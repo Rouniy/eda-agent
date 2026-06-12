@@ -135,14 +135,29 @@ class AltiumProcessManager:
 
     def _scan_running(self) -> bool:
         """Is any Altium process running? Native Toolhelp scan first
-        (~tens of ms); psutil name-only scan as the fallback.
+        (~tens of ms); tasklist.exe for WSL; psutil as last resort.
         """
         wanted = {n.upper() for n in self.PROCESS_NAMES}
         native = _scan_process_names_native(wanted)
         if native is not None:
             return native
-        # Fallback: psutil. Slower, but correct on non-Windows / if the
-        # native path failed.
+        # WSL fallback: query Windows process list via tasklist.exe
+        import subprocess as _sp
+        import os as _os
+        tasklist = "/mnt/c/Windows/System32/tasklist.exe"
+        if _os.path.exists(tasklist):
+            try:
+                for proc_name in self.PROCESS_NAMES:
+                    r = _sp.run(
+                        [tasklist, "/FI", "IMAGENAME eq " + proc_name, "/FO", "CSV", "/NH"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if proc_name.upper() in r.stdout.upper():
+                        return True
+                return False
+            except Exception as e:
+                logger.debug("tasklist.exe scan failed: %s", e)
+        # Last resort: psutil (Linux processes only, won't see Altium on Windows)
         try:
             for proc in psutil.process_iter(["name"]):
                 name = (proc.info.get("name") or "").upper()
