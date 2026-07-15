@@ -60,7 +60,7 @@ def _check_pointer_file() -> Check:
             ),
         )
     try:
-        contents = pointer.read_text(encoding="ascii").strip()
+        contents = pointer.read_text(encoding="utf-8").strip()
     except OSError as exc:
         return Check(
             name="workspace pointer file readable",

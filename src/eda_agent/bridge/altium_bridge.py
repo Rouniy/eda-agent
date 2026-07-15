@@ -581,7 +581,7 @@ class AltiumBridge:
                         f"after={first_appearance*1000:.0f}ms polls={poll_count}",
                     )
                 try:
-                    with open(response_path, "r", encoding="utf-8") as f:
+                    with open(response_path, "r", encoding="utf-8-sig") as f:
                         data = json.load(f)
                 except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
                     parse_errors += 1
