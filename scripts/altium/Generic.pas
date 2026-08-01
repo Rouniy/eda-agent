@@ -197,6 +197,13 @@ Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     R : ISch_Rectangle;
     L : ISch_Line;
+    C : ISch_Component;
+    Lbl : ISch_Label;
+    Pin : ISch_Pin;
+    Port : ISch_Port;
+    NetLbl : ISch_NetLabel;
+    Power : ISch_PowerObject;
+    SheetEntry : ISch_SheetEntry;
     Crn : TLocation;
     Have : Boolean;
 Begin
@@ -239,14 +246,47 @@ Begin
                     Result := IntToStr(CoordToMils(Crn.Y));
             End;
         End
-
         // String properties (late-bound across all types, primitives only)
-        Else If PropName = 'Text'        Then Result := Obj.Text
-        Else If PropName = 'Name'        Then Result := Obj.Name
-        Else If PropName = 'LibReference'       Then Result := Obj.LibReference
-        Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
-        Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
-        Else If PropName = 'ComponentDescription' Then Result := Obj.ComponentDescription
+        Else If (PropName = 'Text') Or (PropName = 'Name') Then
+        Begin
+            { Text is not available on the graphical base interface.  Ports
+              expose their visible caption as Name; net labels expose Text. }
+            If Obj.ObjectId = ePort Then
+            Begin Port := Obj; Result := Port.Name; End
+            Else If Obj.ObjectId = eNetLabel Then
+            Begin NetLbl := Obj; Result := NetLbl.Text; End
+            Else If Obj.ObjectId = ePowerObject Then
+            Begin Power := Obj; Result := Power.Text; End
+            Else If Obj.ObjectId = eSheetEntry Then
+            Begin SheetEntry := Obj; Result := SheetEntry.Name; End
+            Else Result := '';
+        End
+        Else If PropName = 'LibReference' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.LibReference; End;
+        End
+        Else If PropName = 'SourceLibraryName' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.SourceLibraryName; End;
+        End
+        Else If PropName = 'DesignItemId' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.DesignItemId; End;
+        End
+        Else If PropName = 'ComponentDescription' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.ComponentDescription; End;
+        End
+        Else If PropName = 'CurrentPartID' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin C := Obj; Result := IntToStr(C.CurrentPartID); End;
+        End
+        Else If PropName = 'PartCount' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin C := Obj; Result := IntToStr(C.PartCount); End;
+        End
         Else If PropName = 'UniqueId'    Then Result := Obj.UniqueId
 
         // Sub-object string properties (compound interfaces, typed cast required).
@@ -274,12 +314,42 @@ Begin
         Else If PropName = 'Comment.Text'    Then Result := GetSchComponentSubText(Obj, 'Comment')
 
         // Integer properties (returned as string)
-        Else If PropName = 'Orientation' Then Result := IntToStr(Obj.Orientation)
+        Else If PropName = 'Orientation' Then
+        Begin
+            { Orientation is not declared on ISch_GraphicalObject.  Accessing
+              Obj.Orientation makes DelphiScript fail at compile time even
+              when the runtime object is a port or pin.  Narrow to the actual
+              schematic interface first. }
+            If Obj.ObjectId = ePin Then
+            Begin Pin := Obj; Result := IntToStr(Pin.Orientation); End
+            Else If Obj.ObjectId = ePort Then
+            Begin
+                { ISch_Port has no Orientation member in the Altium scripting
+                  interface.  Port direction is represented by port-specific
+                  style/alignment fields, so generic Orientation is empty. }
+                Result := '';
+            End
+            Else If Obj.ObjectId = eNetLabel Then
+            Begin NetLbl := Obj; Result := IntToStr(NetLbl.Orientation); End
+            Else If Obj.ObjectId = ePowerObject Then
+            Begin Power := Obj; Result := IntToStr(Power.Orientation); End
+            Else If Obj.ObjectId = eSchComponent Then
+            Begin C := Obj; Result := IntToStr(C.Orientation); End;
+        End
         Else If PropName = 'FontId'      Then Result := IntToStr(Obj.FontId)
         Else If PropName = 'LineWidth'   Then Result := IntToStr(Obj.LineWidth)
         Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
-        Else If PropName = 'IOType'      Then Result := IntToStr(Obj.IOType)
-        Else If PropName = 'Alignment'   Then Result := IntToStr(Obj.Alignment)
+        Else If PropName = 'IOType' Then
+        Begin
+            If Obj.ObjectId = ePort Then Begin Port := Obj; Result := IntToStr(Port.IOType); End
+            Else If Obj.ObjectId = eSheetEntry Then Begin SheetEntry := Obj; Result := IntToStr(SheetEntry.IOType); End
+            Else Result := '';
+        End
+        Else If PropName = 'Alignment' Then
+        Begin
+            If Obj.ObjectId = ePort Then Begin Port := Obj; Result := IntToStr(Port.Alignment); End
+            Else Result := '';
+        End
         Else If PropName = 'Electrical'  Then Result := IntToStr(Obj.Electrical)
         Else If PropName = 'Color'       Then Result := IntToStr(Obj.Color)
         Else If PropName = 'AreaColor'   Then Result := IntToStr(Obj.AreaColor)
@@ -287,7 +357,15 @@ Begin
         Else If PropName = 'Justification' Then Result := IntToStr(Obj.Justification)
 
         // Coord properties (returned in mils)
-        Else If PropName = 'Width'       Then Result := IntToStr(CoordToMils(Obj.Width))
+        Else If PropName = 'Width' Then
+        Begin
+            { Width is not part of ISch_GraphicalObject.  In particular an
+              eWire query used to stop DelphiScript here with "property does
+              not exist".  Narrow to interfaces that actually expose Width. }
+            If Obj.ObjectId = ePort Then
+            Begin Port := Obj; Result := IntToStr(CoordToMils(Port.Width)); End
+            Else Result := '';
+        End
         Else If PropName = 'PinLength'   Then Result := IntToStr(CoordToMils(Obj.PinLength))
         Else If PropName = 'XSize'       Then Result := IntToStr(CoordToMils(Obj.XSize))
         Else If PropName = 'YSize'       Then Result := IntToStr(CoordToMils(Obj.YSize))
@@ -337,6 +415,13 @@ Var
     Crn : TLocation;
     R : ISch_Rectangle;
     L : ISch_Line;
+    C : ISch_Component;
+    Lbl : ISch_Label;
+    Pin : ISch_Pin;
+    Port : ISch_Port;
+    NetLbl : ISch_NetLabel;
+    Power : ISch_PowerObject;
+    SheetEntry : ISch_SheetEntry;
     Matched : Boolean;
 Begin
     { GOTCHA observed 2026-05-16: callers using modify_objects / batch_modify }
@@ -354,17 +439,31 @@ Begin
         // the TLocation record via the GetState_Location reader; writing
         // directly to `.X` / `.Y` on that copy is silently discarded. Read
         // the whole record, patch the target field, write it back.
+        { A component owns its pins as child primitives that carry their own
+          absolute coordinates. Assigning ISch_Component.Location moves only
+          the symbol body, leaving every pin behind: the part still reports
+          the new Location while its pins sit at the old spot, so wires drawn
+          to the "new" pin positions connect to nothing and the compiled
+          netlist silently disagrees with the drawing. MoveToXY relocates the
+          component together with all its children, which is what a caller
+          asking to move a part always means. }
         If PropName = 'Location.X' Then
         Begin
             Loc := Obj.Location;
             Loc.X := MilsToCoord(StrToIntDef(Value, 0));
-            Obj.Location := Loc;
+            If Obj.ObjectId = eSchComponent Then
+            Begin C := Obj; C.MoveToXY(Loc.X, Loc.Y); End
+            Else
+                Obj.Location := Loc;
         End
         Else If PropName = 'Location.Y' Then
         Begin
             Loc := Obj.Location;
             Loc.Y := MilsToCoord(StrToIntDef(Value, 0));
-            Obj.Location := Loc;
+            If Obj.ObjectId = eSchComponent Then
+            Begin C := Obj; C.MoveToXY(Loc.X, Loc.Y); End
+            Else
+                Obj.Location := Loc;
         End
         // Corner lives on ISch_Rectangle and ISch_Line only (not on the base
         // ISch_GraphicalObject, the compiler rejects Obj.Corner regardless
@@ -394,16 +493,62 @@ Begin
             End;
         End
 
+        Else If (PropName = 'Vertex.1.X') Or (PropName = 'Vertex.1.Y')
+             Or (PropName = 'Vertex.2.X') Or (PropName = 'Vertex.2.Y') Then
+        Begin
+            { Wires and buses keep their electrical geometry in polyline
+              vertices. Changing Location alone leaves these untouched. }
+            { GetState/SetState_Vertex are exposed by the base scripting
+              interface. Do not gate on ObjectId: recent Altium builds report
+              wire polylines with an internal id that differs from eWire. }
+            If Obj <> Nil Then
+            Begin
+                If (PropName = 'Vertex.1.X') Or (PropName = 'Vertex.1.Y') Then
+                Begin
+                    Loc := Obj.GetState_Vertex(1);
+                    If PropName = 'Vertex.1.X' Then Loc.X := MilsToCoord(StrToIntDef(Value, 0))
+                    Else Loc.Y := MilsToCoord(StrToIntDef(Value, 0));
+                    Obj.SetState_Vertex(1, Loc);
+                End
+                Else
+                Begin
+                    Loc := Obj.GetState_Vertex(2);
+                    If PropName = 'Vertex.2.X' Then Loc.X := MilsToCoord(StrToIntDef(Value, 0))
+                    Else Loc.Y := MilsToCoord(StrToIntDef(Value, 0));
+                    Obj.SetState_Vertex(2, Loc);
+                End;
+            End
+            Else Matched := False;
+        End
+
         // String properties (late-bound across all types, primitives only)
-        Else If PropName = 'Text'        Then Obj.Text := Value
-        Else If PropName = 'Name'        Then Obj.Name := Value
-        Else If PropName = 'LibReference'       Then Obj.LibReference := Value
+        Else If (PropName = 'Text') Or (PropName = 'Name') Then
+        Begin
+            If Obj.ObjectId = ePort Then
+            Begin Port := Obj; Port.Name := Value; End
+            Else If Obj.ObjectId = eNetLabel Then
+            Begin NetLbl := Obj; NetLbl.Text := Value; End
+            Else If Obj.ObjectId = ePowerObject Then
+            Begin Power := Obj; Power.Text := Value; End
+            Else If Obj.ObjectId = eSheetEntry Then
+            Begin SheetEntry := Obj; SheetEntry.Name := Value; End
+            Else Matched := False;
+        End
+        Else If PropName = 'LibReference' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; C.LibReference := Value; End
+            Else Matched := False;
+        End
         // SourceLibraryName is the design-cache field that records which
         // library a placed component came from. It is read in GetSchProperty
         // but had no write case, so obj_modify / batch_modify silently no-oped
         // (recorded only as an "unknown property"). Clearing it to '' is the
         // canonical way to detach a part from a stale source-library binding.
-        Else If PropName = 'SourceLibraryName'  Then Obj.SourceLibraryName := Value
+        Else If PropName = 'SourceLibraryName' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; C.SourceLibraryName := Value; End
+            Else Matched := False;
+        End
         // DesignItemId is the library ITEM the placed part re-matches
         // against ("Design Item ID" in the UI). It is a component
         // PROPERTY, not a parameter: stamping a parameter named
@@ -411,12 +556,28 @@ Begin
         // write case here obj_modify silently no-oped while reporting
         // matched. A stale DesignItemId after a library re-link is what
         // produces the <Not Found> state in the Properties panel.
-        Else If PropName = 'DesignItemId'       Then Obj.DesignItemId := Value
+        Else If PropName = 'DesignItemId' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; C.DesignItemId := Value; End
+            Else Matched := False;
+        End
         // `Description` is the natural name (matches get_component_info /
         // BOM column / lib_set_component_description); `ComponentDescription`
         // is what ISch_Component actually exposes -- both accepted.
         Else If (PropName = 'ComponentDescription') Or (PropName = 'Description') Then
             Obj.ComponentDescription := Value
+        Else If PropName = 'CurrentPartID' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin C := Obj; C.CurrentPartID := StrToIntDef(Value, 1); End
+            Else Matched := False;
+        End
+        Else If PropName = 'PartCount' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin C := Obj; C.PartCount := StrToIntDef(Value, 1); End
+            Else Matched := False;
+        End
 
         // Sub-object string properties (compound interfaces, typed cast required)
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
@@ -425,7 +586,22 @@ Begin
             SetSchComponentSubText(Obj, 'Comment', Value)
 
         // Integer properties
-        Else If PropName = 'Orientation' Then Obj.Orientation := StrToIntDef(Value, 0)
+        Else If PropName = 'Orientation' Then
+        Begin
+            { See GetSchProperty: Orientation is available only on typed
+              schematic interfaces, not on ISch_GraphicalObject itself. }
+            If Obj.ObjectId = ePin Then
+            Begin Pin := Obj; Pin.Orientation := StrToIntDef(Value, 0); End
+            Else If Obj.ObjectId = ePort Then
+                Matched := False
+            Else If Obj.ObjectId = eNetLabel Then
+            Begin NetLbl := Obj; NetLbl.Orientation := StrToIntDef(Value, 0); End
+            Else If Obj.ObjectId = ePowerObject Then
+            Begin Power := Obj; Power.Orientation := StrToIntDef(Value, 0); End
+            Else If Obj.ObjectId = eSchComponent Then
+            Begin C := Obj; C.Orientation := StrToIntDef(Value, 0); End
+            Else Matched := False;
+        End
         Else If PropName = 'FontId'      Then Obj.FontId := StrToIntDef(Value, 1)
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
         Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
@@ -1583,25 +1759,86 @@ Begin
 End;
 
 {..............................................................................}
+{ Legacy batch_modify operation parser.                                       }
+{                                                                             }
+{ The pre-2026.08.01 wire format packed operations as                         }
+{ 'scope;object_type;filter;set' joined by '|'. That collides head-on with    }
+{ the '|' that separates AND-conditions inside a filter and assignments       }
+{ inside a set: "...;eSchComponent;Location.X=7013|Location.Y=7634;           }
+{ Designator.Text=C1027" got chopped at the FIRST pipe, both halves then      }
+{ failed the "needs 3 semicolons" test and were silently dropped. Every       }
+{ multi-condition op vanished with no error, which is why the tool reported   }
+{ operations_processed:0 while the single-shot modify_objects (whose filter   }
+{ travels in its own JSON field) worked on the identical filter.              }
+{                                                                             }
+{ Kept only so an older Python client still gets the single-condition         }
+{ behaviour it used to get. Returns False when the op can't be parsed.        }
+{..............................................................................}
+
+Function ParseLegacyModifyOp(OpStr : String; Var Scope : String;
+    Var ObjTypeStr : String; Var FilterStr : String; Var SetStr : String) : Boolean;
+Var
+    Rest : String;
+    SemiPos : Integer;
+Begin
+    Result := False;
+    Scope := '';
+    ObjTypeStr := '';
+    FilterStr := '';
+    SetStr := '';
+    If OpStr = '' Then Exit;
+
+    Rest := OpStr;
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    Scope := Copy(Rest, 1, SemiPos - 1);
+    Rest := Copy(Rest, SemiPos + 1, Length(Rest));
+
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    ObjTypeStr := Copy(Rest, 1, SemiPos - 1);
+    Rest := Copy(Rest, SemiPos + 1, Length(Rest));
+
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    FilterStr := Copy(Rest, 1, SemiPos - 1);
+    SetStr := Copy(Rest, SemiPos + 1, Length(Rest));
+    Result := True;
+End;
+
+{..............................................................................}
 { BATCH MODIFY: Multiple modify operations in a single IPC call.             }
 {                                                                            }
-{ Params: operations, pipe-separated list of operations, each semicolon-    }
-{   separated as: scope;object_type;filter;set                               }
-{   Example: "project;eParameter;Name=Engineer;Text=John|                    }
-{             project;eParameter;Name=Revision;Text=2.0"                     }
+{ Params: operations, '~~'-separated list of operations, each a ';'-separated }
+{   set of keyed fields (same encoding as batch_create / batch_delete, parsed }
+{   by NextBatchOp / GetBatchField):                                          }
+{     scope=<scope>;object_type=<type>;filter=<filter>;set=<assignments>      }
+{   Example, two ops joined by '~~':                                          }
+{     scope=project;object_type=eParameter;filter=Name=Engineer;set=Text=John }
+{     scope=active_doc;object_type=eSchComponent;                             }
+{       filter=Location.X=7013|Location.Y=7634;set=Designator.Text=C1027      }
+{                                                                             }
+{   '~~' never appears in Altium names, filters or property strings, so a     }
+{   filter/set that itself uses '|' survives intact. GetBatchField splits     }
+{   each field at its FIRST '=', so 'filter=Location.X=7013|...' keeps the    }
+{   whole right-hand side as the filter value.                                }
 {                                                                            }
 { This processes ALL operations on the Altium side in one round-trip,        }
 { dramatically faster than multiple individual modify_objects calls.          }
+{                                                                            }
+{ The response reports matched objects and per-op failures so a batch that    }
+{ resolves nothing can no longer look like a success.                        }
 {..............................................................................}
 
 Function Gen_BatchModify(Params : String; RequestId : String) : String;
 Var
-    Operations, OpStr, Remaining : String;
+    Operations, OpStr, Remaining, OpResp : String;
     Scope, ObjTypeStr, FilterStr, SetStr : String;
-    ScopeType, ScopePath : String;
-    ObjTypeInt, PipePos, SemiPos : Integer;
-    TotalMatched, OpCount, OpMatched : Integer;
-    ResultJson : String;
+    ScopeType, ScopePath, FailCode : String;
+    ObjTypeInt, PipePos : Integer;
+    TotalMatched, OpCount, OpIndex, OpFailed : Integer;
+    Keyed, Parsed, IsPCB : Boolean;
+    FailuresJson, ResultJson : String;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -1610,78 +1847,140 @@ Begin
         Exit;
     End;
 
+    { Detect the wire format. The keyed '~~' encoding always starts with a  }
+    { 'scope=' field (the Python helper defaults it to active_doc), and a   }
+    { legacy payload starts with the scope VALUE instead, so the prefix     }
+    { test is unambiguous. A multi-op keyed payload also carries '~~'.      }
+    Keyed := (Copy(Operations, 1, 6) = 'scope=') Or (Pos('~~', Operations) > 0);
+
     TotalMatched := 0;
     OpCount := 0;
-    ResultJson := '';
+    OpIndex := 0;
+    OpFailed := 0;
+    FailuresJson := '';
     Remaining := Operations;
 
     { Clear the property-write diagnostics buffer so this call only       }
     { surfaces issues raised by THIS batch, not anything left over.       }
     ResetPropertyDiag;
 
-    While Length(Remaining) > 0 Do
+    While True Do
     Begin
-        // Split on pipe to get next operation
-        PipePos := Pos('|', Remaining);
-        If PipePos = 0 Then
+        Parsed := False;
+        Scope := '';
+        ObjTypeStr := '';
+        FilterStr := '';
+        SetStr := '';
+        FailCode := '';
+
+        If Keyed Then
         Begin
-            OpStr := Remaining;
-            Remaining := '';
+            OpStr := NextBatchOp(Remaining);
+            If OpStr = '' Then Break;
+            Scope := GetBatchField(OpStr, 'scope');
+            ObjTypeStr := GetBatchField(OpStr, 'object_type');
+            FilterStr := GetBatchField(OpStr, 'filter');
+            SetStr := GetBatchField(OpStr, 'set');
+            Parsed := True;
         End
         Else
         Begin
-            OpStr := Copy(Remaining, 1, PipePos - 1);
-            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            If Length(Remaining) = 0 Then Break;
+            PipePos := Pos('|', Remaining);
+            If PipePos = 0 Then
+            Begin
+                OpStr := Remaining;
+                Remaining := '';
+            End
+            Else
+            Begin
+                OpStr := Copy(Remaining, 1, PipePos - 1);
+                Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            End;
+            If OpStr = '' Then Continue;
+            Parsed := ParseLegacyModifyOp(OpStr, Scope, ObjTypeStr, FilterStr, SetStr);
         End;
 
-        If OpStr = '' Then Continue;
+        Inc(OpIndex);
 
-        // Parse operation: scope;object_type;filter;set
-        // Split on semicolons
-        SemiPos := Pos(';', OpStr);
-        If SemiPos = 0 Then Continue;
-        Scope := Copy(OpStr, 1, SemiPos - 1);
-        OpStr := Copy(OpStr, SemiPos + 1, Length(OpStr));
+        If Scope = '' Then Scope := 'active_doc';
 
-        SemiPos := Pos(';', OpStr);
-        If SemiPos = 0 Then Continue;
-        ObjTypeStr := Copy(OpStr, 1, SemiPos - 1);
-        OpStr := Copy(OpStr, SemiPos + 1, Length(OpStr));
+        If Not Parsed Then FailCode := 'MALFORMED_OP'
+        Else If ObjTypeStr = '' Then FailCode := 'MISSING_OBJECT_TYPE'
+        Else If SetStr = '' Then FailCode := 'MISSING_SET';
 
-        SemiPos := Pos(';', OpStr);
-        If SemiPos = 0 Then Continue;
-        FilterStr := Copy(OpStr, 1, SemiPos - 1);
-        SetStr := Copy(OpStr, SemiPos + 1, Length(OpStr));
-
-        If (ObjTypeStr = '') Or (SetStr = '') Then Continue;
-
-        ParseScope(Scope, ScopeType, ScopePath);
-        { lib_component scope: select the symbol; skip the op if it's gone. }
-        If Not ApplyLibComponentScope(ScopeType, ScopePath) Then Continue;
-        ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
-        If ObjTypeInt = -1 Then Continue;
-
-        // Execute this operation
-        OpMatched := 0;
-        If ScopeType = 'project' Then
+        If FailCode = '' Then
         Begin
-            IterateProjectDocs(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, ScopePath, 0);
-        End
-        Else If ScopeType = 'doc' Then
-        Begin
-            ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
-        End
-        Else
-        Begin
-            ProcessActiveDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
+            ParseScope(Scope, ScopeType, ScopePath);
+            { lib_component scope: select the symbol before the op runs. }
+            If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
+                FailCode := 'LIB_COMPONENT_NOT_FOUND';
         End;
 
-        Inc(OpCount);
+        If FailCode = '' Then
+        Begin
+            { Same two-step type resolution the single-shot modify_objects  }
+            { does, so a batch can carry PCB ops too instead of rejecting    }
+            { every one of them as an unknown type.                          }
+            IsPCB := False;
+            ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
+            If ObjTypeInt = -1 Then
+            Begin
+                ObjTypeInt := ObjectTypeFromStringPCB(ObjTypeStr);
+                If ObjTypeInt <> -1 Then IsPCB := True;
+            End;
+            If ObjTypeInt = -1 Then FailCode := 'INVALID_TYPE';
+        End;
+
+        If FailCode = '' Then
+        Begin
+            If IsPCB Then
+                OpResp := ProcessActivePCBDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
+            Else If ScopeType = 'project' Then
+                OpResp := IterateProjectDocs(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, ScopePath, 0)
+            Else If ScopeType = 'doc' Then
+                OpResp := ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
+            Else
+                OpResp := ProcessActiveDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
+
+            { The per-op helpers return a full response envelope. A failed }
+            { one (document not loaded, no active schematic, ...) used to   }
+            { be discarded, so the batch reported success either way.       }
+            If ExtractJsonValue(OpResp, 'success') = 'true' Then
+            Begin
+                TotalMatched := TotalMatched + StrToIntDef(ExtractJsonValue(OpResp, 'matched'), 0);
+                Inc(OpCount);
+            End
+            Else
+            Begin
+                FailCode := ExtractJsonValue(ExtractJsonValue(OpResp, 'error'), 'code');
+                If FailCode = '' Then FailCode := 'OP_FAILED';
+            End;
+        End;
+
+        If FailCode <> '' Then
+        Begin
+            Inc(OpFailed);
+            { Cap the detail list, a 500-op batch against a closed document }
+            { must not blow the response up.                                }
+            If OpFailed <= 20 Then
+            Begin
+                If FailuresJson <> '' Then FailuresJson := FailuresJson + ',';
+                FailuresJson := FailuresJson +
+                    '{"index":' + IntToStr(OpIndex - 1) +
+                    ',"object_type":"' + EscapeJsonString(ObjTypeStr) +
+                    '","reason":"' + EscapeJsonString(FailCode) + '"}';
+            End;
+        End;
     End;
 
     { Surface unknown / failed property writes so they stop being silent. }
     ResultJson :=
         '{"operations_processed":' + IntToStr(OpCount) +
+        ',"operations_total":' + IntToStr(OpIndex) +
+        ',"operations_failed":' + IntToStr(OpFailed) +
+        ',"matched":' + IntToStr(TotalMatched) +
+        ',"failures":[' + FailuresJson + ']' +
         ',"properties":' + RenderPropertyDiagJson + '}';
     Result := BuildSuccessResponse(RequestId, ResultJson);
 End;
@@ -2418,9 +2717,7 @@ Begin
         Exit;
     End;
 
-    { Two-vertex wire. The canonical pattern: each vertex needs its own      }
-    { InsertVertex BEFORE the SetState_Vertex assignment. The previous code  }
-    { only inserted vertex 1, so the wire was a single point, invisible.     }
+    { MCP factory path requires InsertVertex/SetState indices 1 and 2. }
     Wire.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
     Wire.InsertVertex := 1;
     Wire.SetState_Vertex(1, Point(MilsToCoord(X1), MilsToCoord(Y1)));
@@ -2742,7 +3039,7 @@ Var
     Sym : ISch_SheetSymbol;
     Entry : ISch_SheetEntry;
     SheetNameStr, EntryName, IOStr, SideStr, ThisName : String;
-    DistFromTop : Integer;
+    DistFromTop, EntryX, EntryY : Integer;
     Found : Boolean;
 Begin
     SheetNameStr := ExtractJsonValue(Params, 'sheet_name');
@@ -2810,6 +3107,11 @@ Begin
     End;
 
     Entry.Name := EntryName;
+    { DistanceFromTop is a TCoord owner-relative distance.  Passing a small
+      integer here is interpreted as internal coordinate units and therefore
+      rounds every entry onto the same point after save/reload. }
+    { Set again after attaching to the sheet-symbol container below.  AD 26
+      resets this field to zero while an ownerless entry is adopted. }
     Entry.DistanceFromTop := MilsToCoord(DistFromTop);
 
     If IOStr = 'input' Then Entry.IOType := ePortInput
@@ -2830,7 +3132,40 @@ Begin
     { current bounds. See SDK reference, ISch_BasicContainer interface.          }
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Sym.AddAndPositionSchObject(Entry);
-    SchRegisterObject(Sym, Entry);
+    { AddAndPositionSchObject already registers Entry in the sheet-symbol
+      container. Registering it a second time promotes/detaches it as a
+      document-level object on AD 26, leaving an ownerless entry near 0,0. }
+    { AD 26 sometimes leaves a newly added entry at Y=-50 even though the
+      container and side are correct.  Force the terminal coordinate from
+      the sheet-symbol bounds after it has joined the container. }
+    EntryX := CoordToMils(Sym.Location.X);
+    EntryY := CoordToMils(Sym.Location.Y);
+    If SideStr = 'right' Then
+        EntryX := EntryX + CoordToMils(Sym.XSize)
+    Else If SideStr = 'top' Then
+        EntryX := EntryX + DistFromTop
+    Else If SideStr = 'bottom' Then
+    Begin
+        EntryX := EntryX + DistFromTop;
+        EntryY := EntryY - CoordToMils(Sym.YSize);
+    End
+    Else
+        EntryY := EntryY - DistFromTop;
+    If SideStr = 'right' Then EntryY := EntryY - DistFromTop;
+
+    SchBeginModify(Entry);
+    { Persist owner-relative placement.  Location alone is only an in-memory
+      drawing coordinate; Altium reconstructs it from Side/DistanceFromTop
+      when the document is reopened. }
+    Entry.DistanceFromTop := MilsToCoord(DistFromTop);
+    If SideStr = 'right' Then Entry.Side := eRightSide
+    Else If SideStr = 'top' Then Entry.Side := eTopSide
+    Else If SideStr = 'bottom' Then Entry.Side := eBottomSide
+    Else Entry.Side := eLeftSide;
+    SetSchProperty(Entry, 'Location.X', IntToStr(EntryX));
+    SetSchProperty(Entry, 'Location.Y', IntToStr(EntryY));
+    SchEndModify(Entry);
+
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
@@ -3026,7 +3361,7 @@ End;
 { caller can position / rename / customise it.                                }
 Function FindPlacedComponentByLibRef(SchDoc : ISch_Document; LibRef : String) : ISch_Component;
 Var
-    Iter : ISch_Iterator;
+    Iter, ImplIter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Best : ISch_Component;
 Begin
@@ -3389,7 +3724,7 @@ End;
 Function Gen_PlaceNetLabel(Params : String; RequestId : String) : String;
 Var
     Text, SheetPath : String;
-    X, Y, Orientation : Integer;
+    X, Y, Orientation, SepPos : Integer;
     SchDoc : ISch_Document;
     NetLabel : ISch_NetLabel;
     Loc : TLocation;
@@ -3400,6 +3735,15 @@ Begin
     X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
     Orientation := StrToIntDef(ExtractJsonValue(Params, 'orientation'), 0);
+
+    { Backward-compatible transport for an already-running Python MCP whose
+      published schema has no sheet_path yet: "NET@@C:\path\sheet.SchDoc". }
+    SepPos := Pos('@@', Text);
+    If (SheetPath = '') And (SepPos > 0) Then
+    Begin
+        SheetPath := Copy(Text, SepPos + 2, Length(Text));
+        Text := Copy(Text, 1, SepPos - 1);
+    End;
 
     If Text = '' Then
     Begin
@@ -3442,7 +3786,9 @@ Begin
     NetLabel.Location := Loc;
     NetLabel.Text := Text;
     NetLabel.Orientation := Orientation;
-    NetLabel.Color := 0;
+    { Keep the factory electrical colour/style. Color=0 makes newly-created
+      schematic connectivity primitives render like plain black graphics in
+      AD26 and they are omitted from the compiled electrical index. }
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(NetLabel);
@@ -3616,8 +3962,8 @@ End;
 
 Function Gen_PlacePort(Params : String; RequestId : String) : String;
 Var
-    Name, StyleStr, IOTypeStr : String;
-    X, Y : Integer;
+    Name, StyleStr, IOTypeStr, SheetPath : String;
+    X, Y, SepPos : Integer;
     SchDoc : ISch_Document;
     SchPort : ISch_Port;
 Begin
@@ -3626,6 +3972,16 @@ Begin
     Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
     StyleStr := ExtractJsonValue(Params, 'style');
     IOTypeStr := ExtractJsonValue(Params, 'io_type');
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+
+    { Backward-compatible transport for Python MCP processes whose published
+      schema predates sheet_path: "PORTNAME@@C:\path\sheet.SchDoc". }
+    SepPos := Pos('@@', Name);
+    If (SheetPath = '') And (SepPos > 0) Then
+    Begin
+        SheetPath := Copy(Name, SepPos + 2, Length(Name));
+        Name := Copy(Name, 1, SepPos - 1);
+    End;
 
     If Name = '' Then
     Begin
@@ -3633,7 +3989,13 @@ Begin
         Exit;
     End;
 
-    SchDoc := SchServer.GetCurrentSchDocument;
+    SchDoc := Nil;
+    If SheetPath <> '' Then
+    Begin
+        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+    End
+    Else
+        SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
@@ -4933,7 +5295,7 @@ End;
 { Read a named parameter's text off a sch component. Empty string if absent.   }
 Function GetCompParamText(Comp : ISch_Component; ParamName : String) : String;
 Var
-    Iter : ISch_Iterator;
+    Iter, ImplIter : ISch_Iterator;
     Param : ISch_Parameter;
 Begin
     Result := '';
@@ -5141,6 +5503,7 @@ Var
     Iter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Comp, TargetComp : ISch_Component;
+    Impl : ISch_Implementation;
     Found : Boolean;
     P, Applied, Created : Integer;
     SrvDoc : IServerDocument;
@@ -5241,10 +5604,27 @@ Begin
             Else If Key = 'Footprint' Then
             Begin
                 { CurrentFootprintModelName is read-only in DelphiScript      }
-                { (memory: delphiscript_api_quirks.md). Skip silently rather   }
-                { than crash the script; footprint stays whatever the library }
-                { symbol carried.                                              }
-                Inc(Applied);
+                { but the owned implementation's ModelName is writable. Walk  }
+                { the placed component's implementations and update the first }
+                { PCB model in place so compile/BOM/ECO see the new footprint. }
+                Impl := Nil;
+                ImplIter := TargetComp.SchIterator_Create;
+                Try
+                    ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+                    Impl := ImplIter.FirstSchObject;
+                    While Impl <> Nil Do
+                    Begin
+                        If UpperCase(Impl.ModelType) = 'PCBLIB' Then Break;
+                        Impl := ImplIter.NextSchObject;
+                    End;
+                Finally
+                    TargetComp.SchIterator_Destroy(ImplIter);
+                End;
+                If Impl <> Nil Then
+                Begin
+                    Try Impl.ModelName := Val; Except End;
+                    Inc(Applied);
+                End;
             End
             Else
             Begin
@@ -5287,6 +5667,7 @@ Var
     Iter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
+    Impl : ISch_Implementation;
     Designator, Comment, LibRef, SpicePrefix, Value : String;
     PassivePrefix, Kind, MfrPart, Mfr : String;
     ReadyJson, NeedsPrimJson, NeedsFileJson : String;
@@ -5837,7 +6218,7 @@ Begin
                 Continue;
             End;
 
-            { Two-vertex wire: insert vertex 1 then vertex 2 explicitly. }
+            { MCP factory path requires InsertVertex/SetState indices 1 and 2. }
             Wire.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
             Wire.InsertVertex := 1;
             Wire.SetState_Vertex(1, Point(MilsToCoord(X1), MilsToCoord(Y1)));
@@ -6286,9 +6667,10 @@ Var
     StampsStr, SheetPath, Op, Remaining : String;
     OpCount, Updated, Failed, OpIdx : Integer;
     SchDoc : ISch_Document;
-    Iter : ISch_Iterator;
+    Iter, ImplIter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
+    Impl : ISch_Implementation;
     DesigList : TStringList;
     OpsList : TStringList;
     OpStr, FieldStr, Key, Val : String;
@@ -6380,7 +6762,32 @@ Begin
                                     End
                                     Else If Key = 'Footprint' Then
                                     Begin
-                                        { read-only, skip silently            }
+                                        { Rename only the FIRST PCBLIB model.  }
+                                        { Renaming every implementation makes  }
+                                        { a multi-model part collapse to one   }
+                                        { name and the ECO then reports the    }
+                                        { footprint as ambiguous. The ordinary }
+                                        { Footprint parameter is deliberately  }
+                                        { NOT written: when both it and        }
+                                        { ModelName carry a value Altium emits }
+                                        { a duplicate-footprint ECO error.     }
+                                        Impl := Nil;
+                                        ImplIter := Comp.SchIterator_Create;
+                                        Try
+                                            ImplIter.AddFilter_ObjectSet(
+                                                MkSet(eImplementation));
+                                            Impl := ImplIter.FirstSchObject;
+                                            While Impl <> Nil Do
+                                            Begin
+                                                If UpperCase(Impl.ModelType) =
+                                                    'PCBLIB' Then Break;
+                                                Impl := ImplIter.NextSchObject;
+                                            End;
+                                        Finally
+                                            Comp.SchIterator_Destroy(ImplIter);
+                                        End;
+                                        If Impl <> Nil Then
+                                            Try Impl.ModelName := Val; Except End;
                                     End
                                     Else
                                         SetCompParamText(Comp, Key, Val);

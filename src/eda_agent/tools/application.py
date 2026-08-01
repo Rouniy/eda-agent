@@ -2,7 +2,11 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Application-level tools for Altium Designer MCP Server."""
 
+import os
 import re
+import sys
+import threading
+import time
 from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
@@ -541,6 +545,131 @@ def register_application_tools(mcp):
             "application.create_document", params
         )
         return result
+
+    @mcp.tool()
+    async def app_open_document(
+        file_path: str,
+        kind: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Open an existing Altium document from disk and focus it.
+
+        Project members keep their project association because the live
+        script uses ``Client.OpenDocument`` rather than the UI open process.
+        The document kind is inferred from common Altium extensions, so
+        callers normally only need to provide the absolute path.
+
+        Args:
+            file_path: Absolute path to an existing document.
+            kind: Optional Altium server kind such as ``SCH``, ``PCB``,
+                ``SCHLIB``, ``PCBLIB``, or ``OUTPUTJOB``.
+        """
+        params: dict[str, Any] = {"file_path": file_path}
+        if kind:
+            params["kind"] = kind
+        return await get_bridge().send_command_async(
+            "application.open_document", params
+        )
+
+    @mcp.tool()
+    async def app_close_document(
+        file_path: str,
+        save: bool = True,
+        discard_changes: bool = False,
+    ) -> dict[str, Any]:
+        """Close one loaded Altium document without closing its project.
+
+        Dirty documents are saved by default. If ``save`` is false, the
+        command refuses to close a dirty document unless the caller also
+        explicitly opts into ``discard_changes``. This prevents a hidden
+        confirmation dialog from blocking the MCP loop.
+
+        Args:
+            file_path: Absolute path of the loaded document.
+            save: Save unsaved edits before closing. Default ``True``.
+            discard_changes: Explicitly discard unsaved edits when ``save``
+                is false. Default ``False``.
+        """
+        return await get_bridge().send_command_async(
+            "application.close_document",
+            {
+                "file_path": file_path,
+                "save": "true" if save else "false",
+                "discard_changes": "true" if discard_changes else "false",
+            },
+        )
+
+    @mcp.tool()
+    async def app_reload_document(
+        file_path: str,
+        kind: Optional[str] = None,
+        save_before_close: bool = False,
+        discard_changes: bool = False,
+    ) -> dict[str, Any]:
+        """Close and reopen a document so Altium rereads it from disk.
+
+        This is intended after checkpoint restoration or another external
+        file update. By default it refuses to overwrite unsaved in-editor
+        edits. Set ``save_before_close=True`` to preserve them, or explicitly
+        set ``discard_changes=True`` to replace them with the disk version.
+
+        Args:
+            file_path: Absolute path of the document to reload.
+            kind: Optional Altium document kind; normally inferred.
+            save_before_close: Save dirty editor state before reopening.
+            discard_changes: Explicitly discard dirty editor state.
+        """
+        params: dict[str, Any] = {
+            "file_path": file_path,
+            "save_before_close": "true" if save_before_close else "false",
+            "discard_changes": "true" if discard_changes else "false",
+        }
+        if kind:
+            params["kind"] = kind
+        return await get_bridge().send_command_async(
+            "application.reload_document", params
+        )
+
+    @mcp.tool()
+    async def app_restart_mcp_server(delay_ms: int = 1000) -> dict[str, Any]:
+        """Restart the Python MCP process in place after returning a response.
+
+        The delayed ``exec`` preserves the stdio transport while re-importing
+        the installed package, so newly added Python tools become available
+        without user process management. MCP clients cache the tool list; the
+        newly registered tools may appear on the next agent turn/reconnect.
+
+        This does not recompile Altium DelphiScript. If ``Main.pas`` reports a
+        version mismatch, restart ``StartMCPServer`` inside Altium separately.
+
+        Args:
+            delay_ms: Grace period for the success response to flush before
+                process replacement. Allowed range 250..10000 ms.
+        """
+        if delay_ms < 250 or delay_ms > 10000:
+            return {"success": False,
+                    "reason": "delay_ms must be between 250 and 10000"}
+
+        executable = sys.executable
+        if not executable or not os.path.isfile(executable):
+            return {"success": False,
+                    "reason": "Python executable could not be resolved"}
+
+        def _restart() -> None:
+            time.sleep(delay_ms / 1000.0)
+            os.execv(executable, [executable, "-m", "eda_agent"])
+
+        threading.Thread(
+            target=_restart,
+            name="eda-agent-self-restart",
+            daemon=True,
+        ).start()
+        return {
+            "success": True,
+            "restart_scheduled": True,
+            "delay_ms": delay_ms,
+            "command": [executable, "-m", "eda_agent"],
+            "note": "Tool discovery refreshes after MCP reconnect.",
+        }
 
     @mcp.tool()
     async def app_list_documents() -> list[dict[str, Any]]:

@@ -16,13 +16,27 @@ TPS54331D, D1 → SS14, R1 → RES 10K, J1 → connector).
 This first slice extracts the component list (designator + lib ref +
 description) — the BOM/connectivity spine a headless review needs. Pure
 Python via ``olefile``; no Altium.
+
+Coordinates
+-----------
+Altium stores every schematic coordinate as a PAIR of fields: an integer
+field in units of 10 mil (``Location.X``, ``X1``, ``PinLength``, ...) plus an
+optional companion ``<name>_Frac`` holding the fractional part over a
+denominator of 100000. ``LOCATION.X=840`` + ``LOCATION.X_FRAC=30000`` means
+840.3 units = 8403 mil. Reading only the integer field silently truncates,
+and because ``Location`` and ``PinLength`` truncate independently the error
+ACCUMULATES — on an off-grid sheet that is enough to make real wires miss
+real pin ends and to fabricate phantom breaks in the reconstructed netlist.
+:func:`_read_coord` is the single place that reassembles the pair; every
+reader below goes through it.
 """
 
 from __future__ import annotations
 
 import struct
+from decimal import Context, Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Union
 
 _FILEHEADER = "FileHeader"
 
@@ -118,6 +132,74 @@ def _to_int(value: str | None) -> int | None:
         return None
 
 
+# --- Exact coordinates (integer field + optional ``*_Frac`` companion) -------
+
+# Sub-units per raw SchDoc unit. A raw unit is 10 mil, so one sub-unit is
+# 1e-4 mil — the finest thing a .SchDoc can express.
+_FRAC_DEN = 100000
+_FRAC_EXP = 5  # _FRAC_DEN == 10 ** _FRAC_EXP
+_FRAC_SUFFIX = "_Frac"
+
+# A wide, explicit context so `Decimal.scaleb` below can never round: it is
+# a pure decimal-point shift of an ~11-digit integer. Independent of whatever
+# precision the caller's thread-local decimal context happens to carry.
+_EXACT_CTX = Context(prec=50)
+
+# A coordinate is exact but not always integral: raw units when whole (an int,
+# byte-identical to what this reader returned before *_Frac was honoured) and
+# a Decimal when it carries a fraction. Never a float — see _read_coord.
+Coord = Union[int, Decimal]
+
+
+def _read_coord_units(rec: dict[str, str], base: str) -> Optional[int]:
+    """Exact value of field ``base`` in sub-units (1e-4 mil), or None.
+
+    ``base`` is the integer field name (``Location.X``, ``X1``, ``Y3``,
+    ``PinLength``, ...); the fraction is read from ``<base>_Frac``. Altium's
+    convention is ADDITIVE, including for negatives: the value is
+    ``int_field * 100000 + frac_field``, so ``X=-841`` with ``X_Frac=70000``
+    is -840.3 units, not -841.7. A missing, empty or unparsable ``_Frac``
+    counts as zero, which is why sheets drawn on the grid are unaffected.
+    """
+    whole = _to_int(rec.get(base))
+    if whole is None:
+        return None
+    raw = rec.get(base + _FRAC_SUFFIX)
+    if raw is None:  # Altium writes "_Frac"; tolerate a "_FRAC" spelling too
+        raw = rec.get(base + _FRAC_SUFFIX.upper())
+    return whole * _FRAC_DEN + (_to_int(raw) or 0)
+
+
+def _units_to_coord(units: int) -> Coord:
+    """Sub-units (1e-4 mil) -> raw SchDoc units, exactly.
+
+    Returns a plain ``int`` whenever the value is a whole number of raw units
+    — the overwhelmingly common case, and the one where this reader must stay
+    byte-identical to its pre-fix behaviour. Otherwise a ``Decimal``, which
+    represents these values EXACTLY because the denominator (100000) is a
+    power of ten. A binary float cannot (0.3 is not a binary fraction), and
+    the solver decides connectivity by EQUALITY of coordinates — one bit of
+    float drift and a real connection disappears again, which is the whole
+    failure this fix exists to remove. int and Decimal compare and hash
+    consistently, so the solver's coordinate-keyed union-find sees one
+    coherent space regardless of which of the two it is handed.
+    """
+    whole, frac = divmod(units, _FRAC_DEN)
+    if frac == 0:
+        return whole
+    return Decimal(units).scaleb(-_FRAC_EXP, _EXACT_CTX)
+
+
+def _read_coord(rec: dict[str, str], base: str) -> Optional[Coord]:
+    """Exact value of field ``base`` in raw SchDoc units (10 mil), or None.
+
+    The single coordinate-parsing entry point for every reader in this
+    module: pins, wires, net labels, power ports, junctions, components.
+    """
+    units = _read_coord_units(rec, base)
+    return None if units is None else _units_to_coord(units)
+
+
 def read_schematic_nets(path: str | Path) -> list[dict[str, Any]]:
     """Extract declared net names from a .SchDoc (labels + power ports).
 
@@ -156,7 +238,7 @@ def read_schematic_wires(path: str | Path) -> list[dict[str, Any]]:
     A SchDoc wire is a polyline (``LocationCount`` vertices, ``X1/Y1..``);
     this flattens each polyline into its individual segments so a future
     connectivity solver can union coincident endpoints. Coordinates are raw
-    SchDoc internal units.
+    SchDoc internal units, exact (``*_Frac`` included — see :func:`_read_coord`).
     """
     segments: list[dict[str, Any]] = []
     for rec in read_schdoc_records(path):
@@ -165,8 +247,8 @@ def read_schematic_wires(path: str | Path) -> list[dict[str, Any]]:
         count = _to_int(rec.get("LocationCount")) or 0
         pts = []
         for k in range(1, count + 1):
-            x = _to_int(rec.get(f"X{k}"))
-            y = _to_int(rec.get(f"Y{k}"))
+            x = _read_coord(rec, f"X{k}")
+            y = _read_coord(rec, f"Y{k}")
             if x is not None and y is not None:
                 pts.append((x, y))
         for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
@@ -183,6 +265,10 @@ def read_schematic_pins(path: str | Path) -> list[dict[str, Any]]:
     component. ``x``/``y`` is the pin's anchor; ``orientation`` (deg) and
     ``length`` describe how it extends — the electrical endpoint the net
     solver needs is derived from these (validated in the solver step).
+
+    ``x``, ``y`` and ``length`` are exact: ``PinLength`` carries its own
+    ``PinLength_Frac``, and truncating it independently of the anchor is what
+    made the anchor+length endpoint drift by more than either error alone.
     """
     pins: list[dict[str, Any]] = []
     for rec in read_schdoc_records(path):
@@ -193,9 +279,9 @@ def read_schematic_pins(path: str | Path) -> list[dict[str, Any]]:
             "owner_index": _to_int(rec.get("OwnerIndex")),
             "designator": rec.get("Designator", ""),
             "name": rec.get("Name", ""),
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
-            "length": _to_int(rec.get("PinLength")) or 0,
+            "x": _read_coord(rec, "Location.X"),
+            "y": _read_coord(rec, "Location.Y"),
+            "length": _read_coord(rec, "PinLength") or 0,
             "orientation": _PIN_ORIENT_DEG.get(conglom & 0x3, 0),
         })
     return pins
@@ -217,8 +303,8 @@ def read_schematic_net_label_locations(path: str | Path) -> list[dict[str, Any]]
             continue
         labels.append({
             "name": (rec.get("Text") or "").strip(),
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
+            "x": _read_coord(rec, "Location.X"),
+            "y": _read_coord(rec, "Location.Y"),
         })
     return labels
 
@@ -236,8 +322,8 @@ def read_schematic_power_ports(path: str | Path) -> list[dict[str, Any]]:
             continue
         ports.append({
             "name": (rec.get("Text") or "").strip(),
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
+            "x": _read_coord(rec, "Location.X"),
+            "y": _read_coord(rec, "Location.Y"),
             "orientation": _to_int(rec.get("Orientation")) or 0,
         })
     return ports
@@ -254,8 +340,8 @@ def read_schematic_junctions(path: str | Path) -> list[dict[str, Any]]:
         if rec.get("RECORD") != RECORD_JUNCTION:
             continue
         junctions.append({
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
+            "x": _read_coord(rec, "Location.X"),
+            "y": _read_coord(rec, "Location.Y"),
         })
     return junctions
 
@@ -301,6 +387,10 @@ def read_schematic_document_info(path: str | Path) -> dict[str, Any]:
     info["company"] = _val("CompanyName") or _val("Organization")
 
     sheet = next((r for r in records if r.get("RECORD") == RECORD_SHEET), None)
+    # Sheet size is deliberately plain int, not _read_coord: a custom sheet
+    # size carries no *_Frac (it is chosen from whole units) and this dict is
+    # embedded verbatim in JSON review reports, where a Decimal would not
+    # serialize. Nothing geometric is derived from it.
     info["sheet"] = {
         "custom_x": _to_int(sheet.get("CustomX")) if sheet else None,
         "custom_y": _to_int(sheet.get("CustomY")) if sheet else None,
@@ -316,7 +406,8 @@ def read_schematic_components(path: str | Path) -> list[dict[str, Any]]:
     library_path, unique_id, x, y}`` — the fields a headless BOM/review
     needs. Designators are joined to components via the OwnerIndex scheme
     (owner index = record position counting from the first post-header
-    record). Coordinates are the raw SchDoc internal units (1/100 mil).
+    record). Coordinates are exact raw SchDoc units (10 mil) — see
+    :func:`_read_coord`.
     """
     records = read_schdoc_records(path)
 
@@ -361,8 +452,8 @@ def read_schematic_components(path: str | Path) -> list[dict[str, Any]]:
             "description": rec.get("ComponentDescription", ""),
             "library_path": rec.get("LibraryPath", ""),
             "unique_id": rec.get("UniqueID", ""),
-            "x": _to_int(rec.get("Location.X")),
-            "y": _to_int(rec.get("Location.Y")),
+            "x": _read_coord(rec, "Location.X"),
+            "y": _read_coord(rec, "Location.Y"),
             "mpn": _first_present(params, _MPN_NAMES),
             "manufacturer": _first_present(params, _MFR_NAMES),
             "value": _first_present(params, _VALUE_NAMES),

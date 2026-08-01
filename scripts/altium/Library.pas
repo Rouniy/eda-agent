@@ -193,6 +193,37 @@ Begin
     Try Application.ProcessMessages; Except End;
 End;
 
+{ Mark the focused PcbLib document dirty. RegisterComponent persists a new }
+{ footprint container, but AddPCBObject does not reliably dirty the editor  }
+{ document, so newly-added pads/tracks vanished after close/reopen.          }
+Procedure MarkPcbLibDirty(PcbLib : IPCB_Library);
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    FullPath : String;
+    ServerDoc : IServerDocument;
+Begin
+    If PcbLib = Nil Then Exit;
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then
+        Begin
+            FullPath := '';
+            Try FullPath := Doc.DM_FullPath; Except End;
+            If FullPath <> '' Then
+            Begin
+                ServerDoc := Client.GetDocumentByPath(FullPath);
+                If ServerDoc <> Nil Then
+                    Try ServerDoc.SetModified(True); Except End;
+            End;
+        End;
+    End;
+    Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+    Try Application.ProcessMessages; Except End;
+End;
+
 { True when the resolved SchLib really IS the document at WantPath. Guards the  }
 { silent-wrong-library failure: WorkspaceManager:OpenObject can fail to focus   }
 { the target (bad path, file missing, doc not loadable), leaving the PREVIOUS   }
@@ -711,10 +742,13 @@ Var
     PadsStr, Op, Remaining, Shape, LayerStr : String;
     OpCount, Added, Failed : Integer;
     X, Y, XSize, YSize, HoleSize, CornerRadius : Integer;
+    PasteMaskExpansion, SolderMaskExpansion : Integer;
     Rotation : Double;
     PcbLib : IPCB_Library;
+    Board : IPCB_Board;
     Footprint : IPCB_LibComponent;
     Pad : IPCB_Pad;
+    Cache : TPadCache;
 Begin
     PadsStr := ExtractJsonValue(Params, 'pads');
     If PadsStr = '' Then
@@ -737,6 +771,8 @@ Begin
         Exit;
     End;
 
+    Board := PcbLib.Board;
+
     Added := 0;
     Failed := 0;
     OpCount := 0;
@@ -758,6 +794,8 @@ Begin
             Shape := GetBatchField(Op, 'shape');
             LayerStr := GetBatchField(Op, 'layer');
             CornerRadius := StrToIntDef(GetBatchField(Op, 'corner_radius'), 25);
+            PasteMaskExpansion := StrToIntDef(GetBatchField(Op, 'paste_mask_expansion'), 0);
+            SolderMaskExpansion := StrToIntDef(GetBatchField(Op, 'solder_mask_expansion'), 0);
 
             Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
             If Pad = Nil Then
@@ -767,8 +805,12 @@ Begin
             End;
 
             Pad.Name := GetBatchField(Op, 'designator');
-            Pad.X := MilsToCoord(X);
-            Pad.Y := MilsToCoord(Y);
+            { Batch coordinates are footprint-relative, matching the public }
+            { tool contract. A PcbLib component can have a non-zero internal }
+            { origin, so writing raw board coordinates displaces its pads by }
+            { tens of inches when the footprint is later placed on a PCB.    }
+            Pad.X := Footprint.X + MilsToCoord(X);
+            Pad.Y := Footprint.Y + MilsToCoord(Y);
             Pad.TopXSize := MilsToCoord(XSize);
             Pad.TopYSize := MilsToCoord(YSize);
             Pad.HoleSize := MilsToCoord(HoleSize);
@@ -792,13 +834,34 @@ Begin
             End
             Else Pad.TopShape := eRounded;
 
+            Cache := Pad.GetState_Cache;
+            If GetBatchField(Op, 'paste_mask_expansion') <> '' Then
+            Begin
+                Cache.PasteMaskExpansionValid := eCacheManual;
+                Cache.PasteMaskExpansion := MilsToCoord(PasteMaskExpansion);
+            End;
+            If GetBatchField(Op, 'solder_mask_expansion') <> '' Then
+            Begin
+                Cache.SolderMaskExpansionValid := eCacheManual;
+                Cache.SolderMaskExpansion := MilsToCoord(SolderMaskExpansion);
+            End;
+            Pad.SetState_Cache := Cache;
+
+            { Register on both containers; otherwise the pad exists only in   }
+            { the live footprint and is omitted when the PcbLib is serialized. }
             Footprint.AddPCBObject(Pad);
+            Board.AddPCBObject(Pad);
+            PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Pad.I_ObjectAddress);
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Pad.I_ObjectAddress);
             Inc(Added);
         End;
     Finally
         PCBServer.PostProcess;
     End;
 
+    MarkPcbLibDirty(PcbLib);
     SaveDocByPath(PcbLib.Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
@@ -943,6 +1006,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
+    MarkPcbLibDirty(PcbLib);
     SaveDocByPath(PcbLib.Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
@@ -6643,9 +6707,14 @@ Function Lib_SetModelName(Params : String; RequestId : String) : String;
 Var
     LibPath, CompName, NewName, OldName, CurName, RespJson : String;
     SchLib : ISch_Lib;
+    SchDoc : ISch_Document;
     Component : ISch_Component;
-    ImplIter : ISch_Iterator;
-    Impl, Target, FirstImpl : ISch_Implementation;
+    CompIter, ImplIter : ISch_Iterator;
+    Impl, Target, FirstImpl, Found : ISch_Implementation;
+    Link : ISch_ModelDatafileLink;
+    J, LinkCount, Guard : Integer;
+    MT : String;
+    ServerDoc : IServerDocument;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
     CompName := ExtractJsonValue(Params, 'component_name');
@@ -6654,6 +6723,119 @@ Begin
     If (CompName = '') Or (NewName = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'component_name and new_model_name are required');
+        Exit;
+    End;
+    If UpperCase(ExtractFileExt(LibPath)) = '.SCHDOC' Then
+    Begin
+        SchDoc := Nil;
+        Try SchDoc := SchServer.GetSchDocumentByPath(LibPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'No loaded schematic document at ' + LibPath);
+            Exit;
+        End;
+        Component := Nil;
+        CompIter := SchDoc.SchIterator_Create;
+        Try
+            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Component := CompIter.FirstSchObject;
+            While Component <> Nil Do
+            Begin
+                If Component.Designator.Text = CompName Then Break;
+                Component := CompIter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(CompIter);
+        End;
+        If Component = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND', 'Placed component not found in ' + LibPath + ': ' + CompName);
+            Exit;
+        End;
+        If OldName = '*' Then
+        Begin
+            SchServer.ProcessControl.PreProcess(SchDoc, 'Replace footprint model');
+            Guard := 1000;
+            While Guard > 0 Do
+            Begin
+                Found := Nil;
+                ImplIter := Component.SchIterator_Create;
+                Try
+                    ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+                    Impl := ImplIter.FirstSchObject;
+                    While Impl <> Nil Do
+                    Begin
+                        MT := '';
+                        Try MT := Impl.ModelType; Except End;
+                        If UpperCase(MT) = 'PCBLIB' Then Begin Found := Impl; Break; End;
+                        Impl := ImplIter.NextSchObject;
+                    End;
+                Finally
+                    Component.SchIterator_Destroy(ImplIter);
+                End;
+                If Found = Nil Then Break;
+                Try Component.RemoveSchImplementation(Found); Except End;
+                Dec(Guard);
+            End;
+            Target := Component.AddSchImplementation;
+            If Target <> Nil Then
+            Begin
+                Try Target.ClearAllDatafileLinks; Except End;
+                Try Target.ModelName := NewName; Except End;
+                Try Target.ModelType := cDocKind_PcbLib; Except End;
+                Try Target.IsCurrent := True; Except End;
+                Try Target.AddDataFileLink(NewName, '', 'PCBLib'); Except End;
+            End;
+            SchServer.ProcessControl.PostProcess(SchDoc, 'Replace footprint model');
+            Try SchDoc.GraphicallyInvalidate; Except End;
+            ServerDoc := Client.GetDocumentByPath(LibPath);
+            If ServerDoc <> Nil Then Try ServerDoc.SetModified(True); Except End;
+            Result := BuildSuccessResponse(RequestId, '{"success":true,"component":"'
+                + EscapeJsonString(CompName) + '","new_model_name":"'
+                + EscapeJsonString(NewName) + '","replaced_all":true,"scope":"SchDoc"}');
+            Exit;
+        End;
+        Target := Nil;
+        ImplIter := Component.SchIterator_Create;
+        Try
+            ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+            Impl := ImplIter.FirstSchObject;
+            While Impl <> Nil Do
+            Begin
+                CurName := '';
+                Try CurName := Impl.ModelName; Except End;
+                If (OldName = '') Or (CurName = OldName) Then
+                Begin Target := Impl; Break; End;
+                Impl := ImplIter.NextSchObject;
+            End;
+        Finally
+            Component.SchIterator_Destroy(ImplIter);
+        End;
+        If Target = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MODEL_NOT_FOUND', 'No matching model on placed component ' + CompName);
+            Exit;
+        End;
+        SchServer.ProcessControl.PreProcess(SchDoc, 'Set model name');
+        SchBeginModify(Target);
+        Try Target.ModelName := NewName; Except End;
+        LinkCount := 0;
+        Try LinkCount := Target.DatafileLinkCount; Except End;
+        For J := 0 To LinkCount - 1 Do
+        Begin
+            Link := Nil;
+            Try Link := Target.DatafileLink[J]; Except End;
+            If Link <> Nil Then Try Link.EntityName := NewName; Except End;
+        End;
+        SchEndModify(Target);
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Set model name');
+        Try SchDoc.GraphicallyInvalidate; Except End;
+        ServerDoc := Client.GetDocumentByPath(LibPath);
+        If ServerDoc <> Nil Then Try ServerDoc.SetModified(True); Except End;
+        RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
+            + ',"component":"' + EscapeJsonString(CompName) + '"'
+            + ',"new_model_name":"' + EscapeJsonString(NewName) + '","scope":"SchDoc"}';
+        Result := BuildSuccessResponse(RequestId, RespJson);
         Exit;
     End;
     SchLib := FocusSchLib(LibPath);
@@ -6967,9 +7149,11 @@ Function Lib_SetModelSource(Params : String; RequestId : String) : String;
 Var
     LibPath, CompName, SourceLib, ModelName, UseLibStr, RespJson, CurName, MT : String;
     SchLib : ISch_Lib;
+    SchDoc : ISch_Document;
     Component : ISch_Component;
-    ImplIter : ISch_Iterator;
+    CompIter, ImplIter : ISch_Iterator;
     Impl : ISch_Implementation;
+    ServerDoc : IServerDocument;
     Updated, J, LinkCount : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -6982,6 +7166,151 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'component_name is required');
         Exit;
     End;
+    { A .SchDoc path switches the same operation to a placed component.     }
+    { component_name is then the placed designator (for example C1001).     }
+    If UpperCase(ExtractFileExt(LibPath)) = '.SCHDOC' Then
+    Begin
+        SchDoc := Nil;
+        Try SchDoc := SchServer.GetSchDocumentByPath(LibPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'No loaded schematic document at ' + LibPath);
+            Exit;
+        End;
+        Component := Nil;
+        CompIter := SchDoc.SchIterator_Create;
+        Try
+            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Component := CompIter.FirstSchObject;
+            While Component <> Nil Do
+            Begin
+                If Component.Designator.Text = CompName Then Break;
+                Component := CompIter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(CompIter);
+        End;
+        If Component = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND', 'Placed component not found in ' + LibPath + ': ' + CompName);
+            Exit;
+        End;
+
+        Updated := 0;
+        SchServer.ProcessControl.PreProcess(SchDoc, 'Set model source');
+        ImplIter := Component.SchIterator_Create;
+        Try
+            ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+            Impl := ImplIter.FirstSchObject;
+            While Impl <> Nil Do
+            Begin
+                MT := ''; CurName := '';
+                Try MT := Impl.ModelType; Except End;
+                Try CurName := Impl.ModelName; Except End;
+                If (UpperCase(MT) = 'PCBLIB') And ((ModelName = '') Or (CurName = ModelName)) Then
+                Begin
+                    SchBeginModify(Impl);
+                    LinkCount := 0;
+                    Try LinkCount := Impl.DatafileLinkCount; Except End;
+                    If LinkCount = 0 Then
+                    Begin
+                        Try Impl.AddDataFileLink(CurName, '', 'PCBLib'); Except End;
+                        Try LinkCount := Impl.DatafileLinkCount; Except End;
+                    End;
+                    For J := 0 To LinkCount - 1 Do
+                        Try Impl.DatafileLink[J].Location := SourceLib; Except End;
+                    If UseLibStr = 'true' Then Try Impl.UseComponentLibrary := True; Except End;
+                    If UseLibStr = 'false' Then Try Impl.UseComponentLibrary := False; Except End;
+                    SchEndModify(Impl);
+                    Inc(Updated);
+                End;
+                Impl := ImplIter.NextSchObject;
+            End;
+        Finally
+            Component.SchIterator_Destroy(ImplIter);
+        End;
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Set model source');
+        Try SchDoc.GraphicallyInvalidate; Except End;
+        ServerDoc := Client.GetDocumentByPath(LibPath);
+        If ServerDoc <> Nil Then Try ServerDoc.SetModified(True); Except End;
+        RespJson := '{"success":true,"component":"' + EscapeJsonString(CompName) + '"'
+            + ',"source_library":"' + EscapeJsonString(SourceLib) + '"'
+            + ',"models_updated":' + IntToStr(Updated) + ',"scope":"SchDoc"}';
+        Result := BuildSuccessResponse(RequestId, RespJson);
+        Exit;
+    End;
+
+    If UpperCase(ExtractFileExt(LibPath)) = '.SCHDOC' Then
+    Begin
+        SchDoc := Nil;
+        Try SchDoc := SchServer.GetSchDocumentByPath(LibPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'No loaded schematic document at ' + LibPath);
+            Exit;
+        End;
+        Component := Nil;
+        CompIter := SchDoc.SchIterator_Create;
+        Try
+            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Component := CompIter.FirstSchObject;
+            While Component <> Nil Do
+            Begin
+                If Component.Designator.Text = CompName Then Break;
+                Component := CompIter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(CompIter);
+        End;
+        If Component = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND', 'Placed component not found in ' + LibPath + ': ' + CompName);
+            Exit;
+        End;
+        Target := Nil;
+        ImplIter := Component.SchIterator_Create;
+        Try
+            ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+            Impl := ImplIter.FirstSchObject;
+            While Impl <> Nil Do
+            Begin
+                CurName := '';
+                Try CurName := Impl.ModelName; Except End;
+                If (OldName = '') Or (CurName = OldName) Then
+                Begin Target := Impl; Break; End;
+                Impl := ImplIter.NextSchObject;
+            End;
+        Finally
+            Component.SchIterator_Destroy(ImplIter);
+        End;
+        If Target = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MODEL_NOT_FOUND', 'No matching model on placed component ' + CompName);
+            Exit;
+        End;
+        SchServer.ProcessControl.PreProcess(SchDoc, 'Set model name');
+        SchBeginModify(Target);
+        Try Target.ModelName := NewName; Except End;
+        LinkCount := 0;
+        Try LinkCount := Target.DatafileLinkCount; Except End;
+        For J := 0 To LinkCount - 1 Do
+        Begin
+            Link := Nil;
+            Try Link := Target.DatafileLink[J]; Except End;
+            If Link <> Nil Then Try Link.EntityName := NewName; Except End;
+        End;
+        SchEndModify(Target);
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Set model name');
+        Try SchDoc.GraphicallyInvalidate; Except End;
+        ServerDoc := Client.GetDocumentByPath(LibPath);
+        If ServerDoc <> Nil Then Try ServerDoc.SetModified(True); Except End;
+        RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
+            + ',"component":"' + EscapeJsonString(CompName) + '"'
+            + ',"new_model_name":"' + EscapeJsonString(NewName) + '","scope":"SchDoc"}';
+        Result := BuildSuccessResponse(RequestId, RespJson);
+        Exit;
+    End;
+
     SchLib := FocusSchLib(LibPath);
     If SchLib = Nil Then
     Begin

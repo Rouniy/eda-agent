@@ -369,13 +369,22 @@ def register_generic_tools(mcp):
                   lib_set_current_component round-trip.
                 - object_type: Altium object type (e.g., "ePin", "eParameter",
                   "eSchComponent", "eNetLabel")
-                - filter: Pipe-separated filter conditions
-                  (e.g., "Designator.Text=U1", "Name=VDD")
+                - filter: Pipe-separated filter conditions, AND logic
+                  (e.g., "Designator.Text=U1", "Name=VDD",
+                  "Location.X=7013|Location.Y=7634")
                 - set: Pipe-separated property=value assignments
                   (e.g., "Location.X=300|Location.Y=-100|Orientation=2")
 
+            Values must not contain ';' -- that character separates the
+            fields of one operation on the wire.
+
         Returns:
-            Dictionary with operations_processed count
+            Dictionary with operations_processed (ops that ran without
+            error), operations_total, operations_failed, matched (objects
+            actually touched) and failures[] (index / object_type / reason
+            per failed op). matched == 0 with operations_processed > 0
+            means the filters resolved nothing -- check the filter values,
+            not the batch encoding.
 
         Example, edit pins across THREE different library symbols in ONE call:
             obj_batch_modify(operations=[
@@ -424,7 +433,18 @@ def register_generic_tools(mcp):
                  "filter": "Name=Title", "set": "Text=Power Supply"},
             ])
         """
-        # Build pipe-separated operations string: scope;type;filter;set|scope;type;filter;set|...
+        # Wire encoding: '~~'-separated operations, each a ';'-separated list
+        # of keyed fields, the same format batch_create / batch_delete use and
+        # that Main.pas NextBatchOp / GetBatchField parse.
+        #
+        # The previous encoding was positional -- "scope;type;filter;set"
+        # joined by '|' -- which collided with the '|' that separates filter
+        # conditions and set assignments. Any op whose filter or set had more
+        # than one clause (e.g. "Location.X=7013|Location.Y=7634") was split
+        # mid-field on the Pascal side, failed the positional parse, and was
+        # dropped without an error, so the whole call reported
+        # operations_processed: 0. Keyed fields survive embedded '|' because
+        # GetBatchField splits each field at its FIRST '='.
         op_strings = []
         for op in operations:
             scope = op.get("scope", "active_doc")
@@ -433,7 +453,10 @@ def register_generic_tools(mcp):
             set_str = op.get("set", "")
             if not obj_type or not set_str:
                 continue
-            op_strings.append(f"{scope};{obj_type};{filt};{set_str}")
+            op_strings.append(
+                f"scope={scope};object_type={obj_type};"
+                f"filter={filt};set={set_str}"
+            )
 
         if not op_strings:
             return {"error": "No valid operations provided", "operations_processed": 0}
@@ -441,7 +464,7 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.batch_modify",
-            {"operations": "|".join(op_strings)},
+            {"operations": "~~".join(op_strings)},
         )
         return result
 
@@ -1084,6 +1107,7 @@ def register_generic_tools(mcp):
         x: int,
         y: int,
         orientation: int = 0,
+        sheet_path: str | None = None,
     ) -> dict[str, Any]:
         """Place a net label at coordinates on the active schematic.
 
@@ -1092,6 +1116,7 @@ def register_generic_tools(mcp):
             x: X coordinate in mils
             y: Y coordinate in mils
             orientation: Label rotation (0=0deg, 1=90deg, 2=180deg, 3=270deg)
+            sheet_path: Optional absolute target .SchDoc path.
 
         Returns:
             Dictionary confirming placement
@@ -1104,6 +1129,7 @@ def register_generic_tools(mcp):
                 "x": str(x),
                 "y": str(y),
                 "orientation": str(orientation),
+                "sheet_path": sheet_path or "",
             },
         )
         return result
@@ -1115,6 +1141,7 @@ def register_generic_tools(mcp):
         y: int,
         style: str = "right",
         io_type: str = "bidirectional",
+        sheet_path: str | None = None,
     ) -> dict[str, Any]:
         """Place a port on the active schematic for inter-sheet connectivity.
 
@@ -1124,6 +1151,8 @@ def register_generic_tools(mcp):
             y: Y coordinate in mils
             style: Arrow style, "none", "left", "right", "left_right"
             io_type: I/O direction, "unspecified", "output", "input", "bidirectional"
+            sheet_path: Optional absolute target .SchDoc path. If omitted,
+                the active schematic is used.
 
         Returns:
             Dictionary confirming placement
@@ -1137,6 +1166,7 @@ def register_generic_tools(mcp):
                 "y": str(y),
                 "style": style,
                 "io_type": io_type,
+                "sheet_path": sheet_path or "",
             },
         )
         return result

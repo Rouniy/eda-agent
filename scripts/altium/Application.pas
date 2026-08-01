@@ -225,6 +225,181 @@ Begin
     Result := BuildSuccessResponse(RequestId, '{"success":true,"file_path":"' + EscapeJsonString(ServerDoc.FileName) + '"}');
 End;
 
+{..............................................................................}
+{ Open an existing document from disk and focus it. Client.OpenDocument is    }
+{ used deliberately: unlike the Client:OpenDocument process it preserves the  }
+{ association of files that already belong to the focused project.             }
+{ Params: file_path (required), kind (optional; inferred from extension).       }
+{..............................................................................}
+
+Function App_OpenDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, DocKind, Ext : String;
+    ServerDoc : IServerDocument;
+    AlreadyLoaded : Boolean;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    FilePath := StringReplace(FilePath, '\\', '\', -1);
+    DocKind := UpperCase(ExtractJsonValue(Params, 'kind'));
+
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'file_path is required');
+        Exit;
+    End;
+    If Not FileExists(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FILE_NOT_FOUND',
+            'Document not found: ' + FilePath);
+        Exit;
+    End;
+
+    If DocKind = '' Then
+    Begin
+        Ext := LowerCase(ExtractFileExt(FilePath));
+        If Ext = '.schdoc' Then DocKind := 'SCH'
+        Else If Ext = '.pcbdoc' Then DocKind := 'PCB'
+        Else If Ext = '.schlib' Then DocKind := 'SCHLIB'
+        Else If Ext = '.pcblib' Then DocKind := 'PCBLIB'
+        Else If Ext = '.outjob' Then DocKind := 'OUTPUTJOB'
+        Else If Ext = '.bomdoc' Then DocKind := 'BOM'
+        Else
+        Begin
+            Result := BuildErrorResponse(RequestId, 'KIND_REQUIRED',
+                'Could not infer document kind from: ' + FilePath);
+            Exit;
+        End;
+    End;
+
+    ServerDoc := Nil;
+    AlreadyLoaded := False;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc <> Nil Then AlreadyLoaded := True;
+    If ServerDoc = Nil Then
+    Begin
+        Try ServerDoc := Client.OpenDocument(DocKind, FilePath); Except End;
+    End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+            'Client.OpenDocument returned Nil for kind=' + DocKind +
+            ', path=' + FilePath);
+        Exit;
+    End;
+
+    Try Client.ShowDocument(ServerDoc); Except End;
+    Try Application.ProcessMessages; Except End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
+        '","kind":"' + EscapeJsonString(DocKind) +
+        '","already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
+End;
+
+{..............................................................................}
+{ Close one loaded document. Dirty documents are saved by default. When save  }
+{ is false a dirty document is refused unless discard_changes=true, preventing }
+{ an unexpected Altium prompt from blocking the MCP polling loop.              }
+{..............................................................................}
+
+Function App_CloseDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, SaveStr, DiscardStr : String;
+    ServerDoc : IServerDocument;
+    SaveBeforeClose, DiscardChanges, WasModified : Boolean;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    FilePath := StringReplace(FilePath, '\\', '\', -1);
+    SaveStr := LowerCase(ExtractJsonValue(Params, 'save'));
+    DiscardStr := LowerCase(ExtractJsonValue(Params, 'discard_changes'));
+    SaveBeforeClose := (SaveStr = '') Or (SaveStr = 'true');
+    DiscardChanges := (DiscardStr = 'true');
+
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'file_path is required');
+        Exit;
+    End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
+            '","already_closed":true}');
+        Exit;
+    End;
+
+    WasModified := False;
+    Try WasModified := ServerDoc.Modified; Except End;
+    If WasModified And SaveBeforeClose Then
+    Begin
+        Try ServerDoc.DoFileSave(''); Except
+            Result := BuildErrorResponse(RequestId, 'SAVE_FAILED',
+                'Could not save dirty document before close: ' + FilePath);
+            Exit;
+        End;
+    End
+    Else If WasModified And (Not DiscardChanges) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'DIRTY_DOCUMENT',
+            'Document has unsaved changes. Set save=true or explicitly set discard_changes=true.');
+        Exit;
+    End
+    Else If WasModified And DiscardChanges Then
+        Try ServerDoc.SetModified(False); Except End;
+
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', FilePath);
+    Try RunProcess('WorkspaceManager:CloseObject'); Except End;
+    Try Application.ProcessMessages; Except End;
+
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CLOSE_FAILED',
+            'Document is still loaded after CloseObject: ' + FilePath);
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
+        '","saved":' + BoolToJsonStr(WasModified And SaveBeforeClose) +
+        ',"discarded":' + BoolToJsonStr(WasModified And DiscardChanges) + '}');
+End;
+
+Function App_ReloadDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, DocKind, SaveStr, DiscardStr, CloseParams, OpenParams : String;
+    CloseResp : String;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    FilePath := StringReplace(FilePath, '\\', '\', -1);
+    DocKind := ExtractJsonValue(Params, 'kind');
+    SaveStr := ExtractJsonValue(Params, 'save_before_close');
+    DiscardStr := ExtractJsonValue(Params, 'discard_changes');
+    If SaveStr = '' Then SaveStr := 'false';
+    If DiscardStr = '' Then DiscardStr := 'false';
+
+    CloseParams := '{"file_path":"' + EscapeJsonString(FilePath) +
+        '","save":"' + EscapeJsonString(SaveStr) +
+        '","discard_changes":"' + EscapeJsonString(DiscardStr) + '"}';
+    CloseResp := App_CloseDocument(CloseParams, RequestId);
+    If Pos('"success":false', CloseResp) > 0 Then
+    Begin
+        Result := CloseResp;
+        Exit;
+    End;
+
+    OpenParams := '{"file_path":"' + EscapeJsonString(FilePath) + '"';
+    If DocKind <> '' Then
+        OpenParams := OpenParams + ',"kind":"' + EscapeJsonString(DocKind) + '"';
+    OpenParams := OpenParams + '}';
+    Result := App_OpenDocument(OpenParams, RequestId);
+End;
+
 Function App_RunProcess(Params : String; RequestId : String) : String;
 Var
     ProcessName, ProcessParams : String;
@@ -593,6 +768,9 @@ Begin
         'get_open_documents':  Result := App_GetOpenDocuments(RequestId);
         'get_active_document': Result := App_GetActiveDocument(RequestId);
         'set_active_document': Result := App_SetActiveDocument(Params, RequestId);
+        'open_document':       Result := App_OpenDocument(Params, RequestId);
+        'close_document':      Result := App_CloseDocument(Params, RequestId);
+        'reload_document':     Result := App_ReloadDocument(Params, RequestId);
         'run_process':         Result := App_RunProcess(Params, RequestId);
         'get_preferences':     Result := App_GetPreferences(RequestId);
         'execute_menu':        Result := App_ExecuteMenu(Params, RequestId);

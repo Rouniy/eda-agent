@@ -7,6 +7,7 @@ component placement, trace lengths, layer stackup, board outline, etc.
 """
 
 import json
+import math
 from typing import Any, Optional, Union
 
 from pydantic import ValidationError
@@ -25,6 +26,45 @@ from ..placement import (
 )
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
+
+
+def _offset_pair_polyline(
+    points: list[tuple[float, float]],
+    center_offset: float,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Return positive/negative parallel polylines around a centerline.
+
+    Interior vertices use a miter intersection, so the pair spacing remains
+    constant through ordinary corners instead of opening at every bend.
+    """
+    if len(points) < 2:
+        raise ValueError("at least two centerline points are required")
+    normals: list[tuple[float, float]] = []
+    for (x1, y1), (x2, y2) in zip(points, points[1:]):
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            raise ValueError("centerline contains a zero-length segment")
+        normals.append((-dy / length, dx / length))
+
+    offsets: list[tuple[float, float]] = []
+    for index in range(len(points)):
+        if index == 0:
+            ox, oy = normals[0]
+        elif index == len(points) - 1:
+            ox, oy = normals[-1]
+        else:
+            ax, ay = normals[index - 1]
+            bx, by = normals[index]
+            denom = 1.0 + ax * bx + ay * by
+            if denom <= 1e-6:
+                raise ValueError("centerline contains a 180-degree reversal")
+            ox, oy = (ax + bx) / denom, (ay + by) / denom
+        offsets.append((ox * center_offset, oy * center_offset))
+
+    positive = [(x + ox, y + oy) for (x, y), (ox, oy) in zip(points, offsets)]
+    negative = [(x - ox, y - oy) for (x, y), (ox, oy) in zip(points, offsets)]
+    return positive, negative
 
 
 def _build_objective_report(
@@ -3401,6 +3441,120 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_configure_multilayer_stackup(
+        operations: list[dict[str, Any]],
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Apply a validated sequence of multilayer stack operations.
+
+        Each operation has ``action`` = ``add``, ``modify``, or ``remove``.
+        Add/remove require ``layer``. Modify accepts the same fields as
+        ``pcb_modify_layer``: name, copper thickness, dielectric type/height,
+        dielectric constant, and material. Dry-run is the default because
+        layer-stack changes can invalidate existing routing.
+        """
+        normalized = []
+        for index, raw in enumerate(operations):
+            op = dict(raw)
+            action = str(op.pop("action", "modify")).lower()
+            layer = str(op.get("layer", ""))
+            if action not in {"add", "modify", "remove"} or not layer:
+                return {"success": False, "reason": f"invalid operation {index}"}
+            if action == "modify":
+                dtype = str(op.get("dielectric_type", ""))
+                if dtype and dtype.lower() not in {"none", "core", "prepreg", "surface"}:
+                    return {"success": False, "reason": f"invalid dielectric_type in operation {index}"}
+                for key in ("copper_thickness_mils", "dielectric_height_mils"):
+                    if key in op and float(op[key]) < 0:
+                        return {"success": False, "reason": f"negative {key} in operation {index}"}
+                if "dielectric_constant" in op and float(op["dielectric_constant"]) <= 0:
+                    return {"success": False, "reason": f"invalid dielectric_constant in operation {index}"}
+            normalized.append({"action": action, **op})
+        if dry_run:
+            return {"success": True, "dry_run": True, "operations": normalized,
+                    "warning": "Stack changes can invalidate existing routing."}
+        bridge = get_bridge()
+        results = []
+        for op in normalized:
+            action = op["action"]
+            command = {"add": "pcb.add_layer", "modify": "pcb.modify_layer",
+                       "remove": "pcb.remove_layer"}[action]
+            params = {k: str(v) for k, v in op.items() if k != "action" and v != ""}
+            result = await bridge.send_command_async(command, params)
+            results.append({"operation": op, "result": result})
+        return {"success": True, "dry_run": False, "results": results,
+                "operations_applied": len(results)}
+
+    @mcp.tool()
+    async def pcb_apply_impedance_rules(
+        rule_name: str,
+        scope: str,
+        target_ohms: float,
+        geometry: str,
+        dielectric_height_mils: float,
+        dielectric_constant: float,
+        copper_oz: float = 1.0,
+        spacing_mils: float = 0.0,
+        width_tolerance_mils: int = 1,
+        gap_tolerance_mils: int = 1,
+        max_uncoupled_length_mils: int = 100,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Size and optionally create controlled-impedance PCB rules.
+
+        Creates a Width rule and, for ``*_diff`` geometries, a Differential
+        Pairs Routing gap rule. Values come from the existing verified inverse
+        impedance calculator. Closed-form sizing is an initial engineering
+        value; fabrication-house field-solver values remain authoritative.
+        """
+        from ..design.impedance_sizing import trace_width_for_impedance
+
+        try:
+            sized = trace_width_for_impedance(
+                target_ohms, geometry, dielectric_height_mils,
+                dielectric_constant=dielectric_constant,
+                copper_oz=copper_oz,
+                spacing_mils=spacing_mils,
+            )
+        except (TypeError, ValueError) as exc:
+            return {"success": False, "reason": str(exc)}
+        if not sized.feasible:
+            return {"success": False, "reason": "target impedance is infeasible",
+                    "sizing": sized.__dict__}
+        width = max(1, round(sized.width_mils))
+        rules = [{
+            "rule_type": "width", "name": f"{rule_name}_WIDTH",
+            "value": max(1, width - width_tolerance_mils),
+            "max_value": width + width_tolerance_mils,
+            "favored_value": width, "scope": scope,
+        }]
+        is_diff = geometry.lower().endswith("_diff")
+        if is_diff:
+            if spacing_mils <= 0:
+                return {"success": False, "reason": "spacing_mils is required for differential geometry"}
+            gap = max(1, round(spacing_mils))
+            rules.append({
+                "rule_type": "differential_pairs",
+                "name": f"{rule_name}_GAP",
+                "value": max(1, gap - gap_tolerance_mils),
+                "max_value": gap + gap_tolerance_mils,
+                "favored_value": gap, "scope": scope,
+                "max_uncoupled_length": max_uncoupled_length_mils,
+            })
+        plan = {"success": True, "dry_run": dry_run, "target_ohms": target_ohms,
+                "geometry": geometry, "sizing": sized.__dict__, "rules": rules,
+                "fab_field_solver_required": True}
+        if dry_run:
+            return plan
+        bridge = get_bridge()
+        plan["apply_results"] = [
+            await bridge.send_command_async(
+                "pcb.create_design_rule", {k: str(v) for k, v in rule.items()}
+            ) for rule in rules
+        ]
+        return plan
+
+    @mcp.tool()
     async def pcb_get_board_outline() -> dict[str, Any]:
         """Get the board outline vertices and bounding rectangle.
 
@@ -4442,6 +4596,155 @@ def register_pcb_tools(mcp):
             },
         )
         return result
+
+    @mcp.tool()
+    async def pcb_route_diff_pair(
+        positive_net: str,
+        negative_net: str,
+        centerline: list[dict[str, float]],
+        width_mils: float,
+        gap_mils: float,
+        layer: str = "TopLayer",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Route two matched parallel tracks from one centerline polyline.
+
+        The edge-to-edge gap is held through corners with mitered parallel
+        offsets. Both conductors receive the same number and length pattern
+        of segments. This is a deterministic geometry operation, not an
+        obstacle-avoiding autorouter; run DRC after applying it.
+
+        Args:
+            positive_net / negative_net: Existing board net names.
+            centerline: Ordered ``[{"x": mils, "y": mils}, ...]`` points.
+            width_mils: Width of each conductor.
+            gap_mils: Edge-to-edge pair gap.
+            layer: Copper routing layer, including inner signal layers.
+            dry_run: Return generated geometry without modifying PCB.
+        """
+        if width_mils <= 0 or gap_mils <= 0:
+            return {"success": False, "reason": "width_mils and gap_mils must be > 0"}
+        try:
+            points = [(float(p["x"]), float(p["y"])) for p in centerline]
+            separation = float(width_mils) + float(gap_mils)
+            pos, neg = _offset_pair_polyline(points, separation / 2.0)
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"success": False, "reason": str(exc)}
+
+        tracks: list[dict[str, Any]] = []
+        for net, vertices in ((positive_net, pos), (negative_net, neg)):
+            for start, end in zip(vertices, vertices[1:]):
+                tracks.append({
+                    "x1": round(start[0]), "y1": round(start[1]),
+                    "x2": round(end[0]), "y2": round(end[1]),
+                    "width": round(width_mils), "layer": layer,
+                    "net_name": net,
+                })
+        result: dict[str, Any] = {
+            "success": True, "dry_run": dry_run,
+            "positive_net": positive_net, "negative_net": negative_net,
+            "width_mils": width_mils, "gap_mils": gap_mils,
+            "center_separation_mils": separation, "layer": layer,
+            "tracks": tracks, "drc_checked": False,
+        }
+        if dry_run:
+            return result
+        parts = [
+            f"{t['x1']},{t['y1']},{t['x2']},{t['y2']},{t['width']},{t['layer']},{t['net_name']}"
+            for t in tracks
+        ]
+        applied = await get_bridge().send_command_async(
+            "pcb.place_tracks", {"tracks": "|".join(parts)}
+        )
+        result["apply_result"] = applied
+        return result
+
+    @mcp.tool()
+    async def pcb_place_diff_pair_vias(
+        positive_net: str,
+        negative_net: str,
+        center_x_mils: float,
+        center_y_mils: float,
+        pair_axis_degrees: float,
+        center_separation_mils: float,
+        size_mils: int = 24,
+        hole_size_mils: int = 10,
+        low_layer: str = "TopLayer",
+        high_layer: str = "BottomLayer",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Place a symmetric via pair for a differential layer transition.
+
+        Supports through, blind, buried, and microvia spans through the
+        existing ``low_layer``/``high_layer`` via API. The two via centers are
+        symmetric about the requested point and preserve pair separation.
+        """
+        if center_separation_mils <= 0 or size_mils <= hole_size_mils:
+            return {"success": False, "reason": "invalid separation or via geometry"}
+        angle = math.radians(pair_axis_degrees)
+        dx = math.cos(angle) * center_separation_mils / 2.0
+        dy = math.sin(angle) * center_separation_mils / 2.0
+        vias = [
+            {"net": positive_net, "x": round(center_x_mils + dx),
+             "y": round(center_y_mils + dy)},
+            {"net": negative_net, "x": round(center_x_mils - dx),
+             "y": round(center_y_mils - dy)},
+        ]
+        out: dict[str, Any] = {
+            "success": True, "dry_run": dry_run, "vias": vias,
+            "center_separation_mils": center_separation_mils,
+            "low_layer": low_layer, "high_layer": high_layer,
+            "size_mils": size_mils, "hole_size_mils": hole_size_mils,
+            "drc_checked": False,
+        }
+        if dry_run:
+            return out
+        results = []
+        for via in vias:
+            results.append(await get_bridge().send_command_async(
+                "pcb.place_via",
+                {"x": str(via["x"]), "y": str(via["y"]),
+                 "net": via["net"], "size": str(size_mils),
+                 "hole_size": str(hole_size_mils),
+                 "low_layer": low_layer, "high_layer": high_layer},
+            ))
+        out["apply_results"] = results
+        return out
+
+    @mcp.tool()
+    async def pcb_audit_diff_pair(
+        positive_net: str,
+        negative_net: str,
+        max_skew_mils: float = 10.0,
+        require_same_via_count: bool = True,
+    ) -> dict[str, Any]:
+        """Audit routed length skew and layer-transition symmetry of a pair."""
+        bridge = get_bridge()
+        lengths = await bridge.send_command_async("pcb.get_trace_lengths", {})
+        vias = await bridge.send_command_async("pcb.get_vias", {})
+        by_net = {
+            str(item.get("net")): float(item.get("length_mils") or 0)
+            for item in (lengths.get("trace_lengths") or [])
+        }
+        p_len, n_len = by_net.get(positive_net, 0.0), by_net.get(negative_net, 0.0)
+        p_vias = [v for v in (vias.get("vias") or []) if v.get("net") == positive_net]
+        n_vias = [v for v in (vias.get("vias") or []) if v.get("net") == negative_net]
+        skew = abs(p_len - n_len)
+        violations = []
+        if skew > max_skew_mils:
+            violations.append("length_skew")
+        if require_same_via_count and len(p_vias) != len(n_vias):
+            violations.append("via_count_mismatch")
+        return {
+            "success": True, "positive_net": positive_net,
+            "negative_net": negative_net, "positive_length_mils": p_len,
+            "negative_length_mils": n_len, "skew_mils": skew,
+            "max_skew_mils": max_skew_mils,
+            "positive_via_count": len(p_vias),
+            "negative_via_count": len(n_vias),
+            "violations": violations, "passed": not violations,
+            "note": "Track/arc length only; package pin delay is not included.",
+        }
 
     @mcp.tool()
     async def pcb_place_region(

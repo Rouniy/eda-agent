@@ -306,7 +306,7 @@ These six tools cover most day-to-day work. They accept any object type supporte
 
 **Scope values:** `active_doc`, `project`, `project:<path>`, `doc:<path>`.
 
-### Application (21 tools)
+### Application (25 tools)
 
 | Tool | Purpose |
 |---|---|
@@ -421,7 +421,7 @@ Schematic-side operations plus viewport and sheet management.
 | `obj_crossref_net` | Sch pin list vs PCB pad list for a named net: diff + `in_sync` flag |
 | `obj_run_process` | Run any Altium process command |
 
-### PCB (104 tools)
+### PCB (109 tools)
 
 Queries and modifications on the active PCB document.
 

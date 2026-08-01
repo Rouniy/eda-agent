@@ -1,4 +1,4 @@
-﻿{ SPDX-License-Identifier: Apache-2.0                                   }
+{ SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
 { Main.pas - Constants, IPC primitives and JSON helpers for the Altium bridge   }
@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.07.25.3';
+    SCRIPT_VERSION = '2026.08.01.20';
 
     // Wire protocol version. Bumped whenever the request/response JSON shape
     // changes incompatibly. Python and Pascal must agree; mismatch returns
@@ -100,8 +100,8 @@ End;
 { unambiguous even when a single operation's property list contains '|'.       }
 {                                                                               }
 { Defined in Main.pas so Library.pas and Generic.pas can both use them,       }
-{ the Altium project compiles files in DesignN order (Main â†’ ... â†’ Library â†’  }
-{ ... â†’ Generic) and a callee must come earlier than its caller.               }
+{ the Altium project compiles files in DesignN order (Main → ... → Library →  }
+{ ... → Generic) and a callee must come earlier than its caller.               }
 {..............................................................................}
 
 Function NextBatchOp(Var Remaining : String) : String;
@@ -257,20 +257,22 @@ End;
 Procedure SchBeginModify(Obj : ISch_BasicContainer);
 Begin
     If (Obj <> Nil) And (SchServer <> Nil) Then
-        SchServer.RobotManager.SendMessage(Obj.I_ObjectAddress, Nil, SCHM_BeginModify, Nil);
+        SchServer.RobotManager.SendMessage(
+            Obj.I_ObjectAddress, c_BroadCast, SCHM_BeginModify, c_NoEventData);
 End;
 
 Procedure SchEndModify(Obj : ISch_BasicContainer);
 Begin
     If (Obj <> Nil) And (SchServer <> Nil) Then
-        SchServer.RobotManager.SendMessage(Obj.I_ObjectAddress, Nil, SCHM_EndModify, Nil);
+        SchServer.RobotManager.SendMessage(
+            Obj.I_ObjectAddress, c_BroadCast, SCHM_EndModify, c_NoEventData);
 End;
 
 Procedure SchRegisterObject(Container, Obj : ISch_BasicContainer);
 Begin
     If (Container <> Nil) And (Obj <> Nil) And (SchServer <> Nil) Then
         SchServer.RobotManager.SendMessage(
-            Container.I_ObjectAddress, Nil, SCHM_PrimitiveRegistration,
+            Container.I_ObjectAddress, c_BroadCast, SCHM_PrimitiveRegistration,
             Obj.I_ObjectAddress);
 End;
 

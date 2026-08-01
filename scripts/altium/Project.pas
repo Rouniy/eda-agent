@@ -493,8 +493,9 @@ Var
     Project : IProject;
     Doc : IDocument;
     Comp : IComponent;
+    Part : IComponent;
     Pin : IPin;
-    I, J, K, Count, Limit, DocCount : Integer;
+    I, J, K, M, PartCount, Count, Limit, DocCount : Integer;
     UsePhysical : Boolean;
     Data, CompDesig, NetName : String;
     First : Boolean;
@@ -548,23 +549,44 @@ Begin
             CompDesig := Comp.DM_PhysicalDesignator;
             If (FilterComp <> '') And (CompDesig <> FilterComp) Then Continue;
 
-            For K := 0 To Comp.DM_PinCount - 1 Do
+            PartCount := 1;
+            Try
+                If Comp.DM_SubPartCount > 1 Then
+                    PartCount := Comp.DM_SubPartCount;
+            Except
+                PartCount := 1;
+            End;
+
+            For M := 0 To PartCount - 1 Do
             Begin
-                If Count >= Limit Then Break;
-                Pin := Comp.DM_Pins(K);
-                If Pin = Nil Then Continue;
+                Try
+                    If PartCount > 1 Then
+                        Part := Comp.DM_SubParts(M)
+                    Else
+                        Part := Comp;
+                Except
+                    Part := Nil;
+                End;
+                If Part = Nil Then Continue;
 
-                NetName := Pin.DM_FlattenedNetName;
-                If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
+                For K := 0 To Part.DM_PinCount - 1 Do
+                Begin
+                    If Count >= Limit Then Break;
+                    Pin := Part.DM_Pins(K);
+                    If Pin = Nil Then Continue;
 
-                If Not First Then Data := Data + ',';
-                First := False;
+                    NetName := Pin.DM_FlattenedNetName;
+                    If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
 
-                Data := Data + '{"component":"' + EscapeJsonString(CompDesig) + '"';
-                Data := Data + ',"pin":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
-                Data := Data + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
-                Data := Data + ',"net":"' + EscapeJsonString(NetName) + '"}';
-                Inc(Count);
+                    If Not First Then Data := Data + ',';
+                    First := False;
+
+                    Data := Data + '{"component":"' + EscapeJsonString(CompDesig) + '"';
+                    Data := Data + ',"pin":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
+                    Data := Data + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
+                    Data := Data + ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    Inc(Count);
+                End;
             End;
         End;
     End;

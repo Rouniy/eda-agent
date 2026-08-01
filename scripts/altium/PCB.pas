@@ -983,7 +983,7 @@ Begin
         Begin
             Try P1Desc := Prim.Detail; Except End;
             Try If Prim.Net <> Nil Then P1Net := Prim.Net.Name; Except End;
-            Try P1Type := ObjectIDToObjectName(Prim.ObjectId); Except End;
+            Try P1Type := IntToStr(Prim.ObjectId); Except End;
             Try
                 BBox := Prim.BoundingRectangle;
                 P1X := CoordToMils((BBox.Left + BBox.Right) Div 2);
@@ -1008,7 +1008,7 @@ Begin
         Begin
             Try P2Desc := Prim.Detail; Except End;
             Try If Prim.Net <> Nil Then P2Net := Prim.Net.Name; Except End;
-            Try P2Type := ObjectIDToObjectName(Prim.ObjectId); Except End;
+            Try P2Type := IntToStr(Prim.ObjectId); Except End;
             Try
                 BBox := Prim.BoundingRectangle;
                 P2X := CoordToMils((BBox.Left + BBox.Right) Div 2);
@@ -1050,6 +1050,7 @@ Begin
     // it runs the rule check; with InspectViolation=True it would open
     // the violation viewer instead.
     ResetParameters;
+    AddStringParameter('InspectViolation', 'False');
     RunProcess('PCB:DesignRuleCheck');
 
     // Count violations by iterating
@@ -7225,6 +7226,13 @@ Begin
             Board.AddPCBObject(Comp);
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, Comp.I_ObjectAddress);
+            { Board registration can clear source-link metadata populated on }
+            { a detached component. Stamp it again on the registered object. }
+            If UniqueIdStr <> '' Then
+            Begin
+                Try Comp.SourceUniqueId := UniqueIdStr; Except End;
+                If Designator <> '' Then Try Comp.SourceDesignator := Designator; Except End;
+            End;
 
             If PadNetsStr <> '' Then
             Begin
@@ -10993,11 +11001,19 @@ Begin
                 Continue;
             End;
 
-            PCBServer.SendMessageToRobots(PadFound.I_ObjectAddress, c_Broadcast,
-                PCBM_BeginModify, c_NoEventData);
+            { Pads loaded as children of a library component are serialized  }
+            { from the component payload.  Merely modifying/registering the  }
+            { child updates the live ratsnest but Altium reloads the old      }
+            { payload from disk.  Detach the owning component, change its     }
+            { child while detached, then add it back so the complete updated }
+            { payload is registered with the board serializer.               }
+            Board.RemovePCBObject(Comp);
             PadFound.Net := Net;
-            PCBServer.SendMessageToRobots(PadFound.I_ObjectAddress, c_Broadcast,
-                PCBM_EndModify, c_NoEventData);
+            Board.AddPCBObject(Comp);
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, PadFound.I_ObjectAddress);
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, Comp.I_ObjectAddress);
             Bound := Bound + 1;
         End;
     Finally

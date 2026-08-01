@@ -139,6 +139,121 @@ class TestBatchDelete:
         assert "scope=project" in ops[1]
 
 
+class TestBatchModify:
+    """Regression cover for the silent multi-condition drop.
+
+    obj_batch_modify used to serialize each op positionally as
+    ``scope;object_type;filter;set`` and join the ops with ``|`` -- the very
+    character that separates AND-conditions inside a filter and assignments
+    inside a set. An op like
+    ``active_doc;eSchComponent;Location.X=500|Location.Y=300;Designator.Text=C1``
+    was split at the first pipe, neither half had the three semicolons the
+    Pascal parser required, and both were dropped with no error. The call
+    returned ``operations_processed: 0`` while the identical filter worked
+    through the single-shot obj_modify (whose filter travels in its own JSON
+    field). Coordinate-addressed batches -- the only way to reach components
+    whose designators are all still ``U?`` -- could therefore never work.
+    """
+
+    @pytest.mark.asyncio
+    async def test_uses_keyed_double_tilde_encoding(self, monkeypatch):
+        sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
+        from eda_agent.tools import generic as g
+        tools = _capture(g, "register_generic_tools")
+        await tools["obj_batch_modify"](operations=[
+            {"scope": "active_doc", "object_type": "eSchComponent",
+             "filter": "Location.X=7013|Location.Y=7634",
+             "set": "Designator.Text=C1027"},
+            {"scope": "active_doc", "object_type": "eSchComponent",
+             "filter": "Location.X=7508|Location.Y=6964",
+             "set": "Designator.Text=R4"},
+        ])
+        assert sent.command == "generic.batch_modify"
+        ops = sent.params["operations"].split("~~")
+        assert len(ops) == 2, "ops must not be split on the filter's '|'"
+        assert ops[0] == (
+            "scope=active_doc;object_type=eSchComponent;"
+            "filter=Location.X=7013|Location.Y=7634;set=Designator.Text=C1027"
+        )
+
+    @pytest.mark.asyncio
+    async def test_multi_condition_filter_survives_op_split(self, monkeypatch):
+        """The op separator must not appear inside filter/set values."""
+        sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
+        from eda_agent.tools import generic as g
+        tools = _capture(g, "register_generic_tools")
+        await tools["obj_batch_modify"](operations=[
+            {"object_type": "ePin", "filter": "Name=S1",
+             "set": "Location.X=200|Location.Y=-100|Orientation=2"},
+        ])
+        ops = sent.params["operations"]
+        assert "~~" not in ops  # single op -> no separator
+        assert "set=Location.X=200|Location.Y=-100|Orientation=2" in ops
+
+    def test_multi_condition_filter_matches_through_simulator(
+        self, e2e_bridge, monkeypatch
+    ):
+        """End-to-end through the real bridge + the Gen_BatchModify mirror.
+
+        Two seeded components share Location.X=500 and differ only in
+        Location.Y, so the filter genuinely needs both conditions.
+        """
+        import asyncio
+        import json
+
+        from mcp.server.fastmcp import FastMCP
+        from eda_agent.tools import register_all_tools
+
+        monkeypatch.setattr(
+            "eda_agent.tools.generic.get_bridge", lambda: e2e_bridge
+        )
+        mcp = FastMCP("t")
+        register_all_tools(mcp)
+
+        raw = asyncio.run(mcp.call_tool("obj_batch_modify", {"operations": [
+            {"scope": "active_doc", "object_type": "eSchComponent",
+             "filter": "Location.X=500|Location.Y=300",
+             "set": "Designator.Text=C1027"},
+            {"scope": "active_doc", "object_type": "eSchComponent",
+             "filter": "Location.X=500|Location.Y=100",
+             "set": "Designator.Text=R4_N_A"},
+        ]}))
+        content = raw[0] if isinstance(raw, tuple) else raw
+        res = json.loads(content[0].text)
+
+        assert res["operations_processed"] == 2
+        assert res["operations_failed"] == 0
+        # One component per op, addressed purely by coordinates.
+        assert res["matched"] == 2
+
+    def test_unresolvable_op_is_reported_not_swallowed(
+        self, e2e_bridge, monkeypatch
+    ):
+        """A bad object_type must surface in failures[], not vanish."""
+        import asyncio
+        import json
+
+        from mcp.server.fastmcp import FastMCP
+        from eda_agent.tools import register_all_tools
+
+        monkeypatch.setattr(
+            "eda_agent.tools.generic.get_bridge", lambda: e2e_bridge
+        )
+        mcp = FastMCP("t")
+        register_all_tools(mcp)
+
+        raw = asyncio.run(mcp.call_tool("obj_batch_modify", {"operations": [
+            {"object_type": "eNotAThing", "filter": "Text=VCC",
+             "set": "Text=X"},
+        ]}))
+        content = raw[0] if isinstance(raw, tuple) else raw
+        res = json.loads(content[0].text)
+
+        assert res["operations_processed"] == 0
+        assert res["operations_failed"] == 1
+        assert res["failures"][0]["reason"] == "INVALID_TYPE"
+
+
 class TestPlaceWires:
     @pytest.mark.asyncio
     async def test_wires_get_coordinate_fields(self, monkeypatch):

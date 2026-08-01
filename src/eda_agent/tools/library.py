@@ -870,6 +870,12 @@ def register_library_tools(mcp):
                 - layer      (str, default "TopLayer"). Only used for SMD
                   pads (hole_size=0); a drilled pad is forced through-hole
                   (MultiLayer). Use "BottomLayer" for bottom-side SMD.
+                - paste_mask_expansion (int, mils, optional). When supplied,
+                  creates a manual paste-mask override. A sufficiently large
+                  negative value suppresses the paste aperture.
+                - solder_mask_expansion (int, mils, optional). When supplied,
+                  creates a manual solder-mask override; zero opens the mask
+                  to the copper pad boundary.
 
         Example, a 4-pad 0402 + corner pad in one call:
             lib_add_footprint_pads(pads=[
@@ -901,6 +907,14 @@ def register_library_tools(mcp):
                 f"rotation={p.get('rotation', 0)}",
                 f"layer={p.get('layer', 'TopLayer')}",
             ]
+            if "paste_mask_expansion" in p:
+                fields.append(
+                    f"paste_mask_expansion={round(p['paste_mask_expansion'])}"
+                )
+            if "solder_mask_expansion" in p:
+                fields.append(
+                    f"solder_mask_expansion={round(p['solder_mask_expansion'])}"
+                )
             op_strs.append(";".join(fields))
 
         if not op_strs:

@@ -1222,6 +1222,8 @@ class AltiumSimulator:
             return self._gen_create_object(params, rid)
         elif action == "delete_objects":
             return self._gen_delete_objects(params, rid)
+        elif action == "batch_modify":
+            return self._gen_batch_modify(params, rid)
         elif action == "run_process":
             process_name = params.get("process", "")
             if not process_name:
@@ -1342,6 +1344,98 @@ class AltiumSimulator:
             data = '{"matched":' + str(count) + ',"sheets_processed":2}'
         else:
             data = '{"matched":' + str(count) + '}'
+        return _build_success_response(rid, data)
+
+    def _gen_batch_modify(self, params: dict, rid: str) -> str:
+        """Mirrors Generic.pas Gen_BatchModify.
+
+        Operations arrive '~~'-separated, each a ';'-separated list of keyed
+        fields parsed exactly like Main.pas NextBatchOp / GetBatchField. The
+        keyed encoding matters: a filter or set may itself contain '|', which
+        the old positional 'scope;type;filter;set|...' encoding chopped in
+        half, silently dropping every multi-condition operation.
+        """
+        operations = params.get("operations", "")
+        if not operations:
+            return _build_error_response(rid, "MISSING_PARAMS",
+                                         "operations parameter is required")
+
+        keyed = operations.startswith("scope=") or "~~" in operations
+        if keyed:
+            raw_ops = [op for op in operations.split("~~") if op]
+        else:
+            raw_ops = [op for op in operations.split("|") if op]
+
+        processed = 0
+        failed = 0
+        total_matched = 0
+        failures: list[str] = []
+
+        for index, raw in enumerate(raw_ops):
+            if keyed:
+                fields = {}
+                for field in raw.split(";"):
+                    eq = field.find("=")
+                    if eq <= 0:
+                        continue
+                    key = field[:eq]
+                    if key not in fields:
+                        fields[key] = field[eq + 1:]
+                scope = fields.get("scope", "") or "active_doc"
+                obj_type_str = fields.get("object_type", "")
+                filter_str = fields.get("filter", "")
+                set_str = fields.get("set", "")
+                parsed = True
+            else:
+                parts = raw.split(";")
+                parsed = len(parts) >= 4
+                scope = parts[0] if parsed else "active_doc"
+                obj_type_str = parts[1] if parsed else ""
+                filter_str = parts[2] if parsed else ""
+                set_str = ";".join(parts[3:]) if parsed else ""
+
+            reason = ""
+            if not parsed:
+                reason = "MALFORMED_OP"
+            elif not obj_type_str:
+                reason = "MISSING_OBJECT_TYPE"
+            elif not set_str:
+                reason = "MISSING_SET"
+            elif self._resolve_object_type(obj_type_str) == -1:
+                reason = "INVALID_TYPE"
+
+            if reason:
+                failed += 1
+                failures.append(
+                    '{"index":' + str(index) +
+                    ',"object_type":"' + _escape_json_string(obj_type_str) +
+                    '","reason":"' + reason + '"}'
+                )
+                continue
+
+            obj_type_int = self._resolve_object_type(obj_type_str)
+            for obj in self.sch_objects:
+                if obj.object_id != obj_type_int:
+                    continue
+                if not self._matches_filter(obj, filter_str):
+                    continue
+                for assignment in set_str.split("|"):
+                    eq_pos = assignment.find("=")
+                    if eq_pos <= 0:
+                        continue
+                    obj.set_property(assignment[:eq_pos], assignment[eq_pos + 1:])
+                total_matched += 1
+            processed += 1
+
+        data = (
+            '{"operations_processed":' + str(processed) +
+            ',"operations_total":' + str(len(raw_ops)) +
+            ',"operations_failed":' + str(failed) +
+            ',"matched":' + str(total_matched) +
+            ',"failures":[' + ",".join(failures) + ']' +
+            ',"properties":{"unknown_count":0,"unknown":[],'
+            '"failed_count":0,"failed":[]}}'
+        )
         return _build_success_response(rid, data)
 
     def _gen_create_object(self, params: dict, rid: str) -> str:
