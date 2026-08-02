@@ -85,6 +85,47 @@ def _scan_process_names_native(wanted_upper: set) -> Optional[bool]:
         return None
 
 
+def _pids_with_visible_window() -> set[int]:
+    """PIDs that own at least one visible, titled top-level window.
+
+    Used to tell a live Altium editor apart from the windowless husks a
+    crash leaves behind. Returns an empty set off Windows or on any
+    ctypes failure, which degrades the caller to its size-based
+    tie-break rather than breaking it.
+    """
+    if sys.platform != "win32":
+        return set()
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return set()
+
+    pids: set[int] = set()
+    try:
+        user32 = ctypes.windll.user32
+        enum_proc = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+
+        def _collect(hwnd, _lparam):
+            try:
+                if user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0:
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    if pid.value:
+                        pids.add(int(pid.value))
+            except Exception:
+                pass
+            return True
+
+        user32.EnumWindows(enum_proc(_collect), 0)
+    except Exception as e:
+        logger.debug("visible-window scan failed: %s", e)
+        return set()
+    return pids
+
+
 @dataclass
 class AltiumProcessInfo:
     """Information about a running Altium process."""
@@ -116,22 +157,59 @@ class AltiumProcessManager:
         Fetches exe + cmdline, so this is the SLOW path -- only call it
         when that detail is actually needed (status display, version
         probe). For a plain "is it running?" check use is_altium_running.
+
+        A machine can carry several X2.exe processes at once: crashed or
+        half-torn-down instances linger for hours with no window, and
+        Altium itself spawns helpers under the same image name. Returning
+        the first PID the kernel happens to list then attaches every
+        Win32 tool (app_list_dialogs, app_click_dialog_button,
+        app_restart_altium_bridge) to a windowless husk, while the
+        file-based IPC keeps talking to the real editor. The two halves
+        disagree silently: dialogs read as "none open" while a modal
+        actually blocks the bridge. So rank candidates by whether they
+        own a visible titled top-level window first, then by resident
+        size -- the loaded editor dwarfs an idle instance.
         """
+        candidates: list[AltiumProcessInfo] = []
+        wanted = {n.upper() for n in self.PROCESS_NAMES}
         for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
             try:
                 proc_name = proc.info["name"] or ""
-                if proc_name.upper() in [n.upper() for n in self.PROCESS_NAMES]:
-                    info = AltiumProcessInfo(
+                if proc_name.upper() not in wanted:
+                    continue
+                candidates.append(
+                    AltiumProcessInfo(
                         pid=proc.info["pid"],
                         name=proc.info["name"],
                         exe_path=proc.info["exe"] or "",
                         cmdline=proc.info["cmdline"],
                     )
-                    logger.debug("Found Altium process: PID=%d", proc.info["pid"])
-                    return info
+                )
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
-        return None
+
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            logger.debug("Found Altium process: PID=%d", candidates[0].pid)
+            return candidates[0]
+
+        gui_pids = _pids_with_visible_window()
+
+        def _rss(pid: int) -> int:
+            try:
+                return psutil.Process(pid).memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                return 0
+
+        best = max(candidates, key=lambda c: (c.pid in gui_pids, _rss(c.pid)))
+        logger.debug(
+            "Found Altium process: PID=%d (%d candidates, %d with a window)",
+            best.pid,
+            len(candidates),
+            len(gui_pids & {c.pid for c in candidates}),
+        )
+        return best
 
     def _scan_running(self) -> bool:
         """Is any Altium process running? Native Toolhelp scan first

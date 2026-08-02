@@ -441,7 +441,7 @@ Schematic-side operations plus viewport and sheet management.
 | `obj_crossref_net` | Sch pin list vs PCB pad list for a named net: diff + `in_sync` flag |
 | `obj_run_process` | Run any Altium process command |
 
-### PCB (113 tools)
+### PCB (115 tools)
 
 Queries and modifications on the active PCB document.
 
@@ -474,7 +474,8 @@ Queries and modifications on the active PCB document.
 | `pcb_create_diff_pair` / `pcb_distribute_components` / `pcb_set_board_shape` | Higher-level ops |
 | `pcb_plan_placement` | Connectivity-driven auto-placement: force-directed global placement + legalization minimizes HPWL while keeping parts on-board and overlap-free, and optimizes part orientation (0/90/180/270) from real pin geometry. Pure-Python solver; dry-run by default, applies via `pcb_move_components` |
 | `pcb_create_room` | Room placement |
-| `pcb_get_unrouted_nets` | Ratsnest / unrouted analysis |
+| `pcb_get_unrouted_nets` | Ratsnest / unrouted analysis; rebuilds connectivity first by default so the answer is not read from a stale model |
+| `pcb_rebuild_connectivity` | Recompute net topology + ratsnest after programmatic copper changes (a Zoom Redraw does not) |
 | `pcb_get_layer_stackup` / `pcb_add_layer` / `pcb_remove_layer` / `pcb_modify_layer` / `pcb_set_layer_visibility` | Layer stack: get, add/remove layers, copper thickness + dielectric properties |
 | `pcb_export_stackup_csv` | Write the layer stack to the conventional fab CSV report (copper/dielectric interleaved, mil + mm, Er) |
 | `pcb_get_mech_layer_names` | Enabled mechanical layers with their custom names |

@@ -52,6 +52,83 @@ async def _resolve_geometry(geometry: Any,
     return geometry if isinstance(geometry, dict) else None
 
 
+# Geometry lists that carry a matching entry in the payload's ``counts``
+# block. Pascal increments each counter in lockstep with the JSON it
+# emits, so a shorter list than the declared count means the payload lost
+# entries somewhere between the handler and here.
+_COUNTED_LISTS = ("pads", "tracks", "vias", "arcs", "regions", "components")
+
+
+def _geometry_summary(geom: dict[str, Any],
+                      problem: Any) -> dict[str, Any]:
+    """Describe the routing input and flag a short payload.
+
+    ``truncated`` is True only on hard evidence: the payload declared N
+    of something and delivered fewer than N. It is deliberately not a
+    guess about size.
+    """
+    counts = geom.get("counts")
+    mismatches: dict[str, dict[str, int]] = {}
+    if isinstance(counts, dict):
+        for key in _COUNTED_LISTS:
+            declared = counts.get(key)
+            if not isinstance(declared, int):
+                continue
+            got = len(geom.get(key) or [])
+            if got < declared:
+                mismatches[key] = {"declared": declared, "received": got}
+    return {
+        "truncated": bool(mismatches),
+        "count_mismatches": mismatches,
+        "declared_counts": counts if isinstance(counts, dict) else {},
+        "pads_seen": problem.pads_seen,
+        "pads_used_as_terminals": problem.pads_used,
+        "pads_dropped_off_routing_layers": sum(
+            problem.pads_off_routing_layer.values()),
+        "routing_layers": list(problem.layers),
+        "nets_with_pads": len(problem.pad_nets_seen),
+        "nets_with_terminals": len(problem.terminals),
+    }
+
+
+def _unknown_reason(net: str, problem: Any) -> dict[str, Any]:
+    """Explain why ``net`` produced no terminals.
+
+    Three genuinely different situations that all used to surface as the
+    single word "unknown": the net is absent from the geometry, its pads
+    exist but sit off the routing layers, or it has pads but they were
+    dropped for another reason.
+    """
+    dropped = problem.pads_off_routing_layer.get(net, 0)
+    if dropped:
+        return {
+            "reason": "pads_off_routing_layers",
+            "pads_dropped": dropped,
+            "routing_layers": list(problem.layers),
+            "detail": (
+                f"{net} has {dropped} pad(s) in the geometry, but none on "
+                f"{list(problem.layers)}. Add the layer to rules.layers, "
+                f"or route it on a layer that is in the stack."
+            ),
+        }
+    if net in problem.pad_nets_seen:
+        return {
+            "reason": "pads_present_but_no_terminal",
+            "detail": (
+                f"{net} appears on a pad in the geometry but produced no "
+                f"terminal; the pad record is likely malformed."
+            ),
+        }
+    return {
+        "reason": "absent_from_geometry",
+        "detail": (
+            f"No pad in the geometry payload carries net '{net}'. Either "
+            f"the name is wrong, or the payload did not include those "
+            f"pads -- check geometry_summary.truncated."
+        ),
+    }
+
+
 def register_route_tools(mcp):
     """Register routing tools with the MCP server."""
 
@@ -109,12 +186,28 @@ def register_route_tools(mcp):
 
         Returns:
             ``{"ok": True, "summary": {nets_total, routed, failed,
-            skipped, completion, track_count, via_count,
+            skipped, attempted, completion, track_count, via_count,
             total_length_mils}, "order": [...], "nets": {net:
             {status, class, width, tracks, vias, ...}}, "tracks":
-            [...], "vias": [...], "validation": {...}}``; with a
-            ``nets`` filter also ``requested_nets`` / ``unknown_nets``.
+            [...], "vias": [...], "validation": {...},
+            "geometry_summary": {...}}``; with a ``nets`` filter also
+            ``requested_nets``, ``unknown_nets``,
+            ``unknown_net_reasons``, and ``summary.requested_count`` /
+            ``summary.unknown_count``.
             ``{"ok": False, "reason": ...}`` on malformed input.
+
+            ``completion`` with a ``nets`` filter is routed / requested,
+            so a run that routes none of them reports 0.0. It previously
+            divided by the nets it attempted, which meant filtering every
+            requested net away reported 1.0 while routing nothing.
+
+            ``ok`` is False when the geometry payload is short of its own
+            declared ``counts`` (``geometry_summary.truncated``) or when
+            every requested net is unknown -- an unknown net can come from
+            a truncated input, not just a wrong name, and must not be
+            mistaken for "no such net". ``unknown_net_reasons`` separates
+            ``absent_from_geometry`` from ``pads_off_routing_layers``
+            (pads exist but on layers outside ``rules.layers``).
         """
         geom = await _resolve_geometry(geometry, fetch_geometry)
         if geom is None:
@@ -149,9 +242,52 @@ def register_route_tools(mcp):
                 n: t for n, t in problem.terminals.items() if n in wanted
             }
         result = route_problem(problem, options)
+
+        # Report what the router was actually given. A geometry payload
+        # that arrived short -- for any reason: a capped handler, a
+        # truncated transport, a partial parse -- otherwise presents as
+        # "that net does not exist", which is the same confidently-wrong
+        # failure as a silent list cap. ``counts`` is the payload's own
+        # self-declared tally, so comparing it against the lists actually
+        # received detects a short payload without trusting either side.
+        result["geometry_summary"] = _geometry_summary(geom, problem)
+        if result["geometry_summary"]["truncated"]:
+            result["ok"] = False
+            result["reason"] = (
+                "geometry payload is short of its own declared counts "
+                f"({result['geometry_summary']['count_mismatches']}); the "
+                "routing input is incomplete, so unknown_nets and "
+                "completion cannot be trusted. Re-fetch the geometry."
+            )
+
         if nets is not None:
-            result["requested_nets"] = sorted(set(nets))
+            requested = sorted(set(nets))
+            result["requested_nets"] = requested
             result["unknown_nets"] = unknown
+            # WHY each unknown net is unknown. Without this an unknown net
+            # reads as "no such net", and that is exactly the conclusion
+            # that was wrong: pads existed but sat on layers outside the
+            # routing stack, so they never became terminals.
+            result["unknown_net_reasons"] = {
+                n: _unknown_reason(n, problem) for n in unknown
+            }
+            summary = result.get("summary")
+            if isinstance(summary, dict):
+                # Completion against what the CALLER asked for. The
+                # router's own figure divides by the nets it attempted,
+                # so filtering every requested net away left it dividing
+                # by zero and reporting 1.0 while routing nothing.
+                summary["requested_count"] = len(requested)
+                summary["unknown_count"] = len(unknown)
+                summary["completion"] = (
+                    summary.get("routed", 0) / len(requested)
+                    if requested else 0.0
+                )
+            if requested and len(unknown) == len(requested):
+                result["ok"] = False
+                result.setdefault("reason", (
+                    "none of the requested nets had routable pads in the "
+                    "geometry; see unknown_net_reasons"))
         return result
 
     @mcp.tool()

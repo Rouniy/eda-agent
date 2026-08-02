@@ -30,8 +30,62 @@ from typing import Any, Iterable
 
 DEFAULT_GRID_PITCH_MILS = 25
 
-# Cap on grid cells so a malformed bbox cannot allocate unbounded memory.
-_MAX_CELLS = 4_000_000
+# Cap on grid NODES (cells x routing layers) so a malformed bbox or an
+# over-fine pitch cannot allocate unbounded memory. Counting layers
+# matters: the obstacle map is per layer, so a 6-layer stack costs three
+# times a 2-layer one at the same pitch, and a cells-only cap under-reads
+# the real allocation by exactly that factor.
+_MAX_GRID_NODES = 4_000_000
+
+# Back-compat alias: the original cap was expressed in cells.
+_MAX_CELLS = _MAX_GRID_NODES
+
+
+class GridTooFineError(ValueError):
+    """The requested pitch would exceed the grid node budget.
+
+    A ValueError subclass so every existing ``except (ValueError,
+    TypeError)`` caller keeps working, but it carries the numbers a
+    caller needs to say WHICH resource ran out and by how much. The
+    alternative -- degrading to a coarser grid, or dropping whatever did
+    not fit -- would silently change the answer, and a router that
+    quietly re-resolves its input is a router whose "no such net" and
+    "no path" verdicts cannot be trusted.
+    """
+
+    reason_code = "grid_too_fine"
+
+    def __init__(self, nx: int, ny: int, layers: int, pitch: int,
+                 limit: int) -> None:
+        self.nx = nx
+        self.ny = ny
+        self.layers = layers
+        self.pitch = pitch
+        self.cells = nx * ny
+        self.nodes = nx * ny * layers
+        self.limit = limit
+        # Smallest pitch that fits the budget, rounded up to a whole mil.
+        self.suggested_pitch_mils = max(
+            pitch + 1,
+            int(math.ceil(pitch * math.sqrt(self.nodes / float(limit)))))
+        super().__init__(
+            f"grid too fine at grid_pitch_mils={pitch}: {nx}x{ny} cells "
+            f"x {layers} layer(s) = {self.nodes} nodes exceeds the "
+            f"{limit} node budget; raise grid_pitch_mils to at least "
+            f"{self.suggested_pitch_mils}")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "reason_code": self.reason_code,
+            "grid_pitch_mils": self.pitch,
+            "grid_nx": self.nx,
+            "grid_ny": self.ny,
+            "grid_cells": self.cells,
+            "routing_layers": self.layers,
+            "grid_nodes": self.nodes,
+            "grid_node_limit": self.limit,
+            "suggested_grid_pitch_mils": self.suggested_pitch_mils,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +296,17 @@ class RoutingProblem:
         self._margin_via = rules.clearance_mils + rules.via_size_mils / 2.0
         # net -> terminals (pad centers).
         self.terminals: dict[str, list[Terminal]] = {}
+        # Provenance of the pad input, so a caller can tell "that net does
+        # not exist" from "that net's pads were dropped". Pads on layers
+        # outside ``rules.layers`` are skipped by design (mask/paste
+        # artwork must never become a terminal), but the same rule
+        # silently discards real copper on unlisted layers -- and a net
+        # whose pads all vanish that way is indistinguishable from a typo
+        # unless we record it here.
+        self.pads_seen = 0
+        self.pads_used = 0
+        self.pad_nets_seen: set[str] = set()
+        self.pads_off_routing_layer: dict[str, int] = {}
         # Static obstacle geometry retained for validate_solution():
         # {"kind": "rect"|"seg"|"circle", "layer": index|None(all),
         #  "net": str|None, ...shape fields...}
@@ -258,6 +323,24 @@ class RoutingProblem:
         ix = int(round((x - self.x0) / self.pitch))
         iy = int(round((y - self.y0) / self.pitch))
         return (max(0, min(self.nx - 1, ix)), max(0, min(self.ny - 1, iy)))
+
+    def grid_info(self) -> dict[str, Any]:
+        """Resolved grid scale, so a caller can see what the pitch bought.
+
+        Reported unconditionally: pitch is the one knob that changes
+        every downstream cost (rasterization, A* budget, memory) while
+        leaving the netlist untouched, so its numbers belong next to any
+        verdict that could otherwise be blamed on it.
+        """
+        return {
+            "grid_pitch_mils": self.pitch,
+            "grid_nx": self.nx,
+            "grid_ny": self.ny,
+            "grid_cells": self.nx * self.ny,
+            "grid_nodes": self.nx * self.ny * len(self.layers),
+            "grid_node_limit": _MAX_GRID_NODES,
+            "origin_mils": [self.x0, self.y0],
+        }
 
     # -- queries -----------------------------------------------------------
 
@@ -323,9 +406,9 @@ class RoutingProblem:
         ny = int(math.ceil((y2 - y0) / pitch)) + 1
         if nx < 2 or ny < 2:
             raise ValueError("board area degenerate")
-        if nx * ny > _MAX_CELLS:
-            raise ValueError(
-                f"grid too large ({nx}x{ny} cells); raise grid_pitch_mils")
+        if nx * ny * len(rules.layers) > _MAX_GRID_NODES:
+            raise GridTooFineError(nx, ny, len(rules.layers), pitch,
+                                   _MAX_GRID_NODES)
 
         prob = cls(rules, net_classes, x0, y0, nx, ny, pitch)
         all_idx = tuple(range(len(prob.layers)))
@@ -338,6 +421,9 @@ class RoutingProblem:
             lay = str(p.get("layer", "") or "").lower()
             net = str(p.get("net", "") or "") or None
             owner = net  # None (unnetted) blocks every net.
+            prob.pads_seen += 1
+            if net:
+                prob.pad_nets_seen.add(net)
             if lay == "multilayer":
                 indices: tuple[int, ...] = all_idx
             elif lay == "keepoutlayer":
@@ -345,7 +431,14 @@ class RoutingProblem:
             elif lay in layer_idx:
                 indices = (layer_idx[lay],)
             else:
-                continue  # mask/paste/mech artwork: not routing copper
+                # mask/paste/mech artwork: not routing copper. Record the
+                # drop when the pad carried a net -- that is the only case
+                # where discarding it can turn a real net into "unknown".
+                if net:
+                    prob.pads_off_routing_layer[net] = (
+                        prob.pads_off_routing_layer.get(net, 0) + 1)
+                continue
+            prob.pads_used += 1
             prob._block_rect(indices, cx, cy, hw, hh, owner)
             prob.geoms.append({
                 "kind": "rect",

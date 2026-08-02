@@ -46,6 +46,7 @@ from .recovery import (
     STUCK_HANDLER,
     DEAD_LOOP,
     CORRUPT_RESPONSE,
+    MODAL_DIALOG,
 )
 
 logger = logging.getLogger("eda_agent.bridge")
@@ -512,7 +513,9 @@ class AltiumBridge:
         tmp_path.replace(request_path)
         logger.debug("Published request %s: %s", request.id, request.command)
 
-    def _poll_response(self, request_id: str, timeout: float) -> CommandResponse:
+    def _poll_response(self, request_id: str, timeout: float,
+                       max_extensions: Optional[int] = None
+                       ) -> CommandResponse:
         """Poll for response_<id>.json. Returns when it appears, raises on
         timeout.
 
@@ -526,6 +529,14 @@ class AltiumBridge:
         operation truly stuck. Default ceiling: 30 * 10 s = 5 minutes per
         command, which covers heavy emits / compiles without losing the
         early failure detection of the original 10 s timeout.
+
+        ``max_extensions`` overrides that cap for a single call. The
+        progress file is written ONCE per request, not ticked, so a
+        handler blocked on a modal dialog looks identical to one making
+        progress and will burn the full default ceiling before failing.
+        A caller that knows its command can raise a modal (proj_sync_pcb)
+        passes a small value so it fails fast with an actionable error
+        instead of starving the loop for five minutes.
 
         Race window: Pascal writes the response THEN deletes the progress
         file, so at no instant are both absent. When the per-window
@@ -555,16 +566,19 @@ class AltiumBridge:
             return self._poll_loop(
                 request_id, response_path, progress_path, workspace_dir,
                 poll_interval, deadline, timeout, start, watcher,
+                max_extensions,
             )
         finally:
             _close_dir_watcher(watcher)
 
     def _poll_loop(self, request_id, response_path, progress_path,
                    workspace_dir, poll_interval, deadline, timeout,
-                   start, watcher) -> CommandResponse:
+                   start, watcher, max_extensions=None) -> CommandResponse:
         """Inner poll loop for _poll_response. Split out so the watcher
         handle can be closed via a single try/finally regardless of which
         exit path (match / timeout / break) the loop takes."""
+        ext_cap = (_MAX_HEARTBEAT_EXTENSIONS if max_extensions is None
+                   else max(0, int(max_extensions)))
         extensions = 0
         poll_count = 0
         first_appearance: Optional[float] = None
@@ -631,13 +645,13 @@ class AltiumBridge:
 
             if time.monotonic() >= deadline:
                 # Window expired. Heartbeat still ticking? extend.
-                if progress_path.exists() and extensions < _MAX_HEARTBEAT_EXTENSIONS:
+                if progress_path.exists() and extensions < ext_cap:
                     extensions += 1
                     elapsed = (time.monotonic() - start) * 1000
                     _trace_log(
                         workspace_dir,
                         f"POLL_EXTEND id={request_id[:8]} "
-                        f"extensions={extensions}/{_MAX_HEARTBEAT_EXTENSIONS} "
+                        f"extensions={extensions}/{ext_cap} "
                         f"elapsed={elapsed:.0f}ms",
                     )
                     deadline = time.monotonic() + timeout
@@ -670,15 +684,35 @@ class AltiumBridge:
             f"extensions={extensions} "
             f"first_seen_ms={first_appearance*1000 if first_appearance else -1}",
         )
-        if extensions >= _MAX_HEARTBEAT_EXTENSIONS:
-            self._note_fault(workspace_dir, recovery_guidance(STUCK_HANDLER))
+        if extensions >= ext_cap and ext_cap > 0:
+            # A bounded wait was requested, so exhausting it is the caller's
+            # own deadline firing, not evidence of a runaway handler. Say so
+            # and let the caller diagnose; recording STUCK_HANDLER here would
+            # tell the user to restart a script that is merely waiting.
+            bounded = max_extensions is not None
+            fault = MODAL_DIALOG if bounded else STUCK_HANDLER
+            self._note_fault(workspace_dir, recovery_guidance(fault))
+            total = ext_cap * timeout
+            if bounded:
+                detail = (
+                    f"Command did not return within the caller's {total:.0f}s "
+                    f"budget. Altium is answering keepalives, so the polling "
+                    f"loop is alive and the handler is most likely blocked on "
+                    f"a modal dialog. "
+                )
+            else:
+                detail = (
+                    f"Handler exceeded {ext_cap} heartbeat extensions "
+                    f"({total:.0f}s total); Altium is responding to keepalives "
+                    f"but the command never returned. The handler is likely "
+                    f"stuck in an infinite loop. "
+                )
             raise AltiumTimeoutError(
-                f"Handler exceeded {_MAX_HEARTBEAT_EXTENSIONS} heartbeat "
-                f"extensions ({_MAX_HEARTBEAT_EXTENSIONS * timeout:.0f}s "
-                f"total); Altium is responding to keepalives but the command "
-                f"never returned. The handler is likely stuck in an infinite "
-                f"loop. " + recovery_message(STUCK_HANDLER),
-                details={"recovery": recovery_guidance(STUCK_HANDLER)},
+                detail + recovery_message(fault),
+                details={"recovery": recovery_guidance(fault),
+                         "fault": fault,
+                         "waited_seconds": total,
+                         "bounded_wait": bounded},
             )
         self._note_fault(workspace_dir, recovery_guidance(DEAD_LOOP))
         raise AltiumTimeoutError(
@@ -688,7 +722,9 @@ class AltiumBridge:
             details={"recovery": recovery_guidance(DEAD_LOOP)},
         )
 
-    def _execute_command(self, command: str, params: dict[str, Any], timeout: float) -> Any:
+    def _execute_command(self, command: str, params: dict[str, Any],
+                         timeout: float,
+                         max_extensions: Optional[int] = None) -> Any:
         """Execute a command synchronously (blocking)."""
         request = CommandRequest(command=command, params=params)
         workspace_dir = self.config.workspace_dir
@@ -699,7 +735,7 @@ class AltiumBridge:
 
         response_path = self._response_path(request.id)
         try:
-            response = self._poll_response(request.id, timeout)
+            response = self._poll_response(request.id, timeout, max_extensions)
         finally:
             # Always sweep our own response file on the way out,_poll_response
             # already deletes it on success, but a timeout or a late-arriving
@@ -746,7 +782,17 @@ class AltiumBridge:
         command: str,
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
+        max_extensions: Optional[int] = None,
     ) -> Any:
+        """Send a command and await its response.
+
+        ``max_extensions`` bounds the total wait at roughly
+        ``timeout * max_extensions`` seconds instead of the default
+        30-window ceiling. Use it for commands that can raise a modal
+        Altium dialog: the progress heartbeat is a presence marker, not a
+        tick, so a blocked handler otherwise consumes the whole default
+        budget before failing -- and fails with the wrong diagnosis.
+        """
         if not self.is_altium_running():
             raise AltiumNotRunningError()
         if timeout is None:
@@ -759,6 +805,7 @@ class AltiumBridge:
             command,
             params or {},
             timeout,
+            max_extensions,
         )
 
     def ping(self) -> bool:

@@ -1223,6 +1223,15 @@ End;
 { AABB-overlap test against every other component on the board. Returns the    }
 { list of colliding designators and a count.                                    }
 {                                                                              }
+{ What the boxes contain: BOTH the target box and every collider box are the   }
+{ union of the footprint's pads, tracks, arcs, fills and regions on all        }
+{ layers -- so the silkscreen OUTLINE and any mechanical courtyard shapes      }
+{ count, but no text primitive does. IPCB_Component.BoundingRectangle would    }
+{ swallow the designator and comment strings, which is what made a 0201        }
+{ measure 81 x 281 mil and manufactured collisions out of silkscreen. Colliders}
+{ used to be measured that way while the target was not; they are symmetric    }
+{ now, and each entry carries its own bbox_basis.                              }
+{                                                                              }
 { Caveats: this is an axis-aligned approximation. Components with non-square    }
 { footprints rotated by non-quarter-turn angles will have an inflated bounding }
 { box (treats the rotated polygon's AABB). Same-side check is applied (TopLayer}
@@ -1281,9 +1290,10 @@ Var
     OffsetX, OffsetY : Integer;
     NewBBoxX1, NewBBoxY1, NewBBoxX2, NewBBoxY2 : Integer;
     SwapWH : Boolean;
-    JsonItems, OtherDes, TargetLayer : String;
-    First, HasPlacementBBox : Boolean;
-    CollisionCount : Integer;
+    JsonItems, OtherDes, OtherLayer, TargetLayer : String;
+    CandList, BasisStr, TargetBasis : String;
+    First, HasPlacementBBox, HasOtherBBox, SameSideOnly : Boolean;
+    CollisionCount, PipePos, TmpOffset : Integer;
     Overlap : Boolean;
 Begin
     Board := GetPCBBoardAnywhere;
@@ -1335,6 +1345,8 @@ Begin
     { Ignore designator/comment strings: they are not physical placement
       geometry and otherwise make tiny passives appear hundreds of mils wide. }
     PCB_ComponentPlacementBBox(Comp, BBoxCur, HasPlacementBBox);
+    If HasPlacementBBox Then TargetBasis := 'footprint_body'
+    Else TargetBasis := 'component_rect_including_text';
     Width := BBoxCur.X2 - BBoxCur.X1;
     Height := BBoxCur.Y2 - BBoxCur.Y1;
     OffsetX := ((BBoxCur.X1 + BBoxCur.X2) Div 2) - Comp.x;
@@ -1344,6 +1356,21 @@ Begin
     Begin
         NewW := Height;
         NewH := Width;
+        { The reference-point-to-centre offset turns with the body, so it has }
+        { to rotate too. Leaving it alone put the predicted box off by twice   }
+        { the offset on any footprint whose origin is not its centre. Altium   }
+        { rotations are counter-clockwise: +90 maps (dx,dy) -> (-dy,dx).       }
+        TmpOffset := OffsetX;
+        If (Abs(RotDelta - 90) < 1) Or (Abs(RotDelta + 270) < 1) Then
+        Begin
+            OffsetX := -OffsetY;
+            OffsetY := TmpOffset;
+        End
+        Else
+        Begin
+            OffsetX := OffsetY;
+            OffsetY := -TmpOffset;
+        End;
     End
     Else
     Begin
@@ -1360,44 +1387,68 @@ Begin
     NewBBoxY2 := NewY + OffsetY + (NewH Div 2) + MarginCoord;
 
     Try TargetLayer := GetLayerString(Comp.Layer); Except TargetLayer := ''; End;
+    { With no readable target layer there is no same-side rule to apply, so   }
+    { fall back to comparing against everything and say so in the payload     }
+    { rather than quietly narrowing (or quietly widening) the search.         }
+    SameSideOnly := TargetLayer <> '';
 
     JsonItems := '';
     First := True;
     CollisionCount := 0;
 
+    { Pass 1: collect candidate designators only.                             }
+    {                                                                         }
+    { The previous loop advanced the board iterator INSIDE the layer-skip     }
+    { branch and then relied on `Continue` from within a `Try ... Except End`.}
+    { Whenever that control transfer did not take effect the already-advanced }
+    { `Other` was measured while `OtherDes` still held the component that was }
+    { meant to be skipped -- which is exactly how bottom-layer parts showed   }
+    { up as top-layer colliders carrying a stranger's bounding box. Decide    }
+    { the skip outside any Try, and advance the iterator in one place only.   }
+    CandList := '';
     Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
-    Iterator.AddFilter_Method(eProcessAll);
     Try
+        Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
         Other := Iterator.FirstPCBObject;
         While Other <> Nil Do
         Begin
             OtherDes := '';
             Try OtherDes := Other.Name.Text; Except End;
-
-            { Skip target itself. }
-            If OtherDes = DesStr Then
-            Begin
-                Other := Iterator.NextPCBObject;
-                Continue;
-            End;
+            OtherLayer := '';
+            Try OtherLayer := GetLayerString(Other.Layer); Except End;
 
             { Cross-side components do not collide in plane. }
-            Try
-                If GetLayerString(Other.Layer) <> TargetLayer Then
-                Begin
-                    Other := Iterator.NextPCBObject;
-                    Continue;
-                End;
-            Except End;
+            If (OtherDes <> '') And (OtherDes <> DesStr)
+                And ((Not SameSideOnly) Or (OtherLayer = TargetLayer)) Then
+                CandList := CandList + OtherDes + '|';
 
-            { Do not open a component group iterator while the outer board
-              iterator is positioned on Other.  Altium's scripting COM layer
-              can invalidate/rebind that interface and pair the next refdes
-              with the previous component's geometry.  Target sizing above is
-              physical; comparison objects retain their stable board bbox. }
-            BBoxOther := Other.BoundingRectangle;
+            Other := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
+
+    { Pass 2: the board iterator is closed, so opening a group iterator per   }
+    { candidate is safe and each collider is measured the same way the target }
+    { is -- physical footprint geometry, no designator/comment text. Looking  }
+    { the component up by the refdes we recorded also makes it impossible for }
+    { a box to end up attached to the wrong designator.                       }
+    While CandList <> '' Do
+    Begin
+        PipePos := Pos('|', CandList);
+        OtherDes := Copy(CandList, 1, PipePos - 1);
+        CandList := Copy(CandList, PipePos + 1, Length(CandList));
+
+        Other := Board.GetPcbComponentByRefDes(OtherDes);
+        If Other <> Nil Then
+        Begin
+            OtherLayer := '';
+            Try OtherLayer := GetLayerString(Other.Layer); Except End;
+            PCB_ComponentPlacementBBox(Other, BBoxOther, HasOtherBBox);
+            If HasOtherBBox Then BasisStr := 'footprint_body'
+            Else BasisStr := 'component_rect_including_text';
 
             Overlap := (NewBBoxX1 <= BBoxOther.X2) And (NewBBoxX2 >= BBoxOther.X1)
                 And (NewBBoxY1 <= BBoxOther.Y2) And (NewBBoxY2 >= BBoxOther.Y1);
@@ -1408,21 +1459,25 @@ Begin
                 First := False;
                 JsonItems := JsonItems +
                     '{"designator":"' + EscapeJsonString(OtherDes) +
+                    '","layer":"' + EscapeJsonString(OtherLayer) +
+                    '","bbox_basis":"' + BasisStr +
                     '","bbox":{"x1":' + IntToStr(CoordToMils(BBoxOther.X1)) +
                     ',"y1":' + IntToStr(CoordToMils(BBoxOther.Y1)) +
                     ',"x2":' + IntToStr(CoordToMils(BBoxOther.X2)) +
                     ',"y2":' + IntToStr(CoordToMils(BBoxOther.Y2)) + '}}';
                 Inc(CollisionCount);
             End;
-
-            Other := Iterator.NextPCBObject;
         End;
-    Finally
-        Board.BoardIterator_Destroy(Iterator);
     End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '"' +
+        ',"layer":"' + EscapeJsonString(TargetLayer) + '"' +
+        ',"same_side_filter":' + BoolToJsonStr(SameSideOnly) +
+        ',"bbox_basis":"' + TargetBasis + '"' +
+        ',"bbox_includes":"pads,tracks,arcs,fills,regions on all layers '
+        + '(silkscreen outline and courtyard included); excludes designator, '
+        + 'comment and free text"' +
         ',"proposed":{"x":' + IntToStr(CoordToMils(NewX)) +
         ',"y":' + IntToStr(CoordToMils(NewY)) +
         ',"rotation":' + FloatToJsonStr(NewRot) +
@@ -4133,6 +4188,8 @@ Var
     ExistingKeys : TStringList;
     TracksStr, TrackStr, Remaining, Field : String;
     PipePos, CommaPos, Placed, Failed, SkippedExisting, FieldIdx : Integer;
+    NetMissing : Integer;
+    ConnRebuilt : Boolean;
     TX1, TY1, TX2, TY2, TWidth : Integer;
     LayerStr, NetStr, ExistingNetStr, TrackKey, P1, P2 : String;
     FoundNet : IPCB_Net;
@@ -4158,6 +4215,7 @@ Begin
     Placed := 0;
     Failed := 0;
     SkippedExisting := 0;
+    NetMissing := 0;
     Remaining := TracksStr;
 
     { Build a board-wide exact-track index once. Route retries are common and
@@ -4280,29 +4338,54 @@ Begin
             If NetStr <> '' Then
             Begin
                 FoundNet := FindNetByName(Board, NetStr);
-                If FoundNet <> Nil Then Track.Net := FoundNet;
+                If FoundNet <> Nil Then
+                Begin
+                    Track.Net := FoundNet;
+                    { Setting Track.Net names the net on the primitive;       }
+                    { joining the net's own primitive list is what puts the   }
+                    { segment into the topology the ratsnest is computed      }
+                    { from. PCB_TuneLength does both, and it is the one path  }
+                    { in this codebase observed to move Net.RoutedLength.     }
+                    Try FoundNet.AddPCBObject(Track); Except End;
+                End
+                Else
+                    Inc(NetMissing);
             End;
 
             Board.AddPCBObject(Track);
+
+            { Register EACH track with the board's robots. This used to be a  }
+            { single end-of-batch broadcast carrying c_NoEventData -- i.e. a  }
+            { registration naming no object -- on the theory that one         }
+            { board-level ping refreshes everything. It does not: primitives  }
+            { never individually registered stayed invisible to the           }
+            { connectivity engine, so some nets routed in a batch kept        }
+            { reporting unrouted connections while others in the same call    }
+            { were fine. Per-object registration is the documented idiom.     }
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, Track.I_ObjectAddress);
+
             ExistingKeys.Add(TrackKey);
             Inc(Placed);
         End;
-        { Broadcast ONCE at the end of the batch instead of once per track.   }
-        { A single BoardRegisteration on the board object (null child) is     }
-        { enough to kick the connectivity/rules engines to refresh the whole  }
-        { board, much cheaper than N individual broadcasts.                   }
-        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-            PCBM_BoardRegisteration, c_NoEventData);
       Finally
           PCBServer.PostProcess;
       End;
+
+      { Recompute connectivity before returning so pcb_get_unrouted_nets is   }
+      { trustworthy immediately after a placement batch. Skipped when nothing }
+      { was added -- a no-op batch stays cheap.                               }
+      ConnRebuilt := False;
+      If Placed > 0 Then ConnRebuilt := RebuildPCBConnectivity(Board);
 
       SaveDocByPath(Board.FileName);
 
       Result := BuildSuccessResponse(RequestId,
           '{"placed":' + IntToStr(Placed) + ','
           + '"skipped_existing":' + IntToStr(SkippedExisting) + ','
-          + '"failed":' + IntToStr(Failed) + '}');
+          + '"failed":' + IntToStr(Failed) + ','
+          + '"nets_not_found":' + IntToStr(NetMissing) + ','
+          + '"connectivity_rebuilt":' + BoolToJsonStr(ConnRebuilt) + '}');
     Finally
         ExistingKeys.Free;
     End;
@@ -5196,7 +5279,7 @@ Var
     FilterNet, ViolDesc, ViolName : String;
     JsonItems : String;
     First : Boolean;
-    Count : Integer;
+    Count, Emitted : Integer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -5205,6 +5288,7 @@ Begin
         Exit;
     End;
 
+    Emitted := 0;
     FilterNet := ExtractJsonValue(Params, 'net');
 
     { Do NOT call PCB:DesignRuleCheck here. Despite its process-like name it
@@ -5235,6 +5319,7 @@ Begin
                 If Not First Then JsonItems := JsonItems + ',';
                 First := False;
                 JsonItems := JsonItems + BuildViolationJson(Violation);
+                Inc(Emitted);
             End;
             Inc(Count);
         End;
@@ -5245,6 +5330,10 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"refreshed":false,"stale_possible":true,'
         + '"violation_count":' + IntToStr(Count) + ','
+        { violation_count is the TRUE total; the array stops at 200. Say so }
+        { rather than making the caller compare lengths to find out.        }
+        + '"returned":' + IntToStr(Emitted) + ','
+        + '"truncated":' + BoolToJsonStr(Count > Emitted) + ','
         + '"violations":[' + JsonItems + ']}');
 End;
 
@@ -5442,7 +5531,7 @@ Var
     TargetX, TargetY, ObjX, ObjY : Integer;
     TargetLayer : TLayer;
     ObjFilter : TObjectId;
-    Found : Boolean;
+    Found, ConnRebuilt : Boolean;
     FoundObj : IPCB_Primitive;
     Dist, BestDist : Double;
     BRect : TCoordRect;
@@ -5569,17 +5658,71 @@ Begin
         PCBServer.PostProcess;
     End;
 
+    { Removing copper changes the net topology as much as adding it, so the }
+    { ratsnest has to be recomputed here too, or the next unrouted-nets     }
+    { query answers from a stale model.                                      }
+    ConnRebuilt := RebuildPCBConnectivity(Board);
+
     SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"deleted":true,'
         + '"object_type":"' + EscapeJsonString(ObjTypeStr) + '",'
+        + '"connectivity_rebuilt":' + BoolToJsonStr(ConnRebuilt) + ','
         + '"distance_mils":' + FloatToJsonStr(BestDist) + '}');
 End;
 
 {..............................................................................}
+{ InCommaList - True when Value appears as a whole entry in a comma-separated  }
+{ list. An empty list means "no filter", so everything passes. Entries are     }
+{ trimmed so 'U14, U15' behaves like 'U14,U15'.                                }
+{..............................................................................}
+
+Function InCommaList(Value : String; ListStr : String) : Boolean;
+Var
+    Remaining, Entry : String;
+    CommaPos : Integer;
+Begin
+    Result := True;
+    If ListStr = '' Then Exit;
+    Result := False;
+    Remaining := ListStr;
+    While Remaining <> '' Do
+    Begin
+        CommaPos := Pos(',', Remaining);
+        If CommaPos = 0 Then
+        Begin
+            Entry := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Entry := Copy(Remaining, 1, CommaPos - 1);
+            Remaining := Copy(Remaining, CommaPos + 1, Length(Remaining));
+        End;
+        Entry := Trim(Entry);
+        If (Entry <> '') And (Entry = Value) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
+{..............................................................................}
 { PCB_GetPadProperties - Get detailed pad info filtered by net or component  }
-{ Params: net (optional), designator (optional)                              }
+{ Params: net (optional), designator (optional), offset, limit               }
+{                                                                            }
+{ The 500-pad cap here used to Break out of the iterator and report only     }
+{ count, so a 1087-pad board answered with 500 pad records and count:500     }
+{ and no hint that 587 pads were missing. A caller then reasoned about a part }
+{ that simply fell past the cut and concluded its pads had no nets. The cap  }
+{ stays -- a whole board of pad records is a multi-hundred-kB response --    }
+{ but it is now a WINDOW, not a truncation: the iterator always walks every  }
+{ pad so total_matching is the true filtered count, only the                 }
+{ [offset, offset+limit) slice is serialised, and truncated says so.         }
+{ designator and net accept comma-separated lists, so the cheap way to       }
+{ reach pad 501+ is to ask for the parts you actually care about.            }
 {..............................................................................}
 
 Function PCB_GetPadProperties(Params : String; RequestId : String) : String;
@@ -5587,12 +5730,12 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Pad : IPCB_Pad;
-    FilterNet, FilterDesig : String;
+    FilterNet, FilterDesig, OffsetStr, LimitStr : String;
     JsonItems, PadName, NetName, LayerStr, CompDesig, ShapeStr : String;
     PadCache : TPadCache;
     SolderMask, PasteMask : Integer;
-    First : Boolean;
-    Count : Integer;
+    First, Emit : Boolean;
+    Count, Matched, Scanned, OffsetVal, LimitVal : Integer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -5603,10 +5746,21 @@ Begin
 
     FilterNet := ExtractJsonValue(Params, 'net');
     FilterDesig := ExtractJsonValue(Params, 'designator');
+    OffsetStr := ExtractJsonValue(Params, 'offset');
+    LimitStr := ExtractJsonValue(Params, 'limit');
+
+    OffsetVal := StrToIntDef(OffsetStr, 0);
+    If OffsetVal < 0 Then OffsetVal := 0;
+    LimitVal := StrToIntDef(LimitStr, 500);
+    { limit<=0 means "no window", but a hard ceiling still applies: an       }
+    { unbounded response on a dense board is what breaks the file transport. }
+    If (LimitVal <= 0) Or (LimitVal > 5000) Then LimitVal := 5000;
 
     JsonItems := '';
     First := True;
     Count := 0;
+    Matched := 0;
+    Scanned := 0;
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ePadObject));
@@ -5616,6 +5770,8 @@ Begin
     Pad := Iterator.FirstPCBObject;
     While Pad <> Nil Do
     Begin
+        Inc(Scanned);
+
         // Get pad net name
         NetName := '';
         Try
@@ -5628,13 +5784,23 @@ Begin
             If Pad.Component <> Nil Then CompDesig := Pad.Component.Name.Text;
         Except End;
 
-        // Apply filters
-        If (FilterNet <> '') And (NetName <> FilterNet) Then
+        // Apply filters (comma-separated lists; empty means "match all")
+        If Not InCommaList(NetName, FilterNet) Then
         Begin
             Pad := Iterator.NextPCBObject;
             Continue;
         End;
-        If (FilterDesig <> '') And (CompDesig <> FilterDesig) Then
+        If Not InCommaList(CompDesig, FilterDesig) Then
+        Begin
+            Pad := Iterator.NextPCBObject;
+            Continue;
+        End;
+
+        { Count EVERY match, serialise only the requested window. Counting   }
+        { past the window is what makes total_matching trustworthy.          }
+        Inc(Matched);
+        Emit := (Matched > OffsetVal) And (Count < LimitVal);
+        If Not Emit Then
         Begin
             Pad := Iterator.NextPCBObject;
             Continue;
@@ -5682,13 +5848,22 @@ Begin
             + '"paste_mask_expansion":' + IntToStr(PasteMask) + '}';
         Inc(Count);
 
-        If Count >= 500 Then Break;  // Limit output size
         Pad := Iterator.NextPCBObject;
     End;
     Board.BoardIterator_Destroy(Iterator);
 
+    { count keeps its original meaning (records in pads) so existing callers }
+    { still parse; everything else is additive.                              }
     Result := BuildSuccessResponse(RequestId,
-        '{"pads":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"pads":[' + JsonItems + ']'
+        + ',"count":' + IntToStr(Count)
+        + ',"returned":' + IntToStr(Count)
+        + ',"total_matching":' + IntToStr(Matched)
+        + ',"total_pads_on_board":' + IntToStr(Scanned)
+        + ',"offset":' + IntToStr(OffsetVal)
+        + ',"limit":' + IntToStr(LimitVal)
+        + ',"truncated":' + BoolToJsonStr(Matched > (OffsetVal + Count))
+        + ',"next_offset":' + IntToStr(OffsetVal + Count) + '}');
 End;
 
 {..............................................................................}
@@ -5793,7 +5968,41 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_RebuildConnectivity - explicit "recompute the ratsnest now" entry point. }
+{ Its own command so a caller who batched several mutating calls can pay the   }
+{ cost once, and so the rebuild can be reasoned about on its own when a        }
+{ routing result looks stale.                                                  }
+{..............................................................................}
+
+Function PCB_RebuildConnectivity(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Ok : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    Ok := RebuildPCBConnectivity(Board);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"rebuilt":' + BoolToJsonStr(Ok)
+        + ',"note":"rebuilt means the connectivity process was issued without '
+        + 'raising, not that Altium recomputed. Confirm with '
+        + 'pcb_get_unrouted_nets."}');
+End;
+
+{..............................................................................}
 { PCB_GetUnroutedNets - Get nets with unrouted connections (ratsnest lines)  }
+{                                                                             }
+{ Counts eConnectionObject primitives, which are the ratsnest lines Altium    }
+{ generates FROM the connectivity model. They are stale until a connectivity  }
+{ pass runs, so this rebuilds first by default: the alternative is answering  }
+{ "this net is unrouted" about copper that is demonstrably there. Pass        }
+{ rebuild=false to read the cached state on a board you know is fresh.        }
 {..............................................................................}
 
 Function PCB_GetUnroutedNets(Params : String; RequestId : String) : String;
@@ -5801,9 +6010,9 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
-    JsonItems, NetName, CountStr : String;
+    JsonItems, NetName, CountStr, RebuildStr : String;
     FinalResp : String;
-    First : Boolean;
+    First, DidRebuild : Boolean;
     Count, I, FoundIdx, NewCount : Integer;
     { Heap-allocated parallel lists. Function-local `Array[0..N] Of T`     }
     { where T is any type (String, Integer, ...) silently corrupts this    }
@@ -5818,6 +6027,10 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+
+    RebuildStr := ExtractJsonValue(Params, 'rebuild');
+    DidRebuild := False;
+    If RebuildStr <> 'false' Then DidRebuild := RebuildPCBConnectivity(Board);
 
     NetNames := TStringList.Create;
     NetCounts := TStringList.Create;
@@ -5871,7 +6084,8 @@ Begin
 
         FinalResp := BuildSuccessResponse(RequestId,
             '{"unrouted_nets":[' + JsonItems + '],"net_count":' + IntToStr(NetNames.Count)
-            + ',"total_unrouted":' + IntToStr(Count) + '}');
+            + ',"total_unrouted":' + IntToStr(Count)
+            + ',"connectivity_rebuilt":' + BoolToJsonStr(DidRebuild) + '}');
         Result := FinalResp;
     Finally
         NetCounts.Free;
@@ -11117,6 +11331,7 @@ Var
     CompsJson, PadsJson, NetsJson : String;
     LastResolved : Boolean;
     Bound, Failed, NetIdx, I : Integer;
+    MissingCompCount, MissingPadCount, MissingNetCount : Integer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -11267,6 +11482,11 @@ Begin
         NetsJson := NetsJson + '"' + EscapeJsonString(MissingNets[I]) + '"';
     End;
 
+    { Read the totals BEFORE freeing -- the response is built after. }
+    MissingCompCount := MissingComps.Count;
+    MissingPadCount := MissingPads.Count;
+    MissingNetCount := MissingNets.Count;
+
     NetNames.Free;
     MissingComps.Free;
     MissingPads.Free;
@@ -11276,12 +11496,21 @@ Begin
 
     SaveDocByPath(Board.FileName);
 
+    { Each missing_* list stops at 50 entries. Report the true totals and }
+    { a per-list truncation flag: a caller repairing an incomplete ECO off  }
+    { missing_pads must not silently stop at the 50th pad.                  }
     Result := BuildSuccessResponse(RequestId,
         '{"bound":' + IntToStr(Bound)
         + ',"failed":' + IntToStr(Failed)
         + ',"missing_components":[' + CompsJson + ']'
+        + ',"missing_components_total":' + IntToStr(MissingCompCount)
+        + ',"missing_components_truncated":' + BoolToJsonStr(MissingCompCount > 50)
         + ',"missing_pads":[' + PadsJson + ']'
-        + ',"missing_nets":[' + NetsJson + ']}');
+        + ',"missing_pads_total":' + IntToStr(MissingPadCount)
+        + ',"missing_pads_truncated":' + BoolToJsonStr(MissingPadCount > 50)
+        + ',"missing_nets":[' + NetsJson + ']'
+        + ',"missing_nets_total":' + IntToStr(MissingNetCount)
+        + ',"missing_nets_truncated":' + BoolToJsonStr(MissingNetCount > 50) + '}');
 End;
 
 {..............................................................................}
@@ -11350,6 +11579,7 @@ Begin
         'get_pad_properties':      Result := PCB_GetPadProperties(Params, RequestId);
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
+        'rebuild_connectivity':    Result := PCB_RebuildConnectivity(Params, RequestId);
         'get_polygons':            Result := PCB_GetPolygons(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
         'set_via_soldermask_relief': Result := PCB_SetViaSoldermaskRelief(Params, RequestId);

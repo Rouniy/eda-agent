@@ -397,3 +397,41 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + '}');
 End;
+
+{..............................................................................}
+{ RebuildPCBConnectivity - force Altium to recompute the net topology and the  }
+{ ratsnest after primitives were added or removed programmatically.            }
+{                                                                              }
+{ WHY this is needed at all: adding a track with Board.AddPCBObject makes it   }
+{ exist on the board, but the connectivity engine only learns about it from    }
+{ the PCBM_BoardRegisteration broadcast, and even then the eConnectionObject   }
+{ ratsnest primitives that PCB_GetUnroutedNets counts are only regenerated on  }
+{ a connectivity pass. Without one, tracks whose endpoints sit exactly on pad  }
+{ centres still read as unrouted -- which is how a fully routed net was        }
+{ reported with 2 unrouted connections. A Zoom Redraw (obj_refresh_document)   }
+{ repaints, it does not recompute, so it cannot clear this.                    }
+{                                                                              }
+{ HONESTY NOTE: RunProcess silently ignores process ids it does not know, so   }
+{ if 'PCB:UpdateConnectivity' is not a real id on this Altium build this call  }
+{ is a no-op and reports nothing. It is used elsewhere in this codebase        }
+{ (PCB_TuneLength, where net RoutedLength does change across it), which is the }
+{ best evidence available offline. ViewManager_FullUpdate is issued as well    }
+{ because it IS a documented IPCB_Board method and is what repaints the newly  }
+{ generated ratsnest. Result reports only that the calls were ISSUED without   }
+{ raising -- it is not proof the engine actually reran.                        }
+{..............................................................................}
+
+Function RebuildPCBConnectivity(Board : IPCB_Board) : Boolean;
+Begin
+    Result := False;
+    If Board = Nil Then Exit;
+    Try
+        ResetParameters;
+        RunProcess('PCB:UpdateConnectivity');
+        Result := True;
+    Except
+    End;
+    { Repaint separately: a failed repaint must not mask a successful         }
+    { recompute, and vice versa.                                              }
+    Try Board.ViewManager_FullUpdate; Except End;
+End;

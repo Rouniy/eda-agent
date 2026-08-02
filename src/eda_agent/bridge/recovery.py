@@ -19,6 +19,7 @@ from __future__ import annotations
 STUCK_HANDLER = "stuck_handler"      # heartbeat ticking, handler never returns
 DEAD_LOOP = "dead_loop"              # no heartbeat, no response
 CORRUPT_RESPONSE = "corrupt_response"  # response file present but unparseable
+MODAL_DIALOG = "modal_dialog"        # handler blocked on a modal Altium dialog
 
 _STOP_STEP = (
     "In Altium's Script IDE toolbar press the red Stop button (Run > Stop, "
@@ -47,6 +48,22 @@ _GUIDANCE = {
             "If an Altium error dialog is open, note its text and dismiss it.",
             _STOP_STEP,
             _RELAUNCH_STEP,
+        ],
+    },
+    MODAL_DIALOG: {
+        "diagnosis": (
+            "The handler is blocked on a modal Altium dialog. The polling "
+            "loop is single-threaded, so it cannot answer anything else "
+            "until the dialog is dismissed — this is a stuck DIALOG, not a "
+            "stuck script, and restarting the script is the wrong fix."
+        ),
+        "steps": [
+            "Call app_list_dialogs to see the open dialog and its buttons "
+            "(pure Win32; it does not need the polling loop).",
+            "Dismiss it with app_click_dialog_button — for an ECO, that is "
+            "'Execute Changes' to apply or 'Close' to abandon.",
+            "The blocked command then returns on its own; re-run it if you "
+            "closed the dialog without applying.",
         ],
     },
     CORRUPT_RESPONSE: {

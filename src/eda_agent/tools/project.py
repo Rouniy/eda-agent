@@ -8,6 +8,131 @@ from ..bridge import get_bridge
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
 
+# Pads fetched per round-trip when verifying an ECO. pcb_get_pad_properties
+# windows its output, so a dense board needs paging -- reading only the
+# first page is exactly the mistake this verification exists to catch.
+_PAD_PAGE = 500
+_PAD_PAGE_LIMIT = 40  # 20k pads; a guard against a runaway pager, not a cap
+
+
+def _list_open_dialogs() -> list[dict[str, Any]]:
+    """Current Altium dialogs, via Win32.
+
+    Deliberately does NOT go through the bridge: when a modal is up the
+    polling loop cannot answer, so any bridge-based inventory would block
+    on the very condition it is trying to report. Never raises -- a failed
+    inventory must not mask the caller's real error.
+    """
+    try:
+        from .application import _get_ui_inspector
+        return list(_get_ui_inspector().list_dialogs())
+    except Exception:
+        return []
+
+
+def _modal_blocked_response(code: str, message: str,
+                            dialogs: list[dict[str, Any]],
+                            *, eco_fired: bool) -> dict[str, Any]:
+    """Structured 'a dialog is in the way' result.
+
+    Returned rather than raised so the caller keeps the dialog inventory
+    and the exact steps to clear it. ``eco_fired`` matters: the changes
+    are pending behind the dialog in one case and untouched in the other,
+    and the caller must not guess which.
+    """
+    from ..bridge.recovery import recovery_guidance, MODAL_DIALOG
+    return {
+        "success": False,
+        "error": {"code": code, "message": message},
+        "eco_fired": eco_fired,
+        "eco_state": ("pending_on_dialog" if eco_fired else "not_started"),
+        "dialog_count": len(dialogs),
+        "dialogs": dialogs,
+        "recovery": recovery_guidance(MODAL_DIALOG),
+        "next_steps": [
+            "app_list_dialogs -- read the open dialog and its buttons.",
+            "app_click_dialog_button -- click 'Execute Changes' to apply "
+            "the ECO, or 'Close' to abandon it.",
+            "Re-run proj_sync_pcb afterwards if you closed without applying.",
+        ],
+    }
+
+
+async def _fetch_all_pads(bridge) -> tuple[list[dict[str, Any]], bool]:
+    """Every component pad on the board, paging until the window closes.
+
+    Returns ``(pads, complete)``. ``complete`` is False when the pager hit
+    its guard rail -- reporting an unbound-pad list computed from a partial
+    sweep as if it were the whole board would repeat the original bug in a
+    new place.
+    """
+    pads: list[dict[str, Any]] = []
+    offset = 0
+    for _ in range(_PAD_PAGE_LIMIT):
+        page = await bridge.send_command_async(
+            "pcb.get_pad_properties",
+            {"offset": str(offset), "limit": str(_PAD_PAGE)},
+        )
+        if not isinstance(page, dict):
+            return pads, False
+        batch = page.get("pads") or []
+        pads.extend(p for p in batch if isinstance(p, dict))
+        if not page.get("truncated") or not batch:
+            return pads, True
+        offset = int(page.get("next_offset") or (offset + len(batch)))
+    return pads, False
+
+
+async def _verify_pad_nets(bridge) -> dict[str, Any]:
+    """Compare the compiled netlist against the board's pad nets.
+
+    Any failure to gather either side is reported as ``checked:false`` with
+    a reason. A verification that could not run must never look like a
+    verification that passed.
+    """
+    from ..core.eco_verify import verify_eco
+
+    try:
+        pads, complete = await _fetch_all_pads(bridge)
+    except Exception as exc:
+        return {"checked": False,
+                "reason": f"could not read board pads: {exc}"}
+    if not complete:
+        return {"checked": False,
+                "reason": "pad sweep did not reach the end of the board; "
+                          "the comparison would be based on a partial "
+                          "board and is not reported",
+                "pads_read": len(pads)}
+
+    designators = sorted({
+        str(p.get("component") or "").strip()
+        for p in pads if str(p.get("component") or "").strip()
+    })
+    if not designators:
+        return {"checked": False,
+                "reason": "no component pads on the board to verify"}
+
+    try:
+        netlist = await bridge.send_command_async(
+            "project.get_connectivity_batch",
+            {"designators": "~~".join(designators)},
+        )
+    except Exception as exc:
+        return {"checked": False,
+                "reason": f"could not read the compiled netlist: {exc}"}
+    if not isinstance(netlist, dict):
+        return {"checked": False,
+                "reason": "compiled netlist response was not a dict"}
+
+    report = verify_eco(netlist.get("components") or [], pads)
+    report["checked"] = True
+    report["hint"] = (
+        "Repair anything in pads_unbound with pcb_bind_pad_nets; a "
+        "non-empty list means the ECO reported success but did not "
+        "finish the job."
+    )
+    return report
+
 
 def register_project_tools(mcp):
     """Register project tools with the MCP server."""
@@ -256,7 +381,10 @@ def register_project_tools(mcp):
                 `proj_get_compile_freshness` to confirm no docs are dirty.
 
         Returns:
-            Dict with "pins" and "count".
+            Dict with "pins", "count" (rows RETURNED), "limit" and
+            "truncated". ``truncated`` True means the cap cut the list
+            short -- raise ``limit`` or filter, and do not read the
+            absence of a pin as evidence it has no net.
 
         Examples:
             # PREFERRED, one unfiltered call, then filter locally:
@@ -446,8 +574,10 @@ def register_project_tools(mcp):
             limit: Max components to return (default 1000).
 
         Returns:
-            Dictionary with "components" array and "count", plus
-            `_datasheet_guidance` + `_datasheet_parts`.
+            Dictionary with "components" array, "count" (rows
+            RETURNED), "limit" and "truncated", plus
+            `_datasheet_guidance` + `_datasheet_parts`. A True
+            ``truncated`` means the BOM is incomplete at this limit.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"limit": str(limit)}
@@ -1829,41 +1959,116 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
-    async def proj_sync_pcb() -> dict[str, Any]:
+    async def proj_sync_pcb(
+        wait_seconds: float = 60.0,
+        verify_pad_nets: bool = True,
+    ) -> dict[str, Any]:
         """Push schematic changes to PCB (ECO) — Design ▸ Update PCB Document.
 
         IMPORTANT — this is NOT silent. Altium's ECO (change-review) dialog
         is non-suppressible by design, so this **fires the real ECO and then
         BLOCKS on a modal dialog until a human clicks "Execute Changes"**.
-        Do not call it in an unattended/headless run — it will hang the
-        Altium-side polling loop until someone interacts. (There is no
-        documented silent flag; the prior implementation called a
-        non-existent process id and silently did nothing.)
+        Do not call it in an unattended/headless run.
+
+        The wait is BOUNDED (``wait_seconds``). It used to inherit the
+        bridge's full 300 s heartbeat budget and then report the handler as
+        stuck in an infinite loop — the wrong diagnosis, and it cost a
+        script restart. Now, if the ECO does not return in time, the call
+        gives up and returns a structured ``ECO_DIALOG_BLOCKING`` error
+        naming the open dialogs. Giving up does NOT cancel the ECO: Altium
+        is still sitting on that dialog, and the changes are neither
+        applied nor discarded until someone answers it.
 
         The server:
-          1. Compiles the project and records before-state mappings
+          1. Checks for an already-open modal dialog and refuses up front
+             rather than queueing behind it.
+          2. Compiles the project and records before-state mappings
              (matched, extra-in-schematic, extra-in-pcb).
-          2. Invokes ``WorkspaceManager:Compare`` (ObjectKind=Project,
+          3. Invokes ``WorkspaceManager:Compare`` (ObjectKind=Project,
              Action=UpdateMe) — the direction verified for schematic→PCB when
              the target PCB is focused. Do not substitute ``UpdateOther``:
              Altium interprets it relative to focus and may back-annotate PCB
              changes into the schematic. The modal ECO dialog opens here.
-          3. After the user accepts, recompiles and reports the after-state
+          4. After the user accepts, recompiles and reports the after-state
              delta (how many components were added/removed).
-          4. If counts did not change, ``dialog_may_have_opened:true`` flags
+          5. If counts did not change, ``dialog_may_have_opened:true`` flags
              that the dialog was dismissed without applying.
+          6. With ``verify_pad_nets``, compares the compiled netlist's
+             (designator, pin, net) triples against the board's pad nets
+             and reports every pad the ECO left unbound.
+
+        Why step 6 exists: an ECO has been observed to return success having
+        silently skipped a component — one part's pads were left with no
+        nets while its identical sibling was fully assigned. Nothing in the
+        ECO's own response revealed it. Repair anything in ``pads_unbound``
+        with ``pcb_bind_pad_nets``.
 
         For unattended board population without a schematic, use
         ``pcb_place_components`` instead (places geometry only — see its note
         about leaving the project unsynced).
 
+        Args:
+            wait_seconds: Bound on how long to wait for the ECO to return
+                before reporting the dialog as blocking. The ECO itself is
+                unaffected by this.
+            verify_pad_nets: Run the post-ECO completeness check. Costs a
+                compiled-netlist read plus a paged pad sweep; turn it off
+                only if you will verify by other means.
+
         Returns:
             Dictionary with success, pcb_path, before/after mapping counts,
             components_added_to_pcb, components_removed_from_pcb, in_sync,
-            and dialog_may_have_opened flag.
+            and dialog_may_have_opened flag; plus ``pad_net_verification``
+            (with ``pads_unbound``) when ``verify_pad_nets`` is set.
+            On a bounded-wait expiry: ``success:false`` with
+            ``error.code == "ECO_DIALOG_BLOCKING"``, the dialog inventory,
+            and the steps to clear it.
         """
+        from ..bridge.exceptions import AltiumTimeoutError
+
         bridge = get_bridge()
-        result = await bridge.send_command_async("project.update_pcb", {})
+
+        # Refuse to queue behind a dialog that is ALREADY up. The polling
+        # loop is single-threaded, so firing the ECO now would just stack a
+        # second modal behind the first and guarantee the timeout below.
+        pre_existing = _list_open_dialogs()
+        if pre_existing:
+            return _modal_blocked_response(
+                "MODAL_DIALOG_ALREADY_OPEN",
+                "An Altium dialog is already open, so the ECO was NOT "
+                "fired -- the polling loop cannot reach it until that "
+                "dialog is dismissed.",
+                pre_existing,
+                eco_fired=False,
+            )
+
+        # Bound the wait. The heartbeat is a presence marker written once,
+        # not a tick, so a handler parked on a modal looks exactly like one
+        # doing slow work; only an explicit cap distinguishes them.
+        poll_window = max(1.0, float(bridge.config.poll_timeout))
+        extensions = max(1, int(round(float(wait_seconds) / poll_window)))
+        try:
+            result = await bridge.send_command_async(
+                "project.update_pcb", {},
+                timeout=poll_window,
+                max_extensions=extensions,
+            )
+        except AltiumTimeoutError as exc:
+            return _modal_blocked_response(
+                "ECO_DIALOG_BLOCKING",
+                f"The ECO did not return within {wait_seconds:.0f}s. Altium "
+                f"is answering keepalives, so the script is alive and the "
+                f"handler is blocked on the modal ECO dialog. The ECO was "
+                f"NOT cancelled -- it is still waiting on that dialog, and "
+                f"nothing else can run until it is answered. ({exc})",
+                _list_open_dialogs(),
+                eco_fired=True,
+            )
+
+        if not isinstance(result, dict):
+            return result
+        if verify_pad_nets:
+            result["pad_net_verification"] = await _verify_pad_nets(bridge)
         return result
 
     @mcp.tool()

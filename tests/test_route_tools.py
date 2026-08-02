@@ -87,6 +87,8 @@ def test_register_exposes_route_tools(tools):
     assert set(tools) == {
         "route_plan",
         "route_plan_repairs",
+        "route_audit_plan",
+        "route_build_offline_package",
     }
 
 
@@ -143,12 +145,87 @@ def test_route_plan_nets_filter_reports_unknown(tools):
 
 
 def test_route_plan_nets_filter_all_unknown(tools):
+    # Routing none of the requested nets must NOT read as a clean run.
+    # This used to return ok:True with completion 1.0, because the router
+    # divided by the nets it attempted (zero) -- which is how seven real
+    # nets came back as "unknown" alongside "100% complete".
     res = _run(tools["route_plan"](
         geometry=_two_net_geom(), rules=RULES, nets=["NOPE"]))
-    assert res["ok"] is True
+    assert res["ok"] is False
     assert res["summary"]["nets_total"] == 0
+    assert res["summary"]["completion"] == 0.0
+    assert res["summary"]["requested_count"] == 1
+    assert res["summary"]["unknown_count"] == 1
     assert res["unknown_nets"] == ["NOPE"]
+    assert (res["unknown_net_reasons"]["NOPE"]["reason"]
+            == "absent_from_geometry")
     assert res["tracks"] == []
+
+
+def test_route_plan_partial_unknown_scales_completion_to_requested(tools):
+    # One of two requested nets is routable: completion is 1/2, not 1/1.
+    res = _run(tools["route_plan"](
+        geometry=_two_net_geom(), rules=RULES, nets=["NET1", "NOPE"]))
+    assert res["ok"] is True
+    assert res["summary"]["routed"] == 1
+    assert res["summary"]["requested_count"] == 2
+    assert res["summary"]["completion"] == 0.5
+
+
+def test_route_plan_unknown_net_blames_the_routing_layers(tools):
+    # Pads exist and carry the net, but sit on a layer outside
+    # rules.layers. That is a reachability problem, not a missing net,
+    # and reporting it as "unknown" is what produced the wrong call.
+    geom = _geom([
+        _pad(100, 100, "INNER", layer="MidLayer1"),
+        _pad(900, 100, "INNER", layer="MidLayer1"),
+    ])
+    res = _run(tools["route_plan"](
+        geometry=geom, rules=RULES, nets=["INNER"]))
+    assert res["ok"] is False
+    assert res["unknown_nets"] == ["INNER"]
+    reason = res["unknown_net_reasons"]["INNER"]
+    assert reason["reason"] == "pads_off_routing_layers"
+    assert reason["pads_dropped"] == 2
+    assert res["geometry_summary"]["pads_dropped_off_routing_layers"] == 2
+    assert res["geometry_summary"]["nets_with_pads"] == 1
+    assert res["geometry_summary"]["nets_with_terminals"] == 0
+
+
+def test_route_plan_flags_geometry_short_of_declared_counts(tools):
+    # The payload says it holds 4 pads and delivers 2. Whatever dropped
+    # them, the routing input is incomplete, so the run must not present
+    # its unknown_nets as fact.
+    geom = _two_net_geom()
+    geom["counts"] = {"pads": 4, "tracks": 0, "vias": 0}
+    geom["pads"] = geom["pads"][:2]  # NET2's pads never arrived
+    res = _run(tools["route_plan"](
+        geometry=geom, rules=RULES, nets=["NET1", "NET2"]))
+    assert res["ok"] is False
+    assert res["geometry_summary"]["truncated"] is True
+    assert res["geometry_summary"]["count_mismatches"]["pads"] == {
+        "declared": 4, "received": 2}
+    assert "incomplete" in res["reason"]
+    assert res["unknown_nets"] == ["NET2"]
+
+
+def test_route_plan_intact_geometry_is_not_flagged_truncated(tools):
+    geom = _two_net_geom()
+    geom["counts"] = {"pads": 4, "tracks": 0, "vias": 0}
+    res = _run(tools["route_plan"](geometry=geom, rules=RULES))
+    assert res["ok"] is True
+    assert res["geometry_summary"]["truncated"] is False
+    assert res["geometry_summary"]["count_mismatches"] == {}
+    assert res["geometry_summary"]["pads_seen"] == 4
+    assert res["geometry_summary"]["pads_used_as_terminals"] == 4
+
+
+def test_route_plan_geometry_summary_without_counts_block(tools):
+    # Older payloads carry no `counts`; absence is not evidence of loss.
+    res = _run(tools["route_plan"](geometry=_two_net_geom(), rules=RULES))
+    assert res["ok"] is True
+    assert res["geometry_summary"]["truncated"] is False
+    assert res["geometry_summary"]["declared_counts"] == {}
 
 
 def test_route_plan_nets_must_be_name_list(tools):

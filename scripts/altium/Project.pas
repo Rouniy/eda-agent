@@ -592,7 +592,13 @@ Begin
     End;
 
     Data := Data + ']';
-    Result := BuildSuccessResponse(RequestId, '{"pins":' + Data + ',"count":' + IntToStr(Count) + '}');
+    { count is the number of rows RETURNED. Hitting `limit` used to look   }
+    { identical to a project that simply has that many pins; truncated     }
+    { distinguishes them. Raise `limit` or filter to see the rest.          }
+    Result := BuildSuccessResponse(RequestId,
+        '{"pins":' + Data + ',"count":' + IntToStr(Count)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr(Count >= Limit) + '}');
 End;
 
 {..............................................................................}
@@ -673,7 +679,12 @@ Begin
     End;
 
     Data := Data + ']';
-    Result := BuildSuccessResponse(RequestId, '{"components":' + Data + ',"count":' + IntToStr(Count) + '}');
+    { Same contract as Proj_GetNets: count is what came back, truncated    }
+    { says whether the cap cut it short.                                    }
+    Result := BuildSuccessResponse(RequestId,
+        '{"components":' + Data + ',"count":' + IntToStr(Count)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr(Count >= Limit) + '}');
 End;
 
 {..............................................................................}

@@ -580,7 +580,7 @@ def register_generic_tools(mcp):
             "generic.set_sch_components_parameters", params, timeout=60.0)
 
     @mcp.tool()
-    async def proj_get_erc_violations() -> dict[str, Any]:
+    async def proj_get_erc_violations(limit: int = 100) -> dict[str, Any]:
         """Return the ERC violation list produced by the last
         ``proj_run_erc()`` invocation.
 
@@ -591,12 +591,21 @@ def register_generic_tools(mcp):
         source-level description (sheet, location, rule, primitives
         involved) the agent needs to navigate to it.
 
+        The array is capped at ``limit``; ``violation_count`` is the
+        project's true total either way. Check ``truncated`` before
+        concluding a project is clean of anything past the cap.
+
+        Args:
+            limit: Maximum violations to return (default 100). 0 or
+                negative returns every violation.
+
         Returns:
-            Dictionary with violation count and per-violation details.
+            Dictionary with violation_count (true total), returned,
+            limit, truncated, and per-violation details.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
-            "generic.get_erc_violations", {})
+            "generic.get_erc_violations", {"limit": str(int(limit))})
 
     @mcp.tool()
     async def obj_highlight_net(
@@ -1968,7 +1977,11 @@ def register_generic_tools(mcp):
             ])
 
         Returns:
-            Dict with created, failed, total counts.
+            Dict with created, failed, total counts and a failures
+            list of {index, object_type, reason}. Schematic objects
+            only: a PCB type name comes back as
+            ``PCB_TYPE_UNSUPPORTED`` (use the `pcb_place_*` tools),
+            an unknown name as ``INVALID_TYPE``.
         """
         op_strs: list[str] = []
         for op in operations:
@@ -2010,8 +2023,11 @@ def register_generic_tools(mcp):
             operations: List of delete dicts, each with:
                 - scope: "active_doc" (default), "project", or
                   "doc:<absolute_path>".
-                - object_type: Altium type name (e.g. "eJunction",
-                  "eNoERC", "eWire").
+                - object_type: Altium type name. Schematic types
+                  ("eJunction", "eNoERC", "eWire") and PCB types
+                  ("eTrackObject", "eViaObject", "ePadObject", ...)
+                  both work; PCB ops always run against the active
+                  board regardless of the scope given.
                 - filter: pipe-separated ``PropName=Value`` filter
                   conditions (AND logic), same format as
                   ``obj_delete``.
@@ -2026,7 +2042,21 @@ def register_generic_tools(mcp):
             ])
 
         Returns:
-            Dict with operations_processed and total.
+            Dict with:
+              - operations_processed: ops that actually ran.
+              - total: ops submitted.
+              - operations_failed: ops that did not run.
+              - matched: objects deleted across all ops.
+              - unresolved: object_type strings no type table knows.
+              - failures: [{index, object_type, reason}] (first 20).
+              - connectivity_rebuilt: True when at least one PCB op ran
+                and the ratsnest was recomputed afterwards. Deleting
+                copper changes the net topology, so without this
+                ``pcb_get_unrouted_nets`` would answer from a stale
+                model.
+
+            ``operations_processed`` < ``total`` means ops were
+            rejected, NOT that nothing matched; read ``failures``.
         """
         op_strs: list[str] = []
         for op in operations:

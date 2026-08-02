@@ -123,6 +123,17 @@ class TestBatchCreate:
 
 
 class TestBatchDelete:
+    """Regression cover for the PCB ops that were silently dropped.
+
+    Gen_BatchDelete resolved object_type through ObjectTypeFromString only,
+    the SCHEMATIC table, and ran a bare ``Continue`` on the -1 result. A PCB
+    op such as ``eTrackObject`` filtered on ``Net=VR_PA_A`` therefore never
+    ran, never incremented operations_processed, and never appeared in the
+    response: the caller got ``operations_processed: 0`` out of a well-formed
+    batch while the singular obj_delete with the identical type and filter
+    deleted 6 tracks.
+    """
+
     @pytest.mark.asyncio
     async def test_each_op_carries_scope_type_filter(self, monkeypatch):
         sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
@@ -137,6 +148,94 @@ class TestBatchDelete:
         assert "scope=active_doc" in ops[0]
         assert "object_type=eNoERC" in ops[0]
         assert "scope=project" in ops[1]
+
+    @pytest.mark.asyncio
+    async def test_pcb_type_and_filter_reach_the_bridge_intact(
+        self, monkeypatch
+    ):
+        sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
+        from eda_agent.tools import generic as g
+        tools = _capture(g, "register_generic_tools")
+        await tools["obj_batch_delete"](operations=[
+            {"scope": "active_doc", "object_type": "eTrackObject",
+             "filter": "Net=VR_PA_A"},
+        ])
+        assert sent.params["operations"] == (
+            "scope=active_doc;object_type=eTrackObject;filter=Net=VR_PA_A"
+        )
+
+    def test_pcb_ops_run_instead_of_being_skipped(
+        self, altium_sim, e2e_bridge, monkeypatch
+    ):
+        """The live repro: one PCB track op, addressed purely by net."""
+        import asyncio
+        import json
+
+        from mcp.server.fastmcp import FastMCP
+        from eda_agent.tools import register_all_tools
+
+        altium_sim.board.tracks = [
+            {"x1": 0, "y1": 0, "x2": 100, "y2": 0, "width": 8,
+             "layer": "Top Layer", "net": "VR_PA_A"},
+            {"x1": 100, "y1": 0, "x2": 100, "y2": 90, "width": 8,
+             "layer": "Top Layer", "net": "VR_PA_A"},
+            {"x1": 0, "y1": 50, "x2": 60, "y2": 50, "width": 8,
+             "layer": "Top Layer", "net": "GND"},
+        ]
+
+        monkeypatch.setattr(
+            "eda_agent.tools.generic.get_bridge", lambda: e2e_bridge
+        )
+        mcp = FastMCP("t")
+        register_all_tools(mcp)
+
+        raw = asyncio.run(mcp.call_tool("obj_batch_delete", {"operations": [
+            {"scope": "active_doc", "object_type": "eTrackObject",
+             "filter": "Net=VR_PA_A"},
+        ]}))
+        content = raw[0] if isinstance(raw, tuple) else raw
+        res = json.loads(content[0].text)
+
+        assert res["total"] == 1
+        # The op ran. Before the fix this was 0 with no explanation given.
+        assert res["operations_processed"] == 1
+        assert res["operations_failed"] == 0
+        assert res["unresolved"] == []
+        assert res["matched"] == 2
+        # The GND track is untouched, the filter really was applied.
+        assert [t["net"] for t in altium_sim.board.tracks] == ["GND"]
+
+    def test_unresolvable_type_is_named_not_swallowed(
+        self, e2e_bridge, monkeypatch
+    ):
+        import asyncio
+        import json
+
+        from mcp.server.fastmcp import FastMCP
+        from eda_agent.tools import register_all_tools
+
+        monkeypatch.setattr(
+            "eda_agent.tools.generic.get_bridge", lambda: e2e_bridge
+        )
+        mcp = FastMCP("t")
+        register_all_tools(mcp)
+
+        raw = asyncio.run(mcp.call_tool("obj_batch_delete", {"operations": [
+            {"object_type": "eJunction", "filter": ""},
+            {"object_type": "eNotAThing", "filter": ""},
+        ]}))
+        content = raw[0] if isinstance(raw, tuple) else raw
+        res = json.loads(content[0].text)
+
+        assert res["total"] == 2
+        assert res["operations_processed"] == 1
+        assert res["operations_failed"] == 1
+        # The offending type is named, so "never ran" is distinguishable
+        # from "matched nothing".
+        assert res["unresolved"] == ["eNotAThing"]
+        assert res["failures"] == [
+            {"index": 1, "object_type": "eNotAThing", "reason": "INVALID_TYPE"}
+        ]
 
 
 class TestBatchModify:

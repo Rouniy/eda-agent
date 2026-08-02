@@ -489,7 +489,9 @@ def register_pcb_tools(mcp):
         Returns:
             Dict with ``bound`` / ``failed`` counts plus
             ``missing_components`` / ``missing_pads`` / ``missing_nets``
-            name lists (each capped at 50 entries).
+            name lists. Each list stops at 50 entries and carries its
+            own ``*_total`` and ``*_truncated`` fields -- read those
+            before treating a list as the complete set of failures.
         """
         encoded = _encode_bindings_param(bindings)
         if not encoded:
@@ -666,7 +668,10 @@ def register_pcb_tools(mcp):
                 returns all currently materialized violations.
 
         Returns:
-            Dict with ``{violation_count, violations}``. Capped at 200.
+            Dict with ``{violation_count, returned, truncated,
+            violations}``. ``violation_count`` is the true total;
+            the array stops at 200 and ``truncated`` says when the
+            two differ.
         """
         bridge = get_bridge()
         params = {"net": net} if net else {}
@@ -3215,9 +3220,18 @@ def register_pcb_tools(mcp):
 
         DOES NOT actually move the component. Computes the predicted
         axis-aligned bounding box at the proposed pose, then AABB-tests
-        against every other component's current bounding rect. Use this
-        BEFORE every `pcb_move_components` call when placing parts on a
-        board that already has placed parts.
+        against every other same-side component. Use this BEFORE every
+        `pcb_move_components` call when placing parts on a board that
+        already has placed parts.
+
+        What a bbox covers: the union of the footprint's pads, tracks,
+        arcs, fills and regions on ALL layers. That includes the
+        silkscreen OUTLINE and any mechanical courtyard shapes, and
+        excludes every text primitive (designator, comment, free text).
+        It is therefore a body/courtyard box, NOT the Altium component
+        bounding rectangle, which is text-inflated and made 0201s look
+        hundreds of mils tall. Target and colliders are measured
+        identically; each result carries a `bbox_basis` field.
 
         Args:
             designator: Component to test (must exist on the board).
@@ -3233,16 +3247,30 @@ def register_pcb_tools(mcp):
         Returns:
             Dict with:
               - designator: target.
+              - layer: the target's side, e.g. "TopLayer".
+              - same_side_filter: True when the side rule was applied.
+                False means the target's layer was unreadable and the
+                check fell back to comparing against every component.
+              - bbox_basis: "footprint_body", or
+                "component_rect_including_text" when the footprint had
+                no measurable non-text primitive and the text-inflated
+                rectangle had to be used as a fallback.
+              - bbox_includes: plain-text description of the above.
               - proposed: {x, y, rotation, bbox:{x1,y1,x2,y2}, margin_mils}.
               - clear: True if no collisions, False otherwise.
               - colliding_count: number of collisions.
-              - colliding: list of {designator, bbox:{...}} per collider.
+              - colliding: list of {designator, layer, bbox_basis,
+                bbox:{...}} per collider. Each bbox is measured from the
+                component named next to it.
 
         Caveats:
             - AABB only; rotated non-square footprints will report an
               inflated bbox.
             - Same-side check is automatic; the target's bbox is compared
               only against components on the same layer (Top vs Bottom).
+            - The box is a body/courtyard box including silkscreen
+              outline, not a pad-copper-only box, so it is slightly
+              larger than the package body.
             - Does not detect courtyard violations or pad-to-pad clearances,
               only solid-box overlap. Use DRC for actual clearance rules.
         """
@@ -3826,9 +3854,22 @@ def register_pcb_tools(mcp):
                    "width": 10, "net_name": "NetC8_2"},
                 ]
 
+        Connectivity: each segment is registered with the board
+        individually and, when it names a net, joined to that net's
+        primitive list; the batch then triggers a connectivity rebuild
+        so ``pcb_get_unrouted_nets`` is trustworthy immediately after.
+        A net name that does not exist on the board is NOT created --
+        the segment is placed netless and counted in ``nets_not_found``.
+
         Returns:
-            Dictionary with ``placed``, ``skipped_existing`` (exact
-            direction-insensitive duplicates), and ``failed`` counts.
+            Dictionary with:
+              - placed, skipped_existing (exact direction-insensitive
+                duplicates), failed: segment counts.
+              - nets_not_found: segments whose ``net_name`` matched no
+                net on the board, so they carry no net. Non-zero here
+                is the usual reason a net still looks unrouted.
+              - connectivity_rebuilt: the rebuild was issued (only when
+                something was actually placed).
         """
         parts = []
         for t in tracks:
@@ -4474,8 +4515,13 @@ def register_pcb_tools(mcp):
                 (polygon/region/component/arc are matched by bounding-box
                 centre; for bulk/filter-based deletes use ``obj_delete``)
 
+        Connectivity is rebuilt afterwards, because removing copper
+        changes the net topology and the ratsnest would otherwise stay
+        stale.
+
         Returns:
-            Dictionary with deleted status, object_type, and distance_mils
+            Dictionary with deleted status, object_type, distance_mils,
+            and connectivity_rebuilt.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -4488,24 +4534,54 @@ def register_pcb_tools(mcp):
     async def pcb_get_pad_properties(
         net: str = "",
         designator: str = "",
+        offset: int = 0,
+        limit: int = 500,
     ) -> dict[str, Any]:
         """Get detailed pad information filtered by net or component.
 
         Returns pad shape, size, hole, thermal relief, and solder/paste
-        mask expansion details. Provide at least one filter (net or
-        designator) to avoid returning all pads on the board.
+        mask expansion details.
+
+        THE RESULT IS A WINDOW, NOT THE WHOLE BOARD. At most `limit` pad
+        records come back (default 500, hard ceiling 5000). Always read
+        `truncated` before drawing any conclusion: `truncated:true` means
+        pads matching your filter were NOT returned, so a component
+        missing from `pads` may simply sit past the window rather than
+        being absent or netless. Either narrow with `designator` (the
+        cheap, preferred route) or page with `next_offset`.
 
         Args:
-            net: Filter by net name (e.g., "GND", "VCC"). Optional.
-            designator: Filter by component designator (e.g., "U1"). Optional.
+            net: Filter by net name, or a comma-separated list
+                (e.g., "GND", "GND,VCC"). Empty means all nets.
+            designator: Filter by component designator, or a
+                comma-separated list (e.g., "U15", "U14,U15"). Empty
+                means all components.
+            offset: Skip this many matching pads before collecting.
+                Feed the previous response's `next_offset` to page.
+            limit: Maximum pad records to return. <=0 or >5000 is
+                clamped to 5000; an unbounded dump is not offered
+                because it breaks the file transport on dense boards.
 
         Returns:
-            Dictionary with "pads" array (each with name, component, x, y,
-            net, layer, shape, top_x_size, top_y_size, hole_size, rotation,
-            is_smd, solder_mask_expansion, paste_mask_expansion) and "count"
+            Dictionary with:
+              - pads: array (each with name, component, x, y, net,
+                layer, shape, top_x_size, top_y_size, hole_size,
+                rotation, is_smd, solder_mask_expansion,
+                paste_mask_expansion).
+              - count / returned: records in `pads` (identical; `count`
+                is kept for backwards compatibility).
+              - total_matching: pads matching the filter across the
+                WHOLE board, counted independently of the window.
+              - total_pads_on_board: every pad the iterator saw.
+              - offset, limit: the window that was applied.
+              - truncated: True when total_matching > offset + returned.
+              - next_offset: offset to pass for the next page.
         """
         bridge = get_bridge()
-        params: dict[str, Any] = {}
+        params: dict[str, Any] = {
+            "offset": str(int(offset)),
+            "limit": str(int(limit)),
+        }
         if net:
             params["net"] = net
         if designator:
@@ -4538,18 +4614,63 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_unrouted_nets() -> dict[str, Any]:
+    async def pcb_get_unrouted_nets(rebuild: bool = True) -> dict[str, Any]:
         """Get list of nets with unrouted connections (ratsnest lines).
 
         Identifies nets that still have ratsnest lines, meaning they are
         not fully routed. Useful for checking routing completion status.
 
+        This counts the ratsnest primitives Altium generates FROM its
+        connectivity model, and that model is stale until a connectivity
+        pass runs. Copper added programmatically has therefore been
+        reported as unrouted even with segment endpoints landing exactly
+        on pad centres; a redraw (``obj_refresh_document``) repaints but
+        does not recompute, so it never cleared it. This tool now
+        rebuilds connectivity first by default.
+
+        Args:
+            rebuild: Recompute connectivity before counting (default
+                True). Costs a full connectivity pass -- seconds on a
+                dense board. Pass False only to read the cached state on
+                a board you already know is fresh, e.g. when polling in
+                a loop after a single ``pcb_rebuild_connectivity``.
+
         Returns:
             Dictionary with "unrouted_nets" array (each with net name and
-            unrouted_connections count), "net_count", and "total_unrouted"
+            unrouted_connections count), "net_count", "total_unrouted",
+            and "connectivity_rebuilt".
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_unrouted_nets", {})
+        result = await bridge.send_command_async(
+            "pcb.get_unrouted_nets",
+            {"rebuild": "true" if rebuild else "false"},
+        )
+        return result
+
+    @mcp.tool()
+    async def pcb_rebuild_connectivity() -> dict[str, Any]:
+        """Recompute the board's net topology and ratsnest.
+
+        Adding or removing copper through the API does not by itself
+        refresh Altium's connectivity model, and the ratsnest lines that
+        ``pcb_get_unrouted_nets`` counts are generated from that model.
+        ``pcb_place_tracks``, ``pcb_delete_object`` and
+        ``obj_batch_delete`` already call this at the end of their own
+        work; use this tool directly after a sequence of other mutations
+        (vias, pads, polygons, net binding) or when a routing result
+        looks stale.
+
+        ``obj_refresh_document`` is NOT a substitute -- it issues a Zoom
+        Redraw, which repaints the view without recomputing anything.
+
+        Returns:
+            Dictionary with "rebuilt" and an explanatory "note".
+            ``rebuilt`` means the connectivity process was issued without
+            raising, NOT that Altium is confirmed to have recomputed;
+            verify with ``pcb_get_unrouted_nets``.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("pcb.rebuild_connectivity", {})
         return result
 
     @mcp.tool()

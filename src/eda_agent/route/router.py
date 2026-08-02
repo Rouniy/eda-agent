@@ -134,12 +134,25 @@ def route_problem(problem: RoutingProblem,
             failed += 1
 
     attempted = routed + failed
+    # "Nothing attempted" used to fall straight through to completion 1.0,
+    # so a run whose nets had all been filtered away reported perfect
+    # completion while routing nothing. Distinguish the two ways of having
+    # no work: a geometry with no netted pads at all really is vacuously
+    # complete, but a geometry that HAD netted pads and still produced no
+    # routable net means we routed none of what was there -- 0.0.
+    if attempted:
+        completion = routed / attempted
+    elif not nets_out and problem.pad_nets_seen:
+        completion = 0.0
+    else:
+        completion = 1.0  # nothing to route, or everything present skipped
     summary = {
         "nets_total": len(nets_out),
         "routed": routed,
         "failed": failed,
         "skipped": skipped,
-        "completion": (routed / attempted) if attempted else 1.0,
+        "attempted": attempted,
+        "completion": completion,
         "track_count": len(all_tracks),
         "via_count": len(all_vias),
         "total_length_mils": sum(

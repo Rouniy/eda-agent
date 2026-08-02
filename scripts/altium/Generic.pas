@@ -2640,7 +2640,7 @@ Var
     Workspace : IWorkspace;
     Project : IProject;
     Violation : IViolation;
-    I, VCount, MaxItems : Integer;
+    I, VCount, MaxItems, Emitted : Integer;
     JsonItems : String;
     First : Boolean;
     Desc : String;
@@ -2664,6 +2664,7 @@ Begin
     VCount := Project.DM_ViolationCount;
     JsonItems := '';
     First := True;
+    Emitted := 0;
 
     For I := 0 To VCount - 1 Do
     Begin
@@ -2682,10 +2683,17 @@ Begin
         First := False;
         JsonItems := JsonItems + '{"index":' + IntToStr(I) +
             ',"description":"' + EscapeJsonString(Desc) + '"}';
+        Inc(Emitted);
     End;
 
+    { violation_count is the project's TRUE total; the array stops at      }
+    { `limit` (default 100). Without the flag the two read as the same     }
+    { number and a capped list looks like a complete one.                  }
     Result := BuildSuccessResponse(RequestId,
         '{"violation_count":' + IntToStr(VCount) +
+        ',"returned":' + IntToStr(Emitted) +
+        ',"limit":' + IntToStr(MaxItems) +
+        ',"truncated":' + BoolToJsonStr(VCount > Emitted) +
         ',"violations":[' + JsonItems + ']}');
 End;
 
@@ -6253,7 +6261,15 @@ Begin
             If ObjTypeInt = -1 Then
             Begin
                 Inc(Failed);
-                ItemReason := 'INVALID_TYPE';
+                { A PCB type name resolves fine, SchServer.SchObjectFactory   }
+                { just cannot build one -- creating PCB primitives needs      }
+                { PCBServer and the pcb_place_* handlers. Saying INVALID_TYPE }
+                { sent callers hunting for a spelling mistake that isn't      }
+                { there, so name the real reason.                             }
+                If ObjectTypeFromStringPCB(ObjTypeStr) <> -1 Then
+                    ItemReason := 'PCB_TYPE_UNSUPPORTED'
+                Else
+                    ItemReason := 'INVALID_TYPE';
             End
             Else
             Begin
@@ -6341,14 +6357,24 @@ End;
 { Gen_BatchDelete - Generic bulk delete. Each op is one scope/type/filter       }
 { delete expressed in the same format as delete_objects.                       }
 { Params: operations = 'scope=active_doc;object_type=eWire;filter=Text=old~~scope=...' }
+{                                                                             }
+{ Type resolution and failure reporting deliberately mirror delete_objects /   }
+{ Gen_BatchModify. This used to resolve types against the schematic table      }
+{ ONLY and `Continue` on -1, so every PCB op (eTrackObject, eViaObject, ...)   }
+{ was dropped without running and without incrementing OpsRun -- the caller    }
+{ got operations_processed=0 with no reason and could not tell "matched        }
+{ nothing" from "never ran".                                                   }
 {..............................................................................}
 
 Function Gen_BatchDelete(Params : String; RequestId : String) : String;
 Var
-    Operations, Remaining : String;
-    OpCount, OpsRun : Integer;
-    Op, Scope, ObjTypeStr, FilterStr, ScopeType, ScopePath : String;
+    Operations, Remaining, OpResp : String;
+    OpCount, OpsRun, OpFailed, TotalMatched : Integer;
+    Op, Scope, ObjTypeStr, FilterStr, ScopeType, ScopePath, FailCode : String;
     ObjTypeInt : Integer;
+    IsPCB, PCBTouched, ConnRebuilt : Boolean;
+    PCBBoard : IPCB_Board;
+    FailuresJson, UnresolvedJson : String;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -6359,6 +6385,11 @@ Begin
 
     OpsRun := 0;
     OpCount := 0;
+    OpFailed := 0;
+    TotalMatched := 0;
+    PCBTouched := False;
+    FailuresJson := '';
+    UnresolvedJson := '';
     Remaining := Operations;
 
     While True Do
@@ -6366,26 +6397,108 @@ Begin
         Op := NextBatchOp(Remaining);
         If Op = '' Then Break;
         OpCount := OpCount + 1;
+        FailCode := '';
         Scope := GetBatchField(Op, 'scope');
         If Scope = '' Then Scope := 'active_doc';
         ObjTypeStr := GetBatchField(Op, 'object_type');
         FilterStr := GetBatchField(Op, 'filter');
 
-        ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
-        If ObjTypeInt = -1 Then Continue;
+        If ObjTypeStr = '' Then FailCode := 'MISSING_OBJECT_TYPE';
 
-        ParseScope(Scope, ScopeType, ScopePath);
-        If ScopeType = 'project' Then
-            IterateProjectDocs(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, ScopePath, 0)
-        Else If ScopeType = 'doc' Then
-            ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0)
-        Else
-            ProcessActiveDoc(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0);
-        Inc(OpsRun);
+        If FailCode = '' Then
+        Begin
+            ParseScope(Scope, ScopeType, ScopePath);
+            { lib_component scope: select the symbol before the op runs. }
+            If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
+                FailCode := 'LIB_COMPONENT_NOT_FOUND';
+        End;
+
+        If FailCode = '' Then
+        Begin
+            { Two-step resolution, schematic table first then PCB, exactly    }
+            { as the single-shot delete_objects does. PCB type names only     }
+            { ever resolve through the PCB variant.                            }
+            IsPCB := False;
+            ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
+            If ObjTypeInt = -1 Then
+            Begin
+                ObjTypeInt := ObjectTypeFromStringPCB(ObjTypeStr);
+                If ObjTypeInt <> -1 Then IsPCB := True;
+            End;
+            If ObjTypeInt = -1 Then FailCode := 'INVALID_TYPE';
+        End;
+
+        If FailCode = '' Then
+        Begin
+            If IsPCB Then
+                OpResp := ProcessActivePCBDoc(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0)
+            Else If ScopeType = 'project' Then
+                OpResp := IterateProjectDocs(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, ScopePath, 0)
+            Else If ScopeType = 'doc' Then
+                OpResp := ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0)
+            Else
+                OpResp := ProcessActiveDoc(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0);
+
+            { The per-op helpers return a full response envelope. Throwing it }
+            { away made "no PCB open" / "document not loaded" indistinguish-  }
+            { able from a clean run.                                           }
+            If ExtractJsonValue(OpResp, 'success') = 'true' Then
+            Begin
+                TotalMatched := TotalMatched + StrToIntDef(ExtractJsonValue(OpResp, 'matched'), 0);
+                If IsPCB Then PCBTouched := True;
+                Inc(OpsRun);
+            End
+            Else
+            Begin
+                FailCode := ExtractJsonValue(ExtractJsonValue(OpResp, 'error'), 'code');
+                If FailCode = '' Then FailCode := 'OP_FAILED';
+            End;
+        End;
+
+        If FailCode <> '' Then
+        Begin
+            Inc(OpFailed);
+            { `unresolved` names just the object_type strings that no table   }
+            { knows, so a caller can spot a typo without parsing failures[].  }
+            If FailCode = 'INVALID_TYPE' Then
+            Begin
+                If UnresolvedJson <> '' Then UnresolvedJson := UnresolvedJson + ',';
+                UnresolvedJson := UnresolvedJson + '"' + EscapeJsonString(ObjTypeStr) + '"';
+            End;
+            { Cap the detail list, a 500-op batch against a closed document   }
+            { must not blow the response up.                                   }
+            If OpFailed <= 20 Then
+            Begin
+                If FailuresJson <> '' Then FailuresJson := FailuresJson + ',';
+                FailuresJson := FailuresJson +
+                    '{"index":' + IntToStr(OpCount - 1) +
+                    ',"object_type":"' + EscapeJsonString(ObjTypeStr) +
+                    '","reason":"' + EscapeJsonString(FailCode) + '"}';
+            End;
+        End;
     End;
 
+    { Deleting copper changes the net topology, and the ratsnest is only      }
+    { regenerated by a connectivity pass -- a redraw will not do it. Rebuild  }
+    { once for the whole batch, and only when a PCB op actually ran, so a     }
+    { schematic-only batch pays nothing.                                       }
+    ConnRebuilt := False;
+    If PCBTouched Then
+    Begin
+        PCBBoard := GetPCBBoardAnywhere;
+        If PCBBoard <> Nil Then ConnRebuilt := RebuildPCBConnectivity(PCBBoard);
+    End;
+
+    { operations_processed / total keep their original meaning so existing    }
+    { callers are unaffected; everything else is additive.                     }
     Result := BuildSuccessResponse(RequestId,
-        '{"operations_processed":' + IntToStr(OpsRun) + ',"total":' + IntToStr(OpCount) + '}');
+        '{"operations_processed":' + IntToStr(OpsRun) +
+        ',"total":' + IntToStr(OpCount) +
+        ',"operations_failed":' + IntToStr(OpFailed) +
+        ',"matched":' + IntToStr(TotalMatched) +
+        ',"connectivity_rebuilt":' + BoolToJsonStr(ConnRebuilt) +
+        ',"unresolved":[' + UnresolvedJson + ']' +
+        ',"failures":[' + FailuresJson + ']}');
 End;
 
 {..............................................................................}
