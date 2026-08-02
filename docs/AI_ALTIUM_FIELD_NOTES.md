@@ -53,6 +53,31 @@ writes call `pcb.focus_board` with the absolute `.PcbDoc` path and verify the
 returned path. Pass `board_path` directly where supported. An unexpected
 component count is a stop condition.
 
+## Anchor-first placement workflow
+
+Before re-placing an existing board, ask the user whether any obsolete PCB-only
+components should be removed and whether assembly is single- or double-sided.
+Never delete a component that still exists in the schematic merely to simplify
+placement.
+
+Offer the user a baseline manual placement of mechanically and architecturally
+important parts. Preserve those coordinates unless movement is explicitly
+authorized. Typical immutable anchors include SMA and other edge connectors,
+JST headers, Ethernet magnetics, USB connectors, switches, indicators, mounting
+holes, antennas, and enclosure-constrained parts.
+
+Place outward from each anchor in signal-flow order. For an RF channel this is
+normally: fixed SMA/antenna connector, protection/filtering, RF switch, matching
+network, then transceiver. Keep the RF chain compact and on the intended RF
+side. Next place the MCU, memory, oscillator and their local support parts;
+place power and remaining functional blocks afterward. Small passives are placed
+around the major component they serve, not packed globally by reference prefix.
+
+For a two-sided assembly, keep heavy/mechanical parts on the user-selected
+primary side and use the secondary side for support passives only when the
+electrical constraints allow it. For a single-sided assembly, never flip parts
+merely to make legalization easier.
+
 ## ECO safety and direction
 
 ECO is modal and is not reliably headless. With the target PCB focused, the
@@ -108,5 +133,27 @@ Ping after every modal workflow and run the safe reload sequence if it fails.
 - Save, force recompile, and compare schematic/PCB mappings.
 - Validate ECO without execution whenever model resolution is in question.
 - Run DRC/connectivity audits after an applied PCB change.
+
+## PCB routing verification discipline
+
+- A visually present track is not proof of a valid route. After every
+  `pcb.place_tracks` batch, re-read authoritative PCB geometry and confirm the
+  expected `net`, layer, width, and endpoints. `generic.query_objects` does not
+  reliably resolve the compound PCB property `Net.Name`; use
+  `generic.get_pcb_geometry`, `pcb.get_trace_lengths`, and connectivity audits.
+- Before routing after component relocation, inventory copper in the affected
+  corridor. Old copper does not follow moved footprints and can remain as
+  disconnected or misleading fragments. Remove only segments whose net and
+  coordinates have been positively identified; never clear an RF area merely
+  from its visual appearance.
+- An RF path must be reviewed end to end: connector, filters, switch, matching
+  network, and transceiver pad. Short routed islands at the connector and IC do
+  not constitute a completed RF channel.
+- Keep the RF trace on the intended reference-plane layer, apply the board's
+  controlled-impedance width rule, minimize discontinuities, and verify the
+  final geometry with the fabricator's stackup/field solver before release.
+- If Altium still shows an airwire after pad-centre connectivity succeeds, save
+  and refresh connectivity before adding duplicate copper. Treat ratsnest state
+  and geometric contact as separate verification signals.
 - Stop on an unknown dialog, wrong document, missing reference net, zero-pad or
   duplicate-pad footprint, version mismatch, or mapping regression.

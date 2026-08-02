@@ -1090,11 +1090,13 @@ Function PCB_GetComponents(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
+    GrpIter : IPCB_GroupIterator;
     Comp : IPCB_Component;
-    BBox : TCoordRect;
+    Prim : IPCB_Primitive;
+    BBox, PrimBBox, PlacementBBox : TCoordRect;
     JsonItems, Designator, Footprint, LayerStr, CommentStr, SrcDesignator,
     SrcUniqueId, UniqueIdStr : String;
-    First : Boolean;
+    First, HasPlacementBBox : Boolean;
     Count, HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Integer;
 Begin
     Board := GetPCBBoardAnywhere;
@@ -1128,6 +1130,39 @@ Begin
         Try UniqueIdStr := Comp.UniqueId; Except UniqueIdStr := ''; End;
         Try HeightMils := CoordToMils(Comp.Height); Except HeightMils := 0; End;
 
+        { Component.BoundingRectangle includes designator/comment text. That
+          makes a 0201 package look hundreds of mils wide and causes false
+          overlap/utilization failures in the auto-placer. Build a separate
+          physical placement box from non-text footprint primitives. }
+        HasPlacementBBox := False;
+        GrpIter := Comp.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
+                eArcObject, eFillObject, eRegionObject));
+            Prim := GrpIter.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                Try
+                    PrimBBox := Prim.BoundingRectangle;
+                    If Not HasPlacementBBox Then
+                    Begin
+                        PlacementBBox := PrimBBox;
+                        HasPlacementBBox := True;
+                    End
+                    Else
+                    Begin
+                        If PrimBBox.X1 < PlacementBBox.X1 Then PlacementBBox.X1 := PrimBBox.X1;
+                        If PrimBBox.Y1 < PlacementBBox.Y1 Then PlacementBBox.Y1 := PrimBBox.Y1;
+                        If PrimBBox.X2 > PlacementBBox.X2 Then PlacementBBox.X2 := PrimBBox.X2;
+                        If PrimBBox.Y2 > PlacementBBox.Y2 Then PlacementBBox.Y2 := PrimBBox.Y2;
+                    End;
+                Except End;
+                Prim := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Comp.GroupIterator_Destroy(GrpIter);
+        End;
+
         { Bounding rectangle for collision/placement planning. Returns the    }
         { current axis-aligned bounding box in mils, accounting for the      }
         { component's current rotation and side. Width / Height are derived. }
@@ -1142,6 +1177,7 @@ Begin
             BBoxW := BBoxX2 - BBoxX1;
             BBoxH := BBoxY2 - BBoxY1;
         Except End;
+        If Not HasPlacementBBox Then PlacementBBox := BBox;
 
         JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Designator) + '",'
             + '"comment":"' + EscapeJsonString(CommentStr) + '",'
@@ -1156,7 +1192,13 @@ Begin
             + '"height_mils":' + IntToStr(HeightMils) + ','
             + '"bbox":{"x1":' + IntToStr(BBoxX1) + ',"y1":' + IntToStr(BBoxY1)
             + ',"x2":' + IntToStr(BBoxX2) + ',"y2":' + IntToStr(BBoxY2)
-            + ',"width":' + IntToStr(BBoxW) + ',"height":' + IntToStr(BBoxH) + '}}';
+            + ',"width":' + IntToStr(BBoxW) + ',"height":' + IntToStr(BBoxH) + '},'
+            + '"placement_bbox":{"x1":' + IntToStr(CoordToMils(PlacementBBox.X1))
+            + ',"y1":' + IntToStr(CoordToMils(PlacementBBox.Y1))
+            + ',"x2":' + IntToStr(CoordToMils(PlacementBBox.X2))
+            + ',"y2":' + IntToStr(CoordToMils(PlacementBBox.Y2))
+            + ',"width":' + IntToStr(CoordToMils(PlacementBBox.X2 - PlacementBBox.X1))
+            + ',"height":' + IntToStr(CoordToMils(PlacementBBox.Y2 - PlacementBBox.Y1)) + '}}';
         Inc(Count);
         Comp := Iterator.NextPCBObject;
     End;
@@ -1187,6 +1229,44 @@ End;
 { to TopLayer, BotLayer to BotLayer); cross-side components never collide.     }
 {..............................................................................}
 
+Procedure PCB_ComponentPlacementBBox(Comp : IPCB_Component;
+    Var PlacementBBox : TCoordRect; Var HasPlacementBBox : Boolean);
+Var
+    GrpIter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
+    PrimBBox : TCoordRect;
+Begin
+    HasPlacementBBox := False;
+    GrpIter := Comp.GroupIterator_Create;
+    Try
+        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
+            eArcObject, eFillObject, eRegionObject));
+        Prim := GrpIter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            Try
+                PrimBBox := Prim.BoundingRectangle;
+                If Not HasPlacementBBox Then
+                Begin
+                    PlacementBBox := PrimBBox;
+                    HasPlacementBBox := True;
+                End
+                Else
+                Begin
+                    If PrimBBox.X1 < PlacementBBox.X1 Then PlacementBBox.X1 := PrimBBox.X1;
+                    If PrimBBox.Y1 < PlacementBBox.Y1 Then PlacementBBox.Y1 := PrimBBox.Y1;
+                    If PrimBBox.X2 > PlacementBBox.X2 Then PlacementBBox.X2 := PrimBBox.X2;
+                    If PrimBBox.Y2 > PlacementBBox.Y2 Then PlacementBBox.Y2 := PrimBBox.Y2;
+                End;
+            Except End;
+            Prim := GrpIter.NextPCBObject;
+        End;
+    Finally
+        Comp.GroupIterator_Destroy(GrpIter);
+    End;
+    If Not HasPlacementBBox Then PlacementBBox := Comp.BoundingRectangle;
+End;
+
 Function PCB_CheckPlacementCollision(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -1202,7 +1282,7 @@ Var
     NewBBoxX1, NewBBoxY1, NewBBoxX2, NewBBoxY2 : Integer;
     SwapWH : Boolean;
     JsonItems, OtherDes, TargetLayer : String;
-    First : Boolean;
+    First, HasPlacementBBox : Boolean;
     CollisionCount : Integer;
     Overlap : Boolean;
 Begin
@@ -1252,7 +1332,9 @@ Begin
         Or (Abs(RotDelta - 270) < 1) Or (Abs(RotDelta + 270) < 1) Then
         SwapWH := True;
 
-    BBoxCur := Comp.BoundingRectangle;
+    { Ignore designator/comment strings: they are not physical placement
+      geometry and otherwise make tiny passives appear hundreds of mils wide. }
+    PCB_ComponentPlacementBBox(Comp, BBoxCur, HasPlacementBBox);
     Width := BBoxCur.X2 - BBoxCur.X1;
     Height := BBoxCur.Y2 - BBoxCur.Y1;
     OffsetX := ((BBoxCur.X1 + BBoxCur.X2) Div 2) - Comp.x;
@@ -1310,6 +1392,11 @@ Begin
                 End;
             Except End;
 
+            { Do not open a component group iterator while the outer board
+              iterator is positioned on Other.  Altium's scripting COM layer
+              can invalidate/rebind that interface and pair the next refdes
+              with the previous component's geometry.  Target sizing above is
+              physical; comparison objects retain their stable board bbox. }
             BBoxOther := Other.BoundingRectangle;
 
             Overlap := (NewBBoxX1 <= BBoxOther.X2) And (NewBBoxX2 >= BBoxOther.X1)
@@ -4041,10 +4128,13 @@ Function PCB_PlaceTracks(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Track : IPCB_Track;
+    ExistingTrack : IPCB_Track;
+    ExistingIter : IPCB_BoardIterator;
+    ExistingKeys : TStringList;
     TracksStr, TrackStr, Remaining, Field : String;
-    PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
+    PipePos, CommaPos, Placed, Failed, SkippedExisting, FieldIdx : Integer;
     TX1, TY1, TX2, TY2, TWidth : Integer;
-    LayerStr, NetStr : String;
+    LayerStr, NetStr, ExistingNetStr, TrackKey, P1, P2 : String;
     FoundNet : IPCB_Net;
     { 7 named locals instead of `Array[0..6] Of String` - fixed-size       }
     { string arrays as function locals corrupt the function return slot   }
@@ -4067,10 +4157,39 @@ Begin
 
     Placed := 0;
     Failed := 0;
+    SkippedExisting := 0;
     Remaining := TracksStr;
 
-    PCBServer.PreProcess;
+    { Build a board-wide exact-track index once. Route retries are common and
+      previously produced coincident duplicate copper. Coordinates are mils,
+      endpoints are canonicalized so reversed segments compare equal. }
+    ExistingKeys := TStringList.Create;
+    ExistingKeys.Sorted := True;
+    ExistingKeys.Duplicates := dupIgnore;
+    ExistingIter := Board.BoardIterator_Create;
+    ExistingIter.AddFilter_ObjectSet(MkSet(eTrackObject));
+    ExistingIter.AddFilter_LayerSet(AllLayers);
+    ExistingIter.AddFilter_Method(eProcessAll);
+    ExistingTrack := ExistingIter.FirstPCBObject;
+    While ExistingTrack <> Nil Do
+    Begin
+        ExistingNetStr := '';
+        Try
+            If ExistingTrack.Net <> Nil Then ExistingNetStr := ExistingTrack.Net.Name;
+        Except End;
+        P1 := IntToStr(CoordToMils(ExistingTrack.x1)) + ',' + IntToStr(CoordToMils(ExistingTrack.y1));
+        P2 := IntToStr(CoordToMils(ExistingTrack.x2)) + ',' + IntToStr(CoordToMils(ExistingTrack.y2));
+        If P2 < P1 Then Begin TrackKey := P1; P1 := P2; P2 := TrackKey; End;
+        TrackKey := P1 + '>' + P2 + ',' + IntToStr(CoordToMils(ExistingTrack.Width))
+            + ',' + GetLayerString(ExistingTrack.Layer) + ',' + ExistingNetStr;
+        ExistingKeys.Add(TrackKey);
+        ExistingTrack := ExistingIter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(ExistingIter);
+
     Try
+      PCBServer.PreProcess;
+      Try
         While Length(Remaining) > 0 Do
         Begin
             PipePos := Pos('|', Remaining);
@@ -4127,6 +4246,18 @@ Begin
             TWidth := StrToIntDef(F4, 10);
             LayerStr := F5;
             NetStr := F6;
+            If LayerStr = '' Then LayerStr := 'TopLayer';
+
+            P1 := IntToStr(TX1) + ',' + IntToStr(TY1);
+            P2 := IntToStr(TX2) + ',' + IntToStr(TY2);
+            If P2 < P1 Then Begin TrackKey := P1; P1 := P2; P2 := TrackKey; End;
+            TrackKey := P1 + '>' + P2 + ',' + IntToStr(TWidth) + ','
+                + GetLayerString(GetLayerFromString(LayerStr)) + ',' + NetStr;
+            If ExistingKeys.IndexOf(TrackKey) >= 0 Then
+            Begin
+                Inc(SkippedExisting);
+                Continue;
+            End;
 
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
@@ -4153,6 +4284,7 @@ Begin
             End;
 
             Board.AddPCBObject(Track);
+            ExistingKeys.Add(TrackKey);
             Inc(Placed);
         End;
         { Broadcast ONCE at the end of the batch instead of once per track.   }
@@ -4161,15 +4293,19 @@ Begin
         { board, much cheaper than N individual broadcasts.                   }
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
+      Finally
+          PCBServer.PostProcess;
+      End;
+
+      SaveDocByPath(Board.FileName);
+
+      Result := BuildSuccessResponse(RequestId,
+          '{"placed":' + IntToStr(Placed) + ','
+          + '"skipped_existing":' + IntToStr(SkippedExisting) + ','
+          + '"failed":' + IntToStr(Failed) + '}');
     Finally
-        PCBServer.PostProcess;
+        ExistingKeys.Free;
     End;
-
-    SaveDocByPath(Board.FileName);
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"placed":' + IntToStr(Placed) + ','
-        + '"failed":' + IntToStr(Failed) + '}');
 End;
 
 {..............................................................................}
@@ -4835,6 +4971,89 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_BatchSetComponentSide - deterministically put many parts on one side.   }
+{ Params: designators=U1~~R1~~C1, side=top|bottom. Unlike repeated flip, this }
+{ is idempotent and saves only once.                                          }
+{..............................................................................}
+
+Function PCB_BatchSetComponentSide(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Comp : IPCB_Component;
+    Remaining, OneDesig, SideStr : String;
+    SepPos, Requested, Changed, Already, Missing : Integer;
+    TargetLayer : TLayer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    Remaining := ExtractJsonValue(Params, 'designators');
+    SideStr := LowerCase(ExtractJsonValue(Params, 'side'));
+    If Remaining = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'Missing "designators" parameter');
+        Exit;
+    End;
+    If SideStr = 'top' Then TargetLayer := eTopLayer
+    Else If SideStr = 'bottom' Then TargetLayer := eBottomLayer
+    Else
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'side must be top or bottom');
+        Exit;
+    End;
+
+    Requested := 0; Changed := 0; Already := 0; Missing := 0;
+    PCBServer.PreProcess;
+    Try
+        While Remaining <> '' Do
+        Begin
+            SepPos := Pos('~~', Remaining);
+            If SepPos > 0 Then
+            Begin
+                OneDesig := Copy(Remaining, 1, SepPos - 1);
+                Delete(Remaining, 1, SepPos + 1);
+            End
+            Else
+            Begin
+                OneDesig := Remaining;
+                Remaining := '';
+            End;
+            OneDesig := Trim(OneDesig);
+            If OneDesig = '' Then Continue;
+            Inc(Requested);
+            Comp := Board.GetPcbComponentByRefDes(OneDesig);
+            If Comp = Nil Then
+            Begin
+                Inc(Missing);
+                Continue;
+            End;
+            If Comp.Layer = TargetLayer Then
+            Begin
+                Inc(Already);
+                Continue;
+            End;
+            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+                PCBM_BeginModify, c_NoEventData);
+            Comp.Layer := TargetLayer;
+            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+                PCBM_EndModify, c_NoEventData);
+            Inc(Changed);
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    If Changed > 0 Then SaveDocByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"side":"' + EscapeJsonString(SideStr) + '","requested":' + IntToStr(Requested)
+        + ',"changed":' + IntToStr(Changed) + ',"already":' + IntToStr(Already)
+        + ',"missing":' + IntToStr(Missing) + '}');
+End;
+
+{..............................................................................}
 { PCB_AlignComponents - Align specified components                            }
 { Params: designators=<comma-separated>, alignment=<left/right/top/bottom/  }
 {         center_x/center_y>                                                 }
@@ -4988,10 +5207,10 @@ Begin
 
     FilterNet := ExtractJsonValue(Params, 'net');
 
-    // First run DRC to refresh violations -- correct documented process
-    // is PCB:DesignRuleCheck per TR0124, not PCB:RunDRC.
-    ResetParameters;
-    RunProcess('PCB:DesignRuleCheck');
+    { Do NOT call PCB:DesignRuleCheck here. Despite its process-like name it
+      opens the modal Design Rule Checker options form and blocks the MCP
+      polling loop. This read tool returns the violations already present on
+      the board. An attended DRC run must be a separate explicit operation. }
 
     JsonItems := '';
     First := True;
@@ -5024,7 +5243,8 @@ Begin
     Board.BoardIterator_Destroy(Iterator);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"violation_count":' + IntToStr(Count) + ','
+        '{"refreshed":false,"stale_possible":true,'
+        + '"violation_count":' + IntToStr(Count) + ','
         + '"violations":[' + JsonItems + ']}');
 End;
 
@@ -11120,6 +11340,7 @@ Begin
         'delete_design_rule':      Result := PCB_DeleteDesignRule(Params, RequestId);
         'get_component_pads':      Result := PCB_GetComponentPads(Params, RequestId);
         'flip_component':          Result := PCB_FlipComponent(Params, RequestId);
+        'batch_set_component_side': Result := PCB_BatchSetComponentSide(Params, RequestId);
         'align_components':        Result := PCB_AlignComponents(Params, RequestId);
         'get_clearance_violations': Result := PCB_GetClearanceViolations(Params, RequestId);
         'snap_to_grid':            Result := PCB_SnapToGrid(Params, RequestId);

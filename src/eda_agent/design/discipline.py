@@ -627,10 +627,21 @@ Once parts are on the PCB, moving them is a separate concern from the
 DesignPlan executor above. The same agent often drives both phases.
 Apply these rules whenever calling `pcb_move_components`.
 
+0. **Agree on cleanup, anchors, and assembly sides before placement.** Ask
+   whether obsolete PCB-only components should be removed; never delete parts
+   that still exist in the schematic merely to make placement easier. Ask
+   whether assembly is single-sided or double-sided. Offer the user a quick
+   manual baseline placement of the major ICs, connectors, controls, LEDs, and
+   mechanically constrained parts. Treat that human layout as functional
+   intent: refine it with small moves/rotations, then place passives and other
+   support parts around their anchors. If the user delegates the baseline too,
+   state the side policy and which major parts may move before applying it.
+
 1. **Plan the whole cluster before moving anything.** Call
    `pcb_get_components` once and read the full layout state: each
    component's current (x, y, rotation, layer, footprint) and its
-   `bbox` (axis-aligned bounding rectangle in mils). Sketch the target
+   `placement_bbox` (physical non-text bounding rectangle in mils; ordinary
+   `bbox` also contains designator/comment text). Sketch the target
    positions on paper or in text BEFORE issuing any move. A move tool
    call is for *applying* a placement decision, not for *exploring*
    one.

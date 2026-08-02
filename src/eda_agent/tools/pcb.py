@@ -644,14 +644,13 @@ def register_pcb_tools(mcp):
     async def pcb_get_clearance_violations(
         net: str = "",
     ) -> dict[str, Any]:
-        """Run DRC and return clearance / other violations, optionally
-        filtered to one net.
+        """Read existing clearance / other violations, optionally by net.
 
-        Sibling of ``pcb_run_drc`` -- same underlying DRC trigger, but
-        accepts a ``net`` filter so the agent can drill into a single
-        net's violations without scrolling through the whole board's
-        DRC report. Useful when investigating a specific high-speed
-        signal or power rail.
+        This read is deliberately non-modal and does NOT refresh DRC. Altium's
+        ``PCB:DesignRuleCheck`` process opens the Design Rule Checker options
+        form and blocks the MCP polling loop; an attended DRC run must be a
+        separate explicit action. The response therefore includes
+        ``refreshed:false`` and ``stale_possible:true``.
 
         Filter is substring-matched against the violation's Description
         and Name, so it catches both "Net USB_DP and Net GND" clearance
@@ -664,7 +663,7 @@ def register_pcb_tools(mcp):
 
         Args:
             net: Net name to filter by (substring match). Empty string
-                returns ALL violations (equivalent to ``pcb_run_drc``).
+                returns all currently materialized violations.
 
         Returns:
             Dict with ``{violation_count, violations}``. Capped at 200.
@@ -1474,7 +1473,10 @@ def register_pcb_tools(mcp):
             if not ref:
                 continue
             all_designators.append(ref)
-            bbox = c.get("bbox") or {}
+            # Altium's ordinary BoundingRectangle includes designator/comment
+            # text and grossly inflates small packages. Prefer the physical
+            # non-text primitive box returned by current scripts.
+            bbox = c.get("placement_bbox") or c.get("bbox") or {}
             try:
                 w = max(1.0, float(bbox.get("width", 0)))
                 h = max(1.0, float(bbox.get("height", 0)))
@@ -3825,7 +3827,8 @@ def register_pcb_tools(mcp):
                 ]
 
         Returns:
-            Dictionary with "placed" and "failed" counts
+            Dictionary with ``placed``, ``skipped_existing`` (exact
+            direction-insensitive duplicates), and ``failed`` counts.
         """
         parts = []
         for t in tracks:
@@ -4260,6 +4263,35 @@ def register_pcb_tools(mcp):
             {"designator": designator},
         )
         return result
+
+    @mcp.tool()
+    async def pcb_set_component_side(
+        designators: list[str],
+        side: str,
+    ) -> dict[str, Any]:
+        """Put many components deterministically on Top or Bottom in one call.
+
+        Unlike repeatedly calling ``pcb_flip_component``, this operation is
+        idempotent: components already on the requested side are not toggled.
+        Use it after the user chooses single- or double-sided assembly and
+        before auto-placement so the placer legalizes each side separately.
+
+        Args:
+            designators: Component reference designators to assign.
+            side: ``"top"`` or ``"bottom"``.
+        """
+        normalized = side.strip().lower()
+        if normalized not in {"top", "bottom"}:
+            raise ValueError("side must be 'top' or 'bottom'")
+        refs = [str(x).strip() for x in designators if str(x).strip()]
+        if not refs:
+            return {"side": normalized, "requested": 0, "changed": 0,
+                    "already": 0, "missing": 0}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.batch_set_component_side",
+            {"designators": "~~".join(refs), "side": normalized},
+        )
 
     @mcp.tool()
     async def pcb_align_components(
