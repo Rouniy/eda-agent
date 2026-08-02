@@ -605,6 +605,10 @@ Begin
         Try StatusForm.Top  := NewTop;  Except End;
 
         If Not StatusForm.Visible Then StatusForm.Show;
+        { Keep the polling status available in the taskbar without covering }
+        { the Altium workspace. Agents can restore it when diagnostics are  }
+        { needed; autonomous COM starts should always begin minimized.      }
+        Try StatusForm.WindowState := wsMinimized; Except End;
         Try StatusForm.Caption := 'EDA Agent MCP'; Except End;
         Try lbl_Version.Caption := 'v' + SCRIPT_VERSION; Except End;
         Try pnl_StatusDot.Color := COLOR_ACCENT_GREEN; Except End;

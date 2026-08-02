@@ -214,6 +214,10 @@ End;
 { All tunables come from mcp_config.json via LoadMCPConfig at startup.       }
 { Stop methods: send application.stop_server, drop a 'stop' file in the      }
 { workspace, or wait for auto-shutdown.                                      }
+{                                                                            }
+{ Autonomous restart (PowerShell / COM, no Altium clicks): see              }
+{ COM_RESTART.md next to this file. The COM URI must point at this checkout  }
+{ so Altium never mixes scripts from C:\Users\Alex\EDA Agent\scripts.       }
 {..............................................................................}
 
 Procedure StartMCPServer;

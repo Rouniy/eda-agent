@@ -1092,7 +1092,8 @@ Var
     Iterator : IPCB_BoardIterator;
     Comp : IPCB_Component;
     BBox : TCoordRect;
-    JsonItems, Designator, Footprint, LayerStr, CommentStr, SrcDesignator : String;
+    JsonItems, Designator, Footprint, LayerStr, CommentStr, SrcDesignator,
+    SrcUniqueId, UniqueIdStr : String;
     First : Boolean;
     Count, HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Integer;
 Begin
@@ -1123,6 +1124,8 @@ Begin
         Try Footprint := Comp.Pattern; Except Footprint := ''; End;
         Try LayerStr := GetLayerString(Comp.Layer); Except LayerStr := 'Unknown'; End;
         Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
+        Try SrcUniqueId := Comp.SourceUniqueId; Except SrcUniqueId := ''; End;
+        Try UniqueIdStr := Comp.UniqueId; Except UniqueIdStr := ''; End;
         Try HeightMils := CoordToMils(Comp.Height); Except HeightMils := 0; End;
 
         { Bounding rectangle for collision/placement planning. Returns the    }
@@ -1148,6 +1151,8 @@ Begin
             + '"layer":"' + EscapeJsonString(LayerStr) + '",'
             + '"footprint":"' + EscapeJsonString(Footprint) + '",'
             + '"source_designator":"' + EscapeJsonString(SrcDesignator) + '",'
+            + '"source_unique_id":"' + EscapeJsonString(SrcUniqueId) + '",'
+            + '"unique_id":"' + EscapeJsonString(UniqueIdStr) + '",'
             + '"height_mils":' + IntToStr(HeightMils) + ','
             + '"bbox":{"x1":' + IntToStr(BBoxX1) + ',"y1":' + IntToStr(BBoxY1)
             + ',"x2":' + IntToStr(BBoxX2) + ',"y2":' + IntToStr(BBoxY2)

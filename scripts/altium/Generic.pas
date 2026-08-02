@@ -118,7 +118,10 @@ Begin
     Else If TypeStr = 'eSheetEntry'    Then Result := eSheetEntry
     Else If TypeStr = 'eNoERC'         Then Result := eNoERC
     Else If TypeStr = 'eJunction'      Then Result := eJunction
-    Else If TypeStr = 'eImage'         Then Result := eImage;
+    Else If TypeStr = 'eImage'         Then Result := eImage
+    Else If TypeStr = 'eTextString'    Then Result := eLabel
+    Else If TypeStr = 'eText'          Then Result := eLabel
+    Else If TypeStr = 'eNote'          Then Result := eNote;
 End;
 
 {..............................................................................}
@@ -253,6 +256,8 @@ Begin
               expose their visible caption as Name; net labels expose Text. }
             If Obj.ObjectId = ePort Then
             Begin Port := Obj; Result := Port.Name; End
+            Else If Obj.ObjectId = ePin Then
+            Begin Pin := Obj; Result := Pin.Name; End
             Else If Obj.ObjectId = eNetLabel Then
             Begin NetLbl := Obj; Result := NetLbl.Text; End
             Else If Obj.ObjectId = ePowerObject Then
@@ -355,6 +360,8 @@ Begin
         Else If PropName = 'AreaColor'   Then Result := IntToStr(Obj.AreaColor)
         Else If PropName = 'TextColor'   Then Result := IntToStr(Obj.TextColor)
         Else If PropName = 'Justification' Then Result := IntToStr(Obj.Justification)
+        Else If PropName = 'OwnerPartId' Then Result := IntToStr(Obj.OwnerPartId)
+        Else If PropName = 'OwnerPartDisplayMode' Then Result := IntToStr(Obj.OwnerPartDisplayMode)
 
         // Coord properties (returned in mils)
         Else If PropName = 'Width' Then
@@ -526,6 +533,8 @@ Begin
         Begin
             If Obj.ObjectId = ePort Then
             Begin Port := Obj; Port.Name := Value; End
+            Else If Obj.ObjectId = ePin Then
+            Begin Pin := Obj; Pin.Name := Value; End
             Else If Obj.ObjectId = eNetLabel Then
             Begin NetLbl := Obj; NetLbl.Text := Value; End
             Else If Obj.ObjectId = ePowerObject Then
@@ -578,10 +587,18 @@ Begin
             Begin C := Obj; C.PartCount := StrToIntDef(Value, 1); End
             Else Matched := False;
         End
+        Else If PropName = 'OwnerPartId' Then
+            Obj.OwnerPartId := StrToIntDef(Value, 0)
+        Else If PropName = 'OwnerPartDisplayMode' Then
+            Obj.OwnerPartDisplayMode := StrToIntDef(Value, 0)
 
         // Sub-object string properties (compound interfaces, typed cast required)
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
-            SetSchComponentSubText(Obj, 'Designator', Value)
+        Begin
+            If Obj.ObjectId = ePin Then
+            Begin Pin := Obj; Pin.Designator := Value; End
+            Else SetSchComponentSubText(Obj, 'Designator', Value);
+        End
         Else If (PropName = 'Comment') Or (PropName = 'Comment.Text') Then
             SetSchComponentSubText(Obj, 'Comment', Value)
 
@@ -922,6 +939,8 @@ Var
     Iterator, SymIter : ISch_Iterator;
     Obj, FoundObj : ISch_GraphicalObject;
     Sym : ISch_SheetSymbol;
+    SchLib : ISch_Lib;
+    LibComp : ISch_Component;
     Removed : Boolean;
     ObjJson : String;
     First : Boolean;
@@ -929,6 +948,90 @@ Var
 Begin
     Result := '';
     First := (TotalMatched = 0);
+
+    { A SchLib document iterator only exposes the editor-visible part. Walk }
+    { the selected component itself so multipart symbols return primitives  }
+    { from every OwnerPartId bucket. Mutations must also use the component   }
+    { as their owner; SchDoc.RemoveSchObject silently leaves them behind.    }
+    If (SchDoc <> Nil) And (SchDoc.ObjectId = eSchLib) Then
+    Begin
+        SchLib := SchDoc;
+        LibComp := GetTargetLibComponent(SchLib);
+        If LibComp = Nil Then Exit;
+
+        If (Mode = 'modify') Or (Mode = 'delete') Then
+            SchServer.ProcessControl.PreProcess(SchLib, '');
+
+        If Mode = 'delete' Then
+        Begin
+            MaxIter := 100000;
+            While MaxIter > 0 Do
+            Begin
+                Iterator := LibComp.SchIterator_Create;
+                Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+                FoundObj := Nil;
+                Obj := Iterator.FirstSchObject;
+                While Obj <> Nil Do
+                Begin
+                    If MatchesFilter(Obj, FilterStr) Then
+                    Begin
+                        FoundObj := Obj;
+                        Break;
+                    End;
+                    Obj := Iterator.NextSchObject;
+                End;
+                LibComp.SchIterator_Destroy(Iterator);
+                If FoundObj = Nil Then Break;
+                Try LibComp.RemoveSchObject(FoundObj); Except End;
+                Inc(TotalMatched);
+                Dec(MaxIter);
+                If (Limit > 0) And (TotalMatched >= Limit) Then Break;
+            End;
+        End
+        Else
+        Begin
+            Iterator := LibComp.SchIterator_Create;
+            Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+            Obj := Iterator.FirstSchObject;
+            While Obj <> Nil Do
+            Begin
+                If (Limit > 0) And (TotalMatched >= Limit) Then Break;
+                If MatchesFilter(Obj, FilterStr) Then
+                Begin
+                    If Mode = 'query' Then
+                    Begin
+                        ObjJson := BuildObjectJson(Obj, PropsStr);
+                        If Length(ObjJson) <= 2 Then
+                            ObjJson := '{"_doc":"' + EscapeJsonString(DocPath) + '"}'
+                        Else
+                            ObjJson := Copy(ObjJson, 1, 1)
+                                + '"_doc":"' + EscapeJsonString(DocPath)
+                                + '","_owner_part_id":' + IntToStr(Obj.OwnerPartId)
+                                + ',' + Copy(ObjJson, 2, Length(ObjJson));
+                        If Not First Then Result := Result + ',';
+                        First := False;
+                        Result := Result + ObjJson;
+                    End
+                    Else If Mode = 'modify' Then
+                    Begin
+                        SchBeginModify(Obj);
+                        ApplySetProperties(Obj, SetStr);
+                        SchEndModify(Obj);
+                    End;
+                    Inc(TotalMatched);
+                End;
+                Obj := Iterator.NextSchObject;
+            End;
+            LibComp.SchIterator_Destroy(Iterator);
+        End;
+
+        If (Mode = 'modify') Or (Mode = 'delete') Then
+        Begin
+            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+            MarkLibDirty(SchLib);
+        End;
+        Exit;
+    End;
 
     // Delete mode: one-at-a-time to avoid iterator invalidation.
     If Mode = 'delete' Then
@@ -1417,7 +1520,7 @@ End;
 
 Function Gen_CreateObject(Params : String; RequestId : String) : String;
 Var
-    ObjTypeStr, PropsStr, Container : String;
+    ObjTypeStr, PropsStr, Container, DiagJson : String;
     ObjTypeInt : Integer;
     SchDoc : ISch_Document;
     SchLib : ISch_Lib;
@@ -1444,9 +1547,6 @@ Begin
         Exit;
     End;
 
-    // Set properties
-    ApplySetProperties(NewObj, PropsStr);
-
     // Register in container
     If Container = 'component' Then
     Begin
@@ -1466,9 +1566,17 @@ Begin
             Exit;
         End;
         SchServer.ProcessControl.PreProcess(SchLib, '');
+        { Establish a visible default owner first; explicit OwnerPartId /  }
+        { OwnerPartDisplayMode properties supplied by the caller override }
+        { it, including OwnerPartId=0 for shared multipart primitives.     }
+        SetOwnerPart(NewObj, Component);
+        ResetPropertyDiag;
+        ApplySetProperties(NewObj, PropsStr);
+        DiagJson := RenderPropertyDiagJson;
         Component.AddSchObject(NewObj);
         SchRegisterObject(Component, NewObj);
-        SchServer.ProcessControl.PostProcess(SchLib, '');
+        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        MarkLibDirty(SchLib);
     End
     Else
     Begin
@@ -1480,6 +1588,9 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
             Exit;
         End;
+        ResetPropertyDiag;
+        ApplySetProperties(NewObj, PropsStr);
+        DiagJson := RenderPropertyDiagJson;
         SchServer.ProcessControl.PreProcess(SchDoc, '');
         SchDoc.RegisterSchObjectInContainer(NewObj);
         SchRegisterObject(SchDoc, NewObj);
@@ -1487,7 +1598,8 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
-    Result := BuildSuccessResponse(RequestId, '{"created":true,"object_type":"' + ObjTypeStr + '"}');
+    Result := BuildSuccessResponse(RequestId, '{"created":true,"object_type":"'
+        + ObjTypeStr + '","property_diagnostics":' + DiagJson + '}');
 End;
 
 {..............................................................................}
@@ -5498,19 +5610,22 @@ End;
 
 Function Gen_SetSchComponentParameters(Params : String; RequestId : String) : String;
 Var
-    DesigStr, SheetPath, SubObj, Key, Val : String;
+    DesigStr, SheetPath, SubObj, Key, Val, FootprintLibStr, FootprintStr : String;
     SchDoc : ISch_Document;
-    Iter : ISch_Iterator;
+    Iter, ImplIter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Comp, TargetComp : ISch_Component;
     Impl : ISch_Implementation;
+    Link : ISch_ModelDatafileLink;
     Found : Boolean;
-    P, Applied, Created : Integer;
+    P, Applied, Created, J, LinkCount : Integer;
     SrvDoc : IServerDocument;
 Begin
     DesigStr := ExtractJsonValue(Params, 'designator');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
     SubObj := ExtractJsonValue(Params, 'parameters');
+    FootprintLibStr := ExtractJsonValue(Params, 'footprint_library');
+    FootprintStr := ExtractJsonValue(Params, 'footprint');
 
     If DesigStr = '' Then
     Begin
@@ -5518,7 +5633,7 @@ Begin
         Exit;
     End;
 
-    If SubObj = '' Then
+    If (SubObj = '') And (FootprintLibStr = '') And (FootprintStr = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
             'parameters sub-object required');
@@ -5590,6 +5705,73 @@ Begin
     Created := 0;
     P := 1;
     Try
+        { Top-level form is intentionally supported for automation callers: }
+        { nested object parsing differs between older bridge serializers.    }
+        If FootprintLibStr <> '' Then
+        Begin
+            ImplIter := TargetComp.SchIterator_Create;
+            Try
+                ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+                Impl := ImplIter.FirstSchObject;
+                While Impl <> Nil Do
+                Begin
+                    If UpperCase(Impl.ModelType) = 'PCBLIB' Then
+                    Begin
+                        SchBeginModify(Impl);
+                        LinkCount := 0;
+                        Try LinkCount := Impl.DatafileLinkCount; Except End;
+                        If LinkCount = 0 Then
+                        Begin
+                            Try Impl.AddDataFileLink(Impl.ModelName, FootprintLibStr, 'PCBLib'); Except End;
+                            Try LinkCount := Impl.DatafileLinkCount; Except End;
+                        End;
+                        For J := 0 To LinkCount - 1 Do
+                        Begin
+                            Link := Nil;
+                            Try Link := Impl.DatafileLink[J]; Except End;
+                            If Link <> Nil Then
+                                Try Link.Location := FootprintLibStr; Except End;
+                        End;
+                        Try Impl.UseComponentLibrary := False; Except End;
+                        SchEndModify(Impl);
+                    End;
+                    Impl := ImplIter.NextSchObject;
+                End;
+            Finally
+                TargetComp.SchIterator_Destroy(ImplIter);
+            End;
+            Inc(Applied);
+        End;
+        If FootprintStr <> '' Then
+        Begin
+            ImplIter := TargetComp.SchIterator_Create;
+            Try
+                ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+                Impl := ImplIter.FirstSchObject;
+                While Impl <> Nil Do
+                Begin
+                    If UpperCase(Impl.ModelType) = 'PCBLIB' Then
+                    Begin
+                        SchBeginModify(Impl);
+                        Try Impl.ModelName := FootprintStr; Except End;
+                        LinkCount := 0;
+                        Try LinkCount := Impl.DatafileLinkCount; Except End;
+                        For J := 0 To LinkCount - 1 Do
+                        Begin
+                            Link := Nil;
+                            Try Link := Impl.DatafileLink[J]; Except End;
+                            If Link <> Nil Then
+                                Try Link.EntityName := FootprintStr; Except End;
+                        End;
+                        SchEndModify(Impl);
+                    End;
+                    Impl := ImplIter.NextSchObject;
+                End;
+            Finally
+                TargetComp.SchIterator_Destroy(ImplIter);
+            End;
+            Inc(Applied);
+        End;
         While NextJsonObjectField(SubObj, P, Key, Val) Do
         Begin
             If Val = '' Then Continue;  { skip empty values }
@@ -5625,6 +5807,46 @@ Begin
                     Try Impl.ModelName := Val; Except End;
                     Inc(Applied);
                 End;
+            End
+            Else If Key = 'FootprintLibrary' Then
+            Begin
+                { ECO resolves a model through the implementation data-file  }
+                { link, not through the project's PcbLib document list. Old  }
+                { imported sheets frequently carry Location='', which makes }
+                { Validate Changes report "Footprint not found" even when   }
+                { the named footprint exists in a project PcbLib. Repair all }
+                { PCB implementations in-place with the caller's absolute    }
+                { PcbLib path.                                                }
+                ImplIter := TargetComp.SchIterator_Create;
+                Try
+                    ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+                    Impl := ImplIter.FirstSchObject;
+                    While Impl <> Nil Do
+                    Begin
+                        If UpperCase(Impl.ModelType) = 'PCBLIB' Then
+                        Begin
+                            LinkCount := 0;
+                            Try LinkCount := Impl.DatafileLinkCount; Except End;
+                            If LinkCount = 0 Then
+                            Begin
+                                Try Impl.AddDataFileLink(Impl.ModelName, Val, 'PCBLib'); Except End;
+                                Try LinkCount := Impl.DatafileLinkCount; Except End;
+                            End;
+                            For J := 0 To LinkCount - 1 Do
+                            Begin
+                                Link := Nil;
+                                Try Link := Impl.DatafileLink[J]; Except End;
+                                If Link <> Nil Then
+                                    Try Link.Location := Val; Except End;
+                            End;
+                            Try Impl.UseComponentLibrary := False; Except End;
+                        End;
+                        Impl := ImplIter.NextSchObject;
+                    End;
+                Finally
+                    TargetComp.SchIterator_Destroy(ImplIter);
+                End;
+                Inc(Applied);
             End
             Else
             Begin

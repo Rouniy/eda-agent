@@ -2,6 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Project management tools for Altium Designer MCP Server."""
 
+import asyncio
 from typing import Any, Optional
 from ..bridge import get_bridge
 from .datasheet_hints import tag_response
@@ -692,6 +693,47 @@ def register_project_tools(mcp):
             {"designator": designator, "target": target},
         )
         return result
+
+    @mcp.tool()
+    async def proj_visual_cross_probe(
+        designator: str,
+        output_path: str,
+        target: str = "schematic",
+        settle_ms: int = 500,
+    ) -> dict[str, Any]:
+        """Cross-probe a component and capture the resulting Altium viewport.
+
+        The capture uses Win32 rather than the DelphiScript polling loop, so it
+        also inventories modal dialogs that may explain why the requested view
+        did not appear. It does not change zoom, focus, or selection beyond the
+        normal ``project.cross_probe`` operation.
+        """
+        if target not in {"schematic", "pcb"}:
+            raise ValueError("target must be 'schematic' or 'pcb'")
+        if not output_path.strip():
+            raise ValueError("output_path is required")
+        if settle_ms < 0 or settle_ms > 10000:
+            raise ValueError("settle_ms must be between 0 and 10000")
+
+        bridge = get_bridge()
+        cross_probe = await bridge.send_command_async(
+            "project.cross_probe",
+            {"designator": designator, "target": target},
+        )
+        if settle_ms:
+            await asyncio.sleep(settle_ms / 1000)
+
+        from ..bridge.windows_ui import get_altium_ui_inspector
+        inspector = get_altium_ui_inspector(bridge)
+        window_handle = inspector.main_window_handle()
+        capture = inspector.capture_window(window_handle, output_path)
+        return {
+            "designator": designator,
+            "target": target,
+            "cross_probe": cross_probe,
+            "capture": capture,
+            "dialogs": inspector.list_dialogs(),
+        }
 
     @mcp.tool()
     async def proj_get_stats(
@@ -1802,8 +1844,10 @@ def register_project_tools(mcp):
           1. Compiles the project and records before-state mappings
              (matched, extra-in-schematic, extra-in-pcb).
           2. Invokes ``WorkspaceManager:Compare`` (ObjectKind=Project,
-             Action=UpdateOther) — the evidenced scriptable sch→PCB update.
-             The modal ECO dialog opens here.
+             Action=UpdateMe) — the direction verified for schematic→PCB when
+             the target PCB is focused. Do not substitute ``UpdateOther``:
+             Altium interprets it relative to focus and may back-annotate PCB
+             changes into the schematic. The modal ECO dialog opens here.
           3. After the user accepts, recompiles and reports the after-state
              delta (how many components were added/removed).
           4. If counts did not change, ``dialog_may_have_opened:true`` flags

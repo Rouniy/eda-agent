@@ -358,3 +358,12 @@ class TestDelphiScriptLint:
                 f"{required} missing from scripts/altium/, the lint would "
                 f"silently pass"
             )
+
+    def test_remove_document_changes_project_membership(self) -> None:
+        """Regression: closing an editor tab must not masquerade as removal."""
+        source = (SCRIPTS_DIR / "Project.pas").read_text(encoding="utf-8")
+        start = source.index("Function Proj_RemoveDocument")
+        end = source.index("Function Proj_GetParameters", start)
+        implementation = source[start:end]
+        assert "DM_RemoveSourceDocument(DocumentPath)" in implementation
+        assert "WorkspaceManager:CloseObject" not in implementation

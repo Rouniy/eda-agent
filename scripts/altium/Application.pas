@@ -596,16 +596,19 @@ End;
 
 Function App_CreateDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath, DocKind, DocName, AddStr : String;
+    FilePath, DocKind, DocName, AddStr, ProjectPath : String;
     ServerDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
     AddToProject, Saved, Added : Boolean;
+    I : Integer;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocName := ExtractJsonValue(Params, 'name');
     AddStr := ExtractJsonValue(Params, 'add_to_project');
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    ProjectPath := StringReplace(ProjectPath, '\\', '\', -1);
     AddToProject := (AddStr = '') Or (AddStr = 'true');
 
     If DocKind = '' Then
@@ -668,7 +671,24 @@ Begin
         Workspace := GetWorkspace;
         If Workspace <> Nil Then
         Begin
-            Project := Workspace.DM_FocusedProject;
+            Project := Nil;
+            If ProjectPath <> '' Then
+            Begin
+                For I := 0 To Workspace.DM_ProjectCount - 1 Do
+                Begin
+                    If Workspace.DM_Projects(I) <> Nil Then
+                    Begin
+                        If LowerCase(Workspace.DM_Projects(I).DM_ProjectFullPath) =
+                           LowerCase(ProjectPath) Then
+                        Begin
+                            Project := Workspace.DM_Projects(I);
+                            Break;
+                        End;
+                    End;
+                End;
+            End
+            Else
+                Project := Workspace.DM_FocusedProject;
             If Project <> Nil Then
             Begin
                 Try
@@ -679,11 +699,18 @@ Begin
         End;
     End;
 
+    { OpenNewDocument does not reliably make the new editor active when a
+      script document owns focus. Explicitly show/focus it so the very next
+      SCHLIB/PCBLIB command targets the document just created. }
+    Try Client.ShowDocument(ServerDoc); Except End;
+    Try ServerDoc.Focus; Except End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"kind":"' + EscapeJsonString(DocKind) + '"' +
         ',"file_path":"' + EscapeJsonString(FilePath) + '"' +
         ',"saved":' + BoolToJsonStr(Saved) +
-        ',"added_to_project":' + BoolToJsonStr(Added) + '}');
+        ',"added_to_project":' + BoolToJsonStr(Added) +
+        ',"focused":true}');
 End;
 
 {..............................................................................}

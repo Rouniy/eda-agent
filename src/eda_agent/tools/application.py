@@ -7,6 +7,7 @@ import re
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
@@ -43,6 +44,19 @@ _SESSION_REMINDER = {
 }
 
 
+def _get_ui_inspector():
+    """Build a Win32 inspector for the live Altium PID (lazy for tests/Linux)."""
+    bridge = get_bridge()
+    from ..bridge.windows_ui import (
+        WindowsUiUnavailable,
+        get_altium_ui_inspector,
+    )
+    try:
+        return get_altium_ui_inspector(bridge)
+    except WindowsUiUnavailable as exc:
+        raise AltiumNotRunningError(str(exc)) from exc
+
+
 def _bundled_script_version() -> Optional[str]:
     """Read SCRIPT_VERSION from the bundled Main.pas.
 
@@ -66,6 +80,41 @@ def _bundled_script_version() -> Optional[str]:
 
 def register_application_tools(mcp):
     """Register application tools with the MCP server."""
+
+    @mcp.tool()
+    async def app_capability_probe(probe_live: bool = False) -> dict[str, Any]:
+        """Inventory installed script APIs and optional live bridge features.
+
+        The default is entirely offline: it parses the bundled handlers and
+        reports the exact command actions present. ``probe_live=True`` adds a
+        non-mutating process/ping/UI check; it never opens or edits a document.
+        """
+        from ..bridge.capabilities import inspect_script_capabilities
+        report = inspect_script_capabilities(get_bundled_scripts_path())
+        report.update({
+            "live_probed": probe_live,
+            "mcp_server_version": _mcp_server_version,
+            "bundled_script_version": _bundled_script_version(),
+        })
+        if not probe_live:
+            return report
+
+        bridge = get_bridge()
+        running = bool(bridge.is_altium_running())
+        report["altium_running"] = running
+        report["bridge_response"] = bridge.ping_with_version() if running else None
+        try:
+            inspector = _get_ui_inspector()
+            report["windows_ui"] = {
+                "available": True,
+                "window_count": len(inspector.list_windows()),
+                "dialog_count": len(inspector.list_dialogs()),
+            }
+        except Exception as exc:
+            report["windows_ui"] = {
+                "available": False, "error": str(exc),
+            }
+        return report
 
     @mcp.tool()
     async def tool_catalog(
@@ -323,6 +372,104 @@ def register_application_tools(mcp):
             return {"error": str(e)}
 
     @mcp.tool()
+    async def app_change_transaction(
+        operations: list[dict[str, Any]],
+        validations: Optional[list[dict[str, Any]]] = None,
+        label: str = "autonomous change",
+        dry_run: bool = True,
+        confirm: bool = False,
+        allow_destructive: bool = False,
+        rollback_on_failure: bool = True,
+    ) -> dict[str, Any]:
+        """Checkpoint, execute bridge commands, validate, then keep or rollback.
+
+        Each operation is ``{"command": "pcb...", "params": {...}}``.
+        Lifecycle commands are forbidden inside the transaction. Validation
+        commands must be read/audit-like. Default ``dry_run=true`` only returns
+        the checked plan. Execution requires ``confirm=true``; commands whose
+        names imply delete/remove/clear/prune/restore additionally require
+        ``allow_destructive=true``.
+        """
+        from ..bridge.change_transaction import validate_change_plan
+
+        validations = validations or []
+        errors = validate_change_plan(
+            operations, validations, allow_destructive=allow_destructive,
+        )
+        plan = {
+            "operations": operations,
+            "validations": validations,
+            "rollback_on_failure": rollback_on_failure,
+        }
+        if errors:
+            return {"success": False, "dry_run": dry_run, "errors": errors, "plan": plan}
+        if dry_run:
+            return {"success": True, "dry_run": True, "plan": plan}
+        if not confirm:
+            return {"success": False, "dry_run": False,
+                    "errors": ["confirm=true is required"], "plan": plan}
+
+        project_dir, _project_file, project_error = await _resolve_project_dir()
+        if project_error:
+            return {"success": False, "stage": "project", **project_error}
+        checkpoint_result = await app_checkpoint(label=label, save_first=True)
+        checkpoint = checkpoint_result.get("checkpoint") or {}
+        checkpoint_id = checkpoint.get("id")
+        if not checkpoint_id:
+            return {"success": False, "stage": "checkpoint", **checkpoint_result}
+
+        bridge = get_bridge()
+        applied: list[dict[str, Any]] = []
+        checked: list[dict[str, Any]] = []
+        failure: Optional[dict[str, Any]] = None
+        try:
+            for index, operation in enumerate(operations):
+                result = await bridge.send_command_async(
+                    operation["command"], operation.get("params") or {},
+                )
+                applied.append({"index": index, "command": operation["command"], "result": result})
+            for index, validation in enumerate(validations):
+                result = await bridge.send_command_async(
+                    validation["command"], validation.get("params") or {},
+                )
+                checked.append({"index": index, "command": validation["command"], "result": result})
+        except Exception as exc:
+            failure = {"error": str(exc), "applied_count": len(applied),
+                       "validation_count": len(checked)}
+
+        rollback = None
+        reloaded: list[dict[str, Any]] = []
+        if failure and rollback_on_failure:
+            rollback = await app_restore_checkpoint(checkpoint_id, prune_added=True)
+            project_dir = str(project_dir or "")
+            try:
+                docs = await bridge.send_command_async("application.get_open_documents")
+                for doc in docs if isinstance(docs, list) else []:
+                    path = str(doc.get("file_path", ""))
+                    if project_dir and not path.lower().startswith(project_dir.lower()):
+                        continue
+                    if not doc.get("loaded", True):
+                        continue
+                    result = await bridge.send_command_async(
+                        "application.reload_document",
+                        {"file_path": path, "save_before_close": "false",
+                         "discard_changes": "true"},
+                    )
+                    reloaded.append({"file_path": path, "result": result})
+            except Exception as exc:
+                reloaded.append({"error": str(exc)})
+
+        return {
+            "success": failure is None,
+            "checkpoint": checkpoint,
+            "applied": applied,
+            "validations": checked,
+            "failure": failure,
+            "rollback": rollback,
+            "reloaded": reloaded,
+        }
+
+    @mcp.tool()
     async def app_detach() -> dict[str, Any]:
         """Stop the Altium MCP polling loop. CALL THIS WHEN YOU'RE FINISHED.
 
@@ -512,6 +659,7 @@ def register_application_tools(mcp):
         file_path: str,
         name: Optional[str] = None,
         add_to_project: bool = True,
+        project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a new blank document of a given kind and save it to disk.
 
@@ -529,6 +677,8 @@ def register_application_tools(mcp):
             name: Optional display name. Defaults to the filename.
             add_to_project: Attach the new file to the focused project.
                 Default True. Set False to leave it as a free document.
+            project_path: Explicit project to attach to. Prefer this whenever
+                more than one project is open; it avoids focus ambiguity.
 
         Returns:
             Dictionary with kind, file_path, saved, added_to_project.
@@ -541,6 +691,8 @@ def register_application_tools(mcp):
         }
         if name:
             params["name"] = name
+        if project_path:
+            params["project_path"] = project_path
         result = await bridge.send_command_async(
             "application.create_document", params
         )
@@ -871,3 +1023,267 @@ def register_application_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async("application.get_clipboard_text")
         return result
+
+    @mcp.tool()
+    async def app_list_windows(include_hidden: bool = False) -> dict[str, Any]:
+        """List native Altium windows without using the DelphiScript loop.
+
+        This remains useful when a modal dialog blocks file IPC. Each item has
+        a stable-for-the-moment Win32 handle, title, class, bounds and dialog
+        flag. Refresh before acting because handles can be recycled.
+        """
+        try:
+            windows = _get_ui_inspector().list_windows(include_hidden)
+            return {"success": True, "count": len(windows), "windows": windows}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "windows": []}
+
+    @mcp.tool()
+    async def app_list_dialogs() -> dict[str, Any]:
+        """Read visible Altium dialogs and their child controls via Win32.
+
+        Does not click, focus or dismiss anything and does not require the
+        DelphiScript polling loop to be responsive.
+        """
+        try:
+            dialogs = _get_ui_inspector().list_dialogs()
+            return {"success": True, "count": len(dialogs), "dialogs": dialogs}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "dialogs": []}
+
+    @mcp.tool()
+    async def app_capture_window(window_handle: int, output_path: str) -> dict[str, Any]:
+        """Capture an Altium window/dialog to PNG/BMP without changing focus.
+
+        Obtain a fresh handle from ``app_list_windows``. The output suffix is
+        ``.png`` is recommended for compact, lossless diagnostic artifacts.
+        """
+        try:
+            return _get_ui_inspector().capture_window(window_handle, output_path)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @mcp.tool()
+    async def app_capture_dialogs(output_dir: str) -> dict[str, Any]:
+        """Inventory and save every current Altium dialog as a PNG artifact."""
+        from pathlib import Path
+        try:
+            inspector = _get_ui_inspector()
+            target = Path(output_dir).expanduser().resolve()
+            target.mkdir(parents=True, exist_ok=True)
+            captures = []
+            for index, dialog in enumerate(inspector.list_dialogs(), 1):
+                handle = int(dialog["handle"])
+                path = target / f"{index:03d}_dialog_{handle}.png"
+                captures.append({
+                    "dialog": dialog,
+                    "capture": inspector.capture_window(handle, path),
+                })
+            return {
+                "success": True, "output_dir": str(target),
+                "count": len(captures), "captures": captures,
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "captures": []}
+
+    @mcp.tool()
+    async def app_click_dialog_button(
+        dialog_handle: int,
+        button_handle: int,
+        expected_caption: str,
+        confirm: bool = False,
+        allow_destructive: bool = False,
+    ) -> dict[str, Any]:
+        """Click one exact button from a freshly inventoried Altium dialog.
+
+        ``confirm=true`` is always required. Caption matching prevents a stale
+        handle from clicking a different control. Delete/discard/overwrite-like
+        captions additionally require ``allow_destructive=true``.
+        """
+        try:
+            return _get_ui_inspector().click_button(
+                dialog_handle, button_handle, expected_caption,
+                confirm=confirm, allow_destructive=allow_destructive,
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @mcp.tool()
+    async def app_get_script_errors() -> dict[str, Any]:
+        """Classify visible Altium compile/runtime dialogs structurally.
+
+        Returns detected file, line, symbol, buttons and an automation-safety
+        flag when those details can be extracted. This is Win32-only and does
+        not depend on a responsive DelphiScript loop.
+        """
+        try:
+            from ..bridge.dialog_diagnostics import diagnose_dialogs
+            errors = diagnose_dialogs(_get_ui_inspector().list_dialogs())
+            return {"success": True, "count": len(errors), "diagnostics": errors}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "diagnostics": []}
+
+    @mcp.tool()
+    async def app_interact_dialog_control(
+        dialog_handle: int,
+        control_handle: int,
+        expected_class: str,
+        expected_text: str,
+        action: str,
+        value: Any = None,
+        confirm: bool = False,
+        allow_destructive: bool = False,
+    ) -> dict[str, Any]:
+        """Safely edit/click a standard control from ``app_list_dialogs``.
+
+        Supported actions: ``click``, ``set_text``, ``set_checked`` and
+        ``select_index``. Exact class and current text must still match the
+        fresh inventory, which prevents stale Win32 handles from operating on
+        a changed dialog. Arbitrary coordinates and keystroke text are not
+        accepted.
+        """
+        try:
+            return _get_ui_inspector().interact_control(
+                dialog_handle, control_handle,
+                expected_class=expected_class,
+                expected_text=expected_text,
+                action=action,
+                value=value,
+                confirm=confirm,
+                allow_destructive=allow_destructive,
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @mcp.tool()
+    async def app_visual_context(output_path: str = "") -> dict[str, Any]:
+        """Bundle native UI, dialogs, fault state and optional screenshot.
+
+        The active-document probe is best-effort: if file IPC is blocked, the
+        native windows/dialog diagnostics are still returned. When
+        ``output_path`` is supplied the largest Altium top-level window is
+        captured without changing editor zoom or selection.
+        """
+        from ..bridge.dialog_diagnostics import diagnose_dialogs
+        from ..bridge.fault_state import read_fault
+        from ..config import get_config
+
+        result: dict[str, Any] = {"success": True}
+        inspector = None
+        try:
+            inspector = _get_ui_inspector()
+            result["windows"] = inspector.list_windows()
+            raw_dialogs = inspector.list_dialogs()
+            result["dialogs"] = diagnose_dialogs(raw_dialogs)
+        except Exception as exc:
+            result["windows"] = []
+            result["dialogs"] = []
+            result["ui_error"] = str(exc)
+        try:
+            result["active_document"] = await get_bridge().send_command_async(
+                "application.get_active_document", timeout=2.0,
+            )
+            result["bridge_responsive"] = True
+        except Exception as exc:
+            result["active_document"] = None
+            result["bridge_responsive"] = False
+            result["bridge_error"] = str(exc)
+        result["fault"] = read_fault(get_config().workspace_dir)
+        if output_path and inspector is not None:
+            try:
+                hwnd = inspector.main_window_handle()
+                result["capture"] = inspector.capture_window(hwnd, output_path)
+            except Exception as exc:
+                result["capture"] = {"success": False, "error": str(exc)}
+        return result
+
+    @mcp.tool()
+    async def app_restart_altium_bridge(
+        launch_hotkey: str,
+        delay_ms: int = 750,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Schedule autonomous restart of the DelphiScript polling bridge.
+
+        Before stopping a healthy bridge, this focuses ``Dispatcher.pas`` so
+        Altium's normal F9 command runs the script project's configured
+        ``StartProcName``. The supervisor then closes the MCP status window
+        (or sends Ctrl+F3 when a script error is already open), sends the
+        launch hotkey, and polls ``application.ping`` until the deployed
+        ``SCRIPT_VERSION`` is running. Protected save/license/update dialogs
+        block the restart and are reported instead of being dismissed.
+        """
+        if delay_ms < 250 or delay_ms > 10000:
+            return {"success": False, "reason": "delay_ms must be 250..10000"}
+        if timeout_seconds < 1 or timeout_seconds > 300:
+            return {"success": False, "reason": "timeout_seconds must be 1..300"}
+        try:
+            inspector = _get_ui_inspector()
+            bridge = get_bridge()
+            from ..bridge.altium_supervisor import AltiumBridgeSupervisor
+            from ..config import get_config
+            expected = _bundled_script_version() or ""
+            script_document = get_bundled_scripts_path() / "Dispatcher.pas"
+            prepare: dict[str, Any]
+            try:
+                documents = await bridge.send_command_async(
+                    "application.get_open_documents", {}, timeout=5.0,
+                )
+                if isinstance(documents, list):
+                    loaded_dispatcher = next((
+                        d for d in documents
+                        if str(d.get("file_name", "")).lower() == "dispatcher.pas"
+                        and d.get("loaded")
+                    ), None)
+                    if loaded_dispatcher and loaded_dispatcher.get("file_path"):
+                        script_document = Path(str(loaded_dispatcher["file_path"]))
+                prepare = await bridge.send_command_async(
+                    "application.set_active_document",
+                    {"file_path": str(script_document)},
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                # A compile/runtime fault may already have stopped IPC. The
+                # supervisor still has a valid direct-stop recovery path.
+                prepare = {"success": False, "error": str(exc)}
+
+            def run_restart() -> None:
+                time.sleep(delay_ms / 1000.0)
+                supervisor = AltiumBridgeSupervisor(
+                    inspector,
+                    get_config().workspace_dir,
+                    lambda: bridge.send_command(
+                        "application.ping", timeout=2.0
+                    ),
+                )
+                supervisor.restart(
+                    launch_hotkey=launch_hotkey,
+                    expected_script_version=expected,
+                    timeout_seconds=timeout_seconds,
+                )
+
+            threading.Thread(
+                target=run_restart,
+                name="eda-agent-altium-bridge-restart",
+                daemon=True,
+            ).start()
+            return {
+                "success": True,
+                "restart_scheduled": True,
+                "delay_ms": delay_ms,
+                "timeout_seconds": timeout_seconds,
+                "launch_hotkey": launch_hotkey,
+                "expected_script_version": expected,
+                "prepared_script_document": prepare,
+                "note": "Poll app_get_restart_status until state is running or failed.",
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @mcp.tool()
+    async def app_get_restart_status() -> dict[str, Any]:
+        """Read the detached Altium bridge supervisor's latest status."""
+        from ..bridge.altium_supervisor import read_restart_status
+        from ..config import get_config
+        status = read_restart_status(get_config().workspace_dir)
+        return {"success": True, "status": status, "pending": status is None}

@@ -65,6 +65,7 @@ def register_route_tools(mcp):
         bend_penalty: float = 1.0,
         via_cost: float = 10.0,
         max_expansions: int = 200_000,
+        routing_style: str = "manhattan",
         fetch_geometry: bool = False,
     ) -> dict[str, Any]:
         """Route the board offline (grid A*) and return placeable ops.
@@ -101,6 +102,8 @@ def register_route_tools(mcp):
             via_cost: A* layer-change cost in grid-pitch units.
             max_expansions: Per-connection A* budget so a walled-in
                 net fails fast.
+            routing_style: ``manhattan`` or ``45deg``. The latter permits
+                diagonal moves but conservatively prevents corner cutting.
             fetch_geometry: When True and ``geometry`` is None, pull
                 the live board over the bridge.
 
@@ -124,13 +127,17 @@ def register_route_tools(mcp):
                 return {"ok": False,
                         "reason": "nets must be a list of net names"}
         try:
+            style = routing_style.strip().lower()
+            if style not in {"manhattan", "45deg", "octilinear"}:
+                raise ValueError("routing_style must be manhattan or 45deg")
             problem = RoutingProblem.from_geometry(
                 geom, rules, net_classes=net_classes,
                 grid_pitch_mils=grid_pitch_mils)
             options = RouterOptions(
                 bend_penalty=float(bend_penalty),
                 via_cost=float(via_cost),
-                max_expansions=int(max_expansions))
+                max_expansions=int(max_expansions),
+                allow_diagonal=style in {"45deg", "octilinear"})
         except (ValueError, TypeError) as exc:
             return {"ok": False, "reason": str(exc)}
 
@@ -184,3 +191,47 @@ def register_route_tools(mcp):
             ``{"ok": False, "reason": ...}`` on malformed input.
         """
         return plan_drc_repairs(violations, max_rounds=max_rounds)
+
+    @mcp.tool()
+    async def route_build_offline_package(
+        geometry: dict[str, Any],
+        output_dir: str,
+        rules: Optional[dict[str, Any]] = None,
+        nets: Optional[list[str]] = None,
+        net_classes: Optional[dict[str, str]] = None,
+        grid_pitch_mils: int = DEFAULT_GRID_PITCH_MILS,
+        routing_style: str = "45deg",
+        bend_penalty: float = 1.0,
+        via_cost: float = 10.0,
+        max_expansions: int = 200_000,
+    ) -> dict[str, Any]:
+        """Build a route + validation + SVG + JSON package entirely offline."""
+        from pathlib import Path
+        from ..route.pipeline import build_route_package
+        try:
+            return build_route_package(
+                geometry, Path(output_dir).expanduser().resolve(), rules, nets,
+                net_classes, grid_pitch_mils, routing_style, bend_penalty,
+                via_cost, max_expansions,
+            )
+        except (ValueError, TypeError) as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    async def route_audit_plan(
+        plan: dict[str, Any],
+        reference_vias: Optional[list[dict[str, Any]]] = None,
+        high_speed_nets: Optional[list[str]] = None,
+        return_via_max_mils: float = 100,
+        max_vias_per_net: int = 8,
+        diff_pairs: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Offline length/via/return-path/differential-skew route audit."""
+        from ..route.audit import audit_route_plan
+        try:
+            return audit_route_plan(
+                plan, reference_vias, high_speed_nets,
+                return_via_max_mils, max_vias_per_net, diff_pairs,
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"ok": False, "reason": str(exc), "findings": []}

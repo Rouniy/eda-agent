@@ -345,6 +345,118 @@ def register_library_tools(mcp):
         }
 
     @mcp.tool()
+    async def lib_create_multipart_symbol(
+        name: str,
+        parts: list[dict[str, Any]],
+        shared_pins: Optional[list[dict[str, Any]]] = None,
+        designator_prefix: str = "U",
+        description: str = "",
+    ) -> dict[str, Any]:
+        """Create a complete multipart SchLib symbol in one MCP call.
+
+        Each part contains ``name``, ``left_pins`` and ``right_pins`` in
+        top-to-bottom order. Pins are assigned OwnerPartId 1..N. Optional
+        ``shared_pins`` are added with OwnerPartId 0 and therefore appear on
+        every part (normally supply pins). Every part receives its own body
+        rectangle and becomes independently visible in Altium.
+        """
+        from eda_agent.design.symbol_gen import generate_ic_symbol
+
+        if not parts:
+            raise ValueError("parts must contain at least one symbol part")
+        if len(parts) > 255:
+            raise ValueError("parts cannot contain more than 255 entries")
+
+        geometries = []
+        for part_id, part in enumerate(parts, 1):
+            left = list(part.get("left_pins", []))
+            right = list(part.get("right_pins", []))
+            if not left and not right:
+                raise ValueError(f"part {part_id} has no pins")
+            geometries.append(generate_ic_symbol(left, right))
+        for pin in shared_pins or []:
+            if not str(pin.get("designator", "")).strip():
+                raise ValueError("every shared pin requires a designator")
+
+        bridge = get_bridge()
+        created = await bridge.send_command_async(
+            "library.create_symbol",
+            {
+                "name": name,
+                "designator_prefix": designator_prefix,
+                "description": description,
+                "part_count": str(len(parts)),
+            },
+        )
+
+        pin_ops: list[str] = []
+        part_summary: list[dict[str, Any]] = []
+        for part_id, (part, geom) in enumerate(zip(parts, geometries), 1):
+            left = list(part.get("left_pins", []))
+            right = list(part.get("right_pins", []))
+            for pin in geom.pins:
+                pin_ops.append(";".join([
+                    f"designator={pin['designator']}",
+                    f"name={pin['name']}",
+                    f"x={pin['x']}", f"y={pin['y']}",
+                    f"length={pin['length']}",
+                    f"rotation={pin['rotation']}",
+                    f"electrical_type={pin.get('electrical_type', 'passive')}",
+                    "hidden=false", f"owner_part_id={part_id}",
+                ]))
+            part_summary.append({
+                "part_id": part_id,
+                "name": str(part.get("name", part_id)),
+                "pins": len(geom.pins),
+                "width_mils": geom.width_mils,
+                "height_mils": geom.height_mils,
+            })
+
+        for pin in shared_pins or []:
+            designator = str(pin.get("designator", "")).strip()
+            pin_ops.append(";".join([
+                f"designator={designator}",
+                f"name={str(pin.get('name', '')).strip()}",
+                f"x={_snap(round(pin.get('x', 0)))}",
+                f"y={_snap(round(pin.get('y', 0)))}",
+                f"length={_snap(round(pin.get('length', 200)))}",
+                f"rotation={round(pin.get('rotation', 0))}",
+                f"electrical_type={pin.get('electrical_type', 'power')}",
+                f"hidden={'true' if pin.get('hidden') else 'false'}",
+                "owner_part_id=0",
+            ]))
+
+        pins_result = await bridge.send_command_async(
+            "library.add_pins", {"pins": "~~".join(pin_ops)}
+        )
+        rectangles = []
+        for part_id, geom in enumerate(geometries, 1):
+            await bridge.send_command_async(
+                "library.set_active_part", {"part_id": part_id}
+            )
+            body = geom.body
+            rectangles.append(await bridge.send_command_async(
+                "library.add_symbol_rectangle",
+                {
+                    "x1": body["x1"], "y1": body["y1"],
+                    "x2": body["x2"], "y2": body["y2"],
+                    "fill_color": 8454143, "border_color": 0,
+                },
+            ))
+        await bridge.send_command_async(
+            "library.set_active_part", {"part_id": 1}
+        )
+        return {
+            "symbol": name,
+            "part_count": len(parts),
+            "shared_pin_count": len(shared_pins or []),
+            "parts": part_summary,
+            "create": created,
+            "pins_result": pins_result,
+            "rectangle_results": rectangles,
+        }
+
+    @mcp.tool()
     async def lib_create_passive_symbol(
         name: str,
         kind: str,
@@ -467,6 +579,20 @@ def register_library_tools(mcp):
         return await bridge.send_command_async(
             "library.set_current_component",
             {"name": component_name},
+        )
+
+    @mcp.tool()
+    async def lib_set_active_part(part_id: int) -> dict[str, Any]:
+        """Show one part of the selected multipart SchLib component.
+
+        ``part_id`` is one-based and must be within the component's
+        ``part_count``. Generic SchLib queries still inspect every part;
+        this tool controls which part is visible in the Altium editor.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.set_active_part",
+            {"part_id": int(part_id)},
         )
 
     @mcp.tool()

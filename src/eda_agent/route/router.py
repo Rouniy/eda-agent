@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Multi-layer Manhattan A* router over a :class:`RoutingProblem` grid.
+"""Multi-layer Manhattan / 45-degree A* router over a routing grid.
 
 Net order: class priority first (power / ground, then high-current /
 switch, differential / clock, analog, control, plain signal -- the
@@ -54,7 +54,8 @@ _CLASS_PRIORITY = {
 }
 
 _DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
-_DIR_NONE = 4  # start of path / just emerged from a via: next move is free
+_DIAGONAL_DIRS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
+_DIR_NONE = 8  # start of path / just emerged from a via: next move is free
 _EPS = 1e-6
 
 
@@ -68,6 +69,9 @@ class RouterOptions:
     # Per-connection expansion budget so a walled-in net fails fast
     # instead of flooding a big grid forever.
     max_expansions: int = 200_000
+    # Permit diagonal grid steps. Corner cutting is blocked unless both
+    # adjacent orthogonal cells are passable, yielding manufacturable 45° runs.
+    allow_diagonal: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -408,10 +412,13 @@ def _astar(problem: RoutingProblem, net: str,
     by1, by2 = min(tys), max(tys)
 
     def _h(ix: int, iy: int) -> float:
-        # Manhattan distance to the target bounding box: admissible
-        # (every target is inside the box; bends/vias only add cost).
-        return (max(0, bx1 - ix, ix - bx2)
-                + max(0, by1 - iy, iy - by2))
+        dx = max(0, bx1 - ix, ix - bx2)
+        dy = max(0, by1 - iy, iy - by2)
+        if opt.allow_diagonal:
+            # Octile distance: admissible for unit orthogonal / sqrt(2)
+            # diagonal movement.
+            return max(dx, dy) + (math.sqrt(2.0) - 1.0) * min(dx, dy)
+        return dx + dy
 
     counter = itertools.count()
     open_heap: list[tuple[float, float, int,
@@ -439,11 +446,17 @@ def _astar(problem: RoutingProblem, net: str,
             return _reconstruct(parent, st)
         expansions += 1
 
-        for di, (dx, dy) in enumerate(_DIRS):
+        directions = _DIRS + _DIAGONAL_DIRS if opt.allow_diagonal else _DIRS
+        for di, (dx, dy) in enumerate(directions):
             jx, jy = ix + dx, iy + dy
             if not problem.passable(li, jx, jy, net):
                 continue
-            ng = g + 1.0
+            if dx and dy and (
+                not problem.passable(li, ix + dx, iy, net)
+                or not problem.passable(li, ix, iy + dy, net)
+            ):
+                continue
+            ng = g + (math.sqrt(2.0) if dx and dy else 1.0)
             if d != _DIR_NONE and d != di:
                 ng += opt.bend_penalty
             nst = (li, jx, jy, di)

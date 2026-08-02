@@ -126,6 +126,20 @@ def _via_keys_ok(v):
     assert isinstance(v["net"], str)
 
 
+def test_octilinear_mode_emits_45_degree_segment():
+    geometry = _geom([_pad(100, 100, "D"), _pad(400, 400, "D")],
+                     bbox=(0, 0, 500, 500))
+    result = route_geometry(
+        geometry, RULES, grid_pitch_mils=25,
+        options=RouterOptions(allow_diagonal=True),
+    )
+    assert result["summary"]["routed"] == 1
+    assert any(
+        abs(t["x2"] - t["x1"]) == abs(t["y2"] - t["y1"]) != 0
+        for t in result["tracks"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Basic two-pad net
 # ---------------------------------------------------------------------------

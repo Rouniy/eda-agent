@@ -274,10 +274,10 @@ Begin
 
         If Project <> Nil Then
         Begin
-            ResetParameters;
-            AddStringParameter('ObjectKind', 'Document');
-            AddStringParameter('FileName', DocumentPath);
-            RunProcess('WorkspaceManager:CloseObject');
+            { CloseObject only closes the editor tab; it does not remove the
+              source from the project.  Use the project model operation so
+              the membership change is persisted by the next project save. }
+            Project.DM_RemoveSourceDocument(DocumentPath);
             Result := BuildSuccessResponse(RequestId, '{"success":true}');
         End
         Else
@@ -3397,7 +3397,7 @@ End;
 { Strategy:                                                                    }
 {   1. Compile the project and gather component mapping differences so useful  }
 {      counts are available regardless of what the ECO dialog does.            }
-{   2. Invoke WorkspaceManager:Compare (ObjectKind=Project, Action=UpdateOther)}
+{   2. Invoke WorkspaceManager:Compare (ObjectKind=Project, Action=UpdateMe)   }
 {      -- the documented/evidenced sch->PCB update. It BLOCKS on the modal     }
 {      ECO dialog until the user clicks Execute Changes.                       }
 {   3. Re-compile and recompute mappings; report the before/after delta.      }
@@ -3439,8 +3439,10 @@ Begin
     { Fire the real ECO via the WorkspaceManager comparator. This is the
       ONLY evidenced scriptable launcher (ref: reference MultiPCBProject.pas,
       Petar Perisin): WorkspaceManager:Compare with ObjectKind=Project +
-      Action=UpdateOther performs Design > Update PCB Document (schematic ->
-      PCB). The previous 'PCB:UpdatePCBFromProject' was NOT a real process id
+      Action=UpdateMe performs Design > Update PCB Document (schematic -> PCB)
+      when the target PCB is focused. UpdateOther is relative to focus and was
+      observed to reverse this into PCB -> schematic. The previous
+      'PCB:UpdatePCBFromProject' was NOT a real process id
       (RunProcess silently ignores unknown ids -> the handler no-opped), and
       DisableDialog/Silent/NoConfirm/AutoApply are invented flags that appear
       in no Altium docs.
@@ -3448,11 +3450,10 @@ Begin
       non-suppressible BY DESIGN (altium.com .../keeping-synchronized). This
       process raises that modal and BLOCKS the polling loop until a human
       clicks "Execute Changes" (or closes it). There is no documented silent
-      variant. Direction note: Action=UpdateOther is sch->PCB when driven with
-      the project/schematic in focus; it back-annotates if a PCB is focused. }
+      variant. Keep the resolved target PCB focused and use UpdateMe. }
     ResetParameters;
     AddStringParameter('ObjectKind', 'Project');
-    AddStringParameter('Action', 'UpdateOther');
+    AddStringParameter('Action', 'UpdateMe');
     RunProcess('WorkspaceManager:Compare');
 
     { Recompile and recompute to report actual changes }

@@ -50,6 +50,42 @@ def register_render_tools(mcp):
     """Register rendering tools with the MCP server."""
 
     @mcp.tool()
+    async def design_compare_svg(
+        before_path: str,
+        after_path: str,
+        output_path: Optional[str] = None,
+        rasterize: bool = True,
+        width: int = 2000,
+    ) -> dict[str, Any]:
+        """Create a self-contained before/after comparison from two EDA SVGs.
+
+        This tool is completely offline. It preserves the original structured
+        SVGs inside side-by-side panels and reports content hashes plus counts
+        of groups carrying EDA ``data-*`` identifiers.
+        """
+        from ..render.svg_compare import compare_svg_files
+        before = Path(before_path).expanduser().resolve()
+        after = Path(after_path).expanduser().resolve()
+        if not before.exists() or not after.exists():
+            return {"ok": False, "reason": "before_path and after_path must exist"}
+        target = (
+            Path(output_path).expanduser().resolve()
+            if output_path else _renders_dir() / "before_after.svg"
+        )
+        if target.suffix.lower() != ".svg":
+            target = target.with_suffix(".svg")
+        result = compare_svg_files(before, after, target)
+        result["png_path"] = None
+        if rasterize:
+            png = str(target.with_suffix(".png"))
+            rr = rasterize_svg(str(target), png, width=int(width))
+            if rr.get("ok"):
+                result["png_path"] = rr["png_path"]
+            else:
+                result["rasterize_note"] = rr.get("reason")
+        return result
+
+    @mcp.tool()
     async def sch_render_svg(
         output_path: Optional[str] = None,
         margin_mils: int = 200,
@@ -375,6 +411,68 @@ def register_render_tools(mcp):
             f"Read {viewable} and critique it against `rubric`, then work "
             "through `loop_protocol`."
         )
+        return result
+
+    @mcp.tool()
+    async def design_capture_snapshot(
+        session_id: str,
+        phase: str = "before",
+        target: str = "auto",
+        include_ui: bool = True,
+        include_dialogs: bool = True,
+        width: int = 1600,
+    ) -> dict[str, Any]:
+        """Capture a versioned SVG/PNG/UI manifest for before-after review.
+
+        ``session_id`` groups multiple snapshots. ``phase`` is normally
+        ``before`` or ``after``. Files are stored below the MCP workspace's
+        artifacts directory and never beside the Altium project.
+        """
+        import json
+        import re
+        safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", session_id).strip("._")
+        safe_phase = re.sub(r"[^A-Za-z0-9_.-]+", "_", phase).strip("._")
+        if not safe_session or not safe_phase:
+            raise ValueError("session_id and phase must contain a safe character")
+        artifact_dir = get_config().workspace_dir / "artifacts" / safe_session
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        document = await design_visual_review(
+            target=target,
+            output_path=str(artifact_dir / f"document.{safe_phase}.svg"),
+            rasterize=True,
+            width=width,
+        )
+        result: dict[str, Any] = {
+            "ok": bool(document.get("ok")), "session_id": safe_session,
+            "phase": safe_phase, "artifact_dir": str(artifact_dir),
+            "document": document, "ui": None, "dialogs": [],
+        }
+        if include_ui or include_dialogs:
+            try:
+                from ..bridge.windows_ui import get_altium_ui_inspector
+                inspector = get_altium_ui_inspector(get_bridge())
+                if include_ui:
+                    result["ui"] = inspector.capture_window(
+                        inspector.main_window_handle(),
+                        artifact_dir / f"altium-ui.{safe_phase}.png",
+                    )
+                if include_dialogs:
+                    dialogs = inspector.list_dialogs()
+                    for index, dialog in enumerate(dialogs, 1):
+                        capture = inspector.capture_window(
+                            int(dialog["handle"]),
+                            artifact_dir / f"dialog.{safe_phase}.{index:03d}.png",
+                        )
+                        result["dialogs"].append({
+                            "metadata": dialog, "capture": capture,
+                        })
+            except Exception as exc:
+                result["ui_note"] = str(exc)
+        manifest = artifact_dir / f"manifest.{safe_phase}.json"
+        manifest.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        result["manifest_path"] = str(manifest)
         return result
 
     @mcp.tool()

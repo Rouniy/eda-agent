@@ -3844,6 +3844,120 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_plan_bga_fanout(
+        pads: list[dict[str, Any]],
+        center_x: float,
+        center_y: float,
+        escape_mils: float = 20,
+        track_width_mils: float = 4,
+        via_size_mils: float = 18,
+        via_hole_mils: float = 8,
+        layer: str = "TopLayer",
+        apply: bool = False,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Plan radial BGA dog-bone escapes; optionally place them.
+
+        Defaults to an offline dry run. Applying requires ``confirm=True``.
+        Collision/DRC validation remains a separate mandatory audit step.
+        """
+        from eda_agent.design.pcb_planning import plan_bga_fanout
+        plan = plan_bga_fanout(
+            pads, center_x, center_y, escape_mils, track_width_mils,
+            via_size_mils, via_hole_mils, layer,
+        )
+        plan["applied"] = False
+        if not apply:
+            return plan
+        if not confirm:
+            raise ValueError("confirm=True is required when apply=True")
+        bridge = get_bridge()
+        track_parts = [
+            f"{t['x1']},{t['y1']},{t['x2']},{t['y2']},{t['width']},{t['layer']},{t['net_name']}"
+            for t in plan["tracks"]
+        ]
+        plan["track_result"] = await bridge.send_command_async(
+            "pcb.place_tracks", {"tracks": "|".join(track_parts)}
+        )
+        plan["via_results"] = [
+            await bridge.send_command_async("pcb.place_via", {
+                "x": str(v["x"]), "y": str(v["y"]), "net": v["net"],
+                "size": str(v["size"]), "hole_size": str(v["hole_size"]),
+                "low_layer": "TopLayer", "high_layer": "BottomLayer",
+            }) for v in plan["vias"]
+        ]
+        plan["applied"] = True
+        return plan
+
+    @mcp.tool()
+    async def pcb_render_route_plan_svg(
+        plan: dict[str, Any],
+        output_path: str,
+    ) -> dict[str, Any]:
+        """Render planned tracks/vias/obstacles to SVG without using Altium."""
+        from pathlib import Path
+        from eda_agent.render.route_plan_svg import write_route_plan_svg
+        target = Path(output_path).expanduser().resolve()
+        if target.suffix.lower() != ".svg":
+            target = target.with_suffix(".svg")
+        return write_route_plan_svg(plan, target)
+
+    @mcp.tool()
+    async def pcb_plan_return_vias(
+        transitions: list[dict[str, Any]],
+        reference_net: str = "GND",
+        offset_mils: float = 40,
+        via_size_mils: float = 30,
+        via_hole_mils: float = 14,
+        apply: bool = False,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Plan nearby reference vias for signal layer transitions."""
+        from eda_agent.design.pcb_planning import plan_return_vias
+        vias = plan_return_vias(
+            transitions, reference_net, offset_mils,
+            via_size_mils, via_hole_mils,
+        )
+        result: dict[str, Any] = {
+            "vias": vias, "count": len(vias), "applied": False,
+            "reference_net": reference_net,
+        }
+        if not apply:
+            return result
+        if not confirm:
+            raise ValueError("confirm=True is required when apply=True")
+        bridge = get_bridge()
+        result["via_results"] = [
+            await bridge.send_command_async("pcb.place_via", {
+                "x": str(v["x"]), "y": str(v["y"]), "net": v["net"],
+                "size": str(v["size"]), "hole_size": str(v["hole_size"]),
+                "low_layer": "TopLayer", "high_layer": "BottomLayer",
+            }) for v in vias
+        ]
+        result["applied"] = True
+        return result
+
+    @mcp.tool()
+    async def pcb_audit_placement_plan(
+        components: list[dict[str, Any]],
+        board: dict[str, float],
+        decoupling_max_mils: float = 200,
+        termination_max_mils: float = 300,
+        connector_edge_max_mils: float = 150,
+        courtyard_mils: float = 10,
+    ) -> dict[str, Any]:
+        """Offline placement acceptance: bounds, overlaps and role proximity."""
+        from eda_agent.design.placement_audit import audit_placement
+        try:
+            return audit_placement(
+                components, board, decoupling_max_mils,
+                termination_max_mils, connector_edge_max_mils,
+                courtyard_mils,
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"ok": False, "reason": str(exc), "findings": []}
+
+    @mcp.tool()
     async def pcb_place_arc(
         x_center: int,
         y_center: int,
@@ -4885,10 +4999,14 @@ def register_pcb_tools(mcp):
         Two modes per component: **geometry only** (omit ``unique_id`` /
         ``pad_nets``) leaves pads unconnected (DRC flags them), good for
         artwork / panelization / fiducials / placement studies; **synced**
-        (pass both) stamps the schematic UniqueId so a later ECO matches the
-        part and creates+assigns each pad's net for real connectivity. Read
-        ``unique_id`` via ``query_objects(eSchComponent,
-        "Designator.Text,UniqueId")`` and ``pad_nets`` from the compiled
+        (pass both) stamps the PCB SourceUniqueId so a later ECO matches the
+        part and creates+assigns each pad's net for real connectivity. In a
+        hierarchical project ``unique_id`` normally has the form
+        ``\\SHEET_UNIQUE_ID\\COMPONENT_UNIQUE_ID``; the short schematic
+        UniqueId alone is insufficient. Derive the prefix from a known matched
+        component on the same sheet (``pcb_get_components`` returns
+        ``source_unique_id``) or compiled mappings. Read ``pad_nets`` from the
+        compiled
         netlist (``proj_get_connectivity_many`` → pad number → net).
 
         ``board_path``: target a specific .PcbDoc when several are open
@@ -4906,6 +5024,10 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dict with ``placed`` (count), ``failed`` (count), ``total``.
+
+        After placement, save and force a project recompile, then require no
+        unmatched components on either side. Equal counts alone do not prove
+        that the SourceUniqueId link is valid.
         """
         recs: list[str] = []
         for p in placements:

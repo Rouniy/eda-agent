@@ -430,6 +430,44 @@ Begin
         '{"success":true,"name":"' + EscapeJsonString(Name) + '"}');
 End;
 
+{ Switch the visible part of the selected multipart SchLib component. }
+Function Lib_SetActivePart(Params : String; RequestId : String) : String;
+Var
+    PartId, MaxParts : Integer;
+    SchLib : ISch_Lib;
+    Component : ISch_Component;
+Begin
+    PartId := StrToIntDef(ExtractJsonValue(Params, 'part_id'), 0);
+    SchLib := SchServer.GetCurrentSchDocument;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+            'No schematic library is active');
+        Exit;
+    End;
+    Component := GetTargetLibComponent(SchLib);
+    If Component = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No component is selected in the SchLib');
+        Exit;
+    End;
+    MaxParts := Component.PartCount;
+    If (PartId < 1) Or (PartId > MaxParts) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PART_OUT_OF_RANGE',
+            'part_id ' + IntToStr(PartId) + ' is outside [1, '
+            + IntToStr(MaxParts) + ']');
+        Exit;
+    End;
+    Try Component.CurrentPartID := PartId; Except End;
+    Try SchLib.GraphicallyInvalidate; Except End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"part_id":' + IntToStr(PartId)
+        + ',"part_count":' + IntToStr(MaxParts)
+        + ',"component":"' + EscapeJsonString(Component.LibReference) + '"}');
+End;
+
 Function Lib_AddPin(Params : String; RequestId : String) : String;
 Var
     Designator, Name, ElecType : String;
@@ -654,11 +692,13 @@ End;
 
 Function Lib_AddFootprintPad(Params : String; RequestId : String) : String;
 Var
-    Designator, Shape, LayerStr : String;
+    Designator, Shape, LayerStr, FootprintName : String;
     X, Y, XSize, YSize, HoleSize, CornerRadius : Integer;
     Rotation : Double;
     PcbLib : IPCB_Library;
+    Board : IPCB_Board;
     Footprint : IPCB_LibComponent;
+    LibIter : IPCB_LibraryIterator;
     Pad : IPCB_Pad;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
@@ -671,6 +711,7 @@ Begin
     LayerStr := ExtractJsonValue(Params, 'layer');
     Rotation := StrToFloatDef(ExtractJsonValue(Params, 'rotation'), 0);
     CornerRadius := StrToIntDef(ExtractJsonValue(Params, 'corner_radius'), 25);
+    FootprintName := ExtractJsonValue(Params, 'footprint_name');
 
     PcbLib := PCBServer.GetCurrentPCBLibrary;
     If PcbLib = Nil Then
@@ -679,12 +720,31 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := Nil;
+    If FootprintName <> '' Then
+    Begin
+        LibIter := PcbLib.LibraryIterator_Create;
+        Try
+            Footprint := LibIter.FirstPCBObject;
+            While Footprint <> Nil Do
+            Begin
+                If Footprint.Name = FootprintName Then Break;
+                Footprint := LibIter.NextPCBObject;
+            End;
+        Finally
+            PcbLib.LibraryIterator_Destroy(LibIter);
+        End;
+        If Footprint <> Nil Then
+            Try PcbLib.SetState_CurrentComponent(Footprint); Except End;
+    End
+    Else
+        Footprint := PcbLib.CurrentComponent;
     If Footprint = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
         Exit;
     End;
+    Board := PcbLib.Board;
 
     PCBServer.PreProcess;
 
@@ -720,7 +780,14 @@ Begin
         End
         Else Pad.TopShape := eRounded;
 
+        { PcbLib serialization requires registration in both ownership     }
+        { containers, matching the proven text-primitive authoring path.   }
         Footprint.AddPCBObject(Pad);
+        Board.AddPCBObject(Pad);
+        PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress,
+            c_Broadcast, PCBM_BoardRegisteration, Pad.I_ObjectAddress);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
+            c_Broadcast, PCBM_BoardRegisteration, Pad.I_ObjectAddress);
 
         Result := BuildSuccessResponse(RequestId, '{"success":true,"designator":"' + EscapeJsonString(Designator) + '"}');
     End
@@ -3888,6 +3955,9 @@ Begin
     { Component already resolved above (by name or index). }
     If Description = '' Then
         Try Description := Component.ComponentDescription; Except End;
+    { The on-disk reader can report PartCount+1 on multipart symbols in AD26. }
+    { Prefer the already-resolved live component, whose PartCount is exact.   }
+    Try PartCount := Component.PartCount; Except End;
 
     { Designator + Comment full-style records. The sub-objects ARE        }
     { ISch_Label-derived so they expose Text + FontId + Color + IsHidden  }
@@ -4194,7 +4264,7 @@ Var
     Doc : IDocument;
     ServerDoc : IServerDocument;
     F : TextFile;
-    Line, OldName, NewName : String;
+    Line, OldName, NewName, Errors : String;
     PipePos : Integer;
     Renamed, Failed, LineNum : Integer;
 Begin
@@ -4249,6 +4319,7 @@ Begin
     Renamed := 0;
     Failed := 0;
     LineNum := 0;
+    Errors := '';
 
     // Begin modification block
     SchServer.ProcessControl.PreProcess(SchLib, '');
@@ -4268,6 +4339,9 @@ Begin
                 If PipePos = 0 Then
                 Begin
                     Inc(Failed);
+                    If Errors <> '' Then Errors := Errors + ';';
+                    Errors := Errors + 'line ' + IntToStr(LineNum)
+                        + ': malformed (no | separator)';
                     Continue;
                 End;
                 OldName := Copy(Line, 1, PipePos - 1);
@@ -4277,14 +4351,33 @@ Begin
                 If Component = Nil Then
                 Begin
                     Inc(Failed);
+                    If Errors <> '' Then Errors := Errors + ';';
+                    Errors := Errors + OldName + '->' + NewName
+                        + ': component not found';
                     Continue;
                 End;
 
-                // Must remove and re-add to update the library's internal index
-                SchLib.RemoveSchComponent(Component);
-                Component.LibReference := NewName;
-                SchLib.AddSchComponent(Component);
-                Inc(Renamed);
+                If SchLib.GetState_SchComponentByLibRef(NewName) <> Nil Then
+                Begin
+                    Inc(Failed);
+                    If Errors <> '' Then Errors := Errors + ';';
+                    Errors := Errors + OldName + '->' + NewName
+                        + ': target name already exists';
+                    Continue;
+                End;
+
+                Try
+                    // Must remove and re-add to update the internal index.
+                    SchLib.RemoveSchComponent(Component);
+                    Component.LibReference := NewName;
+                    SchLib.AddSchComponent(Component);
+                    Inc(Renamed);
+                Except
+                    Inc(Failed);
+                    If Errors <> '' Then Errors := Errors + ';';
+                    Errors := Errors + OldName + '->' + NewName
+                        + ': write raised';
+                End;
             End;
         Finally
             CloseFile(F);
@@ -4300,7 +4393,8 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"renamed":' + IntToStr(Renamed) +
         ',"failed":' + IntToStr(Failed) +
-        ',"total_lines":' + IntToStr(LineNum) + '}');
+        ',"total_lines":' + IntToStr(LineNum) +
+        ',"errors":"' + EscapeJsonString(Errors) + '"}');
 End;
 
 {..............................................................................}
@@ -8099,6 +8193,7 @@ Begin
         'set_label_format':   Result := Lib_SetLabelFormat(Params, RequestId);
         'set_label_formats':  Result := Lib_SetLabelFormats(Params, RequestId);
         'set_current_component': Result := Lib_SetCurrentComponent(Params, RequestId);
+        'set_active_part':     Result := Lib_SetActivePart(Params, RequestId);
         'update_footprint_heights_from_3d': Result := Lib_UpdateFootprintHeightsFrom3D(Params, RequestId);
         'split_pin_functions':  Result := Lib_SplitPinFunctions(Params, RequestId);
         'install_library':      Result := Lib_InstallLibrary(Params, RequestId);
