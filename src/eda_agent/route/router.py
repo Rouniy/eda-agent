@@ -146,6 +146,15 @@ def route_problem(problem: RoutingProblem,
         completion = 0.0
     else:
         completion = 1.0  # nothing to route, or everything present skipped
+    # Tally of WHY nets failed. "expansion_budget_exhausted" in here means
+    # the router hit a knob, not the board -- a caller that treats every
+    # failure as a geometry verdict would otherwise redesign around a
+    # limit it could have raised.
+    failed_hints: dict[str, int] = {}
+    for res in nets_out.values():
+        if res.get("status") == "failed":
+            h = str(res.get("hint", "no_route"))
+            failed_hints[h] = failed_hints.get(h, 0) + 1
     summary = {
         "nets_total": len(nets_out),
         "routed": routed,
@@ -153,6 +162,8 @@ def route_problem(problem: RoutingProblem,
         "skipped": skipped,
         "attempted": attempted,
         "completion": completion,
+        "failed_hints": failed_hints,
+        "grid": problem.grid_info(),
         "track_count": len(all_tracks),
         "via_count": len(all_vias),
         "total_length_mils": sum(
@@ -328,14 +339,17 @@ def _route_net(problem: RoutingProblem, net: str,
     width = problem.width_for_net(net)
     cls = problem.class_of(net)
 
-    def _fail(k: int, reason: str) -> dict[str, Any]:
+    def _fail(k: int, reason: str,
+              diag: dict[str, Any] | None = None) -> dict[str, Any]:
         # Partial copper of a failed net is dropped: it would block
         # later nets without delivering connectivity.
-        return {
+        out = {
             "status": "failed",
             "reason": f"connection {k + 1}/{len(terms) - 1}: {reason}",
             "class": cls, "width": width, "tracks": [], "vias": [],
         }
+        out.update(diag or {})
+        return out
 
     # Seed pair: globally closest two terminals (Manhattan on centers).
     best = None
@@ -361,10 +375,13 @@ def _route_net(problem: RoutingProblem, net: str,
             tree_cells.add((li, ix, iy))
             tree_xy.setdefault((ix, iy), set()).add(li)
 
-    path = _astar(problem, net, _starts(terms[i0]),
-                  set(_starts(terms[j0])), opt)
+    path, exhausted, used = _astar(problem, net, _starts(terms[i0]),
+                                   set(_starts(terms[j0])), opt)
     if path is None:
-        return _fail(0, "no path between closest pair")
+        diag = _escape_diagnosis(problem, net, [terms[i0], terms[j0]],
+                                 opt, exhausted, used)
+        return _fail(0, f"no path between closest pair ({diag['hint']})",
+                     diag)
     _absorb(path)
 
     connected = {i0, j0}
@@ -381,10 +398,13 @@ def _route_net(problem: RoutingProblem, net: str,
             if pick is None or cand < pick:
                 pick = cand
         idx = pick[1]  # type: ignore[index]
-        path = _astar(problem, net, _starts(terms[idx]), tree_cells, opt)
+        path, exhausted, used = _astar(
+            problem, net, _starts(terms[idx]), tree_cells, opt)
         if path is None:
+            diag = _escape_diagnosis(problem, net, [terms[idx]], opt,
+                                     exhausted, used)
             return _fail(k, f"terminal at ({terms[idx].x},{terms[idx].y}) "
-                            "unreachable")
+                            f"unreachable ({diag['hint']})", diag)
         _absorb(path)
         connected.add(idx)
         k += 1
@@ -403,6 +423,133 @@ def _route_net(problem: RoutingProblem, net: str,
 
 
 # ---------------------------------------------------------------------------
+# Failure diagnosis
+# ---------------------------------------------------------------------------
+
+
+def _nearest_foreign_pad(problem: RoutingProblem, net: str,
+                         t: Terminal) -> tuple[float, float] | None:
+    """(center pitch, edge gap) to the nearest foreign pad, mils.
+
+    Scans the retained pad rects rather than the grid: the grid has
+    already quantized away the very distances the caller needs, so
+    asking it whether a corridor exists would answer with the same
+    resolution that is under suspicion.
+    """
+    own_hw = own_hh = 0.0
+    for g in problem.geoms:
+        # Terminal coordinates are rounded to whole mils, pad centers are
+        # not, so match with a mil of slack rather than exactly.
+        if (g["kind"] == "rect" and g["net"] == net
+                and abs(g["cx"] - t.x) < 1.0 and abs(g["cy"] - t.y) < 1.0):
+            own_hw, own_hh = g["hw"], g["hh"]
+            break
+    best: tuple[float, float] | None = None
+    for g in problem.geoms:
+        if g["kind"] != "rect" or g["net"] == net:
+            continue
+        pitch = math.hypot(g["cx"] - t.x, g["cy"] - t.y)
+        # Edge-to-edge along the axis-aligned separation, which is what a
+        # track actually has to fit through.
+        gap = math.hypot(
+            max(0.0, abs(g["cx"] - t.x) - g["hw"] - own_hw),
+            max(0.0, abs(g["cy"] - t.y) - g["hh"] - own_hh))
+        if best is None or pitch < best[0]:
+            best = (pitch, gap)
+    return best
+
+
+def _escape_diagnosis(problem: RoutingProblem, net: str,
+                      terms: list[Terminal], opt: RouterOptions,
+                      exhausted: bool, expansions: int) -> dict[str, Any]:
+    """Numbers behind a failed connection, and which knob they implicate.
+
+    Five distinct causes used to surface as the same "no path": the A*
+    budget ran out; the neighbouring pad pitch leaves no DRC-legal
+    corridor at ANY resolution; a corridor exists but is narrower than
+    one grid pitch; the pad's own grid node is walled in by foreign
+    copper; or the reachable region genuinely has no target. Only the
+    first two are knobs (max_expansions, grid_pitch_mils) and only the
+    second is a real geometry verdict -- guessing between them costs a
+    live board iteration each time, so spend the few hundred distance
+    evaluations here instead.
+    """
+    width = problem.width_for_net(net)
+    clearance = problem.rules.clearance_mils
+    # Two flanking neighbours, so a track squeezing past needs its own
+    # width plus one clearance to each side.
+    corridor = width + 2.0 * clearance
+    walled_in = [
+        [t.x, t.y] for t in terms
+        if not any(problem.passable(li, t.cell[0], t.cell[1], net)
+                   for li in t.layers)
+    ]
+    pitch_mils = gap_mils = None
+    for t in terms:
+        near = _nearest_foreign_pad(problem, net, t)
+        if near is None:
+            continue
+        if pitch_mils is None or near[0] < pitch_mils:
+            pitch_mils, gap_mils = near
+
+    diag: dict[str, Any] = {
+        "grid_pitch_mils": problem.pitch,
+        "walled_in_pads": walled_in,
+        "expansions_used": expansions,
+        "expansion_budget": opt.max_expansions,
+        "corridor_needed_mils": round(corridor, 2),
+    }
+    if pitch_mils is not None:
+        band = (gap_mils or 0.0) - corridor
+        diag["limiting_pad_pitch_mils"] = round(pitch_mils, 2)
+        diag["limiting_pad_gap_mils"] = round(gap_mils or 0.0, 2)
+        diag["escape_band_mils"] = round(band, 2)
+    else:
+        band = None
+
+    if exhausted:
+        diag["hint"] = "expansion_budget_exhausted"
+        diag["detail"] = (
+            f"A* stopped after {opt.max_expansions} expansions with an "
+            f"open frontier on a {problem.nx}x{problem.ny} x "
+            f"{len(problem.layers)}-layer grid; this is a search-budget "
+            f"verdict, NOT proof that no route exists. Raise "
+            f"max_expansions or grid_pitch_mils and retry.")
+    elif band is not None and band < 0:
+        diag["hint"] = "no_corridor_at_any_pitch"
+        diag["detail"] = (
+            f"the limiting neighbour is {diag['limiting_pad_pitch_mils']} "
+            f"mils away (edge gap {diag['limiting_pad_gap_mils']} mils); a "
+            f"{width} mil track with {clearance} mil clearance needs "
+            f"{round(corridor, 2)} mils to pass. No grid pitch fixes that "
+            f"gap -- fan out with a via, narrow the track, or relax "
+            f"clearance. Search used {expansions} expansions.")
+    elif band is not None and problem.pitch > band:
+        suggested = max(1, int(math.floor(band)))
+        diag["hint"] = "grid_too_coarse"
+        diag["suggested_grid_pitch_mils"] = suggested
+        diag["detail"] = (
+            f"a {round(band, 2)} mil escape band exists past the limiting "
+            f"neighbour ({diag['limiting_pad_pitch_mils']} mils away), but "
+            f"grid_pitch_mils={problem.pitch} cannot land a node inside "
+            f"it. Retry at grid_pitch_mils<={suggested}. Search used "
+            f"{expansions} expansions.")
+    elif walled_in:
+        diag["hint"] = "pad_node_blocked"
+        diag["detail"] = (
+            "the pad's own grid node is not passable for this net -- "
+            "foreign copper already sits within clearance of it. Rip the "
+            "offending net or route this one first.")
+    else:
+        diag["hint"] = "no_route"
+        diag["detail"] = (
+            "the reachable region was searched exhaustively and contains "
+            "no target; the obstruction is elsewhere on the path, not at "
+            "the pads.")
+    return diag
+
+
+# ---------------------------------------------------------------------------
 # A* search
 # ---------------------------------------------------------------------------
 
@@ -410,15 +557,28 @@ def _route_net(problem: RoutingProblem, net: str,
 def _astar(problem: RoutingProblem, net: str,
            starts: list[tuple[int, int, int]],
            targets: set[tuple[int, int, int]],
-           opt: RouterOptions) -> list[tuple[int, int, int]] | None:
+           opt: RouterOptions,
+           ) -> tuple[list[tuple[int, int, int]] | None, bool, int]:
     """Shortest Manhattan path from any start to any target cell.
 
     States are ``(layer, ix, iy, dir)`` so the bend penalty sees the
-    arrival direction. Returns the path as ``(layer, ix, iy)`` cells
-    (consecutive same-cell entries mark a via) or None.
+    arrival direction. Returns ``(path, budget_exhausted, expansions)``:
+    the path as ``(layer, ix, iy)`` cells (consecutive same-cell entries
+    mark a via) or None.
+
+    ``budget_exhausted`` separates "searched everything reachable and
+    there is no path" from "ran out of expansion budget". They are the
+    same None to a caller that ignores it, and that conflation gets
+    worse the finer the grid: halving the pitch quadruples the cells a
+    flood has to chew through, so a budget that was ample at 25 mils
+    turns real routes into "no path" at 5 mils -- silently, and in the
+    direction that looks like a board problem rather than a knob. The
+    expansion count makes the verdict auditable: a failure after a few
+    dozen expansions is a pad trapped in its own neighbourhood, one
+    after hundreds of thousands is a board-scale flood.
     """
     if not targets:
-        return None
+        return None, False, 0
     txs = [ix for (_l, ix, _y) in targets]
     tys = [iy for (_l, _x, iy) in targets]
     bx1, bx2 = min(txs), max(txs)
@@ -456,7 +616,7 @@ def _astar(problem: RoutingProblem, net: str,
             continue
         li, ix, iy, d = st
         if (li, ix, iy) in targets:
-            return _reconstruct(parent, st)
+            return _reconstruct(parent, st), False, expansions
         expansions += 1
 
         directions = _DIRS + _DIAGONAL_DIRS if opt.allow_diagonal else _DIRS
@@ -490,7 +650,11 @@ def _astar(problem: RoutingProblem, net: str,
                     parent[nst] = st
                     heapq.heappush(
                         open_heap, (ng + _h(ix, iy), ng, next(counter), nst))
-    return None
+    # Frontier still non-empty => we stopped on the budget, not on
+    # having exhausted the reachable set.
+    return (None,
+            bool(open_heap) and expansions >= opt.max_expansions,
+            expansions)
 
 
 def _reconstruct(parent: dict, last: tuple[int, int, int, int]

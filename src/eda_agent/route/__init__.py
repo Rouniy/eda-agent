@@ -14,6 +14,7 @@ coordinates are MILS, integers on the wire.
 
 from eda_agent.route.model import (
     DEFAULT_GRID_PITCH_MILS,
+    GridTooFineError,
     RouteRules,
     RoutingProblem,
     Terminal,
@@ -28,6 +29,7 @@ from eda_agent.route.router import (
 
 __all__ = [
     "DEFAULT_GRID_PITCH_MILS",
+    "GridTooFineError",
     "RouteRules",
     "RouterOptions",
     "RoutingProblem",

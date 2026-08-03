@@ -33,6 +33,7 @@ from typing import Any, Optional
 from ..bridge import get_bridge
 from ..route import (
     DEFAULT_GRID_PITCH_MILS,
+    GridTooFineError,
     RouterOptions,
     RoutingProblem,
     route_problem,
@@ -77,7 +78,7 @@ def _geometry_summary(geom: dict[str, Any],
             got = len(geom.get(key) or [])
             if got < declared:
                 mismatches[key] = {"declared": declared, "received": got}
-    return {
+    summary = {
         "truncated": bool(mismatches),
         "count_mismatches": mismatches,
         "declared_counts": counts if isinstance(counts, dict) else {},
@@ -89,16 +90,56 @@ def _geometry_summary(geom: dict[str, Any],
         "nets_with_pads": len(problem.pad_nets_seen),
         "nets_with_terminals": len(problem.terminals),
     }
+    # The grid scale sits next to the pad tally on purpose: pitch is the
+    # one knob that changes every downstream cost without touching the
+    # netlist, so anyone reading "unknown net" can see at a glance
+    # whether the netlist or the resolution moved.
+    summary.update(problem.grid_info())
+    return summary
+
+
+# Unknown-net reasons that mean the ROUTER lost the net, not that the
+# board lacks it. Only "absent_from_geometry" on an otherwise healthy
+# payload is a genuine "no such net"; every other code is a mechanism
+# failure and must not be reported as a clean result.
+_MECHANISM_REASONS = frozenset({
+    "geometry_has_no_pads",
+    "pads_off_routing_layers",
+    "pads_present_but_no_terminal",
+})
 
 
 def _unknown_reason(net: str, problem: Any) -> dict[str, Any]:
+    """Why ``net`` produced no terminals, plus whether that is our fault."""
+    out = _classify_unknown(net, problem)
+    out["mechanism_failure"] = out["reason"] in _MECHANISM_REASONS
+    return out
+
+
+def _classify_unknown(net: str, problem: Any) -> dict[str, Any]:
     """Explain why ``net`` produced no terminals.
 
-    Three genuinely different situations that all used to surface as the
-    single word "unknown": the net is absent from the geometry, its pads
-    exist but sit off the routing layers, or it has pads but they were
-    dropped for another reason.
+    Four genuinely different situations that all used to surface as the
+    single word "unknown": the payload carried no pads at all, the net is
+    absent from an otherwise healthy payload, its pads exist but sit off
+    the routing layers, or it has pads that were dropped for another
+    reason. Every branch is stamped with ``mechanism_failure`` from
+    :data:`_MECHANISM_REASONS` so the caller never has to re-derive which
+    of them is the board's fault.
     """
+    if problem.pads_seen == 0:
+        # Zero pads with nets requested is never a netlist verdict. Saying
+        # "no such net" here is the exact confidently-wrong answer this
+        # field exists to prevent -- the pad list never arrived.
+        return {
+            "reason": "geometry_has_no_pads",
+            "detail": (
+                f"The geometry payload contained no pads at all, so no net "
+                f"could resolve -- including '{net}'. This is a fetch or "
+                f"payload failure, not a missing net. Re-fetch the "
+                f"geometry and check geometry_summary.declared_counts."
+            ),
+        }
     dropped = problem.pads_off_routing_layer.get(net, 0)
     if dropped:
         return {
@@ -175,10 +216,16 @@ def register_route_tools(mcp):
                 ``differential`` / ...). Sets routing order and the
                 per-class track width. Unlisted nets are ``signal``.
             grid_pitch_mils: Routing grid pitch in mils (default 25).
+                Never changes which nets exist -- a pitch too fine for
+                the node budget fails with ``reason_code
+                "grid_too_fine"`` rather than degrading.
             bend_penalty: A* corner cost in grid-pitch units.
             via_cost: A* layer-change cost in grid-pitch units.
             max_expansions: Per-connection A* budget so a walled-in
-                net fails fast.
+                net fails fast. Halving the pitch quadruples the cells a
+                flood must chew through, so a failure carrying hint
+                ``expansion_budget_exhausted`` means this knob ran out,
+                not that the route is impossible.
             routing_style: ``manhattan`` or ``45deg``. The latter permits
                 diagonal moves but conservatively prevents corner cutting.
             fetch_geometry: When True and ``geometry`` is None, pull
@@ -202,12 +249,27 @@ def register_route_tools(mcp):
             requested net away reported 1.0 while routing nothing.
 
             ``ok`` is False when the geometry payload is short of its own
-            declared ``counts`` (``geometry_summary.truncated``) or when
-            every requested net is unknown -- an unknown net can come from
-            a truncated input, not just a wrong name, and must not be
-            mistaken for "no such net". ``unknown_net_reasons`` separates
-            ``absent_from_geometry`` from ``pads_off_routing_layers``
-            (pads exist but on layers outside ``rules.layers``).
+            declared ``counts`` (``geometry_summary.truncated``), when ANY
+            requested net is unknown for a mechanism reason, or when every
+            requested net is unknown -- an unknown net can come from a
+            truncated input, not just a wrong name, and must not be
+            mistaken for "no such net".
+
+            Every ``unknown_net_reasons`` entry carries ``reason`` plus
+            ``mechanism_failure``. Only ``absent_from_geometry`` is
+            benign; ``geometry_has_no_pads`` (the payload carried no pads
+            at all), ``pads_off_routing_layers`` (pads exist but outside
+            ``rules.layers``) and ``pads_present_but_no_terminal`` are
+            mechanism failures, listed in
+            ``unknown_nets_mechanism_failures``.
+
+            A failed net carries ``hint`` + ``detail`` + the measurements
+            behind them: ``expansion_budget_exhausted`` (raise
+            ``max_expansions``), ``grid_too_coarse`` (with
+            ``suggested_grid_pitch_mils`` and the limiting pad pitch),
+            ``no_corridor_at_any_pitch`` (real geometry -- no pitch helps),
+            ``pad_node_blocked``, or ``no_route``. ``summary.failed_hints``
+            tallies them and ``summary.grid`` reports the resolved grid.
         """
         geom = await _resolve_geometry(geometry, fetch_geometry)
         if geom is None:
@@ -231,6 +293,19 @@ def register_route_tools(mcp):
                 via_cost=float(via_cost),
                 max_expansions=int(max_expansions),
                 allow_diagonal=style in {"45deg", "octilinear"})
+        except GridTooFineError as exc:
+            # A resource bound must fail loudly and by name, carrying the
+            # node count and the limit. Degrading to a coarser grid here
+            # would reclassify nets as a side effect of a memory cap --
+            # exactly the silent behaviour this reports instead.
+            out = {"ok": False, "reason": str(exc)}
+            out.update(exc.as_dict())
+            if nets is not None:
+                # The nets were never looked at. Saying nothing about them
+                # is honest; calling them unknown would not be.
+                out["requested_nets"] = sorted(set(nets))
+                out["unknown_nets"] = []
+            return out
         except (ValueError, TypeError) as exc:
             return {"ok": False, "reason": str(exc)}
 
@@ -283,7 +358,27 @@ def register_route_tools(mcp):
                     summary.get("routed", 0) / len(requested)
                     if requested else 0.0
                 )
-            if requested and len(unknown) == len(requested):
+            # An unknown net is only benign when the payload was healthy
+            # and the name simply is not in it. Every other reason means
+            # the router lost a net that exists, and a caller that trusts
+            # ``ok`` must not have to read the reasons to find that out.
+            # Previously ok flipped only when ALL requested nets vanished,
+            # so 6 of 7 dropped for a mechanism failure still reported a
+            # clean run.
+            mechanism = sorted(
+                n for n, r in result["unknown_net_reasons"].items()
+                if r.get("mechanism_failure"))
+            if mechanism:
+                result["unknown_nets_mechanism_failures"] = mechanism
+                result["ok"] = False
+                result.setdefault("reason", (
+                    f"{len(mechanism)} requested net(s) exist in the "
+                    f"geometry but were dropped by the routing model "
+                    f"({', '.join(mechanism[:5])}"
+                    f"{'...' if len(mechanism) > 5 else ''}); see "
+                    f"unknown_net_reasons. This is a mechanism failure, "
+                    f"not a missing net."))
+            elif requested and len(unknown) == len(requested):
                 result["ok"] = False
                 result.setdefault("reason", (
                     "none of the requested nets had routable pads in the "

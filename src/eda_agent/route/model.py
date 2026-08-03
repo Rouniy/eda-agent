@@ -612,6 +612,7 @@ def _board_bounds(geometry: dict[str, Any]) -> tuple[float, float, float, float]
 
 __all__ = [
     "DEFAULT_GRID_PITCH_MILS",
+    "GridTooFineError",
     "RouteRules",
     "RoutingProblem",
     "Terminal",
