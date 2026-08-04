@@ -53,6 +53,11 @@ writes call `pcb.focus_board` with the absolute `.PcbDoc` path and verify the
 returned path. Pass `board_path` directly where supported. An unexpected
 component count is a stop condition.
 
+Launching the COM restart snippet while Altium is busy can start a *second*
+Altium instance, which then shows a modal `Information` box reading
+`There is another instance of running, but it is busy...`. Dismiss it, and
+restart only after confirming no modal is open.
+
 ## Anchor-first placement workflow
 
 Before re-placing an existing board, ask the user whether any obsolete PCB-only
@@ -94,6 +99,49 @@ Errors** and require an empty list. Never execute while any footprint operation
 is red/unavailable or has dependent pin/net failures. Proposed net changes are
 not themselves validation errors; the error-only view is the gate.
 
+## DRC is modal
+
+`pcb.run_drc` raises a modal dialog titled `Design Rule Checker [mm]` (window
+class `TDRCDialog`-like, enumerable via the UI inspector). While it is open the
+DelphiScript polling loop does not answer and `application.ping` times out.
+
+1. Use the non-modal substitute `pcb.get_clearance_violations`.
+2. Its response carries `refreshed` and `stale_possible` flags plus
+   `truncated`/`returned`/`limit`. A `stale_possible: true` result may be a
+   cached count rather than a fresh computation. Check the flags before quoting
+   the number.
+3. If the dialog is already open, recover with
+   `close_window(handle, "Design Rule Checker [mm]")` (WM_CLOSE), then restart
+   the polling loop via the documented COM snippet.
+
+## Netlist and pin-list queries
+
+`project.get_nets` returns at most 500 rows by default. On a design with 1081
+pin rows it silently returned 500 and set `truncated: true`.
+
+1. Always pass an explicit `limit` and assert `truncated` is false.
+2. The rows live under the response key `pins`, not `nets`.
+3. Rows are flat `{component, pin, pin_name, net}` records keyed only by net
+   *name*. Grouping them by name cannot distinguish two different nets that
+   happen to share a name. Cross-check against the ERC `Duplicate nets`
+   category or the PCB net list before concluding that two sheets' nets are
+   electrically merged.
+
+## Clicking dialog buttons
+
+`WindowsUiInspector.click_button` previously required the Win32 class to be
+exactly `Button`, and therefore could not click any button in Altium: dialog
+buttons are `TXPBitBtn` (for example `OK` on `Choose Documents To Compare`, and
+every Engineering Change Order button), and even a plain message box uses
+`TButton`. It now accepts a set of Delphi/VCL button classes; all of them
+respond to the `BM_CLICK` message the method posts. The destructive-caption
+guard (`_DESTRUCTIVE_WORDS` + `allow_destructive`) is unchanged and still
+applies.
+
+`send_hotkey` is not a substitute. It falls back to `PostMessage` when
+`SetForegroundWindow` is denied to a background process, and an Alt+mnemonic
+delivered by `PostMessage` does not trigger a dialog mnemonic.
+
 ## Library serialization quirk
 
 Adding a pad only to a footprint group can look correct in memory but fail to
@@ -125,6 +173,14 @@ $shell.ShellExecute($uri, '', '', 'open', 0)
 
 Closing an ECO whose initiating IPC client was killed may stop the polling loop.
 Ping after every modal workflow and run the safe reload sequence if it fails.
+
+After a bridge restart the focused project may be the script project
+`Altium_API.PrjScr` rather than the design project. In that state the `audit.*`
+tools return `violations: 0` for every check: a silent false "clean" result, not
+an error. Verify with `project.get_focused` and re-point via
+`application.set_active_document` on a design sheet before trusting any audit or
+compare output. `project.force_recompile` reports which project it compiled in
+its response; check that field.
 
 ## Verification gates
 

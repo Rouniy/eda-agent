@@ -2348,6 +2348,7 @@ Var
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     GrpIter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
     Pad : IPCB_Pad;
     OrderStr, Prefix, MapJson, OldName, NewName : String;
     StartIdx, Increment, N, I, J, P, BestPos, Num, K : Integer;
@@ -3516,6 +3517,321 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_GetNetRouting - Return routed primitives for exactly one named net.      }
+{..............................................................................}
+
+Function PCB_GetNetRouting(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iterator : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Track : IPCB_Track;
+    Via : IPCB_Via;
+    Arc : IPCB_Arc;
+    Fill : IPCB_Fill;
+    FilterNet, NetName, TracksJson, ViasJson, ArcsJson, FillsJson : String;
+    FirstTrack, FirstVia, FirstArc, FirstFill : Boolean;
+    TrackCount, ViaCount, ArcCount, FillCount : Integer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    FilterNet := ExtractJsonValue(Params, 'net');
+    If FilterNet = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'net is required');
+        Exit;
+    End;
+    TracksJson := ''; ViasJson := ''; ArcsJson := ''; FillsJson := '';
+    FirstTrack := True; FirstVia := True; FirstArc := True; FirstFill := True;
+    TrackCount := 0; ViaCount := 0; ArcCount := 0; FillCount := 0;
+    Iterator := Board.BoardIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject, eArcObject,
+            eFillObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Obj := Iterator.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            NetName := '';
+            Try If Obj.Net <> Nil Then NetName := Obj.Net.Name; Except End;
+            If NetName = FilterNet Then
+            Begin
+                If Obj.ObjectId = eTrackObject Then
+                Begin
+                    Track := Obj;
+                    If Not FirstTrack Then TracksJson := TracksJson + ',';
+                    FirstTrack := False;
+                    TracksJson := TracksJson + '{"x1":' + IntToStr(CoordToMils(Track.X1))
+                        + ',"y1":' + IntToStr(CoordToMils(Track.Y1))
+                        + ',"x2":' + IntToStr(CoordToMils(Track.X2))
+                        + ',"y2":' + IntToStr(CoordToMils(Track.Y2))
+                        + ',"width":' + IntToStr(CoordToMils(Track.Width))
+                        + ',"layer":"' + EscapeJsonString(GetLayerString(Track.Layer)) + '"}';
+                    Inc(TrackCount);
+                End
+                Else If Obj.ObjectId = eViaObject Then
+                Begin
+                    Via := Obj;
+                    If Not FirstVia Then ViasJson := ViasJson + ',';
+                    FirstVia := False;
+                    ViasJson := ViasJson + '{"x":' + IntToStr(CoordToMils(Via.X))
+                        + ',"y":' + IntToStr(CoordToMils(Via.Y))
+                        + ',"size":' + IntToStr(CoordToMils(Via.Size))
+                        + ',"hole_size":' + IntToStr(CoordToMils(Via.HoleSize)) + '}';
+                    Inc(ViaCount);
+                End
+                Else If Obj.ObjectId = eArcObject Then
+                Begin
+                    Arc := Obj;
+                    If Not FirstArc Then ArcsJson := ArcsJson + ',';
+                    FirstArc := False;
+                    ArcsJson := ArcsJson + '{"x":' + IntToStr(CoordToMils(Arc.XCenter))
+                        + ',"y":' + IntToStr(CoordToMils(Arc.YCenter))
+                        + ',"radius":' + IntToStr(CoordToMils(Arc.Radius))
+                        + ',"start_angle":' + FloatToJsonStr(Arc.StartAngle)
+                        + ',"end_angle":' + FloatToJsonStr(Arc.EndAngle)
+                        + ',"width":' + IntToStr(CoordToMils(Arc.LineWidth))
+                        + ',"layer":"' + EscapeJsonString(GetLayerString(Arc.Layer)) + '"}';
+                    Inc(ArcCount);
+                End
+                Else If Obj.ObjectId = eFillObject Then
+                Begin
+                    Fill := Obj;
+                    If Not FirstFill Then FillsJson := FillsJson + ',';
+                    FirstFill := False;
+                    FillsJson := FillsJson + '{"x1":' + IntToStr(CoordToMils(Fill.X1Location))
+                        + ',"y1":' + IntToStr(CoordToMils(Fill.Y1Location))
+                        + ',"x2":' + IntToStr(CoordToMils(Fill.X2Location))
+                        + ',"y2":' + IntToStr(CoordToMils(Fill.Y2Location))
+                        + ',"rotation":' + FloatToJsonStr(Fill.Rotation)
+                        + ',"layer":"' + EscapeJsonString(GetLayerString(Fill.Layer)) + '"}';
+                    Inc(FillCount);
+                End;
+            End;
+            Obj := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"net":"' + EscapeJsonString(FilterNet) + '","tracks":[' + TracksJson
+        + '],"vias":[' + ViasJson + '],"arcs":[' + ArcsJson
+        + '],"fills":[' + FillsJson + '],"track_count":'
+        + IntToStr(TrackCount) + ',"via_count":' + IntToStr(ViaCount)
+        + ',"arc_count":' + IntToStr(ArcCount) + ',"fill_count":'
+        + IntToStr(FillCount) + '}');
+End;
+
+{..............................................................................}
+{ PCB_GetNetObjectIds - diagnose duplicate internal net objects by address.  }
+{..............................................................................}
+
+Function PCB_GetNetObjectIds(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Pad : IPCB_Pad;
+    FilterNet, NetName, Items, KindStr, OwnerStr : String;
+    First : Boolean;
+    Addr : Integer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    FilterNet := ExtractJsonValue(Params, 'net');
+    If FilterNet = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'net is required');
+        Exit;
+    End;
+    Items := ''; First := True;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject, eViaObject,
+            eArcObject, eFillObject, eRegionObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            NetName := ''; Addr := 0; OwnerStr := '';
+            Try
+                If Obj.Net <> Nil Then
+                Begin
+                    NetName := Obj.Net.Name;
+                    Addr := Obj.Net.I_ObjectAddress;
+                End;
+            Except End;
+            If NetName = FilterNet Then
+            Begin
+                KindStr := IntToStr(Obj.ObjectId);
+                If Obj.ObjectId = ePadObject Then
+                Begin
+                    KindStr := 'pad'; Pad := Obj;
+                    Try If Pad.Component <> Nil Then OwnerStr := Pad.Component.Name.Text; Except End;
+                    OwnerStr := OwnerStr + ':' + Pad.Name;
+                End
+                Else If Obj.ObjectId = eTrackObject Then KindStr := 'track'
+                Else If Obj.ObjectId = eViaObject Then KindStr := 'via'
+                Else If Obj.ObjectId = eRegionObject Then KindStr := 'region'
+                Else If Obj.ObjectId = eFillObject Then KindStr := 'fill'
+                Else If Obj.ObjectId = eArcObject Then KindStr := 'arc';
+                If Not First Then Items := Items + ',';
+                First := False;
+                Items := Items + '{"kind":"' + KindStr + '","owner":"'
+                    + EscapeJsonString(OwnerStr) + '","net_address":'
+                    + IntToStr(Addr) + '}';
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"net":"' + EscapeJsonString(FilterNet) + '","items":[' + Items + ']}');
+End;
+
+{..............................................................................}
+{ PCB_GetConnectionsDetail - inspect live ratsnest primitives for one net.   }
+{..............................................................................}
+
+Function PCB_GetConnectionsDetail(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Conn : Variant;
+    FilterNet, NetName, Items, X1S, Y1S, X2S, Y2S : String;
+    First : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    FilterNet := ExtractJsonValue(Params, 'net');
+    If FilterNet = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'net is required');
+        Exit;
+    End;
+    Items := ''; First := True;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eConnectionObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            NetName := '';
+            Try If Obj.Net <> Nil Then NetName := Obj.Net.Name; Except End;
+            If NetName = FilterNet Then
+            Begin
+                X1S := 'null'; Y1S := 'null'; X2S := 'null'; Y2S := 'null';
+                Conn := Obj;
+                Try X1S := IntToStr(CoordToMils(Conn.X1)); Except End;
+                Try Y1S := IntToStr(CoordToMils(Conn.Y1)); Except End;
+                Try X2S := IntToStr(CoordToMils(Conn.X2)); Except End;
+                Try Y2S := IntToStr(CoordToMils(Conn.Y2)); Except End;
+                If Not First Then Items := Items + ',';
+                First := False;
+                Items := Items + '{"address":' + IntToStr(Obj.I_ObjectAddress)
+                    + ',"x1":' + X1S + ',"y1":' + Y1S
+                    + ',"x2":' + X2S + ',"y2":' + Y2S + '}';
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"net":"' + EscapeJsonString(FilterNet) + '","connections":['
+        + Items + ']}');
+End;
+
+{..............................................................................}
+{ PCB_DeleteConnectionsForNet - remove stale ratsnest objects for one net.   }
+{ Caller must independently prove the copper graph connects every endpoint. }
+{..............................................................................}
+
+Function PCB_DeleteConnectionsForNet(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj, Victim : IPCB_Primitive;
+    FilterNet, NetName : String;
+    Removed : Integer;
+    FoundOne : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    FilterNet := ExtractJsonValue(Params, 'net');
+    If FilterNet = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'net is required');
+        Exit;
+    End;
+    Removed := 0;
+    PCBServer.PreProcess;
+    Try
+        FoundOne := True;
+        While FoundOne Do
+        Begin
+            FoundOne := False; Victim := Nil;
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eConnectionObject));
+                Iter.AddFilter_LayerSet(AllLayers);
+                Iter.AddFilter_Method(eProcessAll);
+                Obj := Iter.FirstPCBObject;
+                While Obj <> Nil Do
+                Begin
+                    NetName := '';
+                    Try If Obj.Net <> Nil Then NetName := Obj.Net.Name; Except End;
+                    If NetName = FilterNet Then
+                    Begin
+                        Victim := Obj; FoundOne := True; Break;
+                    End;
+                    Obj := Iter.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
+            End;
+            If FoundOne And (Victim <> Nil) Then
+            Begin
+                Try
+                    Board.RemovePCBObject(Victim);
+                    Inc(Removed);
+                Except
+                    FoundOne := False;
+                End;
+            End;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    SaveDocByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"net":"' + EscapeJsonString(FilterNet) + '","removed":'
+        + IntToStr(Removed) + '}');
+End;
+
+{..............................................................................}
 { PCB_GetLayerStackup - Get full layer stack info                             }
 {..............................................................................}
 
@@ -3991,6 +4307,39 @@ Begin
         '{"repoured":true}');
 End;
 
+{ Resolve the canonical live net through a real pad. Multi-channel compiled
+  boards can retain more than one board-net object with the same display name;
+  FindNetByName may then return an object different from Pad.Net, and copper
+  looks correctly named but never joins the pads' topology. }
+Function FindPadNetByName(Board : IPCB_Board; NetName : String) : IPCB_Net;
+Var
+    Iter : IPCB_BoardIterator;
+    Pad : IPCB_Pad;
+Begin
+    Result := Nil;
+    If (Board = Nil) Or (NetName = '') Then Exit;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Pad := Iter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            Try
+                If (Pad.Net <> Nil) And (Pad.Net.Name = NetName) Then
+                Begin
+                    Result := Pad.Net;
+                    Exit;
+                End;
+            Except End;
+            Pad := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 {..............................................................................}
 { PCB_PlaceVia - Place a via at specific coordinates on a net                 }
 { Params: x=<mils>, y=<mils>, net=<name>, size=<mils>, hole_size=<mils>,    }
@@ -4060,12 +4409,17 @@ Begin
         // Assign net
         If NetStr <> '' Then
         Begin
-            FoundNet := FindNetByName(Board, NetStr);
+            FoundNet := FindPadNetByName(Board, NetStr);
+            If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
+            Begin
                 Via.Net := FoundNet;
+            End;
         End;
 
         Board.AddPCBObject(Via);
+        If FoundNet <> Nil Then
+            Try FoundNet.AddPCBObject(Via); Except End;
 
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Via.I_ObjectAddress);
@@ -4146,7 +4500,8 @@ Begin
 
         If NetStr <> '' Then
         Begin
-            FoundNet := FindNetByName(Board, NetStr);
+                    FoundNet := FindPadNetByName(Board, NetStr);
+                    If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
                 Track.Net := FoundNet;
         End;
@@ -4335,24 +4690,23 @@ Begin
             Else
                 Track.Layer := eTopLayer;
 
+            FoundNet := Nil;
             If NetStr <> '' Then
             Begin
-                FoundNet := FindNetByName(Board, NetStr);
+                FoundNet := FindPadNetByName(Board, NetStr);
+                If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
                 If FoundNet <> Nil Then
                 Begin
                     Track.Net := FoundNet;
-                    { Setting Track.Net names the net on the primitive;       }
-                    { joining the net's own primitive list is what puts the   }
-                    { segment into the topology the ratsnest is computed      }
-                    { from. PCB_TuneLength does both, and it is the one path  }
-                    { in this codebase observed to move Net.RoutedLength.     }
-                    Try FoundNet.AddPCBObject(Track); Except End;
                 End
                 Else
                     Inc(NetMissing);
             End;
 
             Board.AddPCBObject(Track);
+            { Match the proven PCB_TuneLength ordering: board first, then net. }
+            If FoundNet <> Nil Then
+                Try FoundNet.AddPCBObject(Track); Except End;
 
             { Register EACH track with the board's robots. This used to be a  }
             { single end-of-batch broadcast carrying c_NoEventData -- i.e. a  }
@@ -7105,6 +7459,207 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_RebindVias - Repair topology registration for already placed vias.     }
+{..............................................................................}
+
+Function PCB_RebindVias(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    Count : Integer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Count := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Via := Iter.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            Try
+                If Via.Net <> Nil Then
+                Begin
+                    Via.Net.AddPCBObject(Via);
+                    Inc(Count);
+                End;
+            Except End;
+            Via := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    ResetParameters;
+    Try RunProcess('PCB:RebuildConnectivity'); Except End;
+    SaveDocByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"rebound":' + IntToStr(Count) + ',"connectivity_rebuilt":true}');
+End;
+
+{..............................................................................}
+{ PCB_RebindCopperToPadNets - canonicalize copper Net objects through pads.  }
+{..............................................................................}
+
+Function PCB_RebindCopperToPadNets(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    OldNet, TargetNet : IPCB_Net;
+    NetName : String;
+    Rebound, Seen : Integer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Rebound := 0; Seen := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject, eArcObject,
+            eFillObject, eRegionObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            OldNet := Nil; NetName := '';
+            Try OldNet := Obj.Net; Except End;
+            Try If OldNet <> Nil Then NetName := OldNet.Name; Except End;
+            If NetName <> '' Then
+            Begin
+                Inc(Seen);
+                TargetNet := FindPadNetByName(Board, NetName);
+                If TargetNet <> Nil Then
+                Begin
+                    Try
+                        Obj.BeginModify;
+                        Obj.Net := TargetNet;
+                        Obj.EndModify;
+                        TargetNet.AddPCBObject(Obj);
+                        Inc(Rebound);
+                    Except End;
+                End;
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    RebuildPCBConnectivity(Board);
+    SaveDocByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"seen":' + IntToStr(Seen) + ',"rebound":' + IntToStr(Rebound)
+        + ',"connectivity_rebuilt":true}');
+End;
+
+{..............................................................................}
+{ PCB_PlaceRegionPoly - Place a net-associated copper region from vertices.  }
+{ Params: pts=x:y;x:y;..., layer=<layer>, net=<optional>. Coordinates mils. }
+{..............................................................................}
+
+Function PCB_PlaceRegionPoly(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Region : IPCB_Region;
+    Contour : IPCB_Contour;
+    PtsStr, Remaining, Token, XStr, YStr, LayerStr, NetStr : String;
+    SemiPos, ColonPos, PtCount, K : Integer;
+    FoundNet : IPCB_Net;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    PtsStr := ExtractJsonValue(Params, 'pts');
+    LayerStr := ExtractJsonValue(Params, 'layer');
+    NetStr := ExtractJsonValue(Params, 'net');
+    If PtsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pts is required');
+        Exit;
+    End;
+
+    PtCount := 1;
+    For K := 1 To Length(PtsStr) Do
+        If PtsStr[K] = ';' Then PtCount := PtCount + 1;
+    If PtCount < 3 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'at least 3 vertices required');
+        Exit;
+    End;
+
+    PCBServer.PreProcess;
+    Try
+        Region := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
+        If Region = Nil Then
+        Begin
+            PCBServer.PostProcess;
+            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create region object');
+            Exit;
+        End;
+        If LayerStr = '' Then LayerStr := 'TopLayer';
+        Region.Layer := GetLayerFromString(LayerStr);
+        Contour := Region.MainContour.Replicate;
+        Contour.Count := PtCount;
+        Remaining := PtsStr;
+        K := 1;
+        While (Remaining <> '') And (K <= PtCount) Do
+        Begin
+            SemiPos := Pos(';', Remaining);
+            If SemiPos = 0 Then
+            Begin
+                Token := Remaining;
+                Remaining := '';
+            End
+            Else
+            Begin
+                Token := Copy(Remaining, 1, SemiPos - 1);
+                Remaining := Copy(Remaining, SemiPos + 1, Length(Remaining));
+            End;
+            ColonPos := Pos(':', Token);
+            If ColonPos = 0 Then
+            Begin
+                PCBServer.PostProcess;
+                Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'vertex must be x:y');
+                Exit;
+            End;
+            XStr := Copy(Token, 1, ColonPos - 1);
+            YStr := Copy(Token, ColonPos + 1, Length(Token));
+            Contour.X[K] := MilsToCoord(StrToIntDef(XStr, 0));
+            Contour.Y[K] := MilsToCoord(StrToIntDef(YStr, 0));
+            K := K + 1;
+        End;
+        Region.SetOutlineContour(Contour);
+        If NetStr <> '' Then
+        Begin
+            Try FoundNet := FindNetByName(Board, NetStr); Except FoundNet := Nil; End;
+            If FoundNet <> Nil Then Region.Net := FoundNet;
+        End;
+        Board.AddPCBObject(Region);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, Region.I_ObjectAddress);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    SaveDocByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"vertex_count":' + IntToStr(PtCount)
+        + ',"layer":"' + EscapeJsonString(LayerStr) + '"}');
+End;
+
+{..............................................................................}
 { PCB_DistributeComponents - Evenly space components along X or Y             }
 { Params: designators=<comma list>, axis=x|y, start=<mils>, end=<mils>        }
 {..............................................................................}
@@ -7415,6 +7970,8 @@ Var
     Pad : IPCB_Pad;
     Net : IPCB_Net;
     X, Y, NetsAssigned : Integer;
+    OldX, OldY, DX, DY, CenterX, CenterY : TCoord;
+    CenterCount : Integer;
     Linked : Boolean;
     Rotation : Double;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr, LoadStr : String;
@@ -7472,10 +8029,10 @@ Begin
         LoadStr := 'SourceLibReference=' + LibRef + '|FootPrint=' + Footprint
                  + '|SourceComponentLibrary=' + LibPath;
         Comp.LoadFromLibrary(LoadStr);
-        Comp.Layer := GetLayerFromString(LayerStr);
-        Comp.x := MilsToCoord(X);
-        Comp.y := MilsToCoord(Y);
-        Comp.Rotation := Rotation;
+        OldX := Comp.X;
+        OldY := Comp.Y;
+        DX := MilsToCoord(X) - OldX;
+        DY := MilsToCoord(Y) - OldY;
         If Designator <> '' Then Comp.Name.Text := Designator;
         If Comment <> '' Then Comp.Comment.Text := Comment;
 
@@ -7493,6 +8050,48 @@ Begin
         Board.AddPCBObject(Comp);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Comp.I_ObjectAddress);
+
+        { Assign the registered component origin exactly once.  Altium moves
+          every grouped footprint primitive with Comp.X/Y; manually moving the
+          group first applies the library-origin delta twice. }
+        Comp.Layer := GetLayerFromString(LayerStr);
+        Comp.x := MilsToCoord(X);
+        Comp.y := MilsToCoord(Y);
+        Comp.Rotation := Rotation;
+
+        { LoadFromLibrary applies a board-context-dependent translation when
+          the registered origin/rotation is assigned.  Measure the resulting
+          pad centroid and translate the grouped geometry once, after the
+          final component pose is established. }
+        CenterX := 0; CenterY := 0; CenterCount := 0;
+        GrpIter := Comp.GroupIterator_Create;
+        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Pad := GrpIter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            CenterX := CenterX + Pad.X;
+            CenterY := CenterY + Pad.Y;
+            Inc(CenterCount);
+            Pad := GrpIter.NextPCBObject;
+        End;
+        Comp.GroupIterator_Destroy(GrpIter);
+        If CenterCount > 0 Then
+        Begin
+            DX := MilsToCoord(X) - (CenterX Div CenterCount);
+            DY := MilsToCoord(Y) - (CenterY Div CenterCount);
+            GrpIter := Comp.GroupIterator_Create;
+            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
+                eArcObject, eFillObject, eRegionObject, eComponentBodyObject));
+            Prim := GrpIter.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                Prim.BeginModify;
+                Prim.MoveByXY(DX, DY);
+                Prim.EndModify;
+                Prim := GrpIter.NextPCBObject;
+            End;
+            Comp.GroupIterator_Destroy(GrpIter);
+        End;
 
         { pad nets: create each named net if missing, assign it to the pad,    }
         { giving the board real connectivity (ratsnest + DRC) without an ECO.  }
@@ -7581,12 +8180,15 @@ Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
     GrpIter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
     Pad : IPCB_Pad;
     Net : IPCB_Net;
     PlacementsStr, BoardPathStr, OnePlace, Remaining, LoadStr : String;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr : String;
     UniqueIdStr, PadNetsStr, PadName, NetName : String;
     X, Y, PlacedCount, FailedCount, SepPos : Integer;
+    OldX, OldY, DX, DY, CenterX, CenterY : TCoord;
+    CenterCount : Integer;
     Rotation : Double;
 Begin
     BoardPathStr  := ExtractJsonValue(Params, 'board_path');
@@ -7650,10 +8252,10 @@ Begin
             LoadStr := 'SourceLibReference=' + LibRef + '|FootPrint=' + Footprint
                      + '|SourceComponentLibrary=' + LibPath;
             Comp.LoadFromLibrary(LoadStr);
-            Comp.Layer := GetLayerFromString(LayerStr);
-            Comp.x := MilsToCoord(X);
-            Comp.y := MilsToCoord(Y);
-            Comp.Rotation := Rotation;
+            OldX := Comp.X;
+            OldY := Comp.Y;
+            DX := MilsToCoord(X) - OldX;
+            DY := MilsToCoord(Y) - OldY;
             If Designator <> '' Then Comp.Name.Text := Designator;
             If Comment <> '' Then Comp.Comment.Text := Comment;
             If UniqueIdStr <> '' Then
@@ -7665,6 +8267,42 @@ Begin
             Board.AddPCBObject(Comp);
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, Comp.I_ObjectAddress);
+
+            { Assign the registered component origin exactly once; setting
+              Comp.X/Y carries all grouped primitives with it. }
+            Comp.Layer := GetLayerFromString(LayerStr);
+            Comp.x := MilsToCoord(X);
+            Comp.y := MilsToCoord(Y);
+            Comp.Rotation := Rotation;
+            CenterX := 0; CenterY := 0; CenterCount := 0;
+            GrpIter := Comp.GroupIterator_Create;
+            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Pad := GrpIter.FirstPCBObject;
+            While Pad <> Nil Do
+            Begin
+                CenterX := CenterX + Pad.X;
+                CenterY := CenterY + Pad.Y;
+                Inc(CenterCount);
+                Pad := GrpIter.NextPCBObject;
+            End;
+            Comp.GroupIterator_Destroy(GrpIter);
+            If CenterCount > 0 Then
+            Begin
+                DX := MilsToCoord(X) - (CenterX Div CenterCount);
+                DY := MilsToCoord(Y) - (CenterY Div CenterCount);
+                GrpIter := Comp.GroupIterator_Create;
+                GrpIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
+                    eArcObject, eFillObject, eRegionObject, eComponentBodyObject));
+                Prim := GrpIter.FirstPCBObject;
+                While Prim <> Nil Do
+                Begin
+                    Prim.BeginModify;
+                    Prim.MoveByXY(DX, DY);
+                    Prim.EndModify;
+                    Prim := GrpIter.NextPCBObject;
+                End;
+                Comp.GroupIterator_Destroy(GrpIter);
+            End;
             { Board registration can clear source-link metadata populated on }
             { a detached component. Stamp it again on the registered object. }
             If UniqueIdStr <> '' Then
@@ -11550,6 +12188,10 @@ Begin
         'add_testpoints_for_net_class': Result := PCB_AddTestpointsForNetClass(Params, RequestId);
         'check_placement_collision': Result := PCB_CheckPlacementCollision(Params, RequestId);
         'get_trace_lengths':       Result := PCB_GetTraceLengths(Params, RequestId);
+        'get_net_routing':         Result := PCB_GetNetRouting(Params, RequestId);
+        'get_net_object_ids':      Result := PCB_GetNetObjectIds(Params, RequestId);
+        'get_connections_detail':  Result := PCB_GetConnectionsDetail(Params, RequestId);
+        'delete_connections_for_net': Result := PCB_DeleteConnectionsForNet(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
@@ -11559,6 +12201,8 @@ Begin
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
         'repour_polygons':         Result := PCB_RepourPolygons(Params, RequestId);
         'place_via':               Result := PCB_PlaceVia(Params, RequestId);
+        'rebind_vias':             Result := PCB_RebindVias(Params, RequestId);
+        'rebind_copper_to_pad_nets': Result := PCB_RebindCopperToPadNets(Params, RequestId);
         'place_track':             Result := PCB_PlaceTrack(Params, RequestId);
         'place_tracks':            Result := PCB_PlaceTracks(Params, RequestId);
         'place_arc':               Result := PCB_PlaceArc(Params, RequestId);
@@ -11594,6 +12238,7 @@ Begin
         'place_via_array':         Result := PCB_PlaceViaArray(Params, RequestId);
         'create_diff_pair':        Result := PCB_CreateDiffPair(Params, RequestId);
         'place_region':            Result := PCB_PlaceRegion(Params, RequestId);
+        'place_region_poly':       Result := PCB_PlaceRegionPoly(Params, RequestId);
         'distribute_components':   Result := PCB_DistributeComponents(Params, RequestId);
         'place_dimension':         Result := PCB_PlaceDimension(Params, RequestId);
         'place_pad':               Result := PCB_PlacePad(Params, RequestId);

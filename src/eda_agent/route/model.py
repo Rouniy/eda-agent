@@ -35,7 +35,7 @@ DEFAULT_GRID_PITCH_MILS = 25
 # matters: the obstacle map is per layer, so a 6-layer stack costs three
 # times a 2-layer one at the same pitch, and a cells-only cap under-reads
 # the real allocation by exactly that factor.
-_MAX_GRID_NODES = 4_000_000
+_MAX_GRID_NODES = 6_000_000
 
 # Back-compat alias: the original cap was expressed in cells.
 _MAX_CELLS = _MAX_GRID_NODES

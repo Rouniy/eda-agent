@@ -31,6 +31,7 @@ Var
     Arc   : IPCB_Arc;
     Pad   : IPCB_Pad;
     Via   : IPCB_Via;
+    Fill  : IPCB_Fill;
     Comp  : IPCB_Component;
     Txt   : IPCB_Text;
     Oid   : Integer;
@@ -40,8 +41,20 @@ Begin
         Oid := Obj.ObjectId;
         { Base IPCB_Primitive members, valid to read on ANY primitive. }
         If PropName = 'ObjectId'        Then Result := IntToStr(Oid)
-        Else If PropName = 'X'          Then Result := IntToStr(CoordToMils(Obj.x))
-        Else If PropName = 'Y'          Then Result := IntToStr(CoordToMils(Obj.y))
+        Else If PropName = 'X' Then
+        Begin
+            If Oid = eViaObject Then Begin Via := Obj; Result := IntToStr(CoordToMils(Via.x)); End
+            Else If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.x)); End
+            Else If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(CoordToMils(Comp.x)); End
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := IntToStr(CoordToMils(Txt.x)); End;
+        End
+        Else If PropName = 'Y' Then
+        Begin
+            If Oid = eViaObject Then Begin Via := Obj; Result := IntToStr(CoordToMils(Via.y)); End
+            Else If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.y)); End
+            Else If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(CoordToMils(Comp.y)); End
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := IntToStr(CoordToMils(Txt.y)); End;
+        End
         Else If PropName = 'Layer'      Then Result := GetLayerString(Obj.Layer)
         Else If PropName = 'Descriptor' Then Result := Obj.Descriptor
         Else If PropName = 'Selected'   Then Result := BoolToJsonStr(Obj.Selected)
@@ -54,24 +67,27 @@ Begin
         { Narrow to a typed local via ObjectId (no Forward casts in script).  }
         Else If PropName = 'X1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.X1)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.X1)); End
+            Else If Oid = eFillObject Then Begin Fill := Obj; Result := IntToStr(CoordToMils(Fill.X1)); End;
         End
         Else If PropName = 'Y1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Y1)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Y1)); End
+            Else If Oid = eFillObject Then Begin Fill := Obj; Result := IntToStr(CoordToMils(Fill.Y1)); End;
         End
         Else If PropName = 'X2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.X2)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.X2)); End
+            Else If Oid = eFillObject Then Begin Fill := Obj; Result := IntToStr(CoordToMils(Fill.X2)); End;
         End
         Else If PropName = 'Y2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Y2)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Y2)); End
+            Else If Oid = eFillObject Then Begin Fill := Obj; Result := IntToStr(CoordToMils(Fill.Y2)); End;
         End
         Else If PropName = 'Width' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Width)); End
-            Else If Oid = eArcObject Then Begin Arc := Obj; Result := IntToStr(CoordToMils(Arc.Width)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Width)); End;
         End
         Else If PropName = 'XCenter' Then
         Begin

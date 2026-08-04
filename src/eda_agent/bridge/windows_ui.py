@@ -82,6 +82,17 @@ class WindowsUiInspector:
         "удал", "сброс", "перезапис", "заменить все",
     )
 
+    # Altium paints its dialog buttons with Delphi/VCL classes, not the Win32
+    # "Button" class: OK on "Choose Documents To Compare" is TXPBitBtn, every
+    # ECO button likewise, and even a plain message box answers to TButton.
+    # A strict == "button" test therefore rejects every button in the product.
+    # All of these accept BM_CLICK, which is what this method posts. The
+    # destructive-caption guard below is unchanged.
+    _BUTTON_CLASSES = frozenset((
+        "button", "txpbitbtn", "txpbutton", "txpspeedbutton",
+        "tbitbtn", "tbutton", "tspeedbutton",
+    ))
+
     def __init__(self, pid: int, backend: Any = None) -> None:
         if int(pid) <= 0:
             raise ValueError("pid must be positive")
@@ -314,8 +325,8 @@ class WindowsUiInspector:
             raise ValueError("button_handle is not a child of dialog_handle")
         cls = self._w.gui.GetClassName(int(button_handle))
         caption = self._w.gui.GetWindowText(int(button_handle)).strip()
-        if cls.lower() != "button":
-            raise ValueError("target control is not a Button")
+        if cls.lower() not in self._BUTTON_CLASSES:
+            raise ValueError("target control is not a clickable button")
         if caption != expected_caption.strip():
             raise ValueError("button caption changed; refresh dialog inventory")
         destructive = any(word in caption.lower() for word in self._DESTRUCTIVE_WORDS)

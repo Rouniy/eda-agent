@@ -3312,6 +3312,21 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_get_net_routing(net: str) -> dict[str, Any]:
+        """Return every track, via and arc assigned to one exact PCB net.
+
+        This is the authoritative structural getter for copying reference
+        routing.  Unlike generic ``obj_query``, net filtering happens inside
+        DelphiScript through ``primitive.Net.Name``.
+        """
+        if not net:
+            return {"error": "net is required"}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.get_net_routing", {"net": net}, timeout=120.0,
+        )
+
+    @mcp.tool()
     async def pcb_get_layer_stackup() -> dict[str, Any]:
         """Get the full PCB layer stackup information.
 
