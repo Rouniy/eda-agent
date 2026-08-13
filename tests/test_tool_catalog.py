@@ -13,10 +13,15 @@ import pytest
 @pytest.fixture(scope="module")
 def mcp():
     from mcp.server.fastmcp import FastMCP
-    from eda_agent.tools import register_all_tools
+    from eda_agent.tools import register_backend
 
+    # register_backend, not register_all_tools: the latter is the
+    # ALTIUM-specific suite, and the backend-agnostic registrars
+    # (register_eda_tools, register_meta_tools) are layered on top of it
+    # by register_backend. Calling the inner one built a surface that no
+    # real server ever serves -- one without tool_catalog itself.
     m = FastMCP("test")
-    register_all_tools(m)
+    register_backend(m, "altium")
     return m
 
 
@@ -99,7 +104,13 @@ def test_tool_invoke_bad_args_returns_error(mcp):
 
 def test_tool_invoke_catalog_through_invoke(mcp):
     res = _invoke(mcp, "tool_catalog", {"category": "routing"})
-    assert res["result"]["count"] == 2
+    names = {tool["name"] for tool in res["result"]["tools"]}
+    assert names == {
+        "route_audit_plan",
+        "route_build_offline_package",
+        "route_plan",
+        "route_plan_repairs",
+    }
 
 
 def test_tool_invoke_unknown_tool(mcp):

@@ -139,7 +139,9 @@ class TestBatchDelete:
         sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
         from eda_agent.tools import generic as g
         tools = _capture(g, "register_generic_tools")
-        await tools["obj_batch_delete"](operations=[
+        # Both filters are empty, so this really is a delete-all sweep
+        # and needs the same confirmation obj_delete demands.
+        await tools["obj_batch_delete"](confirm_delete_all=True, operations=[
             {"scope": "active_doc", "object_type": "eNoERC", "filter": ""},
             {"scope": "project", "object_type": "eJunction", "filter": ""},
         ])
@@ -164,15 +166,13 @@ class TestBatchDelete:
             "scope=active_doc;object_type=eTrackObject;filter=Net=VR_PA_A"
         )
 
-    def test_pcb_ops_run_instead_of_being_skipped(
+    @pytest.mark.asyncio
+    async def test_pcb_ops_run_instead_of_being_skipped(
         self, altium_sim, e2e_bridge, monkeypatch
     ):
         """The live repro: one PCB track op, addressed purely by net."""
         import asyncio
-        import json
-
-        from mcp.server.fastmcp import FastMCP
-        from eda_agent.tools import register_all_tools
+        from eda_agent.tools import generic as g
 
         altium_sim.board.tracks = [
             {"x1": 0, "y1": 0, "x2": 100, "y2": 0, "width": 8,
@@ -186,15 +186,14 @@ class TestBatchDelete:
         monkeypatch.setattr(
             "eda_agent.tools.generic.get_bridge", lambda: e2e_bridge
         )
-        mcp = FastMCP("t")
-        register_all_tools(mcp)
-
-        raw = asyncio.run(mcp.call_tool("obj_batch_delete", {"operations": [
-            {"scope": "active_doc", "object_type": "eTrackObject",
-             "filter": "Net=VR_PA_A"},
-        ]}))
-        content = raw[0] if isinstance(raw, tuple) else raw
-        res = json.loads(content[0].text)
+        tools = _capture(g, "register_generic_tools")
+        res = await asyncio.wait_for(
+            tools["obj_batch_delete"](operations=[
+                {"scope": "active_doc", "object_type": "eTrackObject",
+                 "filter": "Net=VR_PA_A"},
+            ]),
+            timeout=2.0,
+        )
 
         assert res["total"] == 1
         # The op ran. Before the fix this was 0 with no explanation given.
@@ -220,10 +219,13 @@ class TestBatchDelete:
         mcp = FastMCP("t")
         register_all_tools(mcp)
 
-        raw = asyncio.run(mcp.call_tool("obj_batch_delete", {"operations": [
-            {"object_type": "eJunction", "filter": ""},
-            {"object_type": "eNotAThing", "filter": ""},
-        ]}))
+        raw = asyncio.run(mcp.call_tool("obj_batch_delete", {
+            "confirm_delete_all": True,
+            "operations": [
+                {"object_type": "eJunction", "filter": ""},
+                {"object_type": "eNotAThing", "filter": ""},
+            ],
+        }))
         content = raw[0] if isinstance(raw, tuple) else raw
         res = json.loads(content[0].text)
 

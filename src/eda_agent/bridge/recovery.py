@@ -6,7 +6,7 @@ When the Altium script engine faults, the bridge can already tell *which*
 way it failed (stuck handler vs dead polling loop vs corrupt response) from
 the progress-heartbeat file. This module turns that diagnosis into concrete,
 consistent recovery steps so an LLM client can relay exactly what the user
-must do — instead of every call site inventing its own prose — and the
+must do, instead of every call site inventing its own prose, and the
 dashboard can render the same banner.
 
 Pure data; no Altium, no bridge state. One source of truth for the recovery
@@ -34,13 +34,13 @@ _GUIDANCE = {
     STUCK_HANDLER: {
         "diagnosis": (
             "Altium is alive (it answered keep-alives) but the command's "
-            "handler never returned — likely stuck in a loop."
+            "handler never returned: likely stuck in a loop."
         ),
         "steps": [_STOP_STEP, _RELAUNCH_STEP],
     },
     DEAD_LOOP: {
         "diagnosis": (
-            "No response and no progress heartbeat — the polling loop is "
+            "No response and no progress heartbeat: the polling loop is "
             "probably not running (never started, or halted on an earlier "
             "engine fault)."
         ),
@@ -54,13 +54,13 @@ _GUIDANCE = {
         "diagnosis": (
             "The handler is blocked on a modal Altium dialog. The polling "
             "loop is single-threaded, so it cannot answer anything else "
-            "until the dialog is dismissed — this is a stuck DIALOG, not a "
+            "until the dialog is dismissed: this is a stuck DIALOG, not a "
             "stuck script, and restarting the script is the wrong fix."
         ),
         "steps": [
             "Call app_list_dialogs to see the open dialog and its buttons "
             "(pure Win32; it does not need the polling loop).",
-            "Dismiss it with app_click_dialog_button — for an ECO, that is "
+            "Dismiss it with app_click_dialog_button; for an ECO, that is "
             "'Execute Changes' to apply or 'Close' to abandon.",
             "The blocked command then returns on its own; re-run it if you "
             "closed the dialog without applying.",
@@ -68,7 +68,7 @@ _GUIDANCE = {
     },
     CORRUPT_RESPONSE: {
         "diagnosis": (
-            "The response file was present but unparseable — Altium likely "
+            "The response file was present but unparseable: Altium likely "
             "crashed mid-write."
         ),
         "steps": [
@@ -108,7 +108,7 @@ def recovery_message(fault: str) -> str:
 
     The MCP layer surfaces ``str(exception)``, not the structured details, so
     the actionable steps must live in the message text too. Same source as
-    ``recovery_guidance`` — no drift.
+    ``recovery_guidance``, no drift.
     """
     g = recovery_guidance(fault)
     numbered = " ".join(f"{i}) {s}" for i, s in enumerate(g["steps"], 1))

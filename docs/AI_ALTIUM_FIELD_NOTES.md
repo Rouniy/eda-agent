@@ -23,7 +23,7 @@ through this MCP server. Treat them as operating constraints.
 ## Headless schematic-to-PCB assignment
 
 `pcb.place_components` needs geometry (`footprint`, `library_path`), identity
-(`designator`, `lib_reference`, `comment`), connectivity (`pad_nets`), and the
+(designator, lib_reference, comment), connectivity (`pad_nets`), and the
 correct PCB `SourceUniqueId` (`unique_id`). In hierarchical projects the latter
 is normally not the short schematic component ID. It has this form:
 

@@ -40,7 +40,7 @@ async def test_application_probe_defaults_to_offline(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("must stay offline")),
     )
     mcp = _Mcp()
-    application.register_application_tools(mcp)
+    application.register_meta_tools(mcp)
     result = await mcp.tools["app_capability_probe"]()
     assert result["live_probed"] is False
     assert result["command_count"] > 200

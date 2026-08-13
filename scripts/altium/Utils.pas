@@ -325,6 +325,133 @@ Begin
     Result := True;
 End;
 
+{..............................................................................}
+{ IEEE pin-symbol (TIeeeSymbol) converters, used for the decoration drawn on  }
+{ a pin's inner or outer edge: the inversion bubble on an active-low pin      }
+{ (outer edge, 'dot') and the wedge on a clock pin (inner edge, 'clock').     }
+{                                                                             }
+{ These deliberately traffic in Integer, never in TIeeeSymbol. That type name }
+{ appears nowhere else in this codebase, so whether DelphiScript declares it  }
+{ is unverified, and an undeclared identifier in a signature faults at        }
+{ runtime where Try/Except cannot catch it. Assigning a plain Integer to an   }
+{ enum-typed property is already established here: Lib_AddPins sets           }
+{ Pin.Orientation (a TRotationBy90) from Rotation Div 90.                     }
+{                                                                             }
+{ Position in IeeeSymbolNames IS the enum ordinal, so the two converters      }
+{ below cannot disagree. Order verified against the schematic API types       }
+{ reference (TIeeeSymbol, 35 members, eNoSymbol = 0).                         }
+{..............................................................................}
+
+{ Delete every occurrence of one character. Written out rather than calling  }
+{ StringReplace because DelphiScript spells the replace-all flag as the      }
+{ integer -1 while Free Pascal wants a TReplaceFlags set, and these routines }
+{ are compiled by BOTH: tests/cross_validate_pascal.pas carries them         }
+{ verbatim so a real Pascal compiler can check them without Altium.          }
+Function StripChar(S : String; C : Char) : String;
+Var
+    I : Integer;
+Begin
+    Result := '';
+    For I := 1 To Length(S) Do
+        If S[I] <> C Then Result := Result + S[I];
+End;
+
+Function IeeeSymbolNames : String;
+Begin
+    Result :=
+        'no_symbol|dot|right_left_signal_flow|clock|active_low_input|' +
+        'analog_signal_in|not_logic_connection|shift_right|postponed_output|' +
+        'open_collector|hiz|high_current|pulse|schmitt|delay|group_line|' +
+        'group_bin|active_low_output|pi_symbol|greater_equal|less_equal|' +
+        'sigma|open_collector_pullup|open_emitter|open_emitter_pullup|' +
+        'digital_signal_in|and|invertor|or|xor|shift_left|input_output|' +
+        'open_circuit_output|left_right_signal_flow|bidirectional_signal_flow';
+End;
+
+Function IeeeSymbolToStr(V : Integer) : String;
+Var
+    Names, Tok : String;
+    I, P : Integer;
+Begin
+    { Unknown ordinals report as 'no_symbol' rather than raising: this feeds }
+    { JSON output, where a bad read must not abort the whole response.       }
+    Result := 'no_symbol';
+    If V <= 0 Then Exit;
+    Names := IeeeSymbolNames + '|';
+    I := 0;
+    While Names <> '' Do
+    Begin
+        P := Pos('|', Names);
+        If P = 0 Then Break;
+        Tok := Copy(Names, 1, P - 1);
+        Names := Copy(Names, P + 1, Length(Names));
+        If I = V Then
+        Begin
+            Result := Tok;
+            Exit;
+        End;
+        I := I + 1;
+    End;
+End;
+
+Function StrToIeeeSymbol(S : String) : Integer;
+Var
+    LS, Compact, Names, Tok : String;
+    I, P : Integer;
+Begin
+    Result := 0;
+    LS := LowerCase(Trim(S));
+    If LS = '' Then Exit;
+
+    { A bare ordinal is accepted so a caller can reach any TIeeeSymbol member, }
+    { including the ones with no friendly alias spelled out below.             }
+    If IsIntStr(LS) Then
+    Begin
+        Result := StrToIntDef(LS, 0);
+        If (Result < 0) Or (Result > 34) Then Result := 0;
+        Exit;
+    End;
+
+    { Friendly aliases for the two that carry real schematic meaning. KiCad   }
+    { and most part libraries describe these as "inverted" and "clock".       }
+    Compact := StripChar(LS, '_');
+    If (Compact = 'inverted') Or (Compact = 'inversion') Or (Compact = 'bubble')
+        Or (Compact = 'activelow') Or (Compact = 'negated') Then
+    Begin
+        Result := 1;    { eDot }
+        Exit;
+    End;
+    If Compact = 'clk' Then
+    Begin
+        Result := 3;    { eClock }
+        Exit;
+    End;
+
+    { Altium's raw enum spelling ('eActiveLowInput') differs from the         }
+    { canonical name only by a leading 'e', so retry once with it stripped.   }
+    Names := IeeeSymbolNames + '|';
+    I := 0;
+    While Names <> '' Do
+    Begin
+        P := Pos('|', Names);
+        If P = 0 Then Break;
+        Tok := StripChar(Copy(Names, 1, P - 1), '_');
+        Names := Copy(Names, P + 1, Length(Names));
+        If Compact = Tok Then
+        Begin
+            Result := I;
+            Exit;
+        End;
+        If (Length(Compact) > 1) And (Compact[1] = 'e') Then
+            If Copy(Compact, 2, Length(Compact)) = Tok Then
+            Begin
+                Result := I;
+                Exit;
+            End;
+        I := I + 1;
+    End;
+End;
+
 Function StrToFloatDef(S : String; Default : Double) : Double;
 Var
     OldSep : Char;
@@ -573,4 +700,306 @@ Begin
             Result := Copy(Json, StartPos, EndPos - StartPos);
         End;
     End;
+End;
+
+{..............................................................................}
+{ Mechanical layer KIND: the property that says what a mechanical layer is    }
+{ FOR, rather than what it is called. Courtyard, Assembly, 3D Body and the    }
+{ rest. A renamed layer still has no kind, and every feature that resolves a  }
+{ layer by purpose then skips it, so the outlines are drawn and nothing uses  }
+{ them.                                                                        }
+{                                                                              }
+{ Carried as an Integer. The enum identifiers are not declared in this script  }
+{ binding, and an undeclared identifier faults at RUN time on the user's board }
+{ rather than being caught when the script loads.                              }
+{                                                                              }
+{ The numbering is the layer stack manager's own. 31 to 36 are unassigned,     }
+{ which is why the map has a hole in it rather than an off-by-one.            }
+{..............................................................................}
+
+Function MechKindToString(K : Integer) : String;
+Begin
+    Case K Of
+        0  : Result := 'Not Set';
+        1  : Result := 'Assembly Top';
+        2  : Result := 'Assembly Bottom';
+        3  : Result := 'Assembly Notes';
+        4  : Result := 'Board';
+        5  : Result := 'Coating Top';
+        6  : Result := 'Coating Bottom';
+        7  : Result := 'Component Center Top';
+        8  : Result := 'Component Center Bottom';
+        9  : Result := 'Component Outline Top';
+        10 : Result := 'Component Outline Bottom';
+        11 : Result := 'Courtyard Top';
+        12 : Result := 'Courtyard Bottom';
+        13 : Result := 'Designator Top';
+        14 : Result := 'Designator Bottom';
+        15 : Result := 'Dimensions';
+        16 : Result := 'Dimensions Top';
+        17 : Result := 'Dimensions Bottom';
+        18 : Result := 'Fab Notes';
+        19 : Result := 'Glue Points Top';
+        20 : Result := 'Glue Points Bottom';
+        21 : Result := 'Gold Plating Top';
+        22 : Result := 'Gold Plating Bottom';
+        23 : Result := 'Value Top';
+        24 : Result := 'Value Bottom';
+        25 : Result := 'V Cut';
+        26 : Result := '3D Body Top';
+        27 : Result := '3D Body Bottom';
+        28 : Result := 'Route Tool Path';
+        29 : Result := 'Sheet';
+        30 : Result := 'Board Shape';
+        37 : Result := 'Tenting Top';
+        38 : Result := 'Tenting Bottom';
+        39 : Result := 'Covering Top';
+        40 : Result := 'Covering Bottom';
+        41 : Result := 'Plugging Top';
+        42 : Result := 'Plugging Bottom';
+        43 : Result := 'Filling';
+        44 : Result := 'Capping';
+    Else
+        Result := 'Unknown';
+    End;
+End;
+
+{ A kind name or a bare number to its integer, or -1 when neither.            }
+{ Numbers are accepted so a kind added by a later Altium release can still be }
+{ set through this handler without waiting for the map above to catch up.     }
+
+Function MechKindFromString(S : String) : Integer;
+Var
+    U, Candidate : String;
+    I : Integer;
+Begin
+    Result := -1;
+    U := UpperCase(Trim(S));
+    If U = '' Then Exit;
+
+    If IsIntStr(U) Then
+    Begin
+        I := StrToIntDef(U, -1);
+        If (I >= 0) And (I <= 44) Then Result := I;
+        Exit;
+    End;
+
+    For I := 0 To 44 Do
+    Begin
+        Candidate := MechKindToString(I);
+        { 'Unknown' is what the map returns for the unassigned numbers, so    }
+        { matching against it would quietly resolve to the first hole.        }
+        If Candidate <> 'Unknown' Then
+        Begin
+            If UpperCase(Candidate) = U Then
+            Begin
+                Result := I;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{ The kind currently on a mechanical layer, or -1 when the property is not    }
+{ readable. AD17 and AD18 have no mechanical layer kinds at all, and the read }
+{ faults there rather than returning zero.                                    }
+
+Function ReadMechKind(LayerObj : IPCB_LayerObject_V7) : Integer;
+Begin
+    Result := -1;
+    If LayerObj = Nil Then Exit;
+    Try
+        Result := LayerObj.Kind;
+    Except
+        Result := -1;
+    End;
+End;
+
+{..............................................................................}
+{ Mechanical layers above 16.                                                  }
+{                                                                              }
+{ GetLayerFromString knows Mechanical1 to Mechanical16, which is the legacy    }
+{ set. A V9 stack goes to 1024, and a real library was found keeping eleven of }
+{ its twelve named layers in the 17 to 28 range: Top 3D Body on Mechanical 21, }
+{ Top Courtyard on 25, and so on. Every one of those was unreachable, so a     }
+{ sweep applied the single layer that happened to sit below 16 and silently    }
+{ skipped the rest.                                                            }
+{                                                                              }
+{ LayerUtils.MechanicalLayer(n) is the accessor that covers the full range.    }
+{ It is guarded because this codebase has not used LayerUtils before, and an   }
+{ identifier this binding does not declare faults at RUN time rather than      }
+{ when the script loads.                                                       }
+{                                                                              }
+{ The identifiers encode as 16908288 + n, which is how Mechanical 21 reads as  }
+{ 16908309 in a library file. Written in decimal deliberately: an eight digit  }
+{ hex literal has silently aborted a unit in this dialect before.              }
+{..............................................................................}
+
+Function MechLayerIdBase : Integer;
+Begin
+    Result := 16908288;
+End;
+
+{ The mechanical layer NUMBER a caller meant, or -1.                          }
+{ Accepts "Mechanical21", "Mech21", "21", and the raw layer id.               }
+
+Function ParseMechLayerNumber(S : String) : Integer;
+Var
+    T : String;
+    I, Value : Integer;
+Begin
+    Result := -1;
+    T := UpperCase(Trim(S));
+    If T = '' Then Exit;
+
+    T := StringReplace(T, ' ', '', MkSet(rfReplaceAll));
+    If Copy(T, 1, 10) = 'MECHANICAL' Then
+        T := Copy(T, 11, Length(T))
+    Else If Copy(T, 1, 4) = 'MECH' Then
+        T := Copy(T, 5, Length(T));
+
+    If Not IsIntStr(T) Then Exit;
+    Value := StrToIntDef(T, -1);
+    If Value < 0 Then Exit;
+
+    { A raw layer id, as stored in the file. }
+    If Value > 1024 Then
+    Begin
+        If (Value > MechLayerIdBase) And (Value <= MechLayerIdBase + 1024) Then
+            Result := Value - MechLayerIdBase;
+        Exit;
+    End;
+
+    If (Value >= 1) And (Value <= 1024) Then Result := Value;
+End;
+
+{ The TLayer for a mechanical layer number, or eNoLayer.                      }
+
+Function MechLayerFromNumber(N : Integer) : TLayer;
+Begin
+    Result := eNoLayer;
+    If (N < 1) Or (N > 1024) Then Exit;
+    If N <= 16 Then
+    Begin
+        Result := GetLayerFromString('Mechanical' + IntToStr(N));
+        Exit;
+    End;
+    Try
+        Result := LayerUtils.MechanicalLayer(N);
+    Except
+        Result := eNoLayer;
+    End;
+End;
+
+{..............................................................................}
+{ Paired mechanical layer kinds.                                               }
+{                                                                              }
+{ Most kinds come as a Top and Bottom pair, and Altium refuses to set one      }
+{ unless the two layers are joined as a LAYER PAIR first. Measured on a real   }
+{ library: on a single layer in one call, "Fab Notes" and "Not Set" applied    }
+{ and "Component Outline Top" was refused, with nothing else holding that      }
+{ kind. Single kinds need no partner; paired ones do.                          }
+{                                                                              }
+{ Derived from the NAME rather than a second hardcoded table, so a kind added  }
+{ by a later Altium release pairs correctly without another list to update.    }
+{..............................................................................}
+
+Function MechKindIsPaired(K : Integer) : Boolean;
+Var
+    S : String;
+Begin
+    S := MechKindToString(K);
+    Result := (Pos(' Top', S) > 0) Or (Pos(' Bottom', S) > 0);
+End;
+
+{ The kind on the other side of a pair, or -1 when the kind is single. }
+
+Function MechKindPartner(K : Integer) : Integer;
+Var
+    S, Other : String;
+    P, I : Integer;
+Begin
+    Result := -1;
+    S := MechKindToString(K);
+    If S = 'Unknown' Then Exit;
+
+    P := Pos(' Top', S);
+    If P > 0 Then
+        Other := Copy(S, 1, P - 1) + ' Bottom'
+    Else
+    Begin
+        P := Pos(' Bottom', S);
+        If P = 0 Then Exit;
+        Other := Copy(S, 1, P - 1) + ' Top';
+    End;
+
+    For I := 0 To 44 Do
+        If MechKindToString(I) = Other Then
+        Begin
+            Result := I;
+            Exit;
+        End;
+End;
+
+{..............................................................................}
+{ Layer PAIR kinds are a SECOND enum, not the layer kinds renumbered.          }
+{                                                                              }
+{ A paired concept is held by the pair, not by either layer: the pair carries  }
+{ "Component Outline" while the two layers carry "Component Outline Top" and   }
+{ "Component Outline Bottom". The ids differ as well, so a layer kind used as  }
+{ a pair kind names a different concept. Writing the layer property leaves the }
+{ LayerKindMapping stream empty, which is why a paired kind read back          }
+{ unchanged however the layer write was attempted.                             }
+{                                                                              }
+{ There are no Top and Bottom entries here, and the numbering is its own.      }
+{..............................................................................}
+
+Function MechPairKindToString(K : Integer) : String;
+Begin
+    Result := 'Unknown';
+    If K = 0  Then Result := 'Not Set';
+    If K = 1  Then Result := 'Assembly';
+    If K = 2  Then Result := 'Coating';
+    If K = 3  Then Result := 'Component Center';
+    If K = 4  Then Result := 'Component Outline';
+    If K = 5  Then Result := 'Courtyard';
+    If K = 6  Then Result := 'Designator';
+    If K = 7  Then Result := 'Dimensions';
+    If K = 8  Then Result := 'Glue Points';
+    If K = 9  Then Result := 'Gold Plating';
+    If K = 10 Then Result := 'Value';
+    If K = 11 Then Result := '3D Body';
+    { Via protection, IPC-4761. }
+    If K = 15 Then Result := 'Tenting';
+    If K = 16 Then Result := 'Covering';
+    If K = 17 Then Result := 'Plugging';
+End;
+
+{ The pair kind that carries a paired layer kind.                              }
+{                                                                              }
+{ Matched on the name with the side suffix removed rather than through a       }
+{ third table, so the two enums cannot drift apart here. The reference does    }
+{ the same match but stops at 12, which silently drops Tenting, Covering and   }
+{ Plugging; those are 15 to 17, so the search has to reach 17.                 }
+
+Function MechPairKindFromLayerKind(K : Integer) : Integer;
+Var
+    S, Base : String;
+    P, I : Integer;
+Begin
+    Result := -1;
+    S := MechKindToString(K);
+    If S = 'Unknown' Then Exit;
+
+    P := Pos(' Top', S);
+    If P = 0 Then P := Pos(' Bottom', S);
+    If P = 0 Then Exit;
+    Base := Copy(S, 1, P - 1);
+
+    For I := 0 To 17 Do
+        If MechPairKindToString(I) = Base Then
+        Begin
+            Result := I;
+            Exit;
+        End;
 End;

@@ -258,7 +258,6 @@ Var
     FocusedPath : String;
 Begin
     Result := Nil;
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     Workspace := GetWorkspace;
     If Workspace = Nil Then Exit;
     FocusedPath := '';
@@ -364,7 +363,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create symbol');
 End;
 
-{ Lib_SetCurrentComponent — make a named component the "current" one in    }
+{ Lib_SetCurrentComponent: make a named component the "current" one in    }
 { the SchLib editor so subsequent SchIterator-based commands (modify_objects }
 { on ePin / eRectangle / eParameter via active_doc scope) target it. The    }
 { asymmetry this fixes: GetState_SchComponentByLibRef is a read-only fetch  }
@@ -378,10 +377,63 @@ End;
 { lib_component scope handling in the generic primitives, so a caller can   }
 { target a library symbol without a separate set_current_component round-   }
 { trip.                                                                      }
-Function SelectLibComponent(Name : String) : ISch_Component;
+{ CurrentLibPartId - which part the SchLib editor is DISPLAYING.              }
+{                                                                             }
+{ Deliberately read from the document, not from Component.CurrentPartID.      }
+{ Those two disagree: the component property accepts any value, while the     }
+{ document reports what is on screen, and the iterator follows the document.  }
+{ Returns -1 when the document does not answer, so a caller can tell "part 1" }
+{ from "no idea".                                                             }
+Function CurrentLibPartId(SchLib : ISch_Lib) : Integer;
+Begin
+    Result := -1;
+    Try Result := SchLib.GetState_CurrentSchComponentPartId; Except End;
+End;
+
+{ StepLibComponentPartTo - move the editor's displayed part to Target.        }
+{                                                                             }
+{ Assigning CurrentPartID does not move it; the editor's own command does.    }
+{ Stepping is the only route found in working code (two independent scripts   }
+{ in reference/ drive SCH:NextComponentPart and check the document's part id  }
+{ after each step), so it is used here rather than a property that reports    }
+{ success and changes nothing.                                                }
+{                                                                             }
+{ Bounded by PartCount: the command WRAPS past the last part, so a target     }
+{ that can never be reached would spin forever rather than fail.              }
+Procedure StepLibComponentPartTo(SchLib : ISch_Lib; Component : ISch_Component; Target : Integer);
+Var
+    Count, Steps, Seen : Integer;
+Begin
+    Count := 1;
+    Try Count := Component.PartCount; Except End;
+    If Count < 1 Then Count := 1;
+
+    Seen := CurrentLibPartId(SchLib);
+    { No reported part id means there is nothing to verify against, and       }
+    { stepping blind would move the editor off whatever the user was on.      }
+    If Seen < 0 Then Exit;
+
+    Steps := 0;
+    While (Seen <> Target) And (Steps < Count) Do
+    Begin
+        ResetParameters;
+        RunProcess('SCH:NextComponentPart');
+        Steps := Steps + 1;
+        Seen := CurrentLibPartId(SchLib);
+        If Seen < 0 Then Break;
+    End;
+End;
+
+{ SelectLibComponentPart - focus a library symbol and make PART PartId the    }
+{ active one. A SchLib iterator only ever yields the CURRENT part's           }
+{ primitives, so on a multi-part symbol every query, modify and delete sees   }
+{ part 1 alone unless the caller can move the part pointer. PartId <= 0 keeps }
+{ the historical part-1 behaviour.                                            }
+Function SelectLibComponentPart(Name : String; PartId : Integer) : ISch_Component;
 Var
     SchLib : ISch_Lib;
     Component : ISch_Component;
+    Target, Count : Integer;
 Begin
     Result := Nil;
     If (Name = '') Or (SchServer = Nil) Then Exit;
@@ -394,16 +446,51 @@ Begin
 
     SchLib.CurrentSchComponent := Component;
     LastCreatedLibComponent := Component;
+
     { Reset PartID + DisplayMode so subsequent Lib_AddSymbol* calls write     }
-    { their primitives onto the visible normal-mode part (Part 1, DisplayMode }
-    { 0). Without this, after a fresh SchLib reopen Component.CurrentPartID   }
-    { can be 0 (no part) and AddSchObject silently succeeds but the primitive }
-    { lands on an invisible bucket -- explains the "line added with success   }
-    { but no eLine in query_objects" behaviour observed 2026-05-16.           }
-    Try Component.CurrentPartID := 1; Except End;
+    { their primitives onto a VISIBLE normal-mode part. Without this, after a }
+    { fresh SchLib reopen Component.CurrentPartID can be 0 (no part) and      }
+    { AddSchObject silently succeeds but the primitive lands on an invisible  }
+    { bucket -- explains the "line added with success but no eLine in         }
+    { query_objects" behaviour observed on a live symbol. The reset stays,    }
+    { and the only                                                            }
+    { change is WHICH part it selects when the caller asks for one.           }
+    Target := 1;
+    If PartId > 1 Then
+    Begin
+        Count := 1;
+        Try Count := Component.PartCount; Except End;
+        { PartCount can read high by one on some symbols; clamp rather than  }
+        { refuse, and never below 1.                                          }
+        If (Count > 0) And (PartId <= Count) Then
+            Target := PartId
+        Else
+            Target := PartId;   { let Altium reject an out-of-range id }
+    End;
+    Try Component.CurrentPartID := Target; Except End;
     Try Component.DisplayMode := 0; Except End;
+
+    { Assigning CurrentPartID is NOT enough, and this is the whole bug        }
+    { reported in GH #11 against a 4-part TPS23881B: the property takes the   }
+    { value, the editor's part spinner does not move, and the SchLib iterator }
+    { follows the DISPLAYED part. So every query returned part 1 while the    }
+    { scope said part 3, and with the spinner moved by hand the suffix was    }
+    { ignored outright. Nothing errored either way.                           }
+    {                                                                          }
+    { The displayed part is moved by the editor's own command, not by a       }
+    { property. Step it and read the document's part id back after each step. }
+    { Bounded by PartCount because the command WRAPS at the last part, so an  }
+    { unreachable target would otherwise spin forever.                        }
+    If Target > 0 Then
+        StepLibComponentPartTo(SchLib, Component, Target);
+
     Try SchLib.GraphicallyInvalidate; Except End;
     Result := Component;
+End;
+
+Function SelectLibComponent(Name : String) : ISch_Component;
+Begin
+    Result := SelectLibComponentPart(Name, 1);
 End;
 
 Function Lib_SetCurrentComponent(Params : String; RequestId : String) : String;
@@ -511,17 +598,12 @@ Begin
         Pin.Orientation := Rotation Div 90;
         Pin.IsHidden := Hidden;
 
-        // Set electrical type. The bidirectional constant is spelled
-        // eElectricIO in Altium's DelphiScript (eElectricBiDir is undeclared).
-        If ElecType = 'input' Then Pin.Electrical := eElectricInput
-        Else If ElecType = 'output' Then Pin.Electrical := eElectricOutput
-        Else If ElecType = 'bidirectional' Then Pin.Electrical := eElectricIO
-        Else If ElecType = 'io' Then Pin.Electrical := eElectricIO
-        Else If ElecType = 'power' Then Pin.Electrical := eElectricPower
-        Else If ElecType = 'open_collector' Then Pin.Electrical := eElectricOpenCollector
-        Else If ElecType = 'open_emitter' Then Pin.Electrical := eElectricOpenEmitter
-        Else If ElecType = 'hiz' Then Pin.Electrical := eElectricHiZ
-        Else Pin.Electrical := eElectricPassive;
+        { The shared parser, not an inline chain: the batch path        }
+        { (Lib_AddPins) already used StrToPinElectrical, and this       }
+        { path's inline copy was case- and underscore-SENSITIVE with    }
+        { no aliases, so 'Input' made a passive pin here and an input   }
+        { pin there. One vocabulary, stated once, in Utils.pas.         }
+        Pin.Electrical := StrToPinElectrical(ElecType);
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         SetOwnerPart(Pin, Component);
@@ -539,6 +621,7 @@ End;
 Function Lib_AddSymbolRectangle(Params : String; RequestId : String) : String;
 Var
     X1, Y1, X2, Y2 : Integer;
+    FillColorStr, BorderColorStr : String;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Rect : ISch_Rectangle;
@@ -548,6 +631,8 @@ Begin
     Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
     X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
     Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    FillColorStr := ExtractJsonValue(Params, 'fill_color');
+    BorderColorStr := ExtractJsonValue(Params, 'border_color');
 
     SchLib := SchServer.GetCurrentSchDocument;
     If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
@@ -578,7 +663,27 @@ Begin
         Loc.X := MilsToCoord(X2);
         Loc.Y := MilsToCoord(Y2);
         Rect.Corner := Loc;
+
+        { Colours are OPTIONAL and only touched when supplied, so a caller }
+        { that sends neither gets exactly the outline it got before.       }
+        {                                                                   }
+        { IsSolid is the reason fill_color did nothing: it was pinned False }
+        { here, so an AreaColor would never have been drawn. A supplied     }
+        { fill therefore turns the rectangle solid as well, which is what   }
+        { lib_create_ic_symbol has been asking for all along by sending     }
+        { Altium's pale-yellow body colour and getting a hollow box.        }
+        { -1 is the tool's documented "no fill" sentinel and is what the   }
+        { parameter DEFAULTS to, so it arrives on nearly every call.       }
+        { Treating any non-empty value as a fill would have turned every   }
+        { symbol rectangle solid in colour -1.                              }
         Rect.IsSolid := False;
+        If BorderColorStr <> '' Then
+            Try Rect.Color := StrToIntDef(BorderColorStr, 0); Except End;
+        If (FillColorStr <> '') And (StrToIntDef(FillColorStr, -1) >= 0) Then
+            Try
+                Rect.AreaColor := StrToIntDef(FillColorStr, 0);
+                Rect.IsSolid := True;
+            Except End;
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         SetOwnerPart(Rect, Component);
@@ -630,7 +735,7 @@ Begin
         { Read-modify-write -- direct `Line.Location.X := value` writes to a }
         { record copy and is silently discarded, leaving the line at its     }
         { default 0,0 / 0,0 (zero-length, invisible, not added to the        }
-        { component). Confirmed broken 2026-05-16 when 12 lib_add_symbol_line }
+        { component). Confirmed broken when 12 lib_add_symbol_line           }
         { calls all reported success but no eLine objects were on the symbol. }
         Loc := Line.Location;
         Loc.X := MilsToCoord(X1);
@@ -1162,6 +1267,8 @@ End;
 Function Lib_AddFootprintText(Params : String; RequestId : String) : String;
 Var
     TextStr, LayerStr, CompName, LibPath, FocusedPath, FlagStr, RespJson : String;
+    MirrorStr : String;
+    Mirror : Boolean;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
@@ -1188,8 +1295,12 @@ Begin
     If LayerStr = '' Then LayerStr := 'TopOverlay';
     FlagStr := ExtractJsonValue(Params, 'use_ttfont');
     UseTTFont := (FlagStr = 'true') Or (FlagStr = 'True') Or (FlagStr = '1');
+    { Bottom-side text must be mirrored or it reads backwards on the      }
+    { board. audit_find_mirrored_pcb_text reports exactly this pairing:    }
+    { eBottomOverlay without MirrorFlag, and eTopOverlay with it.          }
+    MirrorStr := ExtractJsonValue(Params, 'mirror');
+    Mirror := (MirrorStr = 'true') Or (MirrorStr = 'True') Or (MirrorStr = '1');
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     CompName := ExtractJsonValue(Params, 'component_name');
 
     If LibPath <> '' Then
@@ -1273,6 +1384,7 @@ Begin
         Text.UnderlyingString := TextStr;
         Text.Size := MilsToCoord(Size);
         Text.Width := MilsToCoord(Width);
+        Try Text.MirrorFlag := Mirror; Except End;
         Try Text.Rotation := Rotation; Except End;
 
         { The working pattern: add to footprint AND to its                  }
@@ -1316,7 +1428,6 @@ Var
     Count : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -1409,7 +1520,6 @@ Var
 Begin
     FpWanted := ExtractJsonValue(Params, 'footprint_name');
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -1649,7 +1759,6 @@ Var
     TRect : TCoordRect;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
     Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 250);
     If Offset < 0 Then Offset := 0;
@@ -1985,7 +2094,6 @@ Begin
         Exit;
     End;
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     XStr := ExtractJsonValue(Params, 'x');
     YStr := ExtractJsonValue(Params, 'y');
     HeightStr := ExtractJsonValue(Params, 'height');
@@ -2266,7 +2374,6 @@ Var
     Converted, Total : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -2456,7 +2563,6 @@ Var
     DoCreate, MovedOk : Boolean;
 Begin
     EditsPath := ExtractJsonValue(Params, 'edits_path');
-    EditsPath := StringReplace(EditsPath, '\\', '\', -1);
     If EditsPath = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
@@ -2470,7 +2576,6 @@ Begin
         Exit;
     End;
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -2765,7 +2870,6 @@ Var
     PcbLib : IPCB_Library;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     If LibPath = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
@@ -2825,7 +2929,6 @@ Var
 Begin
     FpWanted := ExtractJsonValue(Params, 'footprint_name');
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -3140,7 +3243,10 @@ End;
 {         not applied (Altium ignores them on import; set in the editor).     }
 Function Lib_Link3DModel(Params : String; RequestId : String) : String;
 Var
-    ModelPath, ComponentName, FpName : String;
+    ModelPath, ComponentName, FpName, AppliedJson : String;
+    OffX, OffY, OffZ : Integer;
+    RotZ : Double;
+    DidStandoff, DidRotation, DidMove : Boolean;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     Iter : IPCB_LibraryIterator;
@@ -3148,8 +3254,16 @@ Var
     Model : IPCB_Model;
 Begin
     ModelPath := ExtractJsonValue(Params, 'model_path');
-    ModelPath := StringReplace(ModelPath, '\\', '\', -1);
     ComponentName := ExtractJsonValue(Params, 'component_name');
+    { Mils and degrees, matching the tool's documented units.             }
+    { rotation_x / rotation_y are deliberately NOT read: the body exposes }
+    { StandoffHeight and a PLANAR Rotation, and the PCB API reference     }
+    { gives the model no X or Y tilt, so reading them would imply a       }
+    { capability that does not exist.                                      }
+    OffX := StrToIntDef(ExtractJsonValue(Params, 'offset_x'), 0);
+    OffY := StrToIntDef(ExtractJsonValue(Params, 'offset_y'), 0);
+    OffZ := StrToIntDef(ExtractJsonValue(Params, 'offset_z'), 0);
+    RotZ := StrToFloatDef(ExtractJsonValue(Params, 'rotation_z'), 0.0);
 
     If (ModelPath = '') Or (Not FileExists(ModelPath)) Then
     Begin
@@ -3219,9 +3333,41 @@ Begin
                 Body.SetState_FromModel;
                 Body.Model := Model;
                 Footprint.AddPCBObject(Body);
-                Result := BuildSuccessResponse(RequestId,
-                    '{"success":true,"footprint":"' + EscapeJsonString(FpName) +
-                    '","model":"' + EscapeJsonString(ExtractFileName(ModelPath)) + '"}');
+
+                { Placement adjustments. Each is guarded AND REPORTED:     }
+                { StandoffHeight, Rotation and MoveByXY are documented on  }
+                { the body (MoveByXY via IPCB_Primitive, used on other     }
+                { primitives in PCB.pas) but appear nowhere else in this   }
+                { codebase, so the first live run needs to show which ones }
+                { actually took rather than trusting a blanket success.    }
+                DidStandoff := False;
+                DidRotation := False;
+                DidMove := False;
+                If OffZ <> 0 Then
+                    Try
+                        Body.StandoffHeight := MilsToCoord(OffZ);
+                        DidStandoff := True;
+                    Except End;
+                If RotZ <> 0 Then
+                    Try
+                        Body.Rotation := RotZ;
+                        DidRotation := True;
+                    Except End;
+                If (OffX <> 0) Or (OffY <> 0) Then
+                    Try
+                        Body.MoveByXY(MilsToCoord(OffX), MilsToCoord(OffY));
+                        DidMove := True;
+                    Except End;
+
+                AppliedJson := JsonBool('standoff_height', DidStandoff) + ','
+                    + JsonBool('rotation_z', DidRotation) + ','
+                    + JsonBool('offset_xy', DidMove);
+
+                Result := BuildSuccessResponse(RequestId, JsonObj(
+                    JsonBool('success', True) + ','
+                    + JsonStr('footprint', FpName) + ','
+                    + JsonStr('model', ExtractFileName(ModelPath)) + ','
+                    + JsonRaw('applied', JsonObj(AppliedJson))));
             End;
         End;
     Finally
@@ -3250,7 +3396,6 @@ Var
 Begin
     // Get library path from parameter or active document
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
 
     // Optional flag: dump parameters per component. Default is FALSE because
     // GetState_SchComponentByLibRef + parameter iterator runs O(N) and is the
@@ -3544,7 +3689,6 @@ Begin
     Query := ExtractJsonValue(Params, 'query');
     SearchType := ExtractJsonValue(Params, 'search_type');
     LibPathFilter := ExtractJsonValue(Params, 'library_path');
-    LibPathFilter := StringReplace(LibPathFilter, '\\', '\', -1);
     Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
 
     If SearchType = '' Then SearchType := 'all';
@@ -3851,7 +3995,6 @@ Var
 Begin
     ComponentName := ExtractJsonValue(Params, 'component_name');
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
 
     If (ComponentName = '') And (ExtractJsonValue(Params, 'component_index') = '') Then
     Begin
@@ -4084,9 +4227,7 @@ Var
     Updated, Created, Failed, LineNum : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     BatchPath := ExtractJsonValue(Params, 'batch_file');
-    BatchPath := StringReplace(BatchPath, '\\', '\', -1);
 
     If BatchPath = '' Then
         BatchPath := WorkspaceDir + 'batch_params.txt';
@@ -4269,9 +4410,7 @@ Var
     Renamed, Failed, LineNum : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     BatchPath := ExtractJsonValue(Params, 'batch_file');
-    BatchPath := StringReplace(BatchPath, '\\', '\', -1);
     If BatchPath = '' Then
         BatchPath := WorkspaceDir + 'batch_rename.txt';
 
@@ -4413,9 +4552,7 @@ Var
     First : Boolean;
 Begin
     PathA := ExtractJsonValue(Params, 'library_a');
-    PathA := StringReplace(PathA, '\\', '\', -1);
     PathB := ExtractJsonValue(Params, 'library_b');
-    PathB := StringReplace(PathB, '\\', '\', -1);
 
     If (PathA = '') Or (PathB = '') Then
     Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'library_a and library_b are required'); Exit; End;
@@ -4709,7 +4846,7 @@ Var
     Component : ISch_Component;
     PinIterator : ISch_Iterator;
     Pin : ISch_Pin;
-    JsonItems, ElecStr : String;
+    JsonItems, ElecStr, WantName : String;
     First : Boolean;
     PinCount : Integer;
 Begin
@@ -4720,10 +4857,43 @@ Begin
         Exit;
     End;
 
-    Component := GetTargetLibComponent(SchLib);
+    { Resolve THROUGH the library, never straight off the editor's current
+      component. Measured on a live library: SchIterator_Create on a component
+      taken from CurrentSchComponent faults with "Undeclared identifier:
+      SchIterator_Create", while the identical call works on a component
+      fetched by lib-ref or returned from a SchLib iterator, which is how
+      every other reader in this file gets one. DelphiScript narrows an
+      interface at iterator-return; a component handed over any other way
+      does not carry the methods, and the failure is a late-bound one that
+      Try/Except cannot catch.
+
+      component_name also lets a caller name the symbol rather than rely on
+      whatever the editor has selected, so reading a symbol's pins stops
+      depending on, and stops disturbing, the current selection. }
+    WantName := ExtractJsonValue(Params, 'component_name');
+    If WantName = '' Then
+    Begin
+        Component := GetTargetLibComponent(SchLib);
+        If Component <> Nil Then
+            Try
+                WantName := Component.LibReference;
+            Except
+                WantName := '';
+            End;
+    End;
+
+    If WantName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No component is selected; pass component_name to name one');
+        Exit;
+    End;
+
+    Component := SchLib.GetState_SchComponentByLibRef(WantName);
     If Component = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
+        Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
+            'Component not found in library: ' + WantName);
         Exit;
     End;
 
@@ -4807,9 +4977,7 @@ Var
     Overwrite, SameLib, Overwrote : Boolean;
 Begin
     SourceLibPath := ExtractJsonValue(Params, 'source_library');
-    SourceLibPath := StringReplace(SourceLibPath, '\\', '\', -1);
     DestLibPath := ExtractJsonValue(Params, 'dest_library');
-    DestLibPath := StringReplace(DestLibPath, '\\', '\', -1);
     SourceName := ExtractJsonValue(Params, 'source_name');
     NewName := ExtractJsonValue(Params, 'new_name');
     OverwriteStr := ExtractJsonValue(Params, 'overwrite');
@@ -4939,7 +5107,11 @@ End;
 { Params: pins = '~~'-separated list; each pin has key=value fields joined by  }
 {         ';'. Fields: designator, name, x, y, length (mils), rotation        }
 {         (0/90/180/270), electrical_type (input/output/bidirectional/        }
-{         passive/power/open_collector/open_emitter/hiz), hidden (true/false).}
+{         passive/power/open_collector/open_emitter/hiz), hidden (true/false),}
+{         symbol_outer_edge / symbol_inner_edge (IEEE decoration name or      }
+{         ordinal; 'dot' = inversion bubble, 'clock' = clock wedge),          }
+{         show_name / show_designator (true/false; whether the pin's name     }
+{         and number are drawn. Omit to leave at Altium's default).           }
 {..............................................................................}
 
 Function Lib_AddPins(Params : String; RequestId : String) : String;
@@ -4947,6 +5119,7 @@ Var
     PinsStr, Op, Remaining : String;
     OpCount, Added, Failed : Integer;
     Designator, Name, ElecType, HiddenStr, OwnerStr : String;
+    OuterStr, InnerStr, ShowNameStr, ShowDesigStr : String;
     X, Y, Length, Rotation, OwnerPartId : Integer;
     Hidden, OwnerExplicit : Boolean;
     SchLib : ISch_Lib;
@@ -5003,6 +5176,17 @@ Begin
             OwnerStr := GetBatchField(Op, 'owner_part_id');
             OwnerExplicit := OwnerStr <> '';
             OwnerPartId := StrToIntDef(OwnerStr, 0);
+            { IEEE edge decorations: 'dot' on the outer edge is the inversion }
+            { bubble of an active-low pin, 'clock' on the inner edge is the   }
+            { wedge of a clock pin. Any TIeeeSymbol name or ordinal is        }
+            { accepted; see StrToIeeeSymbol.                                  }
+            OuterStr := GetBatchField(Op, 'symbol_outer_edge');
+            InnerStr := GetBatchField(Op, 'symbol_inner_edge');
+            { Whether the pin's name and number are DRAWN. Distinct from  }
+            { 'hidden', which hides the whole pin: a resistor shows both  }
+            { its pins and neither of their labels. Absent = leave alone. }
+            ShowNameStr := GetBatchField(Op, 'show_name');
+            ShowDesigStr := GetBatchField(Op, 'show_designator');
 
             Pin := SchServer.SchObjectFactory(ePin, eCreate_Default);
             If Pin = Nil Then
@@ -5024,6 +5208,22 @@ Begin
 
             Pin.Electrical := StrToPinElectrical(ElecType);
 
+            { Only written when the caller asked for a decoration. A fresh    }
+            { pin already carries eNoSymbol on both edges, so skipping the     }
+            { assignment keeps this bulk path (every symbol we author runs     }
+            { through it) byte-identical to its previous behaviour whenever    }
+            { the new fields are absent.                                       }
+            If OuterStr <> '' Then
+                Pin.Symbol_OuterEdge := StrToIeeeSymbol(OuterStr);
+            If InnerStr <> '' Then
+                Pin.Symbol_InnerEdge := StrToIeeeSymbol(InnerStr);
+
+            If ShowNameStr <> '' Then
+                Pin.ShowName := (ShowNameStr = 'true') Or (ShowNameStr = '1');
+            If ShowDesigStr <> '' Then
+                Pin.ShowDesignator :=
+                    (ShowDesigStr = 'true') Or (ShowDesigStr = '1');
+
             If OwnerExplicit Then
             Begin
                 { Explicit owner_part_id from caller (multi-part symbol).  }
@@ -5035,6 +5235,147 @@ Begin
 
             Component.AddSchObject(Pin);
             SchRegisterObject(Component, Pin);
+            Inc(Added);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+    End;
+
+    MarkLibDirty(SchLib);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount) + '}');
+End;
+
+{..............................................................................}
+{ Lib_AddSymbolText - Bulk add body text to the current library symbol.       }
+{ Same batch shape as Lib_AddPins: one PreProcess/PostProcess for the lot.    }
+{ Params: texts = '~~'-separated list; fields joined by ';'. Fields: text,    }
+{         x, y (mils), rotation (0/90/180/270), font_size, font_name, bold,   }
+{         italic (true/false), owner_part_id.                                 }
+{                                                                             }
+{ The primitive is an ISch_Label, which is what Altium uses for free text on  }
+{ a symbol. Its property set is the one BuildLabelStyleJson already reads     }
+{ (Text / FontId / Location / Orientation / Justification), so nothing new is }
+{ being assumed about the interface.                                          }
+{                                                                             }
+{ font_size is Altium's own font size, the number SchServer.FontManager       }
+{ takes, NOT mils. No conversion is attempted here because the relationship   }
+{ between the two is not documented anywhere this project can check, and a    }
+{ guessed constant would silently resize every imported note.                 }
+{..............................................................................}
+
+Function Lib_AddSymbolText(Params : String; RequestId : String) : String;
+Var
+    TextsStr, Op, Remaining : String;
+    OpCount, Added, Failed : Integer;
+    Content, OwnerStr, FontName, BoldStr, ItalicStr : String;
+    X, Y, Rotation, FontSize, OwnerPartId : Integer;
+    OwnerExplicit, Bold, Italic : Boolean;
+    SchLib : ISch_Lib;
+    Component : ISch_Component;
+    Lbl : ISch_Label;
+    Loc : TLocation;
+    FontMgr : ISch_FontManager;
+Begin
+    TextsStr := ExtractJsonValue(Params, 'texts');
+    If TextsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'texts is required');
+        Exit;
+    End;
+
+    SchLib := SchServer.GetCurrentSchDocument;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
+        Exit;
+    End;
+
+    Component := GetTargetLibComponent(SchLib);
+    If Component = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component is selected');
+        Exit;
+    End;
+
+    FontMgr := SchServer.FontManager;
+
+    Added := 0;
+    Failed := 0;
+    OpCount := 0;
+    Remaining := TextsStr;
+
+    SchServer.ProcessControl.PreProcess(SchLib, '');
+    Try
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            OpCount := OpCount + 1;
+
+            Content := GetBatchField(Op, 'text');
+            If Content = '' Then
+            Begin
+                { An empty string would place an invisible, unselectable }
+                { primitive that only shows up as a stray object later.  }
+                Inc(Failed);
+                Continue;
+            End;
+
+            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+            Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+            FontSize := StrToIntDef(GetBatchField(Op, 'font_size'), 10);
+            FontName := GetBatchField(Op, 'font_name');
+            If FontName = '' Then FontName := 'Arial';
+            BoldStr := GetBatchField(Op, 'bold');
+            ItalicStr := GetBatchField(Op, 'italic');
+            Bold := (BoldStr = 'true') Or (BoldStr = '1');
+            Italic := (ItalicStr = 'true') Or (ItalicStr = '1');
+            OwnerStr := GetBatchField(Op, 'owner_part_id');
+            OwnerExplicit := OwnerStr <> '';
+            OwnerPartId := StrToIntDef(OwnerStr, 0);
+
+            Lbl := SchServer.SchObjectFactory(eLabel, eCreate_Default);
+            If Lbl = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            Lbl.Text := Content;
+            { Location is a by-value record: read, mutate, write back. }
+            Loc := Lbl.Location;
+            Loc.X := MilsToCoord(X);
+            Loc.Y := MilsToCoord(Y);
+            Lbl.Location := Loc;
+
+            { Orientation is enum-typed. Assign the quarter-turn ordinal as }
+            { a plain Integer, exactly as Lib_AddPins sets Pin.Orientation,  }
+            { rather than naming a type this codebase cannot verify.        }
+            Try
+                Lbl.Orientation := (((Rotation Mod 360) + 360) Mod 360) Div 90;
+            Except
+            End;
+
+            Try
+                Lbl.FontId := FontMgr.GetFontID(FontSize, 0, False, Italic,
+                                                Bold, False, FontName);
+            Except
+            End;
+
+            If OwnerExplicit Then
+            Begin
+                Try Lbl.OwnerPartId := OwnerPartId; Except End;
+                Try Lbl.OwnerPartDisplayMode := 0; Except End;
+            End
+            Else
+                SetOwnerPart(Lbl, Component);
+
+            Component.AddSchObject(Lbl);
+            SchRegisterObject(Component, Lbl);
             Inc(Added);
         End;
     Finally
@@ -5183,7 +5524,6 @@ Var
     First, FirstPin, FirstStyle, Mismatched : Boolean;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
 
     FlagStr := ExtractJsonValue(Params, 'with_comment');
     WithComment := (FlagStr = 'true') Or (FlagStr = 'True') Or (FlagStr = '1');
@@ -5545,7 +5885,6 @@ Var
     Scope : String;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     Target := ExtractJsonValue(Params, 'target');
     If Target = '' Then Target := 'designator';
     CompName := ExtractJsonValue(Params, 'component_name');
@@ -5796,7 +6135,6 @@ Var
     OpModified, OpAlready, OpMissing, OpFailed : TStringList;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
-    LibPath := StringReplace(LibPath, '\\', '\', -1);
     CompName := ExtractJsonValue(Params, 'component_name');
     OpsStr := ExtractJsonValue(Params, 'ops');
     If OpsStr = '' Then
@@ -6033,7 +6371,6 @@ Var
     RespJson : String;
 Begin
     IntLibPath := ExtractJsonValue(Params, 'intlib_path');
-    IntLibPath := StringReplace(IntLibPath, '\\', '\', -1);
     If IntLibPath = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
@@ -6266,7 +6603,7 @@ Var
     Path : String;
     Ok : Boolean;
 Begin
-    Path := StringReplace(ExtractJsonValue(Params, 'library_path'), '\\', '\', -1);
+    Path := ExtractJsonValue(Params, 'library_path');
     If Path = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'library_path is required');
@@ -6292,7 +6629,7 @@ Var
     Path : String;
     Ok : Boolean;
 Begin
-    Path := StringReplace(ExtractJsonValue(Params, 'library_path'), '\\', '\', -1);
+    Path := ExtractJsonValue(Params, 'library_path');
     If Path = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'library_path is required');
@@ -6329,7 +6666,7 @@ Var
     SchLib : ISch_Lib;
     Component : ISch_Component;
 Begin
-    LibPath := StringReplace(ExtractJsonValue(Params, 'library_path'), '\\', '\', -1);
+    LibPath := ExtractJsonValue(Params, 'library_path');
     CompName := ExtractJsonValue(Params, 'component_name');
     If (CompName = '') And (ExtractJsonValue(Params, 'component_index') = '') Then
     Begin
@@ -6406,7 +6743,7 @@ Var
     SchLib : ISch_Lib;
     Component, Existing : ISch_Component;
 Begin
-    LibPath := StringReplace(ExtractJsonValue(Params, 'library_path'), '\\', '\', -1);
+    LibPath := ExtractJsonValue(Params, 'library_path');
     NewName := ExtractJsonValue(Params, 'new_name');
     If NewName = '' Then
     Begin
@@ -6503,7 +6840,7 @@ Var
     Iter : IPCB_LibraryIterator;
     Footprint, Target : IPCB_LibComponent;
 Begin
-    LibPath := StringReplace(ExtractJsonValue(Params, 'library_path'), '\\', '\', -1);
+    LibPath := ExtractJsonValue(Params, 'library_path');
     FpWanted := ExtractJsonValue(Params, 'footprint_name');
     If FpWanted = '' Then
     Begin
@@ -6677,7 +7014,7 @@ Var
     Footprint, Target : IPCB_LibComponent;
     Clash : Boolean;
 Begin
-    LibPath := StringReplace(ExtractJsonValue(Params, 'library_path'), '\\', '\', -1);
+    LibPath := ExtractJsonValue(Params, 'library_path');
     FpName := ExtractJsonValue(Params, 'footprint_name');
     NewName := ExtractJsonValue(Params, 'new_name');
     If (FpName = '') Or (NewName = '') Then
@@ -7483,7 +7820,7 @@ Var
     HeightMils, PrimCount : Integer;
     PFirst : Boolean;
 Begin
-    LibPath := StringReplace(ExtractJsonValue(Params, 'library_path'), '\\', '\', -1);
+    LibPath := ExtractJsonValue(Params, 'library_path');
     FpWanted := ExtractJsonValue(Params, 'footprint_name');
     If FpWanted = '' Then
     Begin
@@ -7604,8 +7941,8 @@ Var
     ServerDoc : IServerDocument;
     Moved, Skipped, Failed : Integer;
 Begin
-    SourcePath := StringReplace(ExtractJsonValue(Params, 'source_library'), '\\', '\', -1);
-    DestPath := StringReplace(ExtractJsonValue(Params, 'dest_library'), '\\', '\', -1);
+    SourcePath := ExtractJsonValue(Params, 'source_library');
+    DestPath := ExtractJsonValue(Params, 'dest_library');
     NamesStr := ExtractJsonValue(Params, 'names');
     OverwriteStr := ExtractJsonValue(Params, 'overwrite');
     DeleteStr := ExtractJsonValue(Params, 'delete_from_source');
@@ -7723,8 +8060,8 @@ Var
     Footprint, NewFP, Existing, Fp : IPCB_LibComponent;
     Moved, Skipped, Failed, J : Integer;
 Begin
-    SourcePath := StringReplace(ExtractJsonValue(Params, 'source_library'), '\\', '\', -1);
-    DestPath := StringReplace(ExtractJsonValue(Params, 'dest_library'), '\\', '\', -1);
+    SourcePath := ExtractJsonValue(Params, 'source_library');
+    DestPath := ExtractJsonValue(Params, 'dest_library');
     NamesStr := ExtractJsonValue(Params, 'names');
     OverwriteStr := ExtractJsonValue(Params, 'overwrite');
     DeleteStr := ExtractJsonValue(Params, 'delete_from_source');
@@ -7838,8 +8175,8 @@ Var
     Footprint, NewFP, Existing, Fp : IPCB_LibComponent;
     J : Integer;
 Begin
-    SourceLibPath := StringReplace(ExtractJsonValue(Params, 'source_library'), '\\', '\', -1);
-    DestLibPath := StringReplace(ExtractJsonValue(Params, 'dest_library'), '\\', '\', -1);
+    SourceLibPath := ExtractJsonValue(Params, 'source_library');
+    DestLibPath := ExtractJsonValue(Params, 'dest_library');
     SourceName := ExtractJsonValue(Params, 'source_name');
     NewName := ExtractJsonValue(Params, 'new_name');
     OverwriteStr := ExtractJsonValue(Params, 'overwrite');
@@ -7968,7 +8305,7 @@ Var
     Count, CornerPct : Integer;
     ExpVal : Double;
 Begin
-    LibPath := StringReplace(ExtractJsonValue(Params, 'library_path'), '\\', '\', -1);
+    LibPath := ExtractJsonValue(Params, 'library_path');
     FpWanted := ExtractJsonValue(Params, 'footprint_name');
     If FpWanted = '' Then
     Begin
@@ -8144,16 +8481,1114 @@ Begin
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
+{ Lib_ClearSourceLibrary - unpin every symbol in a SchLib from its source     }
+{ provenance, the library-side sibling of the placed-component               }
+{ clear_sch_source_library. When symbols were copied in from another library  }
+{ (a vendor pack, a stock library) each carries SourceLibraryName /           }
+{ TargetFileName pointing at the ORIGIN, and a stale DesignItemId; placing    }
+{ them then re-links against a library that no longer exists. Per matching    }
+{ component: clear SourceLibraryName, reset TargetFileName to '*', and sync   }
+{ DesignItemId to the LibReference (each independently switchable). The       }
+{ minimal fast path of what lib_normalize_implementations does as part of     }
+{ its full model sweep. Deferred save via MarkLibDirty.                        }
+{ Params: library_path (optional, focused default),                           }
+{         component_names (optional comma list, empty = all),                 }
+{         clear_target_file_name=true, sync_design_item_id=true.               }
+Function Lib_ClearSourceLibrary(Params : String; RequestId : String) : String;
+Var
+    LibPath, NamesCsv, FlagStr, Nm, LibRef : String;
+    SchLib : ISch_Lib;
+    CompIter : ISch_Iterator;
+    Component : ISch_Component;
+    AllNames, WantNames : TStringList;
+    ClearTarget, SyncId, WantAll : Boolean;
+    C, Total, ClearedSrc, ClearedTgt, Synced : Integer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    NamesCsv := ExtractJsonValue(Params, 'component_names');
+    FlagStr := ExtractJsonValue(Params, 'clear_target_file_name');
+    ClearTarget := Not ((FlagStr = 'false') Or (FlagStr = 'False') Or (FlagStr = '0'));
+    FlagStr := ExtractJsonValue(Params, 'sync_design_item_id');
+    SyncId := Not ((FlagStr = 'false') Or (FlagStr = 'False') Or (FlagStr = '0'));
+
+    SchLib := FocusSchLib(LibPath);
+    If SchLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+            'Failed to focus schematic library at ' + LibPath);
+        Exit;
+    End;
+
+    AllNames := TStringList.Create;
+    WantNames := TStringList.Create;
+    Try
+        WantNames.CommaText := NamesCsv;
+        WantAll := WantNames.Count = 0;
+
+        { Two-phase walk (the normalize pattern): collect names via the   }
+        { live iterator first, mutate by LibRef lookup after, so the      }
+        { iterator never sees a component being modified under it.        }
+        CompIter := SchLib.SchLibIterator_Create;
+        Try
+            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Component := CompIter.FirstSchObject;
+            While Component <> Nil Do
+            Begin
+                Nm := '';
+                Try Nm := Component.LibReference; Except End;
+                If Nm <> '' Then
+                Begin
+                    If WantAll Or (WantNames.IndexOf(Nm) >= 0) Then
+                        AllNames.Add(Nm);
+                End;
+                Component := CompIter.NextSchObject;
+            End;
+        Finally
+            SchLib.SchIterator_Destroy(CompIter);
+        End;
+
+        Total := 0;
+        ClearedSrc := 0;
+        ClearedTgt := 0;
+        Synced := 0;
+
+        SchServer.ProcessControl.PreProcess(SchLib, '');
+        Try
+            For C := 0 To AllNames.Count - 1 Do
+            Begin
+                Component := SchLib.GetState_SchComponentByLibRef(AllNames[C]);
+                If Component = Nil Then Continue;
+                Inc(Total);
+
+                Try
+                    If Component.SourceLibraryName <> '' Then
+                    Begin
+                        Component.SourceLibraryName := '';
+                        Inc(ClearedSrc);
+                    End;
+                Except End;
+
+                If ClearTarget Then
+                Begin
+                    Try
+                        If Component.TargetFileName <> '*' Then
+                        Begin
+                            Component.TargetFileName := '*';
+                            Inc(ClearedTgt);
+                        End;
+                    Except End;
+                End;
+
+                If SyncId Then
+                Begin
+                    Try
+                        LibRef := Component.LibReference;
+                        If (LibRef <> '') And (Component.DesignItemId <> LibRef) Then
+                        Begin
+                            Component.DesignItemId := LibRef;
+                            Inc(Synced);
+                        End;
+                    Except End;
+                End;
+            End;
+        Finally
+            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        End;
+
+        SchLib.GraphicallyInvalidate;
+        MarkLibDirty(SchLib);
+    Finally
+        AllNames.Free;
+        WantNames.Free;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"library_path":"' + EscapeJsonString(LibPath) + '"' +
+        ',"total":' + IntToStr(Total) +
+        ',"cleared_source_library":' + IntToStr(ClearedSrc) +
+        ',"cleared_target_file_name":' + IntToStr(ClearedTgt) +
+        ',"synced_design_item_id":' + IntToStr(Synced) + '}');
+End;
+
 {..............................................................................}
 { Command Handler - must be at end                                             }
 {..............................................................................}
 
-Function HandleLibraryCommand(Action : String; Params : String; RequestId : String) : String;
+{..............................................................................}
+{ Lib_SetMechLayers - Name, enable and kind the mechanical layers of ONE      }
+{ named library.                                                              }
+{                                                                              }
+{ Params: library_path, layers                                                }
+{   layers is '~~' separated operations, ';' separated fields:                }
+{     layer=Mechanical13;name=Courtyard;enabled=true;kind=Courtyard Top       }
+{                                                                              }
+{ WHY THIS EXISTS SEPARATELY FROM THE pcb_* LAYER TOOLS. Those read whatever  }
+{ board is current. Pointing them at a particular library depends on the      }
+{ focus actually moving, and when it does not they silently operate on the    }
+{ previously focused library instead: a run across twenty one libraries came  }
+{ back with twenty one identical answers because every call had re-read the   }
+{ same file while reporting success.                                          }
+{                                                                              }
+{ So this takes the library by PATH, and refuses unless the document that     }
+{ ended up focused is the one that was asked for. An operation on the wrong   }
+{ library is worse than no operation, because it looks like it worked.        }
+{..............................................................................}
+
+{ Which mechanical layer in THIS request is being given a kind.        }
+{                                                                       }
+{ Scans the caller's own ops rather than the stack, because a paired    }
+{ kind is joined to the partner the caller is setting now. Reading the  }
+{ stack instead would find whatever already held the kind, which is a   }
+{ different layer and a different intent.                                }
+
+Function FindLayerForKindInOps(OpsStr : String; WantKind : Integer) : Integer;
+Var
+    Remaining, Op, LayerName, KindStr : String;
+    Num : Integer;
 Begin
+    Result := -1;
+    Remaining := OpsStr;
+    While Trim(Remaining) <> '' Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Trim(Op) = '' Then Continue;
+        KindStr := Trim(GetBatchField(Op, 'kind'));
+        If KindStr = '' Then Continue;
+        If MechKindFromString(KindStr) = WantKind Then
+        Begin
+            LayerName := Trim(GetBatchField(Op, 'layer'));
+            Num := ParseMechLayerNumber(LayerName);
+            If Num > 0 Then
+            Begin
+                Result := Num;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{ Whether two mechanical layers are joined, in either order.                  }
+{                                                                              }
+{ PairDefined is order sensitive, so asking one way round reports no pair for  }
+{ one that exists the other way round.                                         }
+
+Function PairIsDefined(MechPairs : IPCB_MechanicalLayerPairs;
+    L1 : TLayer; L2 : TLayer) : Boolean;
+Begin
+    Result := False;
+    If MechPairs = Nil Then Exit;
+    Try Result := MechPairs.PairDefined(L1, L2); Except Result := False; End;
+    If Result Then Exit;
+    Try Result := MechPairs.PairDefined(L2, L1); Except Result := False; End;
+End;
+
+{ Drop every pair joining two layers, however many there are.                 }
+{                                                                              }
+{ Returns how many removals it took, which is also how many duplicates were    }
+{ present. Bounded, because a build where RemovePair does nothing would        }
+{ otherwise spin.                                                              }
+
+Function DrainMechPair(MechPairs : IPCB_MechanicalLayerPairs;
+    L1 : TLayer; L2 : TLayer) : Integer;
+Var
+    Guard : Integer;
+Begin
+    Result := 0;
+    Guard := 0;
+    While PairIsDefined(MechPairs, L1, L2) And (Guard < 64) Do
+    Begin
+        Try MechPairs.RemovePair(L1, L2); Except End;
+        Try MechPairs.RemovePair(L2, L1); Except End;
+        Guard := Guard + 1;
+        Result := Guard;
+    End;
+End;
+
+{ Join two mechanical layers and give the PAIR its kind.                      }
+{                                                                              }
+{ AddPair APPENDS WITHOUT CHECKING, so calling it for a pair that already      }
+{ exists leaves a duplicate behind rather than returning the existing one.     }
+{ Repeated sweeps over one library left fourteen pairs where four were         }
+{ wanted, and the Layer Stack Manager shows every one. Existing pairs are      }
+{ therefore drained first, which also yields the index: AddPair is the only    }
+{ call that reports one, since PairDefined answers a boolean and LayerPair(i)  }
+{ is noted as broken in the reference.                                         }
+{                                                                              }
+{ The TOP layer has to be the first argument.                                  }
+
+Function JoinAndKindPair(MechPairs : IPCB_MechanicalLayerPairs;
+    TopL : TLayer; BotL : TLayer; PairKind : Integer) : Boolean;
+Var
+    PairIdx, KindBack : Integer;
+Begin
+    Result := False;
+    If MechPairs = Nil Then Exit;
+    If PairKind < 0 Then Exit;
+
+    DrainMechPair(MechPairs, TopL, BotL);
+    { Still joined means the removals are not taking, and adding now would  }
+    { only grow the duplicate count.                                        }
+    If PairIsDefined(MechPairs, TopL, BotL) Then Exit;
+
+    PairIdx := -1;
+    Try PairIdx := MechPairs.AddPair(TopL, BotL); Except PairIdx := -1; End;
+    If PairIdx < 0 Then Exit;
+
+    Try MechPairs.SetState_LayerPairKind(PairIdx) := PairKind; Except End;
+    KindBack := -1;
+    Try KindBack := MechPairs.LayerPairKind(PairIdx); Except KindBack := -1; End;
+    { A build that will not report the pair kind back must not read as a    }
+    { failure, so only a value that came back DIFFERENT counts as refused.  }
+    Result := (KindBack = PairKind) Or (KindBack < 0);
+End;
+
+{ The name the same request asked for on a given mechanical layer.            }
+{                                                                              }
+{ Needed because joining a layer pair renames both layers to Altium's own Top  }
+{ and Bottom keywords, so the partner's name has to be put back even though    }
+{ its own operation may already have run.                                      }
+
+Function FindNameForLayerInOps(OpsStr : String; WantLayer : Integer) : String;
+Var
+    Remaining, Op, LayerName : String;
+Begin
+    Result := '';
+    Remaining := OpsStr;
+    While Trim(Remaining) <> '' Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Trim(Op) = '' Then Continue;
+        LayerName := Trim(GetBatchField(Op, 'layer'));
+        If ParseMechLayerNumber(LayerName) = WantLayer Then
+        Begin
+            Result := Trim(GetBatchField(Op, 'name'));
+            Exit;
+        End;
+    End;
+End;
+
+Function Lib_SetMechLayers(Params : String; RequestId : String) : String;
+Var
+    LibPath, FocusedPath, OpsStr, Op : String;
+    LayerName, NewName, EnabledStr, KindStr : String;
+    ItemsJson, Problems : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Board : IPCB_Board;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    MasterStack : IPCB_MasterLayerStack;
+    MechPairs : IPCB_MechanicalLayerPairs;
+    OpsAll : String;
+    PartnerKind, PartnerLayer : Integer;
+    PartnerTLayer : TLayer;
+    Paired : Boolean;
+    PairKind, Restored : Integer;
+    PairKindSet, HavePair : Boolean;
+    HandledPairs, PairTag, OpReleased, Remaining : String;
+    TidyPairs, Justified : Boolean;
+    TidiedJson : String;
+    ScanA, ScanB, KindA, KindB, Drained, PairsRemoved : Integer;
+    TLayerA, TLayerB : TLayer;
+    TopTLayer, BotTLayer : TLayer;
+    PartnerObj : IPCB_LayerObject_V7;
+    PartnerName : String;
+    MechObj, OtherMech : IPCB_MechanicalLayer;
+    DisplacedJson : String;
+    Scan, OtherKind : Integer;
+    TargetLayer : TLayer;
+    MechNumber : Integer;
+    KindId, KindBack, Changed, FailedCount : Integer;
+    WantEnabled, GotEnabled, First, DidSomething : Boolean;
+    NameBack : String;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    OpsStr := ExtractJsonValue(Params, 'layers');
+
+    If Trim(OpsStr) = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'layers required, for example '
+            + '"layer=Mechanical13;name=Courtyard;enabled=true"');
+        Exit;
+    End;
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If LibPath = '' Then LibPath := FocusedPath;
+    If LibPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LIBRARY',
+            'No library is active and library_path was not supplied');
+        Exit;
+    End;
+
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+
+    { The check the pcb_* layer tools do not make. Opening a document can    }
+    { report success without moving the focus, and every later read then     }
+    { describes the wrong library.                                           }
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := Doc.DM_FullPath; Except End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Asked for ' + LibPath + ' but the focused document is "'
+            + FocusedPath + '". Nothing was changed: editing whichever '
+            + 'library happened to be in front would look like success.');
+        Exit;
+    End;
+
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+            'Focused ' + LibPath + ' but it is not a PCB library');
+        Exit;
+    End;
+
+    Board := Nil;
+    Try Board := PcbLib.Board; Except Board := Nil; End;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_BOARD',
+            'The library has no board to carry a layer stack');
+        Exit;
+    End;
+
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except End;
+    If LayerStack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP',
+            'Could not access the layer stack of ' + LibPath);
+        Exit;
+    End;
+
+    { The master stack is where a writable Kind lives. Guarded and       }
+    { optional: an older build without it still gets name and enable,    }
+    { and the kind write then reports that it did not take rather than   }
+    { failing the whole call.                                             }
+    MasterStack := Nil;
+    Try MasterStack := Board.MasterLayerStack; Except MasterStack := Nil; End;
+
+    { Where layer PAIRS live. A paired kind cannot be set without one. }
+    MechPairs := Nil;
+    Try MechPairs := Board.MechanicalPairs; Except MechPairs := Nil; End;
+
+    { Kept whole: a paired kind looks up its partner in the caller's }
+    { own request, and the loop below consumes OpsStr as it goes.    }
+    OpsAll := OpsStr;
+
+    ItemsJson := '';
+    DisplacedJson := '';
+    { The two halves of a pair name the SAME pair kind, so whichever is }
+    { reached first does the work and the other reads the outcome here. }
+    { Keying on the op order instead would break on a request that      }
+    { lists Bottom before Top.                                          }
+    HandledPairs := '';
+    { Off by default: a tidy REMOVES pairs, and a caller that only wanted }
+    { to rename a layer should not have the stack rearranged underneath.  }
+    TidyPairs := (ExtractJsonValue(Params, 'tidy_pairs') = 'true');
+    TidiedJson := '';
+    PairsRemoved := 0;
+    First := True;
+    Changed := 0;
+    FailedCount := 0;
+
+    PCBServer.PreProcess;
+    Try
+        While Trim(OpsStr) <> '' Do
+        Begin
+            Op := NextBatchOp(OpsStr);
+            If Trim(Op) = '' Then Continue;
+
+            LayerName := Trim(GetBatchField(Op, 'layer'));
+            NewName := GetBatchField(Op, 'name');
+            EnabledStr := LowerCase(Trim(GetBatchField(Op, 'enabled')));
+            KindStr := Trim(GetBatchField(Op, 'kind'));
+            Problems := '';
+            DidSomething := False;
+
+            { Resolves the whole V9 range, not just the legacy 1 to 16.  }
+            { A real library keeps most of its named layers in the 17 to }
+            { 28 band, and those were being refused outright.            }
+            MechNumber := ParseMechLayerNumber(LayerName);
+            If MechNumber < 0 Then
+                TargetLayer := eNoLayer
+            Else
+                TargetLayer := MechLayerFromNumber(MechNumber);
+
+            If TargetLayer = eNoLayer Then
+            Begin
+                If MechNumber > 16 Then
+                    Problems := 'mechanical layer ' + IntToStr(MechNumber)
+                        + ' could not be resolved. This Altium build may not '
+                        + 'expose LayerUtils.MechanicalLayer, which is what '
+                        + 'reaches layers above 16.'
+                Else
+                    Problems := 'not a mechanical layer: ' + LayerName;
+                LayerObj := Nil;
+            End
+            Else
+            Begin
+                LayerObj := Nil;
+                Try LayerObj := LayerStack.LayerObject_V7[TargetLayer]; Except LayerObj := Nil; End;
+                If LayerObj = Nil Then
+                    Problems := 'layer not present in the stack';
+            End;
+
+            If LayerObj <> Nil Then
+            Begin
+                { ENABLED. Four reference scripts read and write             }
+                { MechanicalLayerEnabled through LayerObject_V7, so it is     }
+                { reached that way rather than through the                    }
+                { ILayer.MechanicalLayer indexer, which is what is actually   }
+                { undeclared in this binding.                                 }
+                If EnabledStr <> '' Then
+                Begin
+                    WantEnabled := (EnabledStr = 'true') Or (EnabledStr = '1');
+                    Try LayerObj.MechanicalLayerEnabled := WantEnabled; Except End;
+                    GotEnabled := Not WantEnabled;
+                    Try GotEnabled := LayerObj.MechanicalLayerEnabled; Except End;
+                    If GotEnabled <> WantEnabled Then
+                        Problems := Problems + 'enabled did not take. '
+                    Else
+                        DidSomething := True;
+                    { A layer nobody can see is enabled but useless, so the  }
+                    { display flag follows the enable rather than being a    }
+                    { second call the caller has to remember.                }
+                    If WantEnabled Then
+                        Try Board.LayerIsDisplayed[TargetLayer] := True; Except End;
+                End;
+
+                If NewName <> '' Then
+                Begin
+                    Try LayerObj.Name := NewName; Except End;
+                    NameBack := '';
+                    Try NameBack := LayerObj.Name; Except End;
+                    If NameBack <> NewName Then
+                        Problems := Problems + 'name did not take. '
+                    Else
+                        DidSomething := True;
+                End;
+
+                If KindStr <> '' Then
+                Begin
+                    KindId := MechKindFromString(KindStr);
+                    If KindId < 0 Then
+                        Problems := Problems + 'unknown kind: ' + KindStr + '. '
+                    Else
+                    Begin
+                        { KIND LIVES ON A DIFFERENT OBJECT.               }
+                        {                                                  }
+                        { Name and MechanicalLayerEnabled take on the      }
+                        { LayerObject_V7 this handler already holds, and   }
+                        { Kind does not: measured on a real library, the   }
+                        { write was accepted and the read back was         }
+                        { unchanged on EVERY mechanical layer, including   }
+                        { ones well below 16, so it was never a range      }
+                        { problem.                                         }
+                        {                                                  }
+                        { LayerObject_V7 is the LEGACY accessor. The       }
+                        { reference reaches a writable Kind through        }
+                        { MasterLayerStack.GetMechanicalLayer(n), which    }
+                        { returns IPCB_MechanicalLayer, and writes Kind on }
+                        { that. The V7 write is kept only as a fallback    }
+                        { for builds with no MasterLayerStack.             }
+                        MechObj := Nil;
+                        If MasterStack <> Nil Then
+                            Try
+                                MechObj := MasterStack.GetMechanicalLayer(MechNumber);
+                            Except
+                                MechObj := Nil;
+                            End;
+
+                        { A PAIRED KIND NEEDS A LAYER PAIR FIRST.        }
+                        {                                                  }
+                        { Altium refuses "Component Outline Top" on a     }
+                        { layer that is not joined to the layer carrying   }
+                        { "Component Outline Bottom". Measured: on one     }
+                        { layer in one call, Fab Notes and Not Set applied }
+                        { and Component Outline Top was refused, with      }
+                        { kinds_displaced empty, so contention was never   }
+                        { the cause.                                        }
+                        {                                                  }
+                        { The partner comes from the SAME request. A       }
+                        { caller setting a Top and its Bottom together is  }
+                        { the ordinary case, and joining them here saves a }
+                        { second pass that would need the pair anyway.     }
+                        { THE PAIR HOLDS THE PAIRED KIND, NOT THE LAYER.  }
+                        {                                                  }
+                        { Creating the pair was necessary and not          }
+                        { sufficient: with the pair present and nothing    }
+                        { else holding the kind, the layer write still     }
+                        { read back unchanged and left the                 }
+                        { Library/LayerKindMapping stream empty, whose     }
+                        { entry count tracks the number of assigned kinds  }
+                        { exactly. A paired concept is carried by the pair }
+                        { under a DIFFERENT enum, so it is written with    }
+                        { SetState_LayerPairKind against a pair index.     }
+                        {                                                  }
+                        { Whichever half is reached first does the work,   }
+                        { and the other reads the outcome out of           }
+                        { HandledPairs: both name the same pair, so a      }
+                        { second attempt would rebuild it and discard the  }
+                        { kind just written.                                }
+                        PartnerKind := MechKindPartner(KindId);
+                        PairKind := MechPairKindFromLayerKind(KindId);
+                        PairTag := '|' + IntToStr(PairKind) + '|';
+                        HavePair := False;
+                        PairKindSet := (PairKind >= 0)
+                            And (Pos(PairTag, HandledPairs) > 0);
+
+                        If (PartnerKind >= 0) And (PairKind >= 0)
+                            And (MechPairs <> Nil) And (Not PairKindSet) Then
+                        Begin
+                            PartnerLayer := FindLayerForKindInOps(
+                                OpsAll, PartnerKind);
+                            If PartnerLayer > 0 Then
+                            Begin
+                                PartnerTLayer := MechLayerFromNumber(PartnerLayer);
+                                If PartnerTLayer <> eNoLayer Then
+                                Begin
+                                    If Pos(' Top', MechKindToString(KindId)) > 0 Then
+                                    Begin
+                                        TopTLayer := TargetLayer;
+                                        BotTLayer := PartnerTLayer;
+                                    End
+                                    Else
+                                    Begin
+                                        TopTLayer := PartnerTLayer;
+                                        BotTLayer := TargetLayer;
+                                    End;
+                                    HavePair := True;
+
+                                    PairKindSet := JoinAndKindPair(
+                                        MechPairs, TopTLayer, BotTLayer, PairKind);
+                                    If PairKindSet Then
+                                        HandledPairs := HandledPairs + PairTag;
+
+                                End;
+                            End;
+                        End;
+
+                        { Write first, and only hunt on FAILURE.          }
+                        {                                                  }
+                        { A KIND BELONGS TO ONE LAYER AT A TIME, so        }
+                        { assigning one another layer already holds does   }
+                        { not take. That is why the single kinds land and  }
+                        { the paired Top/Bottom ones are refused: a        }
+                        { library already carrying Top Assembly elsewhere  }
+                        { leaves nothing to assign. The reference clears   }
+                        { the previous holder first.                        }
+                        {                                                  }
+                        { Searching for that holder means probing the      }
+                        { stack a layer at a time, so it runs only when    }
+                        { the write did not take. On the ordinary path it  }
+                        { costs nothing, and on this one it costs a scan   }
+                        { that stops at the layer it finds.                 }
+                        KindBack := -1;
+                        If MechObj <> Nil Then
+                        Begin
+                            Try MechObj.Kind := KindId; Except End;
+                            Try KindBack := MechObj.Kind; Except KindBack := -1; End;
+                        End;
+
+                        { Not for a kind the pair already accepted. The     }
+                        { layer property always reads back unchanged for a  }
+                        { paired kind, so hunting on that alone would clear }
+                        { the kind off unrelated layers on every call.      }
+                        {                                                  }
+                        { The layer numbers released are kept, because a   }
+                        { release that is not followed by an assignment    }
+                        { leaves the library holding FEWER kinds than it    }
+                        { started with, and that has to be undone.          }
+                        OpReleased := '';
+                        If (KindBack <> KindId) And (KindId > 0)
+                            And (Not PairKindSet)
+                            And (MasterStack <> Nil) And (MechObj <> Nil) Then
+                        Begin
+                            Scan := 1;
+                            While (Scan <= 1024) And (KindBack <> KindId) Do
+                            Begin
+                                If Scan <> MechNumber Then
+                                Begin
+                                    OtherMech := Nil;
+                                    Try
+                                        OtherMech := MasterStack.GetMechanicalLayer(Scan);
+                                    Except
+                                        OtherMech := Nil;
+                                    End;
+                                    If OtherMech <> Nil Then
+                                    Begin
+                                        OtherKind := -1;
+                                        Try OtherKind := OtherMech.Kind; Except OtherKind := -1; End;
+                                        If OtherKind = KindId Then
+                                        Begin
+                                            Try OtherMech.Kind := 0; Except End;
+                                            OpReleased := OpReleased
+                                                + IntToStr(Scan) + ',';
+                                            If DisplacedJson <> '' Then
+                                                DisplacedJson := DisplacedJson + ',';
+                                            DisplacedJson := DisplacedJson
+                                                + '{"layer":"Mechanical' + IntToStr(Scan)
+                                                + '","kind":"'
+                                                + EscapeJsonString(MechKindToString(KindId))
+                                                + '","released_for":"Mechanical'
+                                                + IntToStr(MechNumber) + '"}';
+                                            Try MechObj.Kind := KindId; Except End;
+                                            Try KindBack := MechObj.Kind; Except KindBack := -1; End;
+                                        End;
+                                    End;
+                                End;
+                                Scan := Scan + 1;
+                            End;
+                        End;
+
+                        { RETRY THE PAIR ONCE THE OLD HOLDER IS CLEAR.      }
+                        {                                                  }
+                        { A pair kind is exclusive the same way a layer     }
+                        { kind is, so the first attempt is refused while    }
+                        { another layer still carries it. Releasing that    }
+                        { layer and stopping there is the worst of both:    }
+                        { measured on two libraries, the release took, the  }
+                        { assignment did not, and only an identical second  }
+                        { call recovered. Retrying here closes that window  }
+                        { inside the one call.                              }
+                        If HavePair And (Not PairKindSet) And (OpReleased <> '') Then
+                        Begin
+                            PairKindSet := JoinAndKindPair(
+                                MechPairs, TopTLayer, BotTLayer, PairKind);
+                            If PairKindSet Then
+                                HandledPairs := HandledPairs + PairTag;
+                        End;
+
+                        { AND PUT THE KINDS BACK IF IT STILL WILL NOT TAKE. }
+                        { Ending a call with the kind on neither the old    }
+                        { layer nor the new one is destructive, and it      }
+                        { reads as a partial success rather than a refusal. }
+                        If (Not PairKindSet) And (KindBack <> KindId)
+                            And (OpReleased <> '') And (MasterStack <> Nil) Then
+                        Begin
+                            Restored := 0;
+                            Remaining := OpReleased;
+                            While Pos(',', Remaining) > 0 Do
+                            Begin
+                                Scan := StrToIntDef(
+                                    Copy(Remaining, 1, Pos(',', Remaining) - 1), -1);
+                                Remaining := Copy(Remaining, Pos(',', Remaining) + 1,
+                                    Length(Remaining));
+                                If Scan > 0 Then
+                                Begin
+                                    OtherMech := Nil;
+                                    Try
+                                        OtherMech := MasterStack.GetMechanicalLayer(Scan);
+                                    Except
+                                        OtherMech := Nil;
+                                    End;
+                                    If OtherMech <> Nil Then
+                                    Begin
+                                        Try OtherMech.Kind := KindId; Except End;
+                                        Restored := Restored + 1;
+                                    End;
+                                End;
+                            End;
+                            If Restored > 0 Then
+                                Problems := Problems + 'the kind was put back on '
+                                    + IntToStr(Restored) + ' layer(s) it was '
+                                    + 'released from, so nothing was lost. ';
+                        End;
+
+                        { Last resort: the legacy object, for a build with }
+                        { no MasterLayerStack at all.                       }
+                        If (KindBack <> KindId) And (MechObj = Nil) Then
+                        Begin
+                            Try LayerObj.Kind := KindId; Except End;
+                            KindBack := ReadMechKind(LayerObj);
+                        End;
+
+                        { PAIRING RENAMES BOTH LAYERS. Altium forces its    }
+                        { own Top and Bottom keywords onto a layer the      }
+                        { moment it joins a pair, which silently undoes the }
+                        { name written earlier in this operation. Restored  }
+                        { after the retry, since that rebuilds the pair and }
+                        { would otherwise substitute the keyword again.     }
+                        If HavePair Then
+                        Begin
+                            If NewName <> '' Then
+                            Begin
+                                Try LayerObj.Name := NewName; Except End;
+                                NameBack := '';
+                                Try NameBack := LayerObj.Name; Except End;
+                                If NameBack <> NewName Then
+                                    Problems := Problems
+                                        + 'name did not survive pairing. ';
+                            End;
+
+                            { The partner keeps whatever name the same      }
+                            { request asked for, rather than the keyword    }
+                            { Altium substituted.                            }
+                            PartnerName := FindNameForLayerInOps(
+                                OpsAll, PartnerLayer);
+                            If PartnerName <> '' Then
+                            Begin
+                                PartnerObj := Nil;
+                                Try
+                                    PartnerObj := LayerStack.LayerObject_V7[PartnerTLayer];
+                                Except
+                                    PartnerObj := Nil;
+                                End;
+                                If PartnerObj <> Nil Then
+                                    Try PartnerObj.Name := PartnerName; Except End;
+                            End;
+                        End;
+
+                        { A PAIRED KIND SUCCEEDS ON THE PAIR, so the layer  }
+                        { property reading back unchanged is expected and  }
+                        { is not the measure of whether it took.            }
+                        If (KindBack = KindId) Or PairKindSet Then
+                            DidSomething := True
+                        Else
+                        Begin
+                            If MechObj = Nil Then
+                                Problems := Problems + 'kind did not take, '
+                                    + 'and MasterLayerStack.GetMechanicalLayer '
+                                    + 'was unavailable, which is where a '
+                                    + 'writable Kind lives. '
+                            Else If (PartnerKind >= 0)
+                                And (FindLayerForKindInOps(OpsAll, PartnerKind) < 0) Then
+                                Problems := Problems + '"'
+                                    + MechKindToString(KindId)
+                                    + '" is one half of a pair, and a paired '
+                                    + 'kind is held by the layer PAIR rather '
+                                    + 'than by either layer. Assign "'
+                                    + MechKindToString(PartnerKind)
+                                    + '" to another mechanical layer in the '
+                                    + 'SAME call so the two can be joined and '
+                                    + 'the pair given the kind. '
+                            Else If PartnerKind >= 0 Then
+                                Problems := Problems + '"'
+                                    + MechKindToString(KindId)
+                                    + '" was refused as pair kind "'
+                                    + MechPairKindToString(PairKind)
+                                    + '" even with the pair present. '
+                            Else
+                                Problems := Problems + 'kind did not take; '
+                                    + 'it reads back as "'
+                                    + MechKindToString(KindBack) + '". ';
+                        End;
+                    End;
+                End;
+
+                If (EnabledStr = '') And (NewName = '') And (KindStr = '') Then
+                    Problems := 'nothing asked for: give name, enabled or kind';
+            End;
+
+            If Not First Then ItemsJson := ItemsJson + ',';
+            First := False;
+            ItemsJson := ItemsJson
+                + '{"layer":"' + EscapeJsonString(LayerName) + '",'
+                + '"changed":' + BoolToJsonStr(DidSomething And (Problems = '')) + ','
+                + '"problem":';
+            If Problems = '' Then
+                ItemsJson := ItemsJson + 'null}'
+            Else
+                ItemsJson := ItemsJson + '"' + EscapeJsonString(Trim(Problems)) + '"}';
+
+            If (Problems = '') And DidSomething Then
+                Changed := Changed + 1
+            Else
+                FailedCount := FailedCount + 1;
+        End;
+
+        { STALE PAIRS OUTLIVE THE KINDS THAT JUSTIFIED THEM.               }
+        {                                                                  }
+        { Nothing removes a pair when a kind moves to different layers,    }
+        { and until AddPair stopped being called on pairs that already     }
+        { existed, every sweep appended another copy. One library reached  }
+        { fourteen pairs where four were wanted, all of them visible in    }
+        { the Layer Stack Manager, and no operation exposed here could     }
+        { clear them.                                                      }
+        {                                                                  }
+        { A pair earns its place only when the two layers carry kinds that }
+        { are each other's opposite side. Anything else is left over, so   }
+        { it goes. Pairs the ops above just built are kept by that same    }
+        { test rather than by remembering them.                            }
+        If TidyPairs And (MechPairs <> Nil) And (MasterStack <> Nil) Then
+        Begin
+            PairsRemoved := 0;
+            For ScanA := 1 To MechScanLimit Do
+            Begin
+                KindA := -1;
+                OtherMech := Nil;
+                Try OtherMech := MasterStack.GetMechanicalLayer(ScanA); Except OtherMech := Nil; End;
+                If OtherMech <> Nil Then
+                    Try KindA := OtherMech.Kind; Except KindA := -1; End;
+
+                TLayerA := MechLayerFromNumber(ScanA);
+                If TLayerA <> eNoLayer Then
+                    For ScanB := ScanA + 1 To MechScanLimit Do
+                    Begin
+                        TLayerB := MechLayerFromNumber(ScanB);
+                        If TLayerB <> eNoLayer Then
+                            If PairIsDefined(MechPairs, TLayerA, TLayerB) Then
+                            Begin
+                                KindB := -1;
+                                OtherMech := Nil;
+                                Try OtherMech := MasterStack.GetMechanicalLayer(ScanB); Except OtherMech := Nil; End;
+                                If OtherMech <> Nil Then
+                                    Try KindB := OtherMech.Kind; Except KindB := -1; End;
+
+                                { Both sides must be paired kinds AND be  }
+                                { each other's partner. A pair whose two  }
+                                { layers hold unrelated kinds is not a    }
+                                { pair anyone asked for.                   }
+                                Justified := (KindA > 0) And (KindB > 0)
+                                    And (MechKindPartner(KindA) = KindB);
+                                If Not Justified Then
+                                Begin
+                                    Drained := DrainMechPair(MechPairs, TLayerA, TLayerB);
+                                    PairsRemoved := PairsRemoved + Drained;
+                                    If Drained > 0 Then
+                                    Begin
+                                        If TidiedJson <> '' Then
+                                            TidiedJson := TidiedJson + ',';
+                                        TidiedJson := TidiedJson
+                                            + '{"layers":["Mechanical' + IntToStr(ScanA)
+                                            + '","Mechanical' + IntToStr(ScanB) + '"],'
+                                            + '"removed":' + IntToStr(Drained) + '}';
+                                    End;
+                                End;
+                            End;
+                    End;
+            End;
+        End;
+
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    { NOTHING PARSED IS A FAILURE, not a successful run over no work.    }
+    { A layers payload in the wrong shape produced no operations at all,  }
+    { and this reported success having changed nothing. Across a sweep of }
+    { twenty two libraries that read as twenty two successes.             }
+    If (Changed = 0) And (FailedCount = 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_OPERATIONS',
+            'No layer operations were parsed from the layers parameter, so '
+            + 'nothing was changed in ' + LibPath + '. Expected '
+            + '"layer=<name>;name=<text>;enabled=<bool>;kind=<text>" with '
+            + '"~~" between entries.');
+        Exit;
+    End;
+
+    Try Board.ViewManager_FullUpdate; Except End;
+    SaveDocByPath(LibPath);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"library":"' + EscapeJsonString(LibPath) + '",'
+        + '"layers":[' + ItemsJson + '],'
+        + '"changed":' + IntToStr(Changed) + ','
+        + '"failed":' + IntToStr(FailedCount) + ','
+        { Which layers gave up a kind so this one could take it. A kind }
+        { that silently moved off another layer is a change the caller  }
+        { did not ask for and has to be able to see.                     }
+        + '"kinds_displaced":[' + DisplacedJson + '],'
+        + '"pairs_removed":' + IntToStr(PairsRemoved) + ','
+        + '"pairs_tidied":[' + TidiedJson + '],'
+        { The tidy sweep stops at this layer number. A stale pair above }
+        { it survives, and saying so is the difference between a bound  }
+        { and a silent one.                                              }
+        + '"pairs_scanned_to":' + IntToStr(MechScanLimit) + '}');
+End;
+
+{ Force a library_path onto a parameter object.                              }
+{                                                                             }
+{ ExtractJsonValue finds the FIRST occurrence of a key, so prepending is      }
+{ enough to override one the caller supplied, and the original object is      }
+{ left untouched rather than rewritten. A caller passing a single             }
+{ library_path alongside a library list gets the list honoured, which is the  }
+{ only reading that makes sense for a sweep.                                  }
+
+Function MergeLibraryPath(Params : String; LibPath : String) : String;
+Var
+    Rest : String;
+Begin
+    Rest := Trim(Params);
+    If (Rest = '') Or (Rest = '{}') Then
+    Begin
+        Result := '{"library_path":"' + EscapeJsonString(LibPath) + '"}';
+        Exit;
+    End;
+    If Copy(Rest, 1, 1) = '{' Then
+        Rest := Copy(Rest, 2, Length(Rest))
+    Else
+        Rest := Rest + '}';
+    Result := '{"library_path":"' + EscapeJsonString(LibPath) + '",' + Rest;
+End;
+
+{ One field out of a handler's own response envelope.                        }
+
+Function ResponseField(Response : String; Key : String) : String;
+Begin
+    Result := ExtractJsonValue(Response, Key);
+End;
+
+Function HandleLibraryCommand(Action : String; Params : String; RequestId : String) : String;
+Var
+    SweepLibs, SweepAction, OnePath, OneParams, OneReply : String;
+    ItemsJson, DataJson, ErrJson, OkStr : String;
+    BarPos, Succeeded, FailedCount : Integer;
+    FirstItem : Boolean;
+Begin
+    { A sweep across several libraries in ONE call.                          }
+    {                                                                         }
+    { Sequentially from the caller's side, every library costs a round trip   }
+    { plus the orchestration between them. The expensive part is opening and  }
+    { saving each library, which this cannot avoid, but the round trips it    }
+    { can: the whole sweep becomes one request.                               }
+    {                                                                         }
+    { Handled here rather than in its own function because DelphiScript has   }
+    { no forward declarations, so a separate function could not call this     }
+    { dispatcher. Direct recursion can.                                       }
+    If Action = 'run_across' Then
+    Begin
+        SweepAction := Trim(ExtractJsonValue(Params, 'action'));
+        SweepLibs := ExtractJsonValue(Params, 'libraries');
+
+        If SweepAction = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+                'action required: the library command to run on each library');
+            Exit;
+        End;
+        If SweepAction = 'run_across' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_ACTION',
+                'run_across cannot sweep itself');
+            Exit;
+        End;
+        If Trim(SweepLibs) = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+                'libraries required: full paths separated by "|". A sweep '
+                + 'over no libraries would report a clean pass having done '
+                + 'nothing.');
+            Exit;
+        End;
+
+        ItemsJson := '';
+        FirstItem := True;
+        Succeeded := 0;
+        FailedCount := 0;
+
+        While Trim(SweepLibs) <> '' Do
+        Begin
+            BarPos := Pos('|', SweepLibs);
+            If BarPos > 0 Then
+            Begin
+                OnePath := Trim(Copy(SweepLibs, 1, BarPos - 1));
+                SweepLibs := Copy(SweepLibs, BarPos + 1, Length(SweepLibs));
+            End
+            Else
+            Begin
+                OnePath := Trim(SweepLibs);
+                SweepLibs := '';
+            End;
+            If OnePath = '' Then Continue;
+
+            OneParams := MergeLibraryPath(Params, OnePath);
+            { A library that will not open must not abandon the rest of the  }
+            { sweep. Its failure is recorded against its own name and the    }
+            { loop carries on.                                                }
+            OneReply := '';
+            Try
+                OneReply := HandleLibraryCommand(SweepAction, OneParams, RequestId);
+            Except
+                OneReply := '';
+            End;
+
+            If OneReply = '' Then
+            Begin
+                DataJson := 'null';
+                ErrJson := '"the handler raised and returned nothing"';
+                OkStr := 'false';
+            End
+            Else
+            Begin
+                DataJson := ResponseField(OneReply, 'data');
+                If DataJson = '' Then DataJson := 'null';
+                { The envelope's own success comes before any the payload    }
+                { carries, and ExtractJsonValue takes the first match, so    }
+                { this reads the envelope rather than a handler's own flag.  }
+                If ResponseField(OneReply, 'success') = 'true' Then
+                    OkStr := 'true'
+                Else
+                    OkStr := 'false';
+                { Only on failure. "message" is a key inside the error       }
+                { object, and a SUCCESSFUL payload carrying a field of that  }
+                { name would otherwise be reported here as an error.         }
+                ErrJson := 'null';
+                If OkStr = 'false' Then
+                Begin
+                    ErrJson := ResponseField(OneReply, 'message');
+                    If ErrJson = '' Then
+                        ErrJson := 'null'
+                    Else
+                        ErrJson := '"' + EscapeJsonString(ErrJson) + '"';
+                End;
+            End;
+
+            If OkStr = 'true' Then
+                Succeeded := Succeeded + 1
+            Else
+                FailedCount := FailedCount + 1;
+
+            If Not FirstItem Then ItemsJson := ItemsJson + ',';
+            FirstItem := False;
+            ItemsJson := ItemsJson
+                + '{"library":"' + EscapeJsonString(OnePath) + '",'
+                + '"success":' + OkStr + ','
+                + '"data":' + DataJson + ','
+                + '"error":' + ErrJson + '}';
+        End;
+
+        { Per library, never one aggregate flag. "17 of 20 worked" collapses }
+        { into either a false clean or a false failure the moment it becomes }
+        { a single boolean, and the caller cannot tell which library to fix. }
+        Result := BuildSuccessResponse(RequestId,
+            '{"action":"' + EscapeJsonString(SweepAction) + '",'
+            + '"results":[' + ItemsJson + '],'
+            + '"succeeded":' + IntToStr(Succeeded) + ','
+            + '"failed":' + IntToStr(FailedCount) + ','
+            + '"libraries":' + IntToStr(Succeeded + FailedCount) + '}');
+        Exit;
+    End;
+
     Case Action Of
         'create_symbol':        Result := Lib_CreateSymbol(Params, RequestId);
         'add_pin':              Result := Lib_AddPin(Params, RequestId);
         'add_pins':             Result := Lib_AddPins(Params, RequestId);
+        'add_symbol_text':      Result := Lib_AddSymbolText(Params, RequestId);
         'add_symbol_rectangle': Result := Lib_AddSymbolRectangle(Params, RequestId);
         'add_symbol_line':      Result := Lib_AddSymbolLine(Params, RequestId);
         'add_symbol_lines':     Result := Lib_AddSymbolLines(Params, RequestId);
@@ -8175,6 +9610,7 @@ Begin
         'extract_intlib':       Result := Lib_ExtractIntLib(Params, RequestId);
         'link_footprint':       Result := Lib_LinkFootprint(Params, RequestId);
         'link_3d_model':        Result := Lib_Link3DModel(Params, RequestId);
+        'set_mech_layers':      Result := Lib_SetMechLayers(Params, RequestId);
         'get_components':       Result := Lib_GetComponents(Params, RequestId);
         'search':               Result := Lib_Search(Params, RequestId);
         'get_component_details': Result := Lib_GetComponentDetails(Params, RequestId);
@@ -8208,6 +9644,7 @@ Begin
         'probe_footprint':      Result := Lib_ProbeFootprint(Params, RequestId);
         'get_pad_geometry':     Result := Lib_GetPadGeometry(Params, RequestId);
         'normalize_implementations': Result := Lib_NormalizeImplementations(Params, RequestId);
+        'clear_source_library': Result := Lib_ClearSourceLibrary(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown library action: ' + Action);
     End;

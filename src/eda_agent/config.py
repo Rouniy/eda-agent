@@ -87,6 +87,14 @@ def write_workspace_pointer(workspace_dir: Path) -> None:
         )
         return
 
+    # Resolve the Windows ANSI codec before opening the destination.
+    # ``Path.write_text`` creates the file before the codec lookup fails on
+    # non-Windows hosts, otherwise leaving a misleading empty pointer behind.
+    try:
+        "".encode("mbcs")
+    except LookupError:
+        return
+
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         path_str = str(workspace_dir)
@@ -94,8 +102,6 @@ def write_workspace_pointer(workspace_dir: Path) -> None:
             path_str += "\\"
         target.write_text(path_str, encoding="mbcs")
     except (OSError, PermissionError, UnicodeEncodeError, LookupError):
-        # LookupError: "mbcs" only exists on Windows; the pointer file is
-        # meaningless elsewhere anyway.
         pass
 
 

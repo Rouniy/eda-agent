@@ -403,7 +403,11 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         if force_recompile:
-            params["proj_force_recompile"] = "true"
+            # Project.pas ForceRecompileIfRequested reads
+            # "force_recompile". Sent under the tool's own name this
+            # matched nothing, so the flag was dead and a caller who
+            # asked for fresh data got the cached compile instead.
+            params["force_recompile"] = "true"
         result = await bridge.send_command_async("project.get_nets", params)
         hint = BulkHintTracker.record_and_hint("proj_get_nets")
         if hint and isinstance(result, dict):
@@ -839,11 +843,14 @@ def register_project_tools(mcp):
         normal ``project.cross_probe`` operation.
         """
         if target not in {"schematic", "pcb"}:
-            raise ValueError("target must be 'schematic' or 'pcb'")
+            return {"ok": False, "reason": "target must be 'schematic' or 'pcb'"}
         if not output_path.strip():
-            raise ValueError("output_path is required")
+            return {"ok": False, "reason": "output_path is required"}
         if settle_ms < 0 or settle_ms > 10000:
-            raise ValueError("settle_ms must be between 0 and 10000")
+            return {
+                "ok": False,
+                "reason": "settle_ms must be between 0 and 10000",
+            }
 
         bridge = get_bridge()
         cross_probe = await bridge.send_command_async(
@@ -1040,7 +1047,7 @@ def register_project_tools(mcp):
         rejects them with ``IMAGE_FORMAT_UNSUPPORTED`` and points the
         caller at ``proj_run_outjob`` instead.
 
-        Under the hood the PDF path uses Altium's
+        The PDF path uses Altium's
         ``WorkspaceManager:Print`` server process with ``FileName=`` - the
         same machinery as ``proj_export_pdf``. No OutJob is loaded. The print
         runs against ``Client.CurrentView`` (the focused document), so
@@ -1261,14 +1268,14 @@ def register_project_tools(mcp):
         IPC-356, pick-and-place, assembly, BOM) and report every file produced.
 
         Altium has no per-format export process for Gerber / NC-drill /
-        IPC-356 / P&P — those exist only as OutJob output containers. This runs
+        IPC-356 / P&P: those exist only as OutJob output containers. This runs
         every container in the project's OutJob, scans each container's output
         directory, and returns a consolidated manifest. Optionally also exports
         a STEP 3D model and a DXF (which are separate PCB export processes, not
         OutJob containers).
 
         Prerequisite: the project must have an OutJob whose fab containers are
-        configured and enabled — the script cannot enable outputs that are off
+        configured and enabled: the script cannot enable outputs that are off
         in the OutJob editor.
 
         Args:
@@ -1513,7 +1520,14 @@ def register_project_tools(mcp):
 
         Returns:
             {"exported": [{variant, output_path, ok, error}], "count"} plus
-            ``restored`` (the variant left active at the end).
+            ``restored``: the variant put back, or null if putting it
+            back FAILED. Null is not cosmetic. This loop leaves the
+            project on the last variant it exported, so a null means the
+            active variant is not the one you started with, and anything
+            variant-sensitive run afterwards (an export, a BOM,
+            ``pcb_apply_dnp_paste_exclusion``) will act on the wrong
+            set. A failure also carries ``restore_error``,
+            ``active_variant_unknown`` and a ``note``.
         """
         from pathlib import Path
 
@@ -1557,19 +1571,40 @@ def register_project_tools(mcp):
             exported.append(entry)
 
         # Restore the variant that was active before we started.
+        #
+        # Report whether that WORKED, not merely that it was attempted.
+        # This loop leaves the project on the last variant it touched,
+        # so a swallowed failure here hands back a project whose active
+        # variant is not the one the caller had, and every
+        # variant-sensitive operation after it acts on the wrong set:
+        # an export, a BOM, or pcb_apply_dnp_paste_exclusion stripping
+        # paste off the components the OTHER variant does not fit.
+        restored: Optional[str] = None
+        restore_error = ""
         if original:
             try:
                 await bridge.send_command_async(
                     "project.set_active_variant", dict(params, variant_name=original)
                 )
-            except Exception:
-                pass
+                restored = original
+            except Exception as exc:
+                restore_error = str(exc)
 
-        return {
+        result: dict[str, Any] = {
             "exported": exported,
             "count": sum(1 for e in exported if e["ok"]),
-            "restored": original,
+            "restored": restored,
         }
+        if restore_error:
+            result["restore_error"] = restore_error
+            result["active_variant_unknown"] = True
+            result["note"] = (
+                "the originally-active variant could not be restored, so "
+                "the project is left on the last variant exported. Set it "
+                "back with proj_set_active_variant before any "
+                "variant-sensitive operation."
+            )
+        return result
 
     @mcp.tool()
     async def proj_create_variant(
@@ -1730,7 +1765,11 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         if force_recompile:
-            params["proj_force_recompile"] = "true"
+            # Project.pas ForceRecompileIfRequested reads
+            # "force_recompile". Sent under the tool's own name this
+            # matched nothing, so the flag was dead and a caller who
+            # asked for fresh data got the cached compile instead.
+            params["force_recompile"] = "true"
         result = await bridge.send_command_async("project.get_connectivity", params)
         hint = BulkHintTracker.record_and_hint("proj_get_connectivity")
         if hint and isinstance(result, dict):
@@ -1782,7 +1821,11 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         if force_recompile:
-            params["proj_force_recompile"] = "true"
+            # Project.pas ForceRecompileIfRequested reads
+            # "force_recompile". Sent under the tool's own name this
+            # matched nothing, so the flag was dead and a caller who
+            # asked for fresh data got the cached compile instead.
+            params["force_recompile"] = "true"
         result = await bridge.send_command_async(
             "project.get_connectivity_batch", params
         )
@@ -1963,16 +2006,16 @@ def register_project_tools(mcp):
         wait_seconds: float = 60.0,
         verify_pad_nets: bool = True,
     ) -> dict[str, Any]:
-        """Push schematic changes to PCB (ECO) — Design ▸ Update PCB Document.
+        """Push schematic changes to PCB (ECO): Design > Update PCB Document.
 
-        IMPORTANT — this is NOT silent. Altium's ECO (change-review) dialog
+        IMPORTANT: this is NOT silent. Altium's ECO (change-review) dialog
         is non-suppressible by design, so this **fires the real ECO and then
         BLOCKS on a modal dialog until a human clicks "Execute Changes"**.
         Do not call it in an unattended/headless run.
 
         The wait is BOUNDED (``wait_seconds``). It used to inherit the
         bridge's full 300 s heartbeat budget and then report the handler as
-        stuck in an infinite loop — the wrong diagnosis, and it cost a
+        stuck in an infinite loop, the wrong diagnosis, and it cost a
         script restart. Now, if the ECO does not return in time, the call
         gives up and returns a structured ``ECO_DIALOG_BLOCKING`` error
         naming the open dialogs. Giving up does NOT cancel the ECO: Altium
@@ -1985,7 +2028,7 @@ def register_project_tools(mcp):
           2. Compiles the project and records before-state mappings
              (matched, extra-in-schematic, extra-in-pcb).
           3. Invokes ``WorkspaceManager:Compare`` (ObjectKind=Project,
-             Action=UpdateMe) — the direction verified for schematic→PCB when
+             Action=UpdateMe), the direction verified for schematic-to-PCB when
              the target PCB is focused. Do not substitute ``UpdateOther``:
              Altium interprets it relative to focus and may back-annotate PCB
              changes into the schematic. The modal ECO dialog opens here.
@@ -1998,13 +2041,13 @@ def register_project_tools(mcp):
              and reports every pad the ECO left unbound.
 
         Why step 6 exists: an ECO has been observed to return success having
-        silently skipped a component — one part's pads were left with no
+        silently skipped a component: one part's pads were left with no
         nets while its identical sibling was fully assigned. Nothing in the
         ECO's own response revealed it. Repair anything in ``pads_unbound``
         with ``pcb_bind_pad_nets``.
 
         For unattended board population without a schematic, use
-        ``pcb_place_components`` instead (places geometry only — see its note
+        ``pcb_place_components`` instead (places geometry only: see its note
         about leaving the project unsynced).
 
         Args:
@@ -2045,7 +2088,12 @@ def register_project_tools(mcp):
         # Bound the wait. The heartbeat is a presence marker written once,
         # not a tick, so a handler parked on a modal looks exactly like one
         # doing slow work; only an explicit cap distinguishes them.
-        poll_window = max(1.0, float(bridge.config.poll_timeout))
+        try:
+            poll_window = max(1.0, float(bridge.config.poll_timeout))
+        except (AttributeError, TypeError, ValueError):
+            # Lightweight bridge adapters and test doubles may not expose the
+            # AltiumBridge config object. Keep the wait bounded in that case.
+            poll_window = min(5.0, max(1.0, float(wait_seconds)))
         extensions = max(1, int(round(float(wait_seconds) / poll_window)))
         try:
             result = await bridge.send_command_async(

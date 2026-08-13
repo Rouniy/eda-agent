@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Headless .SchDoc reader (roadmap V1 — hardware CI).
+"""Headless .SchDoc reader (roadmap V1: hardware CI).
 
 An Altium ``.SchDoc`` is an OLE compound document. Its ``FileHeader`` stream
 is a flat sequence of length-prefixed ASCII records:
@@ -14,7 +14,7 @@ first record AFTER the header (verified against the buck fixture: U1 →
 TPS54331D, D1 → SS14, R1 → RES 10K, J1 → connector).
 
 This first slice extracts the component list (designator + lib ref +
-description) — the BOM/connectivity spine a headless review needs. Pure
+description): the BOM/connectivity spine a headless review needs. Pure
 Python via ``olefile``; no Altium.
 
 Coordinates
@@ -25,7 +25,7 @@ optional companion ``<name>_Frac`` holding the fractional part over a
 denominator of 100000. ``LOCATION.X=840`` + ``LOCATION.X_FRAC=30000`` means
 840.3 units = 8403 mil. Reading only the integer field silently truncates,
 and because ``Location`` and ``PinLength`` truncate independently the error
-ACCUMULATES — on an off-grid sheet that is enough to make real wires miss
+ACCUMULATES: on an off-grid sheet that is enough to make real wires miss
 real pin ends and to fabricate phantom breaks in the reconstructed netlist.
 :func:`_read_coord` is the single place that reassembles the pair; every
 reader below goes through it.
@@ -117,7 +117,7 @@ def read_schdoc_records(path: str | Path) -> list[dict[str, str]]:
         length = struct.unpack("<I", data[i:i + 4])[0]
         i += 4
         if length == 0 or i + length > n:
-            break  # truncated / malformed tail — stop cleanly
+            break  # truncated / malformed tail: stop cleanly
         records.append(_parse_fields(data[i:i + length]))
         i += length
     return records
@@ -135,7 +135,7 @@ def _to_int(value: str | None) -> int | None:
 # --- Exact coordinates (integer field + optional ``*_Frac`` companion) -------
 
 # Sub-units per raw SchDoc unit. A raw unit is 10 mil, so one sub-unit is
-# 1e-4 mil — the finest thing a .SchDoc can express.
+# 1e-4 mil, the finest thing a .SchDoc can express.
 _FRAC_DEN = 100000
 _FRAC_EXP = 5  # _FRAC_DEN == 10 ** _FRAC_EXP
 _FRAC_SUFFIX = "_Frac"
@@ -147,7 +147,7 @@ _EXACT_CTX = Context(prec=50)
 
 # A coordinate is exact but not always integral: raw units when whole (an int,
 # byte-identical to what this reader returned before *_Frac was honoured) and
-# a Decimal when it carries a fraction. Never a float — see _read_coord.
+# a Decimal when it carries a fraction. Never a float; see _read_coord.
 Coord = Union[int, Decimal]
 
 
@@ -174,11 +174,11 @@ def _units_to_coord(units: int) -> Coord:
     """Sub-units (1e-4 mil) -> raw SchDoc units, exactly.
 
     Returns a plain ``int`` whenever the value is a whole number of raw units
-    — the overwhelmingly common case, and the one where this reader must stay
-    byte-identical to its pre-fix behaviour. Otherwise a ``Decimal``, which
+    (the overwhelmingly common case, and the one where this reader must stay
+    byte-identical to its pre-fix behaviour). Otherwise a ``Decimal``, which
     represents these values EXACTLY because the denominator (100000) is a
     power of ten. A binary float cannot (0.3 is not a binary fraction), and
-    the solver decides connectivity by EQUALITY of coordinates — one bit of
+    the solver decides connectivity by EQUALITY of coordinates: one bit of
     float drift and a real connection disappears again, which is the whole
     failure this fix exists to remove. int and Decimal compare and hash
     consistently, so the solver's coordinate-keyed union-find sees one
@@ -205,8 +205,8 @@ def read_schematic_nets(path: str | Path) -> list[dict[str, Any]]:
 
     Returns one entry per distinct net name:
     ``{name, label_count, power_count, total}``. These are the names
-    *declared* on the sheet (RECORD=25 net labels, RECORD=17 power ports)
-    — not the compiled netlist, which needs a geometric connectivity solver
+    *declared* on the sheet (RECORD=25 net labels, RECORD=17 power ports),
+    not the compiled netlist, which needs a geometric connectivity solver
     (wires touching pins touching labels). Still useful on its own: a
     reviewer can eyeball the rail inventory, and it is the input a future
     net solver will annotate with membership.
@@ -238,7 +238,7 @@ def read_schematic_wires(path: str | Path) -> list[dict[str, Any]]:
     A SchDoc wire is a polyline (``LocationCount`` vertices, ``X1/Y1..``);
     this flattens each polyline into its individual segments so a future
     connectivity solver can union coincident endpoints. Coordinates are raw
-    SchDoc internal units, exact (``*_Frac`` included — see :func:`_read_coord`).
+    SchDoc internal units, exact (``*_Frac`` included; see :func:`_read_coord`).
     """
     segments: list[dict[str, Any]] = []
     for rec in read_schdoc_records(path):
@@ -263,7 +263,7 @@ def read_schematic_pins(path: str | Path) -> list[dict[str, Any]]:
     where ``owner_index`` matches the component owner-index scheme used by
     :func:`read_schematic_components`, so pins can be tied back to their
     component. ``x``/``y`` is the pin's anchor; ``orientation`` (deg) and
-    ``length`` describe how it extends — the electrical endpoint the net
+    ``length`` describe how it extends: the electrical endpoint the net
     solver needs is derived from these (validated in the solver step).
 
     ``x``, ``y`` and ``length`` are exact: ``PinLength`` carries its own
@@ -403,10 +403,10 @@ def read_schematic_components(path: str | Path) -> list[dict[str, Any]]:
     """Extract placed components (with designators) from a .SchDoc.
 
     Returns a list of ``{designator, lib_reference, description,
-    library_path, unique_id, x, y}`` — the fields a headless BOM/review
+    library_path, unique_id, x, y}``: the fields a headless BOM/review
     needs. Designators are joined to components via the OwnerIndex scheme
     (owner index = record position counting from the first post-header
-    record). Coordinates are exact raw SchDoc units (10 mil) — see
+    record). Coordinates are exact raw SchDoc units (10 mil); see
     :func:`_read_coord`.
     """
     records = read_schdoc_records(path)

@@ -8,6 +8,7 @@ These never touch Altium. Use them as a quick precheck in scripts.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from eda_agent.config import (
@@ -108,6 +109,72 @@ def _check_bundled_scripts() -> Check:
     )
 
 
+def _script_version(main_pas: Path) -> str | None:
+    """SCRIPT_VERSION out of a Main.pas, or None if unreadable."""
+    try:
+        text = main_pas.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"SCRIPT_VERSION\s*=\s*'([^']+)'", text)
+    return match.group(1) if match else None
+
+
+def _check_deployed_scripts_current() -> Check:
+    """The deployed copy must be the bundled one.
+
+    Altium compiles whatever sits in the install directory, not what is
+    in this checkout. So a Pascal fix that was never reinstalled
+    reproduces exactly as before, and the only other place that shows is
+    ``app_ping``'s version, which needs Altium running to read.
+
+    That makes a stale deploy the one live-session problem worth
+    catching offline: it costs a whole session to diagnose from the
+    inside, and one file read to spot from the outside.
+
+    WARN rather than FAIL. Nothing offline is affected, and a developer
+    who has never installed the scripts is not in a broken state.
+    """
+    from ..cli import get_bundled_scripts_path, get_default_scripts_dest
+
+    bundled = Path(get_bundled_scripts_path()) / "Main.pas"
+    deployed = get_default_scripts_dest() / "Main.pas"
+
+    if not deployed.exists():
+        return Check(
+            name="deployed scripts",
+            status=Status.SKIP,
+            message=f"none installed at {deployed.parent}",
+            fix="Run `eda-agent install-scripts` before using Altium.",
+        )
+
+    want = _script_version(bundled)
+    have = _script_version(deployed)
+    if want is None or have is None:
+        return Check(
+            name="deployed scripts",
+            status=Status.WARN,
+            message="could not read SCRIPT_VERSION from both copies",
+            fix="Check that Main.pas is readable in both locations.",
+        )
+    if want != have:
+        return Check(
+            name="deployed scripts current",
+            status=Status.WARN,
+            message=f"installed {have}, this tree has {want}",
+            fix=(
+                "Run `python -m eda_agent.server install-scripts --force`, "
+                "then reload the script project in Altium. Until then "
+                "Altium runs the older code and a fixed bug will "
+                "reproduce."
+            ),
+        )
+    return Check(
+        name="deployed scripts current",
+        status=Status.PASS,
+        message=f"{have}, matches this tree",
+    )
+
+
 def _check_bridge_constructable() -> Check:
     """Construct the bridge object without sending a request.
 
@@ -126,11 +193,59 @@ def _check_bridge_constructable() -> Check:
     return Check(name="bridge constructable", status=Status.PASS)
 
 
+def _check_easyeda_extension_built() -> Check:
+    """Is the editor half of the EasyEDA bridge ready to install?
+
+    Reported even on an Altium install, because the failure it prevents
+    is silent and confusing: EasyEDA DIALS OUT to this server, so a
+    missing extension looks exactly like a server that is not listening.
+    Someone debugging that will check ports and firewalls for a while
+    before suspecting the half that lives inside the editor.
+    """
+    source = (Path(__file__).resolve().parents[3]
+              / "extensions" / "easyeda" / "main.js")
+    built = source.parent / "dist" / "index.js"
+
+    if not source.is_file():
+        # Not an error on a source install that omits the extension.
+        return Check(
+            name="easyeda extension",
+            status=Status.SKIP,
+            message="no extensions/easyeda/main.js in this install",
+        )
+
+    if not built.is_file():
+        return Check(
+            name="easyeda extension",
+            status=Status.WARN,
+            severity=Severity.MINOR,
+            message="the extension is not built, so EasyEDA has nothing "
+                    "to install and will never connect",
+            fix="Run `python extensions/easyeda/build.py`, then install "
+                "the folder from EasyEDA Pro: Settings > Extensions.",
+        )
+
+    if built.read_text(encoding="utf-8") != source.read_text(encoding="utf-8"):
+        return Check(
+            name="easyeda extension",
+            status=Status.WARN,
+            severity=Severity.MINOR,
+            message="the built extension is older than main.js, so EasyEDA "
+                    "is running code that no longer matches this server",
+            fix="Rebuild with `python extensions/easyeda/build.py` and "
+                "reload the extension in EasyEDA.",
+        )
+
+    return Check(name="easyeda extension", status=Status.PASS)
+
+
 def run_health_checks() -> list[Check]:
     """Order matters, earlier failures often explain later ones."""
     return [
         _check_workspace_dir(),
         _check_pointer_file(),
         _check_bundled_scripts(),
+        _check_deployed_scripts_current(),
         _check_bridge_constructable(),
+        _check_easyeda_extension_built(),
     ]

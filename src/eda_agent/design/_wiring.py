@@ -249,7 +249,7 @@ def _power_port_orientation(pin_orientation: int, is_ground: bool) -> int:
 def _label_justification(pin_orientation: int) -> int:
     """Justification for a net label at a pin's stub end.
 
-    HARD RULE (user, 2026-07-23): a net label on a LEFT-facing pin must
+    HARD RULE, set by the user: a net label on a LEFT-facing pin must
     read to the LEFT of the pin, never overlap it. The anchor stays on
     the stub (it is the electrical hotspot); justification decides which
     way the text grows. Left-facing pin (orientation 2) -> bottom-right
@@ -324,11 +324,11 @@ def _net_representation(
     A net whose pins are ALL unzoned (every component has ``zone=None``)
     falls through to ``'wire'`` because they share the implicit "no zone"
     group. This keeps current behaviour for plans that don't define
-    zones yet — the executor still wires them together. Once the planner
+    zones yet: the executor still wires them together. Once the planner
     assigns zones, the rule kicks in.
 
-    ``force_wires=True`` beats everything — including the rail-name
-    heuristic — and is the planner's explicit way to demand a drawn wire.
+    ``force_wires=True`` beats everything, including the rail-name
+    heuristic, and is the planner's explicit way to demand a drawn wire.
     """
     if getattr(net, "force_wires", False):
         return "wire"

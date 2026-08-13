@@ -614,7 +614,7 @@ Begin
         Try pnl_StatusDot.Color := COLOR_ACCENT_GREEN; Except End;
         Try lbl_Status.Caption := 'idle'; Except End;
         Try lbl_LastErr.Caption := ''; Except End;
-        { Button is always enabled — dashboard can run standalone. }
+        { Button is always enabled: dashboard can run standalone. }
         UpdateOpenWebState;
     Except End;
 End;
@@ -683,12 +683,6 @@ Begin
     { Also reset the local tick so the visible countdown jumps back to the   }
     { full window immediately, without waiting for the next poll.            }
     Try LastActivityTick := GetTickCount; Except End;
-End;
-
-Procedure btn_ResetPerfClick(Sender : TObject);
-Begin
-    ResetPerfStats;
-    Try mmo_Perf.Lines.Clear; Except End;
 End;
 
 
@@ -797,11 +791,6 @@ Procedure btn_RenewEnter(Sender : TObject);
 Begin Try btn_Renew.Color := $003A3C42; Except End; End;
 Procedure btn_RenewLeave(Sender : TObject);
 Begin Try btn_Renew.Color := $002A2C32; Except End; End;
-
-Procedure btn_ResetPerfEnter(Sender : TObject);
-Begin Try btn_ResetPerf.Color := $003A3C42; Except End; End;
-Procedure btn_ResetPerfLeave(Sender : TObject);
-Begin Try btn_ResetPerf.Color := $002A2C32; Except End; End;
 
 Procedure btn_OpenWebEnter(Sender : TObject);
 Begin

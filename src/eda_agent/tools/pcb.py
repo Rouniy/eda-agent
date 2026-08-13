@@ -26,6 +26,7 @@ from ..placement import (
 )
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
+from ..bridge.payload import payload_safe
 
 
 def _offset_pair_polyline(
@@ -226,6 +227,19 @@ def _build_placement_summary(
 
 NETLIST_CSV_HEADER = ("component", "pin", "pin_name", "net")
 
+# The fitted-classes pcb_filter_variant_components can select. Validated
+# in Python because the Pascal cannot: PCB_FilterVariantComponents tests
+# 'all_fitted', 'fitted_original' and 'alternate' in an If chain whose
+# implicit else is not_fitted, so an unrecognised word silently selects
+# the not-fitted parts. It then echoes the caller's own string back as
+# "select", so the reply CONFIRMS the class that was not selected.
+#
+# A typo of "alternate" therefore selects the opposite class and says it
+# did what was asked. Anything acting on that selection, a delete, a
+# component class, a variant review, acts on the wrong components.
+FILTER_VARIANT_SELECT = (
+    "not_fitted", "fitted_original", "alternate", "all_fitted")
+
 
 def parse_tabular_netlist(text: str) -> dict[str, Any]:
     """Parse the tabular netlist CSV that ``proj_export_netlist`` writes.
@@ -323,6 +337,20 @@ def _encode_bindings_param(bindings: list[dict[str, Any]]) -> str:
     return "~~".join(ops)
 
 
+#: The signature defaults of pcb_calc_termination's unit-suffixed
+#: arguments, kept here so the alias handling can tell "the caller did
+#: not pass this" from "the caller passed exactly the default". Without
+#: that distinction a conflicting alias cannot be detected at all, and
+#: the choice is between silently preferring one value and refusing
+#: every call that supplies a terse spelling.
+_TERMINATION_DEFAULTS = {
+    "z0_ohms": 50.0,
+    "dielectric_constant": 4.2,
+    "driver_impedance_ohms": 0.0,
+    "dielectric_height_mils": 0.0,
+}
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -344,7 +372,7 @@ def register_pcb_tools(mcp):
         When several PcbDocs are open, the other PCB tools
         (`pcb_get_components`, `pcb_delete_object`, `pcb_delete_net`,
         `pcb_plan_placement`, `design_visual_review`, …) operate on the
-        *focused* board — and `app_set_active_document` does NOT reliably set
+        *focused* board, and `app_set_active_document` does NOT reliably set
         that for a PcbDoc. Call this first to point them all at the board
         you mean. (`pcb_place_components` already accepts `board_path`
         directly.)
@@ -368,7 +396,7 @@ def register_pcb_tools(mcp):
         """Delete nets from the active PCB.
 
         By default removes only EMPTY nets (no connected pads / tracks /
-        vias) — the cleanup for stray nets left behind after deleting
+        vias): the cleanup for stray nets left behind after deleting
         components, e.g. nets created by `pcb_place_components`' synced
         mode. A net that still has connections is skipped unless
         ``force=True`` (forcing orphans those pads/tracks, so use it
@@ -380,18 +408,38 @@ def register_pcb_tools(mcp):
             force: Also delete nets that still have connected primitives
                 (orphans them). Default False.
 
+        A net name containing a COMMA is refused rather than sent. The
+        list rides one comma-separated field and the handler splits it
+        with ``Pos(',', ...)``, so such a name would arrive as two, and
+        the fragments can match real nets: ``VCC,GND`` becomes ``VCC``
+        and ``GND``. With ``force=True`` that deletes nets nobody named
+        and orphans their pads and tracks.
+
         Returns:
             Dict with ``deleted`` (count removed), ``skipped_connected``
             (count), and ``skipped_nets`` (names skipped because still
-            connected).
+            connected). Or ``{"ok": False, "reason": ...}`` if a name
+            contains a comma, in which case nothing is sent.
         """
+        wanted = [str(n).strip() for n in (nets or []) if str(n).strip()]
+        unsendable = [n for n in wanted if "," in n]
+        if unsendable:
+            return {
+                "ok": False,
+                "reason": (
+                    f"these net names contain a comma and cannot be sent: "
+                    f"{unsendable}. The list travels as one "
+                    "comma-separated field, so each would arrive as two "
+                    "names, and a fragment can match a real net: "
+                    "'VCC,GND' becomes 'VCC' and 'GND'. Delete them "
+                    "individually through the Altium UI."
+                ),
+            }
         bridge = get_bridge()
         return await bridge.send_command_async(
             "pcb.delete_nets",
             {
-                "nets": ",".join(
-                    str(n).strip() for n in (nets or []) if str(n).strip()
-                ),
+                "nets": ",".join(payload_safe(n) for n in wanted),
                 "force": "true" if force else "false",
             },
         )
@@ -632,6 +680,17 @@ def register_pcb_tools(mcp):
         """
         if not names:
             return {"ok": False, "reason": "names list is empty"}
+        # The list rides a pipe-separated field, and this tool MUTATES
+        # rule state: 'A|B' would arrive as two patterns, and with the
+        # trailing-* wildcard a fragment can plausibly match real rules.
+        # Refuse rather than strip: stripping produces a different
+        # valid pattern.
+        bad = [n for n in names if "|" in str(n)]
+        if bad:
+            return {"ok": False, "reason":
+                    f"rule names {bad} contain '|', which is the "
+                    "wire-format separator; fragments could match other "
+                    "rules, so the call is refused"}
         bridge = get_bridge()
         return await bridge.send_command_async(
             "pcb.set_rules_enabled",
@@ -769,6 +828,17 @@ def register_pcb_tools(mcp):
             desig = str(m.get("designator", "")).strip()
             if not desig:
                 continue
+            # Moves are comma-packed then pipe-joined, and this MOVES
+            # components: a designator carrying either delimiter would
+            # re-shape into a different move whose fragment can match a
+            # real part. Refuse rather than strip ('R|1' stripped is
+            # 'R1', a real component).
+            if "," in desig or "|" in desig:
+                return {"ok": False, "reason":
+                        f"designator {desig!r} contains ',' or '|', "
+                        "which are the wire-format separators; a "
+                        "fragment could move another component, so the "
+                        "call is refused", "moves_applied": 0}
             x_str = (
                 str(round(m["x"])) if "x" in m and m["x"] is not None else ""
             )
@@ -844,7 +914,7 @@ def register_pcb_tools(mcp):
 
         Launches Altium's Teardrop command on all objects. The Teardrop dialog
         is modal and cannot be suppressed from script (same limitation as the
-        ECO dialog) — choose Add and confirm it in Altium. Returns once the
+        ECO dialog): choose Add and confirm it in Altium. Returns once the
         command is dispatched.
         """
         bridge = get_bridge()
@@ -866,7 +936,7 @@ def register_pcb_tools(mcp):
 
         For every visible designator, tries a ring of auto-position anchors and
         keeps the first that overlaps no pad or other silk text; otherwise
-        leaves the designator where it was. First-fit, not a global optimum —
+        leaves the designator where it was. First-fit, not a global optimum;
         pair with the silk audits and `design_visual_review` to check the
         result.
 
@@ -2083,9 +2153,28 @@ def register_pcb_tools(mcp):
                 ``fitted_original``, ``alternate``, or ``all_fitted``
                 (fitted_original + alternate).
 
+        An unrecognised ``select`` is REJECTED rather than guessed. The
+        handler's If chain falls through to not-fitted for any word it
+        does not know, and the reply echoes back the word you sent, so a
+        typo would select the opposite class and report success.
+
         Returns:
-            {"variant", "select", "matched", "designators"} or an error.
+            {"variant", "select", "matched", "designators"}, or
+            ``{"ok": False, "reason": ...}`` if ``select`` is not one of
+            the four classes, in which case nothing is sent or selected.
         """
+        if select not in FILTER_VARIANT_SELECT:
+            return {
+                "ok": False,
+                "reason": (
+                    f"select must be one of "
+                    f"{', '.join(FILTER_VARIANT_SELECT)}, not "
+                    f"{select!r}. Unknown values are not rejected by the "
+                    "board handler: they fall through to not_fitted, and "
+                    "the reply echoes the word you sent, so a typo would "
+                    "select the opposite class and look like it worked."
+                ),
+            }
         bridge = get_bridge()
         return await bridge.send_command_async(
             "pcb.filter_variant_components",
@@ -2354,22 +2443,50 @@ def register_pcb_tools(mcp):
             return {"ok": False,
                     "reason": "spacing_mils must be > 0 for differential geometries"}
 
-        t = copper_oz * 1.378
+        # The two forward formulas live in design/impedance_sizing.py,
+        # where trace_width_for_impedance already inverts them. They
+        # were inlined here as well, character for character, so the
+        # IPC-2141 constants were stated twice with nothing enforcing
+        # agreement: the same defect as the mils-to-mm factor in task
+        # #43, and the reason calc.py can now offer this tool without
+        # becoming a third copy.
+        from ..design.impedance_sizing import z0_microstrip, z0_stripline
+        from ..units import OZ_TO_MILS
+
         w = float(width_mils)
         h = float(dielectric_height_mils)
         er = float(dielectric_constant)
+        t = copper_oz * OZ_TO_MILS          # copper thickness, mils
 
         if geometry.startswith("microstrip"):
-            # IPC-2141 microstrip.
-            z0 = (87.0 / math.sqrt(er + 1.41)) * \
-                 math.log(5.98 * h / (0.8 * w + t))
+            z0 = z0_microstrip(w, h, er, copper_oz=copper_oz)
             er_eff = (er + 1.0) / 2.0
         else:
             # Symmetric stripline (trace centered between two planes,
             # h is the FULL dielectric thickness between planes).
-            z0 = (60.0 / math.sqrt(er)) * \
-                 math.log(4.0 * h / (0.67 * math.pi * (0.8 * w + t)))
+            z0 = z0_stripline(w, h, er, copper_oz=copper_oz)
             er_eff = er
+
+        # The same validity check the other copy of this tool applies.
+        #
+        # Shared rather than restated for the reason the constants above
+        # are shared: this tool exists twice, here for Altium and in
+        # tools/calc.py for KiCad and EasyEDA. Guarding only one of them
+        # left this one still returning a NEGATIVE impedance as a
+        # success, which is precisely the drift the comment above warns
+        # about.
+        from ..design.impedance_sizing import impedance_validity
+
+        checked = impedance_validity(z0, w, h, er)
+        if not checked["usable"]:
+            return {
+                "ok": False,
+                "reason": checked["reason"],
+                "geometry": geometry,
+                "width_mils": w,
+                "dielectric_height_mils": h,
+                "width_to_height_ratio": checked["width_to_height_ratio"],
+            }
 
         # Propagation delay: c0 = 11.8 in/ns in vacuum;
         # tpd = sqrt(er_eff) / c0 = sqrt(er_eff) * 1000 / 11.8 ps/in
@@ -2384,17 +2501,22 @@ def register_pcb_tools(mcp):
             "thickness_mils": round(t, 3),
             "z0_ohms": round(z0, 1),
             "propagation_delay_ps_per_inch": round(tpd, 2),
+            "width_to_height_ratio": checked["width_to_height_ratio"],
         }
+        if checked["outside_validity_range"]:
+            out["outside_validity_range"] = True
+            out["accuracy_warning"] = checked["warning"]
         if is_diff:
+            # Same reasoning as the Z0 formulas above: the coupling
+            # factor was stated here AND in impedance_sizing, where the
+            # inverse solver uses it. Two copies of a Wadell
+            # approximation is two chances to edit one of them.
+            from ..design.impedance_sizing import diff_coupling_factor
+
             s = float(spacing_mils)
             out["spacing_mils"] = s
-            if geometry == "microstrip_diff":
-                # Wadell microstrip diff approximation.
-                zdiff = 2.0 * z0 * (1.0 - 0.48 * math.exp(-0.96 * s / h))
-            else:
-                # Stripline diff approximation.
-                zdiff = 2.0 * z0 * (1.0 - 0.347 * math.exp(-2.9 * s / h))
-            out["zdiff_ohms"] = round(zdiff, 1)
+            out["zdiff_ohms"] = round(
+                2.0 * z0 * diff_coupling_factor(geometry, s, h), 1)
         return out
 
     @mcp.tool()
@@ -2462,15 +2584,19 @@ def register_pcb_tools(mcp):
     async def pcb_calc_termination(
         length_mils: float,
         rise_time_ns: float,
-        z0_ohms: float = 50.0,
-        dielectric_constant: float = 4.2,
+        z0_ohms: Optional[float] = None,
+        dielectric_constant: Optional[float] = None,
         geometry: str = "microstrip",
-        driver_impedance_ohms: float = 0.0,
+        driver_impedance_ohms: Optional[float] = None,
         vcc: float = 0.0,
         width_mils: float = 0.0,
-        dielectric_height_mils: float = 0.0,
+        dielectric_height_mils: Optional[float] = None,
         length_fraction: float = 1.0 / 6.0,
         multi_load: bool = False,
+        z0: Optional[float] = None,
+        er: Optional[float] = None,
+        driver_impedance: Optional[float] = None,
+        height_mils: Optional[float] = None,
     ) -> dict[str, Any]:
         """Decide if a net needs termination and size the resistor(s).
 
@@ -2509,6 +2635,49 @@ def register_pcb_tools(mcp):
         """
         from ..design.signal_integrity import recommend_termination
         try:
+            # The terse spellings are what the EasyEDA and KiCad builds
+            # take, so accepting both here means one call works on any
+            # backend.
+            #
+            # Preferring the alias unconditionally was the first attempt
+            # and it is wrong: a caller passing z0_ohms=75 and z0=50
+            # would have silently been given 50 and told it succeeded.
+            # These name ONE quantity, so disagreement is a mistake in
+            # the call and the only safe answer is to say so.
+            # The defaults moved OUT of the signature and into
+            # _TERMINATION_DEFAULTS so that "not supplied" is
+            # distinguishable from "supplied, and happens to equal the
+            # default". Detecting the conflict any other way needs a
+            # comparison against the default value, and that silently
+            # misses the case where the caller passed exactly it: the
+            # first version of this passed every test except the one
+            # that supplied dielectric_constant=4.2 alongside a
+            # disagreeing er, which is precisely the call a client
+            # written for another backend makes. Behaviour is unchanged
+            # for every caller; only the advertised default moves into
+            # the docstring.
+            resolved = {}
+            for terse, terse_name, verbose, verbose_name in (
+                    (z0, "z0", z0_ohms, "z0_ohms"),
+                    (er, "er", dielectric_constant, "dielectric_constant"),
+                    (driver_impedance, "driver_impedance",
+                     driver_impedance_ohms, "driver_impedance_ohms"),
+                    (height_mils, "height_mils",
+                     dielectric_height_mils, "dielectric_height_mils")):
+                if (terse is not None and verbose is not None
+                        and terse != verbose):
+                    return {"ok": False, "reason": (
+                        f"{verbose_name}={verbose} and {terse_name}="
+                        f"{terse} were both given and disagree; they are "
+                        f"the same quantity, so pass one")}
+                given = verbose if verbose is not None else terse
+                resolved[verbose_name] = (
+                    given if given is not None
+                    else _TERMINATION_DEFAULTS[verbose_name])
+            z0_ohms = resolved["z0_ohms"]
+            dielectric_constant = resolved["dielectric_constant"]
+            driver_impedance_ohms = resolved["driver_impedance_ohms"]
+            dielectric_height_mils = resolved["dielectric_height_mils"]
             adv = recommend_termination(
                 length_mils, rise_time_ns, z0_ohms, dielectric_constant,
                 geometry=geometry,
@@ -2614,6 +2783,20 @@ def register_pcb_tools(mcp):
             "t_pd_ps_per_mil": round(res["t_pd_ps_per_mil"], 4),
             "skew_budget_ps": res["skew_budget_ps"],
             "tolerance_mils": round(tol, 2) if tol is not None else None,
+            # Which geometry produced the delay. A stripline uses er
+            # directly and a microstrip an effective er near half of it,
+            # so the two differ by roughly a quarter on every length
+            # converted here. This defaults to stripline while
+            # pcb_calc_termination defaults to microstrip, and neither
+            # reply used to say so.
+            "geometry": geometry,
+            "dielectric_constant": dielectric_constant,
+            "geometry_note": (
+                f"delay computed for {geometry}. A stripline uses er "
+                f"directly and a microstrip uses an effective er near "
+                f"half of it, so the two differ by roughly a quarter. "
+                f"Pass geometry explicitly if this board is not "
+                f"{geometry}."),
         }
         rep = res.get("report")
         if rep is not None:
@@ -2644,7 +2827,8 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_calc_thermal_vias(
         drill_mm: float,
-        board_thickness_mm: float,
+        board_thickness_mm: Optional[float] = None,
+        length_mm: Optional[float] = None,
         plating_um: float = 25.0,
         filled_copper: bool = False,
         k_cu: float = 385.0,
@@ -2668,7 +2852,9 @@ def register_pcb_tools(mcp):
 
         Args:
             drill_mm: Finished via drill diameter.
-            board_thickness_mm: Conduction length -- top layer to the heat-
+            board_thickness_mm: Conduction length -- top layer to the heat- The EasyEDA and KiCad builds
+                spell this ``length_mm``; either is accepted.
+            length_mm: Alias for ``board_thickness_mm``.
                 spreading plane (full thickness for a bottom plane).
             plating_um: Barrel plating thickness (default 25 = 1 oz).
             filled_copper: True for a copper-filled via (full-circle copper),
@@ -2685,7 +2871,11 @@ def register_pcb_tools(mcp):
             "target_k_per_w", "temp_rise_c", "barrel_area_mm2", "summary"}``.
         """
         from ..design.thermal_vias import assess_thermal_vias
+        from .calc import _either
         try:
+            board_thickness_mm = _either(
+                "board_thickness_mm", board_thickness_mm,
+                "length_mm", length_mm)
             rep = assess_thermal_vias(
                 drill_mm, plating_um, board_thickness_mm,
                 filled_copper=filled_copper, k_cu=k_cu,
@@ -2775,7 +2965,9 @@ def register_pcb_tools(mcp):
             return {"ok": False,
                     "reason": "layer must be 'external' or 'internal'"}
 
-        thickness_mils = copper_oz * 1.378
+        from ..units import OZ_TO_MILS
+
+        thickness_mils = copper_oz * OZ_TO_MILS
         k = 0.024 if layer_norm == "internal" else 0.048
         b = 0.44
         c = 0.725
@@ -2802,12 +2994,13 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_calc_trace_width_for_current(
-        current_amps: float,
+        current_amps: Optional[float] = None,
         copper_oz: float = 1.0,
         delta_t_c: float = 10.0,
         layer: str = "external",
         margin: float = 0.2,
         length_mils: float = 0.0,
+        current_a: Optional[float] = None,
     ) -> dict[str, Any]:
         """Minimum track WIDTH to carry a target current (inverse IPC-2221).
 
@@ -2820,7 +3013,11 @@ def register_pcb_tools(mcp):
         external / ``0.024`` internal, ``h = copper_oz * 1.378 mils``.
 
         Args:
-            current_amps: Target current the track must carry.
+            current_amps: Target current the track must carry. The
+                EasyEDA and KiCad builds spell this ``current_a``;
+                either is accepted here, so one call works on any
+                backend.
+            current_a: Alias for ``current_amps``.
             copper_oz: Copper weight, oz/ft^2 (0.5 / 1.0 / 2.0 / 3.0).
             delta_t_c: Allowed temperature rise above ambient (10 degC is a
                 common conservative budget; 20-30 degC for tight boards).
@@ -2837,7 +3034,10 @@ def register_pcb_tools(mcp):
             or ``{"ok": False, "reason": ...}``.
         """
         from ..design.trace_sizing import trace_width_for_current
+        from .calc import _either
         try:
+            current_amps = _either("current_amps", current_amps,
+                                   "current_a", current_a)
             r = trace_width_for_current(
                 current_amps, copper_oz=copper_oz, delta_t_c=delta_t_c,
                 layer=layer, margin=margin, length_mils=length_mils)
@@ -2933,6 +3133,163 @@ def register_pcb_tools(mcp):
             },
             timeout=60.0,
         )
+
+    @mcp.tool()
+    async def pcb_apply_dnp_paste_exclusion(
+        designators: Optional[list[str]] = None,
+        restore: bool = False,
+        dry_run: bool = False,
+        use_current_variant: bool = False,
+    ) -> dict[str, Any]:
+        """Suppress stencil paste on Not-Fitted (DNP) components.
+
+        The remediation half of ``audit_variant_not_fitted``. A Not-Fitted
+        component is on the BOM as a placeholder and must NOT receive
+        paste: the SMT line would otherwise deposit paste on empty pads,
+        and the bridging that follows shows up as rework.
+
+        With no ``designators`` this asks ``audit_variant_not_fitted``
+        for the components Not Fitted in the project's CURRENT variant,
+        so the selection follows the variant you actually have open.
+        Pass an explicit list to override that.
+
+        Mechanism: each surface pad gets a manual PasteMaskExpansion of
+        minus its larger dimension, which collapses the stencil aperture
+        whatever the pad shape. Through-hole pads are left alone and
+        counted separately, since they have no aperture to suppress.
+
+        Reversible: ``restore=True`` discards the manual override so
+        Altium recomputes the expansion from the design rules.
+
+        RESTORE THE SAME LIST YOU APPLIED. ``restore`` will NOT guess:
+        called without ``designators`` it refuses and tells you what to
+        pass. That is deliberate. Resolving a restore from the current
+        variant means excluding under one variant, switching, then
+        restoring, and leaving any component that was excluded but is
+        fitted in the new variant with its aperture still suppressed.
+        Nothing would report it: the call succeeds, the pad looks
+        ordinary in the editor, and the part comes back from assembly
+        unsoldered.
+
+        The apply reply lists every component it touched in ``items``.
+        Pass those designators back to restore. If you really do want
+        the current variant's Not-Fitted list, ask for it with
+        ``use_current_variant=True`` and you own the choice.
+
+        Apply is unaffected: with no ``designators`` it uses the current
+        variant's Not-Fitted list, which is the whole point of applying.
+
+        Mismatch is visible either way. ``components_requested`` versus
+        ``components_matched`` in the reply reports how many of the
+        names you passed were actually found on this board.
+
+        Args:
+            designators: Components to treat. Omit on an apply to use
+                the current variant's Not-Fitted list. Required on a
+                restore unless ``use_current_variant`` is set.
+            restore: Undo a previous exclusion instead of applying one.
+            dry_run: Report which components WOULD be treated and change
+                nothing. Worth using first: this edits the board, and a
+                wrong variant selection would strip paste off parts that
+                are meant to be fitted.
+            use_current_variant: Allow a restore with no ``designators``
+                to resolve from the variant open right now. Off by
+                default because that is the failure above.
+
+        Returns:
+            Dict with ``restored``, ``components_requested``,
+            ``components_matched``, ``pads_changed``,
+            ``pads_skipped_through_hole`` and per-component ``items``.
+            In dry-run mode: ``dry_run``, ``designators`` and ``source``.
+            On a refused restore: ``{"ok": False, "reason": ...}`` and
+            nothing is read from or written to the board.
+        """
+        bridge = get_bridge()
+
+        source = "explicit"
+        variant = ""
+        names = [str(d).strip() for d in (designators or []) if str(d).strip()]
+
+        # Refuse BEFORE asking the bridge anything. A restore that
+        # resolves from whatever variant happens to be open is the one
+        # way this tool can leave a fitted part with no paste, and the
+        # result is indistinguishable from success.
+        if restore and not names and not use_current_variant:
+            return {
+                "ok": False,
+                "reason": (
+                    "restore needs the designators that were excluded. "
+                    "Resolving them from the variant open right now "
+                    "would restore the wrong components if the variant "
+                    "changed since the apply, leaving a fitted part "
+                    "with no stencil aperture. Pass the designators "
+                    "from the apply reply's 'items', or set "
+                    "use_current_variant=True to accept that risk "
+                    "deliberately."
+                ),
+            }
+
+        if not names:
+            source = "variant_not_fitted"
+            found = await bridge.send_command_async(
+                "audit.variant_not_fitted", {})
+            items = (found or {}).get("items") or []
+            names = [str(i.get("designator", "")).strip()
+                     for i in items if isinstance(i, dict)]
+            names = [n for n in names if n]
+            variant = str((found or {}).get("variant", ""))
+            if not names:
+                return {
+                    "ok": True,
+                    "components_matched": 0,
+                    "pads_changed": 0,
+                    "source": source,
+                    "variant": (found or {}).get("variant", ""),
+                    "note": "no Not-Fitted components in the current "
+                            "variant; nothing to exclude",
+                }
+
+        if dry_run:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "restore": restore,
+                "source": source,
+                "variant": variant,
+                "designators": names,
+                "note": "nothing was changed; re-run with dry_run=False "
+                        "to apply",
+            }
+
+        # The designator list rides ONE field, so a designator containing
+        # the separator would silently split into two names and treat a
+        # component nobody asked for. This used to STRIP the separator,
+        # which prevents the split but can produce a DIFFERENT valid
+        # name: 'R|1' became 'R1', a real component, whose paste this
+        # tool then changes. Refusing tells the caller what happened.
+        bad = [n for n in names if "|" in payload_safe(n)]
+        if bad:
+            return {"ok": False, "reason":
+                    f"designators {bad} contain '|', which is the "
+                    "wire-format separator; stripping it could target a "
+                    "different real component, so the call is refused"}
+        safe = [s for s in (payload_safe(n) for n in names) if s]
+        result = await bridge.send_command_async(
+            "pcb.apply_dnp_paste_exclusion",
+            {
+                "designators": "|".join(safe),
+                "restore": "true" if restore else "false",
+            },
+        )
+        # Report WHERE the list came from. An apply and a later restore
+        # that resolved against different variants is the failure mode
+        # that leaves a fitted part with no paste, and without these two
+        # keys the two replies are indistinguishable.
+        if isinstance(result, dict):
+            result.setdefault("source", source)
+            if variant:
+                result.setdefault("variant", variant)
+        return result
 
     @mcp.tool()
     async def pcb_make_paste_grid(
@@ -3070,6 +3427,16 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         params: dict[str, str] = {}
         if designator_filter:
+            # A '|' inside a designator splits into two filter entries,
+            # and a fragment like 'R1' matches a real component whose
+            # library pin this tool then clears. Refuse rather than
+            # strip.
+            bad = [d for d in designator_filter if "|" in str(d)]
+            if bad:
+                return {"ok": False, "reason":
+                        f"designators {bad} contain '|', which is the "
+                        "wire-format separator; fragments could match "
+                        "other components, so the call is refused"}
             params["designator_filter"] = "|".join(
                 str(d) for d in designator_filter)
         return await bridge.send_command_async(
@@ -3150,6 +3517,16 @@ def register_pcb_tools(mcp):
         """
         if not nets:
             return {"ok": False, "reason": "nets list is empty"}
+        # A '|' inside a net name splits into two names, and net-name
+        # fragments ('VCC', 'GND') are the most likely of all fragments
+        # to match real objects; this tool then flips their Moveable
+        # state. Refuse rather than strip.
+        bad = [n for n in nets if "|" in str(n)]
+        if bad:
+            return {"ok": False, "reason":
+                    f"net names {bad} contain '|', which is the "
+                    "wire-format separator; fragments could match other "
+                    "nets, so the call is refused"}
         bridge = get_bridge()
         return await bridge.send_command_async(
             "pcb.lock_net_routing",
@@ -3921,6 +4298,8 @@ def register_pcb_tools(mcp):
         Collision/DRC validation remains a separate mandatory audit step.
         """
         from eda_agent.design.pcb_planning import plan_bga_fanout
+        if not pads:
+            return {"ok": False, "reason": "pads must not be empty"}
         plan = plan_bga_fanout(
             pads, center_x, center_y, escape_mils, track_width_mils,
             via_size_mils, via_hole_mils, layer,
@@ -3956,6 +4335,8 @@ def register_pcb_tools(mcp):
         """Render planned tracks/vias/obstacles to SVG without using Altium."""
         from pathlib import Path
         from eda_agent.render.route_plan_svg import write_route_plan_svg
+        if not any(plan.get(key) for key in ("tracks", "vias", "obstacles")):
+            return {"ok": False, "reason": "route plan contains no geometry"}
         target = Path(output_path).expanduser().resolve()
         if target.suffix.lower() != ".svg":
             target = target.with_suffix(".svg")
@@ -4338,7 +4719,7 @@ def register_pcb_tools(mcp):
         """
         normalized = side.strip().lower()
         if normalized not in {"top", "bottom"}:
-            raise ValueError("side must be 'top' or 'bottom'")
+            return {"ok": False, "reason": "side must be 'top' or 'bottom'"}
         refs = [str(x).strip() for x in designators if str(x).strip()]
         if not refs:
             return {"side": normalized, "requested": 0, "changed": 0,
@@ -4495,11 +4876,120 @@ def register_pcb_tools(mcp):
         can target the right mechanical layer by name rather than guessing
         "Mechanical 1".
 
+        Each entry also carries its ``kind``, which is what the layer is FOR
+        rather than what it is called. Read it before setting one: a kind
+        belongs to a single layer, so assigning it moves it. ``kind_id`` of
+        -1 means this Altium build has no mechanical layer kinds.
+
         Returns:
-            Dict with ``mechanical_layers`` (each: layer, name) and ``count``.
+            Dict with ``mechanical_layers`` (each: layer, name, kind,
+            kind_id) and ``count``.
         """
         bridge = get_bridge()
         return await bridge.send_command_async("pcb.get_mech_layer_names", {})
+
+    @mcp.tool()
+    async def pcb_get_layer_display() -> dict[str, Any]:
+        """Visibility and colour for every layer on the active board.
+
+        Covers signal, plane, mechanical, mask, paste, silk, keepout and
+        multilayer. Each entry gives the internal ``layer`` id, the user's
+        ``name`` for it, whether it is ``visible``, and its colour both as
+        Altium's raw integer and as ``color_hex``.
+
+        Read this before recolouring: Altium stores a colour as a Windows
+        TColor, which is byte-reversed against the #RRGGBB people write,
+        and getting that backwards produces a plausible wrong colour
+        rather than an error.
+
+        Returns:
+            Dict with ``layers``, ``count`` and ``visible_count``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.get_layer_display", {})
+
+    @mcp.tool()
+    async def pcb_set_layer_color(layer: str, color: str) -> dict[str, Any]:
+        """Recolour one layer.
+
+        The colour is given as ``#RRGGBB``. Altium holds it internally as
+        a byte-reversed TColor, and that conversion happens on the Altium
+        side so no caller has to know about it.
+
+        The write is READ BACK before reporting success, because a
+        refused assignment raises nothing and would otherwise be reported
+        as having worked.
+
+        Colour is a display setting rather than a property of the board,
+        so it follows the installation rather than travelling with the
+        file.
+
+        Args:
+            layer: Layer name, e.g. "TopOverlay" or "Mechanical13".
+            color: Colour as "#RRGGBB".
+
+        Returns:
+            Dict with ``layer``, ``color`` and ``color_hex``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.set_layer_color", {"layer": layer, "color": color}
+        )
+
+    @mcp.tool()
+    async def pcb_set_mech_layer_kind(
+        layer: str, kind: str, partner_layer: str = ""
+    ) -> dict[str, Any]:
+        """Set what a mechanical layer is FOR, not what it is called.
+
+        Renaming a layer "Courtyard Top" does not make it one. The KIND is
+        a separate property, and it is what every feature resolving a layer
+        by purpose reads: courtyard checking, assembly drawings, 3D body
+        placement and the IPC-4761 via treatments. A layer with no kind is
+        skipped by all of them, so the outlines get drawn and nothing uses
+        them.
+
+        A SINGLE kind such as "Fab Notes" belongs to ONE layer at a time.
+        If another layer already holds it, that layer is cleared first and
+        named in ``cleared_from``, because leaving two layers claiming one
+        purpose is a state the stack manager does not intend.
+
+        A PAIRED kind, meaning any name ending in Top or Bottom, works
+        differently: it is held by the layer PAIR rather than by either
+        layer, under a separate set of names with the side dropped. So
+        "Courtyard Top" is stored as the pair kind "Courtyard" across the
+        two layers, and ``partner_layer`` is required to say which layer
+        carries the other side. Writing it without a partner is refused
+        rather than silently doing nothing.
+
+        The write is READ BACK before reporting success. A refused
+        assignment raises nothing here, so trusting it would report success
+        for having changed nothing.
+
+        Args:
+            layer: Mechanical layer, e.g. "Mechanical13".
+            kind: A kind name such as "Courtyard Top", "Assembly Top",
+                "3D Body Top", "Component Outline Top", "Fab Notes" or
+                "Not Set". A bare number is also accepted, so a kind added
+                by a later Altium release can be set without waiting for
+                the name map to catch up. Read the current assignment with
+                ``pcb_get_mech_layer_names``.
+            partner_layer: The mechanical layer carrying the other side,
+                required when ``kind`` ends in Top or Bottom and ignored
+                otherwise. The two layers are joined as a pair, which is
+                what the kind is then written to.
+
+        Returns:
+            Dict with ``layer``, ``kind``, ``kind_id``, ``paired``,
+            ``pair_kind``, ``partner_layer`` and ``cleared_from``.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"layer": layer, "kind": kind}
+        if partner_layer:
+            params["partner_layer"] = partner_layer
+        return await bridge.send_command_async(
+            "pcb.set_mech_layer_kind", params
+        )
 
     @mcp.tool()
     async def pcb_delete_object(
@@ -4687,6 +5177,66 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.rebuild_connectivity", {})
         return result
+
+    @mcp.tool()
+    async def pcb_get_net_object_ids(net: str) -> dict[str, Any]:
+        """Inspect the internal net-object address used by every primitive.
+
+        Use this diagnostic when pads and copper have the same visible net
+        name but Altium still treats them as disconnected. Different
+        ``net_address`` values reveal duplicate internal net objects.
+        """
+        if not net.strip():
+            return {"success": False, "reason": "net is required"}
+        return await get_bridge().send_command_async(
+            "pcb.get_net_object_ids", {"net": net.strip()}
+        )
+
+    @mcp.tool()
+    async def pcb_get_connections_detail(net: str) -> dict[str, Any]:
+        """Return the live ratsnest connection endpoints for one net."""
+        if not net.strip():
+            return {"success": False, "reason": "net is required"}
+        return await get_bridge().send_command_async(
+            "pcb.get_connections_detail", {"net": net.strip()}
+        )
+
+    @mcp.tool()
+    async def pcb_delete_connections_for_net(
+        net: str,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Remove stale ratsnest objects for one independently verified net.
+
+        This is a repair escape hatch, not a routing operation. Confirm only
+        after independently proving that the copper graph connects every pad;
+        otherwise the removal can hide a genuine unrouted connection.
+        """
+        if not net.strip():
+            return {"success": False, "reason": "net is required"}
+        if not confirm:
+            return {
+                "success": False,
+                "reason": (
+                    "refusing to remove ratsnest objects without confirm=true; "
+                    "first prove that the copper graph connects every endpoint"
+                ),
+            }
+        return await get_bridge().send_command_async(
+            "pcb.delete_connections_for_net", {"net": net.strip()}
+        )
+
+    @mcp.tool()
+    async def pcb_rebind_vias() -> dict[str, Any]:
+        """Re-register every net-associated via and rebuild connectivity."""
+        return await get_bridge().send_command_async("pcb.rebind_vias", {})
+
+    @mcp.tool()
+    async def pcb_rebind_copper_to_pad_nets() -> dict[str, Any]:
+        """Canonicalize copper net objects against pad nets, then rebuild."""
+        return await get_bridge().send_command_async(
+            "pcb.rebind_copper_to_pad_nets", {}
+        )
 
     @mcp.tool()
     async def pcb_get_polygons() -> dict[str, Any]:
@@ -5066,6 +5616,33 @@ def register_pcb_tools(mcp):
             },
         )
         return result
+
+    @mcp.tool()
+    async def pcb_place_region_poly(
+        vertices: list[dict[str, float]],
+        layer: str = "TopLayer",
+        net: str = "",
+    ) -> dict[str, Any]:
+        """Place a copper region from three or more polygon vertices.
+
+        Args:
+            vertices: Ordered ``{"x": ..., "y": ...}`` points in mils.
+            layer: Target layer.
+            net: Optional net assignment.
+        """
+        if len(vertices) < 3:
+            return {"success": False, "reason": "at least 3 vertices required"}
+        try:
+            pts = ";".join(
+                f"{float(point['x']):g}:{float(point['y']):g}"
+                for point in vertices
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"success": False, "reason": f"invalid vertex: {exc}"}
+        return await get_bridge().send_command_async(
+            "pcb.place_region_poly",
+            {"pts": pts, "layer": layer, "net": net},
+        )
 
     @mcp.tool()
     async def pcb_place_dimension(

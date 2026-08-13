@@ -13,7 +13,13 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.08.04.14';
+    SCRIPT_VERSION = '2026.08.13.1';
+
+    // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
+    // and checking every combination of those is a million probes for a stack
+    // that in practice stops in the low tens. The bound is reported back so a
+    // pair above it is known to have been skipped rather than judged clean.
+    MechScanLimit = 64;
 
     // Wire protocol version. Bumped whenever the request/response JSON shape
     // changes incompatibly. Python and Pascal must agree; mismatch returns

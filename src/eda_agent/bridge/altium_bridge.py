@@ -17,7 +17,6 @@ import time
 import uuid
 import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 from pathlib import Path
 from typing import Any, Optional
@@ -62,10 +61,6 @@ PROTOCOL_VERSION = 2
 # this gives a 300 s ceiling per command -- plenty for heavy emit / compile
 # passes while still catching runaway handlers.
 _MAX_HEARTBEAT_EXTENSIONS = 30
-
-# Thread pool for blocking I/O
-_executor = ThreadPoolExecutor(max_workers=1)
-
 
 def _trace_log(workspace_dir: Path, msg: str) -> None:
     """Append a line to workspace/bridge_trace.log. Never raises."""
@@ -252,7 +247,7 @@ class AltiumBridge:
         self._fault_recorded = True
 
     def _clear_fault_if_any(self, workspace_dir) -> None:
-        """A command succeeded — the loop is alive; drop any banner state.
+        """A command succeeded: the loop is alive; drop any banner state.
 
         Clears when THIS instance recorded a fault, and once at first success
         to sweep a stale ``last_fault.json`` left by a previous process (the
@@ -313,10 +308,20 @@ class AltiumBridge:
                         path.unlink()
                 except OSError:
                     pass
-            # Stray .tmp files from older builds that did atomic rename
+            # Stray .tmp files from older builds that did atomic rename.
+            # Age-filtered like the responses above, and for the same
+            # reason: an unconditional delete here removes a temp file
+            # that another writer is between writing and renaming, which
+            # destroys that caller's response and leaves it polling until
+            # it times out. Today's Pascal writes responses directly so
+            # nothing in production creates these, but "nothing creates
+            # them" is a property of the current script, not a guarantee
+            # -- and a sweep whose safety depends on the swept file never
+            # existing is one build away from being wrong.
             for path in workspace.glob("response_*.json.tmp"):
                 try:
-                    path.unlink()
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink()
                 except OSError:
                     pass
         except OSError:
@@ -764,6 +769,172 @@ class AltiumBridge:
         logger.warning("Command %s failed: %s - %s", command, code, message)
         raise_for_code(code, message, details)
 
+    async def _poll_response_async(
+        self,
+        request_id: str,
+        timeout: float,
+        max_extensions: Optional[int] = None,
+    ) -> CommandResponse:
+        """Async counterpart of ``_poll_response`` without a worker thread.
+
+        File polling is cheap and the sleep yields to the MCP event loop. This
+        also avoids depending on cross-thread event-loop wakeups, which can be
+        lost in embedded/WSL hosts even after the blocking worker has returned.
+        """
+        response_path = self._response_path(request_id)
+        progress_path = self._progress_path(request_id)
+        workspace_dir = self.config.workspace_dir
+        poll_interval = self.config.poll_interval
+        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        ext_cap = (_MAX_HEARTBEAT_EXTENSIONS if max_extensions is None
+                   else max(0, int(max_extensions)))
+        extensions = 0
+        poll_count = 0
+        first_appearance: Optional[float] = None
+        parse_errors = 0
+
+        _trace_log(
+            workspace_dir,
+            f"POLL_START id={request_id[:8]} timeout={timeout}s "
+            f"interval={poll_interval}s",
+        )
+        while True:
+            poll_count += 1
+            if response_path.exists():
+                if first_appearance is None:
+                    first_appearance = time.monotonic() - start
+                    _trace_log(
+                        workspace_dir,
+                        f"POLL_SEEN id={request_id[:8]} "
+                        f"after={first_appearance * 1000:.0f}ms "
+                        f"polls={poll_count}",
+                    )
+                try:
+                    with open(response_path, "r", encoding="utf-8-sig") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, IOError, UnicodeDecodeError) as exc:
+                    parse_errors += 1
+                    if parse_errors >= 200:
+                        try:
+                            response_path.unlink()
+                        except OSError:
+                            pass
+                        self._note_fault(
+                            workspace_dir, recovery_guidance(CORRUPT_RESPONSE))
+                        raise AltiumCommandError(
+                            f"Response file for request {request_id[:8]} was "
+                            f"present but unparseable after {parse_errors} "
+                            f"attempts -- Altium likely crashed mid-write. "
+                            f"The corrupt file was removed; retry the call. "
+                            + recovery_message(CORRUPT_RESPONSE),
+                            details={
+                                "recovery": recovery_guidance(CORRUPT_RESPONSE),
+                            },
+                        ) from exc
+                else:
+                    try:
+                        response_path.unlink()
+                    except OSError:
+                        pass
+                    elapsed = (time.monotonic() - start) * 1000
+                    _trace_log(
+                        workspace_dir,
+                        f"POLL_MATCH id={request_id[:8]} "
+                        f"elapsed={elapsed:.0f}ms polls={poll_count} "
+                        f"parse_errs={parse_errors} extensions={extensions}",
+                    )
+                    return CommandResponse.from_dict(data)
+
+            if time.monotonic() >= deadline:
+                if progress_path.exists() and extensions < ext_cap:
+                    extensions += 1
+                    deadline = time.monotonic() + timeout
+                    continue
+                if first_appearance is None and response_path.exists():
+                    continue
+                break
+            await asyncio.sleep(poll_interval)
+
+        elapsed = (time.monotonic() - start) * 1000
+        _trace_log(
+            workspace_dir,
+            f"POLL_TIMEOUT id={request_id[:8]} elapsed={elapsed:.0f}ms "
+            f"polls={poll_count} parse_errs={parse_errors} "
+            f"extensions={extensions}",
+        )
+        if extensions >= ext_cap and ext_cap > 0:
+            bounded = max_extensions is not None
+            fault = MODAL_DIALOG if bounded else STUCK_HANDLER
+            self._note_fault(workspace_dir, recovery_guidance(fault))
+            total = ext_cap * timeout
+            if bounded:
+                detail = (
+                    f"Command did not return within the caller's {total:.0f}s "
+                    "budget. Altium is answering keepalives, so the polling "
+                    "loop is alive and the handler is most likely blocked on "
+                    "a modal dialog. "
+                )
+            else:
+                detail = (
+                    f"Handler exceeded {ext_cap} heartbeat extensions "
+                    f"({total:.0f}s total); Altium is responding to keepalives "
+                    "but the command never returned. The handler is likely "
+                    "stuck in an infinite loop. "
+                )
+            raise AltiumTimeoutError(
+                detail + recovery_message(fault),
+                details={
+                    "recovery": recovery_guidance(fault),
+                    "fault": fault,
+                    "waited_seconds": total,
+                    "bounded_wait": bounded,
+                },
+            )
+        self._note_fault(workspace_dir, recovery_guidance(DEAD_LOOP))
+        raise AltiumTimeoutError(
+            f"No response within {timeout}s and no progress heartbeat. The "
+            "Altium polling loop is probably not running. "
+            + recovery_message(DEAD_LOOP),
+            details={"recovery": recovery_guidance(DEAD_LOOP)},
+        )
+
+    async def _execute_command_async(
+        self,
+        command: str,
+        params: dict[str, Any],
+        timeout: float,
+        max_extensions: Optional[int] = None,
+    ) -> Any:
+        request = CommandRequest(command=command, params=params)
+        workspace_dir = self.config.workspace_dir
+        _trace_log(workspace_dir, f"SEND cmd={command} id={request.id[:8]}")
+        self._publish_request(request)
+        response_path = self._response_path(request.id)
+        try:
+            response = await self._poll_response_async(
+                request.id, timeout, max_extensions)
+        finally:
+            try:
+                response_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        if response.protocol_version and response.protocol_version != PROTOCOL_VERSION:
+            raise AltiumProtocolError(
+                client_version=PROTOCOL_VERSION,
+                server_version=response.protocol_version,
+            )
+        if response.success:
+            self._clear_fault_if_any(workspace_dir)
+            return self._maybe_attach_detach_hint(command, response.data)
+        error = response.error or {}
+        raise_for_code(
+            error.get("code", "UNKNOWN_ERROR"),
+            error.get("message", "Unknown error"),
+            error.get("details"),
+        )
+
     def send_command(
         self,
         command: str,
@@ -798,10 +969,7 @@ class AltiumBridge:
         if timeout is None:
             timeout = self.config.poll_timeout
         self._ensure_keepalive()
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            _executor,
-            self._execute_command,
+        return await self._execute_command_async(
             command,
             params or {},
             timeout,

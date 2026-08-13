@@ -161,7 +161,6 @@ Var
     I : Integer;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
-    FilePath := StringReplace(FilePath, '\\', '\', -1);
 
     // Only switch focus to a document that is ALREADY loaded.
     // RunProcess('WorkspaceManager:OpenObject') would load it but strip
@@ -239,7 +238,6 @@ Var
     AlreadyLoaded : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
-    FilePath := StringReplace(FilePath, '\\', '\', -1);
     DocKind := UpperCase(ExtractJsonValue(Params, 'kind'));
 
     If FilePath = '' Then
@@ -309,7 +307,6 @@ Var
     SaveBeforeClose, DiscardChanges, WasModified : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
-    FilePath := StringReplace(FilePath, '\\', '\', -1);
     SaveStr := LowerCase(ExtractJsonValue(Params, 'save'));
     DiscardStr := LowerCase(ExtractJsonValue(Params, 'discard_changes'));
     SaveBeforeClose := (SaveStr = '') Or (SaveStr = 'true');
@@ -376,7 +373,6 @@ Var
     CloseResp : String;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
-    FilePath := StringReplace(FilePath, '\\', '\', -1);
     DocKind := ExtractJsonValue(Params, 'kind');
     SaveStr := ExtractJsonValue(Params, 'save_before_close');
     DiscardStr := ExtractJsonValue(Params, 'discard_changes');
@@ -608,7 +604,6 @@ Begin
     DocName := ExtractJsonValue(Params, 'name');
     AddStr := ExtractJsonValue(Params, 'add_to_project');
     ProjectPath := ExtractJsonValue(Params, 'project_path');
-    ProjectPath := StringReplace(ProjectPath, '\\', '\', -1);
     AddToProject := (AddStr = '') Or (AddStr = 'true');
 
     If DocKind = '' Then

@@ -147,6 +147,24 @@ RULE_BAD_HEX = LineRule(
 )
 
 # Inc on array element -- the DelphiScript parser refuses `Inc(arr[i])`.
+# Subscripting the RESULT of a call. DelphiScript accepts an index only on
+# a variable, so `UpperCase(Ch)[1]` is rejected by the compiler with
+# ") or ] expected" rather than failing at run time. It reached a user's
+# editor as a broken deploy, which is exactly what this gate exists to
+# stop. Assign to a local first, then index the local.
+#
+# The interface PROPERTIES that legitimately take an index are written
+# `Obj.Prop[i]` with a dot before the name, and the leading (?<![.\w])
+# keeps those out. A bare `Foo(x)[1]` is the shape that breaks.
+RULE_INDEX_ON_CALL_RESULT = LineRule(
+    name="index-on-call-result",
+    pattern=re.compile(r"(?<![.\w])[A-Za-z_][A-Za-z0-9_]*\s*\([^()]*\)\s*\["),
+    severity="error",
+    memory="delphiscript_record_field_write_needs_materialized.md",
+    description=("indexing a function result is a compile error; assign to "
+                 "a local first, then index the local."),
+)
+
 RULE_INC_ARRAY = LineRule(
     name="inc-on-array-element",
     pattern=re.compile(r"\bInc\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*\["),
@@ -435,6 +453,7 @@ LINE_RULES = [
     RULE_TYPECAST,
     RULE_BAD_HEX,
     RULE_INC_ARRAY,
+    RULE_INDEX_ON_CALL_RESULT,
     RULE_RESERVED_IDENT,
     RULE_TYPED_CONSTANT,
     RULE_UNDECLARED_DELPHI_CONST,

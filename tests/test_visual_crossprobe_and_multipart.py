@@ -110,6 +110,6 @@ async def test_multipart_validates_before_mutating(monkeypatch):
     mcp = _Mcp()
     library.register_library_tools(mcp)
 
-    with pytest.raises(ValueError, match="has no pins"):
-        await mcp.tools["lib_create_multipart_symbol"]("BAD", parts=[{}])
+    result = await mcp.tools["lib_create_multipart_symbol"]("BAD", parts=[{}])
+    assert result == {"ok": False, "reason": "part 1 has no pins"}
     assert bridge.calls == []

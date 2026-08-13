@@ -19,6 +19,108 @@ from unittest.mock import patch
 from tests.altium_simulator import AltiumSimulator, SIM_PROTOCOL_VERSION
 
 
+#: Bridge-command verb prefixes that change the design. Defined once
+#: here because two guards classify commands with it and a second copy
+#: drifts: test_maturity_matches_reality checks that no readonly tool
+#: issues one, and test_integration_suite_is_non_destructive checks that
+#: no live-Altium test sends one. They must agree on what "changes
+#: something" means or the two claims stop lining up.
+MUTATING_COMMAND_VERBS = (
+    "place_", "set_", "add_", "delete_", "remove_", "create_", "modify_",
+    "move_", "clear_", "apply_", "rename_", "batch_", "update_", "install_",
+    "link_", "import_", "save_", "fix_", "repair_", "convert_", "split_",
+)
+
+
+def install_bridge_fake(monkeypatch, tmp_path, fake):
+    """Fail-closed isolation for any test that bulk-invokes Altium tools.
+
+    Grew out of two incidents, two days apart, of a bulk sweep escaping
+    its fake and reaching the live workspace. Both escape routes are
+    closed here, and any new bulk-invoke test MUST use this rather than
+    patching on its own:
+
+    * the fake is installed on the ``_bridge`` SINGLETON GLOBAL, the one
+      point every import path resolves through. Patching the
+      ``get_bridge`` NAME is not enough: tool modules bind it at import
+      time, and design/ and core/ resolve their own late imports. The
+      name-level patches below are belt-and-braces, not the mechanism.
+      Constructing a real ``AltiumBridge`` becomes a loud failure.
+    * ``workspace_dir`` is redirected at a temp directory, because
+      several tools write output from the PYTHON side using whatever the
+      bridge returned, which is how one incident overwrote real files
+      with a perfectly faked bridge.
+
+    Returns the temp workspace path, so callers can assert against it.
+    """
+    import importlib
+    import pkgutil
+
+    from eda_agent import config as config_module
+    from eda_agent.bridge import altium_bridge as ab
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    real_get_config = config_module.get_config
+
+    def sandboxed_config():
+        cfg = real_get_config()
+        object.__setattr__(cfg, "workspace_dir", workspace)
+        return cfg
+
+    monkeypatch.setattr(config_module, "get_config", sandboxed_config)
+
+    def tripwire(*_args, **_kwargs):
+        raise AssertionError(
+            "a REAL AltiumBridge was constructed or used; isolation leaked")
+
+    monkeypatch.setattr(ab.AltiumBridge, "__init__", tripwire)
+    monkeypatch.setattr(ab.AltiumBridge, "send_command", tripwire)
+    monkeypatch.setattr(ab.AltiumBridge, "send_command_async", tripwire)
+    monkeypatch.setattr(ab, "_bridge", fake, raising=False)
+    monkeypatch.setattr(ab, "get_bridge", lambda: fake)
+
+    import eda_agent.bridge as bridge_pkg
+    monkeypatch.setattr(bridge_pkg, "get_bridge", lambda: fake)
+
+    import eda_agent.tools as tools_pkg
+    for mod_info in pkgutil.iter_modules(tools_pkg.__path__):
+        mod = importlib.import_module(f"eda_agent.tools.{mod_info.name}")
+        if hasattr(mod, "get_bridge"):
+            monkeypatch.setattr(mod, "get_bridge", lambda: fake)
+        if hasattr(mod, "get_config"):
+            monkeypatch.setattr(mod, "get_config", sandboxed_config)
+
+    return workspace
+
+
+def wait_until(predicate, timeout: float = 5.0, interval: float = 0.005,
+               message: str = "") -> None:
+    """Block until ``predicate()`` is true, or fail after ``timeout``.
+
+    Replaces ``time.sleep(0.1); assert condition``. That pattern races
+    the simulator's polling thread: it passes on an idle machine and
+    fails when the thread does not get scheduled inside the fixed
+    window. It cost a full-suite run here, where
+    ``test_bad_request_still_removed`` failed at 94% under load and then
+    passed in isolation, which is the least useful kind of failure.
+
+    Waiting on the condition instead is both faster in the normal case
+    (it returns as soon as the poller acts, typically well under the old
+    sleep) and only fails after a timeout long enough that a failure
+    means the behaviour is actually wrong.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return
+        _time.sleep(interval)
+    raise AssertionError(
+        message or f"condition not met within {timeout}s")
+
+
 # Binary Altium fixtures that stay local-only: they are large binaries that
 # also embed a local machine's absolute paths, so they are deliberately not
 # committed. Tests that need them run wherever the file is present (a dev box)
@@ -30,6 +132,16 @@ _LOCAL_ONLY_FIXTURES = ("main.SchDoc", "EDAAgentTest.PcbDoc",
 # Committed fixtures that are only useful together with a local-only one: the
 # project files aggregate main.SchDoc, so a project test needs it too.
 _AGGREGATOR_FIXTURES = ("EDAAgentTest.PrjPcb", "EDAAgentTest.PrjPcbStructure")
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--bare-machine", action="store_true", default=False,
+        help=("Simulate a machine with no EDA tool installed, which is "
+              "what CI is. Disables the auto-detection of local KiCad "
+              "and Altium libraries so a test that silently depends on "
+              "a developer's install fails HERE rather than after a "
+              "push."))
 
 
 def pytest_collection_modifyitems(config, items):
@@ -92,11 +204,28 @@ def response_path_for(workspace_dir: Path, request_id: str) -> Path:
 
 @pytest.fixture
 def altium_sim(tmp_path):
-    """Start an AltiumSimulator pointing at a temp workspace directory."""
+    """Start an AltiumSimulator pointing at a temp workspace directory.
+
+    The simulator's poll loop swallows every exception so one bad request
+    cannot kill the daemon thread and silence the rest of the run. It
+    records them on ``sim.errors`` instead, and the docstring there
+    promises that gives "the next failure something to say beyond 'no
+    response'" -- but nothing read the list, so a swallowed crash still
+    surfaced only as a bridge timeout, which is indistinguishable from a
+    slow machine.
+
+    Reading it here is what makes that promise real: a request handler
+    that raises now fails the test that caused it, with the traceback.
+    """
     sim = AltiumSimulator(str(tmp_path))
     sim.start()
     yield sim
     sim.stop()
+    if sim.errors:
+        raise AssertionError(
+            f"the simulator's poll loop swallowed {len(sim.errors)} "
+            f"exception(s); any timeout in this test is a consequence, "
+            f"not a slow machine:\n\n" + "\n\n".join(sim.errors[:3]))
 
 
 @pytest.fixture
@@ -132,6 +261,7 @@ def e2e_bridge(altium_sim):
 
     bridge.process_manager = FakeProcessManager()
     bridge._attached = True
+
     yield bridge
     try:
         bridge.detach()
@@ -214,3 +344,218 @@ def _isolate_workspace_pointer(tmp_path_factory):
     os.environ["EDA_AGENT_POINTER_FILE"] = str(scratch)
     yield
     os.environ.pop("EDA_AGENT_POINTER_FILE", None)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "network: test genuinely needs the internet; exempt from the "
+        "session-wide block. Use sparingly, it makes CI depend on a "
+        "third party being reachable.")
+    config.addinivalue_line(
+        "markers",
+        "kicad_libs: test reads the KiCad symbol/footprint libraries "
+        "installed on this machine. Skipped when KiCad is absent, so CI "
+        "stays green without it; the value is checking a converter "
+        "against a real corpus instead of only hand-written fixtures.")
+
+    # Simulate a machine with no EDA tool installed, which is what CI
+    # is. ONLY the auto-detection roots are emptied: environment
+    # overrides keep working, so a test pointing a provider at its own
+    # tmp_path behaves normally and only dependence on a real install
+    # breaks. Replacing the directory lookup outright would also defeat
+    # tests that build their own libraries, turning artefacts into
+    # failures and burying the real ones.
+    #
+    # Three CI runs failed in a row on tests that passed locally,
+    # because this state could not be reproduced without pushing. Run
+    # `pytest --bare-machine` before pushing anything that touches a
+    # local provider.
+    if config.getoption("--bare-machine"):
+        from eda_agent.libimport.providers import altium_local, kicad_local
+
+        kicad_local._WINDOWS_ROOTS = ()
+        kicad_local._POSIX_ROOTS = ()
+        altium_local._DEFAULT_ROOTS = ()
+
+
+@pytest.fixture(autouse=True)
+def _no_network(request):
+    """Fail loudly on any unstubbed network access.
+
+    Verified before adding: the whole suite passes with urllib blocked
+    and makes ZERO attempts, so nothing legitimate is being taken away.
+
+    The failure this prevents is a slow one. A test that quietly starts
+    fetching passes on the author's machine and later fails as an
+    unexplained TIMEOUT for someone behind a proxy, or whenever the
+    upstream service is down -- with nothing in the message pointing at
+    the network as the cause.
+
+    Opt out with ``@pytest.mark.network`` if a test truly needs it.
+    """
+    if request.node.get_closest_marker("network"):
+        yield
+        return
+
+    import urllib.request
+
+    real_urlopen = urllib.request.urlopen
+    real_open = urllib.request.OpenerDirector.open
+
+    def deny(*args, **kwargs):
+        target = str(args[0])[:120] if args else "?"
+        raise AssertionError(
+            f"network access attempted ({target}); stub the fetch helper "
+            f"instead, or mark the test @pytest.mark.network")
+
+    urllib.request.urlopen = deny
+    urllib.request.OpenerDirector.open = deny
+    try:
+        yield
+    finally:
+        urllib.request.urlopen = real_urlopen
+        urllib.request.OpenerDirector.open = real_open
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _close_leftover_event_loop():
+    """Close the event loop pytest-asyncio leaves behind at session end.
+
+    pytest_asyncio's ``_provide_clean_event_loop`` creates a fresh loop
+    during fixture teardown and sets it current without ever closing it.
+    Python then collects it at interpreter shutdown, where __del__ closes
+    its self-pipe socket AFTER Windows has run WSACleanup, printing an
+    ignored "OSError: [WinError 10093]".
+
+    Nothing fails because of it, but a traceback in the teardown output
+    of every green run teaches people to skim past tracebacks, which is
+    the actual cost.
+    """
+    yield
+    import asyncio
+
+    policy = asyncio.get_event_loop_policy()
+    try:
+        # Read the stored loop WITHOUT get_event_loop(), which would
+        # create one and reintroduce exactly what we are cleaning up.
+        loop = getattr(policy, "_local", None)
+        loop = getattr(loop, "_loop", None)
+    except Exception:
+        return
+    if loop is not None and not loop.is_closed():
+        loop.close()
+
+
+class RecordingBridge:
+    """A bridge that accepts every command and remembers it.
+
+    Lets a generated Altium plan be driven through the real tool
+    coroutines with no Altium and no simulator. Signature checks prove
+    argument NAMES exist; this proves the VALUES survive the tool body,
+    which is where a payload builder quietly drops geometry.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def send_command(self, command, params=None, **kwargs):
+        self.calls.append((command, dict(params or {})))
+        return {"success": True, "result": {}}
+
+    async def send_command_async(self, command, params=None, **kwargs):
+        return self.send_command(command, params, **kwargs)
+
+
+@pytest.fixture
+def altium_tool_harness(monkeypatch):
+    """Every library/application tool wired to one recording bridge.
+
+    Shared by the plan-execution tests for each importer, so a fix to
+    the harness covers all of them rather than one copy of it.
+
+    Returns ``(tools_by_name, bridge)``.
+    """
+    from eda_agent.tools import application as app_mod
+    from eda_agent.tools import library as lib_mod
+
+    bridge = RecordingBridge()
+    for mod in (app_mod, lib_mod):
+        monkeypatch.setattr(mod, "get_bridge", lambda: bridge)
+
+    captured: dict = {}
+
+    class _Capture:
+        def tool(self, *a, **k):
+            def deco(fn):
+                captured[fn.__name__] = fn
+                return fn
+            return deco
+
+        def prompt(self, *a, **k):
+            return self.tool()
+
+        def resource(self, *a, **k):
+            return self.tool()
+
+    app_mod.register_application_tools(_Capture())
+    app_mod.register_meta_tools(_Capture())
+    lib_mod.register_library_tools(_Capture())
+    return captured, bridge
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Finalize orphaned event loops while Windows sockets still work.
+
+    An event loop that becomes unreachable without being closed is
+    finalized whenever the collector happens to reach it. Left to
+    interpreter shutdown that is AFTER Windows has run WSACleanup, so
+    BaseEventLoop.__del__ closing its self-pipe raises, and every full
+    run ends with an ignored "OSError: [WinError 10093]" printed under a
+    green summary. Stderr noise on a passing suite is how people learn
+    to stop reading stderr.
+
+    Collecting here runs those same __del__ methods at a point where the
+    sockets are still valid, so they close quietly. Nothing is
+    suppressed: a loop that is still REACHABLE is untouched and would
+    still be reported.
+
+    Measured with an instrumented run: 614 loops constructed across the
+    suite, 0 still open at this point, i.e. the ones that error at
+    shutdown are unreachable-but-not-yet-collected rather than leaked by
+    a fixture. The prior rate was roughly 4 runs in 6, so a single clean
+    run is not proof on its own.
+    """
+    import gc
+
+    gc.collect()
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_easyeda_server():
+    """Stop the global EasyEDA bridge if a test left it listening.
+
+    Tools start it on first use and nothing in the library stops it,
+    which is right for the server process and wrong here: the socket
+    outlives the test, so the next test that starts its own bridge gets
+    the NEXT port in the discovery range while the extension harness
+    scans and finds the stale one first. It presents as the harness
+    timing out with no error on either side.
+
+    Function-scoped rather than session-scoped for that reason: the
+    collision is between tests, so waiting until the session ends fixes
+    nothing. A test that wants its own bridge still manages it itself;
+    this only reclaims the module-global one.
+    """
+    yield
+
+    from eda_agent.bridge import easyeda_bridge
+
+    leaked = getattr(easyeda_bridge, "_BRIDGE", None)
+    if leaked is not None:
+        try:
+            if leaked.status()["listening"]:
+                leaked.stop()
+        except Exception:
+            pass
+        easyeda_bridge._BRIDGE = None
