@@ -3720,6 +3720,119 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_query_region(
+        object_type: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        layer: str = "",
+        properties: str = "ObjectId,X,Y,Layer,Net,Name",
+        filter: str = "",
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Query PCB primitives intersecting a rectangular area.
+
+        Uses ``IPCB_Board.SpatialIterator_Create`` and therefore avoids a
+        whole-board scan. Group objects such as components and dimensions are
+        not spatial-iterator primitives; query their children (pads, tracks,
+        arcs, fills, regions) or use their dedicated getters instead.
+
+        Args:
+            object_type: PCB primitive constant such as ``eTrackObject``,
+                ``ePadObject``, ``eViaObject``, ``eArcObject`` or
+                ``eTextObject``.
+            x1, y1, x2, y2: Opposite rectangle corners in mils.
+            layer: Optional exact PCB layer; empty searches all layers.
+            properties: Flat PCB property names accepted by ``obj_query``.
+            filter: Optional property=value filters joined with ``|``.
+            limit: Maximum returned primitives (1..10000).
+
+        Returns:
+            Dict with objects, count, normalized bounds, layer, board path and
+            an explicit truncation flag.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.query_region",
+            {
+                "object_type": object_type,
+                "x1": str(x1), "y1": str(y1),
+                "x2": str(x2), "y2": str(y2),
+                "layer": layer,
+                "properties": properties,
+                "filter": filter,
+                "limit": str(limit),
+            },
+        )
+
+    @mcp.tool()
+    async def pcb_get_used_layers() -> dict[str, Any]:
+        """Return PCB layers that actually contain design primitives.
+
+        This reads ``IPCB_Board.LayerIsUsed``. It is intentionally different
+        from ``pcb_get_layer_display``: a hidden layer can still contain
+        fabrication or copper data, while a visible layer can be empty.
+
+        Returns:
+            Dict with ``layers`` (layer id, user name, displayed), ``count``,
+            ``scanned_count``, ``unreadable_count`` and ``board_path``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.get_used_layers", {})
+
+    @mcp.tool()
+    async def pcb_get_drill_layer_pairs() -> dict[str, Any]:
+        """Return every through/blind/buried drill span on the active PCB.
+
+        Reads the documented ``DrillLayerPairsCount`` and
+        ``LayerPair[index]`` interfaces. This is the authoritative way to
+        check whether via drilling spans match the intended stackup.
+
+        Returns:
+            Dict with ``layer_pairs`` (index, low_layer, high_layer),
+            ``count``, ``reported_count``, ``unreadable_count`` and board path.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.get_drill_layer_pairs", {})
+
+    @mcp.tool()
+    async def pcb_get_internal_planes() -> dict[str, Any]:
+        """Return internal-plane layers and their assigned net names.
+
+        Only planes physically present in the current layer stack are
+        returned. ``net_read`` distinguishes an unassigned plane (empty name)
+        from an Altium build that did not expose the net-name accessor.
+
+        Returns:
+            Dict with ``internal_planes`` (layer, name, net_name, net_read,
+            displayed), ``count``, ``unreadable_net_count`` and board path.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.get_internal_planes", {})
+
+    @mcp.tool()
+    async def pcb_get_special_strings(limit: int = 1000) -> dict[str, Any]:
+        """Read authored and rendered PCB special strings.
+
+        For text such as ``.Designator``, ``.PCB_FILE_NAME`` or
+        ``.LAYER_NAME``, returns both the raw token and Altium's
+        ``ConvertedString`` used by output generation. This avoids mistaking
+        rendered display text for the authored token.
+
+        Args:
+            limit: Maximum special strings returned (1..10000).
+
+        Returns:
+            Dict with ``special_strings`` (raw, converted, layer and location),
+            ``count``, ``limit``, ``truncated`` and ``board_path``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.get_special_strings", {"limit": str(limit)},
+        )
+
+    @mcp.tool()
     async def pcb_export_stackup_csv(output_path: str = "") -> dict[str, Any]:
         """Write the layer stackup to a conventional fab CSV report.
 

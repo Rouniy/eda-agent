@@ -13,6 +13,10 @@ documentation. Members Altium exposes but this project does not use are out of
 scope by design; the goal is a complete, accurate map of the surface the bridge
 exercises.
 
+For the mapping from official Altium example families to public MCP tools,
+live-verification status, and known gaps, see
+[`../ALTIUM_SCRIPTING_COVERAGE.md`](../ALTIUM_SCRIPTING_COVERAGE.md).
+
 ---
 
 ## The object model
@@ -96,3 +100,4 @@ signature has additional optional parameters not used here, the entry notes
 | 4 | [`04-workspace-project-documents.md`](04-workspace-project-documents.md) | `IWorkspace`, `IProject`, `IProjectVariant`, `IDocument` (the `DM_*` flattened netlist), `IServerDocument`, `IComponent`. |
 | 5 | [`05-enums.md`](05-enums.md) | The `eXxx` vocabulary grouped by domain: ObjectIds, layers, electrical pin types, rotations, pad shapes, power-object styles. |
 | 6 | [`06-types-and-coordinates.md`](06-types-and-coordinates.md) | `TLocation`, `TCoord`, `TLayer`, the internal-unit system, `MilsToCoord` / `CoordToMils`. |
+| 7 | [`../ALTIUM_SCRIPTING_COVERAGE.md`](../ALTIUM_SCRIPTING_COVERAGE.md) | Official sources, public MCP mapping, live-verification ledger, known gaps, and the extension checklist. |

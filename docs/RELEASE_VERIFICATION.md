@@ -1,4 +1,11 @@
-# Release verification: 2026.08.26.2
+# Release verification: 2026.08.29.5
+
+The official-documentation additions in `2026.08.29.5` have a separate live
+verification record in
+[`ALTIUM_SCRIPTING_COVERAGE.md`](ALTIUM_SCRIPTING_COVERAGE.md). Their read-only
+paths were exercised against Altium Designer 26.9.1; the compile-mask mutation
+was deliberately left for a disposable design. The steps below remain the
+manual verification ledger for earlier high-risk and mutating handlers.
 
 Everything below is Pascal that FPC and the linter have checked and that
 **Altium's DelphiScript engine has never executed**. The two are not the
@@ -130,7 +137,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.08.26.2`, `version_match` =
+Expect `altium_script_version` = `2026.08.29.5`, `version_match` =
 `true`, and `mcp_server_version` = `0.5.0`.
 
 Those are two different versions and they fail differently.

@@ -1,10 +1,9 @@
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
-{ Generic.pas - Generic primitives for the Altium integration bridge                        }
-{ 5 primitives: run_process, query_objects, modify_objects,                  }
-{               create_object, delete_objects                                }
-{ These provide a thin, generic layer so Python controls all logic.          }
+{ Generic.pas - Generic primitives for the Altium integration bridge         }
+{ Generic querying/editing plus focused schematic helpers that do not fit    }
+{ the project, library, or PCB modules. Python remains the public MCP layer.  }
 {..............................................................................}
 
 {..............................................................................}
@@ -151,7 +150,17 @@ Begin
     Else If TypeStr = 'eImage'         Then Result := eImage
     Else If TypeStr = 'eTextString'    Then Result := eLabel
     Else If TypeStr = 'eText'          Then Result := eLabel
-    Else If TypeStr = 'eNote'          Then Result := eNote;
+    Else If TypeStr = 'eNote'          Then Result := eNote
+    { These object ids were already used by dedicated, live bridge handlers. }
+    { Listing them here also makes obj_query/modify/delete and the spatial    }
+    { schematic query capable of inspecting those placed object kinds.       }
+    Else If TypeStr = 'eArc'           Then Result := eArc
+    Else If TypeStr = 'ePolygon'       Then Result := ePolygon
+    Else If TypeStr = 'eCompileMask'   Then Result := eCompileMask
+    Else If TypeStr = 'eHarnessConnector' Then Result := eHarnessConnector
+    Else If TypeStr = 'eCrossSheetConnector' Then Result := eCrossSheetConnector
+    Else If TypeStr = 'eProbe'         Then Result := eProbe
+    Else If TypeStr = 'eTextFrame'     Then Result := eTextFrame;
 End;
 
 {..............................................................................}
@@ -1692,6 +1701,101 @@ Begin
     End;
 
     Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + ObjTypeStr);
+End;
+
+{..............................................................................}
+{ Gen_QueryRegion - schematic iterator restricted to a rectangular area.     }
+{ ISch_Iterator.AddFilter_Area is the documented schematic spatial-query API. }
+{ Coordinates are mils; the returned properties use the same vocabulary as   }
+{ obj_query.                                                                   }
+{..............................................................................}
+
+Function Gen_QueryRegion(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    ObjTypeStr, FilterStr, PropsStr, SheetPath : String;
+    Items, ObjJson : String;
+    ObjTypeInt, X1, Y1, X2, Y2, Temp, Limit, Count : Integer;
+    First, HasMore : Boolean;
+Begin
+    ObjTypeStr := ExtractJsonValue(Params, 'object_type');
+    FilterStr := ExtractJsonValue(Params, 'filter');
+    PropsStr := ExtractJsonValue(Params, 'properties');
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 1000);
+    If Limit < 1 Then Limit := 1;
+    If Limit > 10000 Then Limit := 10000;
+    If PropsStr = '' Then
+        PropsStr := 'Location.X,Location.Y,Designator,Name,Text';
+
+    ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
+    If ObjTypeInt = -1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE',
+            'Unknown schematic object type: ' + ObjTypeStr);
+        Exit;
+    End;
+
+    SchDoc := Nil;
+    If SheetPath <> '' Then
+    Begin
+        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+    End
+    Else
+    Begin
+        Try SchDoc := SchServer.GetCurrentSchDocument; Except End;
+    End;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'No schematic document is loaded at the requested path');
+        Exit;
+    End;
+
+    If X1 > X2 Then Begin Temp := X1; X1 := X2; X2 := Temp; End;
+    If Y1 > Y2 Then Begin Temp := Y1; Y1 := Y2; Y2 := Temp; End;
+    Items := '';
+    First := True;
+    Count := 0;
+    HasMore := False;
+
+    Iterator := SchDoc.SchIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+        Iterator.AddFilter_Area(
+            MilsToCoord(X1), MilsToCoord(Y1),
+            MilsToCoord(X2), MilsToCoord(Y2));
+        Obj := Iterator.FirstSchObject;
+        While (Obj <> Nil) And (Count < Limit) Do
+        Begin
+            If MatchesFilter(Obj, FilterStr) Then
+            Begin
+                ObjJson := BuildObjectJson(Obj, PropsStr);
+                If Not First Then Items := Items + ',';
+                First := False;
+                Items := Items + ObjJson;
+                Inc(Count);
+            End;
+            Obj := Iterator.NextSchObject;
+        End;
+        HasMore := Obj <> Nil;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"objects":[' + Items + '],"count":' + IntToStr(Count)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr((Count >= Limit) And HasMore)
+        + ',"bounds":{"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1)
+        + ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}'
+        + ',"sheet_path":"' + EscapeJsonString(SchDoc.DocumentName) + '"}');
 End;
 
 {..............................................................................}
@@ -6288,6 +6392,159 @@ Begin
 End;
 
 {..............................................................................}
+{ Gen_GetComponentModels - enumerate every implementation attached to placed  }
+{ schematic components. This is the placed-sheet counterpart of the library   }
+{ implementation reader in Library.pas and follows Altium's official           }
+{ ModelsOfAComponent example/interface model.                                  }
+{..............................................................................}
+
+Function Gen_GetComponentModels(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    CompIter, ImplIter : ISch_Iterator;
+    Comp : ISch_Component;
+    Impl : ISch_Implementation;
+    Link : ISch_ModelDatafileLink;
+    SheetPath, WantedDesig, Designator, LibRef : String;
+    ComponentsJson, ModelsJson, LinksJson : String;
+    ModelName, ModelType, Description, Entity, FileKind, Location : String;
+    FirstComp, FirstModel, FirstLink, IsCurrent, UseLib : Boolean;
+    Limit, Count, ModelCount, TotalModels, WithoutModels : Integer;
+    LinkCount, J : Integer;
+Begin
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    WantedDesig := ExtractJsonValue(Params, 'designator');
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 500);
+    If Limit < 1 Then Limit := 1;
+    If Limit > 5000 Then Limit := 5000;
+
+    SchDoc := Nil;
+    If SheetPath <> '' Then
+    Begin
+        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+    End
+    Else
+    Begin
+        Try SchDoc := SchServer.GetCurrentSchDocument; Except End;
+    End;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'No schematic document is loaded at the requested path');
+        Exit;
+    End;
+    If SchDoc.ObjectId <> eSheet Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOC_KIND',
+            'Component models can only be read from a placed .SchDoc sheet');
+        Exit;
+    End;
+
+    ComponentsJson := '';
+    FirstComp := True;
+    Count := 0;
+    TotalModels := 0;
+    WithoutModels := 0;
+
+    CompIter := SchDoc.SchIterator_Create;
+    Try
+        CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Comp := CompIter.FirstSchObject;
+        While (Comp <> Nil) And (Count < Limit) Do
+        Begin
+            Designator := '';
+            Try Designator := Comp.Designator.Text; Except End;
+            If (WantedDesig = '') Or (Designator = WantedDesig) Then
+            Begin
+                LibRef := '';
+                Try LibRef := Comp.LibReference; Except End;
+                ModelsJson := '';
+                FirstModel := True;
+                ModelCount := 0;
+
+                ImplIter := Comp.SchIterator_Create;
+                Try
+                    ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+                    Impl := ImplIter.FirstSchObject;
+                    While Impl <> Nil Do
+                    Begin
+                        ModelName := '';
+                        ModelType := '';
+                        Description := '';
+                        IsCurrent := False;
+                        UseLib := True;
+                        Try ModelName := Impl.ModelName; Except End;
+                        Try ModelType := Impl.ModelType; Except End;
+                        Try Description := Impl.Description; Except End;
+                        Try IsCurrent := Impl.IsCurrent; Except End;
+                        Try UseLib := Impl.UseComponentLibrary; Except End;
+
+                        LinksJson := '';
+                        FirstLink := True;
+                        LinkCount := 0;
+                        Try LinkCount := Impl.DatafileLinkCount; Except End;
+                        For J := 0 To LinkCount - 1 Do
+                        Begin
+                            Link := Nil;
+                            Try Link := Impl.DatafileLink[J]; Except End;
+                            If Link = Nil Then Continue;
+                            Entity := '';
+                            FileKind := '';
+                            Location := '';
+                            Try Entity := Link.EntityName; Except End;
+                            Try FileKind := Link.FileKind; Except End;
+                            Try Location := Link.Location; Except End;
+                            If Not FirstLink Then LinksJson := LinksJson + ',';
+                            FirstLink := False;
+                            LinksJson := LinksJson
+                                + '{"entity_name":"' + EscapeJsonString(Entity) + '",'
+                                + '"file_kind":"' + EscapeJsonString(FileKind) + '",'
+                                + '"location":"' + EscapeJsonString(Location) + '"}';
+                        End;
+
+                        If Not FirstModel Then ModelsJson := ModelsJson + ',';
+                        FirstModel := False;
+                        ModelsJson := ModelsJson
+                            + '{"model_name":"' + EscapeJsonString(ModelName) + '",'
+                            + '"model_type":"' + EscapeJsonString(ModelType) + '",'
+                            + '"description":"' + EscapeJsonString(Description) + '",'
+                            + '"is_current":' + BoolToJsonStr(IsCurrent) + ','
+                            + '"use_component_library":' + BoolToJsonStr(UseLib) + ','
+                            + '"datafile_links":[' + LinksJson + ']}';
+                        Inc(ModelCount);
+                        Inc(TotalModels);
+                        Impl := ImplIter.NextSchObject;
+                    End;
+                Finally
+                    Comp.SchIterator_Destroy(ImplIter);
+                End;
+
+                If ModelCount = 0 Then Inc(WithoutModels);
+                If Not FirstComp Then ComponentsJson := ComponentsJson + ',';
+                FirstComp := False;
+                ComponentsJson := ComponentsJson
+                    + '{"designator":"' + EscapeJsonString(Designator) + '",'
+                    + '"lib_ref":"' + EscapeJsonString(LibRef) + '",'
+                    + '"model_count":' + IntToStr(ModelCount) + ','
+                    + '"models":[' + ModelsJson + ']}';
+                Inc(Count);
+            End;
+            Comp := CompIter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(CompIter);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"components":[' + ComponentsJson + '],"count":' + IntToStr(Count)
+        + ',"total_models":' + IntToStr(TotalModels)
+        + ',"without_models":' + IntToStr(WithoutModels)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr((Count >= Limit) And (Comp <> Nil))
+        + ',"sheet_path":"' + EscapeJsonString(SchDoc.DocumentName) + '"}');
+End;
+
+{..............................................................................}
 { Gen_GetSimulationReadiness - Audit every component on the active schematic    }
 { and report which are ready for SPICE sim vs which need a primitive vs which   }
 { need a model file fetched from the vendor.                                   }
@@ -9633,6 +9890,7 @@ Function HandleGenericCommand(Action : String; Params : String; RequestId : Stri
 Begin
     Case Action Of
         'query_objects':    Result := Gen_QueryObjects(Params, RequestId);
+        'query_region':     Result := Gen_QueryRegion(Params, RequestId);
         'modify_objects':   Result := Gen_ModifyObjects(Params, RequestId);
         'create_object':    Result := Gen_CreateObject(Params, RequestId);
         'delete_objects':   Result := Gen_DeleteObjects(Params, RequestId);
@@ -9672,6 +9930,7 @@ Begin
         'place_sch_component_from_library': Result := Gen_PlaceSchComponentFromLibrary(Params, RequestId);
         'set_sch_component_parameters': Result := Gen_SetSchComponentParameters(Params, RequestId);
         'get_sch_component_pins': Result := Gen_GetSchComponentPins(Params, RequestId);
+        'get_component_models': Result := Gen_GetComponentModels(Params, RequestId);
         'place_net_label':  Result := Gen_PlaceNetLabel(Params, RequestId);
         'stub_pins':        Result := Gen_StubPins(Params, RequestId);
         'set_net_tie':      Result := Gen_SetNetTie(Params, RequestId);

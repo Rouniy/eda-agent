@@ -11,16 +11,10 @@ tools, so an unreachable handler is unreachable full stop.
 The point of the allowlist is that it should SHRINK. A new entry means
 somebody wrote Pascal with no way to call it.
 
-Most current entries are singular forms whose bulk equivalent is the one
+All current entries are singular forms whose bulk equivalent is the one
 actually exposed, matching the standing preference for batch tools over
 per-item loops (``move_component`` is superseded by
-``pcb.batch_move_components``, and so on). Two are not superseded by
-anything and are genuinely unexposed:
-
-* ``fillet_corners`` -- rounds acute track joins. Its own header says it
-  has NOT been validated against a live Altium session, so exposing it
-  would present unvalidated code as a first-class tool.
-* ``measure_distance`` / ``place_compile_mask`` -- no equivalent found.
+``pcb.batch_move_components``, and so on).
 """
 
 from __future__ import annotations
@@ -68,11 +62,12 @@ KNOWN_UNREACHABLE = {
     "set_label_format",
     "set_sch_component_parameters",
     "attach_spice_primitive",
-    "zoom_to_xy",
-    # Genuinely unexposed.
+    # AD26 live test: the handler nests SpatialIterator_Create inside an
+    # active board iterator. Even dry_run with max_tracks=10 wedges the
+    # scripting loop on the first track. It needs a two-pass snapshot before
+    # it can be exposed safely.
     "fillet_corners",
-    "measure_distance",
-    "place_compile_mask",
+    "zoom_to_xy",
 }
 
 #: The modules do NOT all dispatch the same way, and matching only one
@@ -231,11 +226,12 @@ KNOWN_UNHANDLED: dict[str, str] = {}
 #
 # The check below matches on the ACTION only ("pcb.get_components" ->
 # "get_components"), which cannot tell a handler in the right module
-# from one in the wrong module. Four action names are dispatched in TWO
+# from one in the wrong module. Several action names are dispatched in TWO
 # modules each, with different parameter names on each side:
 #
 #     get_components  Library.pas + PCB.pas
 #     get_nets        PCB.pas + Project.pas
+#     query_region    Generic.pas + PCB.pas
 #     run_process     Application.pas + Generic.pas
 #     save_all        Application.pas + Project.pas
 #
@@ -326,6 +322,7 @@ def test_the_duplicate_action_names_are_still_duplicated():
     assert duplicated == {
         "get_components": ["Library.pas", "PCB.pas"],
         "get_nets": ["PCB.pas", "Project.pas"],
+        "query_region": ["Generic.pas", "PCB.pas"],
         "run_process": ["Application.pas", "Generic.pas"],
         # The same operation on the two document kinds that have
         # mechanical layers. A library and a board resolve their target

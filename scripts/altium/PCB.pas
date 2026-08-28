@@ -3947,6 +3947,430 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_QueryRegion - return primitives intersecting an explicit rectangle.    }
+{ This is the non-interactive counterpart of Altium's official SpatialIterator}
+{ example; unlike ChooseRectangleByCorners it never waits for mouse input.    }
+{..............................................................................}
+
+Function PCB_QueryRegion(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iterator : IPCB_SpatialIterator;
+    Obj : IPCB_Primitive;
+    ObjTypeStr, LayerStr, FilterStr, PropsStr, BadProps : String;
+    Items, ObjJson : String;
+    ObjTypeInt, X1, Y1, X2, Y2, Temp, Limit, Count : Integer;
+    LayerId : TLayer;
+    First, HasMore : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    ObjTypeStr := ExtractJsonValue(Params, 'object_type');
+    LayerStr := ExtractJsonValue(Params, 'layer');
+    FilterStr := ExtractJsonValue(Params, 'filter');
+    PropsStr := ExtractJsonValue(Params, 'properties');
+    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 1000);
+    If Limit < 1 Then Limit := 1;
+    If Limit > 10000 Then Limit := 10000;
+    If PropsStr = '' Then PropsStr := 'ObjectId,X,Y,Layer,Net,Name';
+
+    ObjTypeInt := ObjectTypeFromStringPCB(ObjTypeStr);
+    If ObjTypeInt = -1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE',
+            'Unknown PCB primitive type: ' + ObjTypeStr);
+        Exit;
+    End;
+    If (ObjTypeInt = eComponentObject)
+       Or (ObjTypeInt = eDimensionObject)
+       Or (ObjTypeInt = eRuleObject) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NON_SPATIAL_TYPE',
+            'Altium spatial iterators search primitives, not component, '
+            + 'dimension, or rule group objects; use obj_query or a '
+            + 'dedicated getter for ' + ObjTypeStr);
+        Exit;
+    End;
+    BadProps := UnknownPCBProperties(PropsStr);
+    If BadProps <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
+            'Not a PCB property: ' + BadProps + '. Available: '
+            + KnownPCBPropertyList + '.');
+        Exit;
+    End;
+
+    LayerId := eNoLayer;
+    If LayerStr <> '' Then
+    Begin
+        LayerId := GetLayerFromString(LayerStr);
+        If LayerId = eNoLayer Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
+                'Unknown PCB layer: ' + LayerStr);
+            Exit;
+        End;
+    End;
+    If X1 > X2 Then Begin Temp := X1; X1 := X2; X2 := Temp; End;
+    If Y1 > Y2 Then Begin Temp := Y1; Y1 := Y2; Y2 := Temp; End;
+
+    Items := '';
+    First := True;
+    Count := 0;
+    HasMore := False;
+    Iterator := Board.SpatialIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+        If LayerId = eNoLayer Then
+            Iterator.AddFilter_LayerSet(AllLayers)
+        Else
+            Iterator.AddFilter_LayerSet(MkSet(LayerId));
+        Iterator.AddFilter_Area(
+            MilsToCoord(X1), MilsToCoord(Y1),
+            MilsToCoord(X2), MilsToCoord(Y2));
+        Obj := Iterator.FirstPCBObject;
+        While (Obj <> Nil) And (Count < Limit) Do
+        Begin
+            If MatchesFilterPCB(Obj, FilterStr) Then
+            Begin
+                ObjJson := BuildObjectJsonPCB(Obj, PropsStr);
+                If Not First Then Items := Items + ',';
+                First := False;
+                Items := Items + ObjJson;
+                Inc(Count);
+            End;
+            Obj := Iterator.NextPCBObject;
+        End;
+        HasMore := Obj <> Nil;
+    Finally
+        Board.SpatialIterator_Destroy(Iterator);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"objects":[' + Items + '],"count":' + IntToStr(Count)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr((Count >= Limit) And HasMore)
+        + ',"object_type":"' + EscapeJsonString(ObjTypeStr) + '"'
+        + ',"layer":"' + EscapeJsonString(LayerStr) + '"'
+        + ',"bounds":{"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1)
+        + ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}'
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_GetUsedLayers - report the layers that actually contain primitives.    }
+{                                                                                }
+{ This is deliberately separate from PCB_GetLayerDisplay. Visibility is a     }
+{ per-user view setting; LayerIsUsed is board content. The official            }
+{ QueryUsedLayers example uses this exact IPCB_Board property.                 }
+{..............................................................................}
+
+Function PCB_GetUsedLayers(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    Lyr : TLayer;
+    Items, LayerName, UserName : String;
+    First, Used, Displayed, ReadOk : Boolean;
+    Count, Scanned, Unreadable : Integer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except End;
+    Items := '';
+    First := True;
+    Count := 0;
+    Scanned := 0;
+    Unreadable := 0;
+
+    For Lyr := eTopLayer To eMultiLayer Do
+    Begin
+        LayerName := GetLayerString(Lyr);
+        If LayerName = 'Unknown' Then Continue;
+        Inc(Scanned);
+
+        Used := False;
+        ReadOk := False;
+        Try
+            Used := Board.LayerIsUsed[Lyr];
+            ReadOk := True;
+        Except
+        End;
+        If Not ReadOk Then
+        Begin
+            Inc(Unreadable);
+            Continue;
+        End;
+        If Not Used Then Continue;
+
+        Displayed := False;
+        Try Displayed := Board.LayerIsDisplayed[Lyr]; Except End;
+        UserName := '';
+        If LayerStack <> Nil Then
+        Begin
+            LayerObj := Nil;
+            Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except End;
+            If LayerObj <> Nil Then
+                Try UserName := LayerObj.Name; Except End;
+        End;
+
+        If Not First Then Items := Items + ',';
+        First := False;
+        Items := Items
+            + '{"layer":"' + EscapeJsonString(LayerName) + '",'
+            + '"name":"' + EscapeJsonString(UserName) + '",'
+            + '"displayed":' + BoolToJsonStr(Displayed) + '}';
+        Inc(Count);
+    End;
+
+    If Unreadable = Scanned Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LAYER_USAGE_UNAVAILABLE',
+            'Altium did not expose LayerIsUsed for any board layer');
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"layers":[' + Items + '],"count":' + IntToStr(Count)
+        + ',"scanned_count":' + IntToStr(Scanned)
+        + ',"unreadable_count":' + IntToStr(Unreadable)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_GetDrillLayerPairs - enumerate through/blind/buried drill spans.        }
+{ The official QueryLayerPairs example uses DrillLayerPairsCount and          }
+{ LayerPair[index].LowLayer/HighLayer.                                         }
+{..............................................................................}
+
+Function PCB_GetDrillLayerPairs(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pair : IPCB_DrillLayerPair;
+    Items, LowName, HighName : String;
+    I, PairCount, Returned, Unreadable : Integer;
+    First : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    PairCount := -1;
+    Try PairCount := Board.DrillLayerPairsCount; Except End;
+    If PairCount < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'DRILL_PAIRS_UNAVAILABLE',
+            'Altium did not expose DrillLayerPairsCount for this board');
+        Exit;
+    End;
+
+    Items := '';
+    First := True;
+    Returned := 0;
+    Unreadable := 0;
+    For I := 0 To PairCount - 1 Do
+    Begin
+        Pair := Nil;
+        Try Pair := Board.LayerPair[I]; Except End;
+        If Pair = Nil Then
+        Begin
+            Inc(Unreadable);
+            Continue;
+        End;
+        LowName := '';
+        HighName := '';
+        Try LowName := GetLayerString(Pair.LowLayer); Except End;
+        Try HighName := GetLayerString(Pair.HighLayer); Except End;
+        If (LowName = '') Or (HighName = '') Then
+        Begin
+            Inc(Unreadable);
+            Continue;
+        End;
+
+        If Not First Then Items := Items + ',';
+        First := False;
+        Items := Items
+            + '{"index":' + IntToStr(I) + ','
+            + '"low_layer":"' + EscapeJsonString(LowName) + '",'
+            + '"high_layer":"' + EscapeJsonString(HighName) + '"}';
+        Inc(Returned);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"layer_pairs":[' + Items + '],"count":' + IntToStr(Returned)
+        + ',"reported_count":' + IntToStr(PairCount)
+        + ',"unreadable_count":' + IntToStr(Unreadable)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_GetInternalPlanes - report every internal-plane layer in the stack.    }
+{ Board.InternalPlaneNetName[layer] is the documented source of the assigned  }
+{ plane net; LayerStack_V7 supplies the current user-visible layer name.       }
+{..............................................................................}
+
+Function PCB_GetInternalPlanes(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    Lyr : TLayer;
+    Items, LayerName, UserName, NetName : String;
+    First, Used, Displayed, NetRead : Boolean;
+    Count, UnreadableNets : Integer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except End;
+    If LayerStack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP', 'Could not access layer stack');
+        Exit;
+    End;
+
+    Items := '';
+    First := True;
+    Count := 0;
+    UnreadableNets := 0;
+    For Lyr := eInternalPlane1 To eInternalPlane16 Do
+    Begin
+        LayerObj := Nil;
+        Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except End;
+        If LayerObj = Nil Then Continue;
+
+        { LayerObject exists for disabled slots too; only a layer reached by  }
+        { the physical stack iterator is present. Walk that iterator cheaply. }
+        Used := False;
+        Try Used := LayerObj.IsInLayerStack; Except End;
+        If Not Used Then Continue;
+
+        LayerName := GetLayerString(Lyr);
+        UserName := '';
+        Try UserName := LayerObj.Name; Except End;
+        Displayed := False;
+        Try Displayed := Board.LayerIsDisplayed[Lyr]; Except End;
+        NetName := '';
+        NetRead := False;
+        Try
+            NetName := Board.InternalPlaneNetName[Lyr];
+            NetRead := True;
+        Except
+        End;
+        If Not NetRead Then Inc(UnreadableNets);
+
+        If Not First Then Items := Items + ',';
+        First := False;
+        Items := Items
+            + '{"layer":"' + EscapeJsonString(LayerName) + '",'
+            + '"name":"' + EscapeJsonString(UserName) + '",'
+            + '"net_name":"' + EscapeJsonString(NetName) + '",'
+            + '"net_read":' + BoolToJsonStr(NetRead) + ','
+            + '"displayed":' + BoolToJsonStr(Displayed) + '}';
+        Inc(Count);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"internal_planes":[' + Items + '],"count":' + IntToStr(Count)
+        + ',"unreadable_net_count":' + IntToStr(UnreadableNets)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_GetSpecialStrings - return authored and rendered PCB special strings.  }
+{ IPCB_Text.UnderlyingString is the source token; ConvertedString is the      }
+{ official rendered value used by print/plot/Gerber output.                   }
+{..............................................................................}
+
+Function PCB_GetSpecialStrings(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    TextObj : IPCB_Text;
+    RawText, Converted, Items : String;
+    Limit, Count, Scanned : Integer;
+    First : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 1000);
+    If Limit < 1 Then Limit := 1;
+    If Limit > 10000 Then Limit := 10000;
+    Items := '';
+    First := True;
+    Count := 0;
+    Scanned := 0;
+
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTextObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        TextObj := Iter.FirstPCBObject;
+        While (TextObj <> Nil) And (Count < Limit) Do
+        Begin
+            Inc(Scanned);
+            RawText := '';
+            Try RawText := TextObj.UnderlyingString; Except End;
+            If RawText = '' Then Try RawText := TextObj.Text; Except End;
+            If Copy(RawText, 1, 1) = '.' Then
+            Begin
+                Converted := '';
+                Try Converted := TextObj.ConvertedString; Except End;
+                If Not First Then Items := Items + ',';
+                First := False;
+                Items := Items
+                    + '{"raw":"' + EscapeJsonString(RawText) + '",'
+                    + '"converted":"' + EscapeJsonString(Converted) + '",'
+                    + '"layer":"' + EscapeJsonString(GetLayerString(TextObj.Layer)) + '",'
+                    + '"x_mils":' + IntToStr(CoordToMils(TextObj.XLocation)) + ','
+                    + '"y_mils":' + IntToStr(CoordToMils(TextObj.YLocation)) + '}';
+                Inc(Count);
+            End;
+            TextObj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"special_strings":[' + Items + '],"count":' + IntToStr(Count)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr((Count >= Limit) And (TextObj <> Nil))
+        + ',"text_objects_scanned":' + IntToStr(Scanned)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
+End;
+
+{..............................................................................}
 { PCB_GetLayerStackup - Get full layer stack info                             }
 {..............................................................................}
 
@@ -10015,6 +10439,7 @@ End;
 {                    90 (sharp / right-angle corners and worse)               }
 {   dry_run       -- "true" (default) returns the list of WOULD-fillet        }
 {                    corners without mutating; "false" applies the change    }
+{   max_tracks    -- outer-scan safety bound, default 250, maximum 5000       }
 {                                                                              }
 { Geometry: for a corner where two tracks share endpoint P and head off in   }
 { directions u and v (unit vectors away from P), with interior angle theta   }
@@ -10027,10 +10452,9 @@ End;
 { Each tangent point sits R away from C and the radius vector C->T is        }
 { perpendicular to the corresponding track direction.                        }
 {                                                                              }
-{ NOTE: This handler has NOT been validated against a live Altium session.   }
-{ Defensive Try/Except wraps every Altium API touch. Recommend running in    }
-{ dry_run mode first, eyeballing the items[], and only flipping dry_run off  }
-{ on a board you have backed up.                                              }
+{ NOTE: dry_run is the required first step. The spatial iterator must use    }
+{ AddFilter_LayerSet(MkSet(...)); AddFilter_IPCB_LayerSet expects an         }
+{ IPCB_LayerSet object and AD26 raises EVariantTypeCastError for a MkSet.     }
 {..............................................................................}
 
 Function PCB_FilletCorners(Params : String; RequestId : String) : String;
@@ -10041,7 +10465,8 @@ Const
     cPi = 3.14159265358979;
 Var
     Board : IPCB_Board;
-    Iter, SpatIter : IPCB_BoardIterator;
+    Iter : IPCB_BoardIterator;
+    SpatIter : IPCB_SpatialIterator;
     Track, Other : IPCB_Track;
     Obj : IPCB_Primitive;
     Arc : IPCB_Arc;
@@ -10050,7 +10475,7 @@ Var
     RadiusMils : Integer;
     MinAngleDeg : Double;
     Tol, Endpoint : Integer;
-    Filleted, Skipped, MaxItems : Integer;
+    Filleted, Skipped, MaxItems, MaxTracks, ScannedTracks : Integer;
     PX, PY : Integer;
     OX, OY : Integer;
     V1X, V1Y, V2X, V2Y : Double;
@@ -10093,12 +10518,16 @@ Begin
     MinAngleDeg := StrToFloatDef(AngStr, 90.0);
     If MinAngleDeg <= 0 Then MinAngleDeg := 90.0;
     If MinAngleDeg >= 180 Then MinAngleDeg := 179.9;
+    MaxTracks := StrToIntDef(ExtractJsonValue(Params, 'max_tracks'), 250);
+    If MaxTracks < 1 Then MaxTracks := 1;
+    If MaxTracks > 5000 Then MaxTracks := 5000;
 
     R := MilsToCoord(RadiusMils);
     Tol := MilsToCoord(1);
     Filleted := 0;
     Skipped := 0;
     MaxItems := 200;
+    ScannedTracks := 0;
     ItemsJson := '';
     First := True;
     SaveNeeded := False;
@@ -10118,12 +10547,18 @@ Begin
 
         Try
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.SignalLayers);
+            { AD26 exposes SignalLayers as a native layer-set value here.    }
+            { AddFilter_IPCB_LayerSet expects a COM layer-set object and     }
+            { raises EVariantTypeCastError when passed this value.           }
+            Iter.AddFilter_LayerSet(SignalLayers);
             Iter.AddFilter_Method(eProcessAll);
 
             Track := Iter.FirstPCBObject;
-            While (Track <> Nil) And (Filleted + Skipped < MaxItems) Do
+            While (Track <> Nil)
+                  And (Filleted + Skipped < MaxItems)
+                  And (ScannedTracks < MaxTracks) Do
             Begin
+                Inc(ScannedTracks);
                 { Optional net filter. Net handling is wrapped because    }
                 { Track.Net may be Nil on free tracks.                      }
                 If NetFilter <> '' Then
@@ -10170,7 +10605,7 @@ Begin
 
                         Try
                             SpatIter.AddFilter_ObjectSet(MkSet(eTrackObject));
-                            SpatIter.AddFilter_IPCB_LayerSet(MkSet(Track.Layer));
+                            SpatIter.AddFilter_LayerSet(MkSet(Track.Layer));
                             SpatIter.AddFilter_Area(
                                 PX - Tol, PY - Tol, PX + Tol, PY + Tol);
 
@@ -10466,6 +10901,9 @@ Begin
             JsonBool('dry_run', DryRun) + ',' +
             JsonInt('filleted_count', Filleted) + ',' +
             JsonInt('skipped_count', Skipped) + ',' +
+            JsonInt('scanned_tracks', ScannedTracks) + ',' +
+            JsonInt('max_tracks', MaxTracks) + ',' +
+            JsonBool('truncated', Track <> Nil) + ',' +
             JsonInt('radius_mils', RadiusMils) + ',' +
             JsonFloat('min_angle_deg', MinAngleDeg) + ',' +
             JsonRaw('items', '[' + ItemsJson + ']')
@@ -13081,6 +13519,11 @@ Begin
         'get_net_object_ids':      Result := PCB_GetNetObjectIds(Params, RequestId);
         'get_connections_detail':  Result := PCB_GetConnectionsDetail(Params, RequestId);
         'delete_connections_for_net': Result := PCB_DeleteConnectionsForNet(Params, RequestId);
+        'query_region':             Result := PCB_QueryRegion(Params, RequestId);
+        'get_used_layers':         Result := PCB_GetUsedLayers(Params, RequestId);
+        'get_drill_layer_pairs':   Result := PCB_GetDrillLayerPairs(Params, RequestId);
+        'get_internal_planes':     Result := PCB_GetInternalPlanes(Params, RequestId);
+        'get_special_strings':     Result := PCB_GetSpecialStrings(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);

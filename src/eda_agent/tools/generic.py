@@ -108,6 +108,47 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_query_region(
+        object_type: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        properties: str = "Location.X,Location.Y,Designator,Name,Text",
+        filter: str = "",
+        sheet_path: str = "",
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Query schematic objects intersecting a rectangular area.
+
+        Uses the documented ``ISch_Iterator.AddFilter_Area`` rather than
+        filtering a whole-sheet result in Python. Object types, properties and
+        pipe-separated filters use the same vocabulary as ``obj_query``.
+        Coordinates are in mils and may be supplied in either corner order.
+
+        Args:
+            object_type: Schematic object constant such as ``eSchComponent``,
+                ``eWire``, ``ePin`` or ``eNetLabel``.
+            x1, y1, x2, y2: Opposite rectangle corners in mils.
+            properties: Comma-separated properties to return.
+            filter: Optional property=value filters joined with ``|``.
+            sheet_path: Optional absolute path of a loaded ``.SchDoc``.
+            limit: Maximum returned objects (1..10000).
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {
+            "object_type": object_type,
+            "x1": str(x1), "y1": str(y1),
+            "x2": str(x2), "y2": str(y2),
+            "properties": properties,
+            "filter": filter,
+            "limit": str(limit),
+        }
+        if sheet_path:
+            params["sheet_path"] = sheet_path
+        return await bridge.send_command_async("generic.query_region", params)
+
+    @mcp.tool()
     async def obj_modify(
         object_type: str,
         set: str,
@@ -380,6 +421,25 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def obj_measure_distance(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> dict[str, Any]:
+        """Calculate Cartesian distance between two EDA points.
+
+        Coordinates are in mils. The response gives signed ``dx``/``dy`` and
+        Euclidean distance in both mils and millimetres. This is a pure
+        calculation and does not read or modify Altium state.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.measure_distance",
+            {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
+        )
+
+    @mcp.tool()
     async def obj_batch_modify(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:
@@ -620,6 +680,43 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "generic.set_sch_components_parameters", params, timeout=60.0)
+
+    @mcp.tool()
+    async def sch_get_component_models(
+        designator: str = "",
+        sheet_path: str = "",
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Read linked models from placed schematic components.
+
+        Enumerates each component's ``ISch_Implementation`` children and their
+        external data-file links. It covers PCB footprints, simulation, signal
+        integrity, IBIS and other model types exposed by Altium. This reads the
+        placed sheet, not only the source SchLib, so it shows the bindings the
+        design will actually compile with.
+
+        Args:
+            designator: Optional exact designator, e.g. ``U1``. Empty returns
+                all components on the target sheet.
+            sheet_path: Optional absolute path of a loaded ``.SchDoc``. Empty
+                uses the active schematic sheet.
+            limit: Maximum components returned (1..5000).
+
+        Returns:
+            Dict with ``components`` (designator, lib_ref, model_count and
+            models), ``total_models``, ``without_models``, ``count``, ``limit``,
+            ``truncated`` and ``sheet_path``. Each model includes its name,
+            type, description, current flag, library flag and datafile links.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"limit": str(limit)}
+        if designator:
+            params["designator"] = designator
+        if sheet_path:
+            params["sheet_path"] = sheet_path
+        return await bridge.send_command_async(
+            "generic.get_component_models", params,
+        )
 
     @mcp.tool()
     async def proj_get_erc_violations(limit: int = 100) -> dict[str, Any]:
@@ -1539,6 +1636,29 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async("generic.get_directives", {})
         return result
+
+    @mcp.tool()
+    async def sch_place_compile_mask(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+    ) -> dict[str, Any]:
+        """Place a schematic compile mask over a rectangular area.
+
+        Objects enclosed by the mask are excluded from compilation and ERC.
+        This changes the active schematic and can hide real connectivity or
+        rule problems, so use it only for an intentional inactive circuit
+        block and run ERC again afterward. Coordinates are in mils.
+
+        Returns:
+            Dict confirming placement and the normalized rectangle bounds.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.place_compile_mask",
+            {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
+        )
 
     @mcp.tool()
     async def sch_place_image(

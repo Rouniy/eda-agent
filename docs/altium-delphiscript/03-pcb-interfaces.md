@@ -111,7 +111,18 @@ rendering; set it to force a layer visible before a screenshot.
 
 **`LayerIsUsed[Layer : TLayer] : Boolean`**  *(indexed property)*
 Whether a layer carries any objects / is enabled in the stack: lets an exporter
-skip empty layers.
+skip empty layers. `pcb_get_used_layers` exposes content use independently of
+the user's layer-visibility settings.
+
+**`DrillLayerPairsCount : Integer`** and
+**`LayerPair[I] : IPCB_DrillLayerPair`**  *(indexed property)*
+Enumerate through/blind/buried drilling spans. Each pair exposes
+**`LowLayer`** and **`HighLayer`**. `pcb_get_drill_layer_pairs` reports layer
+names and distinguishes the reported count from unreadable entries.
+
+**`InternalPlaneNetName[Layer : TLayer] : String`**  *(indexed property)*
+The net assigned to an internal-plane layer. `pcb_get_internal_planes` combines
+it with `LayerStack_V7` so disabled plane slots are not reported as real layers.
 
 ### Repaint and handles
 
@@ -330,7 +341,9 @@ concept.
 **`Text : String`**  *(property)*
 The string drawn. For a designator override use the component's name; for free
 silk text set this directly. **`UnderlyingString`** is the raw (pre-special-string)
-text.
+text. **`ConvertedString`** is Altium's rendered value used by print, plot, and
+Gerber output. `pcb_get_special_strings` returns both so an authored token such
+as `.ProjectTitle` is never confused with its current rendered text.
 
 **`XLocation : TCoord`** / **`YLocation : TCoord`**  *(properties)*
 The text anchor position.
@@ -573,6 +586,12 @@ Passing a `LayerSet.*` object to `AddFilter_LayerSet` raises
 
 **`AddFilter_Area(X1, Y1, X2, Y2 : TCoord)`**
 Restricts a spatial iterator to a rectangular region.
+
+`pcb_query_region` is the mil-based public wrapper. Altium spatial iterators
+only return primitives; they do not search group objects such as components,
+dimensions, or rules. The handler refuses those types instead of returning a
+misleading empty result. Use `obj_query` or a dedicated component/rule getter
+for group objects.
 
 **`AddFilter_Method(Method)`** / **`SetState_FilterAll`**
 Set an alternative filtering method / clear all filters (walk everything).

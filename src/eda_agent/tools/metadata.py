@@ -171,6 +171,9 @@ _DESIGN_BRIDGE = frozenset(
 # --- explicit interaction overrides (from the DelphiScript bridge audit) ----
 # Only tools that are NOT plain readonly/silent under the default rules.
 INTERACTION_OVERRIDES = {
+    # Pure geometry computed in DelphiScript; no document state is read or
+    # changed. Its verb does not match the generic readonly name rules.
+    "obj_measure_distance": READONLY,
     # Non-suppressible modal dialogs that block the single-threaded loop.
     "proj_sync_pcb": MODAL,          # ECO / Update-PCB dialog
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog

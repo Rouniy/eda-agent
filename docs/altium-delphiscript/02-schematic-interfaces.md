@@ -215,6 +215,8 @@ destroyed by the owner's `SchIterator_Destroy` in a `Finally`.
 `AddFilter_ObjectSet(MkSet(ePin, eParameter))`.
 **`AddFilter_Method(Method)`**: sets the traversal method.
 **`AddFilter_Area(X1, Y1, X2, Y2)`**: restricts to objects within a rectangle.
+The values are internal coordinates. `sch_query_region` exposes this as a
+non-interactive, mil-based MCP query and normalizes reversed corners.
 **`SetState_FilterAll`**: clears filters (iterate everything).
 **`FirstSchObject : ISch_GraphicalObject`**: the first matching object, or `Nil`.
 **`NextSchObject : ISch_GraphicalObject`**: the next match, or `Nil` at the end.
@@ -336,8 +338,19 @@ Comp.AddSchObject(Impl);
 **`ModelName : String`**: the model name (e.g. the footprint `'SOIC-8'`).
 **`ModelType : String`**: the model kind, e.g. `'PCBLIB'` for a footprint or
 `'SIM'` for a SPICE model.
+**`Description : String`**: optional human-readable model description.
+**`IsCurrent : Boolean`**: whether this is the selected implementation in its
+model domain.
 **`AddDataFileLink(...)`**: attaches a model datafile reference (the file that
 backs the model).
 **`UseComponentLibrary : Boolean`**: whether the model is resolved from the
 component's own library.
 **`LibraryIdentifier : String`**: the library the model is resolved from.
+**`DatafileLinkCount : Integer`** and
+**`DatafileLink[I] : ISch_ModelDatafileLink`**: enumerate a model's external
+file links. A link exposes **`EntityName`**, **`FileKind`**, and **`Location`**.
+
+`sch_get_component_models` walks placed `eSchComponent` objects, then their
+`eImplementation` children, and returns these fields without modifying the
+sheet. This is distinct from the `lib_*` model tools, which operate on source
+library components.
