@@ -676,6 +676,110 @@ def _hot_reload_render_modules() -> None:
                 logger.warning("hot-reload of %s failed: %s", full, e)
 
 
+#: Hostnames a browser may legitimately use to reach a loopback bind.
+#: Anything else in the Host header means the request arrived through a
+#: name that resolves here without belonging here, which is what DNS
+#: rebinding is.
+_LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1", "[::1]", ""})
+
+#: Escape hatch for a deliberate non-loopback bind. Comma separated
+#: hostnames, no ports. Sharing the dashboard is already gated behind an
+#: explicit --host and a printed warning; this lets that case name the
+#: address it will actually be reached by.
+_ALLOWED_HOSTS_ENV = "EDA_AGENT_DASHBOARD_ALLOWED_HOSTS"
+
+
+def _hostname_of(value: str) -> str:
+    """The host part of a Host or Origin header, lowercased, no port.
+
+    Handles the bracketed IPv6 form, where the colons inside the
+    brackets are not a port separator.
+    """
+    value = (value or "").strip().lower()
+    if value.startswith("http://"):
+        value = value[7:]
+    elif value.startswith("https://"):
+        value = value[8:]
+    value = value.split("/")[0]
+    if value.startswith("["):
+        end = value.find("]")
+        if end != -1:
+            return value[:end + 1]
+        return value
+    return value.split(":")[0]
+
+
+def _allowed_hostnames() -> frozenset:
+    import os
+
+    extra = os.environ.get(_ALLOWED_HOSTS_ENV, "")
+    names = {n.strip().lower() for n in extra.split(",") if n.strip()}
+    return frozenset(_LOOPBACK_NAMES | names)
+
+
+def install_origin_guard(app) -> None:
+    """Refuse requests that did not come from a loopback name.
+
+    WHY THIS EXISTS. Every endpoint here is unauthenticated, and
+    /api/tool/run invokes any registered tool with caller-supplied
+    arguments. On this project that means reading and mutating client
+    designs under NDA, so the only thing standing between a web page and
+    the board is that the server listens on loopback.
+
+    Loopback is not the protection it looks like. Ordinary CSRF is
+    already blocked, because the endpoint requires a JSON content type
+    and that forces a preflight the server never approves. DNS
+    REBINDING is not: an attacker page served from a domain whose DNS
+    then answers 127.0.0.1 is same-origin as far as the browser is
+    concerned, so no preflight applies and the request arrives looking
+    entirely ordinary.
+
+    MEASURED before this guard: a JSON POST carrying
+    Host: evil.example.com was accepted and ran a command against a live
+    Altium, and GET /api/tools listed all 412 tools to the same caller.
+
+    What separates the two cases is the Host header. A browser sends the
+    name the user typed, so a rebound request carries the attacker's
+    domain while a genuine one carries a loopback name. Origin is
+    checked too when present, which costs nothing and catches a plain
+    cross-site attempt earlier.
+    """
+    from flask import jsonify, request
+
+    @app.before_request
+    def _reject_foreign_origin():
+        allowed = _allowed_hostnames()
+
+        host = _hostname_of(request.headers.get("Host", ""))
+        if host not in allowed:
+            return jsonify({
+                "ok": False,
+                "reason": (
+                    f"refusing a request addressed to {host!r}. This "
+                    f"dashboard is unauthenticated and reachable only as "
+                    f"localhost, because every endpoint can drive the "
+                    f"EDA application. A Host that is not a loopback name "
+                    f"is how a DNS rebinding attack arrives. Set "
+                    f"{_ALLOWED_HOSTS_ENV} if you are deliberately serving "
+                    f"this to another machine."),
+            }), 403
+
+        # Origin is absent on same-origin GETs and on direct navigation,
+        # so only a PRESENT and foreign one is a refusal. Treating a
+        # missing Origin as hostile would break the page itself.
+        origin = request.headers.get("Origin")
+        if origin and _hostname_of(origin) not in allowed:
+            return jsonify({
+                "ok": False,
+                "reason": (
+                    f"refusing a cross-origin request from {origin!r}. "
+                    f"This dashboard has no authentication and its "
+                    f"endpoints drive the EDA application."),
+            }), 403
+
+        return None
+
+
 def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     if workspace_dir is None:
         workspace_dir = get_config().workspace_dir
@@ -742,6 +846,8 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     _atexit.register(_remove_heartbeat)
 
     app = Flask("eda-agent-dashboard")
+    # Before any route, and before anything reads the body.
+    install_origin_guard(app)
     app.config["WORKSPACE_DIR"] = str(workspace_dir)
     app.config["TAILER"] = tailer
 
@@ -1331,7 +1437,10 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     _READ_ONLY_EXACT = frozenset({
         "proj_compile", "proj_force_recompile", "proj_run_erc", "pcb_run_drc",
         "proj_run_output", "proj_cross_probe", "app_attach", "app_detach",
-        "app_set_intent", "app_run_menu", "obj_highlight_net",
+        # app_run_menu is NOT here: it dispatches an arbitrary menu path,
+        # and "File|Save All" writes to disk. Treating it as read-only
+        # left the project cache stale after it changed something.
+        "app_set_intent", "obj_highlight_net",
         "obj_clear_highlights", "obj_deselect_all", "obj_select", "obj_zoom",
         "obj_switch_view", "obj_refresh_document",
     })

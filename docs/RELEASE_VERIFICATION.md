@@ -1,4 +1,4 @@
-# Release verification: 2026.08.13.1
+# Release verification: 2026.08.26.2
 
 Everything below is Pascal that FPC and the linter have checked and that
 **Altium's DelphiScript engine has never executed**. The two are not the
@@ -24,6 +24,9 @@ works elsewhere cannot be an undeclared identifier:
 | 4, DNP paste | `PasteMaskExpansion` | yes, `PCB_MakePasteGrid` | low, but it edits the board |
 | 3, filled body | `AreaColor`, `IsSolid` | yes, `Generic.pas` | low |
 | 5, 3D placement | `MoveByXY` | yes, `PCB_ReplicateLayout` | low |
+| 11, copy and rename | `LibReference` | yes, `Lib_CreateSymbol` | low |
+| 12, delete variant | `DM_RemoveProjectVariant` | no, nowhere | highest, and it destroys work |
+| 13, sheet symbol filename | `Text` on a sheet symbol's sub-object | yes, on other objects | medium |
 | 6, mirrored text | `MirrorFlag` | yes, `PCB.pas` | lowest |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
@@ -38,6 +41,63 @@ there would be behavioural: whether moving a group moves its children.
 a body, and DelphiScript resolves a property against the object in hand,
 so another interface accepting it proves nothing here. Only
 `StandoffHeight` is entirely unexercised.
+
+### What this release adds, and why it is a different kind of risk
+
+The steps above check whether an identifier exists. This release
+carries almost none of that risk: every Altium property and method it
+touches is already written somewhere in shipped code, so an undeclared
+identifier is close to ruled out by construction. The cross-document
+hints touch no Altium API at all, being string handling only.
+
+`Proj_UpdatePCB` now reads `DM_FocusedDocument` and `DM_DocumentKind`
+before comparing, and refuses while a schematic is focused. Both
+identifiers are already used across several units, so neither is new
+exposure. Everything else is string handling: the reply fields that
+used to overstate what had been checked, and the removal of the
+`Client:RunMenu` fallback in `App_ExecuteMenu`, which now refuses an
+unmapped path instead of guessing a MenuID.
+
+One thing here cannot be settled by running the steps below. The
+refusal is deliberately absent from `Proj_UpdateSchematic`, the
+opposite direction, because the focus Altium wants there has never been
+measured. If you exercise that direction, record what it does.
+
+Footprint height is the same shape of risk, which is to say almost
+none. `Lib_SetFootprintHeight` writes `Footprint.Height`, which the
+height sweep beside it has always written, and reads the library
+through the same iterator thirty-odd other handlers use. What is new is
+a DIRECTION: the sweep can now lower a height to the model, not only
+raise it. Check it by setting a footprint absurdly tall by hand, running
+the sweep in `match` mode, and confirming it comes back down. Confirm
+the reverse too, that `raise` leaves it alone, because a mode that
+ignores its argument would pass the first test on its own.
+
+The case worth being careful about is a footprint with NO 3D body. It
+must not be written at all. Writing the 0 that an absent model implies
+does not relax placement-collision DRC, it disables it for that part,
+and doing that across every unmodelled footprint would switch the rule
+off wholesale while reporting a clean sweep. Run `match` on a library
+where at least one footprint has no model, and check that footprint's
+height is untouched and that its name comes back under
+`without_model_names`.
+
+What it adds instead is **logic that decides what to touch**, which
+fails silently rather than loudly:
+
+| Added | What could go wrong | How you would know |
+|---|---|---|
+| `GetPCBBoardForMutation` | An edit refuses when it should proceed, or proceeds when two boards are open and none focused | Open two PcbDocs, focus neither, run `pcb_delete_object`. It must refuse and name both |
+| Board mechanical layers | A paired kind is written on the layer rather than the pair, which silently does nothing | Set a paired kind, then read it back with `pcb_get_mech_layer_names` |
+| `lib_delete_footprint_primitives` | Removes from the wrong footprint, or takes pads with it | Probe the footprint first, delete one layer, probe again and compare pad count |
+| Library parameter delete | Matches zero and reports success | Delete a named parameter from a library symbol, then read the symbol's parameters |
+| Multi-part scope suffix | Returns part one's pins under another part's name | `lib_get_pin_list` on a multi-part symbol with `@2` and `@3`, and compare the counts |
+| Cross-document hints | The hint is appended to an error it does not apply to, or doubles up on a message that already names a tool | Focus a SchDoc and run `pcb_delete_object`. The refusal must name the PCB tool once, and read as one sentence |
+
+None of these can halt the polling loop the way an undeclared
+identifier does, so they are safe to run in any order and safe to run
+last. The cost of getting one wrong is a wrong answer, not a dead
+bridge.
 
 ---
 
@@ -70,7 +130,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.08.13.1`, `version_match` =
+Expect `altium_script_version` = `2026.08.26.2`, `version_match` =
 `true`, and `mcp_server_version` = `0.5.0`.
 
 Those are two different versions and they fail differently.
@@ -490,6 +550,127 @@ must keep working unchanged, which step 9's queries already exercise.
 
 `tests/test_no_double_unescape.py` pins the site count at zero from
 now on, so this is a one-time verification, not a recurring step.
+
+## 11. Copy and rename actually change the library
+
+Reported against the previous script build: `lib_copy_component` and
+`lib_rename_component` both answered `success:true` while the component
+count did not move, the copy's `new_name` resolved nowhere, and the
+renamed part was still there under its old name.
+
+`AddSchComponent` overrides `LibReference` with an auto-generated
+`Component_<N>` on the second and later additions to a SchLib in one
+session, so an assignment made before the add does not survive it.
+`Lib_CreateSymbol` already re-asserts after the add for this reason;
+these two did not. No new identifiers are involved, so the compile risk
+is nil, and what needs proving is the behaviour.
+
+On a scratch library, with a symbol that is not the first added this
+session:
+
+    lib_copy_component    source_name <existing>  new_name COPY_PROBE
+    lib_get_components    library_path <the same library>
+
+`COPY_PROBE` must appear, and the count must be one higher. Then:
+
+    lib_rename_component  component_name COPY_PROBE  new_name RENAME_PROBE
+    lib_get_components    library_path <the same library>
+
+`RENAME_PROBE` must appear, `COPY_PROBE` must be gone, and the count
+must be unchanged. Both replies now carry `verified:true`; a reply with
+`success:false` and a `reason` is the handler reporting that the
+read-back missed, which is the state that used to be reported as
+success.
+
+Note that `part_count` from `lib_get_components` is not evidence of
+anything here. It comes from the CompInfoReader, which has been measured
+reporting 2 for a symbol created single-part whose every pin carries
+`OwnerPartId 1`, while `lib_get_component_details` reported 1 for an
+identically created symbol.
+
+## 12. Deleting a project variant (highest risk in this release)
+
+`DM_RemoveProjectVariant` is the only write in Altium's entire variant
+API, and nothing in this codebase has ever called it, so it carries the
+undeclared-identifier risk in full: if the name is wrong it faults where
+`Try/Except` cannot catch it and takes the polling loop with it.
+
+It is also the only step here that destroys work which cannot be
+rebuilt from this bridge. A variant's entries record which components
+are not fitted and which carry an alternate part, and there is no
+documented way to add a variation entry back. Deleting a populated
+variant means re-making every one of those decisions in the Variant
+Management dialog.
+
+**Work on a copy of a project, or take an `app_checkpoint` first.**
+
+Create a throwaway variant in the Variant Management dialog, then:
+
+    proj_list_variants
+    proj_delete_variant   variant_name SCRATCH_VARIANT
+    proj_list_variants
+
+The reply must carry `verified: true`, `variant_count_after` one lower
+than before, and `entries_removed`. The second listing must not contain
+the name. If the loop stops answering instead, the identifier is not
+declared in DelphiScript and the reference is wrong about it; say so
+and the tool comes back out.
+
+Then check the refusals, which cost nothing: a name that does not exist
+must return `VARIANT_NOT_FOUND` and change no count, and an empty
+`variant_name` must return `MISSING_PARAMS`.
+
+`proj_set_active_variant` changed in the same release and is cheap to
+check alongside. It used to report success on the strength of the name
+existing, without asking which variant was actually current afterwards.
+Switch to a variant and confirm the reply carries `verified: true`;
+the failure reply now names `current_variant` so a switch that did not
+take is distinguishable from one that did.
+
+## 13. obj_modify stops reporting writes it did not make
+
+Measured on a live project: `obj_modify` was asked three times to set a
+sheet symbol's `FileName`, answered `matched:1, saved:true` each time,
+and wrote nothing. The property is readable and had no case in the
+writer, so each attempt was recorded as an unknown name in a diagnostic
+buffer that only `batch_modify` ever rendered. Nothing in the reply
+distinguished it from a real one, and an operator spent a session
+working around a rename that had never happened.
+
+`matched` counts what the FILTER selected. It never said anything about
+whether a write landed. Every modify reply now carries `properties`
+and an explicit `success`.
+
+The cheapest check needs no sheet symbol at all. On any open schematic:
+
+    obj_modify  object_type eNetLabel  filter <anything that matches one>
+                set NotAPropertyName=1
+
+That must come back `success:false` with `NotAPropertyName` under
+`properties.unknown`, and `matched` may still be 1. Before this release
+it returned `matched:1, saved:true` and nothing else.
+
+Then the real one, on a sheet symbol whose child sheet you do NOT mind
+re-pointing, or on a scratch copy of a project:
+
+    obj_query   object_type eSheetSymbol  properties Filename,UniqueId
+    obj_modify  object_type eSheetSymbol  filter UniqueId=<the id>
+                set Filename=SOMETHING_ELSE.SchDoc
+    obj_query   object_type eSheetSymbol  properties Filename,UniqueId
+
+The reply must be `success:true` with an empty `properties.unknown`,
+and the second query must show the new text. A write that does not
+stick now reports under `properties.failed`, because the setter reads
+the label back rather than trusting the assignment.
+
+**This re-points a symbol, it does not rename a sheet.** The filename
+lives in three places: this label, the file on disk, and the project's
+document list. Only Altium's **Sheet Symbol Actions > Rename Child
+Sheet** does all three, and it keeps the symbol's `UniqueId`, which is
+the project's handle for that sheet instance. Deleting and re-placing a
+symbol issues a new id, and the next Update PCB then proposes
+delete-and-re-add for every component on the sheet instead of matching
+them.
 
 ---
 

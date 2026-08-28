@@ -62,6 +62,23 @@ PROTOCOL_VERSION = 2
 # passes while still catching runaway handlers.
 _MAX_HEARTBEAT_EXTENSIONS = 30
 
+#: How often to check whether a modal is what is holding a call up, and
+#: how long to wait before the first check.
+#:
+#: RECURRING, NOT ONE SHOT. A dialog does not only appear at the start: a
+#: long handler can raise one part-way through, and a single early probe
+#: would miss it and then wait out the whole timeout in silence, which is
+#: the failure this exists to remove. Checking on an interval catches it
+#: whenever it turns up.
+#:
+#: The first check is delayed so ordinary calls never pay for it. MEASURED
+#: on this workspace, the compile-bound reads are the slowest legitimate
+#: handlers and return in about a second, so a 3 second grace leaves
+#: headroom. After that the cost is one Win32 window enumeration per
+#: interval, against a call that is already stalled.
+_DIALOG_PROBE_AFTER = 3.0
+_DIALOG_PROBE_EVERY = 3.0
+
 def _trace_log(workspace_dir: Path, msg: str) -> None:
     """Append a line to workspace/bridge_trace.log. Never raises."""
     try:
@@ -588,9 +605,48 @@ class AltiumBridge:
         poll_count = 0
         first_appearance: Optional[float] = None
         parse_errors = 0
+        next_dialog_probe = start + _DIALOG_PROBE_AFTER
 
         while True:
             poll_count += 1
+
+            # WATCH FOR A DIALOG THROUGHOUT, ON EVERY CALL, NOT JUST AT
+            # TIMEOUT.
+            #
+            # A modal blocks the single-threaded scripting engine, so the
+            # handler cannot answer and cannot say why. Waiting out the
+            # full timeout first turns a question a human could answer in
+            # a second into a two-minute silence, and that cost most of a
+            # working day: nine separate calls hung the whole window while
+            # the same "A command is currently active" prompt sat on
+            # screen the entire time.
+            #
+            # Checked on an interval rather than once, because a handler
+            # can raise a dialog part-way through and a single early probe
+            # would miss exactly that case.
+            #
+            # The probe is Win32 and does NOT use the bridge, which is why
+            # it works precisely when the bridge does not.
+            now = time.monotonic()
+            if first_appearance is None and now >= next_dialog_probe:
+                next_dialog_probe = now + _DIALOG_PROBE_EVERY
+                early = self._dialog_probe()
+                if early and early.get("blocked"):
+                    waited = now - start
+                    _trace_log(
+                        workspace_dir,
+                        f"POLL_DIALOG id={request_id[:8]} "
+                        f"after={waited:.1f}s "
+                        f"summary={early.get('summary', '')[:120]}",
+                    )
+                    raise AltiumTimeoutError(
+                        f"Altium is showing a modal dialog {waited:.0f}s into "
+                        f"this call, so the handler cannot run and waiting for "
+                        f"the timeout would tell you nothing more."
+                        + self._dialog_suffix(early),
+                        details={"dialogs": early,
+                                 "blocked_after_seconds": round(waited, 1)},
+                    )
             if response_path.exists():
                 if first_appearance is None:
                     first_appearance = time.monotonic() - start
@@ -689,11 +745,23 @@ class AltiumBridge:
             f"extensions={extensions} "
             f"first_seen_ms={first_appearance*1000 if first_appearance else -1}",
         )
+        self._raise_poll_timeout(
+            workspace_dir, timeout, extensions, ext_cap, max_extensions)
+
+    def _raise_poll_timeout(
+        self,
+        workspace_dir: Path,
+        timeout: float,
+        extensions: int,
+        ext_cap: int,
+        max_extensions: Optional[int],
+    ) -> None:
+        """Raise one consistent, dialog-aware timeout for both poll paths."""
+        # Before blaming the loop, LOOK. A modal produces exactly this
+        # silence, and the two diagnoses call for opposite actions.
+        probe = self._dialog_probe()
+
         if extensions >= ext_cap and ext_cap > 0:
-            # A bounded wait was requested, so exhausting it is the caller's
-            # own deadline firing, not evidence of a runaway handler. Say so
-            # and let the caller diagnose; recording STUCK_HANDLER here would
-            # tell the user to restart a script that is merely waiting.
             bounded = max_extensions is not None
             fault = MODAL_DIALOG if bounded else STUCK_HANDLER
             self._note_fault(workspace_dir, recovery_guidance(fault))
@@ -701,30 +769,79 @@ class AltiumBridge:
             if bounded:
                 detail = (
                     f"Command did not return within the caller's {total:.0f}s "
-                    f"budget. Altium is answering keepalives, so the polling "
-                    f"loop is alive and the handler is most likely blocked on "
-                    f"a modal dialog. "
+                    "budget. A progress marker was seen earlier, so the "
+                    "handler may be blocked on a modal dialog; that marker "
+                    "does not prove the polling loop is still alive. "
                 )
             else:
                 detail = (
                     f"Handler exceeded {ext_cap} heartbeat extensions "
-                    f"({total:.0f}s total); Altium is responding to keepalives "
-                    f"but the command never returned. The handler is likely "
-                    f"stuck in an infinite loop. "
+                    f"({total:.0f}s total). Altium WAS processing the call "
+                    "earlier, but that is not rechecked here, so the handler "
+                    "may be stuck in a long operation OR the loop may since "
+                    "have died. Confirm with app_ping before recovery. "
                 )
             raise AltiumTimeoutError(
-                detail + recovery_message(fault),
-                details={"recovery": recovery_guidance(fault),
-                         "fault": fault,
-                         "waited_seconds": total,
-                         "bounded_wait": bounded},
+                detail + recovery_message(fault) + self._dialog_suffix(probe),
+                details={
+                    "recovery": recovery_guidance(fault),
+                    "fault": fault,
+                    "waited_seconds": total,
+                    "bounded_wait": bounded,
+                    "dialogs": probe,
+                },
             )
+
         self._note_fault(workspace_dir, recovery_guidance(DEAD_LOOP))
         raise AltiumTimeoutError(
-            f"No response within {timeout}s and no progress heartbeat. The "
-            f"Altium polling loop is probably not running. "
-            + recovery_message(DEAD_LOOP),
-            details={"recovery": recovery_guidance(DEAD_LOOP)},
+            f"No response within {timeout}s and no progress heartbeat. "
+            + ("The Altium polling loop is probably not running. "
+               if not probe else "")
+            + recovery_message(DEAD_LOOP)
+            + self._dialog_suffix(probe),
+            details={"recovery": recovery_guidance(DEAD_LOOP),
+                     "dialogs": probe},
+        )
+
+    def _dialog_probe(self) -> Optional[dict]:
+        """What is on Altium's screen, asked WITHOUT the bridge.
+
+        A silent bridge looks identical whether the polling loop is
+        dead, the handler is looping, or a modal is blocking the
+        scripting engine. Those need opposite responses, and until now
+        the timeout guessed: it named a dead loop and told the caller to
+        go and look for a dialog themselves.
+
+        This looks instead. It reads the Win32 windows directly, which
+        is the one route that still answers while Altium is blocked,
+        precisely because it never touches the IPC that is stuck.
+
+        Returns None rather than raising, always. A probe that fails
+        must not replace the timeout the caller actually needs to see.
+        """
+        try:
+            from ..ui import dialog_report, windows
+
+            if not windows.available():
+                return None
+            process = self.process_manager.get_altium_info()
+            if not process:
+                return None
+            report = dialog_report.report(process.pid)
+            return report if report.get("dialog_count") else None
+        except Exception:                        # pragma: no cover - guard
+            return None
+
+    @staticmethod
+    def _dialog_suffix(probe: Optional[dict]) -> str:
+        """One sentence naming what is blocking, for the timeout text."""
+        if not probe:
+            return ""
+        return (
+            f" A DIALOG IS ON SCREEN, so the loop is blocked rather than "
+            f"absent: {probe.get('summary', 'a modal is open')}. Answer it, "
+            f"or read it with app_list_open_dialogs and press a button with "
+            f"app_press_dialog_button; both work while the bridge does not."
         )
 
     def _execute_command(self, command: str, params: dict[str, Any],
@@ -793,6 +910,7 @@ class AltiumBridge:
         poll_count = 0
         first_appearance: Optional[float] = None
         parse_errors = 0
+        next_dialog_probe = start + _DIALOG_PROBE_AFTER
 
         _trace_log(
             workspace_dir,
@@ -801,6 +919,26 @@ class AltiumBridge:
         )
         while True:
             poll_count += 1
+            now = time.monotonic()
+            if first_appearance is None and now >= next_dialog_probe:
+                next_dialog_probe = now + _DIALOG_PROBE_EVERY
+                early = self._dialog_probe()
+                if early and early.get("blocked"):
+                    waited = now - start
+                    _trace_log(
+                        workspace_dir,
+                        f"POLL_DIALOG id={request_id[:8]} "
+                        f"after={waited:.1f}s "
+                        f"summary={early.get('summary', '')[:120]}",
+                    )
+                    raise AltiumTimeoutError(
+                        f"Altium is showing a modal dialog {waited:.0f}s into "
+                        "this call, so the handler cannot run and waiting for "
+                        "the timeout would tell you nothing more."
+                        + self._dialog_suffix(early),
+                        details={"dialogs": early,
+                                 "blocked_after_seconds": round(waited, 1)},
+                    )
             if response_path.exists():
                 if first_appearance is None:
                     first_appearance = time.monotonic() - start
@@ -863,41 +1001,8 @@ class AltiumBridge:
             f"polls={poll_count} parse_errs={parse_errors} "
             f"extensions={extensions}",
         )
-        if extensions >= ext_cap and ext_cap > 0:
-            bounded = max_extensions is not None
-            fault = MODAL_DIALOG if bounded else STUCK_HANDLER
-            self._note_fault(workspace_dir, recovery_guidance(fault))
-            total = ext_cap * timeout
-            if bounded:
-                detail = (
-                    f"Command did not return within the caller's {total:.0f}s "
-                    "budget. Altium is answering keepalives, so the polling "
-                    "loop is alive and the handler is most likely blocked on "
-                    "a modal dialog. "
-                )
-            else:
-                detail = (
-                    f"Handler exceeded {ext_cap} heartbeat extensions "
-                    f"({total:.0f}s total); Altium is responding to keepalives "
-                    "but the command never returned. The handler is likely "
-                    "stuck in an infinite loop. "
-                )
-            raise AltiumTimeoutError(
-                detail + recovery_message(fault),
-                details={
-                    "recovery": recovery_guidance(fault),
-                    "fault": fault,
-                    "waited_seconds": total,
-                    "bounded_wait": bounded,
-                },
-            )
-        self._note_fault(workspace_dir, recovery_guidance(DEAD_LOOP))
-        raise AltiumTimeoutError(
-            f"No response within {timeout}s and no progress heartbeat. The "
-            "Altium polling loop is probably not running. "
-            + recovery_message(DEAD_LOOP),
-            details={"recovery": recovery_guidance(DEAD_LOOP)},
-        )
+        self._raise_poll_timeout(
+            workspace_dir, timeout, extensions, ext_cap, max_extensions)
 
     async def _execute_command_async(
         self,

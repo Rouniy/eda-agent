@@ -5,21 +5,9 @@
 { Parallel to Generic.pas but for PCBServer / IPCB_* objects.               }
 {..............................................................................}
 
-Function ObjectTypeFromStringPCB(TypeStr : String) : Integer;
-Begin
-    Result := -1;
-    If TypeStr = 'eTrackObject'         Then Result := eTrackObject
-    Else If TypeStr = 'ePadObject'      Then Result := ePadObject
-    Else If TypeStr = 'eViaObject'      Then Result := eViaObject
-    Else If TypeStr = 'eComponentObject' Then Result := eComponentObject
-    Else If TypeStr = 'eArcObject'      Then Result := eArcObject
-    Else If TypeStr = 'eFillObject'     Then Result := eFillObject
-    Else If TypeStr = 'eTextObject'     Then Result := eTextObject
-    Else If TypeStr = 'ePolyObject'     Then Result := ePolyObject
-    Else If TypeStr = 'eRegionObject'   Then Result := eRegionObject
-    Else If TypeStr = 'eRuleObject'     Then Result := eRuleObject
-    Else If TypeStr = 'eDimensionObject' Then Result := eDimensionObject;
-End;
+{ ObjectTypeFromStringPCB moved to Utils.pas: Library.pas builds BEFORE
+  this file and needs it, and a call to a function defined later in the
+  concatenation resolves to nothing at runtime. }
 
 {..............................................................................}
 { PCB Property Getter, late-bound, returns '' on unsupported properties     }
@@ -58,7 +46,14 @@ Begin
         Else If PropName = 'Layer'      Then Result := GetLayerString(Obj.Layer)
         Else If PropName = 'Descriptor' Then Result := Obj.Descriptor
         Else If PropName = 'Selected'   Then Result := BoolToJsonStr(Obj.Selected)
-        Else If PropName = 'Net'        Then
+        { 'Net.Name' is accepted as well as 'Net'. Designator.Text and
+          Comment.Text are already accepted alongside their bare forms,
+          so a caller who used one of those infers a dotted rule that
+          held twice and failed here, silently, returning empty as
+          though the copper had no net. Measured: a session concluded
+          the bridge could not attribute copper to a net at all and
+          stopped, when the property was simply spelled differently. }
+        Else If (PropName = 'Net') Or (PropName = 'Net.Name') Then
         Begin
             If Obj.Net <> Nil Then Result := Obj.Net.Name;
         End
@@ -262,6 +257,73 @@ Begin
     End;
 End;
 
+{..............................................................................}
+{ IsKnownPCBProperty                                                           }
+{                                                                              }
+{ Whether GetPCBProperty has a branch for this name. It exists because that    }
+{ getter returns '' for anything it does not recognise, which makes a          }
+{ MISSPELLED property indistinguishable from one that is genuinely empty. That }
+{ ambiguity has now cost three separate investigations, each concluding the    }
+{ bridge could not do something it could: the caller sees blanks, believes the }
+{ data is not there, and stops.                                                }
+{                                                                              }
+{ Kept next to the getter deliberately. A list that lives somewhere else       }
+{ drifts the first time a branch is added, and a stale allow-list would reject }
+{ a property that works, which is worse than the silence it replaces.          }
+{..............................................................................}
+
+Function IsKnownPCBProperty(PropName : String) : Boolean;
+Begin
+    Result :=
+        (PropName = 'ObjectId') Or (PropName = 'X') Or (PropName = 'Y') Or
+        (PropName = 'Layer') Or (PropName = 'Descriptor') Or
+        (PropName = 'Selected') Or (PropName = 'Net') Or
+        (PropName = 'Net.Name') Or (PropName = 'X1') Or (PropName = 'Y1') Or
+        (PropName = 'X2') Or (PropName = 'Y2') Or (PropName = 'Width') Or
+        (PropName = 'Radius') Or (PropName = 'StartAngle') Or
+        (PropName = 'EndAngle') Or (PropName = 'XCenter') Or
+        (PropName = 'YCenter') Or (PropName = 'HoleSize') Or
+        (PropName = 'Size') Or (PropName = 'TopShape') Or
+        (PropName = 'TopXSize') Or (PropName = 'TopYSize') Or
+        (PropName = 'Rotation') Or (PropName = 'Name') Or
+        (PropName = 'Text') Or (PropName = 'Pattern') Or
+        (PropName = 'Designator') Or (PropName = 'Designator.Text') Or
+        (PropName = 'Comment') Or (PropName = 'Comment.Text') Or
+        (PropName = 'SourceDesignator');
+End;
+
+Function UnknownPCBProperties(PropsStr : String) : String;
+Var
+    Remaining, PropName : String;
+    CommaPos : Integer;
+Begin
+    Result := '';
+    Remaining := PropsStr;
+    While Remaining <> '' Do
+    Begin
+        CommaPos := Pos(',', Remaining);
+        If CommaPos > 0 Then
+        Begin
+            PropName := Trim(Copy(Remaining, 1, CommaPos - 1));
+            Remaining := Copy(Remaining, CommaPos + 1, Length(Remaining));
+        End
+        Else Begin PropName := Trim(Remaining); Remaining := ''; End;
+        If (PropName <> '') And (Not IsKnownPCBProperty(PropName)) Then
+        Begin
+            If Result <> '' Then Result := Result + ', ';
+            Result := Result + PropName;
+        End;
+    End;
+End;
+
+Function KnownPCBPropertyList : String;
+Begin
+    Result := 'ObjectId, X, Y, Layer, Descriptor, Selected, Net, X1, Y1, '
+        + 'X2, Y2, Width, Radius, StartAngle, EndAngle, XCenter, YCenter, '
+        + 'HoleSize, Size, TopShape, TopXSize, TopYSize, Rotation, Name, '
+        + 'Text, Pattern, Designator, Comment, SourceDesignator';
+End;
+
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;
 Var
     Remaining, PropName, PropValue : String;
@@ -322,64 +384,93 @@ Begin
     Result := '';
     First := (TotalMatched = 0);
 
+    { EVERY PreProcess BELOW IS IN A Try/Finally, and that is not tidiness.   }
+    {                                                                          }
+    { An exception anywhere between PreProcess and PostProcess leaves Altium   }
+    { believing a command is still running. From then on EVERY save of a PCB   }
+    { document is refused with "A command is currently active and save cannot  }
+    { be completed at this time", the editor offers to write a copy instead,   }
+    { and NOTHING CLEARS IT: not restarting the polling loop, because the      }
+    { state lives in the PCB server rather than the script, and not Escape in  }
+    { the editor.                                                              }
+    {                                                                          }
+    { MEASURED on 2026-08-25: a PcbLib and its board went a whole day without  }
+    { a successful save while SchLib documents beside them saved normally,     }
+    { and the authored footprints existed only in memory.                      }
+    {                                                                          }
+    { The loop body calls MatchesFilterPCB, BuildObjectJsonPCB and             }
+    { ApplySetPropertiesPCB, all of which touch caller-supplied property names }
+    { on arbitrary primitives, so raising is an ordinary outcome here rather   }
+    { than a remote possibility. AltiumScriptCentral ships a whole recovery    }
+    { script for this symptom, which is a fair measure of how often it bites.  }
     If Mode = 'delete' Then
     Begin
         PCBServer.PreProcess;
-        MaxIter := 100000;
-        While MaxIter > 0 Do
-        Begin
-            Iterator := Board.BoardIterator_Create;
-            Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-            Iterator.AddFilter_LayerSet(AllLayers);
-            Iterator.AddFilter_Method(eProcessAll);
-            FoundObj := Nil;
-            Obj := Iterator.FirstPCBObject;
-            While Obj <> Nil Do
+        Try
+            MaxIter := 100000;
+            While MaxIter > 0 Do
             Begin
-                If MatchesFilterPCB(Obj, FilterStr) Then Begin FoundObj := Obj; Break; End;
-                Obj := Iterator.NextPCBObject;
+                Iterator := Board.BoardIterator_Create;
+                Try
+                    Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+                    Iterator.AddFilter_LayerSet(AllLayers);
+                    Iterator.AddFilter_Method(eProcessAll);
+                    FoundObj := Nil;
+                    Obj := Iterator.FirstPCBObject;
+                    While Obj <> Nil Do
+                    Begin
+                        If MatchesFilterPCB(Obj, FilterStr) Then Begin FoundObj := Obj; Break; End;
+                        Obj := Iterator.NextPCBObject;
+                    End;
+                Finally
+                    Board.BoardIterator_Destroy(Iterator);
+                End;
+                If FoundObj = Nil Then Break;
+                PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                    PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
+                Board.RemovePCBObject(FoundObj);
+                Inc(TotalMatched);
+                Dec(MaxIter);
             End;
-            Board.BoardIterator_Destroy(Iterator);
-            If FoundObj = Nil Then Break;
-            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
-                PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
-            Board.RemovePCBObject(FoundObj);
-            Inc(TotalMatched);
-            Dec(MaxIter);
+        Finally
+            PCBServer.PostProcess;
         End;
-        PCBServer.PostProcess;
         Exit;
     End;
 
     If Mode = 'modify' Then PCBServer.PreProcess;
+    Try
+        Iterator := Board.BoardIterator_Create;
+        Try
+            Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_Method(eProcessAll);
 
-    Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-    Iterator.AddFilter_LayerSet(AllLayers);
-    Iterator.AddFilter_Method(eProcessAll);
-
-    Obj := Iterator.FirstPCBObject;
-    While Obj <> Nil Do
-    Begin
-        If (Limit > 0) And (TotalMatched >= Limit) Then Break;
-        If MatchesFilterPCB(Obj, FilterStr) Then
-        Begin
-            If Mode = 'query' Then
+            Obj := Iterator.FirstPCBObject;
+            While Obj <> Nil Do
             Begin
-                ObjJson := BuildObjectJsonPCB(Obj, PropsStr);
-                If Not First Then Result := Result + ',';
-                First := False;
-                Result := Result + ObjJson;
-            End
-            Else If Mode = 'modify' Then
-                ApplySetPropertiesPCB(Obj, SetStr);
-            Inc(TotalMatched);
+                If (Limit > 0) And (TotalMatched >= Limit) Then Break;
+                If MatchesFilterPCB(Obj, FilterStr) Then
+                Begin
+                    If Mode = 'query' Then
+                    Begin
+                        ObjJson := BuildObjectJsonPCB(Obj, PropsStr);
+                        If Not First Then Result := Result + ',';
+                        First := False;
+                        Result := Result + ObjJson;
+                    End
+                    Else If Mode = 'modify' Then
+                        ApplySetPropertiesPCB(Obj, SetStr);
+                    Inc(TotalMatched);
+                End;
+                Obj := Iterator.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iterator);
         End;
-        Obj := Iterator.NextPCBObject;
+    Finally
+        If Mode = 'modify' Then PCBServer.PostProcess;
     End;
-
-    Board.BoardIterator_Destroy(Iterator);
-    If Mode = 'modify' Then PCBServer.PostProcess;
 End;
 
 Function ProcessActivePCBDoc(ObjTypeInt : Integer;
@@ -388,9 +479,32 @@ Function ProcessActivePCBDoc(ObjTypeInt : Integer;
 Var
     Board : IPCB_Board;
     TotalMatched : Integer;
-    JsonItems : String;
+    JsonItems, Why : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    { A READ MAY WANDER; AN EDIT MAY NOT.                                   }
+    {                                                                        }
+    { GetPCBBoardAnywhere opens the first board it can find when none is     }
+    { focused, and hides the focus change afterwards. For a query that is    }
+    { the focus-independent access this project advertises. For a delete it  }
+    { is a misfire: with a library in front and two boards open, primitives  }
+    { would be removed from whichever board the project walk reached first,  }
+    { and nothing in the reply would say which.                              }
+    {                                                                        }
+    { There is no library-scoped primitive delete, so a caller working in a  }
+    { PcbLib has no correct tool here and the wrong one used to look like    }
+    { it worked.                                                             }
+    If (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create') Then
+    Begin
+        Board := GetPCBBoardForMutation(Why);
+        If Board = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'AMBIGUOUS_TARGET', Why);
+            Exit;
+        End;
+    End
+    Else
+        Board := GetPCBBoardAnywhere;
+
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');

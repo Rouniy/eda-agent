@@ -235,6 +235,29 @@ _DESTRUCTIVE_EXACT = frozenset({
     "setNetlist",                 # replaces the whole connectivity
     "importAutoRouteSesFile",     # replaces all routing
     "importAutoRouteJsonFile",
+    "importAutoLayoutJsonFile",   # replaces all PLACEMENT
+    # The automatic engines. Each discards existing work and replaces
+    # it wholesale, and none carries a destructive-sounding verb.
+    #
+    # pcb_Document.autoRouting was guarded ONLY at the tool level, by
+    # easyeda_auto_route. The generic shim reaches the same method and
+    # did not check it, so the documented guarantee that auto-routing
+    # requires confirmation was true of one route in and not the other.
+    "autoRouting",                # discards routing, re-routes the board
+    "autoLayout",                 # rearranges a whole schematic or board
+    "restoreDefault",             # resets the editor's own settings
+    # Repoint or rename an existing constraint. These do not read as
+    # destructive from the name, which is why the prefix list misses
+    # them, but the effect is: moving a differential pair onto another
+    # net silently re-scopes whatever is already routed under it, and a
+    # rename orphans every rule that referenced the old name. Verified
+    # present in reference/easyeda-api-skill PCB_Drc.md before listing,
+    # since a guard on a method that does not exist protects nothing.
+    "modifyDifferentialPairPositiveNet",
+    "modifyDifferentialPairNegativeNet",
+    "modifyDifferentialPairName",
+    "modifyNetClassName",
+    "modifyEqualLengthNetGroupName",
 })
 
 
@@ -297,58 +320,83 @@ def _points(value, field: str, minimum: int, allow_segments: bool = False):
     items = _as_list(value, field)
     if isinstance(items, dict):
         return items
-    # A four-number entry is a whole [x1, y1, x2, y2] SEGMENT, which is
-    # the form the editor reports its own geometry in. Keeping only the
-    # first two numbers would silently halve every segment handed
-    # straight back from a read.
-    widths = {2, 4} if allow_segments else {2}
+    # AN ENTRY IS A WHOLE POLYLINE, not necessarily one segment. The
+    # official WIRE format documents `dots` as a list of polylines, each
+    # a continuous flat run X1 Y1 X2 Y2 X3 Y3 ..., and its own example
+    # carries a six-number entry:
+    #
+    #   "dots": [[310, 550, 400, 550, 400, 460], [480, 460, 400, 460]]
+    #
+    # Accepting only 2 and 4 rejected any wire with a bend expressed as
+    # one entry, including geometry read straight back out of a live
+    # sheet. The earlier measurement that entries are four numbers was
+    # correct and was the two-point case, not the rule.
+    #
+    # So: pairs stay exactly two, and a segment run must be even and at
+    # least four. An odd count is still refused, since a dangling
+    # coordinate means the caller has lost track of the shape.
     out = []
     for index, point in enumerate(items):
         if isinstance(point, str) or not isinstance(point, (list, tuple)):
             return {"ok": False, "reason": (
                 f"{field}[{index}] must be an [x, y] pair, and is a "
                 f"{type(point).__name__}")}
-        if len(point) not in widths:
-            expected = ("an [x, y] pair, or a whole [x1, y1, x2, y2] segment"
+        width = len(point)
+        ok_width = (width == 2) or (
+            allow_segments and width >= 4 and width % 2 == 0)
+        if not ok_width:
+            expected = ("an [x, y] pair, or a flat run of coordinates "
+                        "x1 y1 x2 y2 ... with an even count of at least 4"
                         if allow_segments else "an [x, y] pair")
             return {"ok": False, "reason": (
-                f"{field}[{index}] has {len(point)} value(s); {expected}")}
+                f"{field}[{index}] has {width} value(s); {expected}")}
         try:
             out.append([float(n) for n in point])
         except (TypeError, ValueError):
             return {"ok": False, "reason": (
                 f"{field}[{index}] is not numeric: {point!r}")}
 
-    widths_seen = {len(p) for p in out}
-    if len(widths_seen) > 1:
+    # Pair form and run form cannot be mixed, but two runs of DIFFERENT
+    # lengths are perfectly normal: one bent wire and one straight one.
+    # Comparing raw widths would have rejected that.
+    pair_form = all(len(p) == 2 for p in out)
+    run_form = all(len(p) >= 4 for p in out)
+    if not pair_form and not run_form:
         return {"ok": False, "reason": (
-            f"{field} mixes [x, y] pairs and [x1, y1, x2, y2] segments; "
+            f"{field} mixes [x, y] pairs and flat coordinate runs; "
             f"use one form or the other")}
 
-    # The minimum counts POINTS, and one segment already carries two of
-    # them. Applying the pair-form minimum to segments would reject a
+    # The minimum counts POINTS, and one run already carries at least
+    # two of them. Applying the pair-form minimum to runs would reject a
     # single-segment wire, which is the commonest wire there is.
-    needed = 1 if widths_seen == {4} else minimum
+    needed = 1 if run_form else minimum
     if len(out) < needed:
-        noun = "segments" if widths_seen == {4} else "points"
+        noun = "polylines" if run_form else "points"
         return {"ok": False, "reason": (
             f"{field} needs at least {needed} {noun} and got {len(out)}")}
 
     # Zero length: every pair identical, or every segment's two ends
     # identical. Both draw something invisible that connects nothing.
-    if widths_seen == {2} and len(set(map(tuple, out))) == 1:
+    if pair_form and len(set(map(tuple, out))) == 1:
         return {"ok": False, "reason": (
             f"every point in {field} is the same, so this has zero length "
             f"and would draw something invisible that connects nothing")}
-    if widths_seen == {4} and all(
-            p[0] == p[2] and p[1] == p[3] for p in out):
+    # A run is degenerate when every coordinate pair within it is the
+    # same point, checked across the whole run rather than only its two
+    # ends: a three-point run could otherwise start and finish
+    # elsewhere while collapsing in the middle.
+    def _degenerate(run):
+        pts = {(run[i], run[i + 1]) for i in range(0, len(run), 2)}
+        return len(pts) == 1
+    if run_form and all(_degenerate(p) for p in out):
         return {"ok": False, "reason": (
-            f"every segment in {field} starts and ends at the same point, "
-            f"so this has zero length and connects nothing")}
+            f"every polyline in {field} collapses to a single point, so "
+            f"this has zero length and connects nothing")}
     return out
 
 
-def _search_params(query: str, library_uuid: str) -> dict:
+def _search_params(query: str, library_uuid: str,
+                   page: int = 1, items_of_page: int = 0) -> dict:
     """Parameters for a library search, omitting what was not asked for.
 
     ``library_uuid`` is the editor's second search argument, measured:
@@ -361,6 +409,12 @@ def _search_params(query: str, library_uuid: str) -> dict:
     params: dict = {"query": str(query or "")}
     if str(library_uuid or "").strip():
         params["library_uuid"] = str(library_uuid).strip()
+    # Paging is sent only when asked for, so the editor's own default
+    # page size stays the default rather than being pinned here.
+    if int(page or 1) > 1:
+        params["page"] = int(page)
+    if int(items_of_page or 0) > 0:
+        params["items_of_page"] = int(items_of_page)
     return params
 
 
@@ -489,6 +543,21 @@ def _schematic_parts() -> dict[str, Any]:
     return {"ok": True, "source": "sch.components",
             "verified_live": components.get("verified_live"),
             "parts": parts}
+
+
+def _is_ground_net(net_name: str) -> bool:
+    """Ground specifically, not the whole power class.
+
+    ``_is_power_or_ground_net`` answers a different question and would
+    put a rail and a ground in the same bucket, which is exactly the
+    distinction the orientation check turns on: grounds point one way
+    and rails the other.
+    """
+    if not net_name:
+        return False
+    upper = net_name.upper()
+    return upper in ("GND", "GROUND", "VSS", "AGND", "DGND", "PGND",
+                     "EGND", "SGND", "EARTH") or "GND" in upper
 
 
 def _is_power_or_ground_net(net_name: str) -> bool:
@@ -1000,9 +1069,16 @@ def register_easyeda_tools(mcp):
         extension builds that carry the fix, and an editor running an
         older one still says ``ran: true``. So a reported CLEAN result
         is confirmed by asking the checker again through the reflective
-        shim and looking at its raw answer. Measured: the schematic
-        checker returns the boolean ``false``, which is a status and not
-        an empty violation list.
+        shim and looking at its raw answer.
+
+        The measurement behind it was that the schematic checker returns
+        the boolean ``false``, which is a status and not an empty
+        violation list. That was true, and the cause was the call rather
+        than the editor: ``check`` is overloaded on its third argument,
+        and the zero-argument form asks for the boolean. Both the
+        handler and this re-check now request the array form, so a
+        boolean arriving here means an editor genuinely answering with
+        a status, which is still not a clean bill of health.
 
         Only a clean result is re-checked. Violations that came back
         populated are self-evidently a real report.
@@ -1020,8 +1096,16 @@ def register_easyeda_tools(mcp):
         if reply.get("violation_count"):
             return reply
 
+        # THE SAME ARGUMENTS THE HANDLER USES, or this proves nothing.
+        # check() is overloaded on its third argument: false returns a
+        # boolean, true returns an array. Sending [] selects the boolean
+        # overload, so this re-check would ALWAYS see a boolean and
+        # always overturn a genuinely clean board. That was masked while
+        # the handler also sent no arguments, because the run never got
+        # this far; correcting the handler exposed it.
         raw = _call("system.invoke",
-                    {"class_name": cls, "method": "check", "args": []},
+                    {"class_name": cls, "method": "check",
+                     "args": [True, False, True]},
                     timeout=120.0)
         if not raw.get("ok"):
             # The shim could not be reached, so the clean result stands
@@ -1293,18 +1377,82 @@ def register_easyeda_tools(mcp):
         })
 
     @mcp.tool()
+    async def easyeda_link_3d_model(
+        uuid: str = "", library_uuid: str = "",
+        model_uuid: str = "", model_library_uuid: str = "",
+        footprint_uuid: str = "", symbol_uuid: str = "",
+    ) -> dict[str, Any]:
+        """Bind a 3D model, footprint or symbol to a device.
+
+        The EasyEDA counterpart to ``lib_link_3d_model`` on the Altium
+        side. ``lib_Device.modify`` takes an ``association`` object
+        carrying ``model3D``, ``footprint`` and ``symbol``, each as a
+        uuid plus the library holding it, and that is how a 3D model
+        reaches a part here.
+
+        Recorded previously as a gap on the assumption the extension API
+        might not expose it. It does, and ``LIB_3DModel`` carries a full
+        create, get, search, modify, copy and delete surface besides.
+        Find a model with ``easyeda_search_3d_models``.
+
+        ONLY WHAT YOU NAME IS SENT. The footprint and model slots are
+        explicitly nullable in the API, so passing a blank one would
+        UNBIND that part while reporting success. Omitted arguments are
+        left out of the call entirely rather than sent empty.
+
+        Args:
+            uuid: the device to bind to.
+            library_uuid: the library holding the device. Also the
+                default library for any binding whose own library is
+                not given.
+            model_uuid: the 3D model to attach.
+            model_library_uuid: its library, if it differs.
+            footprint_uuid: rebind the footprint, in the device's
+                library unless another is implied.
+            symbol_uuid: rebind the symbol, likewise.
+
+        Returns:
+            Dict with ``linked`` and ``bound``, the slots written.
+        """
+        if not str(uuid).strip():
+            return {"ok": False, "reason": "uuid is required"}
+        if not str(library_uuid).strip():
+            return {"ok": False, "reason": (
+                "library_uuid is required: lib_Device.modify takes the "
+                "device's library as its second argument")}
+
+        params: dict[str, Any] = {"uuid": uuid, "library_uuid": library_uuid}
+        if str(model_uuid).strip():
+            params["model_3d"] = {
+                "uuid": model_uuid,
+                "library_uuid": (str(model_library_uuid).strip()
+                                 or library_uuid),
+            }
+        if str(footprint_uuid).strip():
+            params["footprint"] = {"uuid": footprint_uuid}
+        if str(symbol_uuid).strip():
+            params["symbol"] = {"uuid": symbol_uuid}
+        if len(params) == 2:
+            return {"ok": False, "reason": (
+                "give model_uuid, footprint_uuid or symbol_uuid. An empty "
+                "association would report success while binding nothing")}
+        return _call("lib.link_device_parts", params, timeout=60.0)
+
+    @mcp.tool()
     async def easyeda_search_3d_models(
-        query: str = "", library_uuid: str = ""
+        query: str = "", library_uuid: str = "", page: int = 1,
+        items_of_page: int = 0,
     ) -> dict[str, Any]:
         """Search the editor's 3D model library.
 
         A footprint without a model leaves a hole in the assembled view,
         which is where mechanical clashes are actually spotted.
 
-        TEN RESULTS, ALWAYS. The editor caps every library search at ten
-        and offers no page or limit argument, so ``capped`` being true
-        means there are more matches that cannot be reached from here.
-        Narrow the query rather than expecting to page.
+        TEN PER PAGE, AND THERE ARE MORE PAGES. Ten is the editor's
+        default page size, not a ceiling: the documented signature
+        carries ``itemsOfPage`` and ``page``, which this backend never
+        used to pass. ``more_likely`` in the reply means a full page
+        came back, and ``next_page`` says which page to ask for.
 
         Args:
             query: Substring matched by the editor's own search. Empty
@@ -1314,11 +1462,12 @@ def register_easyeda_tools(mcp):
                 uuids from ``easyeda_list_libraries``.
 
         Returns:
-            Dict with ``models``, ``result_count``, ``result_cap``,
+            Dict with ``models``, ``result_count``, ``page``,
             ``capped`` and ``library_uuid``.
         """
         return _call("lib.search_3d_models",
-                     _search_params(query, library_uuid))
+                     _search_params(query, library_uuid, page,
+                                    items_of_page))
 
     @mcp.tool()
     async def easyeda_get_paths() -> dict[str, Any]:
@@ -1377,12 +1526,12 @@ def register_easyeda_tools(mcp):
         return reply
 
     @mcp.tool()
-    async def easyeda_activate_document(uuid: str = "") -> dict[str, Any]:
-        """Switch to an already-open document.
+    async def easyeda_activate_document(tab_id: str = "") -> dict[str, Any]:
+        """Switch to an already-open TAB, by its tab id.
 
-        Different from opening one: this brings a tab that is already
-        there to the front, and it is how a session moves between the
-        schematic and the board.
+        Different from opening a document: this brings a tab that is
+        already there to the front, and it is how a session moves
+        between the schematic and the board.
 
         That matters more here than it would elsewhere. EasyEDA serves a
         different API depending on which document is focused, so most
@@ -1390,13 +1539,103 @@ def register_easyeda_tools(mcp):
         reverse. Switching first is the fix for a whole family of
         "returned nothing" results.
 
+        A TAB ID IS NOT A DOCUMENT UUID, and nothing converts one to the
+        other. ``easyeda_open_document`` returns ``tab_id``, which is
+        the only place in the API one can be obtained; if you have only
+        a uuid, open the document instead. This previously passed a
+        document uuid, which the call does not accept.
+
         Args:
-            uuid: from a schematic, PCB or project listing.
+            tab_id: from ``easyeda_open_document``.
         """
-        if not str(uuid).strip():
-            return {"ok": False, "reason": "uuid is required"}
+        if not str(tab_id).strip():
+            return {"ok": False, "reason": (
+                "tab_id is required: activateDocument takes a tab id, not "
+                "a document uuid, and nothing converts between them. "
+                "easyeda_open_document returns tab_id")}
         return _call("editor.activate_document", timeout=60.0,
-                     params={"uuid": uuid})
+                     params={"tab_id": tab_id})
+
+    @mcp.tool()
+    async def easyeda_mark_findings(
+        markers: list | str | None = None,
+        color: dict | str | None = None,
+        line_width: float = 0.0,
+        zoom: bool = False,
+        tab_id: str = "",
+    ) -> dict[str, Any]:
+        """Draw review findings ON the board, where the reader is looking.
+
+        The thing a review has been unable to do on this backend: point
+        at the defect instead of describing where it is. Altium
+        highlights violations in the editor; this is EasyEDA's
+        equivalent, and it was left unbuilt while its arguments were
+        unknown.
+
+        AN OVERLAY, NOT GEOMETRY. Markers draw on top of the design,
+        change nothing in it, and ``easyeda_clear_findings`` removes
+        them all. That is why this is not confirm-guarded when
+        everything else that draws is.
+
+        Each marker needs the fields ITS OWN TYPE uses, and the wrong
+        ones are refused rather than sent, because a marker the editor
+        accepts and draws in the wrong place is a review pointing
+        confidently at nothing:
+
+        * ``point``     x, y
+        * ``line``      startX, startY, endX, endY
+        * ``rectangle`` left, right, top, bottom
+        * ``circle``    x, y, r
+        * ``arc``       startX, startY, endX, endY, angle
+
+        Args:
+            markers: list of shape dicts, each with ``type`` plus its
+                fields. A JSON string is accepted.
+            color: ``{r, g, b, alpha}``, 0-255 with alpha 0-1. The
+                editor's default is used when omitted.
+            line_width: stroke width in mils. Editor default when 0.
+            zoom: frame the markers after drawing them.
+            tab_id: which tab to draw on, from
+                ``easyeda_open_document``. Defaults to the active one.
+
+        Returns:
+            Dict with ``marked`` and ``count``.
+        """
+        shapes = _as_list(markers, "markers")
+        if isinstance(shapes, dict):
+            return shapes
+        if not shapes:
+            return {"ok": False, "reason": (
+                "markers is required: a non-empty list of shapes, each "
+                "with a type of point, line, rectangle, circle or arc")}
+
+        params: dict[str, Any] = {"markers": shapes, "zoom": bool(zoom)}
+        if isinstance(color, str) and color.strip():
+            parsed = _as_list(color, "color")
+            if isinstance(parsed, dict):
+                return parsed
+        if isinstance(color, dict):
+            params["color"] = color
+        if line_width and float(line_width) > 0:
+            params["line_width"] = float(line_width)
+        if str(tab_id).strip():
+            params["tab_id"] = str(tab_id).strip()
+        return _call("editor.mark_findings", params, timeout=60.0)
+
+    @mcp.tool()
+    async def easyeda_clear_findings(tab_id: str = "") -> dict[str, Any]:
+        """Remove every marker drawn by ``easyeda_mark_findings``.
+
+        Clears the whole overlay rather than one marker: the API
+        removes them as a set and offers no per-marker handle.
+
+        Args:
+            tab_id: which tab. Defaults to the active one.
+        """
+        params = {}
+        if str(tab_id).strip():
+            params["tab_id"] = str(tab_id).strip()
+        return _call("editor.clear_findings", params, timeout=60.0)
 
     @mcp.tool()
     async def easyeda_zoom_to_all() -> dict[str, Any]:
@@ -1550,9 +1789,17 @@ def register_easyeda_tools(mcp):
         so populating the panel appears not to be exposed to extensions
         at all. Treat this as document management.
 
+        NAMING IS A SECOND STEP. ``createPanel()`` takes no arguments,
+        so the panel is created with the editor's default name and then
+        renamed. The reply reports ``created`` and ``named`` separately,
+        because a panel that exists under the wrong name is a different
+        outcome from one that was never made. Before this the name was
+        passed to a method that does not accept it and was silently
+        dropped, so the rename never happened at all.
+
         Args:
-            name: what to call it. The editor picks a default when this
-                is left empty.
+            name: what to call it. Applied by a follow-up rename. Left
+                empty, the editor's default name stands.
         """
         params = {}
         if str(name or "").strip():
@@ -1659,21 +1906,47 @@ def register_easyeda_tools(mcp):
         return _call("pcb.clear_selection")
 
     @mcp.tool()
-    async def easyeda_cross_probe(primitive_ids: str = "") -> dict[str, Any]:
-        """Select and reveal objects in the editor by id.
+    async def easyeda_cross_probe(
+        designators: str = "", pins: str = "", nets: str = "",
+        highlight: bool = True, select: bool = True,
+    ) -> dict[str, Any]:
+        """Reveal parts, pins or nets in the editor by NAME.
 
         The counterpart to a query: having found something, put it in
-        front of the human rather than describing where it is.
+        front of the human rather than describing where it is. This is
+        the schematic-to-board link, so it works in the vocabulary a
+        review speaks, designators and net names, rather than in
+        internal ids.
+
+        NOT BY PRIMITIVE ID. Use ``easyeda_select_primitives`` for
+        those; the two identifier spaces are separate and this call
+        matches nothing when handed an id. It previously passed
+        primitive ids here and reported a count of whatever it was
+        given, so it looked successful while selecting nothing.
 
         Args:
-            primitive_ids: comma-separated ids from a query result.
+            designators: comma-separated, e.g. "U1,R4".
+            pins: comma-separated ``designator_pin``, e.g. "U1_1,U1_2".
+            nets: comma-separated net names.
+            highlight: highlight the matches. On by default.
+            select: select the matches. On by default.
         """
-        ids = [i.strip() for i in str(primitive_ids).split(",") if i.strip()]
-        if not ids:
+        def _split(raw: str) -> list[str]:
+            return [i.strip() for i in str(raw).split(",") if i.strip()]
+
+        params = {
+            "designators": _split(designators),
+            "pins": _split(pins),
+            "nets": _split(nets),
+            "highlight": highlight,
+            "select": select,
+        }
+        if not (params["designators"] or params["pins"] or params["nets"]):
             return {"ok": False, "reason": (
-                "primitive_ids is required, comma separated, from a query "
-                "result")}
-        return _call("pcb.cross_probe", {"primitive_ids": ids})
+                "give designators, pins or nets. Cross-probing selects by "
+                "name, not by primitive id: for ids use "
+                "easyeda_select_primitives")}
+        return _call("pcb.cross_probe", params)
 
     @mcp.tool()
     async def easyeda_modify_component(
@@ -2162,7 +2435,8 @@ def register_easyeda_tools(mcp):
 
     @mcp.tool()
     async def easyeda_search_devices(
-        query: str = "", library_uuid: str = ""
+        query: str = "", library_uuid: str = "", page: int = 1,
+        items_of_page: int = 0,
     ) -> dict[str, Any]:
         """Search the editor's device libraries.
 
@@ -2180,11 +2454,12 @@ def register_easyeda_tools(mcp):
                 uuids from ``easyeda_list_libraries``.
 
         Returns:
-            Dict with ``devices``, ``result_count``, ``result_cap``,
+            Dict with ``devices``, ``result_count``, ``page``,
             ``capped`` and ``library_uuid``.
         """
         return _call("lib.search_devices",
-                     _search_params(query, library_uuid))
+                     _search_params(query, library_uuid, page,
+                                    items_of_page))
 
     @mcp.tool()
     async def easyeda_get_devices_by_lcsc(lcsc_ids: str = "") -> dict[str, Any]:
@@ -2245,7 +2520,8 @@ def register_easyeda_tools(mcp):
 
     @mcp.tool()
     async def easyeda_search_symbols(
-        query: str, library_uuid: str = ""
+        query: str, library_uuid: str = "", page: int = 1,
+        items_of_page: int = 0,
     ) -> dict[str, Any]:
         """Search the editor's symbol libraries.
 
@@ -2264,7 +2540,7 @@ def register_easyeda_tools(mcp):
                 uuids from ``easyeda_list_libraries``.
 
         Returns:
-            Dict with ``symbols``, ``result_count``, ``result_cap``,
+            Dict with ``symbols``, ``result_count``, ``page``,
             ``capped`` and ``library_uuid``.
         """
         if not str(query).strip():
@@ -2273,19 +2549,22 @@ def register_easyeda_tools(mcp):
                 "empty query, and the call hangs rather than being "
                 "refused")}
         return _call("lib.search_symbols",
-                     _search_params(query, library_uuid))
+                     _search_params(query, library_uuid, page,
+                                    items_of_page))
 
     @mcp.tool()
     async def easyeda_search_footprints(
-        query: str = "", library_uuid: str = ""
+        query: str = "", library_uuid: str = "", page: int = 1,
+        items_of_page: int = 0,
     ) -> dict[str, Any]:
         """Search the editor's footprint libraries.
 
-        TEN RESULTS, ALWAYS. The editor caps every library search at ten
-        and offers no page or limit argument: a numeric second argument
-        matches nothing and an object one never returns. So ``capped``
-        being true means matches exist that cannot be reached from here,
-        and the answer is a narrower query rather than another page.
+        TEN PER PAGE, AND THERE ARE MORE PAGES. Ten is the default page
+        size, not a ceiling. The earlier note that no page argument
+        exists came from a numeric SECOND argument matching nothing,
+        and the second argument is a library uuid; paging sits further
+        along the signature. Ask for ``next_page`` when ``more_likely``
+        is true, or raise ``items_of_page``.
 
         Args:
             query: What to search for. Empty returns the editor's
@@ -2294,36 +2573,51 @@ def register_easyeda_tools(mcp):
                 uuids from ``easyeda_list_libraries``.
 
         Returns:
-            Dict with ``footprints``, ``result_count``, ``result_cap``,
+            Dict with ``footprints``, ``result_count``, ``page``,
             ``capped`` and ``library_uuid``.
         """
         return _call("lib.search_footprints",
-                     _search_params(query, library_uuid))
+                     _search_params(query, library_uuid, page,
+                                    items_of_page))
 
     @mcp.tool()
-    async def easyeda_get_symbol_image(uuid: str = "") -> dict[str, Any]:
+    async def easyeda_get_symbol_image(
+        uuid: str = "", library_uuid: str = "", sub_part_name: str = "",
+    ) -> dict[str, Any]:
         """Render one symbol to an image.
 
         Worth using rather than skipping: geometry that scores well and
         looks wrong is a recurring failure in this project's own library
         work, and a picture is the only thing that catches it.
 
-        KNOWN NOT TO ANSWER on the builds measured so far.
-        ``lib_Symbol.getRenderImage`` was called through the reflective
-        shim with a symbol uuid taken from a search that had just
-        succeeded, and it never returned. The call is still made, so a
-        release that fixes it starts working without a change here, but
-        expect the timeout rather than a picture.
+        BOTH UUIDS ARE REQUIRED. ``getRenderImage`` takes one source
+        object, ``{symbolUuid, libraryUuid}``, and cannot resolve a
+        symbol from its own uuid alone. Passing a bare uuid was recorded
+        as the editor never answering, and the call was written off on
+        that basis; the ids were good and the argument was the wrong
+        shape. Both uuids come back on every search hit.
 
         Args:
             uuid: the symbol's identifier, from a search result.
+            library_uuid: the library holding it, from the same hit.
+            sub_part_name: one part of a multi-part symbol. Optional.
         """
         if not str(uuid).strip():
             return {"ok": False, "reason": "uuid is required"}
-        return _call("lib.symbol_image", {"uuid": uuid}, timeout=60.0)
+        if not str(library_uuid).strip():
+            return {"ok": False, "reason": (
+                "library_uuid is required: getRenderImage takes "
+                "{symbolUuid, libraryUuid} and cannot find a symbol from "
+                "its uuid alone. easyeda_search_symbols reports both")}
+        params: dict[str, Any] = {"uuid": uuid, "library_uuid": library_uuid}
+        if str(sub_part_name).strip():
+            params["sub_part_name"] = sub_part_name
+        return _call("lib.symbol_image", params, timeout=60.0)
 
     @mcp.tool()
-    async def easyeda_get_footprint_image(uuid: str = "") -> dict[str, Any]:
+    async def easyeda_get_footprint_image(
+        uuid: str = "", library_uuid: str = "",
+    ) -> dict[str, Any]:
         """Render one footprint to an image.
 
         Check it against the manufacturer land pattern before trusting
@@ -2331,19 +2625,26 @@ def register_easyeda_tools(mcp):
         Altium side. A rendered footprint is evidence of what was drawn,
         not of what is correct.
 
-        KNOWN NOT TO ANSWER on the builds measured so far.
-        ``lib_Footprint.getRenderImage`` was called through the
-        reflective shim with a footprint uuid from a search that had
-        just succeeded, and it never returned. The call is still made so
-        a later release starts working on its own, but expect the
-        timeout rather than a picture.
+        BOTH UUIDS ARE REQUIRED, for the same reason as
+        ``easyeda_get_symbol_image``: the call takes one source object,
+        ``{footprintUuid, libraryUuid}``. A bare uuid was mistaken for
+        the editor refusing to answer.
 
         Args:
             uuid: the footprint's identifier, from a search result.
+            library_uuid: the library holding it, from the same hit.
         """
         if not str(uuid).strip():
             return {"ok": False, "reason": "uuid is required"}
-        return _call("lib.footprint_image", {"uuid": uuid}, timeout=60.0)
+        if not str(library_uuid).strip():
+            return {"ok": False, "reason": (
+                "library_uuid is required: getRenderImage takes "
+                "{footprintUuid, libraryUuid} and cannot find a footprint "
+                "from its uuid alone. easyeda_search_footprints reports "
+                "both")}
+        return _call("lib.footprint_image",
+                     {"uuid": uuid, "library_uuid": library_uuid},
+                     timeout=60.0)
 
     @mcp.tool()
     async def easyeda_export_gerber(save_to: str = "") -> dict[str, Any]:
@@ -2564,6 +2865,148 @@ def register_easyeda_tools(mcp):
                 returning megabytes of base64.
         """
         return _save_export(_call("export.ipcd356", timeout=180.0), save_to)
+
+    @mcp.tool()
+    async def easyeda_import_routing(
+        kind: str = "", path: str = "", confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Import an autorouter or autolayout result back onto the board.
+
+        CLOSES THE ROUND TRIP that ``easyeda_export_dsn`` opens. The
+        classic flow is: export a DSN, route it in an external
+        autorouter, import the SES back. Only the outward half existed,
+        so the loop stopped halfway.
+
+        DESTRUCTIVE, and differently so per kind. A session file or an
+        autoroute JSON replaces the board's ROUTING; an autolayout JSON
+        replaces the PLACEMENT of every component. Whatever is there is
+        discarded. Take an ``easyeda_checkpoint`` first.
+
+        The file is read here and sent as base64, because the editor
+        runs in a sandbox with no path this server can name. The
+        extension rebuilds it as a File. The NAME travels with it, since
+        the editor identifies the format by extension, and a name whose
+        extension does not match the kind is refused rather than passed
+        on: the wrong format is accepted by the editor and produces a
+        board nobody asked for.
+
+        NEVER RUN AGAINST A LIVE EDITOR. Built from the published
+        signatures, which settle what the call expects and not what the
+        editor does with it.
+
+        Args:
+            kind: one of "ses", "route_json", "layout_json".
+            path: the file to send.
+            confirm: must be true. Nothing happens without it.
+        """
+        import base64
+        import os
+
+        kinds = {"ses": ".ses", "route_json": ".json",
+                 "layout_json": ".json"}
+        if kind not in kinds:
+            return {"ok": False, "reason": (
+                f"kind must be one of {', '.join(sorted(kinds))}")}
+        if not path.strip():
+            return {"ok": False, "reason": "path is required"}
+        if not os.path.isfile(path):
+            return {"ok": False, "reason": f"no file at {path}"}
+        name = os.path.basename(path)
+        if not name.lower().endswith(kinds[kind]):
+            return {"ok": False, "reason": (
+                f"{name} does not end in {kinds[kind]}, which is what "
+                f"kind={kind} expects. The editor identifies the format "
+                f"by extension and accepts the wrong one silently")}
+        if not confirm:
+            what = ("the PLACEMENT of every component"
+                    if kind == "layout_json" else "the routing")
+            return {"ok": False, "reason": (
+                f"importing this replaces {what} on the board, and "
+                f"whatever is there now is discarded. Take an "
+                f"easyeda_checkpoint, then pass confirm=True")}
+        with open(path, "rb") as handle:
+            payload = base64.b64encode(handle.read()).decode("ascii")
+        return _call("pcb.import_routing", {
+            "kind": kind,
+            "file": {"base64": payload, "name": name},
+            "confirm": True,
+        }, timeout=300.0)
+
+    @mcp.tool()
+    async def easyeda_search_circuit_blocks(
+        query: str = "", library_uuid: str = "", page: int = 1,
+        items_of_page: int = 0,
+    ) -> dict[str, Any]:
+        """Find reusable circuit blocks in the libraries.
+
+        A circuit block (EasyEDA calls it 复用模块) is a saved piece of
+        schematic placed into a design. It is what this editor has
+        INSTEAD of hierarchy: schematic pages here are siblings with an
+        order, and nothing exposes a sheet symbol or a parent link, so
+        reuse happens by placing a block rather than by nesting a sheet.
+
+        Pair with ``easyeda_place_circuit_block``.
+
+        Args:
+            query: free text. Empty lists what the library holds.
+            library_uuid: scope to one library.
+            page: which page of results, from 1.
+            items_of_page: results per page. The editor's default is
+                ten when this is left at 0.
+        """
+        params = _search_params(query, library_uuid, page, items_of_page)
+        return _call("lib.search_cbb", params, timeout=60.0)
+
+    @mcp.tool()
+    async def easyeda_set_netlist(
+        netlist: str = "", netlist_type: str = "", confirm: bool = False,
+    ) -> dict[str, Any]:
+        """REPLACE the board's entire connectivity from a netlist.
+
+        THE MOST DESTRUCTIVE OPERATION ON THIS BACKEND. Every net on the
+        board comes from the text you supply, and whatever it had before
+        is gone. Take an ``easyeda_checkpoint`` first.
+
+        The counterpart to reading the netlist, and the way an
+        externally generated connectivity reaches the board.
+
+        NOT A FILE IMPORT, despite sitting beside the autorouter
+        imports. ``pcb_Net.setNetlist(type, netlist)`` takes a plain
+        STRING, so no file plumbing is involved. It also lives on
+        ``pcb_Net`` rather than ``pcb_Document``.
+
+        NEVER RUN AGAINST A LIVE EDITOR. Every argument here comes from
+        the published reference. The reference settles what the call
+        expects, not what the editor does with it, and this one
+        rewrites a board.
+
+        Args:
+            netlist: the netlist text.
+            netlist_type: one of Allegro, DISA, DSNET, EasyEDA, JLCEDA,
+                PADS. Leave empty to let the editor decide.
+            confirm: must be true. Nothing happens without it.
+
+        Returns:
+            Dict with ``applied``, read from the editor's own answer
+            rather than assumed.
+        """
+        if not netlist.strip():
+            return {"ok": False, "reason": "netlist text is required"}
+        allowed = ("Allegro", "DISA", "DSNET", "EasyEDA", "JLCEDA", "PADS")
+        if netlist_type and netlist_type not in allowed:
+            return {"ok": False, "reason": (
+                f"netlist_type must be one of {', '.join(allowed)}, or "
+                f"empty to let the editor decide")}
+        if not confirm:
+            return {"ok": False, "reason": (
+                "set_netlist REPLACES the entire connectivity of the "
+                "board. Every net comes from the text supplied and "
+                "whatever the board had before is gone. Take an "
+                "easyeda_checkpoint, then pass confirm=True")}
+        params: dict[str, Any] = {"netlist": netlist, "confirm": True}
+        if netlist_type:
+            params["netlist_type"] = netlist_type
+        return _call("pcb.set_netlist", params, timeout=180.0)
 
     @mcp.tool()
     async def easyeda_export_netlist(save_to: str = "") -> dict[str, Any]:
@@ -4143,11 +4586,25 @@ def register_easyeda_tools(mcp):
         updated from the schematic, or has been updated and edited
         since.
 
-        This is this project's comparison, not the editor's. EasyEDA has
-        no compare call; what it has is ``import_schematic_changes``,
-        which APPLIES the schematic rather than reporting on it, and
-        running that to find out what differs would change the board to
-        answer a question about it.
+        This is this project's comparison, not the editor's, and the
+        reason is narrower than "EasyEDA has none".
+
+        The editor does carry comparison calls. ``sys_Tool`` documents
+        ``netlistComparison(netlist1, netlist2)``, marked beta with an
+        unspecified return, and a live capture also shows
+        ``pcbComparison`` and ``schematicComparison``, which the
+        published reference does not describe at all. All three take
+        two artefacts the CALLER supplies rather than reading the open
+        design, so they answer a different question from this one.
+
+        The other candidate, ``import_schematic_changes``, APPLIES the
+        schematic rather than reporting on it: running it to find out
+        what differs would change the board to answer a question about
+        it.
+
+        So this compares designator lists itself. Reaching for
+        ``netlistComparison`` would mean exporting both netlists first
+        and trusting an unspecified reply shape.
         """
         schematic = _call("sch.components", timeout=60.0)
         if not schematic.get("ok"):
@@ -6085,28 +6542,34 @@ def register_easyeda_tools(mcp):
     async def easyeda_delete_project(
         uuid: str, confirm: bool = False,
     ) -> dict[str, Any]:
-        """Delete a whole project.
+        """NOT POSSIBLE on EasyEDA. Delete the parts, or use the UI.
 
-        THE MOST DESTRUCTIVE TOOL ON THIS BACKEND. It removes every
-        schematic, every board, and the library items stored inside the
-        project. There is no undo through this channel and no checkpoint
-        that covers it, because checkpoints here save one open document.
+        EasyEDA'S API CANNOT DELETE A PROJECT. ``dmt_Project`` offers
+        create, open, move and the info reads, and no other class
+        deletes one either: the document tree can remove a board, a
+        folder, a panel, a PCB, a schematic and a schematic page, but
+        never the project itself.
+
+        This previously called a method that does not exist, so it threw
+        a TypeError AFTER the caller had confirmed a destructive
+        operation. It now refuses up front and says what can be deleted.
+
+        Use ``easyeda_delete_schematic``, ``easyeda_delete_pcb`` or
+        ``easyeda_delete_panel`` for the contents, and the EasyEDA UI
+        for the project.
 
         Args:
-            uuid: the project; list them with ``easyeda_list_projects``.
-            confirm: must be true for anything to happen.
+            uuid: accepted and unused, so an existing caller gets the
+                explanation rather than a signature error.
+            confirm: accepted and unused, for the same reason.
         """
-        if not uuid.strip():
-            return {"ok": False, "reason": (
-                "uuid is required; list projects with "
-                "easyeda_list_projects")}
-        if not confirm:
-            return {"ok": False, "reason": (
-                "delete_project removes the WHOLE project: every "
-                "schematic, every board and the library items stored in "
-                "it. Pass confirm=True if that is intended.")}
-        return _call("proj.delete_project",
-                     {"uuid": uuid, "confirm": True}, timeout=60.0)
+        return {"ok": False, "reason": (
+            "EasyEDA has no project-delete API. dmt_Project offers "
+            "create, open, move and the info reads, and nothing "
+            "anywhere deletes a project. Delete the contents with "
+            "easyeda_delete_schematic, easyeda_delete_pcb or "
+            "easyeda_delete_panel, and the project itself from the "
+            "EasyEDA UI.")}
 
     @mcp.tool()
     async def easyeda_close_document(uuid: str) -> dict[str, Any]:
@@ -11062,6 +11525,114 @@ def register_easyeda_tools(mcp):
     #: identity. A connector or a test point has no value and never
     #: will, and reporting those buries the resistor that does.
     _VALUE_BEARING = ("R", "C", "L", "FB")
+
+    @mcp.tool()
+    async def easyeda_audit_power_port_orientation() -> dict[str, Any]:
+        """Power and ground glyphs pointing the wrong way.
+
+        A ground symbol drawn upside down, or a rail flag turned
+        sideways, is invariably an editing accident. It matters beyond
+        tidiness: a VCC glyph pointing down reads as a ground at a
+        glance, and one wrong-looking symbol holds the eye long enough
+        to hide a real wiring fault underneath it.
+
+        REPORTED AS INCONSISTENCY, NOT AGAINST A FIXED CONVENTION, and
+        the difference is deliberate. The Altium check asserts absolute
+        angles because Altium's power symbols carry a style
+        (``ePowerBar``, ``ePowerGndPower``) that says which way each is
+        meant to face. EasyEDA has no such style: a net flag is a net
+        flag, and which rotation value points down has never been
+        measured here. Asserting one would be a guess, and a guess in an
+        audit produces confident findings about nothing.
+
+        So this compares each glyph against the OTHERS OF ITS OWN KIND
+        on the same sheet. Grounds are judged against grounds and rails
+        against rails, because the two point opposite ways by
+        convention. Where a group agrees except for one or two, those
+        are reported. Where a group is evenly split, nothing is
+        reported and the split is stated: with no majority there is no
+        evidence of which way is right.
+
+        Mirroring is reported alongside rotation, since a mirrored
+        glyph can read wrongly at the same angle.
+
+        Returns:
+            Dict with ``checked``, ``violations``, ``items`` (each with
+            ``net``, ``kind``, ``rotation``, ``mirror``, ``expected``
+            and ``x``/``y``), and ``groups`` describing what each kind
+            agreed on.
+        """
+        reply = _call("sch.components", timeout=60.0)
+        if not reply.get("ok"):
+            return reply
+        parts = reply.get("components") or []
+
+        # netflag and netport are the two glyph kinds that carry a net
+        # and face a direction; part, sheet, block_symbol and
+        # short_symbol are the rest of ESCH_PrimitiveComponentType.
+        glyphs = [c for c in parts
+                  if str(c.get("componentType", "")).lower()
+                  in ("netflag", "netport")]
+        if not glyphs:
+            return {"ok": True, "checked": 0, "violations": 0,
+                    "items": [], "groups": {},
+                    "note": ("no net flags or ports on this sheet, so "
+                             "there is nothing to compare")}
+
+        buckets: dict[str, list] = {}
+        for g in glyphs:
+            net = str(g.get("net") or "")
+            kind = "ground" if _is_ground_net(net) else "rail"
+            buckets.setdefault(kind, []).append(g)
+
+        items, groups = [], {}
+        for kind, members in sorted(buckets.items()):
+            poses: dict[tuple, int] = {}
+            for g in members:
+                key = (g.get("rotation"), bool(g.get("mirror")))
+                poses[key] = poses.get(key, 0) + 1
+            ranked = sorted(poses.items(), key=lambda kv: -kv[1])
+            top, top_count = ranked[0]
+            # A majority is required, not merely a plurality. Two
+            # against two says nothing about which pair is wrong, and
+            # reporting either would be inventing a convention.
+            majority = top_count > len(members) / 2
+            groups[kind] = {
+                "count": len(members),
+                "orientations": {f"rotation={k[0]},mirror={k[1]}": n
+                                 for k, n in ranked},
+                "agreed": (f"rotation={top[0]},mirror={top[1]}"
+                           if majority else None),
+            }
+            if not majority:
+                continue
+            for g in members:
+                key = (g.get("rotation"), bool(g.get("mirror")))
+                if key == top:
+                    continue
+                items.append({
+                    "net": str(g.get("net") or ""),
+                    "kind": kind,
+                    "rotation": g.get("rotation"),
+                    "mirror": bool(g.get("mirror")),
+                    "expected": f"rotation={top[0]},mirror={top[1]}",
+                    "x": g.get("x"), "y": g.get("y"),
+                })
+
+        undecided = [k for k, v in groups.items() if v["agreed"] is None]
+        out = {
+            "ok": True,
+            "checked": len(glyphs),
+            "violations": len(items),
+            "items": items,
+            "groups": groups,
+        }
+        if undecided:
+            out["note"] = (
+                f"no majority orientation among the {', '.join(undecided)} "
+                f"glyphs, so none were judged: an even split is not "
+                f"evidence that either side is wrong")
+        return out
 
     @mcp.tool()
     async def easyeda_audit_placeholder_values_schematic() -> dict[str, Any]:

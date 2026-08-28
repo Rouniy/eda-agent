@@ -17,6 +17,8 @@ Coverage:
 
 from __future__ import annotations
 
+import copy
+import functools
 from typing import Optional
 
 import pytest
@@ -1470,7 +1472,31 @@ def test_offgrid_symbol_pins_snap_to_wiring_grid():
 # only the one symbol is affected.
 
 def _build_board(name: str, *, upgrade: bool = True):
-    """Build a benchmark board, optionally with the stub pass disabled."""
+    """Build a benchmark board, optionally with the stub pass disabled.
+
+    CACHED. This file asks for a board 23 times and there are six
+    distinct ones, because each stub-upgrade test builds the same layout
+    twice, once with the pass and once without, and three of them do it
+    for every benchmark board.
+
+    Building one runs the full best-of-N layout. MEASURED in CI: these
+    five tests were 236 of the suite's 771 seconds, 30% of the whole run
+    for five tests out of 4326, and almost all of it was recomputing
+    boards an earlier test had already built.
+
+    A DEEP COPY IS HANDED OUT, not the cached object. Nothing mutates a
+    board today, and the copy is what keeps that from being a
+    requirement nobody knows about: a shared canvas would couple these
+    tests through the cache, so one that started editing its board would
+    change what a later test sees. Introducing an order dependency is
+    not an acceptable price for a faster suite, and the copy costs
+    nothing next to the layout it avoids.
+    """
+    return copy.deepcopy(_build_board_uncached(name, upgrade))
+
+
+@functools.lru_cache(maxsize=None)
+def _build_board_uncached(name: str, upgrade: bool):
     import json
     from pathlib import Path
     from unittest import mock

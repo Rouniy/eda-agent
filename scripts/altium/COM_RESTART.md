@@ -6,7 +6,7 @@ including modal-dialog recovery, PCB focus, footprint, and ECO safety rules.
 Use the script project from this repository only:
 
 ```powershell
-$project = 'D:\msys64\home\Alex\src\22\eda-agent\scripts\altium\Altium_API.PrjScr'
+$project = (Resolve-Path '.\scripts\altium\Altium_API.PrjScr').Path
 $uri = "dxpprocess://ScriptingSystem:RunScript?ProjectName=$project|ProcName=Dispatcher.pas>StartMCPServer"
 $shell = New-Object -ComObject Shell.Application
 $shell.ShellExecute($uri, '', '', 'open', 0)
@@ -21,5 +21,5 @@ Safe reload sequence after editing Pascal sources:
 4. The status form starts minimized by design. Do not restore it unless its log
    is needed for diagnosis.
 
-Do not launch scripts from `C:\Users\Alex\EDA Agent\scripts`; that legacy copy
+Do not launch scripts from `%USERPROFILE%\EDA Agent\scripts`; that legacy copy
 can make Altium load units from two different checkouts.

@@ -177,3 +177,59 @@ def test_a_three_number_entry_is_neither_and_is_refused():
 def test_geometry_read_from_a_live_sheet_is_accepted_unchanged(geometry):
     out = _points(geometry, "points", 2, allow_segments=True)
     assert out == [[float(n) for n in seg] for seg in geometry]
+
+
+# --------------------------------------------------------------------
+# Polylines: an entry is a whole run, not necessarily one segment.
+#
+# The official WIRE format documents `dots` as a list of polylines, each
+# a continuous flat run X1 Y1 X2 Y2 X3 Y3 ..., and its own example
+# carries a six-number entry. Accepting only 2 and 4 rejected any wire
+# with a bend in one entry, including geometry read straight back out of
+# a live sheet. The earlier four-number measurement was the two-point
+# case, not the rule.
+# --------------------------------------------------------------------
+
+@pytest.mark.parametrize("geometry", [
+    # Verbatim from the official format documentation's own example.
+    [[310, 550, 400, 550, 400, 460]],
+    [[310, 550, 400, 550, 400, 460], [480, 460, 400, 460]],
+    [[0, 0, 10, 0, 10, 10, 20, 10]],
+])
+def test_a_polyline_longer_than_one_segment_is_accepted(geometry):
+    out = _points(geometry, "points", 2, allow_segments=True)
+    assert out == [[float(n) for n in run] for run in geometry]
+
+
+def test_runs_of_different_lengths_are_not_a_mix():
+    """One bent wire and one straight one is ordinary, not an error.
+
+    Comparing raw entry widths would reject it, which is why the check
+    is pair-form versus run-form rather than equal widths.
+    """
+    out = _points([[0, 0, 1, 1, 2, 2], [3, 3, 4, 4]], "points", 2,
+                  allow_segments=True)
+    assert not _refused(out)
+
+
+@pytest.mark.parametrize("geometry", [[[0, 0, 1]], [[0, 0, 1, 1, 2]]])
+def test_an_odd_coordinate_count_is_still_refused(geometry):
+    """A dangling coordinate means the caller has lost the shape."""
+    out = _points(geometry, "points", 2, allow_segments=True)
+    assert _refused(out)
+
+
+def test_a_collapsed_three_point_run_is_refused():
+    """Checked across the whole run, not just its two ends.
+
+    A run can start and finish elsewhere while collapsing in the
+    middle, so testing only the endpoints would pass a wire that
+    connects nothing.
+    """
+    out = _points([[5, 5, 5, 5, 5, 5]], "points", 2, allow_segments=True)
+    assert _refused(out)
+    assert "collapses" in out["reason"]
+
+
+def test_a_long_run_is_still_refused_when_segments_are_not_allowed():
+    assert _refused(_points([[0, 0, 10, 0, 20, 0]], "points", 2))

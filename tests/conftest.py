@@ -185,6 +185,40 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
+@pytest.fixture(autouse=True)
+def _restore_active_backend():
+    """Undo any backend a test registers, so the next one starts clean.
+
+    ``register_backend`` records which backend it registered in a
+    process-global, and 16 test files call it without putting the
+    previous value back. Nothing sets ``EDA_AGENT_BACKEND`` in CI or
+    here, so ``active_backend_name`` falls back to that global and a
+    leak is not masked: a later test can resolve against a backend it
+    never asked for and still pass, or fail for a reason that has
+    nothing to do with the file it is in.
+
+    That is not hypothetical. A pair of files enumerating all three
+    backends flipped the active one to easyeda and broke
+    ``tests/design/test_autonomy.py``, which neither imports nor
+    mentions them.
+
+    THIS DOES NOT COVER MODULE-LEVEL REGISTRATION. Fixtures run per
+    test; a ``register_backend`` call at module scope runs during
+    COLLECTION, before any fixture exists, and poisons the whole
+    session whatever the order. Helpers that register at import time
+    must still restore for themselves, which is why the two in
+    ``test_tool_guide_names_real_tools`` and ``test_server_instructions``
+    do so rather than relying on this.
+    """
+    from eda_agent.core import backends
+
+    previous = backends._REGISTERED
+    try:
+        yield
+    finally:
+        backends._REGISTERED = previous
+
+
 @pytest.fixture
 def workspace_dir():
     """Create a temporary workspace directory for IPC tests."""

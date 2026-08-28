@@ -897,11 +897,20 @@ def register_project_tools(mcp):
     async def proj_get_board_info() -> dict[str, Any]:
         """Get PCB board information, outline vertices, layer stack, origin.
 
-        Requires an active PCB document.
+        IT DOES NOT REQUIRE A PCB TO BE ACTIVE, which is what this used
+        to claim. The handler resolves ANY open board, so with a
+        schematic focused it answers about some other document.
+        MEASURED: with a schematic active and a two-document project
+        focused, it returned an outline belonging to neither, and gave
+        no way to tell.
+
+        ``board_path`` in the reply names the document that actually
+        answered. Check it before trusting the geometry, or activate
+        the board you mean first.
 
         Returns:
-            Dictionary with origin_x, origin_y, outline (vertex array),
-            and layers (active copper layer names)
+            Dictionary with origin_x, origin_y, board_path, outline
+            (vertex array), and layers (active copper layer names)
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("project.get_board_info", {})
@@ -1636,6 +1645,47 @@ def register_project_tools(mcp):
         )
         return result
 
+    @mcp.tool()
+    async def proj_delete_variant(
+        variant_name: str,
+        project_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Delete a project variant, with every component variation in it.
+
+        THIS IS NOT REVERSIBLE FROM HERE. A variant's entries record which
+        components are not fitted and which carry an alternate part, and
+        ``DM_RemoveProjectVariant`` is the ONLY write in Altium's whole
+        variant API. There is no scripted way to add a variation entry
+        back, so deleting a variant with fifty entries costs fifty
+        decisions that have to be re-made in the Variant Management
+        dialog. The reply reports ``entries_removed`` so the size of that
+        is on the record; read it with ``proj_list_variants`` first if
+        the variant is not one you created.
+
+        The variant is addressed by name rather than index, because
+        removing one renumbers the rest: two deletions by index taken
+        from a single listing would remove the wrong second variant.
+
+        Args:
+            variant_name: name of the variant to remove.
+            project_path: optional project path; defaults to the focused
+                project.
+
+        Returns:
+            ``{"success": true, "variant_name": ..., "entries_removed": N,
+            "variant_count_before": N, "variant_count_after": N,
+            "verified": true}``, or ``success: false`` with a ``reason``
+            when the variant is still listed afterwards.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"variant_name": variant_name}
+        if project_path:
+            params["project_path"] = project_path
+        result = await bridge.send_command_async(
+            "project.delete_variant", params
+        )
+        return result
+
     # ------------------------------------------------------------------
     # Additional project operations
     # ------------------------------------------------------------------
@@ -2034,8 +2084,8 @@ def register_project_tools(mcp):
              changes into the schematic. The modal ECO dialog opens here.
           4. After the user accepts, recompiles and reports the after-state
              delta (how many components were added/removed).
-          5. If counts did not change, ``dialog_may_have_opened:true`` flags
-             that the dialog was dismissed without applying.
+          5. Returns ``dialog_outcome_verified:false`` rather than guessing
+             whether the ECO was accepted or dismissed.
           6. With ``verify_pad_nets``, compares the compiled netlist's
              (designator, pin, net) triples against the board's pad nets
              and reports every pad the ECO left unbound.
@@ -2045,6 +2095,24 @@ def register_project_tools(mcp):
         nets while its identical sibling was fully assigned. Nothing in the
         ECO's own response revealed it. Repair anything in ``pads_unbound``
         with ``pcb_bind_pad_nets``.
+
+        Refuses with WRONG_FOCUS while a schematic is the active document.
+        MEASURED 2026-08-17: Altium answers the compare with a modal reading
+        "Cannot compare a source document against its owner project" and
+        changes nothing, and this tool used to report success anyway, three
+        times in a row, with the error still on screen. Focus the PCB with
+        ``app_set_active_document`` first.
+
+        What the result does NOT tell you: whether the dialog was accepted.
+        ``dialog_outcome_verified`` is always false, because the handler
+        returns as soon as the modal closes and cannot see which button was
+        pressed. ``components_added_to_pcb`` and its siblings are recounts,
+        so they catch a change in component PRESENCE and miss everything
+        else an ECO carries: footprint swaps, designator and parameter
+        edits, net changes. Unchanged counts therefore mean "nothing was
+        added or removed", not "nothing happened". To learn what the dialog
+        actually says, call ``app_list_open_dialogs``, which reads Altium
+        over Win32 and so answers while the modal is blocking the bridge.
 
         For unattended board population without a schematic, use
         ``pcb_place_components`` instead (places geometry only: see its note
@@ -2060,9 +2128,10 @@ def register_project_tools(mcp):
 
         Returns:
             Dictionary with success, pcb_path, before/after mapping counts,
-            components_added_to_pcb, components_removed_from_pcb, in_sync,
-            and dialog_may_have_opened flag; plus ``pad_net_verification``
-            (with ``pads_unbound``) when ``verify_pad_nets`` is set.
+            components_added_to_pcb, components_removed_from_pcb,
+            components_in_sync (component presence only), and
+            dialog_outcome_verified; plus ``pad_net_verification`` (with
+            ``pads_unbound``) when ``verify_pad_nets`` is set.
             On a bounded-wait expiry: ``success:false`` with
             ``error.code == "ECO_DIALOG_BLOCKING"``, the dialog inventory,
             and the steps to clear it.
@@ -2105,10 +2174,11 @@ def register_project_tools(mcp):
             return _modal_blocked_response(
                 "ECO_DIALOG_BLOCKING",
                 f"The ECO did not return within {wait_seconds:.0f}s. Altium "
-                f"is answering keepalives, so the script is alive and the "
-                f"handler is blocked on the modal ECO dialog. The ECO was "
-                f"NOT cancelled -- it is still waiting on that dialog, and "
-                f"nothing else can run until it is answered. ({exc})",
+                f"created a progress marker, but that one-time marker does "
+                f"not prove the polling loop is still alive. The modal ECO "
+                f"was NOT cancelled and is expected to remain pending until "
+                f"its dialog is answered; inspect the returned dialog list "
+                f"before deciding whether recovery is needed. ({exc})",
                 _list_open_dialogs(),
                 eco_fired=True,
             )

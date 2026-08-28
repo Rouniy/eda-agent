@@ -108,3 +108,16 @@ def test_no_heartbeat_is_still_diagnosed_as_a_dead_loop(bridge):
     with pytest.raises(AltiumTimeoutError) as excinfo:
         bridge._poll_response("noloop", timeout=0.05, max_extensions=3)
     assert "polling loop is probably not running" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_async_polling_keeps_the_same_bounded_timeout_contract(bridge):
+    """The MCP tool path is async, so sync-only recovery is insufficient."""
+    _stale_heartbeat(bridge, "asyncmodal")
+    with pytest.raises(AltiumTimeoutError) as excinfo:
+        await bridge._poll_response_async(
+            "asyncmodal", timeout=0.01, max_extensions=2)
+    details = excinfo.value.details
+    assert details["bounded_wait"] is True
+    assert details["fault"] == "modal_dialog"
+    assert details["waited_seconds"] == pytest.approx(0.02)

@@ -38,6 +38,21 @@ def _pascal(name: str) -> str:
     return (_SCRIPTS / name).read_text(encoding="latin-1")
 
 
+def _pascal_all() -> str:
+    """Every unit, concatenated, for functions whose file is not the point.
+
+    A helper can legitimately move between units: DelphiScript has no
+    forward declarations, so a function called from an earlier unit has
+    to be defined in one earlier still. Naming the file here couples
+    this guard to a layout decision it does not care about, and the
+    failure it produces then reads as a missing vocabulary rather than
+    a relocated one. Searching every unit keeps the real protection,
+    which is that the function must exist SOMEWHERE and its accepted
+    words must match what the docstrings promise.
+    """
+    return "\n".join(_pascal(p.name) for p in sorted(_SCRIPTS.glob("*.pas")))
+
+
 def _function_body(source: str, name: str) -> str:
     """The text of one Pascal function, from its header to the next
     top-level Function/Procedure header."""
@@ -179,11 +194,11 @@ def test_every_object_type_the_docstrings_name_is_accepted():
     that matches nothing."""
     from tests.test_altium_no_raise import _TOOLS
 
+    everything = _pascal_all()
     sch = set(re.findall(r"TypeStr = '(e\w+)'",
-                         _function_body(_pascal("Generic.pas"),
-                                        "ObjectTypeFromString")))
+                         _function_body(everything, "ObjectTypeFromString")))
     pcb = set(re.findall(r"TypeStr = '(e\w+)'",
-                         _function_body(_pascal("PCBGeneric.pas"),
+                         _function_body(everything,
                                         "ObjectTypeFromStringPCB")))
     accepted = sch | pcb
     assert accepted, "no object types parsed out of the Pascal chains"

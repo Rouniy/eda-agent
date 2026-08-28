@@ -55,6 +55,13 @@ NOT_TOOLS: dict[str, str] = {
     "part_count": "a parameter of lib_create_symbol",
     "pcb_only": "a reply field of the schematic/PCB comparison",
     "sch_only": "a reply field of the schematic/PCB comparison",
+    # The namespace PREFIXES, which the readme names when explaining
+    # that a tool's prefix tells you which document it acts on. They
+    # end in an underscore precisely because they are not whole names.
+    "lib_": "the library namespace prefix, not a tool",
+    "pcb_": "the board namespace prefix, not a tool",
+    "sch_": "the schematic namespace prefix, not a tool",
+    "obj_": "the generic object namespace prefix, not a tool",
 }
 
 

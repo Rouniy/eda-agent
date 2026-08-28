@@ -326,12 +326,57 @@ def register_application_tools(mcp):
         Detach also triggers save_all automatically, so you don't need this
         as the very last step.
 
+        CHECK ``still_dirty``, DO NOT ASSUME. Altium refuses to save while
+        a command is active in the editor and asks a human whether to
+        write a copy instead; DoFileSave does not raise when it declines.
+        MEASURED: this returned saved:true while every single save was
+        being refused. It now counts what is still modified afterwards,
+        and ``saved`` is false when anything is. If that happens, run
+        ``app_exit_active_command`` and retry.
+
         Returns:
-            Dictionary confirming save
+            Dict with ``saved``, ``still_dirty``, and a ``reason`` when
+            documents remain unsaved.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "application.save_all", timeout=60.0
+        )
+        return result
+
+    @mcp.tool()
+    async def app_exit_active_command() -> dict[str, Any]:
+        """Close a transaction a crashed handler left open in Altium.
+
+        THE TOOL FOR "A command is currently active and save cannot be
+        completed at this time". While that state is set, EVERY save is
+        refused and the editor asks whether to write a copy instead.
+
+        IT SURVIVES RESTARTING THE POLLING LOOP, because the state lives
+        in Altium's PCB server rather than in the script, and Escape in
+        the editor does not clear it either. MEASURED on 2026-08-25:
+        saves were being refused on a brand-new library, and the state
+        had been left hours earlier by ``lib_link_3d_model`` faulting
+        between PreProcess and PostProcess on an undeclared identifier.
+        It outlived several restarts.
+
+        Every PreProcess in this bridge is paired, including on its error
+        paths, so this is not routine cleanup: it is recovery from a
+        handler that DIED mid-transaction. AltiumScriptCentral ships the
+        same one-line remedy as ExitActiveCommand.vbs.
+
+        Calling it when nothing is outstanding is harmless.
+
+        It saves nothing by itself. Run ``app_save_all`` afterwards and
+        check ``still_dirty``.
+
+        Returns:
+            Dict reporting whether each server accepted the unwind, plus
+            the count of still-modified documents before and after.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "application.exit_active_command", timeout=30.0
         )
         return result
 
@@ -1018,9 +1063,23 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def app_run_menu(menu_path: str) -> dict[str, Any]:
-        """Execute a menu command by its path.
+        """Dispatch a menu command by path. DISPATCH IS NOT EXECUTION.
 
-        Supports common menu paths which are mapped to internal processes:
+        This sends the command and cannot tell you it ran. Altium's
+        ``RunProcess`` accepts an unknown process id in silence and
+        reports nothing back, so a typo, a command unavailable in the
+        current editor, and a command that worked are indistinguishable
+        from here. MEASURED 2026-08-17: "Tools|Preferences" returned in
+        0.11s with ``success: true`` and no dialog ever appeared. That is
+        why the reply says ``dispatched``, never ``executed``, and carries
+        ``outcome_verified: false``.
+
+        Use ``app_click_menu`` when you need the command to actually
+        happen. It walks the real menu bar and clicks the item, so it
+        fails loudly on a path that does not exist and reaches the many
+        commands that have no process id at all.
+
+        These paths are mapped to internal processes:
         - "File|Save All"
         - "Tools|Design Rule Check"
         - "Tools|Electrical Rules Check"
@@ -1030,21 +1089,40 @@ def register_application_tools(mcp):
         - "Tools|Preferences"
         - "Tools|Extensions and Updates"
 
-        Unknown paths are attempted via Client.SendMessage.
+        Anything else is REFUSED with UNMAPPED_MENU_PATH. The old
+        fallback guessed a MenuID out of the pipe-separated path and was
+        measured opening nothing while reporting success, so refusing
+        and pointing at ``app_click_menu`` is strictly more useful than
+        a guess that cannot work.
 
         Args:
             menu_path: Menu path using pipe separators (e.g., "File|Save All")
 
         Returns:
-            Dictionary with success status, menu_path, and process used
+            Dictionary with dispatched, outcome_verified (always false),
+            menu_path, and the process used. A reply the bridge could not
+            parse is reported as a failure, not smoothed into a success.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "application.execute_menu", {"menu_path": menu_path}
         )
+        # Report what the handler said, and nothing it did not say. The
+        # previous ``{"success": True, **result}`` did preserve an
+        # explicit ``success: false`` (the spread wins), but it INVENTED
+        # a success for any reply that carried no verdict at all, and
+        # ``result or {"success": True, ...}`` turned an empty reply
+        # into a success outright. Both manufactured the one fact this
+        # tool has no way to establish.
         if isinstance(result, dict):
-            return {"success": True, **result}
-        return result or {"success": True, "menu_path": menu_path}
+            return result
+        return {
+            "success": False,
+            "dispatched": False,
+            "menu_path": menu_path,
+            "reason": "the bridge returned no usable reply for "
+                      f"{menu_path!r}, so nothing is known about it",
+        }
 
     @mcp.tool()
     async def app_set_intent(intent: str) -> dict[str, Any]:

@@ -170,22 +170,31 @@ _WRAPPER_FAULTS = (TypeError, NameError, AttributeError, UnboundLocalError,
 _PROCESS_CONTROL_TOOLS = {"app_restart_mcp_server"}
 
 
-def _no_argument_bridge_tools():
+def _no_argument_bridge_tools(backend="altium"):
     """Registered tools that take no required argument and use the bridge.
 
     Offline tools are excluded on purpose. They are the ones that touch
     the network and the local filesystem (part_search queries providers,
     the session and job tools read state), and a fake bridge does not
     isolate any of that. Their logic is covered at module level.
+
+    RESTORES THE ACTIVE BACKEND, because register_backend records it in
+    a process global and leaving easyeda selected would change what
+    every later test resolves against.
     """
     import asyncio
+    from eda_agent.core import backends
     from eda_agent.server import register_backend
     from eda_agent.tools.metadata import tool_metadata
     from eda_agent.tools.registry import ToolRegistry
 
-    registry = ToolRegistry()
-    register_backend(registry, "altium", "full")
-    tools = asyncio.run(registry.list_tools())
+    previous = backends._REGISTERED
+    try:
+        registry = ToolRegistry()
+        register_backend(registry, backend, "full")
+        tools = asyncio.run(registry.list_tools())
+    finally:
+        backends.set_active_backend(previous or "")
     names = [t.name for t in tools
              if not (t.inputSchema or {}).get("required")
              and t.name not in _PROCESS_CONTROL_TOOLS
@@ -193,14 +202,30 @@ def _no_argument_bridge_tools():
     return registry, sorted(names)
 
 
-def test_no_argument_tools_survive_being_called(isolated_bridge):
+#: The smallest count each backend must produce. A registry that
+#: returned almost nothing would make the whole check vacuous, and this
+#: file has no other way to notice.
+_FLOOR = {"altium": 150, "easyeda": 100, "kicad": 20}
+
+
+@pytest.mark.parametrize("backend", sorted(_FLOOR))
+def test_no_argument_tools_survive_being_called(isolated_bridge, backend):
+    """EVERY BACKEND, not just Altium.
+
+    This covered altium alone, which left 247 EasyEDA wrappers with no
+    Python-level exercise at all. That is not theoretical: a bulk edit
+    once gave three EasyEDA search tools a reference to a parameter
+    they did not declare, and the module still imported cleanly because
+    the failure is at CALL time. Calling each tool once finds that in a
+    second.
+    """
     import asyncio
 
-    registry, names = _no_argument_bridge_tools()
-    assert len(names) > 150, (
-        f"only {len(names)} no-argument bridge tools found; the registry "
-        f"or the schema shape changed and this guard is not covering "
-        f"what it thinks")
+    registry, names = _no_argument_bridge_tools(backend)
+    assert len(names) > _FLOOR[backend], (
+        f"only {len(names)} no-argument bridge tools found on {backend}; "
+        f"the registry or the schema shape changed and this guard is not "
+        f"covering what it thinks")
 
     faults = []
 

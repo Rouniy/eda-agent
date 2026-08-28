@@ -327,6 +327,11 @@ def test_the_duplicate_action_names_are_still_duplicated():
         "get_components": ["Library.pas", "PCB.pas"],
         "get_nets": ["PCB.pas", "Project.pas"],
         "run_process": ["Application.pas", "Generic.pas"],
+        # The same operation on the two document kinds that have
+        # mechanical layers. A library and a board resolve their target
+        # differently, so they cannot share a handler, and the caller
+        # names the one it means through the category.
+        "set_mech_layers": ["Library.pas", "PCB.pas"],
         "save_all": ["Application.pas", "Project.pas"],
     }, (f"the set of action names dispatched in two modules changed: "
         f"{duplicated}")

@@ -25,7 +25,7 @@ def register_generic_tools(mcp):
         filter: str = "",
         limit: int = 0,
     ) -> dict[str, Any]:
-        """Query schematic objects and read their properties.
+        """Query schematic OR PCB objects and read their properties.
 
         Iterates objects of the given type, optionally filtering by property values,
         and returns the requested properties for each matching object.
@@ -37,9 +37,36 @@ def register_generic_tools(mcp):
                 "eLabel", "eLine", "eRectangle", "eSheetSymbol", "eSheetEntry", "eNoERC", "eJunction"
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject"
-            properties: Comma-separated property names to return, e.g.:
+            properties: Comma-separated property names to return.
+
+                SCHEMATIC objects use the dotted spelling:
                 "Text,Location.X,Location.Y" for net labels
                 "Designator.Text,Comment.Text,LibReference" for components
+
+                PCB PRIMITIVES DO NOT. They are a separate, flat set,
+                and mixing the two is the single commonest mistake here:
+                a caller who used Designator.Text infers a dotted rule,
+                writes Net.Name on a track, and gets an error naming the
+                right spelling. Net is the one that catches people, and
+                it is plain "Net":
+                "Net,Layer,Width" for tracks
+                "Net,Layer,HoleSize,Size" for vias
+                "Designator,Comment,Pattern,Rotation,X,Y" for components
+                Full set: ObjectId, X, Y, Layer, Descriptor, Selected,
+                Net, X1, Y1, X2, Y2, Width, Radius, StartAngle,
+                EndAngle, XCenter, YCenter, HoleSize, Size, TopShape,
+                TopXSize, TopYSize, Rotation, Name, Text, Pattern,
+                Designator, Comment, SourceDesignator.
+
+                An unrecognised PCB property is REFUSED and the reply
+                lists the valid ones. It used to come back empty, which
+                is indistinguishable from a property that is genuinely
+                blank, and that ambiguity has three times been read as
+                "the bridge cannot see this data".
+
+                A track on a mechanical layer really does have no net,
+                so filter to copper before concluding anything from an
+                empty Net: filter="Layer=TopLayer".
             scope: Document scope:
                 "active_doc", current sheet only (default)
                 "project", all SCH sheets in focused project

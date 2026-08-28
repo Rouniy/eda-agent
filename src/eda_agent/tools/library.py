@@ -1477,7 +1477,15 @@ def register_library_tools(mcp):
 
         Args:
             text: The string to place. Required.
-            x, y: Coordinates in mils, relative to the board origin.
+            x, y: Coordinates in mils, relative to the FOOTPRINT's origin,
+                which is what the handler has always actually done
+                (``Footprint.X + MilsToCoord(x)``). The old wording said
+                "board origin" and that was wrong: a PcbLib footprint sits
+                at Altium's library origin, 50000 mils out, so the two
+                readings differ by more than a metre. The pad, track and
+                arc tools wrote absolute board coordinates and produced
+                footprints whose geometry was nowhere near them; they now
+                match this one.
             size: Text height in mils. 50 is a common silkscreen size;
                 drop to 30-40 for tight footprints.
             width: Stroke width in mils. 8 reads cleanly at 50 mil
@@ -1917,11 +1925,12 @@ def register_library_tools(mcp):
     # =========================================================================
 
     @mcp.tool()
-    async def lib_update_footprint_heights_from_3d() -> dict[str, Any]:
+    async def lib_update_footprint_heights_from_3d(
+        mode: str = "raise",
+    ) -> dict[str, Any]:
         """Sweep the active PCB Library: for every footprint, find the
-        tallest 3D body and propagate its ``OverallHeight`` up to
-        ``Footprint.Height`` when the model is taller than the
-        currently-stored value.
+        tallest 3D body and write its ``OverallHeight`` to
+        ``Footprint.Height``.
 
         Footprint.Height is what Altium's placement-collision DRC
         uses to enforce height-clearance rules (don't place a tall
@@ -1931,26 +1940,97 @@ def register_library_tools(mcp):
         to 0 which makes the DRC silently no-op -- a real production
         risk caught only at first-article assembly.
 
+        Args:
+            mode: ``raise`` (default) only ever increases a height, so a
+                hand-set "I know this part is 5mm despite the model
+                being 3mm" survives. ``match`` also LOWERS one to the
+                model.
+
+        Reach for ``match`` when heights are too TALL, which raising
+        cannot fix and which is the more damaging fault: a footprint
+        claiming 50mm when the part is 3mm fails placement-collision
+        DRC against everything near it and blocks placements that are
+        fine, where a too-low height merely fails to catch a real
+        collision. To correct one footprint, or one with no model at
+        all, use ``lib_set_footprint_height``.
+
         Safety:
-          - Only updates footprints whose 3D model is TALLER than
-            the current Height -- never shrinks. Protects a manual
-            "I know this part is 5mm despite the model being 3mm"
-            override.
-          - Does NOT save the library; the agent should review the
-            ``items[]`` diff and save via the Altium UI or by
-            re-opening to confirm.
+          - NEITHER MODE WRITES ZERO. A footprint with no 3D body
+            yields no measurement, and writing the 0 that implies would
+            silently disable the very DRC rule this arms. Those come
+            back as ``without_model`` with their names.
+          - Does NOT save the library; review the ``items[]`` diff and
+            save in Altium.
 
         Returns:
-            Dict with:
-              - ``inspected``: total footprints walked
-              - ``updated``: footprints whose Height was raised
-              - ``items``: per-footprint diff
-                ``{name, old_height_mm, new_height_mm}``
+            Dict with ``mode``, ``inspected``, ``updated``, ``lowered``,
+            ``without_model``, ``without_model_names``, and ``items``
+            (``{name, old_height_mm, new_height_mm}`` per footprint).
         """
+        mode = (mode or "raise").strip().lower()
+        if mode not in ("raise", "match"):
+            return {
+                "ok": False,
+                "reason": (
+                    f"mode must be 'raise' (only increase, the default) or "
+                    f"'match' (also lower to the model). Got {mode!r}."),
+            }
         bridge = get_bridge()
         return await bridge.send_command_async(
-            "library.update_footprint_heights_from_3d", {},
+            "library.update_footprint_heights_from_3d", {"mode": mode},
             timeout=60.0,
+        )
+
+    @mcp.tool()
+    async def lib_set_footprint_height(
+        height_mm: float,
+        footprint_name: str = "",
+    ) -> dict[str, Any]:
+        """Set one footprint's Height directly, up or down.
+
+        The sweep can only derive a height from a 3D body, which leaves
+        two cases it cannot serve: a part with no model, and a part
+        whose model is wrong. There was no setter at all before this, so
+        a footprint carrying an absurd height could be read and not
+        corrected.
+
+        WHY TOO TALL IS WORSE THAN TOO SHORT. Footprint.Height drives
+        placement-collision DRC. A footprint claiming 50mm when the part
+        is 3mm fails against everything near it and blocks placements
+        that are fine. A too-low height only fails to catch a real
+        collision. The first floods the report and gets the rule
+        switched off; the second is quiet.
+
+        ZERO IS ACCEPTED AND IS NOT NEUTRAL. It disables the rule for
+        that footprint rather than relaxing it, so nothing is ever
+        flagged against it however tall the real part is. The reply says
+        so when zero is written.
+
+        Args:
+            height_mm: the height in MILLIMETRES, not mils. Must be
+                non-negative.
+            footprint_name: which footprint. Empty uses the library's
+                current component.
+
+        Returns:
+            ``{name, old_height_mm, new_height_mm, changed, saved,
+            save_note, note}``. ``saved`` is always false: the library
+            is modified in memory and left for you to review and save.
+        """
+        try:
+            height = float(height_mm)
+        except (TypeError, ValueError):
+            return {"ok": False,
+                    "reason": f"height_mm must be a number, got {height_mm!r}"}
+        if height < 0 or height != height:      # NaN fails both comparisons
+            return {"ok": False,
+                    "reason": (f"height_mm must be a non-negative number of "
+                               f"millimetres, got {height_mm!r}")}
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.set_footprint_height",
+            {"height_mm": height, "footprint_name": footprint_name},
         )
 
     @mcp.tool()
@@ -2028,21 +2108,31 @@ def register_library_tools(mcp):
                 This is the common adjustment: lifting a connector body
                 off the board so it sits on its pads rather than through
                 them.
-            rotation_x: NOT APPLIED. IPCB_ComponentBody exposes a PLANAR
-                Rotation only; the PCB API gives the model no X tilt, so
-                this is accepted for signature stability and ignored.
+            rotation_x: NOT APPLIED, accepted for signature stability.
                 Set it in the library editor after linking.
             rotation_y: NOT APPLIED, same reason as rotation_x.
-            rotation_z: Z rotation in degrees, sets the body's Rotation.
+            rotation_z: NOT APPLIED. This one used to assign
+                ``Body.Rotation``, and IPCB_ComponentBody has no such
+                property on AD26 26.9.1.9. MEASURED: it raised
+                "Undeclared identifier: Rotation", which DelphiScript
+                cannot catch, so the Try around it never fired and the
+                resulting modal took the whole polling loop down with
+                it. Passing a rotation used to cost you the bridge.
+                The rotation lives on the MODEL, not the body, and has
+                to be set before the model is attached
+                (``Model.SetState`` in AutoSTEPplacer.pas). Its four
+                arguments are undocumented, so they are not guessed at
+                here. Rotate in the library editor for now.
 
         Returns:
             Dict with ``success``, ``footprint``, ``model``, and
             ``applied`` -- which adjustments were actually written to
             the body (``standoff_height``, ``rotation_z``,
-            ``offset_xy``). Check it rather than assuming: these three
-            properties are documented but are exercised nowhere else in
-            this codebase, and each assignment is individually guarded,
-            so one failing does not fail the call.
+            ``offset_xy``). Check it rather than assuming: each
+            assignment is individually guarded, so one failing does not
+            fail the call. ``rotation_z`` is now ALWAYS false, see
+            above. ``standoff_height`` is confirmed live;
+            ``offset_xy`` is not yet.
 
             A ``false`` means the adjustment did not happen, which
             covers both a rejected assignment and an argument left at
@@ -2176,6 +2266,15 @@ def register_library_tools(mcp):
                 designator string (slow on large libraries; smaller
                 payload than with_parameters). Default False.
 
+        ``part_count`` HERE IS NOT TRUSTWORTHY. It comes from the
+        CompInfoReader, and MEASURED on AD26 it reported 2 for a symbol
+        created single-part whose every pin carries OwnerPartId 1, while
+        ``lib_get_component_details`` reported 1 for an identically
+        created symbol. The two readers disagree and only the
+        discrepancy is established, not a conversion between them, so
+        no correction is applied here rather than guess one. Use
+        ``lib_get_component_details`` when the part count matters.
+
         Returns:
             Dictionary with ``count`` and ``components`` list. Each
             component carries index, name, alias_name, part_count,
@@ -2219,6 +2318,14 @@ def register_library_tools(mcp):
         ``CreateLibCompInfoReader`` so the search is fast even with
         many libraries open: it only loads symbols when ``search_type``
         is ``"parameters"``.
+
+        IT READS THE FILE ON DISK, NOT THE EDITOR. A component created
+        in this session and not yet saved WILL NOT BE FOUND, and the
+        reply is an ordinary empty result with nothing to say why.
+        MEASURED: a symbol that ``lib_get_component_details`` returned
+        in full was absent here until a save. Save first, or use
+        ``lib_get_component_details`` / ``lib_get_pin_list``, which read
+        the live document.
 
         DATASHEET DISCIPLINE: Matches carry `_datasheet_guidance`.
         Before recommending any matched part as a replacement or
@@ -2791,7 +2898,13 @@ def register_library_tools(mcp):
         config.ensure_workspace()
         batch_path = config.workspace_dir / "batch_params.txt"
 
-        with open(batch_path, "w", encoding=encoding) as f:
+        # Windows would translate the newline into CR LF here. The
+        # Pascal reader splits on the newline and leaves the carriage
+        # return attached to the LAST field on the line, so a rename
+        # wrote a LibReference ending in CR and a parameter got a CR
+        # in its value. The Pascal side trims as well; both, because
+        # either alone leaves the other half of the contract unstated.
+        with open(batch_path, "w", encoding=encoding, newline="") as f:
             for a in assignments:
                 f.write(f"{a['component_name']}|{a['param_name']}|{a['param_value']}\n")
 
@@ -2856,7 +2969,13 @@ def register_library_tools(mcp):
         config.ensure_workspace()
         batch_path = config.workspace_dir / "batch_rename.txt"
 
-        with open(batch_path, "w", encoding=encoding) as f:
+        # Windows would translate the newline into CR LF here. The
+        # Pascal reader splits on the newline and leaves the carriage
+        # return attached to the LAST field on the line, so a rename
+        # wrote a LibReference ending in CR and a parameter got a CR
+        # in its value. The Pascal side trims as well; both, because
+        # either alone leaves the other half of the contract unstated.
+        with open(batch_path, "w", encoding=encoding, newline="") as f:
             for a in assignments:
                 f.write(f"{a['old_name']}|{a['new_name']}\n")
 
@@ -3697,6 +3816,75 @@ def register_library_tools(mcp):
         return await bridge.send_command_async(
             "library.rename_component", params,
         )
+
+    @mcp.tool()
+    async def lib_delete_footprint_primitives(
+        footprint_name: str,
+        object_type: str = "",
+        layer: str = "",
+        library_path: str = "",
+        include_pads: bool = False,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Delete primitives inside ONE footprint of a PCB library.
+
+        THE ONLY LIBRARY-SCOPED PRIMITIVE DELETE. ``obj_delete`` and
+        ``pcb_delete_object`` both resolve a BOARD, and when no board is
+        focused that lookup opens the first PcbDoc any open project
+        holds. Aimed at a library they do not fail; they remove
+        primitives from a board you never named, and the reply does not
+        say which one. This is the tool for editing a footprint.
+
+        SCOPED THREE WAYS, all of which must agree before anything is
+        removed: the library by path, the footprint by name, and the
+        object type or layer. The library is verified AFTER it is
+        brought to the front, so a delete aimed at one that never
+        focused is refused rather than landing in whichever did.
+
+        PADS ARE EXCLUDED unless ``include_pads``. Deleting a pad changes
+        the part's connectivity rather than its drawing, and clearing
+        graphics off a layer should not quietly cost you the pinout.
+
+        Args:
+            footprint_name: The footprint to edit. Required: deleting
+                from whichever footprint the editor happens to show is
+                the mistake this avoids.
+            object_type: PCB object type, e.g. "track", "arc", "string",
+                "region", "fill". Give this or ``layer``.
+            layer: Restrict to one layer, e.g. "TopOverlay". The usual
+                case: clear a silkscreen without touching anything else.
+            library_path: The .PcbLib. Defaults to the focused document.
+            include_pads: Allow pads to be removed. Off by default.
+            confirm: Required. Read the footprint first with
+                ``lib_probe_footprint`` and pass True once the filters
+                are what you mean.
+
+        Returns:
+            Dict with ``library``, ``footprint``, ``removed``,
+            ``examined``, ``layers`` and ``pads_included``.
+        """
+        if not footprint_name.strip():
+            return {"ok": False, "reason": "footprint_name is required"}
+        if not object_type.strip() and not layer.strip():
+            return {"ok": False, "reason": (
+                "give object_type or layer. Emptying a whole footprint is "
+                "not something to reach by leaving both filters off")}
+
+        params: dict[str, Any] = {"footprint_name": footprint_name}
+        if object_type.strip():
+            params["object_type"] = object_type.strip()
+        if layer.strip():
+            params["layer"] = layer.strip()
+        if library_path.strip():
+            params["library_path"] = library_path.strip()
+        if include_pads:
+            params["include_pads"] = "true"
+        if confirm:
+            params["confirm"] = "true"
+
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.delete_footprint_primitives", params)
 
     @mcp.tool()
     async def lib_delete_footprint(

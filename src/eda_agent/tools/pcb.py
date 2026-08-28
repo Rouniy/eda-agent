@@ -4868,25 +4868,106 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
-    async def pcb_get_mech_layer_names() -> dict[str, Any]:
-        """List the enabled mechanical layers on the active board with names.
+    async def pcb_get_mech_layer_names(
+        count_primitives: bool = True,
+    ) -> dict[str, Any]:
+        """Every enabled mechanical layer on the board, and what is on it.
 
-        Returns each displayed/enabled mechanical layer's internal layer id
-        and its custom name (e.g. "Assembly Top", "Courtyard"), so an agent
-        can target the right mechanical layer by name rather than guessing
-        "Mechanical 1".
+        WHAT IS ON THE LAYER IS THE PART YOU CANNOT GET ELSEWHERE. A
+        PcbLib header carries USEDBYPRIMS; a PcbDoc does not, so on a
+        board there is no way to ask which mechanical layers the
+        geometry occupies. This counts, because moving kinds around on a
+        board you cannot inspect is how an assembly drawing gets
+        orphaned. ``primitive_count`` of 0 is a layer that is genuinely
+        spare; -1 means the count was not attempted or failed.
 
-        Each entry also carries its ``kind``, which is what the layer is FOR
-        rather than what it is called. Read it before setting one: a kind
-        belongs to a single layer, so assigning it moves it. ``kind_id`` of
-        -1 means this Altium build has no mechanical layer kinds.
+        ENABLED, NOT DISPLAYED. This used to list only layers the view
+        happened to be showing, so a layer carrying the whole fab
+        drawing was missing from the answer whenever it was toggled off.
+        Display is a view setting and is reported separately as
+        ``displayed``.
+
+        Each entry carries its ``kind``, which is what the layer is FOR
+        rather than what it is called. Read it before setting one: a
+        kind belongs to a single layer, so assigning it moves it, and a
+        PAIRED kind is held by the layer pair. ``kind_id`` of -1 means
+        this Altium build has no mechanical layer kinds.
+
+        Args:
+            count_primitives: Count what sits on each layer. The board is
+                walked once per enabled layer, so pass False when only
+                the names are wanted.
 
         Returns:
-            Dict with ``mechanical_layers`` (each: layer, name, kind,
-            kind_id) and ``count``.
+            Dict with ``mechanical_layers`` (each: layer, number, name,
+            enabled, displayed, kind, kind_id, primitive_count),
+            ``count``, ``occupied_count``, ``counted_primitives`` and
+            ``scanned_to``, the layer number the scan stopped at.
         """
         bridge = get_bridge()
-        return await bridge.send_command_async("pcb.get_mech_layer_names", {})
+        return await bridge.send_command_async(
+            "pcb.get_mech_layer_names",
+            {"count_primitives": "true" if count_primitives else "false"})
+
+    @mcp.tool()
+    async def pcb_set_mech_layers(
+        layers: list[dict[str, Any]],
+        tidy_pairs: bool = False,
+        timeout: float = 180.0,
+    ) -> dict[str, Any]:
+        """Name, enable and kind the mechanical layers of the open BOARD.
+
+        The board counterpart of ``lib_set_mech_layers``, which takes a
+        library by path and refuses a PcbDoc. Without this a board could
+        only have kinds set, one layer per call through
+        ``pcb_set_mech_layer_kind``, and could not be renamed at all
+        above Mechanical16.
+
+        Every change is READ BACK. A layer whose name, enable or kind did
+        not take is reported against that layer rather than folded into
+        an overall pass.
+
+        PAIRED KINDS. Any kind ending in Top or Bottom is held by the
+        layer PAIR rather than by either layer, under a shorter name with
+        the side dropped, so "Courtyard Top" is stored as the pair kind
+        "Courtyard". Give both sides in the same call and the two are
+        joined and the pair given the kind. Single kinds such as "Fab
+        Notes" need no partner.
+
+        READ THE BOARD FIRST. ``pcb_get_mech_layer_names`` reports
+        ``primitive_count`` per layer, and a kind moved off a layer that
+        is carrying geometry orphans that geometry from whatever resolves
+        the layer by purpose.
+
+        Args:
+            layers: One dict per layer. Keys: ``layer`` (required, e.g.
+                "Mechanical13"), and any of ``name``, ``enabled``
+                (bool), ``kind`` (e.g. "Courtyard Top"). A layer with
+                none of the three is reported as nothing asked for.
+            tidy_pairs: Remove layer pairs no kind justifies. Off by
+                default, because it REMOVES pairs.
+            timeout: Seconds.
+
+        Returns:
+            Dict with ``document``, ``layers`` (each: layer, changed,
+            problem), ``changed``, ``failed``, ``kinds_displaced``,
+            ``pairs_removed``, ``pairs_tidied`` and ``pairs_scanned_to``.
+        """
+        from .library import _encode_layer_ops
+
+        encoded = _encode_layer_ops(layers)
+        if isinstance(encoded, dict):
+            return encoded
+
+        params: dict[str, Any] = {"layers": encoded}
+        if tidy_pairs:
+            params["tidy_pairs"] = "true"
+
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.set_mech_layers", params, timeout=timeout,
+        )
+        return result or {}
 
     @mcp.tool()
     async def pcb_get_layer_display() -> dict[str, Any]:
@@ -5928,11 +6009,23 @@ def register_pcb_tools(mcp):
             "Hole Size Constraint (Min=0.1mm) (Max=4mm) (All)"
             "Routing Via (Templates Used To Check Via: v30h10m0mx0, ...) (All)"
 
-        Constraint values live on per-kind subtype interfaces
-        (IPCB_ClearanceConstraint, IPCB_MaxMinWidthConstraint, ...) which
-        cannot be safely accessed from a base IPCB_Rule reference in
-        DelphiScript, so we surface the descriptor string instead. Parse
-        it client-side if you need numeric values.
+        WHY THE DESCRIPTOR AND NOT THE NUMBERS. Constraint values live on
+        per-kind subtype interfaces (IPCB_ClearanceConstraint,
+        IPCB_MaxMinWidthConstraint, ...). This handler holds a base
+        IPCB_Rule, where those members do not exist, so reading them
+        gives nothing and the descriptor is what is offered instead.
+        Parse it client-side if you need numeric values.
+
+        THAT IS A LIMIT OF THIS READ, NOT OF THE API, and the difference
+        matters because the sentence above has already been read as
+        "constraints are unreachable" and stopped someone who then
+        reported a rule as unwritable. DelphiScript DOES narrow an
+        interface, but only at iterator return, so a typed local
+        assigned straight from ``BoardIterator.FirstPCBObject`` reaches
+        the constraint members. ``pcb_set_rule_properties`` writes them
+        that way. To CHANGE a value, use that tool. ``obj_modify`` will
+        not do it: it dispatches through the base reference and reports
+        a match while changing nothing.
 
         Args:
             name: Design rule name (e.g., "Clearance", "Width", "RoutingVias").
@@ -5953,6 +6046,7 @@ def register_pcb_tools(mcp):
         scope2: str | None = None,
         comment: str | None = None,
         gap_mils: int | None = None,
+        gap_mm: float | None = None,
         min_width_mils: int | None = None,
         max_width_mils: int | None = None,
         favored_width_mils: int | None = None,
@@ -5964,16 +6058,28 @@ def register_pcb_tools(mcp):
         Metadata fields always apply. Constraint fields are dispatched
         by the rule's underlying RuleKind:
 
-        - Clearance (kind 0), ComponentClearance (kind 24), and
-          HoleToHoleClearance (kind 52): ``gap_mils``. All three share
-          the Gap property on IPCB_ClearanceConstraint.
+        - Clearance (kind 0), ComponentClearance (kind 24),
+          HoleToHoleClearance (kind 52) and BoardOutlineClearance
+          (kind 63): ``gap_mils``, or ``gap_mm`` when the value is
+          metric. An integer mil field cannot express 0.2mm; it lands
+          on 8 mils, which is 0.2032mm. Pass one or the other.
         - Width (kind 2): ``min_width_mils`` / ``max_width_mils`` /
           ``favored_width_mils`` (applied to every layer).
         - HoleSize (kind 42): ``min_hole_size_mils`` / ``max_hole_size_mils``.
 
+        THE GAP WRITE IS READ BACK, not assumed. A rule kind that does
+        not really carry Gap can accept the assignment and keep its old
+        value, so the reply carries ``gap_written``, ``gap_after_mm``
+        and, when it did not take, a note saying the rule still holds
+        the old number. Kind 63 in particular is included on the
+        strength of its position in the TRuleKind order rather than a
+        documented interface, so let ``gap_written`` decide whether it
+        worked rather than the count.
+
         Pass only the parameters you want to change; everything else
-        stays untouched. Each successful field write increments
-        ``properties_updated`` in the response.
+        stays untouched. Each VERIFIED field write increments
+        ``properties_updated`` in the response, so a refused constraint
+        no longer inflates it.
 
         NOTE: Priority is NOT writable from this tool. ``IPCB_Rule.Priority``
         is a read-only function in the PCB scripting API
@@ -6004,6 +6110,7 @@ def register_pcb_tools(mcp):
             ("scope2", scope2),
             ("comment", comment),
             ("gap_mils", gap_mils),
+            ("gap_mm", gap_mm),
             ("min_width_mils", min_width_mils),
             ("max_width_mils", max_width_mils),
             ("favored_width_mils", favored_width_mils),

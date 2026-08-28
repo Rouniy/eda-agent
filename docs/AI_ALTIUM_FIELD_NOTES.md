@@ -152,7 +152,7 @@ geometry; reject zero pads or unexpected duplicates.
 ## Restarting the MCP polling script
 
 Use scripts from this checkout only. Do not mix them with the legacy
-`C:\Users\Alex\EDA Agent\scripts` copy.
+`%USERPROFILE%\EDA Agent\scripts` copy.
 
 1. If a script-error dialog is visible, capture it, press `OK`, then send
    `Ctrl+F3`. Do not close the MCP form first.

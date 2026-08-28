@@ -48,6 +48,11 @@ Begin
         _PropertyDiagStr := _PropertyDiagStr + '|' + Entry;
 End;
 
+Function AnyPropertyDiag : Boolean;
+Begin
+    Result := _PropertyDiagStr <> '';
+End;
+
 Function RenderPropertyDiagJson : String;
 Var
     UJson, FJson, Remaining, Entry, Kind, Nm : String;
@@ -92,6 +97,31 @@ Begin
             + ',"unknown":' + UJson
             + ',"failed_count":' + IntToStr(FCount)
             + ',"failed":' + FJson + '}';
+End;
+
+{ The tail every modify reply carries, so what was WRITTEN is reported      }
+{ alongside what was matched.                                               }
+{                                                                           }
+{ MEASURED: obj_modify was asked to set a sheet symbol's FileName and       }
+{ answered matched:1, saved:true three times over while writing nothing.    }
+{ That property is readable and has no case in the writer, so every attempt }
+{ was recorded here as an unknown name and then discarded, because only     }
+{ batch_modify ever rendered this buffer. Nothing in the reply distinguished }
+{ it from a real one, and an operator spent a session working around a      }
+{ rename that had never happened.                                           }
+{                                                                           }
+{ matched counts what the FILTER selected. It says nothing about whether a  }
+{ property write landed, so reporting it alone made a mis-spelled or        }
+{ unsupported name indistinguishable from success.                          }
+Function ModifyOutcomeJson : String;
+Begin
+    Result := ',"properties":' + RenderPropertyDiagJson;
+    If _PropertyDiagStr <> '' Then
+        Result := Result + ',"success":false,"reason":"one or more properties '
+            + 'were not written. properties.unknown lists names this build '
+            + 'does not write, properties.failed lists writes that threw."'
+    Else
+        Result := Result + ',"success":true';
 End;
 
 {..............................................................................}
@@ -193,6 +223,60 @@ Begin
     Except
         RecordCastError('GetSheetSymbolText:' + PropName);
         Result := '';
+    End;
+End;
+
+{ Write the same two labels. The read side existed and the write side did   }
+{ not, so obj_modify recognised SheetFileName well enough to return it and  }
+{ not well enough to set it.                                                }
+{                                                                           }
+{ THIS RE-POINTS A SYMBOL, IT DOES NOT RENAME A SHEET. The child sheet's    }
+{ filename lives in three places: this label, the file on disk, and the     }
+{ project's document list. Writing only the label leaves the other two      }
+{ alone, which is right when pointing a symbol at a sheet that already      }
+{ exists and wrong as a way to rename one. Altium's Sheet Symbol Actions >  }
+{ Rename Child Sheet does all three and keeps the symbol's UniqueId, which  }
+{ is the project's handle for that sheet instance: replacing the symbol     }
+{ instead would issue a new id, and the next Update PCB would propose       }
+{ delete-and-re-add for every component on the sheet rather than matching   }
+{ them.                                                                     }
+{                                                                           }
+{ Written through the sub-object exactly as GetSheetSymbolText reads it,    }
+{ with no intermediate typed local. Narrowing ISch_SheetFileName to a       }
+{ label interface is not something this codebase has demonstrated, and the  }
+{ direct access above is proven, so this stays on the proven shape.         }
+{                                                                           }
+{ The result is a READ BACK, not the fact that the assignment ran. That is  }
+{ the whole point: the caller reported success for this write for as long   }
+{ as it has existed, on the strength of having attempted it.                }
+Function SetSheetSymbolText(Obj : ISch_GraphicalObject; PropName : String;
+    Value : String) : Boolean;
+Var
+    SS : ISch_SheetSymbol;
+Begin
+    Result := False;
+    If Obj.ObjectId <> eSheetSymbol Then Exit;
+    Try
+        SS := Obj;
+        If PropName = 'Designator' Then
+        Begin
+            If SS.SheetName <> Nil Then
+            Begin
+                SS.SheetName.Text := Value;
+                Result := (SS.SheetName.Text = Value);
+            End;
+        End
+        Else If PropName = 'Filename' Then
+        Begin
+            If SS.SheetFileName <> Nil Then
+            Begin
+                SS.SheetFileName.Text := Value;
+                Result := (SS.SheetFileName.Text = Value);
+            End;
+        End;
+    Except
+        RecordCastError('SetSheetSymbolText:' + PropName);
+        Result := False;
     End;
 End;
 
@@ -435,6 +519,12 @@ Var
     Power : ISch_PowerObject;
     SheetEntry : ISch_SheetEntry;
     Matched : Boolean;
+    { Separate from Matched on purpose. Matched says the property NAME is
+      one this build writes; WroteOK says the value actually landed, read
+      back off the object. Collapsing them would report a recognised
+      property whose write did not stick as an unknown name, which points
+      a reader at a spelling mistake that is not there. }
+    WroteOK : Boolean;
 Begin
     { Measured on a live document: callers using modify_objects /             }
     { batch_modify                                                            }
@@ -447,6 +537,7 @@ Begin
     { Location.X so it still matches the moved pin.                          }
     Result := 0;
     Matched := True;
+    WroteOK := True;
     Try
         // Coordinates (expected in mils). `Obj.Location` returns a copy of
         // the TLocation record via the GetState_Location reader; writing
@@ -599,12 +690,26 @@ Begin
             Obj.OwnerPartDisplayMode := StrToIntDef(Value, 0)
 
         // Sub-object string properties (compound interfaces, typed cast required)
+        // A sheet symbol carries its designator on SheetName rather than on the
+        // component Designator sub-object, so it is dispatched by ObjectId the
+        // same way GetSchProperty dispatches the read.
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
             If Obj.ObjectId = ePin Then
             Begin Pin := Obj; Pin.Designator := Value; End
-            Else SetSchComponentSubText(Obj, 'Designator', Value);
+            Else If Obj.ObjectId = eSheetSymbol Then
+                WroteOK := SetSheetSymbolText(Obj, 'Designator', Value)
+            Else
+                SetSchComponentSubText(Obj, 'Designator', Value);
         End
+        // Sheet-symbol filename. The READ side of this has always existed and
+        // the write side never did, so obj_modify knew the name well enough to
+        // return it and not well enough to set it, and said matched:1 either
+        // way. Re-points the symbol at a sheet; it does not rename one, see
+        // SetSheetSymbolText.
+        Else If (PropName = 'Filename') Or (PropName = 'FileName')
+             Or (PropName = 'SheetFileName') Then
+            WroteOK := SetSheetSymbolText(Obj, 'Filename', Value)
         Else If (PropName = 'Comment') Or (PropName = 'Comment.Text') Then
             SetSchComponentSubText(Obj, 'Comment', Value)
 
@@ -649,8 +754,9 @@ Begin
         Else If PropName = 'Selection'   Then Obj.Selection := StrToBool(Value)
         Else Matched := False;
 
-        If Matched Then Result := 1
-        Else Result := 0;
+        If Not Matched Then Result := 0
+        Else If Not WroteOK Then Result := -1
+        Else Result := 1;
     Except
         Result := -1;
     End;
@@ -835,6 +941,47 @@ End;
 { wraps this in PreProcess/PostProcess.                                       }
 {..............................................................................}
 
+{ Remove every parameter of ONE component that matches the filter.           }
+{                                                                             }
+{ Re-scans after each removal rather than deleting inside the walk: removing  }
+{ a child invalidates the iterator, and a walk that continues past it skips   }
+{ entries, which reads as a filter that matched less than it did.             }
+
+Procedure RemoveMatchingParamsFromComponent(Comp : ISch_Component;
+    ReducedFilter : String; Var TotalMatched : Integer);
+Var
+    ParamIter : ISch_Iterator;
+    Param, FoundParam : ISch_GraphicalObject;
+    Guard : Integer;
+Begin
+    If Comp = Nil Then Exit;
+    Guard := 10000;
+    While Guard > 0 Do
+    Begin
+        FoundParam := Nil;
+        ParamIter := Comp.SchIterator_Create;
+        Try
+            ParamIter.AddFilter_ObjectSet(MkSet(eParameter));
+            Param := ParamIter.FirstSchObject;
+            While Param <> Nil Do
+            Begin
+                If MatchesFilter(Param, ReducedFilter) Then
+                Begin
+                    FoundParam := Param;
+                    Break;
+                End;
+                Param := ParamIter.NextSchObject;
+            End;
+        Finally
+            Comp.SchIterator_Destroy(ParamIter);
+        End;
+        If FoundParam = Nil Then Break;
+        Comp.RemoveSchObject(FoundParam);
+        Inc(TotalMatched);
+        Dec(Guard);
+    End;
+End;
+
 Procedure DeleteParametersAnyOwner(SchDoc : ISch_Document; FilterStr : String;
     Var TotalMatched : Integer);
 Var
@@ -843,9 +990,37 @@ Var
     Comp : ISch_Component;
     Param, FoundParam : ISch_GraphicalObject;
     Guard : Integer;
+    IsLib : Boolean;
 Begin
     ReducedFilter := FilterStr;
     OwnerDesig := PullOwnerDesignator(ReducedFilter);
+
+    { A SCHLIB HAS NO PLACED COMPONENTS TO ITERATE.                          }
+    {                                                                         }
+    { The component walk below uses SchIterator with an eSchComponent filter, }
+    { which returns nothing at all on a library: a SchLib's symbols are not   }
+    { components placed on its canvas, each is its own internal sheet. So     }
+    { every parameter delete against a library reported matched 0 while the   }
+    { parameters sat there, and the document-level pass that followed saw     }
+    { only the library's OWN parameter, which is why a read came back with    }
+    { one entry called Value rather than the component's full set.            }
+    {                                                                         }
+    { The symbol is already known: a lib_component scope resolves through     }
+    { SelectLibComponentPart, which records it. So use it directly instead of }
+    { looking for something a library does not contain.                       }
+    IsLib := False;
+    Try IsLib := (SchDoc.ObjectId = eSchLib); Except IsLib := False; End;
+    If IsLib Then
+    Begin
+        { Same guard as the sheet path: without a filter this would strip     }
+        { every parameter off the symbol.                                     }
+        If ReducedFilter = '' Then Exit;
+        Comp := LastCreatedLibComponent;
+        If Comp = Nil Then
+            Try Comp := SchDoc.CurrentSchComponent; Except Comp := Nil; End;
+        RemoveMatchingParamsFromComponent(Comp, ReducedFilter, TotalMatched);
+        Exit;
+    End;
 
     { Component-owned parameters. Guard against a catastrophic "delete every   }
     { parameter on every part": require an owner designator or a non-empty     }
@@ -863,34 +1038,10 @@ Begin
                 If (OwnerDesig = '') Or
                    (UpperCase(CompDesig) = UpperCase(OwnerDesig)) Then
                 Begin
-                    { Re-scan after each removal to avoid iterator            }
-                    { invalidation; removing a child does not disturb the     }
-                    { outer component iterator.                               }
-                    Guard := 10000;
-                    While Guard > 0 Do
-                    Begin
-                        FoundParam := Nil;
-                        ParamIter := Comp.SchIterator_Create;
-                        Try
-                            ParamIter.AddFilter_ObjectSet(MkSet(eParameter));
-                            Param := ParamIter.FirstSchObject;
-                            While Param <> Nil Do
-                            Begin
-                                If MatchesFilter(Param, ReducedFilter) Then
-                                Begin
-                                    FoundParam := Param;
-                                    Break;
-                                End;
-                                Param := ParamIter.NextSchObject;
-                            End;
-                        Finally
-                            Comp.SchIterator_Destroy(ParamIter);
-                        End;
-                        If FoundParam = Nil Then Break;
-                        Comp.RemoveSchObject(FoundParam);
-                        Inc(TotalMatched);
-                        Dec(Guard);
-                    End;
+                    { Removing a child does not disturb the outer         }
+                    { component iterator, so the shared helper is safe here. }
+                    RemoveMatchingParamsFromComponent(
+                        Comp, ReducedFilter, TotalMatched);
                 End;
                 Comp := CompIter.NextSchObject;
             End;
@@ -1244,7 +1395,8 @@ Begin
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) +
             ',"sheets_processed":' + IntToStr(SheetsProcessed) +
-            ',"sheets_saved":' + IntToStr(SheetsSaved) + '}');
+            ',"sheets_saved":' + IntToStr(SheetsSaved)
+            + ModifyOutcomeJson + '}');
 End;
 
 {..............................................................................}
@@ -1289,7 +1441,8 @@ Begin
     Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr + '}');
+            '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
+            + ModifyOutcomeJson + '}');
     End;
 End;
 
@@ -1341,7 +1494,8 @@ Begin
     Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr + '}');
+            '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
+            + ModifyOutcomeJson + '}');
     End;
 End;
 
@@ -1458,6 +1612,7 @@ End;
 Function Gen_QueryObjects(Params : String; RequestId : String) : String;
 Var
     Scope, ObjTypeStr, FilterStr, PropsStr, ScopeType, ScopePath : String;
+    BadProps : String;
     ObjTypeInt, Limit : Integer;
 Begin
     Scope := ExtractJsonValue(Params, 'scope');
@@ -1468,6 +1623,32 @@ Begin
 
     If PropsStr = '' Then PropsStr := 'Location.X,Location.Y';
     ParseScope(Scope, ScopeType, ScopePath);
+
+    { A PCB OBJECT TYPE CANNOT HONOUR A SCOPE, so say so before doing         }
+    { anything. PCB primitives live on a board and the PCB path below resolves }
+    { one by itself; ScopeType never reaches it.                              }
+    {                                                                          }
+    { MEASURED: obj_query(eArcObject, scope="lib_component:SWEEP_SYM_A")       }
+    { returned 19 arcs belonging to an unrelated client BOARD. The scope was   }
+    { silently discarded and the answer looked entirely ordinary, which is the }
+    { same wrong-document failure the board readers have.                      }
+    {                                                                          }
+    { Checked BEFORE ApplyLibComponentScope on purpose: that call MOVES the    }
+    { active SchLib's current component as a side effect, and doing so for a   }
+    { query that is about to be refused would leave the editor somewhere the   }
+    { caller never asked for.                                                  }
+    If (ObjectTypeFromStringPCB(ObjTypeStr) <> -1)
+        And (ScopeType <> 'active_doc') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SCOPE_NOT_SUPPORTED',
+            'A PCB object type cannot be scoped with "' + Scope + '". PCB '
+            + 'primitives live on a board, and this query always reads the '
+            + 'active one, so a document, project or lib_component scope '
+            + 'would be silently ignored. Activate the board you mean and '
+            + 'query it with the default scope.');
+        Exit;
+    End;
+
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
@@ -1490,6 +1671,22 @@ Begin
     ObjTypeInt := ObjectTypeFromStringPCB(ObjTypeStr);
     If ObjTypeInt <> -1 Then
     Begin
+        { REFUSE a property name the PCB getter has no branch for. It
+          used to return '' for those, which is the same value a real
+          but empty property gives, so a misspelling read as "the data
+          is not there". Measured three times, each ending in a report
+          that the bridge could not do something it could: the worst was
+          'Net.Name', where every track came back with no net and the
+          conclusion was that copper carries no net attribution at all. }
+        BadProps := UnknownPCBProperties(PropsStr);
+        If BadProps <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
+                'Not a PCB property: ' + BadProps + '. These primitives do '
+                + 'not use the dotted schematic spelling, so Net.Name is '
+                + 'Net here. Available: ' + KnownPCBPropertyList + '.');
+            Exit;
+        End;
         Result := ProcessActivePCBDoc(ObjTypeInt, FilterStr, PropsStr, '', 'query', RequestId, Limit);
         Exit;
     End;
@@ -1517,6 +1714,12 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'set parameter is required');
         Exit;
     End;
+
+    { Start clean, so the reply describes THIS call. The buffer is module   }
+    { level and the bridge handles one request at a time, but a handler     }
+    { that left entries behind would otherwise fail the next caller for a   }
+    { property it never sent.                                               }
+    ResetPropertyDiag;
 
     ParseScope(Scope, ScopeType, ScopePath);
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
@@ -1734,8 +1937,21 @@ Begin
         End;
     End;
 
+    { DISPATCHED, NOT EXECUTED. Altium's RunProcess returns nothing and       }
+    { raises nothing for a process that does not exist, so this handler       }
+    { cannot tell a command that ran from a name that was silently ignored.   }
+    { MEASURED: obj_run_process("Sch:ThisProcessDoesNotExist") returned        }
+    { success true. Reporting that as success is the same defect as #83 in    }
+    { app_run_menu, which was fixed while this sibling was left alone.        }
+    {                                                                          }
+    { The key is named for what is actually known. Anything that needs to      }
+    { know the command took effect has to read the design back.               }
     RunProcess(ProcessName);
-    Result := BuildSuccessResponse(RequestId, '{"success":true,"process":"' + EscapeJsonString(ProcessName) + '"}');
+    Result := BuildSuccessResponse(RequestId,
+        '{"dispatched":true,"process":"' + EscapeJsonString(ProcessName) + '"'
+        + ',"note":"Altium accepts an unknown process name without error, so '
+        + 'this reports that the command was SENT, not that it ran. Verify by '
+        + 'reading the design."}');
 End;
 
 {..............................................................................}

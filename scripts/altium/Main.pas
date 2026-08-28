@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.08.13.1';
+    SCRIPT_VERSION = '2026.08.26.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -80,6 +80,34 @@ Var
     { Storing the reference here gives us a working "current target" the    }
     { primitive helpers can trust.                                           }
     LastCreatedLibComponent : ISch_Component;
+
+    { The name that reference was known by, recorded when it was set.
+
+      ASKING THE COMPONENT ITS OWN NAME IS NOT AN OPTION HERE.
+      Measured on AD26: reading LibReference off THIS global raised
+      "Undeclared identifier: LibReference", and the modal took the
+      polling loop with it because undeclared identifiers are not
+      catchable and the Try/Except around it did nothing. One caller sat
+      on that dialog for over two minutes.
+
+      The property itself is fine. ScanLibForComponent reads it off
+      every component it walks, ten lines earlier in the same lookup,
+      and has always worked. What differs is the reference: this one is
+      held ACROSS commands, and the document it belongs to may have been
+      closed, reopened or re-imported since. A member read on a
+      component that no longer exists is reported as an undeclared
+      identifier rather than as a missing object, which is why it reads
+      as an API error and is not one.
+
+      So the reference is cleared whenever this script reopens the
+      library, and the name is compared against this recorded string
+      rather than against anything read back off the component. }
+    LastCreatedLibComponentName : String;
+
+    { Re-entry guard for LookupLibComponent's last-resort reopen. A
+      reopen re-reads the document and the retry looks the name up
+      again; without this the retry could trigger another reopen. }
+    RefreshingLib : Boolean;
 
 {..............................................................................}
 { Initialise polling tunables to compile-time defaults. Called by the          }
@@ -408,6 +436,97 @@ Begin
     If Result = Nil Then Result := GetPCBBoardAnywhere;
 End;
 
+{..............................................................................}
+{ GetPCBBoardForMutation - the board an EDIT is allowed to touch.              }
+{                                                                              }
+{ GetPCBBoardAnywhere WANDERS, and that is correct for a read. When no PcbDoc  }
+{ is focused it walks every open project, opens the first board it finds,      }
+{ reads it, and restores the previous view so the focus change is invisible.   }
+{ For a query that is a convenience. For a DELETE it is a misfire: with a      }
+{ library focused and two boards open, obj_delete would remove primitives from }
+{ whichever board the walk reached first, and hide the fact that it had        }
+{ switched documents to do it.                                                 }
+{                                                                              }
+{ So an edit gets a board only when the target is UNAMBIGUOUS: a PcbDoc is     }
+{ focused, or exactly one is open anywhere. Two open and none focused is       }
+{ refused, and the refusal names them, because picking one is a guess the      }
+{ caller has to make rather than one this should make silently.                }
+{                                                                              }
+{ Why carries the reason when the Result is Nil.                               }
+{..............................................................................}
+
+Function GetPCBBoardForMutation(Var Why : String) : IPCB_Board;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    Path, Candidates, OnePath : String;
+    I, P, Found : Integer;
+Begin
+    Result := Nil;
+    Why := '';
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Why := 'No workspace is open.';
+        Exit;
+    End;
+
+    { A focused PcbDoc is unambiguous, whatever else is open. }
+    Doc := Workspace.DM_FocusedDocument;
+    If (Doc <> Nil) And (UpperCase(Doc.DM_DocumentKind) = 'PCB') Then
+    Begin
+        Result := PCBServer.GetCurrentPCBBoard;
+        If Result <> Nil Then Exit;
+    End;
+
+    Found := 0;
+    Candidates := '';
+    OnePath := '';
+    For P := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Project := Workspace.DM_Projects(P);
+        If Project = Nil Then Continue;
+        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(I);
+            If Doc = Nil Then Continue;
+            Path := '';
+            Try Path := Doc.DM_FullPath; Except End;
+            If Path = '' Then Continue;
+            If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
+               (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
+            Found := Found + 1;
+            OnePath := Path;
+            If Candidates <> '' Then Candidates := Candidates + ', ';
+            Candidates := Candidates + Path;
+        End;
+    End;
+
+    If Found = 0 Then
+    Begin
+        Why := 'No PCB document is open, so there is nothing to edit.';
+        Exit;
+    End;
+
+    If Found > 1 Then
+    Begin
+        Why := 'This edits a board, and ' + IntToStr(Found)
+            + ' are open with none of them focused: ' + Candidates
+            + '. Refusing rather than picking one. Focus the board you '
+            + 'mean, or name it with board_path. A library being in front '
+            + 'does NOT make this edit apply to the library.';
+        Exit;
+    End;
+
+    { Exactly one board open. Opening it is safe because there is no other }
+    { one it could have meant.                                             }
+    Result := ResolvePCBBoard(OnePath);
+    If Result = Nil Then
+        Why := 'The only open board, ' + OnePath + ', could not be opened.';
+End;
+
 { Save every modified IServerDocument the workspace knows about, both     }
 { project-attached docs and free-floating docs (libraries opened           }
 { standalone, scratch docs). Free docs live inside the synthetic           }
@@ -444,6 +563,129 @@ Begin
         ProjectServerDoc := Client.GetDocumentByPath(Project.DM_ProjectFullPath);
         If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
             Try ProjectServerDoc.DoFileSave(''); Except End;
+    Except End;
+End;
+
+{ CountDirtyInProject / CountDirtyDocuments - how many documents are STILL     }
+{ unsaved. The only way to tell a save that worked from one Altium refused.    }
+{                                                                              }
+{ MEASURED on AD26: app_save_all returned saved:true while Altium was raising  }
+{ "A command is currently active and save cannot be completed at this time"    }
+{ once per dirty document. Every one of those saves was declined, and the tool }
+{ still reported success, because it only checked that SaveAllDirty had not    }
+{ raised. DoFileSave does not raise when the editor refuses.                   }
+Function CountDirtyInProject(Project : IProject) : Integer;
+Var
+    J : Integer;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+Begin
+    Result := 0;
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc <> Nil Then
+        Begin
+            Try
+                ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
+                If (ServerDoc <> Nil) And ServerDoc.Modified Then
+                    Result := Result + 1;
+            Except End;
+        End;
+    End;
+End;
+
+Function CountDirtyDocuments : Integer;
+Var
+    Workspace : IWorkspace;
+    I : Integer;
+Begin
+    Result := 0;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+        Result := Result + CountDirtyInProject(Workspace.DM_Projects(I));
+    Try
+        Result := Result + CountDirtyInProject(Workspace.DM_FreeDocumentsProject);
+    Except End;
+End;
+
+{ ResolveLoadedDocPath - turn a bare document name into an ABSOLUTE path.     }
+{                                                                             }
+{ DM_FullPath AND DocumentName BOTH RETURN A BARE BASENAME for a free         }
+{ document, one that is open but not a member of any project. Anything that   }
+{ feeds that string to WorkspaceManager:OpenObject / CloseObject, or to        }
+{ CreateLibCompInfoReader, gets a silent no-op or a reader for the wrong      }
+{ file, because those all want a real path.                                   }
+{                                                                             }
+{ MEASURED: app_get_active_document and lib_get_component_details both        }
+{ reported "SWEEP_A.SchLib" for a document whose actual path is under the     }
+{ scratch directory, while the same call given an explicit library_path       }
+{ reported the full path. A reopen built on the basename did nothing at all   }
+{ and the failure looked like a lookup bug.                                   }
+{                                                                             }
+{ Returns '' when no absolute path can be found, so a caller can REFUSE       }
+{ rather than proceed with a string that will quietly do nothing.             }
+Function LooksAbsolutePath(P : String) : Boolean;
+Begin
+    Result := (Copy(P, 2, 1) = ':') Or (Copy(P, 1, 2) = '\\');
+End;
+
+Function MatchDocPathInProject(Project : IProject; Wanted : String) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Full : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc <> Nil Then
+        Begin
+            Full := '';
+            Try Full := Doc.DM_FullPath; Except End;
+            If LooksAbsolutePath(Full)
+                And (UpperCase(ExtractFileName(Full)) = UpperCase(Wanted)) Then
+            Begin
+                Result := Full;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+Function ResolveLoadedDocPath(NameOrPath : String) : String;
+Var
+    Workspace : IWorkspace;
+    Wanted : String;
+    I : Integer;
+Begin
+    Result := '';
+    If NameOrPath = '' Then Exit;
+    If LooksAbsolutePath(NameOrPath) Then
+    Begin
+        Result := NameOrPath;
+        Exit;
+    End;
+
+    Wanted := ExtractFileName(NameOrPath);
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Result := MatchDocPathInProject(Workspace.DM_Projects(I), Wanted);
+        If Result <> '' Then Exit;
+    End;
+
+    { Free documents live in the synthetic FreeDocumentsProject, and they are }
+    { precisely the ones that report a basename, so this is the branch that   }
+    { usually answers.                                                        }
+    Try
+        Result := MatchDocPathInProject(Workspace.DM_FreeDocumentsProject, Wanted);
     Except End;
 End;
 
@@ -860,12 +1102,57 @@ Begin
               Data + ',"error":null}';
 End;
 
+{..............................................................................}
+{ CROSS-DOCUMENT HINTS                                                        }
+{                                                                              }
+{ "No PCB library is active" is true and unhelpful. It says what is missing    }
+{ and not that the SAME operation exists for the other document kind, so the   }
+{ reasonable conclusion from it is that the capability is absent. That         }
+{ conclusion has been drawn and reported more than once, and each time the     }
+{ tool was there under the other namespace.                                    }
+{                                                                              }
+{ The split is the thing worth stating: lib_ acts on .PcbLib and .SchLib, pcb_ }
+{ on .PcbDoc, sch_ and obj_ on .SchDoc. Attached here rather than at the 277   }
+{ call sites so it cannot be right in some of them and stale in the rest.      }
+{..............................................................................}
+
+Function MessageNamesATool(Msg : String) : Boolean;
+Begin
+    Result := (Pos('pcb_', Msg) > 0) Or (Pos('lib_', Msg) > 0)
+           Or (Pos('sch_', Msg) > 0) Or (Pos('proj_', Msg) > 0)
+           Or (Pos('obj_', Msg) > 0) Or (Pos('app_', Msg) > 0)
+           Or (Pos('run_', Msg) > 0);
+End;
+
+Function CrossDocumentHint(ErrorCode : String) : String;
+Begin
+    Result := '';
+    If (ErrorCode = 'NO_PCBLIB') Then
+        Result := 'This is the LIBRARY tool and needs a .PcbLib. The same '
+                + 'operation on an open board is in the pcb_ namespace.'
+    Else If (ErrorCode = 'NO_SCHLIB') Then
+        Result := 'This is the LIBRARY tool and needs a .SchLib. For a '
+                + 'sheet, the sch_ and obj_ tools act on the open .SchDoc.'
+    Else If (ErrorCode = 'NO_PCB') Or (ErrorCode = 'NO_BOARD') Then
+        Result := 'This tool acts on an open .PcbDoc. To edit a footprint '
+                + 'inside a .PcbLib, use the lib_ tools instead.'
+    Else If (ErrorCode = 'NO_SCHDOC') Or (ErrorCode = 'NO_SCHEMATIC') Then
+        Result := 'This tool acts on an open .SchDoc sheet. To edit a '
+                + 'symbol inside a .SchLib, use the lib_ tools instead.';
+End;
+
 Function BuildErrorResponseDetailed(RequestId : String; ErrorCode : String;
                                     ErrorMsg : String; DetailsJson : String) : String;
 Var
-    EscMsg, Ch, HexDigits : String;
+    EscMsg, Ch, HexDigits, Hint : String;
     I, O : Integer;
 Begin
+    { Only when the handler has not already pointed somewhere itself: a }
+    { specific pointer beats the generic one and must not be doubled.   }
+    Hint := CrossDocumentHint(ErrorCode);
+    If (Hint <> '') And (Not MessageNamesATool(ErrorMsg)) Then
+        ErrorMsg := ErrorMsg + ' ' + Hint;
+
     // Inline escape (EscapeJsonString is not yet declared in build order).
     // Must also \u00XX-escape control and non-ASCII bytes: one raw byte
     // >127 in an error message (an accented file path, say) makes the whole

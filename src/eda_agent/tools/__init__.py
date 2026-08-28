@@ -20,6 +20,8 @@ from .application import (
     register_application_tools,
     register_meta_tools,
 )
+from .guidance import register_guidance_tools
+from .uiauto import register_uiauto_tools
 from .project import register_project_tools
 from .library import register_library_tools
 from .generic import register_generic_tools
@@ -179,6 +181,11 @@ def register_offline_review_tools(mcp) -> None:
 
 def register_all_tools(mcp):
     """Register all Altium tools with the MCP server."""
+    # Dialog-driving tools. Altium-only and Windows-only:
+    # they press buttons in the GUI for the one operation that
+    # has no API at all, so they do not belong on any other
+    # backend and are registered with the Altium suite alone.
+    register_uiauto_tools(mcp)
     register_application_tools(mcp)
     register_project_tools(mcp)
     register_library_tools(mcp)
@@ -275,6 +282,11 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # any one EDA tool, so they belong on every backend too. They also have to
     # exist for the minimal toolset to be possible at all.
     register_meta_tools(mcp)
+    # tool_guide answers which tool for which DOCUMENT, and what is proven
+    # impossible. That is a different question from tool_catalog's "what is
+    # this called", and it is the one that has been getting wrong answers,
+    # so it registers everywhere the catalogue does.
+    register_guidance_tools(mcp)
     # Part sourcing is EDA-agnostic: the providers answer about parts, not
     # about Altium or KiCad, so both backends get them.
     register_parts_tools(mcp)
@@ -298,6 +310,8 @@ __all__ = [
     "TOOLSETS",
     "DEFAULT_TOOLSET",
     "register_application_tools",
+    "register_guidance_tools",
+    "register_uiauto_tools",
     "register_meta_tools",
     "register_parts_tools",
     "register_project_tools",

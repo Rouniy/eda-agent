@@ -744,8 +744,10 @@ Var
     RuleHoleIter : IPCB_MaxMinHoleSizeConstraint;
     RuleName, V, GapStr, MinWStr, MaxWStr, FavWStr, MinHStr, MaxHStr : String;
     UpdatedCount, Kind, ValMils : Integer;
+    GapWanted, GapBefore, GapAfter : TCoord;
+    GapReport, GapMMStr : String;
     L : TLayer;
-    Found : Boolean;
+    Found, GapVerified, GapKindSupported : Boolean;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -754,6 +756,10 @@ Begin
         Exit;
     End;
 
+    GapVerified := False;
+    GapKindSupported := False;
+    GapBefore := -1;
+    GapAfter := -1;
     RuleName := ExtractJsonValue(Params, 'name');
     If RuleName = '' Then
     Begin
@@ -815,14 +821,38 @@ Begin
     { matches by name + kind, applies the write, breaks out. See the         }
     { ModifyWidthRules.pas reference pattern.                                  }
     GapStr := ExtractJsonValue(Params, 'gap_mils');
+    GapMMStr := ExtractJsonValue(Params, 'gap_mm');
     MinWStr := ExtractJsonValue(Params, 'min_width_mils');
     MaxWStr := ExtractJsonValue(Params, 'max_width_mils');
     FavWStr := ExtractJsonValue(Params, 'favored_width_mils');
     MinHStr := ExtractJsonValue(Params, 'min_hole_size_mils');
     MaxHStr := ExtractJsonValue(Params, 'max_hole_size_mils');
 
-    If (GapStr <> '') And
-       ((Kind = eRule_Clearance) Or (Kind = 24) Or (Kind = 52)) Then
+    { 63 is BoardOutlineClearance, added because a board-clearance rule
+      was reachable as an object and unwritable through every exposed
+      path, leaving no way to set it at all. The ordinal comes from the
+      TRuleKind order in the ReturnViaCheck reference script, where
+      position 52 lands on HoleToHoleClearance and so agrees with the
+      value this handler already determined empirically.
+
+      LITERALS, NOT THE eRule_ NAMES, and deliberately so. The published
+      enum stops at 51, which is why 24 and 52 were written as numbers
+      here in the first place, and eRule_HoleToHoleClearance and
+      eRule_BoardOutlineClearance appear nowhere in shipped code. An
+      identifier DelphiScript does not know faults at runtime where
+      Try/Except cannot catch it and takes the polling loop with it, so
+      a name that merely reads better is not worth that.
+        24 = ComponentClearance, 52 = HoleToHoleClearance,
+        63 = BoardOutlineClearance
+
+      Whether 63 answers IPCB_ClearanceConstraint.Gap is NOT established:
+      no IPCB_BoardOutlineClearanceConstraint exists in the reference
+      corpus, and the old note generalised "kinds 52+ share the
+      interface" from a single measurement. So the write below is checked
+      by reading the value back rather than assumed. }
+    GapKindSupported := (Kind = eRule_Clearance) Or (Kind = 24)
+        Or (Kind = 52) Or (Kind = 63);
+    If ((GapStr <> '') Or (GapMMStr <> '')) And GapKindSupported Then
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
@@ -835,10 +865,27 @@ Begin
             Begin
                 If RuleClearIter.Name = RuleName Then
                 Begin
-                    Try
-                        RuleClearIter.Gap := MilsToCoord(StrToIntDef(GapStr, 0));
-                        Inc(UpdatedCount);
-                    Except End;
+                    { Write, then READ IT BACK. A rule kind that does not
+                      really carry Gap does not necessarily raise: it can
+                      accept the assignment and keep its old value, and
+                      counting that as updated is how a caller ends up
+                      told the constraint was set while the board still
+                      has the old number. Measured on a board-clearance
+                      rule: the write reported success and the Gap stayed
+                      at 0. Only a confirmed change is counted. }
+                    { gap_mm is exact where gap_mils is not: an
+                      integer-mil field cannot express 0.2mm, which
+                      lands on 8 mils and 0.2032mm. }
+                    If GapMMStr <> '' Then
+                        GapWanted := MMToCoord(StrToFloatDef(GapMMStr, 0))
+                    Else GapWanted := MilsToCoord(StrToIntDef(GapStr, 0));
+                    GapBefore := -1;
+                    GapAfter := -1;
+                    Try GapBefore := RuleClearIter.Gap; Except End;
+                    Try RuleClearIter.Gap := GapWanted; Except End;
+                    Try GapAfter := RuleClearIter.Gap; Except End;
+                    GapVerified := (GapAfter = GapWanted);
+                    If GapVerified Then Inc(UpdatedCount);
                     Found := True;
                 End;
                 If Not Found Then RuleClearIter := Iter.NextPCBObject;
@@ -933,10 +980,47 @@ Begin
 
     SaveDocByPath(Board.FileName);
 
+    { When a gap was asked for, say what became of it. A bare count is
+      what let a refused constraint write read as a success: the number
+      was 1 because an unrelated comment write had landed. }
+    GapReport := '';
+    If (GapStr <> '') Or (GapMMStr <> '') Then
+    Begin
+        If GapMMStr <> '' Then
+            GapReport := ',"gap_requested_mm":' + GapMMStr
+        Else GapReport := ',"gap_requested_mils":' + GapStr;
+        GapReport := GapReport
+            + ',"gap_after_mm":' + FloatToStr(CoordToMM(GapAfter))
+            + ',"gap_written":' + BoolToJsonStr(GapVerified);
+        If GapBefore >= 0 Then
+            GapReport := GapReport + ',"gap_before_mils":'
+                + IntToStr(CoordToMils(GapBefore));
+        If GapAfter >= 0 Then
+            GapReport := GapReport + ',"gap_after_mils":'
+                + IntToStr(CoordToMils(GapAfter));
+        If Not GapKindSupported Then
+            GapReport := GapReport + ',"gap_note":"'
+                + 'This handler does not write a gap for rule kind '
+                + IntToStr(Kind) + '. It was SKIPPED, not attempted, and the '
+                + 'rule is unchanged. Gap is dispatched for kinds 0 '
+                + '(Clearance), 24 (ComponentClearance), 52 '
+                + '(HoleToHoleClearance) and 63 (BoardOutlineClearance). '
+                + 'Everything else needs PCB > Rules and Constraints Editor. '
+                + 'Report the kind number if it should be here."'
+        Else If Not GapVerified Then
+            GapReport := GapReport + ',"gap_note":"'
+                + 'The gap was attempted and did NOT take: the rule still '
+                + 'holds its old value. Read back rather than assumed, '
+                + 'because a kind that does not really carry Gap on '
+                + 'IPCB_ClearanceConstraint accepts the assignment silently. '
+                + 'Set it in PCB > Rules and Constraints Editor."';
+    End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
-        + '"properties_updated":' + IntToStr(UpdatedCount) + '}');
+        + '"properties_updated":' + IntToStr(UpdatedCount)
+        + GapReport + '}');
 End;
 
 {..............................................................................}
@@ -1034,8 +1118,8 @@ Var
     ViolationCount : Integer;
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
-    JsonItems : String;
-    First : Boolean;
+    JsonItems, ReportPath : String;
+    First, ReportPresent : Boolean;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -1077,9 +1161,40 @@ Begin
     End;
     Board.BoardIterator_Destroy(Iterator);
 
-    Result := BuildSuccessResponse(RequestId,
-        '{"violation_count":' + IntToStr(ViolationCount) + ','
-        + '"violations":[' + JsonItems + ']}');
+    { A ZERO HERE USED TO BE INDISTINGUISHABLE FROM A CANCELLED CHECK.       }
+    { PCB:DesignRuleCheck opens the Design Rule Checker dialog on AD26.      }
+    { MEASURED: pressing Cancel produced violation_count 0 with an empty     }
+    { list, byte-identical to a board that genuinely passes. A caller was    }
+    { told the good news either way, which is the worst shape this bug takes.}
+    {                                                                         }
+    { There is no verified silent form of the process. The only corroboration }
+    { available in-process is the .DRC report Altium writes beside the board  }
+    { when the check actually runs, so its presence is reported and a zero is }
+    { explicitly qualified rather than left to speak for itself. Nothing is   }
+    { deleted to force the issue: that would mean removing a file from the    }
+    { user's project folder to answer a question.                             }
+    ReportPath := '';
+    ReportPresent := False;
+    Try ReportPath := ChangeFileExt(Board.FileName, '.DRC'); Except End;
+    If ReportPath <> '' Then
+        Try ReportPresent := FileExists(ReportPath); Except End;
+
+    If (ViolationCount = 0) And (Not ReportPresent) Then
+        Result := BuildSuccessResponse(RequestId,
+            '{"violation_count":0,"violations":[],"drc_confirmed":false'
+            + ',"report_present":false'
+            + ',"report_path":"' + EscapeJsonString(ReportPath) + '"'
+            + ',"reason":"no violations were found AND no .DRC report exists, '
+            + 'so this zero does NOT mean the board is clean. The Design Rule '
+            + 'Checker is a dialog on this build: if it was cancelled the '
+            + 'check never ran. Confirm the dialog was answered, or drive it '
+            + 'with app_run_ui_command."}')
+    Else
+        Result := BuildSuccessResponse(RequestId,
+            '{"violation_count":' + IntToStr(ViolationCount) + ','
+            + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
+            + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
+            + '"violations":[' + JsonItems + ']}');
 End;
 
 {..............................................................................}
@@ -6127,11 +6242,17 @@ Var
     FoundObj : IPCB_Primitive;
     Dist, BestDist : Double;
     BRect : TCoordRect;
+    Why : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    { This DELETES, so it may not wander to find a board. See
+      GetPCBBoardForMutation: the wandering lookup opens the first board
+      any open project holds and hides the focus change, which for a
+      delete means removing primitives from a board the caller never
+      named. }
+    Board := GetPCBBoardForMutation(Why);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BuildErrorResponse(RequestId, 'AMBIGUOUS_TARGET', Why);
         Exit;
     End;
 
@@ -10767,15 +10888,85 @@ End;
 { MechanicalLayerEnabled are undeclared in this script binding.               }
 {..............................................................................}
 
+{ Name, enable and kind the mechanical layers of the OPEN BOARD.              }
+{                                                                              }
+{ lib_set_mech_layers refuses a PcbDoc outright, because it resolves a library }
+{ by path and a board is not one. That left the board half-served: kinds were  }
+{ reachable one at a time through pcb_set_mech_layer_kind, and names and       }
+{ enables were not reachable at all above Mechanical16.                        }
+{                                                                              }
+{ The whole apparatus is shared with the library, so pairs, the retry once the }
+{ previous holder is released, the restore when it still will not take, and    }
+{ the tidy all behave identically here. Only the resolution differs: the       }
+{ library is taken by path and verified, the board is whichever one is open.   }
+
+Function PCB_SetMechLayers(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Where : String;
+Begin
+    Board := GetPCBBoardAnywhere;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB',
+            'No PCB document is active. For a LIBRARY use '
+            + 'lib_set_mech_layers, which takes the library by path.');
+        Exit;
+    End;
+
+    Where := '';
+    Try Where := Board.FileName; Except Where := ''; End;
+    If Where = '' Then Where := 'the open board';
+
+    Result := ApplyMechLayerOps(Board, ExtractJsonValue(Params, 'layers'),
+        ExtractJsonValue(Params, 'tidy_pairs') = 'true', Where, RequestId);
+End;
+
+{ How many primitives sit on one layer of a board.                            }
+{                                                                              }
+{ A PcbDoc header carries no USEDBYPRIMS field, which a PcbLib does, so a      }
+{ board cannot be asked which mechanical layers its geometry occupies. The     }
+{ only way to know is to count, and not knowing is what makes moving kinds     }
+{ around on a board unsafe: a layer that looks spare can be carrying the       }
+{ assembly drawing.                                                            }
+
+Function PCB_CountPrimitivesOnLayer(Board : IPCB_Board; Lyr : TLayer) : Integer;
+Var
+    Iterator : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+Begin
+    Result := 0;
+    Iterator := Nil;
+    Try
+        Iterator := Board.BoardIterator_Create;
+        { No object filter. A single-type filter would count tracks and       }
+        { miss the strings, arcs, fills and regions that assembly and         }
+        { fabrication layers are mostly made of, and report a populated       }
+        { layer as empty.                                                     }
+        Iterator.AddFilter_LayerSet(MkSet(Lyr));
+        Iterator.AddFilter_Method(eProcessAll);
+        Prim := Iterator.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            Result := Result + 1;
+            Prim := Iterator.NextPCBObject;
+        End;
+    Except
+        Result := -1;
+    End;
+    If Iterator <> Nil Then
+        Try Board.BoardIterator_Destroy(Iterator); Except End;
+End;
+
 Function PCB_GetMechLayerNames(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     LayerStack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
     Lyr : TLayer;
-    JsonItems, NameStr : String;
-    First, Disp : Boolean;
-    Count, KindId : Integer;
+    JsonItems, NameStr, CountedStr : String;
+    First, Disp, Enabled, WantAll : Boolean;
+    Count, KindId, Num, Prims, Occupied : Integer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -10791,40 +10982,68 @@ Begin
         Exit;
     End;
 
+    { Counting walks the board once per layer, so it is opt-out rather than }
+    { forced on a caller who only wants the names.                          }
+    CountedStr := ExtractJsonValue(Params, 'count_primitives');
+    WantAll := (CountedStr <> 'false');
+
     JsonItems := '';
     First := True;
     Count := 0;
+    Occupied := 0;
 
-    For Lyr := eMechanical1 To eMechanical16 Do
+    { ENABLED, NOT DISPLAYED. This reported only layers the view happened to }
+    { be showing, so a layer carrying the whole fabrication drawing was      }
+    { absent from the answer whenever it was toggled off. Display is a view  }
+    { setting; enablement is a property of the board.                       }
+    For Num := 1 To MechScanLimit Do
     Begin
+        Lyr := MechLayerFromNumber(Num);
+        If Lyr = eNoLayer Then Continue;
+
         LayerObj := Nil;
         Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except LayerObj := Nil; End;
-        If LayerObj <> Nil Then
-        Begin
-            Disp := False;
-            Try Disp := Board.LayerIsDisplayed[Lyr]; Except End;
-            If Disp Then
-            Begin
-                NameStr := '';
-                Try NameStr := LayerObj.Name; Except End;
-                { The kind says what the layer is FOR, and a caller setting  }
-                { one needs to see what is already taken: a kind belongs to  }
-                { a single layer. -1 means this build has no kinds at all.   }
-                KindId := ReadMechKind(LayerObj);
-                If Not First Then JsonItems := JsonItems + ',';
-                First := False;
-                JsonItems := JsonItems
-                    + '{"layer":"' + EscapeJsonString(GetLayerString(Lyr)) + '",'
-                    + '"name":"' + EscapeJsonString(NameStr) + '",'
-                    + '"kind":"' + EscapeJsonString(MechKindToString(KindId)) + '",'
-                    + '"kind_id":' + IntToStr(KindId) + '}';
-                Inc(Count);
-            End;
-        End;
+        If LayerObj = Nil Then Continue;
+
+        Enabled := False;
+        Try Enabled := LayerObj.MechanicalLayerEnabled; Except Enabled := False; End;
+        If Not Enabled Then Continue;
+
+        NameStr := '';
+        Try NameStr := LayerObj.Name; Except End;
+        Disp := False;
+        Try Disp := Board.LayerIsDisplayed[Lyr]; Except End;
+        { The kind says what the layer is FOR, and a caller setting one     }
+        { needs to see what is already taken: a kind belongs to a single    }
+        { layer. -1 means this build has no kinds at all.                   }
+        KindId := ReadMechKind(LayerObj);
+
+        Prims := -1;
+        If WantAll Then Prims := PCB_CountPrimitivesOnLayer(Board, Lyr);
+        If Prims > 0 Then Occupied := Occupied + 1;
+
+        If Not First Then JsonItems := JsonItems + ',';
+        First := False;
+        JsonItems := JsonItems
+            + '{"layer":"Mechanical' + IntToStr(Num) + '",'
+            + '"number":' + IntToStr(Num) + ','
+            + '"name":"' + EscapeJsonString(NameStr) + '",'
+            + '"enabled":true,'
+            + '"displayed":' + BoolToJsonStr(Disp) + ','
+            + '"kind":"' + EscapeJsonString(MechKindToString(KindId)) + '",'
+            + '"kind_id":' + IntToStr(KindId) + ','
+            + '"primitive_count":' + IntToStr(Prims) + '}';
+        Inc(Count);
     End;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"mechanical_layers":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"mechanical_layers":[' + JsonItems + '],'
+        + '"count":' + IntToStr(Count) + ','
+        + '"occupied_count":' + IntToStr(Occupied) + ','
+        + '"counted_primitives":' + BoolToJsonStr(WantAll) + ','
+        { The scan stops here, so a layer above it is unreported rather   }
+        { than reported empty.                                             }
+        + '"scanned_to":' + IntToStr(MechScanLimit) + '}');
 End;
 
 {..............................................................................}
@@ -12867,6 +13086,7 @@ Begin
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
         'modify_layer':            Result := PCB_ModifyLayer(Params, RequestId);
         'set_mech_layer_kind':     Result := PCB_SetMechLayerKind(Params, RequestId);
+        'set_mech_layers':         Result := PCB_SetMechLayers(Params, RequestId);
         'get_layer_display':       Result := PCB_GetLayerDisplay(Params, RequestId);
         'set_layer_color':         Result := PCB_SetLayerColor(Params, RequestId);
         'get_board_outline':       Result := PCB_GetBoardOutline(Params, RequestId);

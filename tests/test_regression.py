@@ -337,7 +337,14 @@ class TestGenericRunProcessKeys:
             {"process": "Sch:Compile", "params": "ObjectKind=Document"},
             timeout=5.0,
         )
-        assert result["success"] is True
+        # DISPATCHED, not success. Altium accepts a process name it does
+        # not know without any error, so the handler cannot tell a command
+        # that ran from one that was ignored. MEASURED on AD26:
+        # obj_run_process("Sch:ThisProcessDoesNotExist") came back
+        # success:true. The key is named for what is actually known, and
+        # this assertion is what stops it drifting back.
+        assert result["dispatched"] is True
+        assert "success" not in result
         assert result["process"] == "Sch:Compile"
 
     def test_run_process_missing_process_key_errors(self, altium_sim, e2e_bridge):

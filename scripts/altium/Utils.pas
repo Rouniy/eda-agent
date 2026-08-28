@@ -151,6 +151,23 @@ Begin
     Result := '"' + EscapeJsonString(Name) + '":"' + EscapeJsonString(Value) + '"';
 End;
 
+{ AddFailReason - accumulate ONE per-item failure into a JSON array body.     }
+{                                                                             }
+{ The batch handlers used to answer a partly-failed run with nothing but a    }
+{ count, so a caller was told "failed: 1" and given no way to find out which  }
+{ item or why. Measured: lib_batch_rename and lib_batch_set_params both       }
+{ refused a component that demonstrably existed, and the reply could not      }
+{ distinguish a malformed line from an unresolvable name.                     }
+{                                                                             }
+{ Acc is the array BODY, without the enclosing brackets, so a caller wraps it }
+{ with JsonRaw when emitting.                                                 }
+Procedure AddFailReason(Var Acc : String; Item : String; Reason : String);
+Begin
+    If Acc <> '' Then Acc := Acc + ',';
+    Acc := Acc + '{"item":"' + EscapeJsonString(Item)
+        + '","reason":"' + EscapeJsonString(Reason) + '"}';
+End;
+
 Function JsonInt(Name : String; Value : Integer) : String;
 Begin
     Result := '"' + EscapeJsonString(Name) + '":' + IntToStr(Value);
@@ -716,6 +733,60 @@ End;
 { The numbering is the layer stack manager's own. 31 to 36 are unassigned,     }
 { which is why the map has a hole in it rather than an off-by-one.            }
 {..............................................................................}
+
+{ PCB object-type name to its TObjectId value, or -1 when unknown.            }
+{                                                                              }
+{ Lives HERE rather than beside the PCB iteration helpers because Library.pas  }
+{ builds before PCBGeneric.pas. Calling it from there resolved to nothing at   }
+{ runtime and took the scripting engine down with an access violation rather   }
+{ than a compile error, since DelphiScript has no forward declarations.        }
+
+Function ObjectTypeFromStringPCB(TypeStr : String) : Integer;
+Begin
+    Result := -1;
+    If TypeStr = 'eTrackObject'         Then Result := eTrackObject
+    Else If TypeStr = 'ePadObject'      Then Result := ePadObject
+    Else If TypeStr = 'eViaObject'      Then Result := eViaObject
+    Else If TypeStr = 'eComponentObject' Then Result := eComponentObject
+    Else If TypeStr = 'eArcObject'      Then Result := eArcObject
+    Else If TypeStr = 'eFillObject'     Then Result := eFillObject
+    Else If TypeStr = 'eTextObject'     Then Result := eTextObject
+    Else If TypeStr = 'ePolyObject'     Then Result := ePolyObject
+    Else If TypeStr = 'eRegionObject'   Then Result := eRegionObject
+    Else If TypeStr = 'eRuleObject'     Then Result := eRuleObject
+    Else If TypeStr = 'eDimensionObject' Then Result := eDimensionObject;
+End;
+
+{ Inverse of ObjectTypeFromStringPCB. Written here, next to it, so the
+  two cannot disagree about what a type is called.
+
+  It exists because PCB.pas called ObjectIDToObjectName, which no Altium
+  version declares. DelphiScript compiles a function only when it is
+  first CALLED, so the fault stayed hidden from May until a DRC
+  violation report finally reached that line, and it halted the polling
+  loop: an undeclared identifier is not catchable, and the Try/Except
+  wrapped around the call did nothing.
+
+  The name looked safe because it appears in reference/, but the only
+  file there using it is a vendored copy of this project's own PCB.pas.
+  The independent scripts define their own ObjectIDToString by hand,
+  which is the tell that no builtin exists. }
+
+Function ObjectIDToObjectName(Id : Integer) : String;
+Begin
+    If Id = eTrackObject             Then Result := 'track'
+    Else If Id = ePadObject          Then Result := 'pad'
+    Else If Id = eViaObject          Then Result := 'via'
+    Else If Id = eComponentObject    Then Result := 'component'
+    Else If Id = eArcObject          Then Result := 'arc'
+    Else If Id = eFillObject         Then Result := 'fill'
+    Else If Id = eTextObject         Then Result := 'text'
+    Else If Id = ePolyObject         Then Result := 'polygon'
+    Else If Id = eRegionObject       Then Result := 'region'
+    Else If Id = eRuleObject         Then Result := 'rule'
+    Else If Id = eDimensionObject    Then Result := 'dimension'
+    Else Result := 'objectid_' + IntToStr(Id);
+End;
 
 Function MechKindToString(K : Integer) : String;
 Begin

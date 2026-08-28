@@ -231,54 +231,52 @@ def find_unconnected_ic_pins_from_bom(bom: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Designator prefix to component class. Kept identical to
+#: componentClass() in the dashboard's index.html, and
+#: tests/test_designator_classes_agree.py fails if the two drift.
+#:
+#: Matched on the WHOLE letter prefix, so LED is a semiconductor rather
+#: than an inductor and SW is a connector rather than a switch nobody
+#: classified.
+_DESIGNATOR_CLASSES = {
+    "U": "ic", "IC": "ic", "A": "ic",
+    "J": "connector", "P": "connector", "X": "connector",
+    "CN": "connector", "SW": "connector", "S": "connector",
+    "D": "semi", "LED": "semi", "Q": "semi", "T": "semi",
+    "VR": "semi", "TVS": "semi",
+    "R": "passive", "C": "passive", "L": "passive", "FB": "passive",
+    "RN": "passive", "Y": "passive", "XTAL": "passive",
+}
+
+
 def _component_class_from_designator(des: str) -> str:
     """Mirror of the dashboard's componentClass() heuristic so MCP-side
     audits classify the same way the Components tab chips do."""
     if not des:
         return "other"
 
-    # MULTI-LETTER PREFIXES FIRST, then the single letter.
+    # THE WHOLE LETTER PREFIX, matched against one table.
     #
-    # Reading only des[0] classified IC1, IC2 and IC3 as "other",
-    # because the first letter is I. IC is the standard prefix for an
-    # integrated circuit outside the U convention, and a live board
-    # used it for three of its four ICs: the
-    # datasheet audit examined 2 parts out of 111 and reported no
-    # violations, which is a clean bill of health for a board it had
-    # barely looked at.
+    # This used to try a three-entry multi-letter map and then fall
+    # through to des[0], and the claim above that it mirrors the
+    # dashboard was simply false: measured across 25 ordinary
+    # designators the two disagreed on TEN, twice landing in opposite
+    # categories. CN1 was a connector on the dashboard and a passive
+    # here; XTAL1 was a passive there and a connector here. Y1, the
+    # standard crystal prefix, was "other".
     #
-    # Checked before the single letter and falling through to it, so
-    # every existing answer is unchanged: X still means connector for
-    # XTAL1, which the old code decided from its first letter alone.
+    # A first-letter fallback cannot be made to agree, because the
+    # prefixes that matter are multi-letter and their first letters
+    # belong to other classes: LED starts with L, TVS with T, SW with S.
+    # So the fallback is gone and the table below is the whole rule,
+    # kept identical to componentClass() in the dashboard. A guard
+    # parses that function and compares the two, because a comment
+    # asserting they match is what failed last time.
     import re as _re
 
-    letters = (_re.match(r"[A-Za-z]+", des) or _re.match("", "")).group(0)
-    multi = {
-        "IC": "ic",
-        # A resistor or capacitor network is still a passive, and RN1
-        # would otherwise read as a resistor by its first letter, which
-        # happens to be right for the wrong reason.
-        "RN": "passive", "CN": "passive",
-        # Ferrite bead: a passive, and F alone is a fuse.
-        "FB": "passive",
-    }
-    if letters.upper() in multi:
-        return multi[letters.upper()]
-
-    prefix = des[0].upper()
-    if prefix == "C":
-        return "passive"
-    if prefix == "R":
-        return "passive"
-    if prefix == "L":
-        return "passive"
-    if prefix == "U":
-        return "ic"
-    if prefix == "Q" or prefix == "D":
-        return "semi"
-    if prefix == "J" or prefix == "P" or prefix == "X":
-        return "connector"
-    return "other"
+    match = _re.match(r"[A-Za-z]+", des)
+    prefix = match.group(0).upper() if match else ""
+    return _DESIGNATOR_CLASSES.get(prefix, "other")
 
 
 def register_audit_tools(mcp):

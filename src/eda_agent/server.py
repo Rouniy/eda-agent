@@ -114,9 +114,60 @@ ACTIVE_BACKEND = os.environ.get("EDA_AGENT_BACKEND", DEFAULT_BACKEND)
 # default stays "full" so existing installs are unaffected.
 ACTIVE_TOOLSET = os.environ.get("EDA_AGENT_TOOLSET", DEFAULT_TOOLSET)
 
+# WHY THERE ARE SERVER INSTRUCTIONS AT ALL.
+#
+# tool_catalog and tool_guide only help a caller who thinks to call them,
+# and the recorded failures are precisely the ones where nobody did: a
+# capability was reported ABSENT while the tool existed under another
+# namespace, four times over. A tool description cannot fix that, because
+# it is read only once the right tool has already been found. Server
+# instructions are the one piece of text a client sees before choosing
+# anything, so the pointer belongs here.
+#
+# Deliberately short. This is prepended to a client's context on every
+# session, so it earns its place by covering the mistakes that actually
+# happened and nothing else.
+def build_server_instructions(toolset: str = DEFAULT_TOOLSET) -> str:
+    """The preamble, worded for the toolset the client will actually see.
+
+    Under the minimal toolset only tool_catalog and tool_invoke are
+    advertised, so instructing a client to "call tool_guide" names
+    something it cannot see. It stays reachable through tool_invoke, and
+    saying which applies is the difference between guidance and a dead
+    end for the clients that most need the guidance.
+    """
+    if (toolset or DEFAULT_TOOLSET).strip().lower() == "minimal":
+        reach = ('reach tool_guide through tool_invoke, since this server '
+                 'is advertising only the two meta-tools,')
+    else:
+        reach = "call tool_guide"
+    return (
+        "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
+        "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
+        "pcb_ on an open .PcbDoc, sch_ and obj_ on an open .SchDoc. A board\n"
+        "tool aimed at a library does not always fail. It can resolve some\n"
+        "other open board and report success for work you never asked for.\n"
+        "\n"
+        f"Before concluding that this server cannot do something, {reach}\n"
+        "with what you are trying to do. It answers three separate things:\n"
+        "the tool and what it needs first, the tool you were probably\n"
+        "reaching for and why it acts on a different document, and the\n"
+        "short list of things that are genuinely impossible with the\n"
+        "reason. Use tool_catalog to search the surface by name or\n"
+        "category.\n"
+        "\n"
+        "Coordinates are in mils throughout, on every backend.\n"
+    )
+
+
+SERVER_INSTRUCTIONS = build_server_instructions(ACTIVE_TOOLSET)
+
 # Create global FastMCP instance, named for the backend so a client that
 # lists several eda-agent servers can tell them apart.
-mcp = FastMCP(f"eda-agent-{ACTIVE_BACKEND.strip().lower() or DEFAULT_BACKEND}")
+mcp = FastMCP(
+    f"eda-agent-{ACTIVE_BACKEND.strip().lower() or DEFAULT_BACKEND}",
+    instructions=SERVER_INSTRUCTIONS,
+)
 
 # Register only the selected backend's tools. Returns the normalised name
 # (an unrecognised value falls back to the default).

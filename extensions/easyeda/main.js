@@ -91,6 +91,36 @@ const ATTACH_STALL_MS = 30000;
 //: idle counter twice per interval.
 let lastTickAt = 0;
 
+//: What the last attach actually observed, in words, for the editor.
+//:
+//: WHY THIS EXISTS IN THE EDITOR AND NOT ONLY OVER THE WIRE. Every
+//: other diagnostic here is reported in the ping reply, which is
+//: readable exactly when a connection already works, and therefore
+//: useless for the one question anybody asks: why is it not connected?
+//: The operator sits in front of the editor with no console and no way
+//: to see a scan that fails in silence.
+//:
+//: So the outcome of each scan is kept here and shown from the menu.
+let lastOutcome = 'not attempted yet';
+let lastOutcomeAt = 0;
+
+//: What each port said when asked, kept from the last health scan.
+//:
+//: The entry that matters is a port that answers /health with SOME
+//: OTHER service. Our range and path (49620-49629, /eda) are the ones
+//: EasyEDA's own bridge server uses, so a port answering `easyeda-bridge`
+//: means the official gateway is running there and the two are
+//: competing for the same range. That is invisible from a bare "no
+//: server found" and is the first thing worth ruling out.
+let lastProbeNotes = [];
+
+//: When a failure was last announced, so a 5 second retry loop cannot
+//: bury the editor in toasts. The state is available on demand from the
+//: menu; the toast only marks the transitions.
+let lastFailureToastAt = 0;
+//: How long to leave between unsolicited failure toasts.
+const FAILURE_TOAST_MS = 60000;
+
 function renewSocketId() {
   const previous = WS_ID;
   wsSerial += 1;
@@ -228,10 +258,33 @@ const DESTRUCTIVE_METHOD =
 //
 //   setNetlist              replaces the whole connectivity
 //   importAutoRoute*        replaces all routing
+//   modify*Net / modify*Name  re-scope or orphan an existing constraint
 const DESTRUCTIVE_EXACT = [
   'setNetlist',
   'importAutoRouteSesFile',
   'importAutoRouteJsonFile',
+  // Replaces the PLACEMENT of the whole board, which is at least as
+  // destructive as replacing its routing, and it sat unguarded beside
+  // the two that were. Found by reading PCB_Document's import family
+  // in the official reference rather than by anything going wrong.
+  'importAutoLayoutJsonFile',
+  // The automatic engines, none of which reads as destructive.
+  // pcb_Document.autoRouting was guarded only by the easyeda_auto_route
+  // TOOL; the generic shim reaches the same method and did not check,
+  // so the documented guarantee held for one route in and not the other.
+  'autoRouting',
+  'autoLayout',
+  'restoreDefault',
+  // Constraint edits that read as harmless. Repointing a differential
+  // pair onto another net silently re-scopes whatever is already routed
+  // under it, and renaming a class or group orphans every rule that
+  // referenced the old name. Neither carries a destructive-sounding
+  // verb, so the prefix test above never sees them.
+  'modifyDifferentialPairPositiveNet',
+  'modifyDifferentialPairNegativeNet',
+  'modifyDifferentialPairName',
+  'modifyNetClassName',
+  'modifyEqualLengthNetGroupName',
 ];
 
 function looksDestructive(method) {
@@ -558,10 +611,25 @@ async function boardName() {
   }
 }
 
+// ASK FOR THE VIOLATION LIST. check() is overloaded on its third
+// argument: with includeVerboseError false it returns Promise<boolean>,
+// and with it true the return is ALWAYS an array. Called with no
+// arguments at all, as this did, the boolean overload is what answers,
+// which is why the checker appeared to report a bare status and why
+// reportProblem below had to refuse it. The boolean was our own call
+// selecting the wrong overload, not the editor declining to explain
+// itself.
+//
+// strict=true asks for the full rule set rather than a reduced pass.
+// userInterface=false keeps the editor from opening its own results
+// panel, since this call answers a tool rather than a person.
+const DRC_ARGS = [true, false, true];
+
 handlers['design.run_drc'] = async () => {
   // The editor's own checker. This project does not reimplement an EDA
   // tool's rules: a second opinion that disagrees is worse than none.
-  const report = await eda.pcb_Drc.check();
+  const report = await eda.pcb_Drc.check(
+    DRC_ARGS[0], DRC_ARGS[1], DRC_ARGS[2]);
   // NOTHING and NO VIOLATIONS are different answers.
   //
   // normaliseViolations turns a null report into an empty list, so a
@@ -584,7 +652,10 @@ handlers['design.run_drc'] = async () => {
 };
 
 handlers['design.run_erc'] = async () => {
-  const report = await eda.sch_Drc.check();
+  // Same overload rule as the PCB checker above; sch_Drc.check carries
+  // the identical signature.
+  const report = await eda.sch_Drc.check(
+    DRC_ARGS[0], DRC_ARGS[1], DRC_ARGS[2]);
   if (report === null || report === undefined) {
     return {
       ran: false,
@@ -603,11 +674,18 @@ handlers['design.run_erc'] = async () => {
 // cannot enumerate violations from.
 //
 // Returns null when it is a usable report, or an explanation when it is
-// not. Measured: eda.sch_Drc.check() answers with the BOOLEAN false on
+// not. Measured: eda.sch_Drc.check() answered with the BOOLEAN false on
 // a live schematic. That is not null or undefined, so it sailed past
 // the guard above, and normaliseViolations turned it into an empty
 // list. The reply was "ran: true, violation_count: 0" - a confident
 // clean bill of health from a check that produced no report.
+//
+// The measurement was right and the cause was not. check() is
+// overloaded on includeVerboseError, and calling it with no arguments
+// selected the boolean overload; the editor was answering the question
+// we asked. Both call sites now pass the array form. This guard stays
+// anyway: it is the only thing standing between a status value and a
+// clean bill of health if an editor build ever answers with one.
 //
 // A boolean is a STATUS, not a list of violations. Even `true` cannot
 // be read as "clean": nothing in it enumerates what was checked, and a
@@ -665,9 +743,142 @@ handlers['pcb.differential_pairs'] = async () => ({
   differential_pairs: (await eda.pcb_Drc.getAllDifferentialPairs()) || [],
 });
 
+// REUSABLE CIRCUIT BLOCKS, which is what EasyEDA has instead of
+// hierarchy.
+//
+// There is no hierarchical sheet here: schematic pages are siblings
+// with an order, and no class exposes a sheet symbol, a sheet entry or
+// a parent link. What EasyEDA offers instead is the CBB, 复用模块, a
+// saved block placed into a schematic. Reuse without containment.
+//
+// Placing one needs THREE uuids and only two are obvious:
+//
+//   placeCbbSchematicPage({libraryUuid, cbbUuid, uuid}, x, y)
+//
+// The third is the schematic page INSIDE the block, and the chain to
+// it is all documented: lib_Cbb.get gives an ILIB_CbbItem, whose
+// `boards` array holds IDMT_BoardItem, whose `schematic` is an
+// IDMT_SchematicItem carrying the uuid. Resolved here rather than
+// asked of the caller, who has no way to know it.
+handlers['lib.search_cbb'] = async (params) => {
+  const query = params.query || '';
+  const found = (await eda.lib_Cbb.search(
+    query, params.library_uuid || undefined, undefined,
+    Number(params.items_of_page) > 0 ? Number(params.items_of_page) : 10,
+    Number(params.page) > 0 ? Number(params.page) : 1)) || [];
+  return { found: found, count: found.length };
+};
+
+// sch.place_cbb WAS HERE AND IS REMOVED.
+//
+// placeCbbSchematicPage({libraryUuid, cbbUuid, uuid}, x, y) is fully
+// documented, and the third uuid is resolvable: lib_Cbb.get returns an
+// ILIB_CbbItem whose boards each carry a schematic whose uuid is the
+// one the call wants. The whole chain reads correctly on paper.
+//
+// It is NOT IN THE RUNTIME. The captured surface for editor 2.2.47.7
+// has sch_PrimitiveComponent with placeComponentWithMouse and no
+// placeCbbSchematicPage, and the reality guard caught the call the
+// moment it was written.
+//
+// This is the inverse of the sys_Tool comparison methods, which exist
+// at runtime and are absent from the docs. Documented and present are
+// two different sets, and neither contains the other. Shipping a tool
+// that cannot work on the only build anyone has measured is what this
+// backend spent a long time recovering from, so the search half stays
+// and the place half waits for a runtime that has it.
+
 handlers['sch.netlist'] = async () => ({
   netlist: (await eda.sch_Netlist.getNetlist()) || null,
 });
+
+// REPLACING THE CONNECTIVITY, which is the counterpart to the read
+// above and by far the most destructive thing on this backend.
+//
+// setNetlist takes a STRING, not a File:
+//
+//   pcb_Net.setNetlist(type: ESYS_NetlistType | undefined,
+//                      netlist: string): Promise<boolean>
+//   sch_Netlist.setNetlist(same arguments): Promise<void>
+//
+// It was recorded alongside the autorouter FILE imports as though it
+// needed the same plumbing. It does not, and it lives on pcb_Net
+// rather than pcb_Document.
+//
+// Note the return types differ: the board form answers boolean, the
+// schematic form answers void. So a schematic call CANNOT be confirmed
+// from its return value, and saying "done" there would be asserting
+// something the API never told us.
+const NETLIST_TYPES = ['Allegro', 'DISA', 'DSNET', 'EasyEDA', 'JLCEDA',
+  'PADS'];
+
+// THE AUTOROUTER ROUND TRIP, closing the loop that export_dsn opens.
+//
+// The classic flow: export a DSN, route it in an external autorouter,
+// import the SES back. We had the outward half and not the return, so
+// the round trip stopped halfway.
+//
+// All three take a File, which is why they sat unexposed rather than
+// because the API lacked anything. Each is confirm-gated: they replace
+// routing or placement wholesale, and the destructive name list covers
+// the same methods for anyone reaching them through the generic shim.
+const FILE_IMPORTS = {
+  ses: {
+    method: 'importAutoRouteSesFile',
+    extension: '.ses',
+    warns: 'importing a SES file REPLACES the routing on this board.',
+  },
+  route_json: {
+    method: 'importAutoRouteJsonFile',
+    extension: '.json',
+    warns: 'importing an autoroute JSON REPLACES the routing on this board.',
+  },
+  layout_json: {
+    method: 'importAutoLayoutJsonFile',
+    extension: '.json',
+    warns: 'importing an autolayout JSON REPLACES the PLACEMENT of every '
+      + 'component on this board.',
+  },
+};
+
+handlers['pcb.import_routing'] = async (params) => {
+  const kind = String(params.kind || '');
+  const spec = FILE_IMPORTS[kind];
+  if (!spec) {
+    throw new Error(
+      `kind must be one of ${Object.keys(FILE_IMPORTS).join(', ')}`);
+  }
+  requireConfirm(params, spec.warns
+    + ' Whatever is there now is discarded. Take a checkpoint first.');
+  const file = unpackedFile(params.file, spec.extension);
+  const answer = await eda.pcb_Document[spec.method](file);
+  return {
+    imported: answer === true,
+    kind: kind,
+    method: spec.method,
+    bytes: file.size,
+  };
+};
+
+handlers['pcb.set_netlist'] = async (params) => {
+  requireConfirm(params, 'set_netlist REPLACES the entire connectivity '
+    + 'of the board. Every net comes from the netlist you supply, and '
+    + 'whatever the board had before is gone.');
+  const text = params.netlist;
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('netlist must be a non-empty string');
+  }
+  const type = params.netlist_type;
+  if (type !== undefined && NETLIST_TYPES.indexOf(type) === -1) {
+    throw new Error(
+      `netlist_type ${JSON.stringify(type)} is not one of `
+      + `${NETLIST_TYPES.join(', ')}. Omit it to let the editor decide.`);
+  }
+  const answer = await eda.pcb_Net.setNetlist(type, text);
+  // The board form returns a boolean, so read it rather than assuming.
+  return { applied: answer === true, netlist_type: type || null,
+    length: text.length };
+};
 
 handlers['pcb.components'] = async () => ({
   components: (await eda.pcb_PrimitiveComponent.getAll()) || [],
@@ -734,6 +945,46 @@ handlers['pcb.list_boards'] = async () => ({
 handlers['sch.components'] = async () => ({
   components: (await eda.sch_PrimitiveComponent.getAll()) || [],
 });
+
+// THE INVERSE OF packedFile, for the calls that take a File IN.
+//
+// importAutoRouteSesFile, importAutoRouteJsonFile and
+// importAutoLayoutJsonFile all take a File, and the bridge carries
+// JSON. Sending a file INTO the editor was recorded as the reason
+// those three stayed unexposed, and the plumbing is the mirror of what
+// already existed for getting one out: base64 in, bytes out, wrapped
+// in a File the sandbox will accept.
+//
+// The name matters to the editor. An autorouter session file is
+// identified by its extension, so a caller that omits one gets a
+// refusal here rather than an unexplained rejection inside EasyEDA.
+function unpackedFile(payload, expectedExtension) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('file must be an object with base64 and name');
+  }
+  const { base64, name } = payload;
+  if (typeof base64 !== 'string' || !base64) {
+    throw new Error('file.base64 is required');
+  }
+  if (typeof name !== 'string' || !name) {
+    throw new Error('file.name is required: the editor identifies the '
+      + 'format by its extension');
+  }
+  if (expectedExtension
+      && !name.toLowerCase().endsWith(expectedExtension)) {
+    throw new Error(
+      `file.name is ${JSON.stringify(name)} but this call expects a `
+      + `${expectedExtension} file. Passing the wrong format is accepted `
+      + `by the editor and produces a board nobody asked for.`);
+  }
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new File([bytes], name,
+    { type: payload.mime || 'application/octet-stream' });
+}
 
 // Exports return file content from the editor rather than writing to
 // disk here: the extension runs in a sandbox and has no path the server
@@ -889,9 +1140,16 @@ handlers['pcb.primitives_in_region'] = async (params) => {
   if ([x1, y1, x2, y2].some((v) => typeof v !== 'number')) {
     throw new Error('x1, y1, x2 and y2 are required and must be numbers');
   }
+  // BOTH X VALUES, THEN BOTH Y VALUES. The signature is
+  // getPrimitivesInRegion(left, right, top, bottom), so the corner-pair
+  // order this handler accepts at its own boundary must be interleaved
+  // before it goes in. Passing (x1, y1, x2, y2) put y1 into `right` and
+  // x2 into `top`, which searched a different rectangle and returned a
+  // perfectly plausible list of primitives from the wrong place. That
+  // is why it was never noticed: the failure has no symptom to see.
   return {
     primitives:
-      (await eda.pcb_Document.getPrimitivesInRegion(x1, y1, x2, y2)) || [],
+      (await eda.pcb_Document.getPrimitivesInRegion(x1, x2, y1, y2)) || [],
   };
 };
 
@@ -1567,7 +1825,10 @@ function libraryRef(params) {
       || typeof uuid !== 'string' || !uuid) {
     throw new Error(
       'library_uuid and uuid are both required. Both come from a search '
-        + 'result; there is no lookup by part name.',
+        + 'result: nothing resolves a bare name straight to a part, so '
+        + 'call lib.search_devices (or search_symbols / search_footprints) '
+        + 'first and pass the pair it returns. Searching BY name is fine, '
+        + 'it is the direct name-to-uuid lookup that does not exist.',
     );
   }
   return { libraryUuid, uuid };
@@ -2519,6 +2780,49 @@ handlers['lib.delete_footprint'] = async (params) => {
   };
 };
 
+// BINDING A DEVICE TO ITS PARTS, including the 3D model.
+//
+// lib_Device.modify's fifth parameter is an `association` object:
+//
+//   { symbol?: {uuid, libraryUuid}, footprint?: {uuid, libraryUuid},
+//     model3D?: {uuid, libraryUuid}, imageData? }
+//
+// which is how a 3D model reaches a part on this backend, matching what
+// lib_link_3d_model does on the Altium side. It was recorded as a gap
+// on the assumption the extension API might not expose it; it does, and
+// LIB_3DModel carries a full create/get/search/modify/copy/delete
+// surface besides.
+//
+// Each binding is optional and only what was asked for is sent, because
+// passing null CLEARS a binding: footprint and model3D are typed
+// `| null` explicitly. Sending a blank one would unbind the part while
+// reporting success.
+handlers['lib.link_device_parts'] = async (params) => {
+  const [uuid, libraryUuid] = itemAndLibrary(params);
+  const pair = (item) => {
+    if (!item || !item.uuid) return null;
+    return {
+      uuid: item.uuid,
+      libraryUuid: item.library_uuid || libraryUuid,
+    };
+  };
+  const association = {};
+  const model3d = pair(params.model_3d);
+  const footprint = pair(params.footprint);
+  const symbol = pair(params.symbol);
+  if (model3d) association.model3D = model3d;
+  if (footprint) association.footprint = footprint;
+  if (symbol) association.symbol = symbol;
+  if (!Object.keys(association).length) {
+    throw new Error(
+      'give model_3d, footprint or symbol, each as {uuid, library_uuid}. '
+      + 'An empty association would report success while binding nothing.');
+  }
+  const ok = await eda.lib_Device.modify(
+    uuid, libraryUuid, undefined, undefined, association) === true;
+  return { linked: ok, bound: Object.keys(association) };
+};
+
 handlers['lib.modify_device'] = async (params) => {
   const [uuid, libraryUuid] = itemAndLibrary(params);
   if (!params.name && !params.description) {
@@ -2527,12 +2831,26 @@ handlers['lib.modify_device'] = async (params) => {
         + 'while doing nothing',
     );
   }
+  // DEVICE TAKES SEVEN, SYMBOL AND FOOTPRINT TAKE FIVE. The three
+  // modify methods are NOT the same shape, so the call cannot be shared
+  // between them:
+  //
+  //   lib_Device.modify(uuid, libraryUuid, name, classification,
+  //                     association, description, property)
+  //   lib_Symbol.modify(uuid, libraryUuid, name, classification, description)
+  //   lib_Footprint.modify(same as symbol)
+  //
+  // Device carries an `association` slot at position 5 that the other
+  // two do not, so passing description there put it where the symbol,
+  // footprint and 3D model bindings live. The neighbouring symbol and
+  // footprint handlers are correct as they stand; do not align them.
   return {
     modified: await eda.lib_Device.modify(
       uuid, libraryUuid,
       typeof params.name === 'string' && params.name
         ? params.name : undefined,
-      undefined,
+      undefined,   // classification
+      undefined,   // association: symbol / footprint / 3D bindings
       typeof params.description === 'string' && params.description
         ? params.description : undefined) === true,
   };
@@ -2597,13 +2915,25 @@ handlers['proj.delete_pcb'] = async (params) => {
   return { deleted: await eda.dmt_Pcb.deletePcb(params.uuid) === true };
 };
 
-handlers['proj.delete_project'] = async (params) => {
-  if (!params.uuid) throw new Error('uuid is required');
-  requireConfirm(params, 'delete_project removes the WHOLE project: '
-    + 'every schematic, every board and the library items stored in it.');
-  return {
-    deleted: await eda.dmt_Project.deleteProject(params.uuid) === true,
-  };
+// NOT POSSIBLE, and it never was. dmt_Project exposes createProject,
+// getAllProjectsUuid, getCurrentProjectInfo, getProjectInfo,
+// moveProjectToFolder and openProject. There is no deleteProject, and
+// no other class offers one: the document tree can delete a board, a
+// folder, a panel, a PCB, a schematic and a schematic page, but never
+// the project itself.
+//
+// This used to call eda.dmt_Project.deleteProject, which is undefined,
+// so the call threw a TypeError AFTER the caller had confirmed a
+// destructive operation. Refusing outright is the honest answer, and it
+// names what the API can actually delete so the caller is not left
+// guessing whether they mistyped something.
+handlers['proj.delete_project'] = async () => {
+  throw new Error(
+    'EasyEDA has no project-delete API. dmt_Project offers create, open, '
+    + 'move and the info reads, and nothing anywhere deletes a project. '
+    + 'You can delete the parts: proj.delete_schematic, proj.delete_pcb, '
+    + 'proj.delete_panel, or the folder through the document tree. '
+    + 'Delete the project itself from the EasyEDA UI.');
 };
 
 handlers['editor.close_document'] = async (params) => {
@@ -2673,12 +3003,30 @@ handlers['lib.list_libraries'] = async () => {
   };
 };
 
-// EasyEDA caps every library search at ten results and exposes no way
-// past it. A numeric second argument matches nothing and an object one
-// never returns, so ten is the entire answer rather than the first page
-// of one. A caller choosing between parts has no route to the eleventh,
-// and a reply that does not say so reads as the complete set.
-const LIB_SEARCH_CAP = 10;
+// TEN IS THE DEFAULT PAGE, NOT A CEILING. This previously recorded
+// that EasyEDA caps every library search at ten with no way past, on
+// the strength of the SECOND argument matching nothing. The second
+// argument is a library uuid, and paging lives further along:
+//
+//   lib_Symbol.search   (key, libraryUuid, classification, symbolType,
+//                        itemsOfPage, page)
+//   lib_Device.search   (same six)
+//   lib_Footprint.search(key, libraryUuid, classification,
+//                        itemsOfPage, page)
+//   lib_3DModel.search  (same five)
+//
+// Note the arity differs: symbolType exists on Symbol and Device only,
+// so itemsOfPage sits at position 5 for those two and position 4 for
+// the other two. Passing the page size into the wrong slot is how a
+// second attempt at this would quietly fail.
+//
+// The default page size is what ten was, so it stays as the default
+// here rather than being raised silently.
+const LIB_SEARCH_PAGE_SIZE = 10;
+
+// Classes whose search carries a symbolType argument before the paging
+// pair. Everything hangs off this one fact, so it is named once.
+const LIB_SEARCH_HAS_SYMBOL_TYPE = ['lib_Symbol', 'lib_Device'];
 
 // The second argument scopes the search to one library, measured: the
 // system uuid returns the same ten, and the personal, project and
@@ -2698,18 +3046,30 @@ async function librarySearch(className, params, allowEmpty) {
   }
   const libraryUuid = params.library_uuid || '';
   const instance = eda[className];
-  const found = (libraryUuid
-    ? await instance.search(query, libraryUuid)
-    : await instance.search(query)) || [];
+  const size = Number(params.items_of_page) > 0
+    ? Number(params.items_of_page) : LIB_SEARCH_PAGE_SIZE;
+  const page = Number(params.page) > 0 ? Number(params.page) : 1;
+
+  // Built positionally, because the classes disagree on how many
+  // arguments precede the paging pair. undefined leaves an optional
+  // slot at its default rather than sending an empty value.
+  const args = [query, libraryUuid || undefined, undefined];
+  if (LIB_SEARCH_HAS_SYMBOL_TYPE.indexOf(className) !== -1) {
+    args.push(undefined);            // symbolType
+  }
+  args.push(size, page);
+
+  const found = (await instance.search.apply(instance, args)) || [];
   return {
     found: found,
     meta: {
       result_count: found.length,
-      result_cap: LIB_SEARCH_CAP,
-      // At the cap there are probably more, and no argument reaches
-      // them. Saying so is the difference between a bound and a silent
-      // one.
-      capped: found.length >= LIB_SEARCH_CAP,
+      page: page,
+      items_of_page: size,
+      // A full page means there is probably another one. Unlike before,
+      // there is now something the caller can do about it.
+      more_likely: found.length >= size,
+      next_page: found.length >= size ? page + 1 : null,
       library_uuid: libraryUuid || null,
       query: query,
     },
@@ -2741,19 +3101,48 @@ handlers['lib.search_footprints'] = async (params) => {
   return Object.assign({ footprints: out.found }, out.meta);
 };
 
+// AN OBJECT, AND A BLOB BACK. Both render calls take a single source
+// object carrying BOTH uuids, not a bare id:
+//
+//   getRenderImage({ symbolUuid, libraryUuid, subPartName? })
+//   getRenderImage({ footprintUuid, libraryUuid })
+//
+// and both return Promise<Blob | undefined>, which JSON.stringify
+// flattens to {} exactly as the manufacture exports did before
+// packedFile existed.
+//
+// Passing a bare uuid was recorded as the editor never answering, and
+// both commands were listed in NEVER_ANSWERED on that basis. The ids
+// were good; the argument was the wrong shape. library_uuid was never
+// collected at all, so it has to come from the caller now.
 handlers['lib.symbol_image'] = async (params) => {
   const uuid = params.uuid;
   if (!uuid) throw new Error('uuid is required');
+  if (!params.library_uuid) {
+    throw new Error('library_uuid is required: getRenderImage takes '
+      + '{ symbolUuid, libraryUuid } and cannot resolve a symbol from '
+      + 'its own uuid alone. lib.search_symbols reports it per hit.');
+  }
   // A picture is the only way to catch geometry that scores well and
   // looks wrong, which is a recurring failure in this project's own
   // library work.
-  return { image: await eda.lib_Symbol.getRenderImage(uuid) };
+  const source = { symbolUuid: uuid, libraryUuid: params.library_uuid };
+  if (params.sub_part_name) source.subPartName = params.sub_part_name;
+  return { image: await packedFile(
+    await eda.lib_Symbol.getRenderImage(source)) };
 };
 
 handlers['lib.footprint_image'] = async (params) => {
   const uuid = params.uuid;
   if (!uuid) throw new Error('uuid is required');
-  return { image: await eda.lib_Footprint.getRenderImage(uuid) };
+  if (!params.library_uuid) {
+    throw new Error('library_uuid is required: getRenderImage takes '
+      + '{ footprintUuid, libraryUuid } and cannot resolve a footprint '
+      + 'from its own uuid alone. lib.search_footprints reports it.');
+  }
+  return { image: await packedFile(
+    await eda.lib_Footprint.getRenderImage(
+      { footprintUuid: uuid, libraryUuid: params.library_uuid })) };
 };
 
 handlers['proj.list'] = async () => ({
@@ -2856,13 +3245,45 @@ handlers['pcb.clear_selection'] = async () => {
   return { cleared: true };
 };
 
+// CROSS-PROBING IS BY DESIGNATOR, NOT BY PRIMITIVE ID. The signature is
+//
+//   doCrossProbeSelect(components?, pins?, nets?, highlight?, select?)
+//
+// where components are designators ('U1'), pins are designator_pin
+// ('U1_1') and nets are net names. This used to be handed
+// params.primitive_ids, which is a different identifier space
+// entirely, so it selected nothing and reported a count anyway.
+//
+// It was also a duplicate: pcb.select already selects by primitive id
+// through doSelectPrimitives, correctly, and reads the boolean back.
+// So this is now the operation its name always claimed, which is the
+// one the API actually offers and the one pcb.select cannot do.
 handlers['pcb.cross_probe'] = async (params) => {
-  const ids = params.primitive_ids;
-  if (!Array.isArray(ids) || ids.length === 0) {
-    throw new Error('primitive_ids must be a non-empty array');
+  const list = (v) => (Array.isArray(v) ? v.filter(Boolean) : []);
+  const components = list(params.designators);
+  const pins = list(params.pins);
+  const nets = list(params.nets);
+  if (!components.length && !pins.length && !nets.length) {
+    throw new Error(
+      'give designators, pins or nets. Cross-probing selects by '
+      + "designator ('U1'), pin ('U1_1') or net name, not by primitive "
+      + 'id. To select by primitive id use pcb.select.');
   }
-  await eda.pcb_SelectControl.doCrossProbeSelect(ids);
-  return { selected: ids.length };
+  // Both flags default true: a cross-probe that neither highlights nor
+  // selects puts nothing in front of anyone, which is the whole point.
+  const highlight = params.highlight !== false;
+  const select = params.select !== false;
+  const ok = await eda.pcb_SelectControl.doCrossProbeSelect(
+    components, pins, nets, highlight, select);
+  // Read the answer rather than assuming it. The old reply counted the
+  // ids it was given, so it reported success for a call that matched
+  // nothing at all.
+  return {
+    cross_probed: ok === true,
+    designators: components,
+    pins: pins,
+    nets: nets,
+  };
 };
 
 handlers['pcb.modify_component'] = async (params) => {
@@ -3031,8 +3452,8 @@ handlers['sys.paths'] = async () => ({
 //
 // Seven dmt_EditorControl methods were exposed nowhere. These three are
 // the ones whose call shape follows something this file already does:
-// activateDocument takes a uuid exactly as openDocument below does, and
-// the two zooms take nothing at all.
+// the two zooms take nothing at all, and activateDocument takes a TAB
+// ID rather than a document uuid, which is not the same thing.
 //
 // The rest are left alone deliberately. generateIndicatorMarkers and
 // removeIndicatorMarkers are the interesting pair, being EasyEDA's way
@@ -3040,19 +3461,109 @@ handlers['sys.paths'] = async () => ({
 // violations, but their arguments are not known and inventing a
 // signature for a call that draws on somebody's board is not a guess
 // worth making offline.
+// A TAB ID, NOT A DOCUMENT UUID. activateDocument(tabId) is documented
+// with no note allowing a document uuid, and the docs are explicit when
+// one IS allowed: closeDocument carries exactly such a note and this
+// does not. IDMT_EditorTabItem has a tabId and no document uuid, so the
+// two identifier spaces are separate.
+//
+// Passing a uuid was justified by analogy with openDocument, which does
+// take one. That analogy was wrong, and openDocument RETURNS the tab
+// id, which is the only place in the API one can be obtained. So
+// editor.open_document now reports tab_id, and this consumes it.
 handlers['editor.activate_document'] = async (params) => {
-  const uuid = params.uuid;
-  if (!uuid) throw new Error('uuid is required');
+  const tabId = params.tab_id;
+  if (!tabId) {
+    throw new Error(
+      'tab_id is required: activateDocument takes a TAB ID, not a '
+      + 'document uuid, and there is no call that converts one to the '
+      + 'other. editor.open_document returns tab_id; use that. To bring '
+      + 'a document forward when you only have its uuid, open it.');
+  }
   // Read the answer: this declines by returning false rather than
   // throwing, and reporting an unmade switch as made would send every
   // following command to the wrong document.
-  const answer = await eda.dmt_EditorControl.activateDocument(uuid);
+  const answer = await eda.dmt_EditorControl.activateDocument(tabId);
   if (answer === false) {
-    return { uuid: uuid, activated: false,
-      failed: 'the editor declined to switch to that document' };
+    return { tab_id: tabId, activated: false,
+      failed: 'the editor declined to switch to that tab' };
   }
-  return { uuid: uuid, activated: true };
+  return { tab_id: tabId, activated: true };
 };
+
+// MARKING FINDINGS ON THE BOARD, which is what a review needs and what
+// this backend has never had. Markers are an OVERLAY: they draw on top
+// of the design, change no geometry, and are cleared in one call. That
+// is why they are not confirm-guarded while everything else that draws
+// is.
+//
+// Previously left alone because the arguments were unknown and
+// inventing a signature for a call that draws on somebody's board is
+// not a guess worth making. They are documented after all:
+//
+//   generateIndicatorMarkers(markers, color?, lineWidth?, zoom?, tabId?)
+//   removeIndicatorMarkers(tabId?)
+//
+// with each marker an IDMT_IndicatorMarkerShape whose `type` decides
+// which fields apply. The five types and their fields come from
+// EDMT_IndicatorMarkerType and the interface, not from guesswork:
+const MARKER_FIELDS = {
+  point: ['x', 'y'],
+  line: ['startX', 'startY', 'endX', 'endY'],
+  rectangle: ['left', 'right', 'top', 'bottom'],
+  circle: ['x', 'y', 'r'],
+  arc: ['startX', 'startY', 'endX', 'endY', 'angle'],
+};
+
+handlers['editor.mark_findings'] = async (params) => {
+  const raw = Array.isArray(params.markers) ? params.markers : [];
+  if (!raw.length) {
+    throw new Error('markers must be a non-empty array');
+  }
+  // Validated per type before anything is sent. A marker missing the
+  // fields its own type needs is accepted by the editor and drawn
+  // somewhere unintended, which is worse than a refusal: a review
+  // would be pointing at the wrong place with full confidence.
+  const markers = raw.map((m, i) => {
+    const type = String((m && m.type) || '').toLowerCase();
+    const need = MARKER_FIELDS[type];
+    if (!need) {
+      throw new Error(
+        `markers[${i}].type is ${JSON.stringify(m && m.type)}; expected `
+        + `one of ${Object.keys(MARKER_FIELDS).join(', ')}`);
+    }
+    const out = { type: type };
+    for (const key of need) {
+      if (typeof m[key] !== 'number') {
+        throw new Error(
+          `markers[${i}] is a ${type} and needs a numeric ${key}; `
+          + `a ${type} uses ${need.join(', ')}`);
+      }
+      out[key] = m[key];
+    }
+    return out;
+  });
+
+  const colour = params.color && typeof params.color === 'object'
+    ? {
+      r: Number(params.color.r) || 0,
+      g: Number(params.color.g) || 0,
+      b: Number(params.color.b) || 0,
+      alpha: params.color.alpha === undefined ? 1 : Number(params.color.alpha),
+    }
+    : undefined;
+  const ok = await eda.dmt_EditorControl.generateIndicatorMarkers(
+    markers, colour,
+    typeof params.line_width === 'number' ? params.line_width : undefined,
+    params.zoom === true,
+    params.tab_id || undefined) === true;
+  return { marked: ok, count: markers.length };
+};
+
+handlers['editor.clear_findings'] = async (params) => ({
+  cleared: await eda.dmt_EditorControl.removeIndicatorMarkers(
+    (params && params.tab_id) || undefined) === true,
+});
 
 handlers['editor.zoom_to_all'] = async () => ({
   zoomed: await eda.dmt_EditorControl.zoomToAllPrimitives() !== false,
@@ -3065,9 +3576,17 @@ handlers['editor.zoom_to_selection'] = async () => ({
 handlers['editor.open_document'] = async (params) => {
   const uuid = params.uuid;
   if (!uuid) throw new Error('uuid is required');
-  const answer = await eda.dmt_EditorControl.openDocument(uuid);
-  if (answer === false) {
-    return { uuid: uuid, opened: false,
+  // FAILURE IS undefined, NOT false, and success is the TAB ID.
+  // openDocument(documentUuid, splitScreenId?) returns
+  // Promise<string | undefined>. Testing `=== false` could never be
+  // true, so the failure branch was dead: a failed open fell straight
+  // into the readiness loop below, which asks what the CURRENT document
+  // is. With any schematic or PCB tab already in front that loop
+  // succeeds, and the handler answered {opened: true, ready: true} for
+  // a document it had not opened.
+  const tabId = await eda.dmt_EditorControl.openDocument(uuid);
+  if (!tabId) {
+    return { uuid: uuid, opened: false, tab_id: null,
       failed: 'the editor declined to open that document' };
   }
 
@@ -3096,10 +3615,15 @@ handlers['editor.open_document'] = async (params) => {
   }
   if (kind !== 'pcb' && kind !== 'schematic') {
     return { uuid: uuid, opened: true, ready: false, document: kind,
+      tab_id: tabId,
       failed: `the document opened but did not become readable within `
         + `${READY_TRIES * READY_GAP_MS}ms; a read now may hang` };
   }
-  return { uuid: uuid, opened: true, ready: true, document: kind };
+  // The tab id is worth returning rather than discarding: it is the
+  // ONLY thing activateDocument accepts, and nothing else in the API
+  // hands one out.
+  return { uuid: uuid, opened: true, ready: true, document: kind,
+    tab_id: tabId };
 };
 
 // PCB_PrimitiveString, not PrimitiveText. Text on copper and silk is
@@ -3270,10 +3794,12 @@ handlers['dmt.panels'] = async () => ({
 // Panel documents, which had a read and nothing else.
 //
 // dmt_Panel is method-for-method parallel to dmt_Pcb: copy, create,
-// delete, getAll, getCurrent, get, modifyName. The create signature is
-// the one the sibling classes already use here, createPcb(name) and
-// createSchematic(name) returning a uuid, so it is a convention this
-// file already depends on rather than a guess made for panels.
+// delete, getAll, getCurrent, get, modifyName. The parallel does NOT
+// extend to create taking a name. createPcb(boardName) and
+// createSchematic(boardName) do, but the reference declares
+// createPanel() with no parameters at all, so the name passed here was
+// silently dropped and the tool advertised a naming behaviour that
+// never happened. The panel is created unnamed, then renamed.
 //
 // What is NOT here is a way to put a board INTO a panel: dmt_Panel has
 // no add, insert or place method, and neither does dmt_Board. So this
@@ -3281,9 +3807,23 @@ handlers['dmt.panels'] = async () => ({
 // something the extension API appears to expose, and none of these
 // tools should be read as an equivalent to a step-and-repeat.
 handlers['dmt.create_panel'] = async (params) => {
-  const uuid = await eda.dmt_Panel.createPanel(
-    typeof params.name === 'string' && params.name ? params.name : undefined);
-  return { uuid: uuid || null, created: Boolean(uuid) };
+  const uuid = await eda.dmt_Panel.createPanel();
+  const wanted = typeof params.name === 'string' && params.name
+    ? params.name : '';
+  // Reported separately from `created`, because a panel that exists
+  // under the wrong name is a different outcome from one that was
+  // never made, and collapsing them is how the dropped argument went
+  // unnoticed in the first place.
+  let named = null;
+  if (uuid && wanted) {
+    named = await eda.dmt_Panel.modifyPanelName(uuid, wanted) === true;
+  }
+  return {
+    uuid: uuid || null,
+    created: Boolean(uuid),
+    requested_name: wanted || null,
+    named: named,
+  };
 };
 
 handlers['dmt.current_panel'] = async () => {
@@ -3348,6 +3888,34 @@ async function dispatch(raw) {
   } catch (e) {
     // Not addressed to us, or corrupt. Staying silent is right: there
     // is no id to answer to.
+    return;
+  }
+
+  // A SERVER THAT IS NOT OURS, ANSWERING ON A PORT WE SCANNED.
+  //
+  // The fallback discovery path has no /health check: with no fetch in
+  // the runtime it opens a WebSocket to each candidate port and keeps
+  // whichever connects. EasyEDA's own bridge server listens on the same
+  // ten ports and the same /eda path, so that path can attach to it,
+  // and nothing downstream would notice. Its handshake carries no
+  // `command`, so it used to be dropped here in silence while the
+  // extension stayed attached and reported itself connected. Every
+  // later command would then go to a server speaking a different
+  // protocol.
+  //
+  // It announces itself on connect, which is the opening this uses:
+  // {type: "handshake", service: "easyeda-bridge"}. Any service that
+  // names itself and is not us gets the socket closed, so the retry
+  // loop moves on to the next port instead of settling on the wrong
+  // server.
+  if (request && request.service && request.service !== SERVICE_ID) {
+    connected = false;
+    noteOutcome(
+      `port answered, but it is ${request.service}, not ${SERVICE_ID}`,
+    );
+    try {
+      eda.sys_WebSocket.close(WS_ID);
+    } catch (e) { /* it is going away regardless */ }
     return;
   }
 
@@ -3425,17 +3993,17 @@ async function dispatch(raw) {
     const NEVER_ANSWERED = [
       'sch.attributes', 'pcb.attributes', 'sch.selection',
       'pcb.strings', 'pcb.poured', 'sys.paths',
-      // The two library render calls. Confirmed at the API level
-      // through the reflective shim: lib_Symbol.getRenderImage and
-      // lib_Footprint.getRenderImage never return, for a symbol uuid
-      // and a footprint uuid taken from a live search that had just
-      // succeeded, so the ids were good.
-      //
-      // Worth recording that they are a HANG and not the empty-object
-      // fault that editor.render_image had. That one returned a Blob
-      // which JSON dropped; these produce nothing to drop. Packing them
-      // would have fixed nothing.
-      'lib.symbol_image', 'lib.footprint_image',
+      // lib.symbol_image and lib.footprint_image WERE listed here, on a
+      // measurement that both render calls never return for ids taken
+      // from a search that had just succeeded. The ids were good and
+      // the observation was real, but the diagnosis was not: both take
+      // a source OBJECT carrying the library uuid as well
+      // ({ symbolUuid, libraryUuid }), and were being handed a bare
+      // string. They are attempted normally again, and the note that
+      // packing "would have fixed nothing" was wrong twice over, since
+      // the documented return is a Blob and now goes through
+      // packedFile. If they hang with the correct argument, put them
+      // back with that measurement recorded rather than this one.
       // Measured twice on a live schematic holding 111 parts: the call
       // is accepted and never returns. Not a missing class, and not an
       // empty project, since the same document answers sch.components
@@ -3785,6 +4353,7 @@ async function findServerByHealth() {
   // Ask each port who it is rather than assuming whatever answers is
   // ours. Another service on the port would otherwise get a WebSocket
   // handshake it never asked for.
+  lastProbeNotes = [];
   for (const port of candidatePorts()) {
     try {
       // BOUNDED. A fetch with no timeout of its own is how the whole
@@ -3809,6 +4378,15 @@ async function findServerByHealth() {
       if (body && body.service === SERVICE_ID) {
         return `ws://127.0.0.1:${port}/eda`;
       }
+      // Something is there and it is not us. Worth recording rather
+      // than skipping: this range and path are the ones EasyEDA's own
+      // bridge server uses, so the likeliest occupant is that server,
+      // and the two are then competing for the same ten ports. A bare
+      // "no server found" hides the difference between an empty range
+      // and a range somebody else already owns.
+      lastProbeNotes.push(
+        `${port}: ${(body && body.service) || 'answered, not a health reply'}`,
+      );
     } catch (e) {
       // Nothing listening there. Expected for most of the range.
     }
@@ -3871,6 +4449,7 @@ async function attach() {
     const url = configured || (await findServer());
 
     if (url) {
+      noteOutcome(`found a server, dialling ${url}`);
       openSocket(url);
       return;
     }
@@ -3894,6 +4473,22 @@ async function attach() {
         eda.sys_WebSocket.close(mine);
       } catch (e) { /* nothing was open */ }
     }
+
+    // Every candidate walked and nothing answered. Say so IN THE
+    // EDITOR. This path used to return in silence, which is the worst
+    // possible outcome to report: identical to never having installed
+    // the extension, and indistinguishable from a server that is up but
+    // unreachable.
+    noteOutcome(
+      lastProbeNotes.length
+        ? `no eda-agent server found. Ports answered by something else: ${lastProbeNotes.join(', ')}`
+        : `no eda-agent server found on ${PORT_START}-${PORT_END}. Is it running?`,
+    );
+    const now = Date.now();
+    if (now - lastFailureToastAt >= FAILURE_TOAST_MS) {
+      lastFailureToastAt = now;
+      toast(`eda-agent: ${lastOutcome}`);
+    }
   } finally {
     if (attachingSince === myAttach) {
       attaching = false;
@@ -3905,6 +4500,127 @@ function toast(text) {
   try {
     eda.sys_Message.showToastMessage(text);
   } catch (e) { /* nothing to show on runtimes without a UI */ }
+}
+
+function noteOutcome(text) {
+  lastOutcome = text;
+  lastOutcomeAt = Date.now();
+}
+
+// What the extension currently believes, shown in the editor.
+//
+// THE POINT. Everything else the extension knows about its own
+// connection is reported in the ping reply, over the socket, and is
+// therefore readable exactly when a connection already works. The
+// question anybody actually asks is the opposite one, and it has to be
+// answerable with no socket at all.
+//
+// It states the build too, because a re-import at a version already
+// installed is a silent no-op, so "the fix is not working" and "the fix
+// is not installed" look the same from here.
+// MODULE STATE ALONE IS NOT ENOUGH, and the first version of this that
+// shipped proved it. It reported "NOT connected, attempts 0, retry
+// timer NOT ARMED" while the server showed the editor connected, and
+// both were accurate.
+//
+// A mid-session re-import loads a SECOND copy of this module. The
+// editor fires onStartupFinished only at startup, so the new copy never
+// runs activate(), yet it is the copy wired to the freshly imported
+// menu. The older copy keeps the working socket and answers every
+// command. Asking the menu's copy how the connection is going therefore
+// asks the one that never made one.
+//
+// The server sees every copy, so the second half of this reads /health
+// and reports what IT observes, including which builds are actually
+// holding sockets. Comparing that against BUILD_ID is what distinguishes
+// "not connected" from "connected, but not by this copy of the code".
+export function status() {
+  const age =
+    lastOutcomeAt === 0
+      ? 'never'
+      : `${Math.round((Date.now() - lastOutcomeAt) / 1000)}s ago`;
+  const lines = [
+    `eda-agent ${BUILD_ID}`,
+    connected ? 'this copy believes it is CONNECTED' : 'this copy: NOT connected',
+    `last scan: ${lastOutcome} (${age})`,
+    `attempts ${attachAttempts}, sockets opened ${wsSerial}`,
+    `retry timer: ${retryTimer ? 'armed' : 'NOT ARMED'}`,
+  ];
+  if (attachAttempts === 0 && retryTimer === null) {
+    lines.push(
+      'This copy never started. It was imported mid session, so',
+      'another loaded copy probably holds the socket. Asking the server.',
+    );
+  }
+  toast(lines.join('\n'));
+
+  // Asked second and reported separately, so the local answer appears
+  // at once even on a runtime with no fetch and no server to ask.
+  askServer().then((seen) => {
+    if (!seen) {
+      toast(
+        hasFetch()
+          ? `eda-agent: no server answered on ${PORT_START}-${PORT_END}`
+          : 'eda-agent: this runtime has no fetch, so the server cannot be asked',
+      );
+      return;
+    }
+    // ABSENT IS NOT EMPTY. A server older than this field answers
+    // without editor_builds at all, and treating that as "no builds
+    // are connected" turns a question nobody asked into a confident
+    // wrong answer: it would report this build as not holding a socket
+    // when the server simply never said. Read nothing and nothing
+    // there have to stay distinguishable.
+    const lines = [
+      `server on ${seen.port}: editor ${seen.editor_connected ? 'CONNECTED' : 'not connected'}`,
+    ];
+    if (!Array.isArray(seen.editor_builds)) {
+      lines.push(
+        'that server does not report which builds hold sockets,',
+        'so whether this one does is unknown. Restart the server.',
+      );
+    } else if (seen.editor_builds.length === 0) {
+      lines.push('no build has identified itself to it yet');
+    } else {
+      lines.push(`builds holding sockets: ${seen.editor_builds.join(', ')}`);
+      lines.push(
+        seen.editor_builds.indexOf(BUILD_ID) !== -1
+          ? 'one of them is this build'
+          : `this build (${BUILD_ID}) is NOT one of them`,
+      );
+    }
+    toast(lines.join('\n'));
+  });
+
+  return lines.join('\n');
+}
+
+// What the server says, from whichever port answers first.
+async function askServer() {
+  if (!hasFetch()) return null;
+  for (const port of candidatePorts()) {
+    try {
+      const response = await Promise.race([
+        fetch(`http://127.0.0.1:${port}/health`, { method: 'GET' }),
+        delay(PROBE_MS * 4).then(() => null),
+      ]);
+      if (!response || !response.ok) continue;
+      const body = await Promise.race([
+        response.json(),
+        delay(PROBE_MS * 4).then(() => null),
+      ]);
+      if (body && body.service === SERVICE_ID) {
+        return {
+          port,
+          editor_connected: body.editor_connected,
+          editor_builds: body.editor_builds,
+        };
+      }
+    } catch (e) {
+      // Nothing there. Expected for most of the range.
+    }
+  }
+  return null;
 }
 
 export function connect() {
@@ -4003,6 +4719,10 @@ function openSocket(url) {
     },
     () => {
       connected = true;
+      noteOutcome(`connected to ${url}`);
+      // Reset the failure window, so the NEXT time it goes away the
+      // operator is told at once rather than after a quiet minute.
+      lastFailureToastAt = 0;
       eda.sys_Message.showToastMessage(`eda-agent connected: ${url}`);
     },
   );
