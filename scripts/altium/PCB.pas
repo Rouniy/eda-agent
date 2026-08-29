@@ -3599,12 +3599,15 @@ Begin
             If FoundIdx >= 0 Then
             Begin
                 Accum := StrToFloatDef(NetLengthStrs[FoundIdx], 0) + SegLen;
-                NetLengthStrs[FoundIdx] := FloatToStr(Accum);
+                { Keep the intermediate value locale-independent.             }
+                { StrToFloatDef deliberately parses JSON-style decimal points, }
+                { while FloatToStr emits a comma on many Windows locales.      }
+                NetLengthStrs[FoundIdx] := FloatToJsonStr(Accum);
             End
             Else
             Begin
                 NetNames.Add(NetName);
-                NetLengthStrs.Add(FloatToStr(SegLen));
+                NetLengthStrs.Add(FloatToJsonStr(SegLen));
             End;
 
             Obj := Iterator.NextPCBObject;
