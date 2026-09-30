@@ -215,6 +215,14 @@ class CommandResponse:
     protocol_version: int = 0
     data: Any = None
     error: Optional[dict] = None
+    # Siblings the Pascal dispatcher appends to EVERY reply, success or
+    # error: the follow-up a handler named with NoteNextStep, and a note
+    # when the command moved the focused document. They were dropped here,
+    # so eight Pascal call sites of advice (a library that could not be
+    # flagged for saving, a part that could not be reached) never reached
+    # a caller, and a refusal read as a bare "not found".
+    next_step: str = ""
+    active_document_changed: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "CommandResponse":
@@ -224,7 +232,28 @@ class CommandResponse:
             protocol_version=data.get("protocol_version", 0),
             data=data.get("data"),
             error=data.get("error"),
+            next_step=data.get("next_step") or "",
+            active_document_changed=data.get("active_document_changed"),
         )
+
+
+def _with_envelope_notes(data: Any, response: CommandResponse) -> Any:
+    """Carry the envelope's notes into a successful reply's data.
+
+    Only a dict can take them without changing the reply's shape, so a
+    list or scalar reply is returned as it came. A key the handler already
+    set is left alone: the handler's own value is the more specific one.
+    """
+    if not isinstance(data, dict):
+        return data
+    if not response.next_step and not response.active_document_changed:
+        return data
+    data = dict(data)
+    if response.next_step and not data.get("next_step"):
+        data["next_step"] = response.next_step
+    if response.active_document_changed and "active_document_changed" not in data:
+        data["active_document_changed"] = response.active_document_changed
+    return data
 
 
 class AltiumBridge:
@@ -914,12 +943,20 @@ class AltiumBridge:
         if response.success:
             logger.info("Command %s succeeded", command)
             self._clear_fault_if_any(workspace_dir)
-            return self._maybe_attach_detach_hint(command, response.data)
+            return self._maybe_attach_detach_hint(
+                command, _with_envelope_notes(response.data, response))
 
         error = response.error or {}
         code = error.get("code", "UNKNOWN_ERROR")
         message = error.get("message", "Unknown error")
         details = error.get("details")
+        # The reason a handler recorded is often the only useful part of a
+        # refusal: "not found" for a symbol that exists, when what failed
+        # was reaching one of its parts.
+        if response.next_step:
+            message = f"{message} Next step: {response.next_step}"
+            details = dict(details) if isinstance(details, dict) else {}
+            details["next_step"] = response.next_step
         logger.warning("Command %s failed: %s - %s", command, code, message)
         raise_for_code(code, message, details)
 
