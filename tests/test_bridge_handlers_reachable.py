@@ -81,6 +81,12 @@ KNOWN_UNREACHABLE = {
     # stays as the second layer, for tool_invoke and raw commands.
     # See tests/test_via_soldermask_relief_is_refused.py.
     "set_via_soldermask_relief",
+    # The schematic emitter placed its junctions through this until
+    # it stopped placing any: Altium draws its own at every T, in the
+    # colour interactive wiring gives them (see AUTO JUNCTIONS in
+    # design/emitter.py). The handler stays for a manual junction
+    # where two wires cross and must connect.
+    "place_junctions",
 }
 
 #: The modules do NOT all dispatch the same way, and matching only one

@@ -61,7 +61,6 @@ class EmitResult:
     wires_emitted: int = 0
     labels_emitted: int = 0
     power_ports_emitted: int = 0
-    junctions_emitted: int = 0
     buses_emitted: int = 0
     bus_entries_emitted: int = 0
     failures: list[EmitFailure] = field(default_factory=list)
@@ -378,8 +377,7 @@ def emit_canvas_delta(
                  bridge, result, sheet_name)
     _emit_power_ports([p for p in canvas.power_ports if p.sheet == sheet_name],
                       bridge, result, sheet_name)
-    _emit_junctions([j for j in canvas.junctions if j.sheet == sheet_name],
-                    bridge, result, sheet_name)
+    # No junctions: Altium draws its own. See AUTO JUNCTIONS below.
     _emit_buses([b for b in canvas.buses if b.sheet == sheet_name],
                 bridge, result, sheet_name)
     _emit_bus_entries([e for e in canvas.bus_entries if e.sheet == sheet_name],
@@ -475,10 +473,7 @@ def _emit_sheet(
     bus_entries = canvas.bus_entries_on(sheet_name)
     if bus_entries:
         _emit_bus_entries(bus_entries, bridge, result, sheet_name)
-    # 4. Bulk junctions (after wires).
-    junctions = canvas.junctions_on(sheet_name)
-    if junctions:
-        _emit_junctions(junctions, bridge, result, sheet_name)
+    # 4. No junctions: Altium draws its own. See AUTO JUNCTIONS below.
     # 5. Bulk labels.
     labels = canvas.labels_on(sheet_name)
     if labels:
@@ -630,19 +625,19 @@ def _emit_wires(
         result.notes.append(f"place_wires for {sheet_name} failed: {exc}")
 
 
-def _emit_junctions(
-    junctions: list, bridge: Any, result: EmitResult, sheet_name: str
-) -> None:
-    payload = "~~".join(f"x={j.x};y={j.y}" for j in junctions)
-    try:
-        bridge.send_command(
-            "generic.place_junctions",
-            {"junctions": payload},
-            timeout=_BULK_TIMEOUT_S * max(1, len(junctions) // 8),
-        )
-        result.junctions_emitted += len(junctions)
-    except Exception as exc:
-        result.notes.append(f"place_junctions for {sheet_name} failed: {exc}")
+# AUTO JUNCTIONS: WHY THE EMITTER PLACES NONE.
+# The canvas still computes junction points, for the offline previews and
+# the counts, but nothing sends them. Every point it computes is a same-net
+# T or three wire ends meeting, and Altium draws an AUTO junction at exactly
+# those by itself: blue, the way interactive wiring leaves them. An explicit
+# junction object is a MANUAL junction, drawn dark red with a lock marker on
+# top of the blue one Altium would have drawn anyway. Checked live on AD
+# 26.10.1.6 (2026-09-24) with wires placed through this bridge: a T in
+# either placement order and three coincident ends each got a blue auto
+# junction; a plain crossing, which the canvas never marks, got none.
+# Connection is by the geometry, not the dot, so dropping the objects
+# changes no netlist. sch_place_junction still places a manual one for a
+# caller who asks for one.
 
 
 def _emit_buses(
