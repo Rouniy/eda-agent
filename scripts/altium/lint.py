@@ -185,11 +185,20 @@ RULE_INC_ARRAY = LineRule(
 RESERVED_AS_NAME = {"Label", "Type", "Class", "Object", "Record", "Array",
                     "Set", "String", "File", "Unit", "Function", "Procedure",
                     "Const", "Var", "End", "Begin", "If", "Then", "Else",
-                    "Goto", "With", "In", "Is", "As", "Of", "Out"}
+                    "Goto", "With", "In", "Is", "As", "Of", "Out",
+                    # Measured 2026-09-24: `Index, Emitted, I : Integer;` in a
+                    # Var block failed Altium's compile with "Error in
+                    # declaration block". Delphi reads index as a property
+                    # directive.
+                    "Index"}
+_RESERVED_ALT = "|".join(sorted(RESERVED_AS_NAME))
 RULE_RESERVED_IDENT = LineRule(
     name="reserved-word-as-identifier",
+    # Anywhere in a parameter's name list, not only first: `(A, Index : X)`.
+    # Case-insensitive, because DelphiScript is.
     pattern=re.compile(
-        r"(?:\(|;)\s*(" + "|".join(RESERVED_AS_NAME) + r")\s*:"),
+        r"(?:\(|;)\s*(?:\w+\s*,\s*)*\b(" + _RESERVED_ALT + r")\b\s*(?:,|:)",
+        re.IGNORECASE),
     severity="error",
     memory="delphiscript_reserved_words.md",
     description="Reserved keyword used as parameter name; rename it.",
@@ -707,8 +716,12 @@ def _scan_dollar_i(path: str, text: str) -> list[Finding]:
 _VAR_OR_CONST_HEADER = re.compile(r"^\s*(Var|Const)\b", re.IGNORECASE)
 _BLOCK_TERMINATOR = re.compile(
     r"^\s*(Begin|Function|Procedure|Type)\b", re.IGNORECASE)
+# Anywhere in the declared name list, not only first: the declaration that
+# failed was `Index, Emitted, I : Integer;`, which a first-name-only match
+# walked straight past.
 _RESERVED_DECL = re.compile(
-    r"^\s*(" + "|".join(RESERVED_AS_NAME) + r")\s*:")
+    r"^\s*(?:\w+\s*,\s*)*\b(" + _RESERVED_ALT + r")\b\s*(?:,|:)",
+    re.IGNORECASE)
 
 
 def _scan_reserved_in_var_block(path: str, lines: list[str]) -> list[Finding]:
