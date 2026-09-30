@@ -2424,7 +2424,7 @@ Var
     ObjTypeInt, PipePos : Integer;
     TotalMatched, OpCount, OpSkipped, OpMatched : Integer;
     ResultJson, ResultsJson : String;
-    UseTilde : Boolean;
+    UseTilde, IsPcb : Boolean;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -2500,24 +2500,45 @@ Begin
             Else If SetStr = '' Then Note := 'missing_set';
         End;
 
+        IsPcb := False;
         If Note = '' Then
         Begin
             ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
+            { A board type has a table of its own. obj_modify has always   }
+            { looked there as well; this batch form answered              }
+            { unknown_object_type for every board type.                   }
+            If ObjTypeInt = -1 Then
+            Begin
+                ObjTypeInt := ObjectTypeFromStringPCB(ObjTypeStr);
+                IsPcb := (ObjTypeInt <> -1);
+            End;
             If ObjTypeInt = -1 Then Note := 'unknown_object_type';
         End;
 
         If Note = '' Then
         Begin
             ParseScope(Scope, ScopeType, ScopePath);
-            { lib_component scope: select the symbol; report if it's gone. }
-            If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
-                Note := 'lib_component_not_found';
+            { A board type edits the active board and nothing else, and the }
+            { lib_component step would move a SchLib's current symbol for   }
+            { an operation that never reads it.                             }
+            If IsPcb Then
+            Begin
+                If ScopeType <> 'active_doc' Then Note := 'scope_not_supported';
+            End
+            Else
+            Begin
+                { lib_component scope: select the symbol; report if it's gone. }
+                If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
+                    Note := 'lib_component_not_found';
+            End;
         End;
 
         If Note = '' Then
         Begin
             OpResult := '';
-            If ScopeType = 'project' Then
+            If IsPcb Then
+                OpResult := ProcessActivePCBDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
+            Else If ScopeType = 'project' Then
                 OpResult := IterateProjectDocs(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, ScopePath, 0)
             Else If ScopeType = 'doc' Then
                 OpResult := ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
@@ -2526,7 +2547,14 @@ Begin
 
             OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);
             TotalMatched := TotalMatched + OpMatched;
-            If OpMatched = 0 Then Note := 'no_objects_matched';
+            If Pos('"success":false', OpResult) > 0 Then
+            Begin
+                Note := 'failed: ' + ExtractJsonValue(OpResult, 'code');
+            End
+            Else
+            Begin
+                If OpMatched = 0 Then Note := 'no_objects_matched';
+            End;
             Inc(OpCount);
         End
         Else
@@ -7861,9 +7889,11 @@ End;
 Function Gen_BatchDelete(Params : String; RequestId : String) : String;
 Var
     Operations, Remaining : String;
-    OpCount, OpsRun : Integer;
+    OpCount, OpsRun, OpMatched, TotalMatched : Integer;
     Op, Scope, ObjTypeStr, FilterStr, ScopeType, ScopePath : String;
+    OpResult, Note, ResultsJson : String;
     ObjTypeInt : Integer;
+    IsPcb : Boolean;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -7874,6 +7904,8 @@ Begin
 
     OpsRun := 0;
     OpCount := 0;
+    TotalMatched := 0;
+    ResultsJson := '';
     Remaining := Operations;
 
     While True Do
@@ -7885,22 +7917,63 @@ Begin
         If Scope = '' Then Scope := 'active_doc';
         ObjTypeStr := GetBatchField(Op, 'object_type');
         FilterStr := GetBatchField(Op, 'filter');
+        Note := '';
+        OpMatched := 0;
 
+        { A BOARD TYPE WAS SKIPPED HERE WITHOUT A WORD. Only the schematic  }
+        { table was looked up, so eTrackObject fell to the unknown-type      }
+        { branch, which moved on: the reply counted one operation fewer than }
+        { it was sent and named none. Board types now go where obj_delete    }
+        { sends them, to the active board, and every operation reports what  }
+        { it deleted or why it did not run.                                  }
+        IsPcb := False;
         ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
-        If ObjTypeInt = -1 Then Continue;
+        If ObjTypeInt = -1 Then
+        Begin
+            ObjTypeInt := ObjectTypeFromStringPCB(ObjTypeStr);
+            IsPcb := (ObjTypeInt <> -1);
+        End;
+        If ObjTypeInt = -1 Then Note := 'unknown_object_type';
 
         ParseScope(Scope, ScopeType, ScopePath);
-        If ScopeType = 'project' Then
-            IterateProjectDocs(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, ScopePath, 0)
-        Else If ScopeType = 'doc' Then
-            ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0)
-        Else
-            ProcessActiveDoc(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0);
-        Inc(OpsRun);
+        If (Note = '') And IsPcb And (ScopeType <> 'active_doc') Then
+            Note := 'scope_not_supported';
+
+        If Note = '' Then
+        Begin
+            If IsPcb Then
+                OpResult := ProcessActivePCBDoc(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0)
+            Else If ScopeType = 'project' Then
+                OpResult := IterateProjectDocs(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, ScopePath, 0)
+            Else If ScopeType = 'doc' Then
+                OpResult := ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0)
+            Else
+                OpResult := ProcessActiveDoc(ObjTypeInt, FilterStr, '', '', 'delete', RequestId, 0);
+            If Pos('"success":false', OpResult) > 0 Then
+            Begin
+                Note := 'failed: ' + ExtractJsonValue(OpResult, 'code');
+            End
+            Else
+            Begin
+                OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);
+                If OpMatched = 0 Then Note := 'no_objects_matched';
+            End;
+            TotalMatched := TotalMatched + OpMatched;
+            Inc(OpsRun);
+        End;
+
+        If ResultsJson <> '' Then ResultsJson := ResultsJson + ',';
+        ResultsJson := ResultsJson +
+            '{"object_type":"' + EscapeJsonString(ObjTypeStr) + '"' +
+            ',"filter":"' + EscapeJsonString(FilterStr) + '"' +
+            ',"deleted":' + IntToStr(OpMatched) +
+            ',"note":"' + EscapeJsonString(Note) + '"}';
     End;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"operations_processed":' + IntToStr(OpsRun) + ',"total":' + IntToStr(OpCount) + '}');
+        '{"operations_processed":' + IntToStr(OpsRun) + ',"total":' + IntToStr(OpCount)
+        + ',"total_deleted":' + IntToStr(TotalMatched)
+        + ',"results":[' + ResultsJson + ']}');
 End;
 
 {..............................................................................}

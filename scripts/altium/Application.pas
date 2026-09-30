@@ -254,6 +254,53 @@ Begin
     Result := BuildSuccessResponse(RequestId, '{"success":true,"file_path":"' + EscapeJsonString(ServerDoc.FileName) + '"}');
 End;
 
+{ Close ONE document, found by its full path, whatever has the focus.        }
+{ WorkspaceManager:CloseObject acts on the FOCUSED object, not the one named: }
+{ a close by path once closed a different project. This closes the document }
+{ object itself, as the reference scripts do (Client.CloseDocument), refuses }
+{ one that reads modified (a floor only: that read can miss editor edits),  }
+{ and looks it up again afterwards to say whether it is really gone.        }
+{ With discard, the modified flag is cleared first, unread, which is what   }
+{ keeps the save prompt away; the edits are lost.                           }
+Function App_CloseDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath : String;
+    ServerDoc, Again : IServerDocument;
+    WasModified, Discard : Boolean;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    Discard := LowerCase(ExtractJsonValue(Params, 'discard')) = 'true';
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Exit;
+    End;
+    ServerDoc := Client.GetDocumentByPath(FilePath);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED', 'Document not loaded: ' + FilePath);
+        Exit;
+    End;
+    WasModified := False;
+    Try WasModified := ServerDoc.Modified; Except WasModified := False; End;
+    If WasModified And Not Discard Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MODIFIED',
+            'The document has unsaved changes, so it was not closed: ' + FilePath);
+        Exit;
+    End;
+    If Discard Then
+    Begin
+        Try ServerDoc.SetModified(False); Except End;
+    End;
+    Client.CloseDocument(ServerDoc);
+    Again := Nil;
+    Try Again := Client.GetDocumentByPath(FilePath); Except Again := Nil; End;
+    Result := BuildSuccessResponse(RequestId, '{"closed":' + BoolToJsonStr(Again = Nil)
+        + ',"discarded":' + BoolToJsonStr(Discard And WasModified)
+        + ',"file_path":"' + EscapeJsonString(FilePath) + '"}');
+End;
+
 Function App_RunProcess(Params : String; RequestId : String) : String;
 Var
     ProcessName, ProcessParams : String;
@@ -798,6 +845,7 @@ Begin
         'get_open_documents':  Result := App_GetOpenDocuments(RequestId);
         'get_active_document': Result := App_GetActiveDocument(RequestId);
         'set_active_document': Result := App_SetActiveDocument(Params, RequestId);
+        'close_document':      Result := App_CloseDocument(Params, RequestId);
         'run_process':         Result := App_RunProcess(Params, RequestId);
         'get_preferences':     Result := App_GetPreferences(RequestId);
         'execute_menu':        Result := App_ExecuteMenu(Params, RequestId);

@@ -1,4 +1,4 @@
-# Release verification: 2026.09.23.4
+# Release verification: 2026.09.28.1
 
 Everything below is Pascal that FPC and the linter have checked and that
 **Altium's DelphiScript engine has never executed**. The two are not the
@@ -33,6 +33,8 @@ works elsewhere cannot be an undeclared identifier:
 | 17, component UniqueId | `UniqueId` on a placed component | no, nowhere | highest, and a wrong id costs the next Update PCB |
 | 18, pin owner part | `OwnerPartId` | yes, by two independent reference scripts | medium, behavioural not declarative |
 | 6, mirrored text | `MirrorFlag` | yes, `PCB.pas` | lowest |
+| 20, bulk vias | `Size`, `HoleSize`, `LowLayer`, `HighLayer` on a via | yes, `PCB_PlaceVia` | low |
+| 20, track width | `Width` on a track, now in fractions of a mil | yes, `PCB_PlaceTrack` | low |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -109,7 +111,7 @@ identifier does, so they are safe to run in any order and safe to run
 last. The cost of getting one wrong is a wrong answer, not a dead
 bridge.
 
-### Carried into 2026.09.23.4: five fixes whose symptom was silence
+### Carried from the previous build: five fixes whose symptom was silence
 
 These came out of one live session and a bug report, and they share a
 shape: the tool reported success, the board or sheet did not agree, and
@@ -208,7 +210,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.09.23.4`, `version_match` =
+Expect `altium_script_version` = `2026.09.28.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -612,7 +614,7 @@ The loop is bounded by `PartCount` because the command wraps at the
 last part. A target that can never be reached leaves the editor moved
 but not where asked, so check the spinner afterwards.
 
-**Part 1 goes a different way, new in 2026.09.23.4.** The command only
+**Part 1 goes a different way, new in the previous build.** The command only
 steps forward and stops at the last part, so from part 3 there is no
 step back to part 1, and `@1` read whichever part was on screen.
 `@1` now selects some other component in the library and then this
@@ -1025,6 +1027,201 @@ as an error.
 
 Save with `app_save_all` and reopen the library before trusting any of
 it. A library edit is real in memory and absent from disk until then.
+
+## 19. The layout model read
+
+`pcb.get_layout_model` reads a whole board for the new placement and
+routing engines, one section per call, in Altium's internal units. It
+only reads, so the cost of a mistake is a wrong or missing field, except
+for one class of mistake: these identifiers are read here and are NOT
+used anywhere else in this codebase. Altium's own example scripts read
+them the same way, which is why they are expected to work, but an
+undeclared one stops the polling loop:
+
+| Identifier | Where |
+|---|---|
+| `IsKeepout` on any primitive | copper section |
+| `StackShapeOnLayer`, `XStackSizeOnLayer`, `YStackSizeOnLayer`, `StackCRPctOnLayer`, `XPadOffset`, `YPadOffset` | pads section |
+| `MidShape`, `MidXSize`, `MidYSize`, `BotShape`, `BotXSize`, `BotYSize` | pads section |
+| `Region.HoleCount`, `Region.Holes[i]` | copper and components sections |
+| `Fill.Rotation` | copper section |
+| `Pad.IsPadRemoved(Layer)` | pads section |
+| `Via.IntersectLayer(Layer)`, `Via.SizeOnLayer(Layer)` | copper section |
+| `Obj.Polygon`, and that polygon's `Name` and `Net` | copper section |
+
+Open any board and run each section in turn, the riskiest first:
+
+    pcb.get_layout_model  section=pads     limit=50
+    pcb.get_layout_model  section=copper   limit=50
+    pcb.get_layout_model  section=board
+    pcb.get_layout_model  section=components
+    pcb.get_layout_model  section=rules
+    pcb.get_layout_model  section=classes
+
+Each must answer. Then check the values against the board, not just
+that they arrived:
+
+* A through-hole pad lists copper on every signal layer, a surface pad
+  on its own layer only, and sizes divided by 10000 match the pad's
+  properties in mils.
+* A rounded-rectangle pad carries its corner percentage.
+* On a board with internal planes, `board` lists `split_planes`, each
+  with its layer, its net and its regions. A plane's net is read from
+  there because `LayerObj.Net` on a stack layer faulted live as an
+  undeclared identifier. `pcb_set_plane_net` reads and writes that same
+  `LayerObj.Net`, so expect it to stop the polling loop the same way
+  until it is changed; do not run it on a board in use.
+* A part known to be locked reports `locked: true`.
+* On a board with poured polygons, a poured region or track in the
+  `copper` section carries `pour` (the polygon's name) and `pour_net`
+  (its net), and a region's `copper` flag is false for a polygon
+  cutout.
+* On a board whose vias have unused inner pads removed, a via's `sizes`
+  lists every signal layer it spans, and on a removed layer the size is
+  the hole size. A through-hole pad's copper entry for such a layer ends
+  in `true`.
+* `pcb.get_layout_model section=copper limit=50 trace=true` answers as
+  without `trace`, and `workspace/layout_trace.log` gains a line
+  `copper offset=0 limit=50`, then per object its index, `kind=`, and a
+  line before each of `owner`, `common`, `via sizes`, `region shape` and
+  `polygon points` that the object reaches. Twice the copper read of a
+  board crashed the scripting system (an access violation no Try can
+  catch) with nothing to say which object it was on; with `trace`, the
+  last line names it. Delete the file afterwards.
+
+---
+
+## 20. Router output lands where the router put it
+
+`pcb_place_vias` places a batch of vias in one call (`pcb.place_vias`),
+and `pcb_place_tracks` now keeps decimals in coordinates and in width.
+The router works on a grid finer than a mil and a rule set in mm is not
+whole mils either: a 0.1 mm width is 3.937 mil, and parsed as an integer
+it fell back to the 10 mil default.
+
+On a scratch board, not a client's:
+
+    pcb_place_vias  vias=[{"x": 1000.25, "y": 1000.5, "size": 12.5, "hole_size": 6.25},
+                          {"x": 1100, "y": 1000, "size": 20, "hole_size": 10,
+                           "net": "<a net on the board>"}]
+    pcb_place_tracks tracks=[{"x1": 1000.25, "y1": 1100, "x2": 1200.75, "y2": 1100,
+                              "width": 3.937, "layer": "TopLayer"}]
+
+Both must report every item placed. Then read them back and compare,
+not just the counts:
+
+* The first via sits at 1000.25, 1000.5 with a 12.5 mil pad and a 6.25
+  mil hole; the second carries its net.
+* The track is 3.937 mil wide, not 10 and not 4.
+* A via with an unknown layer name is counted in `failed` and named in
+  `unknown_layers`, and the rest of the batch is still placed.
+
+Then the tools that use them, on a public example board opened in Altium
+(never a client's):
+
+    pcb_autoroute        expect_file=<the board's full path>
+    design_job_status    job_id=<from the reply>        until done
+    design_job_result    job_id=<same>
+    pcb_autoroute_apply  job_id=<same> expect_file=<same path>
+
+* `pcb_autoroute` with another board focused answers with an error and
+  starts no job.
+* The job's `summary` reports completion, violations, routing layers, the
+  planes it relied on and the pours that join a net. On a two-layer board
+  with a ground polygon on each side, `pours` names both and the ground
+  net has tracks only where a pour left it apart.
+* `pcb_autoroute_apply` places exactly the `tracks` and `vias` counts the
+  result lists, names the checkpoint it took, and when the job relied on
+  planes or pours answers `repoured: true` with the polygons repoured
+  round the new copper (`repour=false` leaves them alone).
+* Then `pcb_run_drc`: Altium's own count of clearance violations and
+  unrouted nets should match the job's summary. A net joined by a pour
+  that Altium leaves unjoined means its repour and the engine's differ
+  (a thermal relief or a neck width): write down where.
+  A difference is a finding about the engine's DRC or its board read;
+  write it down with the rule it came from.
+
+Taking the routing up first, on a saved copy of a public example board:
+
+    obj_count  object_type=eTrackObject  filter=InComponent=false|InPolygon=false|Layer=TopLayer
+    obj_count  object_type=eTrackObject  filter=InComponent=true
+    pcb_unroute  expect_file=<the copy's full path>
+
+* The two counts differ from each other and from an unfiltered count:
+  footprint copper and free copper are told apart. `obj_query` with
+  `properties=Component,Locked,Kind` answers them all; `Kind` used to be
+  refused as unknown.
+* `pcb_unroute` reports tracks, arcs and vias removed. Afterwards
+  `pcb_get_board_statistics` shows no free routing left, every footprint
+  is intact (its pads and silkscreen drawn as before), polygons and
+  keepouts are still there, and a track locked beforehand
+  (`pcb_lock_net_routing`) is still there and counted in `kept_locked`.
+* `pcb_unroute nets=["NOT_A_NET"]` answers with an error and removes
+  nothing; with another board focused it refuses the same way.
+* `obj_batch_delete` with a board type (`eViaObject`,
+  `filter=InComponent=false|Net=<a net>`) deletes them and reports a
+  `results` row with the count; a board type with `scope=project` is
+  reported as `scope_not_supported`, not skipped in silence.
+  `obj_batch_modify` takes the same board types.
+* Undo (Ctrl+Z) in Altium after `pcb_unroute` puts the routing back.
+* `obj_query object_type=eConnectionObject properties=Net,X1,Y1,X2,Y2,Layer1,Layer2`
+  lists one row per ratsnest line, as many as `pcb_get_unrouted_nets`
+  counts, each with both ends and their layers filled in.
+* On a board whose nets are all joined (Altium's own DRC reports no
+  un-routed net), `pcb_get_unrouted_nets` may still list stored lines.
+  Read them with `properties=Net,IsRedundant,Mode` and note both values
+  per line; then `pcb_get_unrouted_nets reanalyze=true` and note whether
+  the count drops to 0. Both calls must answer: a halted polling loop here
+  means the script engine does not know IsRedundant, Mode or AnalyzeNet.
+
+Placement next, on the same copy:
+
+    pcb_autoplace        expect_file=<the copy's full path>
+    design_job_status    job_id=<from the reply>        until done
+    design_job_result    job_id=<same>
+    pcb_autoplace_apply  job_id=<same> expect_file=<same path>
+
+* `pcb_autoplace` with another board focused answers with an error and
+  starts no job; a designator in `parts` that is not on the board is
+  named in the error.
+* The job's `summary` reports parts moved and fixed, wirelength before
+  and after, and the engine's DRC count on the placed board. Locked
+  parts and connectors, mounting holes and test points are not in
+  `moves`.
+* `pcb_autoplace_apply` answers `moved` equal to `expected` and names
+  its checkpoint. Read the parts back: each sits at the whole-mil x, y
+  and rotation the job listed, on the side it started on.
+* Then `pcb_autoroute` and its apply as above, and `pcb_run_drc`.
+  Component clearance violations Altium reports on the placed board
+  that the job's summary did not are a finding about the placer's
+  body outlines: write down the two parts.
+
+---
+
+## 21. Closing one document by its path
+
+`app_close_document` closes the document it is given, found by its full
+path, not whatever has the focus: `WorkspaceManager:CloseObject` acts on
+the focused object and once closed a different project than the one
+named. It calls `Client.CloseDocument`, which the reference scripts use;
+nothing in this codebase called it before, so an undeclared identifier
+here would stop the polling loop.
+
+On scratch documents only:
+
+1. Open two scratch boards; focus the FIRST.
+2. `app_close_document file_path=<the SECOND's full path>`. It answers
+   `closed: true`, the second is gone from `app_list_documents`, and the
+   first is still open and still focused.
+3. `app_close_document` on a path that is not open answers `NOT_LOADED`
+   and closes nothing.
+4. Place anything on the remaining scratch board without saving, then
+   `app_close_document` on it: it answers `MODIFIED` and the board stays
+   open. If the modified read misses the edit and Altium raises its save
+   prompt instead, record it: the refusal is a floor, not a guarantee.
+5. The same call with `discard_changes=true` closes it with no prompt,
+   answers `discarded: true`, and the file on disk is unchanged (compare
+   its hash before and after).
 
 ---
 

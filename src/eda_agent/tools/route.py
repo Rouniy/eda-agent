@@ -87,8 +87,308 @@ def _planned_against(geom: dict[str, Any], source: str) -> dict[str, Any]:
     return out
 
 
+#: Items per bridge call when applying routes: one PreProcess and one
+#: broadcast per call, and a request small enough to pass comfortably.
+APPLY_CHUNK = 300
+
+
+def _fmt(v: Any) -> str:
+    x = float(v)
+    return str(int(x)) if x.is_integer() else f"{x:.4f}".rstrip("0").rstrip(".")
+
+
 def register_route_tools(mcp):
     """Register routing tools with the MCP server."""
+
+    @mcp.tool()
+    async def pcb_autoroute(
+        expect_file: str,
+        nets: Optional[list[str]] = None,
+        use_planes: bool = True,
+    ) -> dict[str, Any]:
+        """Route the focused board with the in-house layout engine, as a job.
+
+        Reads the board exactly (``pcb.get_layout_model``: padstacks per
+        layer, rules, pours, planes, in Altium's internal units), then routes
+        it in the background and returns a job id at once. Poll
+        ``design_job_status``; ``design_job_result`` gives the tracks and
+        vias to add, the exact DRC's verdict on the routed board, and which
+        pours it relied on as planes. Nothing is written to the board until
+        ``pcb_autoroute_apply``.
+
+        This is the in-house engine: no Altium autorouter, no external
+        program. Inner layers a pour covers are used as planes and not
+        routed on; a redundant one is given back to routing when the board
+        cannot be completed without it.
+
+        Args:
+            expect_file: full path of the board to route. The read refuses
+                on the first reply if the focused board is another one.
+            nets: route only these nets; all other copper stays as it is.
+                None routes every net with two or more pads.
+            use_planes: treat inner layers a single pour covers as planes
+                (default True).
+
+        Returns:
+            ``{"job_id", "board", "read": {pads, components, nets, layers}}``,
+            or ``{"error": ...}`` when the read failed or found another board.
+        """
+        import asyncio
+
+        from ..design.jobs import get_job_store
+        from ..layout.read_altium import WrongBoard, read_live_board
+        from ..layout.route.job import route_job
+
+        try:
+            board = await asyncio.to_thread(read_live_board, expect_file)
+        except WrongBoard as exc:
+            return {"error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"error": f"board read failed: {exc}"}
+        job_id = get_job_store().submit(
+            "layout_route", route_job,
+            {"board": board, "nets": list(nets) if nets else None, "planes": use_planes})
+        return {
+            "job_id": job_id,
+            "board": board.name,
+            "read": {"pads": len(board.pads), "components": len(board.components),
+                     "nets": len(board.nets()), "layers": board.copper_layers()},
+            "next_step": "poll design_job_status, then design_job_result; "
+                         "apply with pcb_autoroute_apply",
+        }
+
+    @mcp.tool()
+    async def pcb_autoroute_apply(
+        job_id: str,
+        expect_file: str,
+        checkpoint: bool = True,
+        repour: bool = True,
+    ) -> dict[str, Any]:
+        """Write a finished ``pcb_autoroute`` job's tracks and vias to the board.
+
+        Refuses unless the focused board is ``expect_file``. With
+        ``checkpoint`` (default), first snapshots the board's folder as it
+        is ON DISK, so it can be restored with ``app_restore_checkpoint``.
+        Nothing is saved first: unsaved edits in the editor are not in the
+        checkpoint, so save the board yourself beforehand if it has any.
+        Coordinates, widths and via sizes keep their decimals.
+
+        Args:
+            job_id: a ``layout_route`` job that has finished.
+            expect_file: full path of the board the job routed.
+            checkpoint: take a checkpoint first (default True).
+            repour: repour the board's polygons afterwards when the job
+                relied on them, as planes or as pours joining a net, or
+                routed through their old poured copper (default True). A
+                poured net's connections are not there, and the new copper
+                is not cleared, until the polygons are repoured round it.
+
+        Returns:
+            ``{"tracks": {placed, failed}, "vias": {placed, failed},
+            "checkpoint": ..., "repoured": bool, "notes": [...]}`` or
+            ``{"error": ...}``.
+        """
+        from pathlib import Path
+
+        from ..design.jobs import get_job_store
+        from ..layout.read_altium import _same_file
+
+        store = get_job_store()
+        rec = store.get(job_id)
+        if rec is None or rec.kind != "layout_route":
+            return {"error": f"no layout_route job {job_id!r}"}
+        if rec.status != "done":
+            return {"error": f"job {job_id} is {rec.status}, not done", "job": rec.summary()}
+        result = rec.result or {}
+        bridge = get_bridge()
+        head = await bridge.send_command_async("pcb.get_layout_model", {"section": "board"},
+                                                timeout=120.0)
+        focused = str((head or {}).get("file", ""))
+        if not _same_file(focused, expect_file):
+            return {"error": f"the focused board is {focused or '(none)'}, not {expect_file}; "
+                             "nothing was written"}
+        out: dict[str, Any] = {"notes": list(result.get("notes") or [])}
+        if checkpoint:
+            from ..checkpoint import CheckpointStore
+            from ..config import get_config
+            cp = CheckpointStore(get_config().workspace_dir / "checkpoints")
+            info = cp.create(Path(expect_file).parent, label=f"before pcb_autoroute_apply {job_id}")
+            out["checkpoint"] = info.summary()
+            out["notes"].append("The checkpoint holds the board folder as it was on disk; "
+                                "unsaved editor changes are not in it.")
+        placed = {"tracks": {"placed": 0, "failed": 0}, "vias": {"placed": 0, "failed": 0}}
+        tracks = result.get("tracks") or []
+        for i in range(0, len(tracks), APPLY_CHUNK):
+            parts = [",".join([_fmt(t["x1"]), _fmt(t["y1"]), _fmt(t["x2"]), _fmt(t["y2"]),
+                               _fmt(t["width"]), str(t["layer"]), str(t.get("net_name", ""))])
+                     for t in tracks[i:i + APPLY_CHUNK]]
+            r = await bridge.send_command_async("pcb.place_tracks", {"tracks": "|".join(parts)},
+                                                timeout=120.0)
+            placed["tracks"]["placed"] += int((r or {}).get("placed", 0))
+            placed["tracks"]["failed"] += int((r or {}).get("failed", 0))
+        vias = result.get("vias") or []
+        for i in range(0, len(vias), APPLY_CHUNK):
+            parts = [",".join([_fmt(v["x"]), _fmt(v["y"]), _fmt(v["size"]), _fmt(v["hole_size"]),
+                               str(v["low_layer"]), str(v["high_layer"]), str(v.get("net", ""))])
+                     for v in vias[i:i + APPLY_CHUNK]]
+            r = await bridge.send_command_async("pcb.place_vias", {"vias": "|".join(parts)},
+                                                timeout=120.0)
+            placed["vias"]["placed"] += int((r or {}).get("placed", 0))
+            placed["vias"]["failed"] += int((r or {}).get("failed", 0))
+        out.update(placed)
+        out["expected"] = {"tracks": len(tracks), "vias": len(vias)}
+        summary = result.get("summary") or {}
+        relied = bool(summary.get("pours") or summary.get("planes")
+                      or summary.get("old_pours"))
+        out["repoured"] = False
+        if repour and relied:
+            await bridge.send_command_async("pcb.repour_polygons", {}, timeout=600.0)
+            out["repoured"] = True
+        out["notes"].append("Run pcb_run_drc to check the board with Altium's own rules.")
+        return out
+
+    @mcp.tool()
+    async def pcb_autoplace(
+        expect_file: str,
+        parts: Optional[list[str]] = None,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        """Place the focused board's parts with the in-house placer, as a job.
+
+        Reads the board exactly (``pcb.get_layout_model``), then places it in
+        the background and returns a job id at once. Poll
+        ``design_job_status``; ``design_job_result`` gives the moves, the
+        wirelength before and after, any overlaps, and the exact DRC's
+        verdict on the placed board (unrouted). Nothing is moved on the board
+        until ``pcb_autoplace_apply``.
+
+        Parts keep their side. Locked parts, and parts whose designator
+        starts like a connector, mounting hole, fiducial, test point, switch
+        or battery, stay where they are unless named in ``parts``: they sit
+        where they do for mechanical reasons. The board's own routing does
+        not move with its parts: place before routing, or take the routing up
+        first with ``pcb_unroute``.
+
+        This is the in-house engine: no Altium auto-placer, no external
+        program.
+
+        Args:
+            expect_file: full path of the board to place. The read refuses on
+                the first reply if the focused board is another one.
+            parts: designators to move; every other part stays. None moves
+                every part that is not locked or mechanical (see above).
+            compact: spread the parts over only as much room as they need,
+                round where their connections pull them, instead of over the
+                whole board. For a small circuit on a large board; over the
+                benchmark boards it routes slightly worse, so it is off by
+                default.
+
+        Returns:
+            ``{"job_id", "board", "read": {...}}``, or ``{"error": ...}`` when
+            the read failed or found another board.
+        """
+        import asyncio
+
+        from ..design.jobs import get_job_store
+        from ..layout.read_altium import WrongBoard, read_live_board
+
+        try:
+            board = await asyncio.to_thread(read_live_board, expect_file)
+        except WrongBoard as exc:
+            return {"error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"error": f"board read failed: {exc}"}
+        if parts:
+            known = {c.ref for c in board.components}
+            unknown = [p for p in parts if p not in known]
+            if unknown:
+                return {"error": f"no such parts on the board: {', '.join(unknown)}"}
+        from ..layout.place.job import place_job
+        from ..layout.place.placer import SPREAD_DENSITY
+        job_id = get_job_store().submit(
+            "layout_place", place_job, {"board": board, "parts": list(parts) if parts else None,
+                                        "spread_density": SPREAD_DENSITY if compact else 0.0})
+        return {
+            "job_id": job_id,
+            "board": board.name,
+            "read": {"pads": len(board.pads), "components": len(board.components),
+                     "nets": len(board.nets()), "layers": board.copper_layers()},
+            "next_step": "poll design_job_status, then design_job_result; "
+                         "apply with pcb_autoplace_apply",
+        }
+
+    @mcp.tool()
+    async def pcb_autoplace_apply(
+        job_id: str,
+        expect_file: str,
+        checkpoint: bool = True,
+    ) -> dict[str, Any]:
+        """Move the parts of a finished ``pcb_autoplace`` job on the board.
+
+        Refuses unless the focused board is ``expect_file``. With
+        ``checkpoint`` (default), first snapshots the board's folder as it is
+        ON DISK, so it can be restored with ``app_restore_checkpoint``;
+        unsaved edits in the editor are not in it, so save first if there
+        are any. Positions are whole mils, as the job reported and judged
+        them.
+
+        Args:
+            job_id: a ``layout_place`` job that has finished.
+            expect_file: full path of the board the job placed.
+            checkpoint: take a checkpoint first (default True).
+
+        Returns:
+            ``{"moved", "failed", "expected", "checkpoint", "notes"}`` or
+            ``{"error": ...}``.
+        """
+        from pathlib import Path
+
+        from ..design.jobs import get_job_store
+        from ..layout.read_altium import _same_file
+
+        store = get_job_store()
+        rec = store.get(job_id)
+        if rec is None or rec.kind != "layout_place":
+            return {"error": f"no layout_place job {job_id!r}"}
+        if rec.status != "done":
+            return {"error": f"job {job_id} is {rec.status}, not done", "job": rec.summary()}
+        result = rec.result or {}
+        bridge = get_bridge()
+        head = await bridge.send_command_async("pcb.get_layout_model", {"section": "board"},
+                                                timeout=120.0)
+        focused = str((head or {}).get("file", ""))
+        if not _same_file(focused, expect_file):
+            return {"error": f"the focused board is {focused or '(none)'}, not {expect_file}; "
+                             "nothing was moved"}
+        out: dict[str, Any] = {"notes": list(result.get("notes") or [])}
+        if checkpoint:
+            from ..checkpoint import CheckpointStore
+            from ..config import get_config
+            cp = CheckpointStore(get_config().workspace_dir / "checkpoints")
+            info = cp.create(Path(expect_file).parent, label=f"before pcb_autoplace_apply {job_id}")
+            out["checkpoint"] = info.summary()
+            out["notes"].append("The checkpoint holds the board folder as it was on disk; "
+                                "unsaved editor changes are not in it.")
+        moves = result.get("moves") or []
+        moved = failed = 0
+        for i in range(0, len(moves), APPLY_CHUNK):
+            ops = []
+            for m in moves[i:i + APPLY_CHUNK]:
+                d = str(m["designator"])
+                if "," in d or "|" in d:
+                    failed += 1
+                    continue
+                ops.append(f"{d},{int(m['x'])},{int(m['y'])},{_fmt(m['rotation'])}")
+            if not ops:
+                continue
+            r = await bridge.send_command_async("pcb.batch_move_components",
+                                                {"moves": "|".join(ops)}, timeout=120.0)
+            r = r or {}
+            moved += int(r.get("moves_applied", 0))
+            failed += int(r.get("failed", 0))
+        out.update(moved=moved, failed=failed, expected=len(moves))
+        out["notes"].append("Then pcb_autoroute to route the placed board.")
+        return out
 
     @mcp.tool()
     async def route_plan(

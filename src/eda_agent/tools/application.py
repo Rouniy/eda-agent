@@ -464,6 +464,37 @@ def register_application_tools(mcp):
         return CheckpointStore(get_config().workspace_dir / "checkpoints")
 
     @mcp.tool()
+    async def app_close_document(file_path: str,
+                                 discard_changes: bool = False) -> dict[str, Any]:
+        """Close ONE open document, found by its full path, whatever has focus.
+
+        Unlike closing through the workspace manager, which acts on the
+        FOCUSED object, this closes the named document itself. It refuses a
+        document that reads modified, and says whether it is really gone
+        afterwards. The modified read can miss edits held in the editor, so
+        save anything you care about first; a close of an edited document
+        may still raise Altium's save prompt.
+
+        Args:
+            file_path: the document's full path, as app_list_documents
+                reports it.
+            discard_changes: close it even when it reads modified, and
+                LOSE the unsaved edits: the modified flag is cleared first
+                so no save prompt appears. For scratch copies and documents
+                Altium changed by merely opening them, never for work.
+
+        Returns:
+            ``{"closed": bool, "discarded": bool, "file_path": ...}``; an
+            error when the path is not open, or when the document reads
+            modified and ``discard_changes`` is not set.
+        """
+        params = {"file_path": file_path}
+        if discard_changes:
+            params["discard"] = "true"
+        return await get_bridge().send_command_async(
+            "application.close_document", params, timeout=120.0)
+
+    @mcp.tool()
     async def app_checkpoint(label: str = "", save_first: bool = True) -> dict[str, Any]:
         """Snapshot the focused project so the session is revertible.
 

@@ -282,6 +282,15 @@ def derive_netlist_build(
     }
 
 
+def _mils(value: Any) -> str:
+    """A length in mils for the wire: whole numbers as integers, the rest
+    to 1e-4 mil, which is one Altium internal unit."""
+    v = float(value)
+    if v.is_integer():
+        return str(int(v))
+    return f"{v:.4f}".rstrip("0").rstrip(".")
+
+
 def _encode_bindings_param(bindings: list[dict[str, Any]]) -> str:
     """Encode binding dicts into the ``~~``-op / ``;``-field wire grammar
     the Pascal ``NextBatchOp``/``GetBatchField`` helpers parse. Entries
@@ -1217,6 +1226,82 @@ def register_pcb_tools(mcp):
             {"mode": mode, "min_length_mils": str(min_length_mils)},
             timeout=120.0,
         )
+
+    @mcp.tool()
+    async def pcb_unroute(
+        expect_file: str,
+        nets: Optional[list[str]] = None,
+        include_locked: bool = False,
+        checkpoint: bool = True,
+    ) -> dict[str, Any]:
+        """Take up the focused board's routing: its tracks, arcs and vias.
+
+        Removes the free tracks and arcs on signal layers, and the free
+        vias, that carry a net. Never removes a footprint's own copper,
+        polygons or their hatching, dimensions, keepouts, or copper with
+        no net (an antenna, a logo, a heat spreader): those are drawn,
+        not routed. Locked routing stays unless ``include_locked``, since
+        locking is how a designer keeps a route. Polygons are not
+        repoured; ``pcb_repour_polygons`` does that.
+
+        Refuses unless the focused board is ``expect_file``. With
+        ``checkpoint`` (default), first snapshots the board's folder as it
+        is ON DISK, so it can be restored with ``app_restore_checkpoint``;
+        unsaved edits in the editor are not in it, so save first if there
+        are any.
+
+        For other selections of board copper, ``obj_delete`` and
+        ``obj_batch_delete`` take a board type with a filter, e.g.
+        ``eTrackObject`` with ``Layer=TopLayer|InComponent=false``.
+
+        Args:
+            expect_file: full path of the board to un-route.
+            nets: take up only these nets' routing. None takes every
+                net's. A name that is not a net on the board refuses the
+                whole call and nothing is removed.
+            include_locked: take locked routing as well (default False).
+            checkpoint: take a checkpoint first (default True).
+
+        Returns:
+            ``{"tracks", "arcs", "vias", "nets", "kept_locked", "failed",
+            "checkpoint"}``: how many of each were removed, how many nets
+            they were on, and how many locked primitives stayed. Or
+            ``{"error": ...}``.
+        """
+        from pathlib import Path
+
+        from ..layout.read_altium import _same_file
+
+        if nets is not None and not nets:
+            return {"error": "nets is empty; pass None to take up every net's routing"}
+        bad = [n for n in (nets or []) if "," in n]
+        if bad:
+            return {"error": f"a net name with a comma cannot be sent: {bad}"}
+        bridge = get_bridge()
+        head = await bridge.send_command_async("pcb.get_layout_model", {"section": "board"},
+                                                timeout=120.0)
+        focused = str((head or {}).get("file", ""))
+        if not _same_file(focused, expect_file):
+            return {"error": f"the focused board is {focused or '(none)'}, not {expect_file}; "
+                             "nothing was removed"}
+        out: dict[str, Any] = {}
+        if checkpoint:
+            from ..checkpoint import CheckpointStore
+            from ..config import get_config
+            cp = CheckpointStore(get_config().workspace_dir / "checkpoints")
+            info = cp.create(Path(expect_file).parent, label="before pcb_unroute")
+            out["checkpoint"] = info.summary()
+        # The board's own spelling of its path, so the script's check
+        # compares like with like.
+        res = await bridge.send_command_async(
+            "pcb.unroute",
+            {"expect_file": focused, "nets": ",".join(nets or []),
+             "include_locked": "true" if include_locked else "false"},
+            timeout=600.0,
+        )
+        if isinstance(res, dict):
+            out.update(res)
+        return out
 
     @mcp.tool()
     async def pcb_place_thieving_pads(
@@ -4144,8 +4229,9 @@ def register_pcb_tools(mcp):
 
         Args:
             tracks: List of track dicts. Each dict supports:
-                x1, y1, x2, y2 (required, mils)
-                width (default 10), layer (default "TopLayer"),
+                x1, y1, x2, y2 (required, mils; decimals are kept)
+                width (default 10, mils; decimals are kept, so a 0.1 mm
+                rule stays 3.937), layer (default "TopLayer"),
                 net_name (optional, empty = no net)
 
             Example:
@@ -4161,11 +4247,11 @@ def register_pcb_tools(mcp):
         """
         parts = []
         for t in tracks:
-            x1 = int(t["x1"])
-            y1 = int(t["y1"])
-            x2 = int(t["x2"])
-            y2 = int(t["y2"])
-            width = int(t.get("width", 10))
+            x1 = _mils(t["x1"])
+            y1 = _mils(t["y1"])
+            x2 = _mils(t["x2"])
+            y2 = _mils(t["y2"])
+            width = _mils(t.get("width", 10))
             layer = str(t.get("layer", "TopLayer"))
             net = str(t.get("net_name", ""))
             parts.append(f"{x1},{y1},{x2},{y2},{width},{layer},{net}")
@@ -4174,6 +4260,40 @@ def register_pcb_tools(mcp):
             "pcb.place_tracks", {"tracks": "|".join(parts)}
         )
         return result
+
+    @mcp.tool()
+    async def pcb_place_vias(
+        vias: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Place many vias on the active PCB in ONE IPC round-trip.
+
+        PREFER THIS over ``pcb_place_via`` whenever there is more than one
+        via: the batch is one PreProcess/PostProcess and one broadcast.
+        Coordinates and sizes keep their decimals, so a via laid by a
+        router on a sub-mil grid lands where the router put it.
+
+        Args:
+            vias: List of via dicts. Each dict supports:
+                x, y (required, mils), size (default 50), hole_size
+                (default 28), low_layer (default "TopLayer"), high_layer
+                (default "BottomLayer"), net (optional, empty = no net)
+
+        Returns:
+            Dictionary with "placed" and "failed" counts and
+            "unknown_layers" naming any layer pair that did not resolve.
+        """
+        parts = []
+        for v in vias:
+            parts.append(",".join([
+                _mils(v["x"]), _mils(v["y"]),
+                _mils(v.get("size", 50)), _mils(v.get("hole_size", 28)),
+                str(v.get("low_layer", "TopLayer")),
+                str(v.get("high_layer", "BottomLayer")),
+                str(v.get("net", "")),
+            ]))
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.place_vias", {"vias": "|".join(parts)})
 
     @mcp.tool()
     async def pcb_place_arc(
@@ -4961,18 +5081,31 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_unrouted_nets() -> dict[str, Any]:
+    async def pcb_get_unrouted_nets(reanalyze: bool = False) -> dict[str, Any]:
         """Get list of nets with unrouted connections (ratsnest lines).
 
         Identifies nets that still have ratsnest lines, meaning they are
         not fully routed. Useful for checking routing completion status.
 
+        The count is of the connection lines stored on the board, and
+        those can be out of date: boards whose nets were all joined have
+        been reported with open connections. ``reanalyze`` has Altium
+        re-derive the lines of every net that has one first, as it does
+        after an edit. ``obj_query`` on ``eConnectionObject`` lists each
+        line with its ends, layers, ``IsRedundant`` and ``Mode``.
+
+        Args:
+            reanalyze: re-derive the ratsnest before counting (default
+                False).
+
         Returns:
             Dictionary with "unrouted_nets" array (each with net name and
-            unrouted_connections count), "net_count", and "total_unrouted"
+            unrouted_connections count), "net_count", "total_unrouted" and
+            "reanalyzed"
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_unrouted_nets", {})
+        result = await bridge.send_command_async(
+            "pcb.get_unrouted_nets", {"reanalyze": "true" if reanalyze else "false"})
         return result
 
     @mcp.tool()

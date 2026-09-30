@@ -184,7 +184,14 @@ def test_every_step_that_writes_a_property_is_ranked():
 # DELETION of a StringReplace, so there is no new property write to
 # rank; the risk it carries (a mangled path) is the very thing the
 # step observes directly.
-_STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10"}
+#
+# Step 21 closes a document with Client.CloseDocument, a method call, not
+# a property write; its risk (an undeclared identifier) is in the step.
+#
+# Step 19 (the layout model read) only reads. Its undeclared-identifier
+# risk is listed in the step itself, identifier by identifier, for the
+# same reason step 8's is.
+_STEPS_WITHOUT_A_PROPERTY = {"0", "1", "8", "9", "10", "19", "21"}
 
 
 def _step_headings() -> list[tuple[str, str]]:

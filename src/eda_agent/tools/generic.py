@@ -162,7 +162,9 @@ def register_generic_tools(mcp):
                 "eWire", "eBus", "eBusEntry", "eParameter", "ePin",
                 "eLabel", "eLine", "eRectangle", "eSheetSymbol", "eSheetEntry", "eNoERC", "eJunction"
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
-                "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject"
+                "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
+                "eConnectionObject" (the ratsnest: one line per unrouted
+                connection, with X1, Y1, X2, Y2, Layer1, Layer2 and Net)
             properties: Comma-separated property names to return.
 
                 SCHEMATIC objects use the dotted spelling:
@@ -189,7 +191,16 @@ def register_generic_tools(mcp):
                 Net, X1, Y1, X2, Y2, Width, Radius, StartAngle,
                 EndAngle, XCenter, YCenter, HoleSize, Size, TopShape,
                 TopXSize, TopYSize, Rotation, Name, Text, Pattern,
-                Designator, Comment, SourceDesignator.
+                Designator, Comment, SourceDesignator, Kind,
+                RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea,
+                StandoffHeight, OverallHeight, InComponent, Component,
+                InPolygon, IsKeepout, Locked, Layer1, Layer2.
+
+                A board type walks EVERY primitive of that type, a
+                footprint's own tracks and a hatched polygon's tracks
+                with the routing, on the same copper layers. Filter
+                "InComponent=false|InPolygon=false" keeps to free copper;
+                Component is the owning footprint's designator.
 
                 An unrecognised PCB property is REFUSED and the reply
                 lists the valid ones. It used to come back empty, which
@@ -434,15 +445,22 @@ def register_generic_tools(mcp):
         filter: str = "",
         confirm_delete_all: bool = False,
     ) -> dict[str, Any]:
-        """Find and delete schematic objects.
+        """Find and delete schematic or PCB objects.
 
         For several scope/type/filter sets at once, use `obj_batch_delete`
        , one IPC round-trip vs one LLM turn per delete.
 
+        A PCB type (eTrackObject, eViaObject, ...) deletes from the active
+        board, and matches a footprint's own primitives and a polygon's
+        hatching too unless the filter says "InComponent=false" and
+        "InPolygon=false". To take up routing, ``pcb_unroute`` does that
+        with the right exclusions built in.
+
         Args:
             object_type: Altium object type constant (see `obj_query`)
             scope: "active_doc", "project", "doc:PATH", or
-                "lib_component:NAME" (a named symbol in the active SchLib)
+                "lib_component:NAME" (a named symbol in the active SchLib).
+                A PCB type takes only "active_doc".
             filter: Pipe-separated property=value conditions (AND logic).
                     WARNING: empty filter deletes ALL objects of the type.
             confirm_delete_all: Must be True to delete all objects when filter is empty.
@@ -669,7 +687,9 @@ def register_generic_tools(mcp):
                   many library symbols in ONE call, no per-symbol
                   lib_set_current_component round-trip.
                 - object_type: Altium object type (e.g., "ePin", "eParameter",
-                  "eSchComponent", "eNetLabel")
+                  "eSchComponent", "eNetLabel"), or a PCB type such as
+                  "eTrackObject", which edits the active board and takes
+                  only scope "active_doc"
                 - filter: Pipe-separated filter conditions
                   (e.g., "Designator.Text=U1", "Name=VDD")
                 - set: Pipe-separated property=value assignments
@@ -1651,9 +1671,18 @@ def register_generic_tools(mcp):
         x: int,
         y: int,
     ) -> dict[str, Any]:
-        """Place a wire junction at coordinates on the active schematic.
+        """Place a MANUAL junction at coordinates on the active schematic.
 
-        Junctions are needed where wires cross and should connect (T or + intersections).
+        A T NEEDS NONE. Altium draws an automatic junction wherever a wire
+        ends on another wire or three wire ends meet, blue, exactly as
+        interactive wiring leaves it, and it does so for wires this server
+        places too. The object this tool creates is a manual junction:
+        drawn dark red with a lock marker, and placed on a T it just sits
+        on top of the blue one.
+
+        Use it only where two wires CROSS and must connect. A plain
+        crossing is not a connection in Altium, and a manual junction is
+        what makes it one.
 
         Args:
             x: X coordinate in mils
@@ -2471,7 +2500,9 @@ def register_generic_tools(mcp):
                 - scope: "active_doc" (default), "project", or
                   "doc:<absolute_path>".
                 - object_type: Altium type name (e.g. "eJunction",
-                  "eNoERC", "eWire").
+                  "eNoERC", "eWire", or a PCB type such as
+                  "eTrackObject", which deletes from the active board
+                  and takes only scope "active_doc").
                 - filter: pipe-separated ``PropName=Value`` filter
                   conditions (AND logic), same format as
                   ``obj_delete``. An EMPTY filter deletes every object
@@ -2492,9 +2523,13 @@ def register_generic_tools(mcp):
             ])
 
         Returns:
-            Dict with operations_processed and total, or an ``error``
-            with ``operations_processed`` 0 when a sweep is unconfirmed,
-            in which case nothing is sent.
+            Dict with operations_processed, total, total_deleted and
+            ``results``: one row per operation with its ``deleted`` count
+            and a ``note`` saying why it deleted nothing
+            (unknown_object_type, scope_not_supported, no_objects_matched,
+            or failed: CODE). Or an ``error`` with
+            ``operations_processed`` 0 when a sweep is unconfirmed, in
+            which case nothing is sent.
         """
         op_strs: list[str] = []
         sweeping: list[str] = []

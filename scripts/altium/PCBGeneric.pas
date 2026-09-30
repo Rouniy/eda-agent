@@ -93,6 +93,24 @@ Begin
     End;
 End;
 
+{ A ratsnest line's redundancy and connection mode. Each is read in a     }
+{ function of its own: both come from the API reference and neither had   }
+{ been called from a script here, and an identifier the script engine does }
+{ not know halts the polling loop where no Try catches it. Apart, a build  }
+{ without one fails only a query that asks for it.                         }
+Function PCBConnRedundant(Conn : IPCB_Connection) : String;
+Begin
+    Result := BoolToJsonStr(Conn.IsRedundant);
+End;
+
+Function PCBConnMode(Conn : IPCB_Connection) : String;
+Var
+    M : Integer;
+Begin
+    M := Conn.Mode;
+    Result := IntToStr(M);
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -104,6 +122,7 @@ Var
     Rgn   : IPCB_Region;
     Poly  : IPCB_Polygon;
     Body  : IPCB_ComponentBody;
+    Conn  : IPCB_Connection;
     Oid   : Integer;
     PosVal : Integer;
     PosFound : Boolean;
@@ -141,24 +160,74 @@ Begin
         Begin
             If Obj.Net <> Nil Then Result := Obj.Net.Name;
         End
+        { WHAT A PRIMITIVE BELONGS TO. The walk below takes every primitive  }
+        { on the board, so a footprint's own tracks and a hatched pour's     }
+        { tracks come through with the routing, on the same copper layers,   }
+        { and a filter on Layer alone cannot keep to routing. These let it:  }
+        { InComponent=false|InPolygon=false is free copper.                  }
+        Else If PropName = 'InComponent' Then
+        Begin
+            Result := BoolToJsonStr(Obj.InComponent);
+        End
+        Else If PropName = 'InPolygon' Then
+        Begin
+            Result := BoolToJsonStr(Obj.InPolygon);
+        End
+        Else If PropName = 'IsKeepout' Then
+        Begin
+            Result := BoolToJsonStr(Obj.IsKeepout);
+        End
+        Else If PropName = 'Locked' Then
+        Begin
+            Result := BoolToJsonStr(Not Obj.Moveable);
+        End
+        Else If PropName = 'Component' Then
+        Begin
+            { The owning footprint's designator; empty for a free primitive. }
+            If Obj.InComponent Then
+            Begin
+                If Obj.Component <> Nil Then Result := Obj.Component.Name.Text;
+            End;
+        End
         { Subtype members. DelphiScript resolves members against the DECLARED }
         { type, so Obj.X1 on an IPCB_Primitive is "Undeclared identifier".    }
         { Narrow to a typed local via ObjectId (no Forward casts in script).  }
+        { A ratsnest line has two ends the same way a track does. }
         Else If PropName = 'X1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.X1)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.X1)); End
+            Else If Oid = eConnectionObject Then Begin Conn := Obj; Result := FloatToJsonStr(CoordToMilsF(Conn.X1)); End;
         End
         Else If PropName = 'Y1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Y1)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Y1)); End
+            Else If Oid = eConnectionObject Then Begin Conn := Obj; Result := FloatToJsonStr(CoordToMilsF(Conn.Y1)); End;
         End
         Else If PropName = 'X2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.X2)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.X2)); End
+            Else If Oid = eConnectionObject Then Begin Conn := Obj; Result := FloatToJsonStr(CoordToMilsF(Conn.X2)); End;
         End
         Else If PropName = 'Y2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Y2)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Y2)); End
+            Else If Oid = eConnectionObject Then Begin Conn := Obj; Result := FloatToJsonStr(CoordToMilsF(Conn.Y2)); End;
+        End
+        Else If PropName = 'Layer1' Then
+        Begin
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := GetLayerString(Conn.Layer1); End;
+        End
+        Else If PropName = 'Layer2' Then
+        Begin
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := GetLayerString(Conn.Layer2); End;
+        End
+        Else If PropName = 'IsRedundant' Then
+        Begin
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := PCBConnRedundant(Conn); End;
+        End
+        Else If PropName = 'Mode' Then
+        Begin
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := PCBConnMode(Conn); End;
         End
         Else If PropName = 'Width' Then
         Begin
@@ -561,6 +630,9 @@ End;
 
 Function IsKnownPCBProperty(PropName : String) : Boolean;
 Begin
+    { Kind, RegionKind, the three pour options and the two body heights  }
+    { were answered by the getter and refused here, so a query for them  }
+    { was told they do not exist: the lag the list below warns about.    }
     Result :=
         (PropName = 'ObjectId') Or (PropName = 'X') Or (PropName = 'Y') Or
         (PropName = 'Layer') Or (PropName = 'Descriptor') Or
@@ -576,7 +648,16 @@ Begin
         (PropName = 'Text') Or (PropName = 'Pattern') Or
         (PropName = 'Designator') Or (PropName = 'Designator.Text') Or
         (PropName = 'Comment') Or (PropName = 'Comment.Text') Or
-        (PropName = 'SourceDesignator');
+        (PropName = 'SourceDesignator') Or
+        (PropName = 'Kind') Or (PropName = 'RegionKind') Or
+        (PropName = 'RemoveDead') Or (PropName = 'RemoveNarrowNecks') Or
+        (PropName = 'RemoveIslandsByArea') Or
+        (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
+        (PropName = 'InComponent') Or (PropName = 'Component') Or
+        (PropName = 'InPolygon') Or (PropName = 'IsKeepout') Or
+        (PropName = 'Locked') Or (PropName = 'Layer1') Or
+        (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
+        (PropName = 'Mode');
 End;
 
 Function UnknownPCBProperties(PropsStr : String) : String;
@@ -623,7 +704,8 @@ Begin
           tells a caller a property does not exist when it does, which is
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
-        + 'StandoffHeight, OverallHeight';
+        + 'StandoffHeight, OverallHeight, InComponent, Component, '
+        + 'InPolygon, IsKeepout, Locked, Layer1, Layer2, IsRedundant, Mode';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;
@@ -681,7 +763,8 @@ Var
     Obj, FoundObj : IPCB_Primitive;
     ObjJson : String;
     First : Boolean;
-    MaxIter : Integer;
+    I : Integer;
+    Victims : TInterfaceList;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -705,34 +788,41 @@ Begin
     { on arbitrary primitives, so raising is an ordinary outcome here rather   }
     { than a remote possibility. AltiumScriptCentral ships a whole recovery    }
     { script for this symptom, which is a fair measure of how often it bites.  }
+    { COLLECT, THEN REMOVE, the way Altium's own DeletePCBObjects example  }
+    { does. Finding one match and restarting the walk after each removal   }
+    { built a new iterator per object and walked again past everything the }
+    { filter rejects, so taking the routing off a board walked the board   }
+    { once per track. Nothing is removed while the iterator is live, and   }
+    { the list is never Freed: releasing board-primitive refs through it   }
+    { faults in oleaut32 (see PCB_SetTrackWidth). Items come back as the   }
+    { base IPCB_Primitive, the type RemovePCBObject takes.                 }
     If Mode = 'delete' Then
     Begin
+        Victims := TInterfaceList.Create;
+        Iterator := Board.BoardIterator_Create;
+        Try
+            Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_Method(eProcessAll);
+            Obj := Iterator.FirstPCBObject;
+            While Obj <> Nil Do
+            Begin
+                If MatchesFilterPCB(Obj, FilterStr) Then Victims.Add(Obj);
+                Obj := Iterator.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iterator);
+        End;
         PCBServer.PreProcess;
         Try
-            MaxIter := 100000;
-            While MaxIter > 0 Do
+            For I := 0 To Victims.Count - 1 Do
             Begin
-                Iterator := Board.BoardIterator_Create;
-                Try
-                    Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-                    Iterator.AddFilter_LayerSet(AllLayers);
-                    Iterator.AddFilter_Method(eProcessAll);
-                    FoundObj := Nil;
-                    Obj := Iterator.FirstPCBObject;
-                    While Obj <> Nil Do
-                    Begin
-                        If MatchesFilterPCB(Obj, FilterStr) Then Begin FoundObj := Obj; Break; End;
-                        Obj := Iterator.NextPCBObject;
-                    End;
-                Finally
-                    Board.BoardIterator_Destroy(Iterator);
-                End;
-                If FoundObj = Nil Then Break;
+                FoundObj := Victims.Items[I];
+                If FoundObj = Nil Then Continue;
                 PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                     PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
                 Board.RemovePCBObject(FoundObj);
                 Inc(TotalMatched);
-                Dec(MaxIter);
             End;
         Finally
             PCBServer.PostProcess;

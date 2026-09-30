@@ -1246,6 +1246,13 @@ Begin
     Else If N = 'rule'           Then Result := eRuleObject
     Else If N = 'dimensionobject' Then Result := eDimensionObject
     Else If N = 'dimension'      Then Result := eDimensionObject
+    { THE RATSNEST WAS UNREADABLE. pcb_get_unrouted_nets counts its lines  }
+    { per net and nothing could say which two points a line joins, so an   }
+    { unrouted count that disagreed with the layout engine's could not be  }
+    { followed to the pads concerned.                                      }
+    Else If N = 'connectionobject' Then Result := eConnectionObject
+    Else If N = 'connection'     Then Result := eConnectionObject
+    Else If N = 'ratsnest'       Then Result := eConnectionObject
     { A FREE 3D BODY WAS UNREACHABLE. pcb_place_3d_body could put one on
       a board and nothing could then find it, move it or take it off
       again, because this vocabulary is what obj_query, obj_modify and
@@ -1266,7 +1273,7 @@ Begin
     Result := 'eTrackObject, ePadObject, eViaObject, eComponentObject, '
             + 'eArcObject, eFillObject, eTextObject, ePolyObject, '
             + 'eRegionObject, eRuleObject, eDimensionObject, '
-            + 'eComponentBodyObject';
+            + 'eComponentBodyObject, eConnectionObject';
 End;
 
 { Inverse of ObjectTypeFromStringPCB. Written here, next to it, so the
@@ -1298,6 +1305,7 @@ Begin
     Else If Id = eRegionObject       Then Result := 'region'
     Else If Id = eRuleObject         Then Result := 'rule'
     Else If Id = eDimensionObject    Then Result := 'dimension'
+    Else If Id = eConnectionObject   Then Result := 'connection'
     Else Result := 'objectid_' + IntToStr(Id);
 End;
 
