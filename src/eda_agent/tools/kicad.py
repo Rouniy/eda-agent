@@ -1137,9 +1137,16 @@ def register_kicad_tools(mcp) -> None:
                 os.remove(cir)
             except OSError:
                 pass
-        return {"ok": result["returncode"] == 0,
-                "output": result.get("stdout", "")[:6000],
-                "errors": result.get("stderr", "")[:2000]}
+        reply = {"ok": result["returncode"] == 0,
+                 "output": result.get("stdout", "")[:6000],
+                 "errors": result.get("stderr", "")[:2000]}
+        if not reply["ok"]:
+            first = next((ln.strip() for ln in (result.get("stderr") or "").splitlines()
+                          if ln.strip()), "")
+            reply["reason"] = (f"ngspice exited with code {result['returncode']}"
+                               + (f": {first[:200]}" if first else "")
+                               + ". Its full output is in errors.")
+        return reply
 
     @mcp.tool()
     async def kicad_export_spice(output_dir: Optional[str] = None) -> dict[str, Any]:
