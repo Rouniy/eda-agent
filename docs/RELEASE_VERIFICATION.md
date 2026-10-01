@@ -1,4 +1,4 @@
-# Release verification: 2026.09.28.1
+# Release verification: 2026.10.01.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -210,7 +210,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.09.28.1`, `version_match` =
+Expect `altium_script_version` = `2026.10.01.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -1235,6 +1235,18 @@ On scratch documents only:
 
 ## Generic property rejection on Altium 21 (live verified)
 
+The same reads stopped polling on Altium 26.10.1.6 before this change:
+`Text` on a parameter set, `IsHidden` on a net label, and `IsHidden` on a
+wire. `IsHidden` is now accepted only on pins, parameters, designators, sheet
+names and sheet file names, the types whose interface declares it; `Text` is
+refused on the types whose interface has none, wires among them. Repeat
+steps 3 to 7 on AD 26 with the wire included.
+
+Verified on AD 26.10.1.6 with script 2026.10.01.1: the three reads return
+empty fields listed under `properties.unreadable`, `IsHidden=true` on a wire
+is refused under `properties.unknown`, `IsHidden` reads and writes on
+parameters, and the bridge answered `app_ping` after each call.
+
 Recorded on Altium 21.4.1.30: `IsHidden` on `eNetLabel` and `Text` on
 `eParameterSet` opened an undeclared-identifier dialog and stopped polling.
 The fix guards reads and writes before accessing those members. It does not
@@ -1285,6 +1297,7 @@ Repeatable acceptance, on a disposable schematic only:
 3. Query `IsHidden` on the label and `Text` on the directive, each alongside
    coordinates. Expect empty unsupported fields, unreadable diagnostics, and
    unchanged valid coordinates. Neither call may open a modal or stop polling.
+   Do the same for `IsHidden` and `Text` on a wire.
 4. Attempt those writes with `obj_modify` and `obj_batch_modify`. Expect
    failure diagnostics, unchanged objects, and no modal. These operations
    retain existing partial-write semantics for other valid assignments.

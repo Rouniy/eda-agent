@@ -150,9 +150,17 @@ def _routine(code: str, name: str) -> str:
                   body, flags=re.S)
 
 
-def _assert_property_contract(code: str, prop: str, guard: str, rejected: str):
+def _assert_property_contract(code: str, prop: str, guard: str, rejected: str,
+                              allowed: tuple = ()):
     capability = _routine(code, guard)
-    assert re.search(rf"Obj\.ObjectId\s*(?:=|<>)\s*{rejected}\b", capability)
+    if allowed:
+        # An allowlist: the types that declare it are named, and the one
+        # that stopped the bridge is not.
+        for kind in allowed:
+            assert re.search(rf"Obj\.ObjectId\s*=\s*{kind}\b", capability)
+        assert not re.search(rf"\b{rejected}\b", capability)
+    else:
+        assert re.search(rf"Obj\.ObjectId\s*(?:=|<>)\s*{rejected}\b", capability)
     assert "Result := False" in capability
     for routine, diagnostic in (("GetSchProperty", "unreadable"),
                                 ("SetSchProperty", "unknown")):
@@ -172,22 +180,24 @@ def _assert_property_contract(code: str, prop: str, guard: str, rejected: str):
             assert "If Result = 0 Then NotePropertyDiag('unknown', PropName)" in body
 
 
-@pytest.mark.parametrize("prop,guard,rejected", [
-    ("Text", "SchObjectHasText", "eParameterSet"),
-    ("IsHidden", "SchObjectHasIsHidden", "eNetLabel"),
-])
-def test_ad21_unsupported_property_contract(prop, guard, rejected):
-    _assert_property_contract(_source(), prop, guard, rejected)
+_UNSUPPORTED = [
+    ("Text", "SchObjectHasText", "eParameterSet", ()),
+    ("Text", "SchObjectHasText", "eWire", ()),
+    ("IsHidden", "SchObjectHasIsHidden", "eNetLabel", ("ePin", "eParameter")),
+    ("IsHidden", "SchObjectHasIsHidden", "eWire", ("ePin", "eParameter")),
+]
 
 
-@pytest.mark.parametrize("prop,guard,rejected", [
-    ("Text", "SchObjectHasText", "eParameterSet"),
-    ("IsHidden", "SchObjectHasIsHidden", "eNetLabel"),
-])
-def test_property_regression_detects_removed_guards(prop, guard, rejected):
+@pytest.mark.parametrize("prop,guard,rejected,allowed", _UNSUPPORTED)
+def test_ad21_unsupported_property_contract(prop, guard, rejected, allowed):
+    _assert_property_contract(_source(), prop, guard, rejected, allowed)
+
+
+@pytest.mark.parametrize("prop,guard,rejected,allowed", _UNSUPPORTED)
+def test_property_regression_detects_removed_guards(prop, guard, rejected, allowed):
     """Mutate only an in-memory copy; each original crash must be detected."""
     source = _source()
-    _assert_property_contract(source, prop, guard, rejected)
+    _assert_property_contract(source, prop, guard, rejected, allowed)
     for routine in ("GetSchProperty", "SetSchProperty"):
         original = _routine(source, routine)
         broken = original.replace(f"If {guard}(Obj) Then", "If True Then")
@@ -197,10 +207,20 @@ def test_property_regression_detects_removed_guards(prop, guard, rejected):
         end = source.index("\nEnd;", start) + len("\nEnd;")
         mutant = source[:start] + broken + source[end:]
         with pytest.raises(AssertionError):
-            _assert_property_contract(mutant, prop, guard, rejected)
-    mutant = re.sub(rf"(Obj\.ObjectId\s*(?:=|<>)\s*){rejected}\b", r"\1eDummy", source)
+            _assert_property_contract(mutant, prop, guard, rejected, allowed)
+    if allowed:
+        # Admitting the type that stopped the bridge, inside the guard only.
+        start = source.index(f"Function {guard}(")
+        end = source.index("\nEnd;", start)
+        first = f"(Obj.ObjectId = {allowed[0]})"
+        region = source[start:end].replace(
+            first, f"{first} Or (Obj.ObjectId = {rejected})", 1)
+        mutant = source[:start] + region + source[end:]
+    else:
+        mutant = re.sub(rf"(Obj\.ObjectId\s*(?:=|<>)\s*){rejected}\b", r"\1eDummy", source)
+    assert mutant != source
     with pytest.raises(AssertionError):
-        _assert_property_contract(mutant, prop, guard, rejected)
+        _assert_property_contract(mutant, prop, guard, rejected, allowed)
 
 
 @pytest.mark.parametrize("name", ["Gen_CreateObject", "Gen_BatchCreate"])
@@ -244,7 +264,8 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
     # Match all identifiers used by the real guards, so existing denylist
     # exclusions remain part of the executable test.
     types = sorted(set(re.findall(r"\be[A-Z]\w*", routines)) |
-                   {"eNetLabel", "eParameterSet", "eParameter", "ePort", "eSheetEntry"})
+                   {"eNetLabel", "eParameterSet", "eParameter", "ePort", "eSheetEntry",
+                    "eWire", "ePin", "eLabel"})
     constants = "\n".join(f"  {name} = {i};" for i, name in enumerate(types))
     checks = [
         ("eParameterSet", "Text=bad", "Text"),
@@ -256,6 +277,10 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
         ("eParameter", "Text=GOOD|IsHidden=true", ""),
         ("ePort", "Text=bad", "Text"),
         ("eSheetEntry", "Text=bad", "Text"),
+        ("eWire", "IsHidden=true", "IsHidden"),
+        ("eWire", "Text=bad", "Text"),
+        ("ePin", "IsHidden=true", ""),
+        ("eLabel", "Text=GOOD", ""),
         ("eNetLabel", "IsHidden|Text=GOOD", ""),
         ("eNetLabel", "Text=contains=equals", ""),
         ("eNetLabel", "", ""),
@@ -301,8 +326,7 @@ def test_extracted_pascal_single_and_mixed_batch_creation(tmp_path):
 program creation_regression;
 {$mode delphi}
 uses SysUtils;
-const ePort=1; eSheetEntry=2; eParameterSet=3; eNetLabel=4;
-      eParameter=5; eSchLib=6; eCreate_Default=0;
+const @@TYPES@@ eCreate_Default=0;
 type
   TSchObject = class
     ObjectId: Integer;
@@ -382,6 +406,10 @@ begin Result := '{"code":"'+Code+'","message":"'+Message+'"}'; end;
 function BuildSuccessResponse(Id, Payload: String): String;
 begin Result := Payload; end;
 '''
+    # Every type the guards name, so a longer list still compiles.
+    kinds = sorted(set(re.findall(r"\be[A-Z]\w*", guards)) |
+                   {"ePort", "eSheetEntry", "eParameterSet", "eNetLabel", "eParameter", "eSchLib"})
+    stubs = stubs.replace("@@TYPES@@", " ".join(f"{k}={n};" for n, k in enumerate(kinds, 1)))
     transport = r'''
 function ExtractJsonValue(Params, Key: String): String;
 begin

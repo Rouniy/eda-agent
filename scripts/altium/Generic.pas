@@ -142,7 +142,7 @@ End;
 { for primitive returns.                                                      }
 {..............................................................................}
 
-{ Which schematic objects carry Text and Orientation.                          }
+{ Which schematic objects carry Text, IsHidden and Orientation.                }
 {                                                                              }
 { Neither lives on the base ISch_GraphicalObject, and reaching for one on a    }
 { type that lacks it raises "Undeclared identifier". That is not catchable:    }
@@ -156,24 +156,38 @@ End;
 { and ReplaceSchObjects.pas reads a cross-sheet connector's Orientation in     }
 { order to map it onto Port.Style. Enumerating every type that DOES have       }
 { these would be guesswork and would silently break queries that work today.  }
+{ IsHidden is the exception, below.                                            }
 
 Function SchObjectHasText(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := True;
     If Obj = Nil Then Exit;
-    { Ports, sheet entries and parameter-set directives do not expose Text. }
+    { None of these has Text in Altium's interface: ports and sheet entries
+      (named by Name), parameter-set directives (measured on AD 21 and
+      AD 26), pins, the containers, and wiring and graphics. }
     If (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
-        Or (Obj.ObjectId = eParameterSet) Then
+        Or (Obj.ObjectId = eParameterSet) Or (Obj.ObjectId = ePin)
+        Or (Obj.ObjectId = eSchComponent) Or (Obj.ObjectId = eSheetSymbol)
+        Or (Obj.ObjectId = eHarnessConnector) Or (Obj.ObjectId = eProbe)
+        Or (Obj.ObjectId = eWire) Or (Obj.ObjectId = eBus)
+        Or (Obj.ObjectId = eBusEntry) Or (Obj.ObjectId = eJunction)
+        Or (Obj.ObjectId = eNoERC) Or (Obj.ObjectId = eLine)
+        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eImage) Then
         Result := False;
 End;
 
-{ AD21 net labels do not expose IsHidden. Test before member access: an
-  undeclared identifier opens a modal that Try/Except cannot contain. }
+{ IsHidden belongs to pins and to the complex text types (parameters,
+  designators, sheet names, sheet file names) and to nothing else in
+  Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
+  On a net label and on a wire it raised an undeclared identifier on AD 21
+  and AD 26 alike, a modal that Try/Except cannot contain. }
 Function SchObjectHasIsHidden(Obj : ISch_GraphicalObject) : Boolean;
 Begin
     Result := False;
     If Obj = Nil Then Exit;
-    Result := Obj.ObjectId <> eNetLabel;
+    Result := (Obj.ObjectId = ePin) Or (Obj.ObjectId = eParameter)
+        Or (Obj.ObjectId = eDesignator) Or (Obj.ObjectId = eSheetName)
+        Or (Obj.ObjectId = eSheetFileName);
 End;
 
 { Preflight only the known unsupported property/type pairs. Preserve the

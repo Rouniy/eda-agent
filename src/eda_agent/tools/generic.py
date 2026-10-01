@@ -2454,8 +2454,10 @@ def register_generic_tools(mcp):
 
         Returns:
             Dict with created, failed, total counts and indexed failures.
-            Known unsupported properties (for example IsHidden on eNetLabel
-            or Text on eParameterSet) reject that item before registration.
+            Known unsupported properties (IsHidden on anything but pins,
+            parameters, designators and sheet names; Text on a type without
+            it, such as eParameterSet or eWire) reject that item before
+            registration.
             Its failure includes reason UNSUPPORTED_PROPERTY, property and
             object_type. Other valid items still run.
         """
