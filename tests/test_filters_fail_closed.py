@@ -179,6 +179,12 @@ def test_the_production_check_and_matchers_run_fail_closed(tmp_path):
         "begin if PropName = 'Layer' then Result := 'TopLayer' else Result := ''; end;",
         "function GetSchProperty(Obj: ISch_GraphicalObject; PropName: String): String;",
         "begin if PropName = 'Layer' then Result := 'TopLayer' else Result := ''; end;",
+        # The TextColor guard, which test_sch_textcolor runs for real: every
+        # property here is one the stub object declares.
+        "function UnsupportedSchProperty(Obj: ISch_GraphicalObject; SetStr: String): String;",
+        "begin Result := ''; end;",
+        "procedure NotePropertyDiag(Kind: String; PropName: String);",
+        "begin end;",
         problem, sch, pcb,
         "var P: IPCB_Primitive; S: ISch_GraphicalObject;",
         "begin", "  P := IPCB_Primitive.Create; S := ISch_GraphicalObject.Create;",
