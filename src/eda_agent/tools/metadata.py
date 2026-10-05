@@ -229,6 +229,9 @@ INTERACTION_OVERRIDES = {
     # prefix defaults to "silent" (mutating), which is the opposite of
     # the truth here, so say so explicitly.
     "obj_explain_pin": READONLY,
+    # Reads a database library's declared tables and fields. The lib_ prefix
+    # does not make that clear to the classifier; it writes nothing.
+    "lib_dblib_info": READONLY,
     # part_fetch writes library files when given download_dir. The
     # "parts" category is offline, and offline falls back to READONLY,
     # which would advertise a tool that touches the filesystem as

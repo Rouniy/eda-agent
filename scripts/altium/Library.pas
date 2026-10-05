@@ -10721,6 +10721,2095 @@ Begin
         ExtractJsonValue(Params, 'tidy_pairs') = 'true', LibPath, RequestId);
 End;
 
+{..............................................................................}
+{ DATABASE LIBRARIES (DbLib)                                                   }
+{                                                                              }
+{ A .DbLib holds no parts. It is a connection string plus a list of tables,    }
+{ and every row of an enabled table is a component: the row names a symbol in  }
+{ a .SchLib and footprints in .PcbLibs, and carries the parameters. lib_search }
+{ reads open .SchLib files only, so a user whose parts live in a DbLib got 0   }
+{ hits from it.                                                                }
+{                                                                              }
+{ WHAT ALTIUM PUBLISHES, AND WHAT IS USED HERE. The integrated-library API     }
+{ lists the DbLib members of IntegratedLibraryManager (GetAvailableDBLibDoc-   }
+{ AtPath, GetComponentLocationFromDatabase, GetDatabaseDatafileLocation and    }
+{ others) by name only, with no signature and no description. Community        }
+{ scripts show GetAvailableDBLibDocAtPath answering a document with            }
+{ GetTableCount, GetTableNameAt and GetConnectionString, and nothing that      }
+{ lists a table's columns or rows. So the table definitions are read from the  }
+{ .DbLib file itself, inside this handler and not from Python: it is an INI    }
+{ with a ConnectionString, one [TableN] section per table and one Options=     }
+{ line per mapped column. The rows are read through ADO, with TADOConnection   }
+{ and TADOQuery exactly as libADOQuery.pas in the reference drives them from   }
+{ DelphiScript.                                                                }
+{                                                                              }
+{ READ ONLY. Every statement is a SELECT assembled from the DbLib's own        }
+{ declared table names and the key column it names, quoted with the DbLib's    }
+{ quote characters by DbLibQuoteIdent, which refuses any name that could       }
+{ close the quote. Text a caller supplies never enters a statement: a search   }
+{ is matched here, row by row, and a record key is bound as an ADO parameter.  }
+{ Access and Excel sources are opened with Mode=Read, which is also what lets  }
+{ a second reader open a file Altium holds Share Deny Write.                   }
+{                                                                              }
+{ A CONNECTION STRING CAN CARRY A PASSWORD. It is never returned and never put }
+{ in an error. DbLibRedactConnStr blanks every Password and Pwd value before   }
+{ the string is reported, and no error here quotes the connection or ADO's own }
+{ message text.                                                                }
+{..............................................................................}
+
+{ The text after the first '=' of an INI line. }
+Function DbLibLineValue(Line : String) : String;
+Var
+    P : Integer;
+    Value : String;
+Begin
+    Value := '';
+    P := Pos('=', Line);
+    If P > 0 Then Value := Copy(Line, P + 1, Length(Line));
+    Result := Value;
+End;
+
+{ True when an INI line sets Key. Case and spaces around the key are ignored. }
+Function DbLibLineHasKey(Line : String; Key : String) : Boolean;
+Var
+    P : Integer;
+Begin
+    Result := False;
+    P := Pos('=', Line);
+    If P < 2 Then Exit;
+    Result := LowerCase(Trim(Copy(Line, 1, P - 1))) = LowerCase(Key);
+End;
+
+{ The name inside a section header line, or '' for any other line. }
+Function DbLibSectionName(Line : String) : String;
+Var
+    S, Name : String;
+Begin
+    Name := '';
+    S := Trim(Line);
+    If (Length(S) >= 3) And (Copy(S, 1, 1) = '[') And (Copy(S, Length(S), 1) = ']')
+        And (Pos('=', S) = 0) Then
+        Name := Copy(S, 2, Length(S) - 2);
+    Result := Name;
+End;
+
+{ True for the sections that declare a table: Table1, Table2 and so on. }
+Function DbLibIsTableSection(Name : String) : Boolean;
+Var
+    I : Integer;
+    Rest, Ch : String;
+Begin
+    Result := False;
+    If LowerCase(Copy(Name, 1, 5)) <> 'table' Then Exit;
+    Rest := Copy(Name, 6, Length(Name));
+    If Rest = '' Then Exit;
+    For I := 1 To Length(Rest) Do
+    Begin
+        Ch := Copy(Rest, I, 1);
+        If (Ch < '0') Or (Ch > '9') Then Exit;
+    End;
+    Result := True;
+End;
+
+{ The first value of Key outside the table sections, '' when absent. }
+Function DbLibGlobalValue(Lines : TStringList; Key : String) : String;
+Var
+    I : Integer;
+    InTable, Found : Boolean;
+    Line, Section, Value : String;
+Begin
+    Value := '';
+    InTable := False;
+    Found := False;
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        If Found Then Break;
+        Line := Lines.Get(I);
+        Section := DbLibSectionName(Line);
+        If Section <> '' Then
+        Begin
+            InTable := DbLibIsTableSection(Section);
+            Continue;
+        End;
+        If (Not InTable) And DbLibLineHasKey(Line, Key) Then
+        Begin
+            Value := DbLibLineValue(Line);
+            Found := True;
+        End;
+    End;
+    Result := Value;
+End;
+
+{ Every table the DbLib declares, in file order, separated by tabs. A table   }
+{ section with no TableName is skipped.                                       }
+Function DbLibTableNames(Lines : TStringList) : String;
+Var
+    I : Integer;
+    InTable : Boolean;
+    Line, Section, Names, Name : String;
+Begin
+    Names := '';
+    InTable := False;
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        Line := Lines.Get(I);
+        Section := DbLibSectionName(Line);
+        If Section <> '' Then
+        Begin
+            InTable := DbLibIsTableSection(Section);
+            Continue;
+        End;
+        If InTable And DbLibLineHasKey(Line, 'TableName') Then
+        Begin
+            Name := Trim(DbLibLineValue(Line));
+            If Name <> '' Then
+            Begin
+                If Names <> '' Then Names := Names + #9;
+                Names := Names + Name;
+            End;
+        End;
+    End;
+    Result := Names;
+End;
+
+{ Every section name in the file, separated by tabs. Reported when no table   }
+{ is found, so a file laid out differently can be diagnosed from the reply.   }
+Function DbLibSectionNames(Lines : TStringList) : String;
+Var
+    I : Integer;
+    Section, Names : String;
+Begin
+    Names := '';
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        Section := DbLibSectionName(Lines.Get(I));
+        If Section <> '' Then
+        Begin
+            If Names <> '' Then Names := Names + #9;
+            Names := Names + Section;
+        End;
+    End;
+    Result := Names;
+End;
+
+{ The value of Key in the table section whose TableName is Table, matched    }
+{ without case. TableName need not come first in its section, so a section   }
+{ is only judged once it ends. '' when the table or the key is absent.        }
+Function DbLibTableAttr(Lines : TStringList; Table : String; Key : String) : String;
+Var
+    I : Integer;
+    InTable, Done, HaveValue : Boolean;
+    Line, Section, SecTable, SecValue, Value : String;
+Begin
+    Value := '';
+    InTable := False;
+    Done := False;
+    HaveValue := False;
+    SecTable := '';
+    SecValue := '';
+    For I := 0 To Lines.Count Do
+    Begin
+        If Done Then Break;
+        If I < Lines.Count Then
+        Begin
+            Line := Lines.Get(I);
+            Section := DbLibSectionName(Line);
+        End
+        Else
+        Begin
+            Line := '';
+            Section := 'end of file';
+        End;
+        If Section <> '' Then
+        Begin
+            If InTable And (SecTable <> '')
+                And (LowerCase(SecTable) = LowerCase(Trim(Table))) Then
+            Begin
+                Value := SecValue;
+                Done := True;
+            End;
+            InTable := DbLibIsTableSection(Section);
+            SecTable := '';
+            SecValue := '';
+            HaveValue := False;
+        End
+        Else
+        Begin
+            If InTable Then
+            Begin
+                If DbLibLineHasKey(Line, 'TableName') Then
+                    SecTable := Trim(DbLibLineValue(Line));
+                If (Not HaveValue) And DbLibLineHasKey(Line, Key) Then
+                Begin
+                    SecValue := DbLibLineValue(Line);
+                    HaveValue := True;
+                End;
+            End;
+        End;
+    End;
+    Result := Value;
+End;
+
+{ One Name=Value item out of an Options= body, whose items are separated by  }
+{ '|'. '' when the item is absent.                                           }
+Function DbLibOptionValue(Body : String; Name : String) : String;
+Var
+    Rest, Item, Value : String;
+    P, Q : Integer;
+    Found : Boolean;
+Begin
+    Value := '';
+    Found := False;
+    Rest := Body;
+    While (Rest <> '') And (Not Found) Do
+    Begin
+        P := Pos('|', Rest);
+        If P > 0 Then
+        Begin
+            Item := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Item := Rest;
+            Rest := '';
+        End;
+        Q := Pos('=', Item);
+        If (Q > 1) And (LowerCase(Trim(Copy(Item, 1, Q - 1))) = LowerCase(Name)) Then
+        Begin
+            Value := Copy(Item, Q + 1, Length(Item));
+            Found := True;
+        End;
+    End;
+    Result := Value;
+End;
+
+{ The column a table maps to a system parameter such as [Library Ref], read   }
+{ from the DbLib's Options= lines. '' when the DbLib maps nothing to it.      }
+Function DbLibMappedField(Lines : TStringList; Table : String; ParamName : String) : String;
+Var
+    I, P : Integer;
+    Line, Body, Field, Full : String;
+    Found : Boolean;
+Begin
+    Field := '';
+    Found := False;
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        If Found Then Break;
+        Line := Lines.Get(I);
+        If Not DbLibLineHasKey(Line, 'Options') Then Continue;
+        Body := DbLibLineValue(Line);
+        If LowerCase(Trim(DbLibOptionValue(Body, 'TableNameOnly'))) <> LowerCase(Trim(Table)) Then Continue;
+        If LowerCase(Trim(DbLibOptionValue(Body, 'ParameterName'))) <> LowerCase(ParamName) Then Continue;
+        Field := Trim(DbLibOptionValue(Body, 'FieldNameOnly'));
+        If Field = '' Then
+        Begin
+            Full := Trim(DbLibOptionValue(Body, 'FieldName'));
+            P := Pos('.', Full);
+            While P > 0 Do
+            Begin
+                Full := Copy(Full, P + 1, Length(Full));
+                P := Pos('.', Full);
+            End;
+            Field := Full;
+        End;
+        If Field <> '' Then Found := True;
+    End;
+    Result := Field;
+End;
+
+{ The column a where-clause lookup matches on, from a clause shaped like      }
+{ [Part Number] = '...': the first quoted name, else the text before '='.    }
+Function DbLibKeyFromWhere(Where : String; LeftQ : String; RightQ : String) : String;
+Var
+    W, Rest, Key : String;
+    P, E : Integer;
+Begin
+    Key := '';
+    W := Trim(Where);
+    If (LeftQ <> '') And (RightQ <> '') Then
+    Begin
+        P := Pos(LeftQ, W);
+        If P > 0 Then
+        Begin
+            Rest := Copy(W, P + Length(LeftQ), Length(W));
+            E := Pos(RightQ, Rest);
+            If E > 1 Then Key := Copy(Rest, 1, E - 1);
+        End;
+    End;
+    If Key = '' Then
+    Begin
+        E := Pos('=', W);
+        If E > 1 Then Key := Trim(Copy(W, 1, E - 1));
+        While (Key <> '') And (Copy(Key, 1, 1) = '(') Do
+            Key := Trim(Copy(Key, 2, Length(Key)));
+    End;
+    Result := Key;
+End;
+
+{ The position of Name in Names, matched without case, or -1. }
+Function DbLibIndexOfName(Names : TStringList; Name : String) : Integer;
+Var
+    I, Found : Integer;
+    Want : String;
+Begin
+    Found := -1;
+    Want := LowerCase(Trim(Name));
+    If Want <> '' Then
+    Begin
+        For I := 0 To Names.Count - 1 Do
+        Begin
+            If LowerCase(Trim(Names.Get(I))) = Want Then
+            Begin
+                Found := I;
+                Break;
+            End;
+        End;
+    End;
+    Result := Found;
+End;
+
+{ The declared spelling of Name in a tab-separated list, matched without     }
+{ case, or '' when the list does not hold it.                                }
+Function DbLibFindTab(TabList : String; Name : String) : String;
+Var
+    Rest, One, Found : String;
+Begin
+    Found := '';
+    Rest := TabList;
+    While (Rest <> '') And (Found = '') Do
+    Begin
+        One := SplitNextTab(Rest);
+        If (One <> '') And (LowerCase(One) = LowerCase(Trim(Name))) Then Found := One;
+    End;
+    Result := Found;
+End;
+
+{ True for a path ending in .DbLib or .SVNDbLib. }
+Function DbLibHasDbLibExt(Path : String) : Boolean;
+Var
+    L : String;
+Begin
+    L := LowerCase(Trim(Path));
+    Result := (Copy(L, Length(L) - 5, 6) = '.dblib')
+        Or (Copy(L, Length(L) - 8, 9) = '.svndblib');
+End;
+
+{ Why a library_path cannot be used, or '' when it can. }
+Function DbLibPathProblem(Path : String) : String;
+Var
+    Problem : String;
+Begin
+    Problem := '';
+    If Trim(Path) = '' Then
+        Problem := 'library_path is required: the full path of a .DbLib file'
+    Else
+    Begin
+        If Not DbLibHasDbLibExt(Path) Then
+            Problem := 'library_path must name a .DbLib or .SVNDbLib file; '
+                + 'a .SchLib is searched with lib_search and an .IntLib '
+                + 'with lib_extract_intlib';
+    End;
+    Result := Problem;
+End;
+
+{ One Key=Value pair out of a connection string, starting at P and moving P  }
+{ past it. A value may be quoted with a double or single quote, in which a    }
+{ doubled quote stands for itself, or braced as ODBC does, and either form    }
+{ may hold a ';'. RawValue keeps the quotes. HasEq is False for a bare word.  }
+{ Returns False when nothing is left.                                         }
+Function DbLibConnNextPair(S : String; Var P : Integer; Var Key : String;
+    Var RawValue : String; Var HasEq : Boolean) : Boolean;
+Var
+    N, Start, Mode : Integer;
+    Ch, Closer, Raw : String;
+Begin
+    Result := False;
+    Key := '';
+    RawValue := '';
+    HasEq := False;
+    N := Length(S);
+    While (P <= N) And ((Copy(S, P, 1) = ';') Or (Copy(S, P, 1) = ' ')) Do
+        Inc(P);
+    If P > N Then Exit;
+    Start := P;
+    While (P <= N) And (Copy(S, P, 1) <> '=') And (Copy(S, P, 1) <> ';') Do
+        Inc(P);
+    Key := Trim(Copy(S, Start, P - Start));
+    Result := True;
+    If (P > N) Or (Copy(S, P, 1) = ';') Then Exit;
+    HasEq := True;
+    Inc(P);
+    Raw := '';
+    Mode := 0;
+    Closer := '';
+    While P <= N Do
+    Begin
+        Ch := Copy(S, P, 1);
+        If Mode = 0 Then
+        Begin
+            If Ch = ';' Then Break;
+            If Trim(Raw) = '' Then
+            Begin
+                If (Ch = '"') Or (Ch = '''') Then
+                Begin
+                    Mode := 1;
+                    Closer := Ch;
+                End;
+                If Ch = '{' Then
+                Begin
+                    Mode := 1;
+                    Closer := '}';
+                End;
+            End;
+            Raw := Raw + Ch;
+            Inc(P);
+        End
+        Else
+        Begin
+            Raw := Raw + Ch;
+            Inc(P);
+            If Ch = Closer Then
+            Begin
+                If Copy(S, P, 1) = Closer Then
+                Begin
+                    Raw := Raw + Closer;
+                    Inc(P);
+                End
+                Else
+                    Mode := 0;
+            End;
+        End;
+    End;
+    RawValue := Raw;
+End;
+
+{ A connection-string value without its quotes or braces. }
+Function DbLibUnquote(Raw : String) : String;
+Var
+    S, Opener, Closer, Inner, Value, Ch : String;
+    I : Integer;
+Begin
+    S := Trim(Raw);
+    Value := S;
+    Opener := Copy(S, 1, 1);
+    Closer := '';
+    If (Opener = '"') Or (Opener = '''') Then Closer := Opener;
+    If Opener = '{' Then Closer := '}';
+    If (Closer <> '') And (Length(S) >= 2) And (Copy(S, Length(S), 1) = Closer) Then
+    Begin
+        Inner := Copy(S, 2, Length(S) - 2);
+        Value := '';
+        I := 1;
+        While I <= Length(Inner) Do
+        Begin
+            Ch := Copy(Inner, I, 1);
+            Value := Value + Ch;
+            If (Ch = Closer) And (Copy(Inner, I + 1, 1) = Closer) Then Inc(I);
+            Inc(I);
+        End;
+    End;
+    Result := Value;
+End;
+
+{ S with every C written twice, which is how a quote is kept inside a value   }
+{ quoted with that same character.                                            }
+Function DbLibDoubled(S : String; C : String) : String;
+Var
+    I : Integer;
+    Value, Ch : String;
+Begin
+    Value := '';
+    For I := 1 To Length(S) Do
+    Begin
+        Ch := Copy(S, I, 1);
+        Value := Value + Ch;
+        If Ch = C Then Value := Value + C;
+    End;
+    Result := Value;
+End;
+
+{ True for a connection-string key whose value is a credential. }
+Function DbLibIsSecretKey(Key : String) : Boolean;
+Var
+    K : String;
+Begin
+    K := LowerCase(Trim(Key));
+    Result := (Pos('pwd', K) > 0) Or (Pos('password', K) > 0)
+        Or (Pos('secret', K) > 0) Or (Pos('token', K) > 0);
+End;
+
+{ The connection string with every credential value replaced by ***. A value }
+{ that itself holds Key=Value pairs, as an ODBC string inside Extended       }
+{ Properties does, is redacted the same way, so a nested Pwd is caught too.  }
+Function DbLibRedactConnStr(S : String) : String;
+Var
+    P : Integer;
+    Key, Raw, Piece, Redacted, Inner, Opener, Closer : String;
+    HasEq : Boolean;
+Begin
+    Redacted := '';
+    P := 1;
+    While DbLibConnNextPair(S, P, Key, Raw, HasEq) Do
+    Begin
+        If Not HasEq Then
+            Piece := Key
+        Else
+        Begin
+            If DbLibIsSecretKey(Key) Then
+                Piece := Key + '=***'
+            Else
+            Begin
+                Piece := Key + '=' + Raw;
+                If Pos('=', Raw) > 0 Then
+                Begin
+                    Inner := DbLibRedactConnStr(DbLibUnquote(Raw));
+                    Opener := Copy(Trim(Raw), 1, 1);
+                    Closer := '';
+                    If (Opener = '"') Or (Opener = '''') Then Closer := Opener;
+                    If Opener = '{' Then Closer := '}';
+                    If Closer <> '' Then
+                        Piece := Key + '=' + Opener + DbLibDoubled(Inner, Closer) + Closer
+                    Else
+                        Piece := Key + '=' + Inner;
+                End;
+            End;
+        End;
+        If Redacted <> '' Then Redacted := Redacted + ';';
+        Redacted := Redacted + Piece;
+    End;
+    Result := Redacted;
+End;
+
+{ True when the connection string carries a non-empty credential anywhere. }
+Function DbLibConnHasSecret(S : String) : Boolean;
+Var
+    P : Integer;
+    Key, Raw : String;
+    HasEq, Found : Boolean;
+Begin
+    Found := False;
+    P := 1;
+    While (Not Found) And DbLibConnNextPair(S, P, Key, Raw, HasEq) Do
+    Begin
+        If HasEq Then
+        Begin
+            If DbLibIsSecretKey(Key) Then
+                Found := Trim(DbLibUnquote(Raw)) <> ''
+            Else
+            Begin
+                If Pos('=', Raw) > 0 Then Found := DbLibConnHasSecret(DbLibUnquote(Raw));
+            End;
+        End;
+    End;
+    Result := Found;
+End;
+
+{ The unquoted value of Key in a connection string, '' when absent. }
+Function DbLibConnValue(S : String; Key : String) : String;
+Var
+    P : Integer;
+    K, Raw, Value : String;
+    HasEq, Found : Boolean;
+Begin
+    Value := '';
+    Found := False;
+    P := 1;
+    While (Not Found) And DbLibConnNextPair(S, P, K, Raw, HasEq) Do
+    Begin
+        If HasEq And (LowerCase(K) = LowerCase(Key)) Then
+        Begin
+            Value := DbLibUnquote(Raw);
+            Found := True;
+        End;
+    End;
+    Result := Value;
+End;
+
+{ The connection string with Key set to NewRaw: the first occurrence is       }
+{ replaced and any repeat dropped, or the pair appended when Key is absent.   }
+{ Every other pair, credentials included, is carried through unchanged.       }
+Function DbLibSetConnValue(S : String; Key : String; NewRaw : String) : String;
+Var
+    P : Integer;
+    K, Raw, Rebuilt, Piece : String;
+    HasEq, Replaced : Boolean;
+Begin
+    Rebuilt := '';
+    Replaced := False;
+    P := 1;
+    While DbLibConnNextPair(S, P, K, Raw, HasEq) Do
+    Begin
+        If HasEq Then Piece := K + '=' + Raw Else Piece := K;
+        If LowerCase(K) = LowerCase(Key) Then
+        Begin
+            If Replaced Then
+                Piece := ''
+            Else
+            Begin
+                Piece := K + '=' + NewRaw;
+                Replaced := True;
+            End;
+        End;
+        If Piece <> '' Then
+        Begin
+            If Rebuilt <> '' Then Rebuilt := Rebuilt + ';';
+            Rebuilt := Rebuilt + Piece;
+        End;
+    End;
+    If Not Replaced Then
+    Begin
+        If Rebuilt <> '' Then Rebuilt := Rebuilt + ';';
+        Rebuilt := Rebuilt + Key + '=' + NewRaw;
+    End;
+    Result := Rebuilt;
+End;
+
+{ True when the provider is the Jet or ACE engine, which reads Access and     }
+{ Excel files and is the one that honours Mode=Read.                          }
+Function DbLibIsJetOrAce(S : String) : Boolean;
+Var
+    Prov : String;
+Begin
+    Prov := LowerCase(DbLibConnValue(S, 'Provider'));
+    Result := (Pos('jet.oledb', Prov) > 0) Or (Pos('ace.oledb', Prov) > 0);
+End;
+
+{ True for a drive-letter, UNC or root path. }
+Function DbLibIsAbsolutePath(Path : String) : Boolean;
+Begin
+    Result := (Copy(Path, 2, 1) = ':') Or (Copy(Path, 1, 1) = '\')
+        Or (Copy(Path, 1, 1) = '/');
+End;
+
+{ The connection string this handler opens: for a Jet or ACE file, a Data     }
+{ Source relative to the DbLib is made absolute against BaseDir and the       }
+{ connection is set to Mode=Read. Other providers are left as written; they   }
+{ are kept read-only by issuing nothing but SELECT.                          }
+Function DbLibConnectionForRead(S : String; BaseDir : String) : String;
+Var
+    Conn, Src, Dir : String;
+Begin
+    Conn := S;
+    If DbLibIsJetOrAce(Conn) Then
+    Begin
+        Src := Trim(DbLibConnValue(Conn, 'Data Source'));
+        If (Src <> '') And (Not DbLibIsAbsolutePath(Src)) And (BaseDir <> '') Then
+        Begin
+            Dir := BaseDir;
+            If (Copy(Dir, Length(Dir), 1) <> '\') And (Copy(Dir, Length(Dir), 1) <> '/') Then
+                Dir := Dir + '\';
+            Src := Dir + Src;
+            If Pos(';', Src) > 0 Then Src := '"' + DbLibDoubled(Src, '"') + '"';
+            Conn := DbLibSetConnValue(Conn, 'Data Source', Src);
+        End;
+        Conn := DbLibSetConnValue(Conn, 'Mode', 'Read');
+    End;
+    Result := Conn;
+End;
+
+{ The kind of database behind a connection string, for the reply. }
+Function DbLibConnKind(S : String) : String;
+Var
+    Prov, Ext, Src, Kind : String;
+Begin
+    Kind := '';
+    Prov := LowerCase(DbLibConnValue(S, 'Provider'));
+    If DbLibIsJetOrAce(S) Then
+    Begin
+        Ext := LowerCase(DbLibConnValue(S, 'Extended Properties'));
+        Src := LowerCase(Trim(DbLibConnValue(S, 'Data Source')));
+        If (Pos('excel', Ext) > 0) Or (Pos('.xls', Src) > 0) Then
+            Kind := 'excel'
+        Else
+            Kind := 'access';
+    End;
+    If (Kind = '') And ((Pos('sqloledb', Prov) > 0) Or (Pos('sqlncli', Prov) > 0)
+        Or (Pos('msoledbsql', Prov) > 0)) Then
+        Kind := 'sql_server';
+    If (Kind = '') And ((Pos('msdasql', Prov) > 0) Or ((Prov = '')
+        And ((DbLibConnValue(S, 'DSN') <> '') Or (DbLibConnValue(S, 'Driver') <> '')))) Then
+        Kind := 'odbc';
+    If (Kind = '') And ((Pos('oraoledb', Prov) > 0) Or (Pos('msdaora', Prov) > 0)) Then
+        Kind := 'oracle';
+    If Kind = '' Then Kind := 'other';
+    Result := Kind;
+End;
+
+{ True for a letter, digit, underscore or dollar sign: the only characters    }
+{ allowed in a name that has to go into a statement unquoted.                 }
+Function DbLibIsPlainIdentChar(Ch : String) : Boolean;
+Begin
+    Result := ((Ch >= 'a') And (Ch <= 'z')) Or ((Ch >= 'A') And (Ch <= 'Z'))
+        Or ((Ch >= '0') And (Ch <= '9')) Or (Ch = '_') Or (Ch = '$');
+End;
+
+{ A table or column name ready to go into a SELECT, or '' when it cannot go   }
+{ in safely. The name is wrapped in the DbLib's quote characters. It is       }
+{ refused outright if it holds a control character, either quote character,   }
+{ a quote of any other kind, ';' or ':' (which ADO would read as a parameter).}
+{ With no usable quote pair only letters, digits, '_' and '$' are allowed.    }
+{ Callers pass only names the DbLib itself declares, or that ADO reported, so }
+{ this is the second check, not the first.                                    }
+Function DbLibQuoteIdent(Name : String; LeftQ : String; RightQ : String) : String;
+Var
+    I : Integer;
+    Ch, Quoted : String;
+    Plain, Ok : Boolean;
+Begin
+    Quoted := '';
+    Ok := (Name <> '') And (Length(Name) <= 128) And (Trim(Name) = Name);
+    Plain := (Length(LeftQ) <> 1) Or (Length(RightQ) <> 1);
+    I := 1;
+    While Ok And (I <= Length(Name)) Do
+    Begin
+        Ch := Copy(Name, I, 1);
+        If (Ch < ' ') Or (Ch = ':') Or (Ch = ';') Or (Ch = '''') Or (Ch = '"')
+            Or (Ch = '`') Then
+            Ok := False;
+        If (Not Plain) And ((Ch = LeftQ) Or (Ch = RightQ)) Then Ok := False;
+        If Plain And (Not DbLibIsPlainIdentChar(Ch)) Then Ok := False;
+        Inc(I);
+    End;
+    If Ok Then
+    Begin
+        If Plain Then
+            Quoted := Name
+        Else
+            Quoted := LeftQ + Name + RightQ;
+    End;
+    Result := Quoted;
+End;
+
+{ A table name ready for a FROM clause, schema-qualified when the DbLib gives }
+{ a schema. '' when either part is refused.                                   }
+Function DbLibQualifiedTable(Schema : String; Table : String; LeftQ : String;
+    RightQ : String) : String;
+Var
+    QT, QS, Qualified : String;
+Begin
+    Qualified := '';
+    QT := DbLibQuoteIdent(Table, LeftQ, RightQ);
+    If QT <> '' Then
+    Begin
+        If Trim(Schema) = '' Then
+            Qualified := QT
+        Else
+        Begin
+            QS := DbLibQuoteIdent(Trim(Schema), LeftQ, RightQ);
+            If QS <> '' Then Qualified := QS + '.' + QT;
+        End;
+    End;
+    Result := Qualified;
+End;
+
+{ The column a table maps to ParamName, else the column literally named      }
+{ ColName when the table has one. The mapping wins because a DbLib can map    }
+{ [Library Ref] from a column with any name.                                  }
+Function DbLibResolveField(Lines : TStringList; Cols : TStringList; Table : String;
+    ParamName : String; ColName : String) : String;
+Var
+    Field : String;
+    I : Integer;
+Begin
+    Field := DbLibMappedField(Lines, Table, ParamName);
+    If Field = '' Then
+    Begin
+        I := DbLibIndexOfName(Cols, ColName);
+        If I >= 0 Then Field := Cols.Get(I);
+    End;
+    Result := Field;
+End;
+
+{ The column a table's rows are looked up by, and where that answer came     }
+{ from: the table's Key setting, the column its where clause matches on, a    }
+{ column named Part Number (Altium's default key), or the first column. A     }
+{ name the columns hold is returned in the columns' own spelling.             }
+Function DbLibKeyField(Lines : TStringList; Cols : TStringList; Table : String;
+    LeftQ : String; RightQ : String; Var Source : String) : String;
+Var
+    KeyName, FromWhere, UserWhere : String;
+    I : Integer;
+Begin
+    KeyName := '';
+    Source := '';
+    UserWhere := LowerCase(Trim(DbLibTableAttr(Lines, Table, 'UserWhere')));
+    FromWhere := DbLibKeyFromWhere(DbLibTableAttr(Lines, Table, 'UserWhereText'), LeftQ, RightQ);
+    If ((UserWhere = '1') Or (UserWhere = 'true')) And (FromWhere <> '') Then
+    Begin
+        KeyName := FromWhere;
+        Source := 'where_clause';
+    End;
+    If KeyName = '' Then
+    Begin
+        KeyName := Trim(DbLibTableAttr(Lines, Table, 'Key'));
+        If KeyName <> '' Then Source := 'key_setting';
+    End;
+    If (KeyName = '') And (FromWhere <> '') Then
+    Begin
+        KeyName := FromWhere;
+        Source := 'where_clause';
+    End;
+    If (KeyName = '') And (DbLibIndexOfName(Cols, 'Part Number') >= 0) Then
+    Begin
+        KeyName := 'Part Number';
+        Source := 'part_number_column';
+    End;
+    If (KeyName = '') And (Cols.Count > 0) Then
+    Begin
+        KeyName := Cols.Get(0);
+        Source := 'first_column';
+    End;
+    I := DbLibIndexOfName(Cols, KeyName);
+    If I >= 0 Then KeyName := Cols.Get(I);
+    Result := KeyName;
+End;
+
+{ The footprint columns of a table, as two tab-separated lists in step:       }
+{ [Footprint Ref] with [Footprint Path], then [Footprint Ref 2] with          }
+{ [Footprint Path 2], up to eight. A library column may be empty.             }
+Procedure DbLibFootprintFields(Lines : TStringList; Cols : TStringList; Table : String;
+    Var RefFields : String; Var LibFields : String);
+Var
+    N : Integer;
+    Suffix, RefF, LibF : String;
+Begin
+    RefFields := '';
+    LibFields := '';
+    For N := 1 To 8 Do
+    Begin
+        Suffix := '';
+        If N > 1 Then Suffix := ' ' + IntToStr(N);
+        RefF := DbLibResolveField(Lines, Cols, Table, '[Footprint Ref' + Suffix + ']',
+            'Footprint Ref' + Suffix);
+        LibF := DbLibResolveField(Lines, Cols, Table, '[Footprint Path' + Suffix + ']',
+            'Footprint Path' + Suffix);
+        If RefF <> '' Then
+        Begin
+            If RefFields <> '' Then
+            Begin
+                RefFields := RefFields + #9;
+                LibFields := LibFields + #9;
+            End;
+            RefFields := RefFields + RefF;
+            LibFields := LibFields + LibF;
+        End;
+    End;
+End;
+
+{ A tab-separated list as a JSON array of strings. }
+Function DbLibTabsToJson(TabList : String) : String;
+Var
+    Rest, One, Json : String;
+Begin
+    Json := '';
+    Rest := TabList;
+    While Rest <> '' Do
+    Begin
+        One := SplitNextTab(Rest);
+        If Json <> '' Then Json := Json + ',';
+        Json := Json + '"' + EscapeJsonString(One) + '"';
+    End;
+    Result := '[' + Json + ']';
+End;
+
+{ Every setting of one table section, Options= lines aside, as a JSON object. }
+{ Reported so the keys a real DbLib uses can be read off the reply.           }
+Function DbLibTableSettingsJson(Lines : TStringList; Table : String) : String;
+Var
+    I, P : Integer;
+    InTable : Boolean;
+    Line, Section, SecTable, SecJson, Json, KeyName : String;
+Begin
+    Json := '';
+    InTable := False;
+    SecTable := '';
+    SecJson := '';
+    For I := 0 To Lines.Count Do
+    Begin
+        If I < Lines.Count Then
+        Begin
+            Line := Lines.Get(I);
+            Section := DbLibSectionName(Line);
+        End
+        Else
+        Begin
+            Line := '';
+            Section := 'end of file';
+        End;
+        If Section <> '' Then
+        Begin
+            If InTable And (Json = '') And (SecTable <> '')
+                And (LowerCase(SecTable) = LowerCase(Trim(Table))) Then
+                Json := SecJson;
+            InTable := DbLibIsTableSection(Section);
+            SecTable := '';
+            SecJson := '';
+        End
+        Else
+        Begin
+            P := Pos('=', Line);
+            If InTable And (P > 1) And (Not DbLibLineHasKey(Line, 'Options')) Then
+            Begin
+                KeyName := Trim(Copy(Line, 1, P - 1));
+                If LowerCase(KeyName) = 'tablename' Then
+                    SecTable := Trim(DbLibLineValue(Line));
+                If SecJson <> '' Then SecJson := SecJson + ',';
+                SecJson := SecJson + '"' + EscapeJsonString(KeyName) + '":"'
+                    + EscapeJsonString(DbLibLineValue(Line)) + '"';
+            End;
+        End;
+    End;
+    Result := '{' + Json + '}';
+End;
+
+{ One table of a DbLib as a JSON object: its settings, the columns that carry }
+{ the key, the symbol and the footprints, and (when HaveCols) its columns.    }
+Function DbLibTableJson(Lines : TStringList; Cols : TStringList; Table : String;
+    LeftQ : String; RightQ : String; HaveCols : Boolean; QueryErr : String) : String;
+Var
+    Enabled, Schema, KeyField, KeySource, SymField, SymLibField, DescField : String;
+    RefFields, LibFields, FpJson, ColsJson, Json, ErrJson, OneRef, OneLib : String;
+    I : Integer;
+Begin
+    Enabled := LowerCase(Trim(DbLibTableAttr(Lines, Table, 'Enabled')));
+    Schema := Trim(DbLibTableAttr(Lines, Table, 'SchemaName'));
+    KeySource := '';
+    KeyField := DbLibKeyField(Lines, Cols, Table, LeftQ, RightQ, KeySource);
+    SymField := DbLibResolveField(Lines, Cols, Table, '[Library Ref]', 'Library Ref');
+    SymLibField := DbLibResolveField(Lines, Cols, Table, '[Library Path]', 'Library Path');
+    DescField := DbLibResolveField(Lines, Cols, Table, '[Description]', 'Description');
+    DbLibFootprintFields(Lines, Cols, Table, RefFields, LibFields);
+    FpJson := '';
+    While RefFields <> '' Do
+    Begin
+        OneRef := SplitNextTab(RefFields);
+        OneLib := SplitNextTab(LibFields);
+        If FpJson <> '' Then FpJson := FpJson + ',';
+        FpJson := FpJson + '{"ref_field":"' + EscapeJsonString(OneRef)
+            + '","library_field":"' + EscapeJsonString(OneLib) + '"}';
+    End;
+    ColsJson := 'null';
+    If HaveCols Then
+    Begin
+        ColsJson := '';
+        For I := 0 To Cols.Count - 1 Do
+        Begin
+            If ColsJson <> '' Then ColsJson := ColsJson + ',';
+            ColsJson := ColsJson + '"' + EscapeJsonString(Cols.Get(I)) + '"';
+        End;
+        ColsJson := '[' + ColsJson + ']';
+    End;
+    ErrJson := 'null';
+    If QueryErr <> '' Then ErrJson := '"' + EscapeJsonString(QueryErr) + '"';
+    Json := '{"name":"' + EscapeJsonString(Table) + '"'
+        + ',"enabled":' + BoolToJsonStr((Enabled = '') Or (Enabled = 'true') Or (Enabled = '1'))
+        + ',"schema":"' + EscapeJsonString(Schema) + '"'
+        + ',"key_field":"' + EscapeJsonString(KeyField) + '"'
+        + ',"key_field_source":"' + EscapeJsonString(KeySource) + '"'
+        + ',"key_field_found":' + BoolToJsonStr(HaveCols And (DbLibIndexOfName(Cols, KeyField) >= 0))
+        + ',"symbol_ref_field":"' + EscapeJsonString(SymField) + '"'
+        + ',"symbol_library_field":"' + EscapeJsonString(SymLibField) + '"'
+        + ',"description_field":"' + EscapeJsonString(DescField) + '"'
+        + ',"footprint_fields":[' + FpJson + ']'
+        + ',"fields":' + ColsJson
+        + ',"field_count":' + IntToStr(Cols.Count)
+        + ',"error":' + ErrJson
+        + ',"settings":' + DbLibTableSettingsJson(Lines, Table) + '}';
+    Result := Json;
+End;
+
+{ Lib_GetDbLibInfo - what a DbLib declares and how it connects.               }
+{                                                                              }
+{ Params: library_path (the .DbLib), with_fields ("false" reads the file only  }
+{ and opens no database connection).                                           }
+{ Response: connection (provider, kind, data_source, has_password, redacted,   }
+{ read_only), quote characters, search_path, tables (each with its key,        }
+{ symbol and footprint columns, its settings and, when fields were read, every }
+{ column), and connected, which is null when no connection was attempted.      }
+Function Lib_GetDbLibInfo(Params : String; RequestId : String) : String;
+Var
+    LibPath, ConnStr, ReadConn, LeftQ, RightQ, TableList, Rest, Table : String;
+    QTable, Problem, TablesJson, ConnJson, Response, QueryErr, ConnectedJson : String;
+    Lines, Cols : TStringList;
+    Conn : TADOConnection;
+    Q : TADOQuery;
+    I, TableCount : Integer;
+    Loaded, WantFields, Connected, Opened, Tried : Boolean;
+Begin
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    WantFields := ExtractJsonValue(Params, 'with_fields') <> 'false';
+    Problem := DbLibPathProblem(LibPath);
+    If Problem <> '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'BAD_LIBRARY_PATH', Problem);
+        Result := Response;
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No DbLib file at ' + LibPath);
+        Result := Response;
+        Exit;
+    End;
+
+    Response := '';
+    Lines := TStringList.Create;
+    Try
+        Loaded := False;
+        Try
+            Lines.LoadFromFile(LibPath);
+            Loaded := True;
+        Except
+            Loaded := False;
+        End;
+
+        If Not Loaded Then
+            Response := BuildErrorResponse(RequestId, 'READ_FAILED', 'Could not read ' + LibPath)
+        Else
+        Begin
+            ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
+            LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
+            RightQ := DbLibGlobalValue(Lines, 'RightQuote');
+            If LeftQ = '' Then LeftQ := '[';
+            If RightQ = '' Then RightQ := ']';
+            TableList := DbLibTableNames(Lines);
+
+            Tried := WantFields And (Trim(ConnStr) <> '') And (TableList <> '');
+            Connected := False;
+            Conn := Nil;
+            If Tried Then
+            Begin
+                ReadConn := DbLibConnectionForRead(ConnStr, ExtractFilePath(LibPath));
+                Try
+                    Conn := TADOConnection.Create(Nil);
+                    Conn.ConnectionString := ReadConn;
+                    Conn.LoginPrompt := False;
+                    Conn.Connected := True;
+                    Connected := True;
+                Except
+                    Connected := False;
+                End;
+            End;
+
+            TablesJson := '';
+            TableCount := 0;
+            Rest := TableList;
+            While Rest <> '' Do
+            Begin
+                Table := SplitNextTab(Rest);
+                If Table = '' Then Continue;
+                QueryErr := '';
+                Cols := TStringList.Create;
+                If Connected Then
+                Begin
+                    QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Table, 'SchemaName'),
+                        Table, LeftQ, RightQ);
+                    If QTable = '' Then
+                        QueryErr := 'TABLE_NAME_REFUSED'
+                    Else
+                    Begin
+                        Opened := False;
+                        Q := TADOQuery.Create(Nil);
+                        Try
+                            Q.Connection := Conn;
+                            Q.SQL.Add('SELECT * FROM ' + QTable + ' WHERE 1=0');
+                            Q.Open;
+                            Opened := True;
+                        Except
+                            Opened := False;
+                        End;
+                        If Opened Then
+                        Begin
+                            For I := 0 To Q.FieldCount - 1 Do
+                                Cols.Add(Q.Fields[I].DisplayName);
+                            Try Q.Close; Except End;
+                        End
+                        Else
+                            QueryErr := 'QUERY_FAILED';
+                        Q.Free;
+                    End;
+                End;
+                If TablesJson <> '' Then TablesJson := TablesJson + ',';
+                TablesJson := TablesJson + DbLibTableJson(Lines, Cols, Table, LeftQ, RightQ,
+                    Connected And (QueryErr = ''), QueryErr);
+                Cols.Free;
+                Inc(TableCount);
+            End;
+            If Conn <> Nil Then Conn.Free;
+
+            ConnectedJson := 'null';
+            If Tried Then ConnectedJson := BoolToJsonStr(Connected);
+            ConnJson := '{"provider":"' + EscapeJsonString(DbLibConnValue(ConnStr, 'Provider')) + '"'
+                + ',"kind":"' + DbLibConnKind(ConnStr) + '"'
+                + ',"data_source":"' + EscapeJsonString(DbLibConnValue(ConnStr, 'Data Source')) + '"'
+                + ',"has_password":' + BoolToJsonStr(DbLibConnHasSecret(ConnStr))
+                + ',"redacted":"' + EscapeJsonString(DbLibRedactConnStr(ConnStr)) + '"'
+                + ',"read_only":' + BoolToJsonStr(DbLibIsJetOrAce(ConnStr)) + '}';
+
+            Response := BuildSuccessResponse(RequestId,
+                '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+                + ',"connection":' + ConnJson
+                + ',"left_quote":"' + EscapeJsonString(LeftQ) + '"'
+                + ',"right_quote":"' + EscapeJsonString(RightQ) + '"'
+                + ',"search_path":"' + EscapeJsonString(DbLibGlobalValue(Lines, 'LibrarySearchPath')) + '"'
+                + ',"table_count":' + IntToStr(TableCount)
+                + ',"tables":[' + TablesJson + ']'
+                + ',"sections":' + DbLibTabsToJson(DbLibSectionNames(Lines))
+                + ',"fields_included":' + BoolToJsonStr(Connected)
+                + ',"connected":' + ConnectedJson + '}');
+        End;
+    Finally
+        Lines.Free;
+    End;
+    Result := Response;
+End;
+
+{ DbLibSearchOne - case-insensitive substring search over one DbLib's rows.   }
+{                                                                              }
+{ Each searched table is read with SELECT * FROM <table>, the table name being }
+{ one the DbLib declares, and each row is matched HERE against the lowered     }
+{ query. Nothing the caller typed reaches the database. Stops at Limit hits   }
+{ in total or MaxRows rows read in total, whichever comes first.              }
+{ Appends hits to ResultsJson and one summary object to LibsJson.             }
+Function DbLibSearchOne(LibPath : String; LowerQuery : String; TableFilter : String;
+    FieldsFilter : String; Limit : Integer; MaxRows : Integer;
+    Var HitCount : Integer; Var Scanned : Integer; Var Capped : Boolean;
+    Var ResultsJson : String; Var LibsJson : String) : Boolean;
+Var
+    ConnStr, ReadConn, LeftQ, RightQ, TableList, Rest, Table, QTable, Enabled : String;
+    ErrCode, SearchedJson, FailedJson, UnknownJson, FieldRest, OneField : String;
+    KeyField, KeySource, SymField, SymLibField, DescField, RefFields, LibFields : String;
+    V, Matched, MatchedVal, KeyV, SymV, SymLibV, DescV, FpJson, RefRest, LibRest : String;
+    OneRef, OneLib, RefV, LibV, ErrJson : String;
+    Lines, Cols, SearchIdx : TStringList;
+    Conn : TADOConnection;
+    Q : TADOQuery;
+    I, J, Idx, KeyIdx, SymIdx, SymLibIdx, DescIdx, RefIdx, LibIdx : Integer;
+    Loaded, Connected, Opened, Stopped : Boolean;
+Begin
+    Result := False;
+    ErrCode := '';
+    SearchedJson := '';
+    FailedJson := '';
+    UnknownJson := '';
+    Lines := TStringList.Create;
+    Try
+        Loaded := False;
+        Try
+            Lines.LoadFromFile(LibPath);
+            Loaded := True;
+        Except
+            Loaded := False;
+        End;
+        If Not Loaded Then ErrCode := 'READ_FAILED';
+
+        If ErrCode = '' Then
+        Begin
+            ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
+            LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
+            RightQ := DbLibGlobalValue(Lines, 'RightQuote');
+            If LeftQ = '' Then LeftQ := '[';
+            If RightQ = '' Then RightQ := ']';
+            TableList := DbLibTableNames(Lines);
+            If TableFilter <> '' Then
+            Begin
+                Table := DbLibFindTab(TableList, TableFilter);
+                If Table = '' Then ErrCode := 'TABLE_UNKNOWN';
+                TableList := Table;
+            End;
+            If (ErrCode = '') And (TableList = '') Then ErrCode := 'NO_TABLES';
+            If (ErrCode = '') And (Trim(ConnStr) = '') Then ErrCode := 'NO_CONNECTION_STRING';
+        End;
+
+        Connected := False;
+        Conn := Nil;
+        If ErrCode = '' Then
+        Begin
+            ReadConn := DbLibConnectionForRead(ConnStr, ExtractFilePath(LibPath));
+            Try
+                Conn := TADOConnection.Create(Nil);
+                Conn.ConnectionString := ReadConn;
+                Conn.LoginPrompt := False;
+                Conn.Connected := True;
+                Connected := True;
+            Except
+                Connected := False;
+            End;
+            If Not Connected Then ErrCode := 'CONNECT_FAILED';
+        End;
+
+        Rest := '';
+        If ErrCode = '' Then Rest := TableList;
+        While Rest <> '' Do
+        Begin
+            Table := SplitNextTab(Rest);
+            If Table = '' Then Continue;
+            If (HitCount >= Limit) Or (Scanned >= MaxRows) Then Break;
+            { A disabled table is skipped, as Altium skips it, unless it was }
+            { asked for by name.                                             }
+            Enabled := LowerCase(Trim(DbLibTableAttr(Lines, Table, 'Enabled')));
+            If (TableFilter = '') And (Enabled <> '') And (Enabled <> 'true')
+                And (Enabled <> '1') Then
+                Continue;
+            QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Table, 'SchemaName'),
+                Table, LeftQ, RightQ);
+            If QTable = '' Then
+            Begin
+                If FailedJson <> '' Then FailedJson := FailedJson + ',';
+                FailedJson := FailedJson + '{"table":"' + EscapeJsonString(Table)
+                    + '","reason":"TABLE_NAME_REFUSED"}';
+                Continue;
+            End;
+
+            Opened := False;
+            Q := TADOQuery.Create(Nil);
+            Try
+                Q.Connection := Conn;
+                Q.SQL.Add('SELECT * FROM ' + QTable);
+                Q.Open;
+                Opened := True;
+            Except
+                Opened := False;
+            End;
+            If Not Opened Then
+            Begin
+                Q.Free;
+                If FailedJson <> '' Then FailedJson := FailedJson + ',';
+                FailedJson := FailedJson + '{"table":"' + EscapeJsonString(Table)
+                    + '","reason":"QUERY_FAILED"}';
+                Continue;
+            End;
+
+            Cols := TStringList.Create;
+            SearchIdx := TStringList.Create;
+            Try
+                For I := 0 To Q.FieldCount - 1 Do
+                    Cols.Add(Q.Fields[I].DisplayName);
+
+                { Which columns to match: the ones asked for that this table }
+                { has, else every column. A name the table lacks is reported }
+                { rather than silently searched as nothing.                  }
+                If FieldsFilter <> '' Then
+                Begin
+                    FieldRest := FieldsFilter;
+                    While FieldRest <> '' Do
+                    Begin
+                        I := Pos('|', FieldRest);
+                        If I > 0 Then
+                        Begin
+                            OneField := Trim(Copy(FieldRest, 1, I - 1));
+                            FieldRest := Copy(FieldRest, I + 1, Length(FieldRest));
+                        End
+                        Else
+                        Begin
+                            OneField := Trim(FieldRest);
+                            FieldRest := '';
+                        End;
+                        If OneField = '' Then Continue;
+                        Idx := DbLibIndexOfName(Cols, OneField);
+                        If Idx >= 0 Then
+                            SearchIdx.Add(IntToStr(Idx))
+                        Else
+                        Begin
+                            If UnknownJson <> '' Then UnknownJson := UnknownJson + ',';
+                            UnknownJson := UnknownJson + '{"table":"' + EscapeJsonString(Table)
+                                + '","field":"' + EscapeJsonString(OneField) + '"}';
+                        End;
+                    End;
+                End
+                Else
+                Begin
+                    For I := 0 To Cols.Count - 1 Do
+                        SearchIdx.Add(IntToStr(I));
+                End;
+
+                KeySource := '';
+                KeyField := DbLibKeyField(Lines, Cols, Table, LeftQ, RightQ, KeySource);
+                SymField := DbLibResolveField(Lines, Cols, Table, '[Library Ref]', 'Library Ref');
+                SymLibField := DbLibResolveField(Lines, Cols, Table, '[Library Path]', 'Library Path');
+                DescField := DbLibResolveField(Lines, Cols, Table, '[Description]', 'Description');
+                DbLibFootprintFields(Lines, Cols, Table, RefFields, LibFields);
+                KeyIdx := DbLibIndexOfName(Cols, KeyField);
+                SymIdx := DbLibIndexOfName(Cols, SymField);
+                SymLibIdx := DbLibIndexOfName(Cols, SymLibField);
+                DescIdx := DbLibIndexOfName(Cols, DescField);
+
+                If SearchedJson <> '' Then SearchedJson := SearchedJson + ',';
+                SearchedJson := SearchedJson + '"' + EscapeJsonString(Table) + '"';
+
+                Stopped := False;
+                Try Q.First; Except End;
+                While (Not Stopped) And (Not Q.Eof) And (HitCount < Limit) And (Scanned < MaxRows) Do
+                Begin
+                    Scanned := Scanned + 1;
+                    Matched := '';
+                    MatchedVal := '';
+                    For J := 0 To SearchIdx.Count - 1 Do
+                    Begin
+                        Idx := StrToIntDef(SearchIdx[J], -1);
+                        If Idx < 0 Then Continue;
+                        V := '';
+                        Try V := Q.Fields[Idx].AsString; Except V := ''; End;
+                        If Pos(LowerQuery, LowerCase(V)) > 0 Then
+                        Begin
+                            Matched := Cols[Idx];
+                            MatchedVal := V;
+                            Break;
+                        End;
+                    End;
+
+                    If Matched <> '' Then
+                    Begin
+                        KeyV := '';
+                        SymV := '';
+                        SymLibV := '';
+                        DescV := '';
+                        If KeyIdx >= 0 Then
+                        Begin
+                            Try KeyV := Q.Fields[KeyIdx].AsString; Except End;
+                        End;
+                        If SymIdx >= 0 Then
+                        Begin
+                            Try SymV := Q.Fields[SymIdx].AsString; Except End;
+                        End;
+                        If SymLibIdx >= 0 Then
+                        Begin
+                            Try SymLibV := Q.Fields[SymLibIdx].AsString; Except End;
+                        End;
+                        If DescIdx >= 0 Then
+                        Begin
+                            Try DescV := Q.Fields[DescIdx].AsString; Except End;
+                        End;
+                        FpJson := '';
+                        RefRest := RefFields;
+                        LibRest := LibFields;
+                        While RefRest <> '' Do
+                        Begin
+                            OneRef := SplitNextTab(RefRest);
+                            OneLib := SplitNextTab(LibRest);
+                            RefV := '';
+                            LibV := '';
+                            RefIdx := DbLibIndexOfName(Cols, OneRef);
+                            LibIdx := DbLibIndexOfName(Cols, OneLib);
+                            If RefIdx >= 0 Then
+                            Begin
+                                Try RefV := Q.Fields[RefIdx].AsString; Except End;
+                            End;
+                            If LibIdx >= 0 Then
+                            Begin
+                                Try LibV := Q.Fields[LibIdx].AsString; Except End;
+                            End;
+                            If RefV <> '' Then
+                            Begin
+                                If FpJson <> '' Then FpJson := FpJson + ',';
+                                FpJson := FpJson + '{"ref":"' + EscapeJsonString(RefV)
+                                    + '","library":"' + EscapeJsonString(LibV) + '"}';
+                            End;
+                        End;
+
+                        If ResultsJson <> '' Then ResultsJson := ResultsJson + ',';
+                        ResultsJson := ResultsJson
+                            + '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+                            + ',"table":"' + EscapeJsonString(Table) + '"'
+                            + ',"key":"' + EscapeJsonString(KeyV) + '"'
+                            + ',"key_field":"' + EscapeJsonString(KeyField) + '"'
+                            + ',"symbol_ref":"' + EscapeJsonString(SymV) + '"'
+                            + ',"symbol_library":"' + EscapeJsonString(SymLibV) + '"'
+                            + ',"footprints":[' + FpJson + ']'
+                            + ',"description":"' + EscapeJsonString(DescV) + '"'
+                            + ',"matched_field":"' + EscapeJsonString(Matched) + '"'
+                            + ',"matched_value":"' + EscapeJsonString(Copy(MatchedVal, 1, 200)) + '"}';
+                        HitCount := HitCount + 1;
+                    End;
+                    Try Q.Next; Except Stopped := True; End;
+                End;
+                If (Scanned >= MaxRows) And (Not Q.Eof) Then Capped := True;
+                Try Q.Close; Except End;
+            Finally
+                Cols.Free;
+                SearchIdx.Free;
+                Q.Free;
+            End;
+        End;
+        If Conn <> Nil Then Conn.Free;
+    Finally
+        Lines.Free;
+    End;
+
+    ErrJson := 'null';
+    If ErrCode <> '' Then ErrJson := '"' + ErrCode + '"';
+    If LibsJson <> '' Then LibsJson := LibsJson + ',';
+    LibsJson := LibsJson + '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+        + ',"searched":' + BoolToJsonStr(ErrCode = '')
+        + ',"error":' + ErrJson
+        + ',"tables_searched":[' + SearchedJson + ']'
+        + ',"tables_failed":[' + FailedJson + ']'
+        + ',"unknown_fields":[' + UnknownJson + ']}';
+    Result := ErrCode = '';
+End;
+
+{ Lib_QueryDbLib - search database libraries for components.                  }
+{                                                                              }
+{ Params: query (required, case-insensitive substring), library_path (one     }
+{ .DbLib; omitted searches every installed database library), table (one     }
+{ declared table), fields ("|"-separated column names; omitted matches every  }
+{ column), limit (hits, default 50), max_rows (rows read in total, default    }
+{ 20000).                                                                      }
+{ Response: query, count, limit, truncated, rows_scanned, scan_capped,        }
+{ libraries (one summary per DbLib, with its error code if it could not be    }
+{ searched) and results (library_path, table, key, key_field, symbol_ref,     }
+{ symbol_library, footprints, description, matched_field, matched_value).     }
+Function Lib_QueryDbLib(Params : String; RequestId : String) : String;
+Var
+    LibPath, Query, TableFilter, FieldsFilter, Paths, Rest, OnePath, Problem : String;
+    ResultsJson, LibsJson, Response, InstPath : String;
+    Limit, MaxRows, HitCount, Scanned, I, InstCount, TypeOrd : Integer;
+    Capped : Boolean;
+Begin
+    Query := ExtractJsonValue(Params, 'query');
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    TableFilter := Trim(ExtractJsonValue(Params, 'table'));
+    FieldsFilter := ExtractJsonValue(Params, 'fields');
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 50);
+    MaxRows := StrToIntDef(ExtractJsonValue(Params, 'max_rows'), 20000);
+    If Limit < 1 Then Limit := 1;
+    If Limit > 1000 Then Limit := 1000;
+    If MaxRows < 1 Then MaxRows := 1;
+    If MaxRows > 1000000 Then MaxRows := 1000000;
+
+    If Trim(Query) = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'query is required');
+        Result := Response;
+        Exit;
+    End;
+
+    Paths := '';
+    If LibPath <> '' Then
+    Begin
+        Problem := DbLibPathProblem(LibPath);
+        If Problem <> '' Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'BAD_LIBRARY_PATH', Problem);
+            Result := Response;
+            Exit;
+        End;
+        If Not FileExists(LibPath) Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No DbLib file at ' + LibPath);
+            Result := Response;
+            Exit;
+        End;
+        Paths := LibPath;
+    End
+    Else
+    Begin
+        If IntegratedLibraryManager = Nil Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'NO_MANAGER',
+                'IntegratedLibraryManager unavailable');
+            Result := Response;
+            Exit;
+        End;
+        { Every installed database library. The type is matched by its      }
+        { TLibraryType ordinal (3), not an enum name, as get_installed_      }
+        { libraries does; an installed path missing from the available list  }
+        { (ordinal -1) still counts when it is a .DbLib file.                }
+        InstCount := 0;
+        Try InstCount := IntegratedLibraryManager.InstalledLibraryCount; Except End;
+        For I := 0 To InstCount - 1 Do
+        Begin
+            InstPath := '';
+            Try InstPath := IntegratedLibraryManager.InstalledLibraryPath(I); Except End;
+            If InstPath = '' Then Continue;
+            TypeOrd := InstalledLibTypeOrdinal(InstPath);
+            If (TypeOrd = 3) Or ((TypeOrd = -1) And DbLibHasDbLibExt(InstPath)) Then
+            Begin
+                If Paths <> '' Then Paths := Paths + #9;
+                Paths := Paths + InstPath;
+            End;
+        End;
+    End;
+
+    HitCount := 0;
+    Scanned := 0;
+    Capped := False;
+    ResultsJson := '';
+    LibsJson := '';
+    Rest := Paths;
+    While Rest <> '' Do
+    Begin
+        OnePath := SplitNextTab(Rest);
+        If OnePath = '' Then Continue;
+        If (HitCount >= Limit) Or (Scanned >= MaxRows) Then
+        Begin
+            If LibsJson <> '' Then LibsJson := LibsJson + ',';
+            LibsJson := LibsJson + '{"library_path":"' + EscapeJsonString(OnePath) + '"'
+                + ',"searched":false,"error":"LIMIT_REACHED","tables_searched":[]'
+                + ',"tables_failed":[],"unknown_fields":[]}';
+            Continue;
+        End;
+        DbLibSearchOne(OnePath, LowerCase(Query), TableFilter, FieldsFilter, Limit,
+            MaxRows, HitCount, Scanned, Capped, ResultsJson, LibsJson);
+    End;
+
+    Response := BuildSuccessResponse(RequestId,
+        '{"query":"' + EscapeJsonString(Query) + '"'
+        + ',"count":' + IntToStr(HitCount)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr(HitCount >= Limit)
+        + ',"rows_scanned":' + IntToStr(Scanned)
+        + ',"scan_capped":' + BoolToJsonStr(Capped)
+        + ',"libraries":[' + LibsJson + ']'
+        + ',"results":[' + ResultsJson + ']}');
+    Result := Response;
+End;
+
+{ Lib_GetDbLibRecord - every column of one row of a DbLib table.              }
+{                                                                              }
+{ The table must be one the DbLib declares and the key column one the table   }
+{ has. The key VALUE is bound as an ADO parameter. If the parameterised query }
+{ cannot run (a key value the column's type will not accept, or a provider    }
+{ without named parameters) the table is read and compared here instead, and  }
+{ the reply says which lookup answered.                                       }
+{ Params: library_path, table, key (all required), key_field (optional        }
+{ override, checked against the table's columns), max_rows (scan bound).     }
+Function Lib_GetDbLibRecord(Params : String; RequestId : String) : String;
+Var
+    LibPath, Table, KeyValue, KeyOverride, Problem, ConnStr, ReadConn, LeftQ, RightQ : String;
+    TableList, Declared, QTable, QKey, KeyField, KeySource, Lookup, ErrCode, ErrMsg : String;
+    FieldsJson, V, WantKey, SymField, SymLibField, DescField, RefFields, LibFields : String;
+    FpJson, OneRef, OneLib, RefV, LibV, SymV, SymLibV, DescV, Response, Probe : String;
+    Lines, Cols, Vals : TStringList;
+    Conn : TADOConnection;
+    Q : TADOQuery;
+    I, KeyIdx, MatchCount, MaxRows, Scanned, Idx : Integer;
+    Loaded, Connected, Opened, ParamWorked, Capped, Stopped : Boolean;
+Begin
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    Table := Trim(ExtractJsonValue(Params, 'table'));
+    KeyValue := ExtractJsonValue(Params, 'key');
+    KeyOverride := Trim(ExtractJsonValue(Params, 'key_field'));
+    MaxRows := StrToIntDef(ExtractJsonValue(Params, 'max_rows'), 100000);
+    If MaxRows < 1 Then MaxRows := 1;
+
+    Problem := DbLibPathProblem(LibPath);
+    If Problem = '' Then
+    Begin
+        If Table = '' Then Problem := 'table is required';
+    End;
+    If Problem = '' Then
+    Begin
+        If Trim(KeyValue) = '' Then Problem := 'key is required';
+    End;
+    If Problem <> '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', Problem);
+        Result := Response;
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No DbLib file at ' + LibPath);
+        Result := Response;
+        Exit;
+    End;
+
+    ErrCode := '';
+    ErrMsg := '';
+    Lookup := '';
+    MatchCount := 0;
+    Scanned := 0;
+    Capped := False;
+    FieldsJson := '';
+    KeyField := '';
+    KeySource := '';
+    SymV := '';
+    SymLibV := '';
+    DescV := '';
+    FpJson := '';
+    Declared := '';
+    Conn := Nil;
+    Lines := TStringList.Create;
+    Cols := TStringList.Create;
+    Vals := TStringList.Create;
+    Try
+        Loaded := False;
+        Try
+            Lines.LoadFromFile(LibPath);
+            Loaded := True;
+        Except
+            Loaded := False;
+        End;
+        If Not Loaded Then
+        Begin
+            ErrCode := 'READ_FAILED';
+            ErrMsg := 'Could not read ' + LibPath;
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
+            LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
+            RightQ := DbLibGlobalValue(Lines, 'RightQuote');
+            If LeftQ = '' Then LeftQ := '[';
+            If RightQ = '' Then RightQ := ']';
+            TableList := DbLibTableNames(Lines);
+            Declared := DbLibFindTab(TableList, Table);
+            If Declared = '' Then
+            Begin
+                ErrCode := 'TABLE_UNKNOWN';
+                ErrMsg := 'The DbLib declares no table named "' + Table + '". It declares: '
+                    + StringReplace(TableList, #9, ', ', MkSet(rfReplaceAll));
+            End;
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Declared, 'SchemaName'),
+                Declared, LeftQ, RightQ);
+            If QTable = '' Then
+            Begin
+                ErrCode := 'TABLE_NAME_REFUSED';
+                ErrMsg := 'The table name holds a character that cannot be quoted safely';
+            End;
+        End;
+
+        Connected := False;
+        If ErrCode = '' Then
+        Begin
+            ReadConn := DbLibConnectionForRead(ConnStr, ExtractFilePath(LibPath));
+            Try
+                Conn := TADOConnection.Create(Nil);
+                Conn.ConnectionString := ReadConn;
+                Conn.LoginPrompt := False;
+                Conn.Connected := True;
+                Connected := True;
+            Except
+                Connected := False;
+            End;
+            If Not Connected Then
+            Begin
+                ErrCode := 'CONNECT_FAILED';
+                ErrMsg := 'Could not open the database this DbLib names. Check it with '
+                    + 'lib_dblib_info, which reports the provider and data source.';
+            End;
+        End;
+
+        { The table's columns, to check the key column against. }
+        If ErrCode = '' Then
+        Begin
+            Opened := False;
+            Q := TADOQuery.Create(Nil);
+            Try
+                Q.Connection := Conn;
+                Q.SQL.Add('SELECT * FROM ' + QTable + ' WHERE 1=0');
+                Q.Open;
+                Opened := True;
+            Except
+                Opened := False;
+            End;
+            If Opened Then
+            Begin
+                For I := 0 To Q.FieldCount - 1 Do
+                    Cols.Add(Q.Fields[I].DisplayName);
+                Try Q.Close; Except End;
+            End;
+            Q.Free;
+            If Not Opened Then
+            Begin
+                ErrCode := 'QUERY_FAILED';
+                ErrMsg := 'The table could not be read';
+            End;
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            If KeyOverride <> '' Then
+            Begin
+                KeyField := KeyOverride;
+                KeySource := 'caller';
+            End
+            Else
+                KeyField := DbLibKeyField(Lines, Cols, Declared, LeftQ, RightQ, KeySource);
+            KeyIdx := DbLibIndexOfName(Cols, KeyField);
+            If KeyIdx < 0 Then
+            Begin
+                ErrCode := 'KEY_FIELD_UNKNOWN';
+                ErrMsg := 'The table has no column "' + KeyField + '" (key from '
+                    + KeySource + '). Pass key_field with one of its columns; '
+                    + 'lib_dblib_info lists them.';
+            End
+            Else
+                KeyField := Cols.Get(KeyIdx);
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            QKey := DbLibQuoteIdent(KeyField, LeftQ, RightQ);
+            If QKey = '' Then
+            Begin
+                ErrCode := 'KEY_FIELD_REFUSED';
+                ErrMsg := 'The key column name holds a character that cannot be quoted safely';
+            End;
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            WantKey := LowerCase(Trim(KeyValue));
+            { First choice: the key bound as a parameter, so the database }
+            { does the lookup and the value never becomes SQL text.       }
+            ParamWorked := False;
+            Q := TADOQuery.Create(Nil);
+            Try
+                Q.Connection := Conn;
+                Q.SQL.Add('SELECT * FROM ' + QTable + ' WHERE ' + QKey + ' = :dblibkey');
+                Q.Parameters.ParamByName('dblibkey').Value := KeyValue;
+                Q.Open;
+                ParamWorked := True;
+            Except
+                ParamWorked := False;
+            End;
+            If ParamWorked Then
+            Begin
+                Lookup := 'parameter';
+                Stopped := False;
+                Try Q.First; Except End;
+                While (Not Stopped) And (Not Q.Eof) Do
+                Begin
+                    Probe := '';
+                    Try Probe := Q.Fields[KeyIdx].AsString; Except End;
+                    If LowerCase(Trim(Probe)) = WantKey Then
+                    Begin
+                        MatchCount := MatchCount + 1;
+                        If MatchCount = 1 Then
+                        Begin
+                            For I := 0 To Q.FieldCount - 1 Do
+                            Begin
+                                V := '';
+                                Try V := Q.Fields[I].AsString; Except End;
+                                Vals.Add(V);
+                            End;
+                        End;
+                    End;
+                    Try Q.Next; Except Stopped := True; End;
+                End;
+                Try Q.Close; Except End;
+            End;
+            Q.Free;
+
+            { Fallback: read the table and compare here. Still no caller }
+            { text in the statement, only the declared table name.       }
+            If Not ParamWorked Then
+            Begin
+                Lookup := 'scan';
+                Opened := False;
+                Q := TADOQuery.Create(Nil);
+                Try
+                    Q.Connection := Conn;
+                    Q.SQL.Add('SELECT * FROM ' + QTable);
+                    Q.Open;
+                    Opened := True;
+                Except
+                    Opened := False;
+                End;
+                If Opened Then
+                Begin
+                    Stopped := False;
+                    Try Q.First; Except End;
+                    While (Not Stopped) And (Not Q.Eof) And (Scanned < MaxRows) Do
+                    Begin
+                        Scanned := Scanned + 1;
+                        Probe := '';
+                        Try Probe := Q.Fields[KeyIdx].AsString; Except End;
+                        If LowerCase(Trim(Probe)) = WantKey Then
+                        Begin
+                            MatchCount := MatchCount + 1;
+                            If MatchCount = 1 Then
+                            Begin
+                                For I := 0 To Q.FieldCount - 1 Do
+                                Begin
+                                    V := '';
+                                    Try V := Q.Fields[I].AsString; Except End;
+                                    Vals.Add(V);
+                                End;
+                            End;
+                        End;
+                        Try Q.Next; Except Stopped := True; End;
+                    End;
+                    If (Scanned >= MaxRows) And (Not Q.Eof) Then Capped := True;
+                    Try Q.Close; Except End;
+                End
+                Else
+                Begin
+                    ErrCode := 'QUERY_FAILED';
+                    ErrMsg := 'The table could not be read';
+                End;
+                Q.Free;
+            End;
+        End;
+
+        If (ErrCode = '') And (MatchCount > 0) Then
+        Begin
+            For I := 0 To Cols.Count - 1 Do
+            Begin
+                V := '';
+                If I < Vals.Count Then V := Vals[I];
+                If FieldsJson <> '' Then FieldsJson := FieldsJson + ',';
+                FieldsJson := FieldsJson + '"' + EscapeJsonString(Cols[I]) + '":"'
+                    + EscapeJsonString(V) + '"';
+            End;
+            SymField := DbLibResolveField(Lines, Cols, Declared, '[Library Ref]', 'Library Ref');
+            SymLibField := DbLibResolveField(Lines, Cols, Declared, '[Library Path]', 'Library Path');
+            DescField := DbLibResolveField(Lines, Cols, Declared, '[Description]', 'Description');
+            Idx := DbLibIndexOfName(Cols, SymField);
+            If (Idx >= 0) And (Idx < Vals.Count) Then SymV := Vals[Idx];
+            Idx := DbLibIndexOfName(Cols, SymLibField);
+            If (Idx >= 0) And (Idx < Vals.Count) Then SymLibV := Vals[Idx];
+            Idx := DbLibIndexOfName(Cols, DescField);
+            If (Idx >= 0) And (Idx < Vals.Count) Then DescV := Vals[Idx];
+            DbLibFootprintFields(Lines, Cols, Declared, RefFields, LibFields);
+            While RefFields <> '' Do
+            Begin
+                OneRef := SplitNextTab(RefFields);
+                OneLib := SplitNextTab(LibFields);
+                RefV := '';
+                LibV := '';
+                Idx := DbLibIndexOfName(Cols, OneRef);
+                If (Idx >= 0) And (Idx < Vals.Count) Then RefV := Vals[Idx];
+                Idx := DbLibIndexOfName(Cols, OneLib);
+                If (Idx >= 0) And (Idx < Vals.Count) Then LibV := Vals[Idx];
+                If RefV <> '' Then
+                Begin
+                    If FpJson <> '' Then FpJson := FpJson + ',';
+                    FpJson := FpJson + '{"ref":"' + EscapeJsonString(RefV)
+                        + '","library":"' + EscapeJsonString(LibV) + '"}';
+                End;
+            End;
+        End;
+        If Conn <> Nil Then Conn.Free;
+    Finally
+        Lines.Free;
+        Cols.Free;
+        Vals.Free;
+    End;
+
+    If ErrCode <> '' Then
+        Response := BuildErrorResponse(RequestId, ErrCode, ErrMsg)
+    Else
+        Response := BuildSuccessResponse(RequestId,
+            '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+            + ',"table":"' + EscapeJsonString(Declared) + '"'
+            + ',"key":"' + EscapeJsonString(KeyValue) + '"'
+            + ',"key_field":"' + EscapeJsonString(KeyField) + '"'
+            + ',"key_field_source":"' + EscapeJsonString(KeySource) + '"'
+            + ',"lookup":"' + Lookup + '"'
+            + ',"found":' + BoolToJsonStr(MatchCount > 0)
+            + ',"match_count":' + IntToStr(MatchCount)
+            + ',"rows_scanned":' + IntToStr(Scanned)
+            + ',"scan_capped":' + BoolToJsonStr(Capped)
+            + ',"symbol_ref":"' + EscapeJsonString(SymV) + '"'
+            + ',"symbol_library":"' + EscapeJsonString(SymLibV) + '"'
+            + ',"footprints":[' + FpJson + ']'
+            + ',"description":"' + EscapeJsonString(DescV) + '"'
+            + ',"fields":{' + FieldsJson + '}}');
+    Result := Response;
+End;
+
+{ Lib_PlaceDbLibComponent - place one DbLib row on a schematic sheet.         }
+{                                                                              }
+{ NOT INTERACTIVE. The process Sch:PlaceIntegratedComponentFromDB, which the   }
+{ reference examples use, attaches the part to the cursor for a person to drop }
+{ and has been reported to place nothing when a script runs it. This uses      }
+{ SchServer.LoadComponentFromDatabaseLibrary, declared in the schematic API    }
+{ and used that way by CompPlaceFromLib.pas in the reference, which hands back }
+{ the component built from the database row; it is then added, moved and      }
+{ rotated as Gen_PlaceSchComponentFromLibrary does for a .SchLib symbol.       }
+{                                                                              }
+{ Altium resolves the DbLib by its file name among the libraries it has        }
+{ available, so the DbLib must be installed or in the project: that is checked }
+{ first, and so is the table, against the DbLib's own list.                    }
+{ Params: library_path, table, key (required), x, y (mils), rotation (0, 90,   }
+{ 180, 270), designator, sheet_path (optional; default the active sheet).      }
+Function Lib_PlaceDbLibComponent(Params : String; RequestId : String) : String;
+Var
+    LibPath, Table, KeyValue, SheetPath, DesigStr, TableList, Declared, Problem : String;
+    LibRef, DbTable, Response, AvailPath : String;
+    X, Y, Rotation, OrientationVal, I, AvailCount : Integer;
+    Lines : TStringList;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+    Available : Boolean;
+Begin
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    Table := Trim(ExtractJsonValue(Params, 'table'));
+    KeyValue := ExtractJsonValue(Params, 'key');
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    DesigStr := ExtractJsonValue(Params, 'designator');
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
+
+    Problem := DbLibPathProblem(LibPath);
+    If (Problem = '') And (Table = '') Then Problem := 'table is required';
+    If (Problem = '') And (Trim(KeyValue) = '') Then Problem := 'key is required';
+    If (Problem = '') And (Rotation <> 0) And (Rotation <> 90) And (Rotation <> 180)
+        And (Rotation <> 270) Then
+        Problem := 'rotation must be 0, 90, 180 or 270';
+    If Problem <> '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', Problem);
+        Result := Response;
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No DbLib file at ' + LibPath);
+        Result := Response;
+        Exit;
+    End;
+
+    TableList := '';
+    Lines := TStringList.Create;
+    Try
+        Try
+            Lines.LoadFromFile(LibPath);
+            TableList := DbLibTableNames(Lines);
+        Except
+            TableList := '';
+        End;
+    Finally
+        Lines.Free;
+    End;
+    Declared := DbLibFindTab(TableList, Table);
+    If Declared = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'TABLE_UNKNOWN',
+            'The DbLib declares no table named "' + Table + '". It declares: '
+            + StringReplace(TableList, #9, ', ', MkSet(rfReplaceAll)));
+        Result := Response;
+        Exit;
+    End;
+
+    If IntegratedLibraryManager = Nil Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NO_MANAGER', 'IntegratedLibraryManager unavailable');
+        Result := Response;
+        Exit;
+    End;
+    Available := False;
+    AvailCount := 0;
+    Try AvailCount := IntegratedLibraryManager.AvailableLibraryCount; Except End;
+    For I := 0 To AvailCount - 1 Do
+    Begin
+        AvailPath := '';
+        Try AvailPath := IntegratedLibraryManager.AvailableLibraryPath(I); Except End;
+        If UpperCase(AvailPath) = UpperCase(LibPath) Then
+        Begin
+            Available := True;
+            Break;
+        End;
+    End;
+    If Not Available Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NOT_AVAILABLE',
+            'Altium does not have ' + ExtractFileName(LibPath) + ' among its available '
+            + 'libraries, and it finds a DbLib part by the library''s name. Install it '
+            + 'with lib_install_library, or add it to the project, and place again.');
+        Result := Response;
+        Exit;
+    End;
+
+    SchDoc := Nil;
+    If SheetPath <> '' Then
+    Begin
+        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'SHEET_NOT_LOADED',
+                'No SchDoc loaded at ' + SheetPath + '. Open it first.');
+            Result := Response;
+            Exit;
+        End;
+    End
+    Else
+    Begin
+        SchDoc := SchServer.GetCurrentSchDocument;
+        If SchDoc = Nil Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+                'No schematic document is active');
+            Result := Response;
+            Exit;
+        End;
+    End;
+    If SchDoc.ObjectId <> eSheet Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'WRONG_DOC_KIND',
+            'Target document is not a schematic sheet (ObjectId='
+            + IntToStr(SchDoc.ObjectId) + '). Pass sheet_path to a .SchDoc.');
+        Result := Response;
+        Exit;
+    End;
+
+    { Load before the sheet's transaction opens, as the .SchLib placer does. }
+    Comp := Nil;
+    Try
+        Comp := SchServer.LoadComponentFromDatabaseLibrary(ExtractFileName(LibPath),
+            Declared, KeyValue);
+    Except
+        Comp := Nil;
+    End;
+    If Comp = Nil Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'PLACE_FAILED',
+            'Altium returned no component for key "' + KeyValue + '" in table "'
+            + Declared + '" of ' + ExtractFileName(LibPath) + '. Check the key with '
+            + 'lib_dblib_get_record.');
+        Result := Response;
+        Exit;
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try SchDoc.AddSchObject(Comp); Except End;
+    Try Comp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    OrientationVal := 0;
+    If Rotation = 90 Then OrientationVal := 1;
+    If Rotation = 180 Then OrientationVal := 2;
+    If Rotation = 270 Then OrientationVal := 3;
+    Try Comp.SetState_Orientation(OrientationVal); Except End;
+    If DesigStr <> '' Then
+    Begin
+        Try Comp.Designator.Text := DesigStr; Except End;
+    End;
+    SchRegisterObject(SchDoc, Comp);
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchDoc.GraphicallyInvalidate;
+    MarkDocDirtyByPath(SchDoc.DocumentName);
+
+    { Read back what Altium built. DatabaseTableName is empty on a part     }
+    { that came from a .SchLib, so it says whether the database link held.  }
+    LibRef := '';
+    Try LibRef := Comp.LibReference; Except End;
+    DbTable := '';
+    Try DbTable := Comp.DatabaseTableName; Except End;
+
+    Response := BuildSuccessResponse(RequestId,
+        '{"placed":true'
+        + ',"library_path":"' + EscapeJsonString(LibPath) + '"'
+        + ',"table":"' + EscapeJsonString(Declared) + '"'
+        + ',"key":"' + EscapeJsonString(KeyValue) + '"'
+        + ',"lib_reference":"' + EscapeJsonString(LibRef) + '"'
+        + ',"database_table":"' + EscapeJsonString(DbTable) + '"'
+        + ',"database_linked":' + BoolToJsonStr(DbTable <> '')
+        + ',"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
+        + ',"rotation":' + IntToStr(Rotation)
+        + ',"designator":"' + EscapeJsonString(DesigStr) + '"}');
+    Result := Response;
+End;
+
 { Force a library_path onto a parameter object.                              }
 {                                                                             }
 { ExtractJsonValue finds the FIRST occurrence of a key, so prepending is      }
@@ -10776,7 +12865,10 @@ Begin
            Or (Action = 'probe_footprint')
            Or (Action = 'probe_designator')
            Or (Action = 'audit_styles')
-           Or (Action = 'search');
+           Or (Action = 'search')
+           Or (Action = 'get_dblib_info')
+           Or (Action = 'query_dblib')
+           Or (Action = 'get_dblib_record');
 End;
 
 Function HandleLibraryCommand(Action : String; Params : String; RequestId : String) : String;
@@ -10984,6 +13076,10 @@ Begin
         'get_pad_geometry':     Result := Lib_GetPadGeometry(Params, RequestId);
         'normalize_implementations': Result := Lib_NormalizeImplementations(Params, RequestId);
         'clear_source_library': Result := Lib_ClearSourceLibrary(Params, RequestId);
+        'get_dblib_info':       Result := Lib_GetDbLibInfo(Params, RequestId);
+        'query_dblib':          Result := Lib_QueryDbLib(Params, RequestId);
+        'get_dblib_record':     Result := Lib_GetDbLibRecord(Params, RequestId);
+        'place_dblib_component': Result := Lib_PlaceDbLibComponent(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown library action: ' + Action);
     End;

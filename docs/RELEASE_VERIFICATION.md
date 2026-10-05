@@ -42,6 +42,11 @@ works elsewhere cannot be an undeclared identifier:
 | 23, via mode | `Mode` on a via | yes, on pads, `PCB.pas` | medium |
 | 23, via size | `Size`, `HoleSize` on a via | yes, `PCB_PlaceVia` | low |
 | 23, Routing Via rule | `PreferedWidth`, `PreferedHoleWidth`, `MinHoleWidth`, `MaxHoleWidth` | no, nowhere | high, and it can stop the loop |
+| 25, DbLib connection | `ConnectionString`, `LoginPrompt`, `Connected` on an ADO connection | no, nowhere | highest, and it can stop the loop |
+| 25, DbLib query | `Connection` on an ADO query | no, nowhere | highest, and it can stop the loop |
+| 25, DbLib record key | `ParamByName`, `Value` on an ADO parameter | no, nowhere | high, and it can stop the loop |
+| 25, DbLib placement | `LoadComponentFromDatabaseLibrary` | no, nowhere | highest, and it edits the sheet |
+| 25, DbLib placement | `AddSchObject`, `SetState_Orientation` | yes, `Gen_PlaceSchComponentFromLibrary` | low |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -1341,6 +1346,127 @@ step 2's rule path (`pcb_normalize_vias` set two vias to the min/max rule's
 50/28 with `before` and `after` counts, app_ping answered after). Still to
 run: step 1 (needs a rule in template mode), step 2 with explicit sizes,
 steps 4 and 5, which need the MCP server restarted on this tree.
+
+---
+
+## 24. lib_search says what it searched
+
+`lib_search` reads open .SchLib files only, and an empty result used to
+read as "no such part" even with a database library installed. Python
+only: no script change.
+
+1. With a DbLib (or an IntLib) installed, `lib_search query=<anything
+   absent>` answers `count: 0`, lists the open .SchLib files under
+   `libraries_searched`, and lists the DbLib under `not_searched` with
+   `library_type: "database"` and a `coverage_note`.
+2. With `library_path` set, `libraries_searched` is that one path and the
+   reply carries no `not_searched`.
+
+---
+
+## 25. Database libraries: read, search, one record, place
+
+A DbLib is a .DbLib file naming a database and its tables; each row is a
+part. Four new bridge commands in Library.pas read it: `get_dblib_info`,
+`query_dblib`, `get_dblib_record` and `place_dblib_component`, behind
+`lib_dblib_info`, `lib_dblib_search`, `lib_dblib_get_record` and
+`sch_place_dblib_component`. `lib_search` now searches every installed
+DbLib too. The table definitions are read from the .DbLib file inside the
+handler; the rows are read over ADO, which nothing in this codebase has
+used before.
+
+**This is the highest-risk step in the release.** Every ADO member below is
+new here and comes from one reference script
+(`reference/altium-delphiscripts-brett/common/libADOQuery (clean).pas`):
+`TADOConnection`, `TADOQuery`, `ConnectionString`, `LoginPrompt`,
+`Connected`, `Connection`, `SQL.Add`, `Open`, `First`, `Eof`, `Next`,
+`Close`, `FieldCount`, `Fields[I].DisplayName`, `Fields[I].AsString` and
+`Parameters.ParamByName(...).Value`. Placement adds
+`LoadComponentFromDatabaseLibrary` (declared in the schematic API, used by
+`reference/altium-delphiscripts-brett/Sch/CompPlaceFromLib.pas`) and reads
+back `DatabaseTableName`. An undeclared one stops the polling loop with a
+dialog no `Try/Except` catches, so run `app_ping` after every item, and
+stop at the first item that does not answer.
+
+You need an installed DbLib whose database this machine can open (an
+Access .mdb or .accdb is the simplest), one key value from it, and a
+scratch schematic sheet. Item 6 writes to that sheet: `app_checkpoint`
+first.
+
+1. **File only, no ADO.** `lib_dblib_info library_path=<dblib>
+   with_fields=false`. Expect every table the DbLib editor shows, with its
+   `enabled` flag; `connection.kind` and `provider` right for the database;
+   `has_password` true only if the connection has one, and
+   `connection.redacted` showing `***` where it was; `connected: null`.
+   Record each table's `key_field_source` and the keys under `settings`:
+   the file keys for the key column (`Key`, `UserWhere`) are inferred, not
+   documented, and this is where the guess is checked. `app_ping`.
+2. **ADO connection (highest risk).** The same call without `with_fields`.
+   Expect `connected: true` and each enabled table's `fields` listing the
+   columns the DbLib editor's field mappings show, `key_field_found: true`,
+   and `symbol_ref_field` / `footprint_fields` matching its [Library Ref] /
+   [Footprint Ref] mappings. Repeat with the DbLib open in the Libraries
+   panel: Access is then held Share Deny Write by Altium, and the Mode=Read
+   connection must still open. `app_ping`. If the loop stops here on
+   `TADOConnection`, this Altium does not expose ADO to DelphiScript:
+   record the version and skip to item 7.
+3. **Search.** `lib_dblib_search query=<part of a known part number>`:
+   hits carry `table`, `key`, `symbol_ref`, `footprints` and
+   `matched_field`, and `rows_scanned` is above 0. A query that matches
+   nothing gives `count: 0` with every enabled table under
+   `tables_searched`. `fields=["<a real column>","Nonsense"]` searches the
+   one and lists `Nonsense` under `unknown_fields`. `query="10%'"` answers
+   without error and matches only that literal text. `app_ping`.
+4. **One record.** `lib_dblib_get_record library_path=<dblib>
+   table=<table> key=<a key from item 3>`: `found: true`,
+   `lookup: "parameter"`, and `fields` holds every column with the values
+   the database shows. A key that is not there gives `found: false`, not
+   an error. `app_ping`. A `lookup` of `"scan"` means the parameterised
+   query failed on this provider: the answer is still right; record the
+   provider.
+5. **lib_search.** `lib_search query=<the same text>`: the DbLib rows
+   are in `results` with `source: "dblib"`, the DbLib is in
+   `libraries_searched` and not in `not_searched`, and `dblib_searches`
+   reports it searched. With `include_dblibs=false` the reply is step
+   24's: the DbLib under `not_searched`, its reason naming the switch.
+6. **Placement (highest risk, edits the sheet).** On the scratch sheet,
+   `sch_place_dblib_component library_path=<dblib> table=<table> key=<key>
+   x=1000 y=1000 rotation=90 designator=U99`: `placed: true`,
+   `database_linked: true`, its library reference the symbol from item 4. The part
+   is on the sheet at (1000, 1000), turned 90 degrees, with the record's
+   parameters, and Update From Libraries sees it as a DbLib part. Nothing
+   is left on the cursor. `app_ping`. If the call times out, look for an
+   Altium dialog with `app_list_open_dialogs` before anything else.
+   Uninstall the DbLib and repeat: `NOT_AVAILABLE`, sheet unchanged. A
+   table the DbLib does not declare: `TABLE_UNKNOWN`, sheet unchanged.
+7. **Credentials.** With a DbLib that has a password (a SQL Server login
+   or a password-protected .accdb), no reply carries it:
+   `connection.redacted` reads `Password=***`. Point a copy of that DbLib
+   at a server that does not exist: `CONNECT_FAILED`, and neither the
+   error nor anything in `libraries` quotes the connection string.
+8. **A part's link through obj_query.** `obj_query eSchComponent
+   properties="DatabaseTableName,DatabaseLibraryName,DesignItemId"` on the
+   sheet from item 6 reads the table, the DbLib's file name and the key.
+   On a part from a .SchLib the first two read empty; on any other object
+   type they are listed under `properties.unreadable`.
+
+Verified on AD 26.10.1.6 (scratch folder, Access .accdb through ACE OLE DB
+12.0, a two-table sample DbLib with a .SchLib and .PcbLib made by this
+server's own library tools): items 1 to 6, with `app_ping` answering after
+each. ADO works from DelphiScript: the connection opened read-only and
+listed every column; a search containing SQL matched nothing and did no
+harm; the record was found with `lookup: "parameter"`; lib_search found
+a part by its manufacturer part number in the DbLib; and the placed part
+carried its database link, key and every mapped column (Value visible,
+the rest hidden), at the location and rotation asked. Two findings from
+the run: Altium's own DbLib layout keeps the connection in
+`[DatabaseLinks]`, keys each table by its `UserWhereText`, and puts every
+field mapping in a `[FieldMapN]` section (a first sample with the
+connection in a `[DataSource]` section was parsed by this reader but
+Altium found no connection and placed nothing); and Altium's component
+count for a DbLib is not its row count (0, then 1, for five rows), so
+`lib_get_installed_libraries` reports it as unknown. Item 7 is not run.
+Item 8 is new in the following build.
 
 ---
 

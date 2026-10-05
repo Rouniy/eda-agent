@@ -538,6 +538,26 @@ Begin
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
         Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
         Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
+        // A database part's link: the DbLib table and the DbLib file name it
+        // was placed from, both empty on a part from a .SchLib. Declared on
+        // ISch_Component only. Without these branches a query for them
+        // answered an empty string as if the part had no link, which is how
+        // a database-linked part read as unlinked during the DbLib live test.
+        Else If (PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName') Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                If PropName = 'DatabaseTableName' Then
+                    Result := Comp.DatabaseTableName
+                Else
+                    Result := Comp.DatabaseLibraryName;
+            End
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+            End;
+        End
         // Which part of a multi-part symbol owns this primitive (0 = shared
         // across all parts). Without it a caller querying a multi-part
         // library symbol cannot tell which part a returned primitive is on.

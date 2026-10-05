@@ -9,6 +9,10 @@ from typing import Any, Optional
 from ..bridge import get_bridge
 from ..bridge.payload import payload_safe
 from ..libimport import extract_cse_zip, inspect_cse_zip
+from ..library_db import (
+    dblib_path_refusal, is_dblib_path, redact_connection_text, redact_reply,
+    search_hit_as_result,
+)
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..config import get_config
@@ -488,6 +492,239 @@ def _spill_pin_list(result, pins, comp, output_path):
         f"{len(pins)} pins written to {written}. Read or diff that file "
         f"directly; it is not summarised further here."
     )
+    return out
+
+
+#: Installed library kinds lib_search cannot read, and why, as
+#: library.get_installed_libraries names them.
+_UNSEARCHED_KINDS = {
+    "database": "a database library (DbLib) keeps its parts as rows in a "
+                "database; lib_search reads it only with include_dblibs on, "
+                "and lib_dblib_search reads it directly",
+    "query": "a query library (SVN DbLib) keeps its parts as rows in a "
+             "database, which this search does not read",
+    "integrated": "an integrated library (IntLib) is a compiled package; this "
+                  "search reads only open .SchLib files",
+    "design_items": "workspace components are not in a file this search reads",
+}
+
+
+async def _search_coverage(bridge, library_path) -> dict[str, Any]:
+    """What a lib_search looked through, and what it could not.
+
+    An empty search used to read as "no such part" whatever was installed:
+    a user with a database library got 0 hits and no hint that the DbLib
+    was never opened. The search walks the open .SchLib documents, which
+    the open-documents list names exactly; the installed list names the
+    rest. Either read failing leaves its field None rather than failing
+    the search.
+    """
+    if library_path:
+        return {"libraries_searched": [library_path], "libraries_searched_count": 1}
+    out: dict[str, Any] = {}
+    searched: list[str] = []
+    try:
+        docs = await bridge.send_command_async("application.get_open_documents")
+        rows = docs if isinstance(docs, list) else (
+            (docs or {}).get("result") or (docs or {}).get("documents") or [])
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            path = str(row.get("file_path") or "")
+            kind = str(row.get("document_kind") or "").upper()
+            if (kind == "SCHLIB" or path.upper().endswith(".SCHLIB")) and path.lower() not in seen:
+                seen.add(path.lower())
+                searched.append(path)
+        out["libraries_searched"] = searched
+        out["libraries_searched_count"] = len(searched)
+    except Exception:  # noqa: BLE001 - coverage is a report, never a failure
+        out["libraries_searched"] = None
+    try:
+        inst = await bridge.send_command_async(
+            "library.get_installed_libraries", {"with_counts": "false"})
+        libs = (inst.get("libraries") or []) if isinstance(inst, dict) else []
+        open_paths = {p.lower() for p in searched}
+        skipped = []
+        for lib in libs:
+            if not isinstance(lib, dict):
+                continue
+            path = str(lib.get("library_path") or "")
+            kind = str(lib.get("library_type") or "unknown")
+            if kind == "unknown" and is_dblib_path(path):
+                # Installed but missing from the available list, which is
+                # how the type gets lost; the file is still a DbLib.
+                kind = "database"
+            reason = _UNSEARCHED_KINDS.get(kind)
+            if reason is None and path.upper().endswith(".SCHLIB") and path.lower() not in open_paths:
+                reason = ("an installed .SchLib that is not open; open it, or pass "
+                          "library_path, to search it")
+            if reason:
+                skipped.append({"library_path": path, "library_type": kind, "reason": reason})
+        out["not_searched"] = skipped
+        out["not_searched_count"] = len(skipped)
+        note = _coverage_note(len(searched), 0, skipped)
+        if note:
+            out["coverage_note"] = note
+    except Exception:  # noqa: BLE001
+        out["not_searched"] = None
+    return out
+
+
+def _coverage_note(schlib_count: int, dblib_count: int, skipped: list) -> "str | None":
+    """The sentence that stops an empty search reading as "no such part"."""
+    if not skipped:
+        return None
+    kinds = sorted({str(s.get("library_type")) for s in skipped})
+    what = f"{schlib_count} open .SchLib file(s)"
+    if dblib_count:
+        what += (f" and {dblib_count} database "
+                 f"librar{'y' if dblib_count == 1 else 'ies'}")
+    else:
+        what += " only"
+    n = len(skipped)
+    return (f"Searched {what}. {n} installed librar{'y' if n == 1 else 'ies'} "
+            f"({', '.join(kinds)}) were not searched, so an empty result is not "
+            "evidence that a part is absent from them.")
+
+
+#: One DbLib search reads table rows over ADO. A network database or a
+#: large table takes far longer than the file reads the other tools wait
+#: on, so it gets its own, longer, bound.
+_DBLIB_TIMEOUT = 120.0
+
+
+async def _query_one_dblib(bridge, library_path: str, query: str,
+                           limit: int) -> dict[str, Any]:
+    """One database library searched by library.query_dblib, redacted."""
+    reply = await bridge.send_command_async(
+        "library.query_dblib",
+        {"library_path": library_path, "query": query, "limit": str(limit)},
+        timeout=_DBLIB_TIMEOUT)
+    return redact_reply(reply) if isinstance(reply, dict) else {}
+
+
+def _dblib_summary(path: str, reply: dict[str, Any]) -> dict[str, Any]:
+    """What one DbLib search covered, for ``dblib_searches``."""
+    libs = reply.get("libraries") or []
+    lib = libs[0] if libs and isinstance(libs[0], dict) else {}
+    return {
+        "library_path": path,
+        "searched": bool(lib.get("searched")),
+        "error": lib.get("error"),
+        "count": reply.get("count", 0),
+        "truncated": bool(reply.get("truncated")),
+        "rows_scanned": reply.get("rows_scanned"),
+        "scan_capped": bool(reply.get("scan_capped")),
+        "tables_searched": lib.get("tables_searched") or [],
+        "tables_failed": lib.get("tables_failed") or [],
+    }
+
+
+async def _search_dblibs(bridge, result: dict[str, Any], query: str,
+                         limit: int, include_dblibs: bool) -> None:
+    """Fold the installed database libraries into a lib_search reply.
+
+    Each DbLib that _search_coverage listed under ``not_searched`` is
+    searched in turn with what is left of ``limit``. Its rows join
+    ``results`` marked ``source: "dblib"`` and its path moves to
+    ``libraries_searched``. A DbLib that is switched off, crowded out by
+    the limit, or that fails stays under ``not_searched`` with that
+    reason: a DbLib never fails the search, and an unread one is never
+    reported as read.
+    """
+    skipped = result.get("not_searched")
+    if not isinstance(skipped, list):
+        return
+    results = result.setdefault("results", [])
+    searched = result.get("libraries_searched")
+    schlib_count = len(searched) if isinstance(searched, list) else 0
+    truncated = bool(result.get("truncated"))
+    remaining: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+    dblibs_read = 0
+    for entry in skipped:
+        if not isinstance(entry, dict) or entry.get("library_type") != "database":
+            remaining.append(entry)
+            continue
+        path = str(entry.get("library_path") or "")
+        if not include_dblibs:
+            remaining.append({**entry, "reason": (
+                "a database library (DbLib), skipped because include_dblibs "
+                "is off; turn it on, or use lib_dblib_search")})
+            continue
+        room = limit - len(results)
+        if room <= 0:
+            truncated = True
+            remaining.append({**entry, "reason": (
+                "a database library (DbLib) left unsearched because the result "
+                "limit was reached first; raise limit or use lib_dblib_search")})
+            continue
+        try:
+            reply = await _query_one_dblib(bridge, path, query, room)
+        except Exception as exc:  # noqa: BLE001 - one DbLib never fails the search
+            remaining.append({**entry, "reason": (
+                "a database library (DbLib) whose search failed: "
+                + redact_connection_text(str(exc))[:300])})
+            continue
+        summary = _dblib_summary(path, reply)
+        summaries.append(summary)
+        if not summary["searched"]:
+            remaining.append({**entry, "reason": (
+                "a database library (DbLib) that could not be searched ("
+                + str(summary["error"] or "no reply") + "); lib_dblib_info "
+                "reports its connection and tables")})
+            continue
+        hits = [search_hit_as_result(h) for h in (reply.get("results") or [])
+                if isinstance(h, dict)]
+        results.extend(hits[:room])
+        if summary["truncated"] or summary["scan_capped"] or len(hits) > room:
+            truncated = True
+        if isinstance(searched, list):
+            searched.append(path)
+        dblibs_read += 1
+    result["not_searched"] = remaining
+    result["not_searched_count"] = len(remaining)
+    if isinstance(searched, list):
+        result["libraries_searched_count"] = len(searched)
+    if summaries:
+        result["dblib_searches"] = summaries
+    note = _coverage_note(schlib_count, dblibs_read, remaining)
+    if note:
+        result["coverage_note"] = note
+    else:
+        result.pop("coverage_note", None)
+    result["count"] = len(results)
+    result["truncated"] = truncated or len(results) >= limit
+
+
+async def _search_named_dblib(bridge, library_path: str, query: str,
+                              search_type: str, limit: int) -> dict[str, Any]:
+    """lib_search with library_path naming a DbLib: that DbLib alone, in
+    lib_search's own reply shape."""
+    out: dict[str, Any] = {"query": query, "search_type": search_type,
+                           "limit": limit, "results": []}
+    try:
+        reply = await _query_one_dblib(bridge, library_path, query, limit)
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": redact_connection_text(str(exc))}
+    summary = _dblib_summary(library_path, reply)
+    out["results"] = [search_hit_as_result(h) for h in (reply.get("results") or [])
+                      if isinstance(h, dict)]
+    out["count"] = len(out["results"])
+    out["truncated"] = summary["truncated"] or summary["scan_capped"]
+    out["dblib_searches"] = [summary]
+    if summary["searched"]:
+        out["libraries_searched"] = [library_path]
+        out["libraries_searched_count"] = 1
+    else:
+        out["libraries_searched"] = []
+        out["libraries_searched_count"] = 0
+        out["not_searched"] = [{
+            "library_path": library_path, "library_type": "database",
+            "reason": ("a database library (DbLib) that could not be searched ("
+                       + str(summary["error"] or "no reply") + ")")}]
+        out["not_searched_count"] = 1
     return out
 
 
@@ -2234,8 +2471,28 @@ def register_library_tools(mcp):
         search_type: str = "all",
         library_path: Optional[str] = None,
         limit: int = 100,
+        include_dblibs: bool = True,
     ) -> dict[str, Any]:
-        """Search open SchLib documents for components.
+        """Search open SchLib documents and installed database libraries.
+
+        OPEN .SchLib FILES AND INSTALLED DATABASE LIBRARIES (DbLib) ARE
+        SEARCHED. Query libraries (SVN DbLib), integrated libraries
+        (IntLib), workspace components and installed .SchLib files that
+        are not open are not, so 0 hits is not "no such part". The reply
+        says what was searched (``libraries_searched``, DbLibs included)
+        and lists every installed library it could not read
+        (``not_searched``, with the reason), with a ``coverage_note`` when
+        anything was skipped.
+
+        DbLib rows join ``results`` after the SchLib matches, with what
+        is left of ``limit``, each marked ``source: "dblib"`` and carrying
+        its table, key, symbol and footprints; SchLib matches are marked
+        ``source: "schlib"``. Every column of a row is matched, so a
+        manufacturer part number or a value finds the part. A DbLib that
+        cannot be connected stays under ``not_searched`` with the reason,
+        and ``dblib_searches`` says what each DbLib search covered. Use
+        ``lib_dblib_search`` to restrict to one table or a few columns,
+        and ``lib_dblib_get_record`` for every column of one row.
 
         Case-insensitive substring match. Walks every .SchLib that is
         a member of any open project, plus every standalone .SchLib in
@@ -2264,19 +2521,42 @@ def register_library_tools(mcp):
                 description), ``"name"``, ``"description"``, or
                 ``"parameters"`` (slow, also walks each candidate's
                 parameter dict via the live symbol).
-            library_path: Optional path to a single .SchLib to restrict
-                the search to. When omitted, searches every open
-                library.
-            limit: Cap on returned matches (default 100).
+            library_path: Optional path to a single .SchLib, or to a
+                single .DbLib, to restrict the search to. When omitted,
+                searches every open .SchLib and every installed DbLib.
+            limit: Cap on returned matches (default 100), SchLib and
+                DbLib together.
+            include_dblibs: also search the installed database libraries
+                (default True). Their rows are read through the connection
+                each DbLib declares, every row of every enabled table up to
+                lib_dblib_search's row bound, so a large database makes the
+                search slower; False keeps it to open .SchLib files and
+                lists the DbLibs under ``not_searched``. A ``library_path``
+                naming a .DbLib searches that one either way.
 
         Returns:
             Dict with ``query``, ``search_type``, ``count``, ``limit``,
-            ``truncated`` (True when count == limit), and ``results``,
-            a list of {name, alias_name, description, library_path,
-            part_count} per match, plus `_datasheet_guidance` +
-            `_datasheet_parts`.
+            ``truncated`` (True when count == limit, or when a DbLib
+            search stopped early), and ``results``, a list of {name,
+            alias_name, description, library_path, part_count, source}
+            per match (a DbLib row adds table, key_field, symbol_ref,
+            symbol_library, footprints, matched_field, and its name is
+            the row's key), plus `_datasheet_guidance` +
+            `_datasheet_parts`; and ``libraries_searched``,
+            ``not_searched`` (each ``{library_path, library_type,
+            reason}``), ``dblib_searches`` and ``coverage_note`` as
+            above. Either list is None when it could not be read.
         """
         bridge = get_bridge()
+        if library_path and is_dblib_path(library_path):
+            result = await _search_named_dblib(
+                bridge, library_path, query, search_type, limit)
+            if result.get("success") is False:
+                return result
+            synthetic = {"components": result.get("results") or []}
+            return tag_response(
+                result, components=synthetic, context="lib_search"
+            )
         params: dict[str, Any] = {
             "query": query,
             "search_type": search_type,
@@ -2287,6 +2567,13 @@ def register_library_tools(mcp):
         result = await bridge.send_command_async("library.search", params)
         if isinstance(result, list):
             result = {"results": result}
+        if isinstance(result, dict) and "error" not in result:
+            for row in result.get("results") or []:
+                if isinstance(row, dict):
+                    row.setdefault("source", "schlib")
+            result.update(await _search_coverage(bridge, library_path))
+            if not library_path:
+                await _search_dblibs(bridge, result, query, limit, include_dblibs)
         if isinstance(result, dict):
             synthetic = {"components": (
                 result.get("results") or result.get("components") or []
@@ -2295,6 +2582,270 @@ def register_library_tools(mcp):
                 result, components=synthetic, context="lib_search"
             )
         return result
+
+    # =========================================================================
+    # Database libraries (DbLib)
+    # =========================================================================
+
+    @mcp.tool()
+    async def lib_dblib_info(
+        library_path: str,
+        with_fields: bool = True,
+    ) -> dict[str, Any]:
+        """What a database library (.DbLib) declares, and how it connects.
+
+        A DbLib holds no symbols. It names a database (Access, Excel, SQL
+        Server, any ODBC or OLE DB source) and lists the tables whose rows
+        are the components; each row names a symbol in a .SchLib and
+        footprints in .PcbLibs. This reads the .DbLib file itself, inside
+        Altium, and with ``with_fields`` opens the database read-only to
+        list each table's columns. Call it first on an unfamiliar DbLib:
+        it says which column is each table's key, which carries the
+        symbol and which the footprints, which is what
+        ``lib_dblib_get_record`` and ``sch_place_dblib_component`` take.
+
+        THE PASSWORD IS NEVER RETURNED. ``connection.redacted`` is the
+        connection string with every Password / Pwd value replaced by
+        ``***``, and ``has_password`` says whether there was one.
+
+        HOW EACH COLUMN WAS FOUND IS STATED. ``key_field_source`` is
+        ``key_setting`` or ``where_clause`` when the DbLib names it,
+        ``part_number_column`` when a column is called Part Number
+        (Altium's default), or ``first_column`` as a last resort; treat
+        the last as a guess. ``settings`` is the table's section of the
+        file as written, for anything the parsed fields do not cover.
+
+        Args:
+            library_path: Full path of the .DbLib (or .SVNDbLib) file.
+                lib_get_installed_libraries lists installed ones with
+                library_type "database".
+            with_fields: True (default) connects to the database to list
+                every table's columns. False reads the file only and
+                opens no connection: use it when the database is slow or
+                unreachable, or to read the connection settings alone.
+
+        Returns:
+            {"library_path", "connection": {"provider", "kind" (access /
+            excel / sql_server / odbc / oracle / other), "data_source",
+            "has_password", "redacted", "read_only"}, "left_quote",
+            "right_quote", "search_path", "table_count", "tables": [{"name",
+            "enabled", "schema", "key_field", "key_field_source",
+            "key_field_found", "symbol_ref_field", "symbol_library_field",
+            "description_field", "footprint_fields": [{"ref_field",
+            "library_field"}], "fields" (null when not read), "field_count",
+            "error", "settings"}], "sections", "fields_included",
+            "connected" (null when no connection was attempted)}.
+        """
+        refusal = dblib_path_refusal(library_path)
+        if refusal:
+            return refusal
+        bridge = get_bridge()
+        params: dict[str, Any] = {"library_path": library_path}
+        if not with_fields:
+            params["with_fields"] = "false"
+        result = await bridge.send_command_async(
+            "library.get_dblib_info", params, timeout=_DBLIB_TIMEOUT)
+        return redact_reply(result)
+
+    @mcp.tool()
+    async def lib_dblib_search(
+        query: str,
+        library_path: Optional[str] = None,
+        table: Optional[str] = None,
+        fields: Optional[list[str]] = None,
+        limit: int = 50,
+        max_rows: int = 20000,
+    ) -> dict[str, Any]:
+        """Search database libraries (.DbLib) for components, read-only.
+
+        Case-insensitive substring match against the columns of every
+        row of every enabled table, in one DbLib or in every installed
+        one. lib_search already folds DbLib rows into its own results;
+        this is the direct form, for restricting to one table or a few
+        columns, or for raising the row bound on a large database.
+
+        THE QUERY NEVER REACHES THE DATABASE. Each table is read with a
+        plain SELECT of the DbLib's own declared table and every row is
+        matched inside Altium, so a query holding quotes, wildcards or
+        SQL is matched as the text it is. The cost is that every row is
+        read: ``max_rows`` bounds the total, ``rows_scanned`` reports it,
+        and ``scan_capped`` says the bound cut the search short.
+
+        Args:
+            query: Text to find (case-insensitive substring).
+            library_path: One .DbLib to search. Omitted, every installed
+                database library is searched.
+            table: One table the DbLib declares (as lib_dblib_info names
+                it). Omitted, every enabled table.
+            fields: Column names to match. Omitted, every column. A name
+                a table lacks is reported under ``unknown_fields``.
+            limit: Cap on returned rows (1 to 1000, default 50).
+            max_rows: Cap on rows read in total (default 20000).
+
+        Returns:
+            {"query", "count", "limit", "truncated", "rows_scanned",
+            "scan_capped", "libraries": [{"library_path", "searched",
+            "error", "tables_searched", "tables_failed", "unknown_fields"}],
+            "results": [{"library_path", "table", "key", "key_field",
+            "symbol_ref", "symbol_library", "footprints": [{"ref",
+            "library"}], "description", "matched_field", "matched_value"}]}.
+            A library's ``error`` is a code (READ_FAILED, TABLE_UNKNOWN,
+            NO_TABLES, NO_CONNECTION_STRING, CONNECT_FAILED,
+            LIMIT_REACHED); the reason text never carries the connection
+            string.
+        """
+        if not isinstance(query, str) or not query.strip():
+            return {"success": False, "error": "query is required"}
+        if library_path:
+            refusal = dblib_path_refusal(library_path)
+            if refusal:
+                return refusal
+        if not 1 <= int(limit) <= 1000:
+            return {"success": False, "error": "limit must be between 1 and 1000"}
+        if int(max_rows) < 1:
+            return {"success": False, "error": "max_rows must be at least 1"}
+        names = [str(f).strip() for f in (fields or [])]
+        if any(not n or "|" in n for n in names):
+            return {"success": False,
+                    "error": ("each entry in fields must be a non-empty column "
+                              "name without '|', which separates them on the "
+                              "way to Altium")}
+        params: dict[str, Any] = {
+            "query": query,
+            "limit": str(int(limit)),
+            "max_rows": str(int(max_rows)),
+        }
+        if library_path:
+            params["library_path"] = library_path
+        if table:
+            params["table"] = table
+        if names:
+            params["fields"] = "|".join(names)
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "library.query_dblib", params, timeout=_DBLIB_TIMEOUT)
+        return redact_reply(result)
+
+    @mcp.tool()
+    async def lib_dblib_get_record(
+        library_path: str,
+        table: str,
+        key: str,
+        key_field: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Every column of one row of a database library table.
+
+        The row is found by its key, the value in the table's key column
+        (``key`` in a ``lib_dblib_search`` result; the column is
+        ``key_field`` in ``lib_dblib_info``). The key is passed to the
+        database as a parameter, never as SQL text. ``lookup`` says how
+        the row was found: ``parameter`` when the database matched it,
+        ``scan`` when the parameterised query could not run and the
+        table was read and compared instead.
+
+        Args:
+            library_path: Full path of the .DbLib file.
+            table: A table the DbLib declares.
+            key: The row's key value.
+            key_field: Optional column to match instead of the DbLib's
+                own key column; it must be a column of the table.
+
+        Returns:
+            {"library_path", "table", "key", "key_field",
+            "key_field_source", "lookup", "found", "match_count",
+            "rows_scanned", "scan_capped", "symbol_ref", "symbol_library",
+            "footprints": [{"ref", "library"}], "description",
+            "fields": {column: value}}. ``found`` False is an answer, not
+            an error: the key is not in that table. ``match_count`` above
+            1 means the key is not unique and the first row is shown.
+        """
+        refusal = dblib_path_refusal(library_path)
+        if refusal:
+            return refusal
+        if not isinstance(table, str) or not table.strip():
+            return {"success": False, "error": "table is required"}
+        if not isinstance(key, str) or not key.strip():
+            return {"success": False, "error": "key is required"}
+        params: dict[str, Any] = {
+            "library_path": library_path, "table": table, "key": key,
+        }
+        if key_field:
+            params["key_field"] = key_field
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "library.get_dblib_record", params, timeout=_DBLIB_TIMEOUT)
+        return redact_reply(result)
+
+    @mcp.tool()
+    async def sch_place_dblib_component(
+        library_path: str,
+        table: str,
+        key: str,
+        x: int,
+        y: int,
+        rotation: int = 0,
+        designator: Optional[str] = None,
+        sheet_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Place one database library (DbLib) part on a schematic sheet.
+
+        Acts on a .SchDoc: the active sheet, or ``sheet_path``. The part
+        is built by Altium from the database row (symbol, footprints and
+        parameters, with its database link) and dropped at (x, y). NOT
+        INTERACTIVE: nothing is attached to the cursor and nothing waits
+        for a click.
+
+        THE DbLib MUST BE AVAILABLE TO ALTIUM. Altium finds a DbLib part
+        by the library's file name among its available libraries, so the
+        DbLib has to be installed (lib_install_library) or in the
+        project. The call refuses before touching the sheet when it is
+        not, or when ``table`` is not one the DbLib declares.
+
+        ``database_linked`` reads the placed part's DatabaseTableName
+        back: True means the part carries its database link, False that
+        Altium built it without one. ``lib_reference`` is the symbol it
+        used.
+
+        Do not draw a schematic part by part with this. A sheet comes from
+        a DesignPlan through design_execute_plan; this is for adding a
+        part a person picked from their company library.
+
+        Args:
+            library_path: Full path of the .DbLib file.
+            table: A table the DbLib declares.
+            key: The row's key value (``key`` in a lib_dblib_search
+                result).
+            x, y: Location in mils.
+            rotation: 0, 90, 180 or 270.
+            designator: Optional designator to stamp on the part.
+            sheet_path: Optional .SchDoc path; default the active sheet.
+
+        Returns:
+            {"placed", "library_path", "table", "key", "lib_reference",
+            "database_table", "database_linked", "x", "y", "rotation",
+            "designator"}.
+        """
+        refusal = dblib_path_refusal(library_path)
+        if refusal:
+            return refusal
+        if not isinstance(table, str) or not table.strip():
+            return {"success": False, "error": "table is required"}
+        if not isinstance(key, str) or not key.strip():
+            return {"success": False, "error": "key is required"}
+        if int(rotation) not in (0, 90, 180, 270):
+            return {"success": False, "error": "rotation must be 0, 90, 180 or 270"}
+        params: dict[str, Any] = {
+            "library_path": library_path, "table": table, "key": key,
+            "x": str(int(x)), "y": str(int(y)), "rotation": str(int(rotation)),
+        }
+        if designator:
+            params["designator"] = designator
+        if sheet_path:
+            params["sheet_path"] = sheet_path
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "library.place_dblib_component", params, timeout=_DBLIB_TIMEOUT)
+        return redact_reply(result)
 
     @mcp.tool()
     async def lib_get_component_details(
@@ -3723,9 +4274,21 @@ def register_library_tools(mcp):
         params: dict[str, Any] = {}
         if not with_counts:
             params["with_counts"] = "false"
-        return await bridge.send_command_async(
+        result = await bridge.send_command_async(
             "library.get_installed_libraries", params
         )
+        # Altium's component count is not a database library's row count:
+        # MEASURED on AD26, a DbLib of five rows read 0 while its connection
+        # was unreadable and 1 once it worked. Reported as unknown, with
+        # where the real answer is, rather than as a number.
+        if isinstance(result, dict) and with_counts:
+            for lib in result.get("libraries") or []:
+                if isinstance(lib, dict) and lib.get("library_type") in ("database", "query"):
+                    lib["component_count"] = None
+                    lib["count_note"] = ("Altium's count does not reflect a database "
+                                         "library's rows; lib_dblib_info and "
+                                         "lib_dblib_search read the database.")
+        return result
 
     @mcp.tool()
     async def lib_install_library(library_path: str) -> dict[str, Any]:
