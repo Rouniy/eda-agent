@@ -8,6 +8,7 @@ a pass-through layer for object iteration, property access, and process executio
 """
 
 import difflib
+import re
 from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
@@ -140,6 +141,38 @@ async def _refuse_manual_sheet_layout(
     }
 
 
+_FILTER_NAME = re.compile(r"[A-Za-z0-9_.]+")
+
+
+def filter_problem(filt: str) -> str:
+    """The first condition of ``filt`` that is not Name=Value, or ''.
+
+    A filter is Name=Value pairs joined by ``|`` and nothing else. The
+    script used to skip a condition it could not parse, which emptied the
+    filter: obj_delete given an Altium query expression removed every
+    track on a board and reported success. The script now refuses such a
+    filter too; this says so before anything is sent.
+    """
+    for cond in str(filt or "").split("|"):
+        if not cond.strip():
+            continue
+        name, eq, _ = cond.partition("=")
+        if not eq or not _FILTER_NAME.fullmatch(name):
+            return cond
+    return ""
+
+
+def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
+    """The refusal for a filter condition that is not Name=Value."""
+    hint = ""
+    if _FILTER_NAME.fullmatch(cond.strip()):
+        hint = f" For a true/false property write {cond.strip()}=true."
+    return {"error": f'Filter condition "{cond}" is not Name=Value. A filter is '
+                     "Name=Value pairs joined by |, each matched exactly; Altium "
+                     "query expressions (OnLayer(...), Or, And) and bare names are "
+                     f"not understood.{hint} Nothing was sent.", **extra}
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -187,6 +220,7 @@ def register_generic_tools(mcp):
                 "Net,Layer,Width" for tracks
                 "Net,Layer,HoleSize,Size" for vias
                 "Designator,Comment,Pattern,Rotation,X,Y" for components
+                "Text,Height,StrokeWidth,IsDesignator" for texts
                 Full set: ObjectId, X, Y, Layer, Descriptor, Selected,
                 Net, X1, Y1, X2, Y2, Width, Radius, StartAngle,
                 EndAngle, XCenter, YCenter, HoleSize, Size, TopShape,
@@ -194,7 +228,18 @@ def register_generic_tools(mcp):
                 Designator, Comment, SourceDesignator, Kind,
                 RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea,
                 StandoffHeight, OverallHeight, InComponent, Component,
-                InPolygon, IsKeepout, Locked, Layer1, Layer2.
+                InPolygon, IsKeepout, Locked, Layer1, Layer2,
+                IsRedundant, Mode, Height, StrokeWidth, IsDesignator,
+                IsComment, UseTTFonts.
+
+                On a text, Height and StrokeWidth are writable in mils
+                (Altium's own names, Size and Width, answer the same).
+                On a via, Size and HoleSize are writable; a write that
+                would leave the hole as large as the pad is refused, so
+                give Size first to grow a via and HoleSize first to
+                shrink it. Lengths read back in decimal mils.
+                IsDesignator and IsComment pick out component labels:
+                filter "IsDesignator=true" for every designator.
 
                 A board type walks EVERY primitive of that type, a
                 footprint's own tracks and a hatched polygon's tracks
@@ -236,6 +281,9 @@ def register_generic_tools(mcp):
         Returns:
             Dictionary with "objects" array and "count"
         """
+        bad = filter_problem(filter)
+        if bad:
+            return bad_filter(bad, objects=[], count=0)
         bridge = get_bridge()
         params = {
             "scope": scope,
@@ -353,6 +401,9 @@ def register_generic_tools(mcp):
             set: Pipe-separated property=value assignments to apply, e.g.:
                 "Text=NEW_NAME", set Text property
                 "Location.X=100|Location.Y=200", set multiple properties
+                "Height=31.5|StrokeWidth=3.94", a board text's size
+                (lengths on a board are decimal mils; a value that is
+                not a number is reported failed, never written as 0)
             scope: Document scope:
                 "active_doc", current sheet only (default)
                 "project", all SCH sheets in focused project
@@ -387,6 +438,9 @@ def register_generic_tools(mcp):
                 set="Name=A"
             )
         """
+        bad = filter_problem(filter)
+        if bad:
+            return bad_filter(bad, matched=0)
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.modify_objects",
@@ -465,9 +519,16 @@ def register_generic_tools(mcp):
                     WARNING: empty filter deletes ALL objects of the type.
             confirm_delete_all: Must be True to delete all objects when filter is empty.
 
+        A filter that is not Name=Value pairs (an Altium query expression
+        such as ``OnLayer('TopLayer') Or ...``, or a bare name) is refused,
+        and nothing is deleted.
+
         Returns:
             Dictionary with "matched" count (number deleted)
         """
+        bad = filter_problem(filter)
+        if bad:
+            return bad_filter(bad, matched=0)
         if not filter and not confirm_delete_all:
             return {
                 "error": "Safety guard: empty filter would delete ALL objects of type "
@@ -573,6 +634,9 @@ def register_generic_tools(mcp):
         Returns:
             Dictionary with count of selected objects
         """
+        bad = filter_problem(filter)
+        if bad:
+            return bad_filter(bad, matched=0)
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.select_objects",
@@ -765,6 +829,9 @@ def register_generic_tools(mcp):
             set_str = op.get("set", "")
             if not obj_type or not set_str:
                 continue
+            bad = filter_problem(filt)
+            if bad:
+                return bad_filter(bad, operations_processed=0)
             op_strings.append(
                 f"scope={scope};object_type={obj_type};"
                 f"filter={filt};set={set_str}"
@@ -1630,6 +1697,9 @@ def register_generic_tools(mcp):
         Returns:
             Dictionary with "count" (and "sheets_processed" for project scope)
         """
+        bad = filter_problem(filter)
+        if bad:
+            return bad_filter(bad, count=0)
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.get_object_count",
@@ -2561,6 +2631,9 @@ def register_generic_tools(mcp):
                             "operations_processed": 0}
             if not obj_type:
                 continue
+            bad = filter_problem(filt)
+            if bad:
+                return bad_filter(bad, operations_processed=0)
             if not str(filt).strip():
                 sweeping.append(f"{obj_type} in {scope}")
             op_strs.append(

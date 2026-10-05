@@ -769,7 +769,11 @@ Var
     RuleClearIter : IPCB_ClearanceConstraint;
     RuleWidthIter : IPCB_MaxMinWidthConstraint;
     RuleHoleIter : IPCB_MaxMinHoleSizeConstraint;
+    RuleViaIter : IPCB_RoutingViaStyleRule;
     RuleName, V, GapStr, MinWStr, MaxWStr, FavWStr, MinHStr, MaxHStr : String;
+    VMinS, VMaxS, VPrefS, VMinH, VMaxH, VPrefH, ViaReport, ViaDesc, ViaProblem : String;
+    NMinS, NMaxS, NPrefS, NMinH, NMaxH, NPrefH : TCoord;
+    ViaAsked, ViaWritten : Integer;
     UpdatedCount, Kind, ValMils : Integer;
     GapWanted, GapBefore, GapAfter : TCoord;
     GapReport, GapMMStr : String;
@@ -854,6 +858,12 @@ Begin
     FavWStr := ExtractJsonValue(Params, 'favored_width_mils');
     MinHStr := ExtractJsonValue(Params, 'min_hole_size_mils');
     MaxHStr := ExtractJsonValue(Params, 'max_hole_size_mils');
+    VMinS := ExtractJsonValue(Params, 'min_via_size_mils');
+    VMaxS := ExtractJsonValue(Params, 'max_via_size_mils');
+    VPrefS := ExtractJsonValue(Params, 'preferred_via_size_mils');
+    VMinH := ExtractJsonValue(Params, 'min_via_hole_mils');
+    VMaxH := ExtractJsonValue(Params, 'max_via_hole_mils');
+    VPrefH := ExtractJsonValue(Params, 'preferred_via_hole_mils');
 
     { 63 is BoardOutlineClearance, added because a board-clearance rule
       was reachable as an object and unwritable through every exposed
@@ -1005,6 +1015,90 @@ Begin
         End;
     End;
 
+    { THE ROUTING VIA RULE'S SIZES, through a typed local assigned straight }
+    { from the iterator, the one place DelphiScript narrows an interface   }
+    { (see PCB_SetRuleProperties' header). The six values are checked as a }
+    { set before any is written: minimum <= preferred <= maximum for the   }
+    { diameter and the hole, and every diameter larger than its hole. Each }
+    { is read back. A rule in template mode is written but its sizes are   }
+    { not what it checks, and the reply says so.                           }
+    ViaReport := '';
+    ViaAsked := 0;
+    ViaWritten := 0;
+    If (VMinS <> '') Or (VMaxS <> '') Or (VPrefS <> '')
+       Or (VMinH <> '') Or (VMaxH <> '') Or (VPrefH <> '') Then
+    Begin
+        ViaProblem := '';
+        If ((VMinS <> '') And (Not IsFloatStr(VMinS))) Or ((VMaxS <> '') And (Not IsFloatStr(VMaxS)))
+           Or ((VPrefS <> '') And (Not IsFloatStr(VPrefS))) Or ((VMinH <> '') And (Not IsFloatStr(VMinH)))
+           Or ((VMaxH <> '') And (Not IsFloatStr(VMaxH))) Or ((VPrefH <> '') And (Not IsFloatStr(VPrefH))) Then
+            ViaProblem := 'via sizes are numbers in mils';
+        If Kind <> eRule_RoutingViaStyle Then
+            ViaProblem := 'via sizes apply to a Routing Via rule; this is kind ' + IntToStr(Kind);
+        Iter := Board.BoardIterator_Create;
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Found := False;
+        Try
+            RuleViaIter := Iter.FirstPCBObject;
+            While (RuleViaIter <> Nil) And (Not Found) And (ViaProblem = '') Do
+            Begin
+                If (RuleViaIter.RuleKind = eRule_RoutingViaStyle)
+                    And (RuleViaIter.Name = RuleName) Then
+                Begin
+                    Found := True;
+                    ViaDesc := '';
+                    Try ViaDesc := RuleViaIter.Descriptor; Except End;
+                    NMinS := RuleViaIter.MinWidth;
+                    NMaxS := RuleViaIter.MaxWidth;
+                    NPrefS := RuleViaIter.PreferedWidth;
+                    NMinH := RuleViaIter.MinHoleWidth;
+                    NMaxH := RuleViaIter.MaxHoleWidth;
+                    NPrefH := RuleViaIter.PreferedHoleWidth;
+                    If VMinS <> '' Then NMinS := MilsToCoordF(StrToFloatDef(VMinS, -1));
+                    If VMaxS <> '' Then NMaxS := MilsToCoordF(StrToFloatDef(VMaxS, -1));
+                    If VPrefS <> '' Then NPrefS := MilsToCoordF(StrToFloatDef(VPrefS, -1));
+                    If VMinH <> '' Then NMinH := MilsToCoordF(StrToFloatDef(VMinH, -1));
+                    If VMaxH <> '' Then NMaxH := MilsToCoordF(StrToFloatDef(VMaxH, -1));
+                    If VPrefH <> '' Then NPrefH := MilsToCoordF(StrToFloatDef(VPrefH, -1));
+                    If (NMinH <= 0) Or (NMinS <= 0) Or (NMinS > NPrefS) Or (NPrefS > NMaxS)
+                       Or (NMinH > NPrefH) Or (NPrefH > NMaxH) Then
+                        ViaProblem := 'the via sizes must run minimum <= preferred <= maximum, holes above zero'
+                    Else If (NMinS <= NMinH) Or (NPrefS <= NPrefH) Or (NMaxS <= NMaxH) Then
+                        ViaProblem := 'every via diameter must be larger than its hole';
+                    If ViaProblem = '' Then
+                    Begin
+                        If VMinS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MinWidth := NMinS; Except End; If RuleViaIter.MinWidth = NMinS Then Inc(ViaWritten); End;
+                        If VMaxS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MaxWidth := NMaxS; Except End; If RuleViaIter.MaxWidth = NMaxS Then Inc(ViaWritten); End;
+                        If VPrefS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.PreferedWidth := NPrefS; Except End; If RuleViaIter.PreferedWidth = NPrefS Then Inc(ViaWritten); End;
+                        If VMinH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MinHoleWidth := NMinH; Except End; If RuleViaIter.MinHoleWidth = NMinH Then Inc(ViaWritten); End;
+                        If VMaxH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MaxHoleWidth := NMaxH; Except End; If RuleViaIter.MaxHoleWidth = NMaxH Then Inc(ViaWritten); End;
+                        If VPrefH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.PreferedHoleWidth := NPrefH; Except End; If RuleViaIter.PreferedHoleWidth = NPrefH Then Inc(ViaWritten); End;
+                        UpdatedCount := UpdatedCount + ViaWritten;
+                        ViaReport := ',"via_sizes_mils":{"min_size":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MinWidth))
+                            + ',"max_size":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MaxWidth))
+                            + ',"preferred_size":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.PreferedWidth))
+                            + ',"min_hole":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MinHoleWidth))
+                            + ',"max_hole":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MaxHoleWidth))
+                            + ',"preferred_hole":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.PreferedHoleWidth)) + '}'
+                            + ',"via_sizes_written":' + BoolToJsonStr(ViaWritten = ViaAsked);
+                        If Pos('TEMPLATE', UpperCase(ViaDesc)) > 0 Then
+                            ViaReport := ViaReport + ',"via_note":"This rule checks via templates ('
+                                + EscapeJsonString(ViaDesc) + '); its size fields were written but '
+                                + 'are not what it checks while it is in template mode."';
+                    End;
+                End;
+                If Not Found Then RuleViaIter := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+        If ViaProblem <> '' Then
+            ViaReport := ',"via_sizes_written":false,"via_note":"' + EscapeJsonString(ViaProblem)
+                + '. No via size was written."';
+    End;
+
     MarkDocDirtyByPath(Board.FileName);
 
     { When a gap was asked for, say what became of it. A bare count is
@@ -1047,7 +1141,7 @@ Begin
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
-        + GapReport + '}');
+        + GapReport + ViaReport + '}');
 End;
 
 {..............................................................................}
@@ -3290,6 +3384,205 @@ End;
 
 
 {..............................................................................}
+{ PCB_SetTextStyle - height and stroke width of component designators and    }
+{ comments. Silkscreen text size is a fabrication requirement, and only the  }
+{ create path could set it.                                                  }
+{                                                                              }
+{ Params:                                                                     }
+{   designators -- pipe-separated designators; empty for every component     }
+{   which       -- designator (default), comment, or both                    }
+{   height_mils -- text height; empty leaves it                               }
+{   stroke_mils -- stroke width; empty leaves it (not both empty)            }
+{                                                                              }
+{ The components are collected first and changed after, each inside the     }
+{ component's and the text's modify brackets as the community designator    }
+{ scripts do it (AdjustDesignators2.pas, QuickSilk.pas). Every text is read  }
+{ back: one whose height or stroke did not take is counted as failed.        }
+{                                                                              }
+{ Response: matched, changed, failed, not_found, texts.                      }
+{..............................................................................}
+
+Function PCB_SetTextStyle(Params, RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    Obj : IPCB_Primitive;
+    Txt : IPCB_Text;
+    Comps : TInterfaceList;
+    DesStr, Which, HStr, SStr, CompName, Kind, Items, Seen, Missing, Rest, One : String;
+    WantName, WantComment, HasFilter, SetH, SetS, Ok : Boolean;
+    H, S, GotH, GotS : Double;
+    I, K, Changed, Failed, Listed, PipePos : Integer;
+Begin
+    Board := Nil;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_BOARD',
+            'No active PCB board. Open the .PcbDoc and try again.');
+        Exit;
+    End;
+
+    DesStr := ExtractJsonValue(Params, 'designators');
+    Which := LowerCase(ExtractJsonValue(Params, 'which'));
+    HStr := ExtractJsonValue(Params, 'height_mils');
+    SStr := ExtractJsonValue(Params, 'stroke_mils');
+    If Which = '' Then Which := 'designator';
+    WantName := (Which = 'designator') Or (Which = 'both');
+    WantComment := (Which = 'comment') Or (Which = 'both');
+    If (Not WantName) And (Not WantComment) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'which must be designator, comment or both, not "' + Which + '"');
+        Exit;
+    End;
+    SetH := HStr <> '';
+    SetS := SStr <> '';
+    If (Not SetH) And (Not SetS) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'Give height_mils, stroke_mils or both');
+        Exit;
+    End;
+    If (SetH And (Not IsFloatStr(HStr))) Or (SetS And (Not IsFloatStr(SStr))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'height_mils and stroke_mils are numbers in mils');
+        Exit;
+    End;
+    H := StrToFloatDef(HStr, 0);
+    S := StrToFloatDef(SStr, 0);
+    If (SetH And (H <= 0)) Or (SetS And (S <= 0)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'height_mils and stroke_mils must be above zero');
+        Exit;
+    End;
+    HasFilter := DesStr <> '';
+
+    Comps := TInterfaceList.Create;
+    Seen := '|';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            Comp := Obj;
+            CompName := '';
+            Try CompName := Comp.Name.Text; Except End;
+            If (Not HasFilter) Or (Pos('|' + CompName + '|', '|' + DesStr + '|') > 0) Then
+            Begin
+                Comps.Add(Comp);
+                Seen := Seen + CompName + '|';
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    { Designators asked for that are not on this board. }
+    Missing := '';
+    Rest := DesStr;
+    While Rest <> '' Do
+    Begin
+        PipePos := Pos('|', Rest);
+        If PipePos > 0 Then
+        Begin
+            One := Copy(Rest, 1, PipePos - 1);
+            Rest := Copy(Rest, PipePos + 1, Length(Rest));
+        End
+        Else
+        Begin
+            One := Rest;
+            Rest := '';
+        End;
+        If (One <> '') And (Pos('|' + One + '|', Seen) = 0) Then
+        Begin
+            If Missing <> '' Then Missing := Missing + ',';
+            Missing := Missing + '"' + EscapeJsonString(One) + '"';
+        End;
+    End;
+
+    Changed := 0;
+    Failed := 0;
+    Listed := 0;
+    Items := '';
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Comps.Count - 1 Do
+        Begin
+            Comp := Comps.Items[I];
+            If Comp = Nil Then Continue;
+            CompName := '';
+            Try CompName := Comp.Name.Text; Except End;
+            For K := 0 To 1 Do
+            Begin
+                Txt := Nil;
+                Kind := '';
+                If (K = 0) And WantName Then
+                Begin
+                    Txt := Comp.Name;
+                    Kind := 'designator';
+                End;
+                If (K = 1) And WantComment Then
+                Begin
+                    Txt := Comp.Comment;
+                    Kind := 'comment';
+                End;
+                If Txt = Nil Then Continue;
+                Ok := True;
+                Try
+                    Comp.BeginModify;
+                    Txt.BeginModify;
+                    If SetH Then Txt.Size := MilsToCoordF(H);
+                    If SetS Then Txt.Width := MilsToCoordF(S);
+                    Txt.EndModify;
+                    Txt.GraphicallyInvalidate;
+                    Comp.EndModify;
+                Except
+                    Ok := False;
+                End;
+                GotH := CoordToMilsF(Txt.Size);
+                GotS := CoordToMilsF(Txt.Width);
+                If SetH And (Abs(GotH - H) > 0.01) Then Ok := False;
+                If SetS And (Abs(GotS - S) > 0.01) Then Ok := False;
+                If Ok Then Inc(Changed) Else Inc(Failed);
+                If Listed < 500 Then
+                Begin
+                    If Items <> '' Then Items := Items + ',';
+                    Items := Items + '{"designator":"' + EscapeJsonString(CompName)
+                        + '","kind":"' + Kind
+                        + '","height_mils":' + FloatToJsonStr(GotH)
+                        + ',"stroke_mils":' + FloatToJsonStr(GotS)
+                        + ',"ok":' + BoolToJsonStr(Ok) + '}';
+                    Inc(Listed);
+                End;
+            End;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    Try Board.GraphicallyInvalidate; Except End;
+    If Changed > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":' + BoolToJsonStr((Failed = 0) And (Missing = '')) + ','
+        + '"matched":' + IntToStr(Comps.Count) + ','
+        + '"changed":' + IntToStr(Changed) + ','
+        + '"failed":' + IntToStr(Failed) + ','
+        + '"not_found":[' + Missing + '],'
+        + '"texts":[' + Items + '],'
+        + '"texts_truncated":' + BoolToJsonStr(Changed + Failed > Listed) + '}');
+End;
+
+
+{..............................................................................}
 { PCB_BatchMoveComponents - Move/rotate many components in ONE IPC call.      }
 { Param 'moves' is a pipe-separated list; each entry is 4 comma-separated     }
 { fields: designator,x,y,rotation. Empty field = leave that property          }
@@ -4157,7 +4450,7 @@ Var
     BR : TCoordRect;
     JsonItems, SegKind : String;
     First : Boolean;
-    I : Integer;
+    I, EL, EB, ER, ET : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -4180,8 +4473,11 @@ Begin
     Except
     End;
 
-    // Bounding rectangle
+    // Bounding rectangle, from the vertices it is reported with (see
+    // OutlineExtents): the cached one went stale after a reshape.
     BR := Outline.BoundingRectangle;
+    EL := BR.Left; EB := BR.Bottom; ER := BR.Right; ET := BR.Top;
+    OutlineExtents(Outline, EL, EB, ER, ET);
 
     // Iterate vertices
     JsonItems := '';
@@ -4216,10 +4512,10 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"point_count":' + IntToStr(Outline.PointCount) + ','
         + '"vertices":[' + JsonItems + '],'
-        + '"bounding_rect":{"left":' + IntToStr(CoordToMils(BR.Left))
-        + ',"bottom":' + IntToStr(CoordToMils(BR.Bottom))
-        + ',"right":' + IntToStr(CoordToMils(BR.Right))
-        + ',"top":' + IntToStr(CoordToMils(BR.Top)) + '}}');
+        + '"bounding_rect":{"left":' + IntToStr(CoordToMils(EL))
+        + ',"bottom":' + IntToStr(CoordToMils(EB))
+        + ',"right":' + IntToStr(CoordToMils(ER))
+        + ',"top":' + IntToStr(CoordToMils(ET)) + '}}');
 End;
 
 {..............................................................................}
@@ -5366,16 +5662,17 @@ End;
 
 {..............................................................................}
 { PCB_PlaceText - Place text string on the PCB                                }
-{ Params: text, x, y (mils), layer, height (mils), rotation (deg)           }
+{ Params: text, x, y (mils), layer, height (mils), rotation (deg),          }
+{         stroke (mils, optional; Altium's default when empty)              }
 {..............................................................................}
 
 Function PCB_PlaceText(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     TextObj : IPCB_Text;
-    TextStr, XStr, YStr, LayerStr, HeightStr, RotStr : String;
-    TX, TY, THeight : Integer;
-    TRot : Double;
+    TextStr, XStr, YStr, LayerStr, HeightStr, RotStr, StrokeStr : String;
+    TX, TY : Integer;
+    TRot, THeight, TStroke : Double;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -5391,6 +5688,7 @@ Begin
     LayerStr := ExtractJsonValue(Params, 'layer');
     HeightStr := ExtractJsonValue(Params, 'height');
     RotStr := ExtractJsonValue(Params, 'rotation');
+    StrokeStr := ExtractJsonValue(Params, 'stroke');
 
     If TextStr = '' Then
     Begin
@@ -5406,8 +5704,15 @@ Begin
 
     TX := StrToIntDef(XStr, 0);
     TY := StrToIntDef(YStr, 0);
-    THeight := StrToIntDef(HeightStr, 60);
+    THeight := StrToFloatDef(HeightStr, 60);
+    TStroke := StrToFloatDef(StrokeStr, 0);
     TRot := StrToFloatDef(RotStr, 0);
+    If (THeight <= 0) Or (TStroke < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'height must be above zero and stroke not below it');
+        Exit;
+    End;
 
     If LayerStr = '' Then TargetLayer := eTopOverlay
     Else TargetLayer := ResolveLayerId(Board, LayerStr);
@@ -5431,7 +5736,8 @@ Begin
         TextObj.XLocation := MilsToCoord(TX);
         TextObj.YLocation := MilsToCoord(TY);
         TextObj.Text := TextStr;
-        TextObj.Size := MilsToCoord(THeight);
+        TextObj.Size := MilsToCoordF(THeight);
+        If TStroke > 0 Then TextObj.Width := MilsToCoordF(TStroke);
         TextObj.Rotation := TRot;
 
         TextObj.Layer := TargetLayer;
@@ -5451,7 +5757,8 @@ Begin
         + '"text":"' + EscapeJsonString(TextStr) + '",'
         + '"x":' + IntToStr(TX) + ','
         + '"y":' + IntToStr(TY) + ','
-        + '"height":' + IntToStr(THeight) + ','
+        + '"height":' + FloatToJsonStr(CoordToMilsF(TextObj.Size)) + ','
+        + '"stroke":' + FloatToJsonStr(CoordToMilsF(TextObj.Width)) + ','
         + '"rotation":' + FloatToJsonStr(TRot) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(TextObj.Layer)) + '"}');
 End;
@@ -6414,9 +6721,85 @@ Begin
         '{"vias":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
 End;
 
+{ Distance in mils from (Px, Py) to the segment A-B, every input in mils.   }
+Function SegDistMils(Px, Py, Ax, Ay, Bx, By : Double) : Double;
+Var
+    Dx, Dy, L2, T, Qx, Qy : Double;
+Begin
+    Dx := Bx - Ax;
+    Dy := By - Ay;
+    L2 := Dx * Dx + Dy * Dy;
+    T := 0.0;
+    If L2 > 0.000001 Then
+    Begin
+        T := ((Px - Ax) * Dx + (Py - Ay) * Dy) / L2;
+        If T < 0 Then T := 0.0;
+        If T > 1 Then T := 1.0;
+    End;
+    Qx := Ax + T * Dx - Px;
+    Qy := Ay + T * Dy - Py;
+    Result := Sqrt(Qx * Qx + Qy * Qy);
+End;
+
+{ Distance in mils from (Px, Py) to a rectangle in internal units; 0 inside. }
+Function RectDistMils(Px, Py : Double; R : TCoordRect) : Double;
+Var
+    L, Rt, B, T, Dx, Dy : Double;
+Begin
+    L := R.Left / 10000.0;
+    Rt := R.Right / 10000.0;
+    B := R.Bottom / 10000.0;
+    T := R.Top / 10000.0;
+    Dx := 0.0;
+    Dy := 0.0;
+    If Px < L Then Dx := L - Px;
+    If Px > Rt Then Dx := Px - Rt;
+    If Py < B Then Dy := B - Py;
+    If Py > T Then Dy := Py - T;
+    Result := Sqrt(Dx * Dx + Dy * Dy);
+End;
+
+{ Distance in mils from (Px, Py) to an arc's centreline: to the curve where }
+{ the point lies inside the sweep (counter-clockwise from Start to End),    }
+{ else to the nearer end.                                                   }
+Function ArcDistMils(Px, Py, Cx, Cy, R, StartDeg, EndDeg : Double) : Double;
+Var
+    D, Ang, Sweep, Off, E1x, E1y, E2x, E2y, D1, D2, ToRad : Double;
+Begin
+    ToRad := 3.14159265358979 / 180.0;
+    D := Sqrt((Px - Cx) * (Px - Cx) + (Py - Cy) * (Py - Cy));
+    Ang := ArcTan2(Py - Cy, Px - Cx) / ToRad;
+    Sweep := EndDeg - StartDeg;
+    While Sweep < 0 Do Sweep := Sweep + 360.0;
+    If Sweep = 0 Then Sweep := 360.0;
+    Off := Ang - StartDeg;
+    While Off < 0 Do Off := Off + 360.0;
+    While Off >= 360.0 Do Off := Off - 360.0;
+    If Off <= Sweep Then
+    Begin
+        Result := Abs(D - R);
+    End
+    Else
+    Begin
+        E1x := Cx + R * Cos(StartDeg * ToRad);
+        E1y := Cy + R * Sin(StartDeg * ToRad);
+        E2x := Cx + R * Cos(EndDeg * ToRad);
+        E2y := Cy + R * Sin(EndDeg * ToRad);
+        D1 := Sqrt((Px - E1x) * (Px - E1x) + (Py - E1y) * (Py - E1y));
+        D2 := Sqrt((Px - E2x) * (Px - E2x) + (Py - E2y) * (Py - E2y));
+        If D1 < D2 Then Result := D1 Else Result := D2;
+    End;
+End;
+
 {..............................................................................}
 { PCB_DeleteObject - Delete a PCB object at specific coordinates on a layer  }
 { Params: x, y (mils), layer, object_type (track/via/fill/text)             }
+{                                                                            }
+{ DISTANCE IS TO THE OBJECT, NOT TO A REFERENCE POINT. It used to be to a    }
+{ track's midpoint and to everything else's centre, so a point exactly on a  }
+{ long track was "not found within 100 mils". Now: a track by its segment    }
+{ less half its width, an arc by its curve, a via by its centre less its     }
+{ radius, anything else by its bounding rectangle (0 inside).               }
 {..............................................................................}
 
 Function PCB_DeleteObject(Params : String; RequestId : String) : String;
@@ -6425,15 +6808,18 @@ Var
     Iterator : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
     TrkObj : IPCB_Track;
+    ArcObj : IPCB_Arc;
+    ViaObj : IPCB_Via;
     XStr, YStr, LayerStr, ObjTypeStr : String;
-    TargetX, TargetY, ObjX, ObjY : Integer;
+    TargetX, TargetY : Integer;
     TargetLayer : TLayer;
     ObjFilter : TObjectId;
     Found : Boolean;
     FoundObj : IPCB_Primitive;
-    Dist, BestDist : Double;
+    Dist, BestDist, Px, Py : Double;
+    Ties : Integer;
     BRect : TCoordRect;
-    Why : String;
+    Why, NetName : String;
 Begin
     { This DELETES, so it may not wander to find a board. See
       GetPCBBoardForMutation: the wandering lookup opens the first board
@@ -6509,41 +6895,53 @@ Begin
     Iterator.AddFilter_LayerSet(MkSet(TargetLayer));
     Iterator.AddFilter_Method(eProcessAll);
 
+    Px := TargetX * 1.0;
+    Py := TargetY * 1.0;
+    Ties := 0;
     Obj := Iterator.FirstPCBObject;
     While Obj <> Nil Do
     Begin
-        // Get object position based on type
-        If ObjFilter = eTrackObject Then
-        Begin
-            TrkObj := Obj;
-            ObjX := CoordToMils((TrkObj.X1 + TrkObj.X2) Div 2);
-            ObjY := CoordToMils((TrkObj.Y1 + TrkObj.Y2) Div 2);
-        End
-        Else If (ObjFilter = eViaObject) Or (ObjFilter = ePadObject) Then
-        Begin
-            ObjX := CoordToMils(Obj.x);
-            ObjY := CoordToMils(Obj.y);
-        End
-        Else If ObjFilter = eFillObject Then
-        Begin
-            ObjX := CoordToMils((Obj.X1Location + Obj.X2Location) Div 2);
-            ObjY := CoordToMils((Obj.Y1Location + Obj.Y2Location) Div 2);
-        End
-        Else
-        Begin
-            { Polygons, regions, components, arcs and text: use the bounding
-              rectangle centre -- XLocation is not exposed on every type. }
-            BRect := Obj.BoundingRectangle;
-            ObjX := CoordToMils((BRect.Left + BRect.Right) Div 2);
-            ObjY := CoordToMils((BRect.Bottom + BRect.Top) Div 2);
+        Dist := 1e30;
+        Try
+            If ObjFilter = eTrackObject Then
+            Begin
+                TrkObj := Obj;
+                Dist := SegDistMils(Px, Py, TrkObj.X1 / 10000.0, TrkObj.Y1 / 10000.0,
+                    TrkObj.X2 / 10000.0, TrkObj.Y2 / 10000.0) - TrkObj.Width / 20000.0;
+            End
+            Else If ObjFilter = eArcObject Then
+            Begin
+                ArcObj := Obj;
+                Dist := ArcDistMils(Px, Py, ArcObj.XCenter / 10000.0, ArcObj.YCenter / 10000.0,
+                    ArcObj.Radius / 10000.0, ArcObj.StartAngle, ArcObj.EndAngle)
+                    - ArcObj.LineWidth / 20000.0;
+            End
+            Else If ObjFilter = eViaObject Then
+            Begin
+                ViaObj := Obj;
+                Dist := Sqrt((ViaObj.x / 10000.0 - Px) * (ViaObj.x / 10000.0 - Px)
+                    + (ViaObj.y / 10000.0 - Py) * (ViaObj.y / 10000.0 - Py)) - ViaObj.Size / 20000.0;
+            End
+            Else
+            Begin
+                BRect := Obj.BoundingRectangle;
+                Dist := RectDistMils(Px, Py, BRect);
+            End;
+        Except
+            Dist := 1e30;
         End;
+        If Dist < 0 Then Dist := 0.0;
 
-        Dist := Sqrt((ObjX - TargetX) * (ObjX - TargetX) + (ObjY - TargetY) * (ObjY - TargetY));
-        If Dist < BestDist Then
+        If Dist < BestDist - 0.001 Then
         Begin
             BestDist := Dist;
             FoundObj := Obj;
             Found := True;
+            Ties := 1;
+        End
+        Else
+        Begin
+            If Abs(Dist - BestDist) <= 0.001 Then Inc(Ties);
         End;
 
         Obj := Iterator.NextPCBObject;
@@ -6556,6 +6954,11 @@ Begin
             'No ' + ObjTypeStr + ' found within 100 mils of (' + IntToStr(TargetX) + ',' + IntToStr(TargetY) + ')');
         Exit;
     End;
+
+    { Described BEFORE it goes, so the caller can check it was the one meant. }
+    NetName := '';
+    Try If FoundObj.Net <> Nil Then NetName := FoundObj.Net.Name; Except End;
+    BRect := FoundObj.BoundingRectangle;
 
     PCBServer.PreProcess;
     Try
@@ -6571,7 +6974,13 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"deleted":true,'
         + '"object_type":"' + EscapeJsonString(ObjTypeStr) + '",'
-        + '"distance_mils":' + FloatToJsonStr(BestDist) + '}');
+        + '"distance_mils":' + FloatToJsonStr(BestDist) + ','
+        + '"net":"' + EscapeJsonString(NetName) + '",'
+        + '"bbox_mils":[' + FloatToJsonStr(BRect.Left / 10000.0) + ','
+        + FloatToJsonStr(BRect.Bottom / 10000.0) + ','
+        + FloatToJsonStr(BRect.Right / 10000.0) + ','
+        + FloatToJsonStr(BRect.Top / 10000.0) + '],'
+        + '"others_as_close":' + IntToStr(Ties - 1) + '}');
 End;
 
 {..............................................................................}
@@ -7688,6 +8097,8 @@ Begin
         Board.BoardOutline.Invalidate;
         Board.BoardOutline.Rebuild;
         Board.BoardOutline.Validate;
+        { Without this the outline's cached size kept the old rectangle. }
+        RefreshBoardOutline(Board);
     Finally
         PCBServer.PostProcess;
     End;
@@ -10190,15 +10601,19 @@ Begin
                 For Endpoint := 1 To 2 Do
                 Begin
                     Try
+                        { REALS: an Integer difference kept in a Double  }
+                        { variable stays an Integer in DelphiScript, and }
+                        { its square overflowed on any track longer than }
+                        { about 4.6 mil. The * 1.0 makes it a real.      }
                         If Endpoint = 1 Then
                         Begin
                             PX := Track.X1; PY := Track.Y1;
-                            V1X := Track.X2 - PX; V1Y := Track.Y2 - PY;
+                            V1X := (Track.X2 - PX) * 1.0; V1Y := (Track.Y2 - PY) * 1.0;
                         End
                         Else
                         Begin
                             PX := Track.X2; PY := Track.Y2;
-                            V1X := Track.X1 - PX; V1Y := Track.Y1 - PY;
+                            V1X := (Track.X1 - PX) * 1.0; V1Y := (Track.Y1 - PY) * 1.0;
                         End;
                         L1 := Sqrt(V1X * V1X + V1Y * V1Y);
                         If L1 < 1 Then Continue;
@@ -10253,16 +10668,16 @@ Begin
                                        And (Abs(Other.Y1 - PY) <= Tol) Then
                                     Begin
                                         OtherEndpoint := 1;
-                                        V2X := Other.X2 - PX;
-                                        V2Y := Other.Y2 - PY;
+                                        V2X := (Other.X2 - PX) * 1.0;
+                                        V2Y := (Other.Y2 - PY) * 1.0;
                                         OX := Other.X2; OY := Other.Y2;
                                     End
                                     Else If (Abs(Other.X2 - PX) <= Tol)
                                             And (Abs(Other.Y2 - PY) <= Tol) Then
                                     Begin
                                         OtherEndpoint := 2;
-                                        V2X := Other.X1 - PX;
-                                        V2Y := Other.Y1 - PY;
+                                        V2X := (Other.X1 - PX) * 1.0;
+                                        V2Y := (Other.Y1 - PY) * 1.0;
                                         OX := Other.X1; OY := Other.Y1;
                                     End
                                     Else
@@ -11074,33 +11489,68 @@ Begin
     End;
 End;
 
-{ True if the designator text Slk overlaps any pad or other silk text in its  }
-{ immediate vicinity. SelfAddr excludes the text object itself from the test. }
-Function SilkCollides(Board : IPCB_Board; Slk : IPCB_Text; SelfAddr : Integer) : Boolean;
+{ True when the designator Slk comes closer than SilkGap to anything else on }
+{ its own overlay layer (component outlines, texts, fills, regions), closer   }
+{ than MaskGap to a pad on its side of the board, or leaves the board's       }
+{ extents BL..BT. All internal units. Rectangles throughout, so it errs       }
+{ towards blocked. The check it replaces looked at pads and texts only, on   }
+{ any layer and with no clearance, which let a designator onto a neighbour's  }
+{ outline at 0 mm.                                                            }
+Function SilkBlocked(Board : IPCB_Board; Slk : IPCB_Text; SilkGap, MaskGap : Integer;
+    BL, BB, BR, BT : Integer) : Boolean;
 Var
     SBB, OBB : TCoordRect;
-    Margin : Integer;
+    Reach, Gap, Oid : Integer;
     Iter : IPCB_SpatialIterator;
     Obj : IPCB_Primitive;
+    Txt : IPCB_Text;
+    SilkLayer, CopperSide : TLayer;
 Begin
     Result := False;
     SBB := Slk.BoundingRectangle;
-    Margin := MilsToCoord(2);
+    If (SBB.Left < BL) Or (SBB.Right > BR) Or (SBB.Bottom < BB) Or (SBB.Top > BT) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    SilkLayer := Slk.Layer;
+    If SilkLayer = eBottomOverlay Then CopperSide := eBottomLayer Else CopperSide := eTopLayer;
+    Reach := SilkGap;
+    If MaskGap > Reach Then Reach := MaskGap;
     Iter := Board.SpatialIterator_Create;
     Try
-        Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTextObject));
+        Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTextObject, eTrackObject,
+            eArcObject, eFillObject, eRegionObject));
         Iter.AddFilter_LayerSet(AllLayers);
-        Iter.AddFilter_Area(SBB.X1 - Margin, SBB.Y1 - Margin, SBB.X2 + Margin, SBB.Y2 + Margin);
+        Iter.AddFilter_Area(SBB.Left - Reach, SBB.Bottom - Reach, SBB.Right + Reach, SBB.Top + Reach);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
         Begin
-            If Obj.I_ObjectAddress <> SelfAddr Then
+            If Obj.I_ObjectAddress <> Slk.I_ObjectAddress Then
             Begin
+                Gap := -1;
                 Try
-                    OBB := Obj.BoundingRectangle;
-                    If RectsOverlap(SBB.X1, SBB.Y1, SBB.X2, SBB.Y2,
-                                    OBB.X1, OBB.Y1, OBB.X2, OBB.Y2, 0) Then
-                        Result := True;
+                    Oid := Obj.ObjectId;
+                    If Oid = ePadObject Then
+                    Begin
+                        If (Obj.Layer = eMultiLayer) Or (Obj.Layer = CopperSide) Then Gap := MaskGap;
+                    End
+                    Else If Obj.Layer = SilkLayer Then
+                    Begin
+                        Gap := SilkGap;
+                        If Oid = eTextObject Then
+                        Begin
+                            Txt := Obj;
+                            If Txt.IsHidden Then Gap := -1;
+                        End;
+                    End;
+                    If Gap >= 0 Then
+                    Begin
+                        OBB := Obj.BoundingRectangle;
+                        If RectsOverlap(SBB.Left, SBB.Bottom, SBB.Right, SBB.Top,
+                                        OBB.Left, OBB.Bottom, OBB.Right, OBB.Top, Gap) Then
+                            Result := True;
+                    End;
                 Except End;
             End;
             If Result Then Break;
@@ -11314,19 +11764,38 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_AutoplaceSilkscreen - reposition component designators to clear pads    }
-{ and other silk. For each visible designator, try a ring of auto-position    }
-{ anchors and keep the first that collides with nothing; otherwise leave it.  }
-{ Approximate (first-fit), not a global optimum.                              }
+{ PCB_AutoplaceSilkscreen - move component designators that are too close to  }
+{ other silk, to a pad's mask opening, or off the board, onto the first of a  }
+{ ring of auto-position anchors that clears. First-fit, not a global optimum. }
+{                                                                              }
+{ A DESIGNATOR THAT IS ALREADY CLEAR IS NOT TOUCHED, and one that no anchor   }
+{ clears goes back where it was. Every designator used to be moved, onto the  }
+{ first anchor clear of pads and texts alone or else the last anchor tried,  }
+{ and a board with no Silk To Silk violations came back with two.             }
+{                                                                              }
+{ Clearances: silk_clearance_mils / mask_clearance_mils when given, else the  }
+{ largest enabled Silk To Silk (kind 55) / Silk To Solder Mask (kind 54) rule,}
+{ read from the rule's Descriptor (GapMilsFromDescriptor). Refused when       }
+{ neither gives one. A pad's mask opening is taken as its copper plus         }
+{ mask_expansion_mils (default 4, Altium's default expansion).               }
+{ Params: designators (pipe list, optional), the three above.                }
 {..............................................................................}
 Function PCB_AutoplaceSilkscreen(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Iter : IPCB_BoardIterator;
+    Rule : IPCB_Rule;
     Comp : IPCB_Component;
+    Obj : IPCB_Primitive;
     Slk : IPCB_Text;
-    I, Placed, Skipped, Total : Integer;
-    Ok : Boolean;
+    Comps : TInterfaceList;
+    BRect : TCoordRect;
+    I, K, Kind, Placed, AlreadyClear, Unplaced, Hidden : Integer;
+    BL, BB, BR, BT, SilkGap, MaskGap, OrigX, OrigY : Integer;
+    OrigAuto : TTextAutoposition;
+    SilkMils, MaskMils, ExpMils, RuleMils : Double;
+    SilkSrc, MaskSrc, DesStr, CompName, PlacedList, UnplacedList, S : String;
+    Ok, WasOnline : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -11335,54 +11804,206 @@ Begin
         Exit;
     End;
 
-    Placed := 0;
-    Skipped := 0;
-    Total := 0;
-    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
-    PCBServer.PreProcess;
-    Try
+    SilkMils := -1;
+    MaskMils := -1;
+    ExpMils := 4;
+    SilkSrc := '';
+    MaskSrc := '';
+    S := ExtractJsonValue(Params, 'silk_clearance_mils');
+    If S <> '' Then
+    Begin
+        If Not IsFloatStr(S) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', 'silk_clearance_mils is a number in mils');
+            Exit;
+        End;
+        SilkMils := StrToFloatDef(S, -1);
+        SilkSrc := 'argument';
+    End;
+    S := ExtractJsonValue(Params, 'mask_clearance_mils');
+    If S <> '' Then
+    Begin
+        If Not IsFloatStr(S) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', 'mask_clearance_mils is a number in mils');
+            Exit;
+        End;
+        MaskMils := StrToFloatDef(S, -1);
+        MaskSrc := 'argument';
+    End;
+    S := ExtractJsonValue(Params, 'mask_expansion_mils');
+    If S <> '' Then
+    Begin
+        If Not IsFloatStr(S) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', 'mask_expansion_mils is a number in mils');
+            Exit;
+        End;
+        ExpMils := StrToFloatDef(S, 4);
+    End;
+    DesStr := ExtractJsonValue(Params, 'designators');
+
+    If (SilkSrc = '') Or (MaskSrc = '') Then
+    Begin
         Iter := Board.BoardIterator_Create;
         Try
-            Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+            Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
             Iter.AddFilter_LayerSet(AllLayers);
             Iter.AddFilter_Method(eProcessAll);
-            Comp := Iter.FirstPCBObject;
-            While Comp <> Nil Do
+            Rule := Iter.FirstPCBObject;
+            While Rule <> Nil Do
             Begin
-                Total := Total + 1;
-                Slk := Nil;
-                Try Slk := Comp.Name; Except End;
-                If (Slk <> Nil) And (Not Slk.IsHidden) Then
+                Kind := -1;
+                Try Kind := Rule.RuleKind; Except Kind := -1; End;
+                If ((Kind = 55) Or (Kind = 54)) And Rule.Enabled Then
                 Begin
-                    Ok := False;
-                    Slk.BeginModify;
-                    For I := 0 To 7 Do
+                    RuleMils := GapMilsFromDescriptor(Rule.Descriptor);
+                    If (Kind = 55) And (SilkSrc <> 'argument') And (RuleMils > SilkMils) Then
                     Begin
-                        Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(I)); Except End;
-                        If Not SilkCollides(Board, Slk, Slk.I_ObjectAddress) Then
-                        Begin
-                            Ok := True;
-                            Break;
-                        End;
+                        SilkMils := RuleMils;
+                        SilkSrc := 'rule ' + Rule.Name;
                     End;
-                    Slk.EndModify;
-                    If Ok Then Placed := Placed + 1 Else Skipped := Skipped + 1;
-                End
-                Else Skipped := Skipped + 1;
-                Comp := Iter.NextPCBObject;
+                    If (Kind = 54) And (MaskSrc <> 'argument') And (RuleMils > MaskMils) Then
+                    Begin
+                        MaskMils := RuleMils;
+                        MaskSrc := 'rule ' + Rule.Name;
+                    End;
+                End;
+                Rule := Iter.NextPCBObject;
             End;
         Finally
             Board.BoardIterator_Destroy(Iter);
         End;
-    Finally
-        PCBServer.PostProcess;
-        Try PCBServer.SystemOptions.DoOnlineDRC := True; Except End;
+    End;
+    If (SilkMils < 0) Or (MaskMils < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_CLEARANCE',
+            'No clearance to keep: this board has no enabled, readable Silk To Silk '
+            + 'or Silk To Solder Mask rule for the one not given. Pass '
+            + 'silk_clearance_mils and mask_clearance_mils. Nothing was moved.');
+        Exit;
     End;
 
-    MarkDocDirtyByPath(Board.FileName);
+    SilkGap := MilsToCoordF(SilkMils);
+    MaskGap := MilsToCoordF(MaskMils + ExpMils);
+    BRect := Board.BoardOutline.BoundingRectangle;
+    BL := BRect.Left;
+    BB := BRect.Bottom;
+    BR := BRect.Right;
+    BT := BRect.Top;
+    OutlineExtents(Board.BoardOutline, BL, BB, BR, BT);
+
+    { Collected first: nothing moves while the board iterator walks. }
+    Comps := TInterfaceList.Create;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            Comp := Obj;
+            CompName := '';
+            Try CompName := Comp.Name.Text; Except End;
+            If (DesStr = '') Or (Pos('|' + CompName + '|', '|' + DesStr + '|') > 0) Then
+                Comps.Add(Comp);
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Placed := 0;
+    AlreadyClear := 0;
+    Unplaced := 0;
+    Hidden := 0;
+    PlacedList := '';
+    UnplacedList := '';
+    WasOnline := True;
+    Try WasOnline := PCBServer.SystemOptions.DoOnlineDRC; Except End;
+    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Comps.Count - 1 Do
+        Begin
+            Comp := Comps.Items[I];
+            If Comp = Nil Then Continue;
+            Slk := Nil;
+            Try Slk := Comp.Name; Except End;
+            If Slk = Nil Then
+            Begin
+                Inc(Hidden);
+                Continue;
+            End;
+            If Slk.IsHidden Then
+            Begin
+                Inc(Hidden);
+                Continue;
+            End;
+            CompName := '';
+            Try CompName := Slk.Text; Except End;
+            If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+            Begin
+                Inc(AlreadyClear);
+                Continue;
+            End;
+
+            OrigAuto := Comp.NameAutoPosition;
+            OrigX := Slk.XLocation;
+            OrigY := Slk.YLocation;
+            Ok := False;
+            For K := 0 To 7 Do
+            Begin
+                Comp.BeginModify;
+                Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(K)); Except End;
+                Comp.EndModify;
+                If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+                Begin
+                    Ok := True;
+                    Break;
+                End;
+            End;
+
+            If Ok Then
+            Begin
+                Inc(Placed);
+                If PlacedList <> '' Then PlacedList := PlacedList + ',';
+                PlacedList := PlacedList + '"' + EscapeJsonString(CompName) + '"';
+            End
+            Else
+            Begin
+                Comp.BeginModify;
+                Try Comp.ChangeNameAutoposition(OrigAuto); Except End;
+                If (Slk.XLocation <> OrigX) Or (Slk.YLocation <> OrigY) Then
+                    Slk.MoveToXY(OrigX, OrigY);
+                Comp.EndModify;
+                Inc(Unplaced);
+                If UnplacedList <> '' Then UnplacedList := UnplacedList + ',';
+                UnplacedList := UnplacedList + '"' + EscapeJsonString(CompName) + '"';
+            End;
+        End;
+    Finally
+        PCBServer.PostProcess;
+        Try PCBServer.SystemOptions.DoOnlineDRC := WasOnline; Except End;
+    End;
+
+    If Placed + Unplaced > 0 Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"placed":' + IntToStr(Placed) + ',"skipped":' + IntToStr(Skipped)
-        + ',"total":' + IntToStr(Total) + '}');
+        '{"success":' + BoolToJsonStr(Unplaced = 0) + ','
+        + '"placed":' + IntToStr(Placed) + ','
+        + '"already_clear":' + IntToStr(AlreadyClear) + ','
+        + '"unplaced":' + IntToStr(Unplaced) + ','
+        + '"hidden":' + IntToStr(Hidden) + ','
+        + '"skipped":' + IntToStr(Unplaced + Hidden) + ','
+        + '"total":' + IntToStr(Comps.Count) + ','
+        + '"placed_designators":[' + PlacedList + '],'
+        + '"unplaced_designators":[' + UnplacedList + '],'
+        + '"silk_clearance_mils":' + FloatToJsonStr(SilkMils) + ','
+        + '"silk_clearance_source":"' + EscapeJsonString(SilkSrc) + '",'
+        + '"mask_clearance_mils":' + FloatToJsonStr(MaskMils) + ','
+        + '"mask_clearance_source":"' + EscapeJsonString(MaskSrc) + '",'
+        + '"mask_expansion_mils":' + FloatToJsonStr(ExpMils) + '}');
 End;
 
 {..............................................................................}
@@ -11875,9 +12496,106 @@ Begin
         + ',"height_mils":' + IntToStr(CoordToMils(MaxY - MinY)) + '}');
 End;
 
+{ One more of Key in a Name=Count list. An '=' in the key (a rule        }
+{ descriptor has them) would split it, so it is written as ':'.          }
+Procedure HistAdd(L : TStringList; Key : String);
+Var
+    I, N : Integer;
+    Line, Safe, Ch : String;
+Begin
+    Safe := '';
+    For I := 1 To Length(Key) Do
+    Begin
+        Ch := Copy(Key, I, 1);
+        If Ch = '=' Then Ch := ':';
+        Safe := Safe + Ch;
+    End;
+    Key := Safe;
+    I := L.IndexOfName(Key);
+    If I < 0 Then
+    Begin
+        L.Add(Key + '=1');
+        Exit;
+    End;
+    Line := L.Get(I);
+    N := StrToIntDef(Copy(Line, Length(Key) + 2, Length(Line)), 0);
+    L.Strings[I] := Key + '=' + IntToStr(N + 1);
+End;
+
+{ A Name=Count list as a JSON object. }
+Function HistJson(L : TStringList) : String;
+Var
+    I, EqPos : Integer;
+    Line : String;
+Begin
+    Result := '';
+    For I := 0 To L.Count - 1 Do
+    Begin
+        Line := L.Get(I);
+        EqPos := Pos('=', Line);
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Copy(Line, 1, EqPos - 1)) + '":'
+            + Copy(Line, EqPos + 1, Length(Line));
+    End;
+    Result := '{' + Result + '}';
+End;
+
+{ "diameter/hole" in mils, the key the via histograms count under. }
+Function ViaSizeKey(Size, Hole : TCoord) : String;
+Begin
+    Result := FloatToJsonStr(CoordToMilsF(Size)) + '/' + FloatToJsonStr(CoordToMilsF(Hole));
+End;
+
+{ Whether a via passes the optional net and current-size filters. A size   }
+{ filter of 0 is no filter; sizes match within a twentieth of a mil.       }
+Function ViaPassesFilter(Via : IPCB_Via; NetFilter : String; FromSize, FromHole : TCoord) : Boolean;
+Var
+    NetName : String;
+    Tol : TCoord;
+Begin
+    Result := False;
+    Tol := MilsToCoordF(0.05);
+    If NetFilter <> '' Then
+    Begin
+        NetName := '';
+        Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
+        If NetName <> NetFilter Then Exit;
+    End;
+    If (FromSize > 0) And (Abs(Via.Size - FromSize) > Tol) Then Exit;
+    If (FromHole > 0) And (Abs(Via.HoleSize - FromHole) > Tol) Then Exit;
+    Result := True;
+End;
+
+{ The optional size filters and targets of the via tools, in mils. Sets  }
+{ Problem and returns 0 for a value that is not a positive number.       }
+Function ViaParamCoord(Params, Key : String; Var Problem : String) : TCoord;
+Var
+    S : String;
+Begin
+    Result := 0;
+    S := ExtractJsonValue(Params, Key);
+    If S = '' Then Exit;
+    If (Not IsFloatStr(S)) Or (StrToFloatDef(S, 0) <= 0) Then
+    Begin
+        Problem := Key + ' must be a positive number of mils, not "' + S + '"';
+        Exit;
+    End;
+    Result := MilsToCoordF(StrToFloatDef(S, 0));
+End;
+
 {..............................................................................}
-{ PCB_NormalizeVias - snap every via's diameter + hole to its dominant routing }
-{ via-style rule's preferred values.                                          }
+{ PCB_NormalizeVias - set free vias to their dominant Routing Via rule's      }
+{ preferred diameter and hole, or to size_mils / hole_mils when given.        }
+{                                                                              }
+{ A TEMPLATE-BASED RULE IS REFUSED. In template mode ("Templates Used To      }
+{ Check Via" in its descriptor) the rule's size fields are not what it        }
+{ checks, and reading them set nearly every via on a board to a pad no      }
+{ larger than its hole. A target with no annular ring is refused whatever   }
+{ its source.                                                                 }
+{ Refused vias are left as they were and counted.                            }
+{                                                                              }
+{ Params: size_mils + hole_mils (together), net, from_size_mils,             }
+{ from_hole_mils (only vias at that size now), dry_run.                      }
 {..............................................................................}
 Function PCB_NormalizeVias(Params : String; RequestId : String) : String;
 Var
@@ -11887,7 +12605,12 @@ Var
     Via : IPCB_Via;
     Rule : IPCB_Rule;
     Matches : TInterfaceList;
-    I, Checked, Changed : Integer;
+    Before, After, Refusals : TStringList;
+    I, Checked, Matched, Changed, Unchanged, Children, Filtered : Integer;
+    TemplateRule, NoRing, NoRule, Failed : Integer;
+    WantSize, WantHole, FromSize, FromHole, TSize, THole : TCoord;
+    Problem, NetFilter, Desc, RuleName : String;
+    HasTarget, DryRun : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -11896,12 +12619,36 @@ Begin
         Exit;
     End;
 
-    Checked := 0;
-    Changed := 0;
+    Problem := '';
+    WantSize := ViaParamCoord(Params, 'size_mils', Problem);
+    WantHole := ViaParamCoord(Params, 'hole_mils', Problem);
+    FromSize := ViaParamCoord(Params, 'from_size_mils', Problem);
+    FromHole := ViaParamCoord(Params, 'from_hole_mils', Problem);
+    If Problem <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE', Problem);
+        Exit;
+    End;
+    If (WantSize > 0) <> (WantHole > 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'Give size_mils and hole_mils together, or neither to use the rules.');
+        Exit;
+    End;
+    HasTarget := WantSize > 0;
+    If HasTarget And (WantSize <= WantHole) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_ANNULAR_RING',
+            'size_mils must be larger than hole_mils. Nothing was changed.');
+        Exit;
+    End;
+    NetFilter := ExtractJsonValue(Params, 'net');
+    DryRun := LowerCase(ExtractJsonValue(Params, 'dry_run')) = 'true';
 
     { Collect first, THEN modify -- mutating primitives while the BoardIterator
       is walking corrupts the iterator. Collect as the base IPCB_Primitive and
       never Free the list (releasing board-interface refs faults in oleaut32). }
+    Checked := 0;
     Matches := CreateObject(TInterfaceList);
     Iter := Board.BoardIterator_Create;
     Try
@@ -11919,7 +12666,19 @@ Begin
         Board.BoardIterator_Destroy(Iter);
     End;
 
-    PCBServer.PreProcess;
+    Before := TStringList.Create;
+    After := TStringList.Create;
+    Refusals := TStringList.Create;
+    Matched := 0;
+    Changed := 0;
+    Unchanged := 0;
+    Children := 0;
+    Filtered := 0;
+    TemplateRule := 0;
+    NoRing := 0;
+    NoRule := 0;
+    Failed := 0;
+    If Not DryRun Then PCBServer.PreProcess;
     Try
         For I := 0 To Matches.Count - 1 Do
         Begin
@@ -11927,29 +12686,305 @@ Begin
             If Prim = Nil Then Continue;
             { Only free vias -- a via owned by a component footprint, polygon,
               or dimension is a child primitive; modifying it faults. }
-            If Prim.InComponent Or Prim.InPolygon Or Prim.InDimension Then Continue;
-            Try
-                Via := Prim;
-                Rule := Board.FindDominantRuleForObject(Via, eRule_RoutingViaStyle);
-                If Rule <> Nil Then
+            If Prim.InComponent Or Prim.InPolygon Or Prim.InDimension Then
+            Begin
+                Inc(Children);
+                Continue;
+            End;
+            Via := Prim;
+            If Not ViaPassesFilter(Via, NetFilter, FromSize, FromHole) Then
+            Begin
+                Inc(Filtered);
+                Continue;
+            End;
+            Inc(Matched);
+            HistAdd(Before, ViaSizeKey(Via.Size, Via.HoleSize));
+
+            TSize := WantSize;
+            THole := WantHole;
+            RuleName := 'size_mils/hole_mils';
+            If Not HasTarget Then
+            Begin
+                Rule := Nil;
+                Try Rule := Board.FindDominantRuleForObject(Via, eRule_RoutingViaStyle); Except Rule := Nil; End;
+                If Rule = Nil Then
                 Begin
-                    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
-                        PCBM_BeginModify, c_NoEventData);
-                    Via.Size := Rule.PreferedWidth;
-                    Via.HoleSize := Rule.PreferedHoleWidth;
-                    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
-                        PCBM_EndModify, c_NoEventData);
-                    Changed := Changed + 1;
+                    Inc(NoRule);
+                    HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+                    Continue;
                 End;
-            Except End;
+                RuleName := '';
+                Desc := '';
+                Try RuleName := Rule.Name; Except End;
+                Try Desc := Rule.Descriptor; Except End;
+                If Pos('TEMPLATE', UpperCase(Desc)) > 0 Then
+                Begin
+                    Inc(TemplateRule);
+                    HistAdd(Refusals, 'template rule ' + RuleName + ': ' + Desc);
+                    HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+                    Continue;
+                End;
+                TSize := Rule.PreferedWidth;
+                THole := Rule.PreferedHoleWidth;
+            End;
+            If (THole <= 0) Or (TSize <= THole) Then
+            Begin
+                Inc(NoRing);
+                HistAdd(Refusals, 'no annular ring from ' + RuleName + ': ' + ViaSizeKey(TSize, THole));
+                HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+                Continue;
+            End;
+            If (Via.Size = TSize) And (Via.HoleSize = THole) Then
+            Begin
+                Inc(Unchanged);
+                HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+                Continue;
+            End;
+            If DryRun Then
+            Begin
+                Inc(Changed);
+                HistAdd(After, ViaSizeKey(TSize, THole));
+                Continue;
+            End;
+            If SetViaGeometry(Via, TSize, THole) Then Inc(Changed) Else Inc(Failed);
+            HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
         End;
     Finally
-        PCBServer.PostProcess;
+        If Not DryRun Then PCBServer.PostProcess;
     End;
 
-    MarkDocDirtyByPath(Board.FileName);
+    If (Not DryRun) And (Changed + Failed > 0) Then MarkDocDirtyByPath(Board.FileName);
+    Result := '{"success":' + BoolToJsonStr((Failed = 0) And (TemplateRule = 0) And (NoRing = 0))
+        + ',"dry_run":' + BoolToJsonStr(DryRun)
+        + ',"checked":' + IntToStr(Checked)
+        + ',"matched":' + IntToStr(Matched)
+        + ',"changed":' + IntToStr(Changed)
+        + ',"unchanged":' + IntToStr(Unchanged)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"refused_template_rule":' + IntToStr(TemplateRule)
+        + ',"refused_no_annular_ring":' + IntToStr(NoRing)
+        + ',"no_rule":' + IntToStr(NoRule)
+        + ',"skipped_child_vias":' + IntToStr(Children)
+        + ',"filtered_out":' + IntToStr(Filtered)
+        + ',"before":' + HistJson(Before)
+        + ',"after":' + HistJson(After)
+        + ',"refusals":' + HistJson(Refusals);
+    If TemplateRule > 0 Then
+        Result := Result + ',"note":"The Routing Via rule checks via templates, so its '
+            + 'size fields are not the sizes it checks and were not used. Copy the '
+            + 'template from a via that has it with pcb_apply_via_template, or pass '
+            + 'size_mils and hole_mils."';
+    Result := BuildSuccessResponse(RequestId, Result + '}');
+    Before.Free;
+    After.Free;
+    Refusals.Free;
+End;
+
+{..............................................................................}
+{ PCB_ApplyViaTemplate - make free vias match a source via: its pad/via       }
+{ template link, its mode, its hole and its diameter. The link is copied the  }
+{ way the FormatCopy reference script does it (Source.TemplateLink.CopyTo of  }
+{ the target's link), the only template access any reference demonstrates;   }
+{ nothing there reads a template's name or looks one up, so the template is   }
+{ chosen by pointing at a via that already has it.                            }
+{                                                                              }
+{ Params: source_x, source_y (mils; the via whose pad covers that point,     }
+{ nearest centre wins), net, from_size_mils, from_hole_mils, dry_run.        }
+{ A source with a per-layer stack, or with no annular ring, is refused.     }
+{ The reply confirms diameter and hole by read-back; the link itself has no }
+{ member this code can read back.                                           }
+{..............................................................................}
+Function PCB_ApplyViaTemplate(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj, Prim : IPCB_Primitive;
+    Via, Src : IPCB_Via;
+    DstT : IPCB_ViaTemplate;
+    Matches : TInterfaceList;
+    Before, After : TStringList;
+    I, Major, Checked, Matched, Changed, Failed, Children, Filtered : Integer;
+    SX, SY, FromSize, FromHole : TCoord;
+    Best, D : Double;
+    Problem, NetFilter, Ver, SrcNet : String;
+    DryRun, Ok : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    { Templates arrived with Altium Designer 22; TemplateLink on an older }
+    { build is an undeclared identifier, which halts the polling loop.     }
+    Ver := '';
+    Try Ver := Client.GetProductVersion; Except Ver := ''; End;
+    Major := 0;
+    If Pos('.', Ver) > 1 Then Major := StrToIntDef(Copy(Ver, 1, Pos('.', Ver) - 1), 0);
+    If Major < 22 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNSUPPORTED',
+            'Via templates need Altium Designer 22 or later; this build reports "'
+            + Ver + '". Nothing was changed.');
+        Exit;
+    End;
+
+    If (Not IsFloatStr(ExtractJsonValue(Params, 'source_x')))
+       Or (Not IsFloatStr(ExtractJsonValue(Params, 'source_y'))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'source_x and source_y (mils) name the via to copy from');
+        Exit;
+    End;
+    SX := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'source_x'), 0));
+    SY := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'source_y'), 0));
+    Problem := '';
+    FromSize := ViaParamCoord(Params, 'from_size_mils', Problem);
+    FromHole := ViaParamCoord(Params, 'from_hole_mils', Problem);
+    If Problem <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE', Problem);
+        Exit;
+    End;
+    NetFilter := ExtractJsonValue(Params, 'net');
+    DryRun := LowerCase(ExtractJsonValue(Params, 'dry_run')) = 'true';
+
+    Checked := 0;
+    Src := Nil;
+    Best := 1e30;
+    Matches := CreateObject(TInterfaceList);
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            Checked := Checked + 1;
+            Matches.Add(Obj);
+            Via := Obj;
+            D := Sqrt(((Via.x - SX) * 1.0) * (Via.x - SX) + ((Via.y - SY) * 1.0) * (Via.y - SY));
+            If (D <= Via.Size / 2.0) And (D < Best) Then
+            Begin
+                Best := D;
+                Src := Via;
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    If Src = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'No via covers (' + ExtractJsonValue(Params, 'source_x') + ', '
+            + ExtractJsonValue(Params, 'source_y') + ') mils. Point at the via to copy from.');
+        Exit;
+    End;
+    If Src.Mode <> ePadMode_Simple Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LOCAL_STACK',
+            'The source via has a per-layer stack; this copies a simple via only. Nothing was changed.');
+        Exit;
+    End;
+    If (Src.HoleSize <= 0) Or (Src.Size <= Src.HoleSize) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_ANNULAR_RING',
+            'The source via is ' + ViaSizeKey(Src.Size, Src.HoleSize)
+            + ' mils, with no annular ring. Nothing was changed.');
+        Exit;
+    End;
+    SrcNet := '';
+    Try If Src.Net <> Nil Then SrcNet := Src.Net.Name; Except End;
+
+    Before := TStringList.Create;
+    After := TStringList.Create;
+    Matched := 0;
+    Changed := 0;
+    Failed := 0;
+    Children := 0;
+    Filtered := 0;
+    If Not DryRun Then PCBServer.PreProcess;
+    Try
+        For I := 0 To Matches.Count - 1 Do
+        Begin
+            Prim := Matches.Items[I];
+            If Prim = Nil Then Continue;
+            If Prim.I_ObjectAddress = Src.I_ObjectAddress Then Continue;
+            If Prim.InComponent Or Prim.InPolygon Or Prim.InDimension Then
+            Begin
+                Inc(Children);
+                Continue;
+            End;
+            Via := Prim;
+            If Not ViaPassesFilter(Via, NetFilter, FromSize, FromHole) Then
+            Begin
+                Inc(Filtered);
+                Continue;
+            End;
+            Inc(Matched);
+            HistAdd(Before, ViaSizeKey(Via.Size, Via.HoleSize));
+            If DryRun Then
+            Begin
+                HistAdd(After, ViaSizeKey(Src.Size, Src.HoleSize));
+                Continue;
+            End;
+            Ok := True;
+            Try
+                PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                    PCBM_BeginModify, c_NoEventData);
+                DstT := Via.TemplateLink;
+                Src.TemplateLink.CopyTo(DstT);
+                If Via.Mode <> Src.Mode Then Via.Mode := Src.Mode;
+                If Src.HoleSize < Via.Size Then
+                Begin
+                    Via.HoleSize := Src.HoleSize;
+                    Via.Size := Src.Size;
+                End
+                Else
+                Begin
+                    Via.Size := Src.Size;
+                    Via.HoleSize := Src.HoleSize;
+                End;
+                PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                    PCBM_EndModify, c_NoEventData);
+            Except
+                Ok := False;
+            End;
+            If Ok And (Via.Size = Src.Size) And (Via.HoleSize = Src.HoleSize) Then
+                Inc(Changed)
+            Else
+                Inc(Failed);
+            HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+        End;
+    Finally
+        If Not DryRun Then PCBServer.PostProcess;
+    End;
+
+    If (Not DryRun) And (Changed + Failed > 0) Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"checked":' + IntToStr(Checked) + ',"changed":' + IntToStr(Changed) + '}');
+        '{"success":' + BoolToJsonStr(Failed = 0)
+        + ',"dry_run":' + BoolToJsonStr(DryRun)
+        + ',"source":{"x_mils":' + FloatToJsonStr(CoordToMilsF(Src.x))
+        + ',"y_mils":' + FloatToJsonStr(CoordToMilsF(Src.y))
+        + ',"size_mils":' + FloatToJsonStr(CoordToMilsF(Src.Size))
+        + ',"hole_mils":' + FloatToJsonStr(CoordToMilsF(Src.HoleSize))
+        + ',"net":"' + EscapeJsonString(SrcNet) + '"}'
+        + ',"checked":' + IntToStr(Checked)
+        + ',"matched":' + IntToStr(Matched)
+        + ',"changed":' + IntToStr(Changed)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"skipped_child_vias":' + IntToStr(Children)
+        + ',"filtered_out":' + IntToStr(Filtered)
+        + ',"before":' + HistJson(Before)
+        + ',"after":' + HistJson(After)
+        + ',"note":"Diameter and hole are read back; the template link is copied '
+        + 'but has no member to read back, so check one via in the Properties panel."}');
+    Before.Free;
+    After.Free;
 End;
 
 {..............................................................................}
@@ -12075,11 +13110,12 @@ Begin
         Begin
             e1x := Track.x1; e1y := Track.y1;
             e2x := Track.x2; e2y := Track.y2;
-            D := (e1x - MilsToCoord(FromX)) * (e1x - MilsToCoord(FromX))
-               + (e1y - MilsToCoord(FromY)) * (e1y - MilsToCoord(FromY));
+            { As reals: the Integer square overflowed past about 4.6 mil. }
+            D := ((e1x - MilsToCoord(FromX)) * 1.0) * (e1x - MilsToCoord(FromX))
+               + ((e1y - MilsToCoord(FromY)) * 1.0) * (e1y - MilsToCoord(FromY));
             If D < BestD Then Begin BestD := D; Best := Track; MoveEnd := 1; End;
-            D := (e2x - MilsToCoord(FromX)) * (e2x - MilsToCoord(FromX))
-               + (e2y - MilsToCoord(FromY)) * (e2y - MilsToCoord(FromY));
+            D := ((e2x - MilsToCoord(FromX)) * 1.0) * (e2x - MilsToCoord(FromX))
+               + ((e2y - MilsToCoord(FromY)) * 1.0) * (e2y - MilsToCoord(FromY));
             If D < BestD Then Begin BestD := D; Best := Track; MoveEnd := 2; End;
             Track := Iter.NextPCBObject;
         End;
@@ -12502,8 +13538,9 @@ Begin
                                 If Sx <> -MAX_INT Then
                                 Begin
                                     { collinear continuation: far ends point opposite directions through S }
-                                    sax := FarAx - Sx; say := FarAy - Sy;
-                                    sbx := FarBx - Sx; sby := FarBy - Sy;
+                                    { Reals, or the squares below overflow. }
+                                    sax := (FarAx - Sx) * 1.0; say := (FarAy - Sy) * 1.0;
+                                    sbx := (FarBx - Sx) * 1.0; sby := (FarBy - Sy) * 1.0;
                                     lna := Sqrt(sax * sax + say * say);
                                     lnb := Sqrt(sbx * sbx + sby * sby);
                                     If (lna > 0) And (lnb > 0) Then
@@ -12932,8 +13969,9 @@ Begin
             S := OrigList[K];   P := Pos('|', S);
             vnx := StrToIntDef(Copy(S, 1, P - 1), 0); vny := StrToIntDef(Copy(S, P + 1, Length(S)), 0);
 
-            upx := vpx - vix; upy := vpy - viy; lenp := Sqrt(upx * upx + upy * upy);
-            unx := vnx - vix; uny := vny - viy; lenn := Sqrt(unx * unx + uny * uny);
+            { Reals, or the squares overflow on any edge over 4.6 mil. }
+            upx := (vpx - vix) * 1.0; upy := (vpy - viy) * 1.0; lenp := Sqrt(upx * upx + upy * upy);
+            unx := (vnx - vix) * 1.0; uny := (vny - viy) * 1.0; lenn := Sqrt(unx * unx + uny * uny);
             dd := dC;
             If lenp > 0 Then If dd > 0.45 * lenp Then dd := 0.45 * lenp;
             If lenn > 0 Then If dd > 0.45 * lenn Then dd := 0.45 * lenn;
@@ -14283,6 +15321,7 @@ Begin
         'copy_tracks_radial':      Result := PCB_CopyTracksRadial(Params, RequestId);
         'scale':                   Result := PCB_Scale(Params, RequestId);
         'set_text_visibility':     Result := PCB_SetTextVisibility(Params, RequestId);
+        'set_text_style':          Result := PCB_SetTextStyle(Params, RequestId);
         'lock_net_routing':        Result := PCB_LockNetRouting(Params, RequestId);
         'place_stitching_vias':    Result := PCB_PlaceStitchingVias(Params, RequestId);
         'get_fab_stats':           Result := PCB_GetFabStats(Params, RequestId);
@@ -14362,6 +15401,7 @@ Begin
         'audit_pad_center_connected': Result := PCB_AuditPadCenterConnected(Params, RequestId);
         'auto_size_board_outline': Result := PCB_AutoSizeBoardOutline(Params, RequestId);
         'normalize_vias':          Result := PCB_NormalizeVias(Params, RequestId);
+        'apply_via_template':      Result := PCB_ApplyViaTemplate(Params, RequestId);
         'copy_designators_to_mech': Result := PCB_CopyDesignatorsToMechLayer(Params, RequestId);
         'trim_extend_track':       Result := PCB_TrimExtendTrack(Params, RequestId);
         'cleanup_tracks':          Result := PCB_CleanupTracks(Params, RequestId);

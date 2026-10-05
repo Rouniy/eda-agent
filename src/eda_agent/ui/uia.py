@@ -217,6 +217,44 @@ def _find(hwnd: int, name: str, control_type: Optional[str] = None):
     return None
 
 
+def _find_pressable(hwnd: int, name: str):
+    """The element named ``name`` that is most likely the one to press.
+
+    A dialog often carries the same caption twice: a button "OK" and a
+    text label "OK", or a group named like the action. The first match
+    used to win, and a label offers no Invoke, so a press of a real
+    button was refused. A Button is preferred, then anything that
+    implements Invoke, then the first match.
+    """
+    def flat(text):
+        return str(text or "").replace("&", "").strip().lower()
+
+    root = _element(hwnd)
+    if root is None:
+        return None
+    wanted = flat(name)
+    hits = []
+    stack = [(root, 0)]
+    while stack and len(hits) < 12:
+        node, level = stack.pop()
+        if level > 6:
+            continue
+        for child in _children(node):
+            info = _describe(child)
+            if flat(info["name"]) == wanted or flat(info["automation_id"]) == wanted:
+                hits.append((child, info))
+            stack.append((child, level + 1))
+    if not hits:
+        return None
+    for hit in hits:
+        if flat(hit[1]["type"]) == "button":
+            return hit
+    for hit in hits:
+        if _pattern(hit[0], _PATTERN_INVOKE, _UIA.IUIAutomationInvokePattern) is not None:
+            return hit
+    return hits[0]
+
+
 def _pattern(element, pattern_id: int, interface):
     try:
         raw = element.GetCurrentPattern(pattern_id)
@@ -247,7 +285,7 @@ def invoke(hwnd: int, name: str) -> dict:
     """
     if not _AVAILABLE:
         return {"ok": False, "reason": "UI Automation is unavailable here"}
-    hit = _find(hwnd, name)
+    hit = _find_pressable(hwnd, name)
     if hit is None:
         return {"ok": False, "reason": f"no element named {name!r}",
                 "offered": text_of(hwnd)[:60]}

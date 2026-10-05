@@ -1,4 +1,4 @@
-# Release verification: 2026.10.01.1
+# Release verification: 2026.10.04.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -35,6 +35,13 @@ works elsewhere cannot be an undeclared identifier:
 | 6, mirrored text | `MirrorFlag` | yes, `PCB.pas` | lowest |
 | 20, bulk vias | `Size`, `HoleSize`, `LowLayer`, `HighLayer` on a via | yes, `PCB_PlaceVia` | low |
 | 20, track width | `Width` on a track, now in fractions of a mil | yes, `PCB_PlaceTrack` | low |
+| 22, text size | `Size`, `Width` on a board text | yes, `Lib_AddFootprintText` | low |
+| 22, silkscreen restore | `MoveToXY` on a designator | yes, `Generic.pas`, on components | low |
+| 22, silkscreen anchors | `ChangeNameAutoposition` | yes, `PCB_AutoplaceSilkscreen` before this change | low |
+| 23, via template | `CopyTo` on a via's template link | yes, `Library.pas`, on footprints only | highest, and it can stop the loop |
+| 23, via mode | `Mode` on a via | yes, on pads, `PCB.pas` | medium |
+| 23, via size | `Size`, `HoleSize` on a via | yes, `PCB_PlaceVia` | low |
+| 23, Routing Via rule | `PreferedWidth`, `PreferedHoleWidth`, `MinHoleWidth`, `MaxHoleWidth` | no, nowhere | high, and it can stop the loop |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -210,7 +217,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.01.1`, `version_match` =
+Expect `altium_script_version` = `2026.10.04.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -1225,6 +1232,118 @@ On scratch documents only:
 
 ---
 
+## 22. Board tools from a full board run
+
+Nine findings from one board driven end to end. On a scratch board and a
+scratch schematic only. Every Altium member below is declared in the
+API reference or used by a working reference script; none is new to
+Altium, so the risk is behaviour, not a halted loop. The two least
+exercised are `BoardOutline.SetState_XSizeYSize` and
+`Board.UpdateBoardOutline` (step 4).
+
+1. **Filters refuse what they cannot apply.** `obj_delete
+   object_type=eTrackObject filter="OnLayer('TopLayer')"` answers
+   BAD_FILTER and deletes nothing; `obj_count` before and after agree.
+   `obj_query object_type=eTextObject filter="IsDesignator"` answers
+   BAD_FILTER with the hint `IsDesignator=true`, and with that filter it
+   returns designators only, no pin-number or free texts.
+2. **Text size.** `obj_query object_type=eTextObject
+   properties="Text,Height,StrokeWidth,IsDesignator"` reads all four.
+   `pcb_set_text_style height_mils=31.5 stroke_mils=3.94
+   designators=["<one part>"]` answers `changed: 1` and the text reads
+   back at those values; the designator is visibly smaller. Repeat with
+   `obj_modify ... set="Height=40"` on a free text. `pcb_place_text
+   height=31.5 stroke=3.94` reads back the same. A designator not on the
+   board comes back in `not_found`.
+3. **pcb_delete_object on a track's length.** Place a track
+   (1300,1300) to (8250,1300) on a scratch layer and delete at
+   (2000,1300): it goes, `distance_mils` near 0, `bbox_mils` is that
+   track.
+4. **Outline extents after a reshape.** `pcb_set_board_shape` to a
+   larger rectangle, then `pcb_get_board_outline`: `bounding_rect`
+   matches the vertices. `pcb_render_svg` shows the whole board. Then
+   `app_ping` answers.
+5. **audit_find_acute_angles returns.** On a board with long tracks it
+   answers parseable JSON; each acute join is listed once.
+6. **pcb_autoplace_silkscreen keeps clearance.** On a board with no Silk
+   To Silk violations, the call answers `placed: 0` and every designator
+   `already_clear`; DRC still shows none. Move one designator onto a
+   neighbour's outline by hand: the call moves only that one, or lists it
+   in `unplaced_designators` and leaves it where you put it. The reply
+   names the rules its clearances came from.
+7. **app_click_menu checks what it clicked.** `app_click_menu
+   menu_path="Tools|Update From PCB Libraries"` (no ellipsis) either
+   opens the update wizard or fails naming the item it found; it never
+   reports ok with SI Setup Options open. `app_update_from_libraries
+   launch="menu"` opens the right wizard.
+8. **WPF buttons.** Open Tools > Silkscreen Preparation and
+   `app_invoke_element name="Cancel"`: the dialog closes and the reply
+   says `dialog_closed: true`. `app_press_dialog_button` on the same
+   button answers `method: "uia"`.
+9. **route_plan joins what it reports routed.** Place a route_plan
+   result verbatim: Altium's DRC shows no Un-Routed Net or Net Antennae
+   for the nets reported `routed`, and each `validation.violations`
+   record names its two layers.
+
+Verified on AD 26.10.1.6 with the previous script, build 2 of 2026.10.02
+(scratch board), through the script side: step 1 (a bare `IsDesignator` filter refused with the
+`=true` hint; an `OnLayer(...) Or ...` filter on `obj_delete` refused with
+all four tracks intact), step 2 for a free text (Height 31.5 and
+StrokeWidth 3.94 written and read back under both names; `Height=abc`
+reported failed, text unchanged), step 3 (a point 3800 mil from a track's
+midpoint deleted it at distance 0, with its bbox), step 4 (a reshape to
+8000 x 5400 read back the same bounding_rect, the render covered it, and
+app_ping answered after the outline refresh), step 5 (one acute corner of
+24 degrees reported once, a 90 degree corner not). The silkscreen placer
+read both clearances from the board's rules (10 mil each). Still to run:
+steps 2 and 6 on parts, and steps 7 to 9, which need the MCP server
+restarted on this tree.
+
+---
+
+## 23. Vias keep an annular ring, and take a template from another via
+
+`pcb_normalize_vias` read a template-based Routing Via rule's size fields
+and set nearly every via on a board to a pad no larger than its hole.
+`obj_modify` could not repair them. On a scratch board only:
+
+1. **Template rule refused.** Give the board a Routing Via rule in
+   template mode, then `pcb_normalize_vias dry_run=true`: every via counts
+   under `refused_template_rule`, `changed` is 0 and `note` points at
+   `pcb_apply_via_template`. Without `dry_run` nothing changes either.
+2. **Explicit sizes.** `pcb_normalize_vias size_mils=23.622
+   hole_mils=11.811 from_size_mils=<one group>`: only that group changes,
+   `before` and `after` count it, and `obj_query eViaObject
+   properties="Size,HoleSize"` reads 23.622 and 11.811.
+   `size_mils=12 hole_mils=12` is refused before anything is sent.
+3. **obj_modify on a via.** `set="Size=30|HoleSize=15"` on a 20/12 via
+   writes both; `set="HoleSize=40"` on it is reported failed and the via
+   is unchanged. `set="TopXSize=50"` on a via is reported unknown, not
+   success.
+4. **Template copy (highest risk).** Set one via's template in the
+   Properties panel, then `pcb_apply_via_template source_x=<x>
+   source_y=<y> dry_run=true`, then without `dry_run`. Every other free
+   via reads the source's size and hole, and the Properties panel shows
+   the same template on a sample of them. `TemplateLink` is used by one
+   reference script and nowhere in this codebase; an undeclared one
+   would stop the polling loop, so `app_ping` after the call.
+5. **Routing Via sizes.** On a rule not in template mode,
+   `pcb_set_rule_properties name=<rule> preferred_via_size_mils=24
+   preferred_via_hole_mils=12` answers `via_sizes_written: true` and the
+   rule editor shows the values. A preferred hole at or above the
+   preferred size is refused with nothing written.
+
+Verified on AD 26.10.1.6 with the previous script, build 2 of 2026.10.02
+(scratch board): step 3
+(`Size=30|HoleSize=15` grew a 20/12 via and read back; `HoleSize=40` on it
+reported failed, via unchanged; `TopXSize` on a via reported unknown), and
+step 2's rule path (`pcb_normalize_vias` set two vias to the min/max rule's
+50/28 with `before` and `after` counts, app_ping answered after). Still to
+run: step 1 (needs a rule in template mode), step 2 with explicit sizes,
+steps 4 and 5, which need the MCP server restarted on this tree.
+
+---
+
 ## Still open, and not blocking
 
 * **#23** font size: the importer places symbol text but not its height.
@@ -1242,7 +1361,7 @@ names and sheet file names, the types whose interface declares it; `Text` is
 refused on the types whose interface has none, wires among them. Repeat
 steps 3 to 7 on AD 26 with the wire included.
 
-Verified on AD 26.10.1.6 with script 2026.10.01.1: the three reads return
+Verified on AD 26.10.1.6 with the script from commit 57760ac: the three reads return
 empty fields listed under `properties.unreadable`, `IsHidden=true` on a wire
 is refused under `properties.unknown`, `IsHidden` reads and writes on
 parameters, and the bridge answered `app_ping` after each call.

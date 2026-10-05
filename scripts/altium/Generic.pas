@@ -1065,9 +1065,15 @@ Begin
             Remaining := '';
         End;
 
-        // Parse "PropName=Value"
+        // Parse "PropName=Value". A condition that is not one matches
+        // nothing (see FilterProblem): skipped, it matched everything.
+        If Trim(Condition) = '' Then Continue;
         EqPos := Pos('=', Condition);
-        If EqPos = 0 Then Continue;
+        If EqPos < 2 Then
+        Begin
+            Result := False;
+            Exit;
+        End;
         PropName := Copy(Condition, 1, EqPos - 1);
         Expected := Copy(Condition, EqPos + 1, Length(Condition));
 
@@ -1591,9 +1597,15 @@ Var
     SchDoc : ISch_Document;
     ServerDoc : IServerDocument;
     I, TotalMatched, SheetsProcessed, SheetsMarked : Integer;
-    FilePath, JsonItems : String;
+    FilePath, JsonItems, BadCond : String;
     IsMutating : Boolean;
 Begin
+    BadCond := FilterProblem(FilterStr);
+    If BadCond <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FILTER', BadFilterMessage(BadCond));
+        Exit;
+    End;
     Workspace := GetWorkspace;
     If Workspace = Nil Then
     Begin
@@ -1683,9 +1695,15 @@ Var
     SchDoc : ISch_Document;
     ServerDoc : IServerDocument;
     TotalMatched : Integer;
-    JsonItems, DocPath, SavedStr : String;
+    JsonItems, DocPath, SavedStr, BadCond : String;
     IsMutating, Saved : Boolean;
 Begin
+    BadCond := FilterProblem(FilterStr);
+    If BadCond <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FILTER', BadFilterMessage(BadCond));
+        Exit;
+    End;
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
     Begin
@@ -1734,9 +1752,15 @@ Var
     SchDoc : ISch_Document;
     ServerDoc : IServerDocument;
     TotalMatched : Integer;
-    JsonItems, SavedStr : String;
+    JsonItems, SavedStr, BadCond : String;
     IsMutating, Saved : Boolean;
 Begin
+    BadCond := FilterProblem(FilterStr);
+    If BadCond <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FILTER', BadFilterMessage(BadCond));
+        Exit;
+    End;
 
     // Do NOT RunProcess Client:OpenDocument, that loads the file but
     // strips any project association, producing a "free document" in the
@@ -9945,7 +9969,7 @@ Var
     NumRegions, NumComps : Integer;
     LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr : String;
     BR : TCoordRect;
-    I, K, PtCount : Integer;
+    I, K, PtCount, EL, EB, ER, ET : Integer;
     Seg : TPolySegment;
     RespJson : String;
     NameOnFlag, CommentOnFlag, IsHiddenFlag : Boolean;
@@ -10000,7 +10024,11 @@ Begin
     End;
     OutlineJson := OutlineJson + ']';
 
+    { From the outline's segments: its cached rectangle went stale after a }
+    { reshape and the renders built on this bbox clipped the board.         }
     BR := Board.BoardOutline.BoundingRectangle;
+    EL := BR.X1; EB := BR.Y1; ER := BR.X2; ET := BR.Y2;
+    OutlineExtents(Board.BoardOutline, EL, EB, ER, ET);
 
     TracksJson := '['; NumTracks := 0;
     ArcsJson := '[';   NumArcs := 0;
@@ -10277,10 +10305,10 @@ Begin
         ',"texts":' + IntToStr(NumTexts) +
         ',"regions":' + IntToStr(NumRegions) +
         ',"components":' + IntToStr(NumComps) + '}' +
-        ',"bbox":{"x1":' + IntToStr(CoordToMils(BR.X1)) +
-        ',"y1":' + IntToStr(CoordToMils(BR.Y1)) +
-        ',"x2":' + IntToStr(CoordToMils(BR.X2)) +
-        ',"y2":' + IntToStr(CoordToMils(BR.Y2)) + '}' +
+        ',"bbox":{"x1":' + IntToStr(CoordToMils(EL)) +
+        ',"y1":' + IntToStr(CoordToMils(EB)) +
+        ',"x2":' + IntToStr(CoordToMils(ER)) +
+        ',"y2":' + IntToStr(CoordToMils(ET)) + '}' +
         ',"outline":' + OutlineJson +
         ',"tracks":' + TracksJson +
         ',"arcs":' + ArcsJson +

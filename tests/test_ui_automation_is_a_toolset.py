@@ -347,7 +347,7 @@ async def test_a_failed_menu_click_never_reaches_the_driver(monkeypatch):
         MenuBarUnavailable = menu.MenuBarUnavailable
 
         @staticmethod
-        def click_path(pid, path):
+        def click_path(pid, path, **kwargs):
             calls.append(("click", path))
             return {"ok": False, "reason": "'Nope' is not on the menu bar",
                     "offered": ["Tools", "Design"]}
@@ -382,7 +382,7 @@ async def test_a_drive_that_stopped_for_a_human_is_not_a_success(
     """An unanswered dialog left on screen is not a completed command."""
     class _Menu:
         @staticmethod
-        def click_path(pid, path):
+        def click_path(pid, path, **kwargs):
             return {"ok": True, "path": path}
 
     class _Driver:

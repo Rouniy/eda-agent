@@ -41,6 +41,14 @@ _MENU_PATHS = {
     "pcb": "Tools|Update From PCB Libraries...",
 }
 
+#: Part of the title of the wizard each path opens. The click is a
+#: success only when that wizard appears: a path once reported ok while
+#: Signal Integrity's setup dialog opened instead.
+_MENU_EXPECT = {
+    "schematic": "Update From Librar",
+    "pcb": "Update From PCB Librar",
+}
+
 
 def _altium_pid():
     """(pid, None) or (None, error-dict).
@@ -261,11 +269,13 @@ def register_uiauto_tools(mcp):
             # keystroke and the click.
             loop = asyncio.get_running_loop()
             opened = await loop.run_in_executor(
-                None, menu.click_path, pid, _MENU_PATHS[target])
+                None, lambda: menu.click_path(pid, _MENU_PATHS[target],
+                                              expect_dialog=_MENU_EXPECT[target]))
             if not opened.get("ok"):
                 return {"ok": False, "launch": "menu",
                         "reason": opened.get("reason"),
                         "offered": opened.get("offered"),
+                        "opened_instead": opened.get("opened_instead"),
                         "note": ("nothing was opened, so nothing was "
                                  "driven and no dialog is waiting")}
 
@@ -386,7 +396,8 @@ def register_uiauto_tools(mcp):
     @mcp.tool()
     async def app_click_menu(menu_path: str,
                              may_steal_focus: bool = False,
-                             list_only: bool = False) -> dict[str, Any]:
+                             list_only: bool = False,
+                             expect_dialog: str = "") -> dict[str, Any]:
         """Invoke ANY Altium menu command by path, by driving the menu.
 
         Use this when ``app_run_menu`` will not do, which is more often
@@ -425,10 +436,16 @@ def register_uiauto_tools(mcp):
             list_only: do not invoke. Reports the top-level menus
                 currently on screen, which is the way to find out what
                 this editor context offers.
+            expect_dialog: part of the title of the dialog the command
+                should open. Then ``ok`` means that dialog appeared; any
+                other dialog, or none, fails and names what did open.
 
         Returns:
-            Dict with ``ok``; on failure ``reason`` and ``offered``
-            listing what that level actually contained.
+            Dict with ``ok`` and ``opened`` (titles of dialogs that
+            appeared); on failure ``reason`` and ``offered`` listing what
+            that level actually contained. A path that leaves the menu
+            open (it ended at a submenu, or the click did not land) is a
+            failure: no command ran.
         """
         if not menu.available():
             return {"ok": False, "reason": (
@@ -462,7 +479,7 @@ def register_uiauto_tools(mcp):
                 "may_steal_focus=True if that is acceptable now.")}
 
         return await loop.run_in_executor(
-            None, menu.click_path, pid, menu_path)
+            None, lambda: menu.click_path(pid, menu_path, expect_dialog=expect_dialog))
 
     @mcp.tool()
     async def app_list_open_dialogs() -> dict[str, Any]:
@@ -591,6 +608,19 @@ def register_uiauto_tools(mcp):
                         return {"ok": False, "role": role, "reason": (
                             f"{button_caption!r} commits a change. Pass "
                             f"allow_irreversible=True if that is intended.")}
+                    # The named button first, through UI Automation: a WPF
+                    # button is an element even where it is not a window,
+                    # and Enter only reaches the default action, which on
+                    # some dialogs (Silkscreen Preparation) is not the
+                    # button asked for.
+                    from ..ui import uia
+                    if uia.available():
+                        pressed = uia.invoke(target.hwnd, button_caption)
+                        if pressed.get("ok"):
+                            shut = windows.wait_for_close(target.hwnd, timeout=5.0)
+                            return {"ok": True, "dialog": target.title,
+                                    "pressed": button_caption, "method": "uia",
+                                    "dialog_closed": shut}
                     windows.press_key(target.hwnd, key)
                     shut = windows.wait_for_close(target.hwnd, timeout=5.0)
                     return {
@@ -723,7 +753,8 @@ def register_uiauto_tools(mcp):
                                  dry_run: bool = False,
                                  may_steal_focus: bool = True,
                                  wait_first: float = 30.0,
-                                 budget: float = 300.0) -> dict[str, Any]:
+                                 budget: float = 300.0,
+                                 expect_dialog: str = "") -> dict[str, Any]:
         """Invoke a menu command AND answer the dialogs it raises.
 
         The composite, and usually the one to reach for. Firing a menu
@@ -754,6 +785,9 @@ def register_uiauto_tools(mcp):
             may_steal_focus: opening a menu needs real input.
             wait_first: seconds to wait for the first dialog.
             budget: seconds before giving up.
+            expect_dialog: part of the title of the dialog the command
+                should open. When a different dialog (or none) appears,
+                the reply fails at the menu stage and nothing is driven.
 
         Returns:
             ``ok``, the ``menu`` result, and the full ``dialogs`` record.
@@ -771,8 +805,10 @@ def register_uiauto_tools(mcp):
                 "may_steal_focus=True if that is acceptable now.")}
 
         loop = asyncio.get_running_loop()
+        # With expect_dialog, a different dialog is a failure here and
+        # nothing is driven: the driver answers whatever is in front.
         clicked = await loop.run_in_executor(
-            None, menu.click_path, pid, menu_path)
+            None, lambda: menu.click_path(pid, menu_path, expect_dialog=expect_dialog))
         if not clicked.get("ok"):
             return {"ok": False, "stage": "menu", "menu": clicked}
 
@@ -1448,15 +1484,22 @@ def register_uiauto_tools(mcp):
         That makes this the right tool for a WPF dialog, and for anything
         you want done while the user keeps working.
 
+        A CLIENT THAT DOES NOT LIST THIS TOOL can still reach it through
+        the dispatcher: ``tool_invoke(name="app_invoke_element",
+        arguments={"name": "OK", "dialog_title": "Silkscreen"})``.
+
         Args:
-            name: the element's name or automation id.
-            dialog_title: which dialog. Empty uses the main window.
+            name: the element's name or automation id. A Button of that
+                name is preferred over a label carrying the same text.
+            dialog_title: which dialog. Empty uses the frontmost open
+                dialog, or the main window when no dialog is open.
             text: set this value instead of pressing.
             expand: "true" or "false" to open or close a node instead.
 
         Returns:
-            ``ok`` with what was done, or a refusal naming which pattern
-            the element lacks and its rectangle, so a real click remains
+            ``ok`` with what was done and, for a press in a dialog,
+            ``dialog_closed``; or a refusal naming which pattern the
+            element lacks and its rectangle, so a real click remains
             possible as a fallback.
         """
         from ..ui import uia
@@ -1468,14 +1511,24 @@ def register_uiauto_tools(mcp):
             return {"ok": False, "reason": "UI Automation is unavailable here"}
 
         target = None
+        in_dialog = False
+        open_dialogs = windows.dialogs(pid)
         if dialog_title:
-            for dialog in windows.dialogs(pid):
+            for dialog in open_dialogs:
                 if dialog_title.lower() in (dialog.title or "").lower():
                     target = dialog.hwnd
                     break
             if target is None:
                 return {"ok": False,
-                        "reason": f"no dialog matching {dialog_title!r}"}
+                        "reason": f"no dialog matching {dialog_title!r}",
+                        "open": [d.title for d in open_dialogs]}
+            in_dialog = True
+        elif open_dialogs:
+            # A WPF dialog is a window of its own, so searching the main
+            # window for its OK found nothing. The frontmost dialog is
+            # the one a press is meant for.
+            target = open_dialogs[0].hwnd
+            in_dialog = True
         else:
             frame = menu.frame(pid)
             if frame is None:
@@ -1488,4 +1541,8 @@ def register_uiauto_tools(mcp):
             return uia.expand(target, name,
                               want=str(expand).strip().lower()
                               in ("1", "true", "yes"))
-        return uia.invoke(target, name)
+        done = uia.invoke(target, name)
+        if done.get("ok") and in_dialog:
+            # Reported, not required: Next or Apply leave a dialog open.
+            done["dialog_closed"] = windows.wait_for_close(target, timeout=3.0)
+        return done

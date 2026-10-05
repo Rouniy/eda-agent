@@ -3634,18 +3634,23 @@ Begin
             For Endpoint := 1 To 2 Do
             Begin
                 Try
+                    { IN MILS, AS REALS. A coordinate difference is an     }
+                    { Integer, and kept one in a Double variable, so its   }
+                    { square overflowed 32 bits on any track longer than   }
+                    { about 4.6 mil: the angles were garbage and a negative }
+                    { sum made Sqrt return NaN, which is not JSON.          }
                     If Endpoint = 1 Then
                     Begin
                         PX := Track.X1; PY := Track.Y1;
-                        V1X := Track.X2 - PX; V1Y := Track.Y2 - PY;
+                        V1X := (Track.X2 - PX) / 10000.0; V1Y := (Track.Y2 - PY) / 10000.0;
                     End
                     Else
                     Begin
                         PX := Track.X2; PY := Track.Y2;
-                        V1X := Track.X1 - PX; V1Y := Track.Y1 - PY;
+                        V1X := (Track.X1 - PX) / 10000.0; V1Y := (Track.Y1 - PY) / 10000.0;
                     End;
                     L1 := Sqrt(V1X * V1X + V1Y * V1Y);
-                    If L1 < 1 Then Continue;
+                    If L1 < 0.01 Then Continue;
 
                     SpatIter := Board.SpatialIterator_Create;
                     Try
@@ -3658,7 +3663,9 @@ Begin
                         Begin
                             Try
                                 Other := Obj;
-                                If (Other.I_ObjectAddress <> Track.I_ObjectAddress)
+                                { Each join is seen from both of its tracks: }
+                                { reported from the lower address only.       }
+                                If (Other.I_ObjectAddress > Track.I_ObjectAddress)
                                    And (Other.Net = Track.Net) Then
                                 Begin
                                     { Find which of Other's endpoints is at (PX,PY) }
@@ -3666,14 +3673,14 @@ Begin
                                     If (Abs(Other.X1 - PX) <= Tol)
                                        And (Abs(Other.Y1 - PY) <= Tol) Then
                                     Begin
-                                        V2X := Other.X2 - PX;
-                                        V2Y := Other.Y2 - PY;
+                                        V2X := (Other.X2 - PX) / 10000.0;
+                                        V2Y := (Other.Y2 - PY) / 10000.0;
                                     End
                                     Else If (Abs(Other.X2 - PX) <= Tol)
                                             And (Abs(Other.Y2 - PY) <= Tol) Then
                                     Begin
-                                        V2X := Other.X1 - PX;
-                                        V2Y := Other.Y1 - PY;
+                                        V2X := (Other.X1 - PX) / 10000.0;
+                                        V2Y := (Other.Y1 - PY) / 10000.0;
                                     End
                                     Else
                                     Begin
@@ -3681,7 +3688,7 @@ Begin
                                         Continue;
                                     End;
                                     L2 := Sqrt(V2X * V2X + V2Y * V2Y);
-                                    If L2 < 1 Then
+                                    If L2 < 0.01 Then
                                     Begin
                                         Obj := SpatIter.NextPCBObject;
                                         Continue;
