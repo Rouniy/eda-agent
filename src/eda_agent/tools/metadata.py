@@ -229,6 +229,11 @@ INTERACTION_OVERRIDES = {
     # prefix defaults to "silent" (mutating), which is the opposite of
     # the truth here, so say so explicitly.
     "obj_explain_pin": READONLY,
+    # Reads the board (or a saved board model) and measures it: overlaps,
+    # gaps, connectivity, corners, return vias, plane islands. Nothing is
+    # written. The pcb_ prefix defaults to silent, which would tell anyone
+    # filtering for safe operations that an audit edits the board.
+    "pcb_layout_audit": READONLY,
     # Reads a database library's declared tables and fields. The lib_ prefix
     # does not make that clear to the classifier; it writes nothing.
     "lib_dblib_info": READONLY,
