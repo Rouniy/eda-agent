@@ -26,7 +26,7 @@ from ..placement import (
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..bridge.payload import payload_safe
-from ..units import MILS_PER_MM
+from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 
 
 def _build_objective_report(
@@ -5693,15 +5693,16 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_pad(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         name: str = "",
         net: str = "",
         shape: str = "round",
-        x_size: int = 60,
-        y_size: int = 60,
-        hole_size: int = 0,
+        x_size: Optional[float] = None,
+        y_size: Optional[float] = None,
+        hole_size: float = 0,
         layer: str = "TopLayer",
+        units: str = "mil",
     ) -> dict[str, Any]:
         """Place a standalone pad on the active PCB.
 
@@ -5716,28 +5717,34 @@ def register_pcb_tools(mcp):
             shape: "round" (default) / "rect" / "oct", or spelled out as
                 the library tools take them ("rectangular", "octagonal").
                 Any other word is refused; it used to become a round pad.
-            x_size, y_size: Pad dimensions in mils
-            hole_size: Drill diameter in mils (0 = SMD)
+            x_size, y_size: Pad dimensions (default 60 mil)
+            hole_size: Drill diameter (0 = SMD)
             layer: Copper layer (default "TopLayer")
+            units: "mil" (default) or "mm", for the position and every
+                size, kept exact rather than rounded to whole mils.
 
         Returns:
             Dictionary confirming pad placement
         """
+        if normalise_units(units) is None:
+            return {"error": f"units must be 'mil' or 'mm', not {units!r}"}
+        params: dict[str, Any] = {
+            "x": format_length(x),
+            "y": format_length(y),
+            "name": name,
+            "net": net,
+            "shape": shape,
+            "x_size": format_length(
+                length_in(units, 60) if x_size is None else x_size),
+            "y_size": format_length(
+                length_in(units, 60) if y_size is None else y_size),
+            "hole_size": format_length(hole_size),
+            "layer": layer,
+        }
+        if normalise_units(units) == "mm":
+            params["units"] = "mm"
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.place_pad",
-            {
-                "x": str(x),
-                "y": str(y),
-                "name": name,
-                "net": net,
-                "shape": shape,
-                "x_size": str(x_size),
-                "y_size": str(y_size),
-                "hole_size": str(hole_size),
-                "layer": layer,
-            },
-        )
+        result = await bridge.send_command_async("pcb.place_pad", params)
         return result
 
     @mcp.tool()

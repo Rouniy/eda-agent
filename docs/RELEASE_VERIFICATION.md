@@ -1,4 +1,4 @@
-# Release verification: 2026.10.05.3
+# Release verification: 2026.10.06.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -53,6 +53,8 @@ works elsewhere cannot be an undeclared identifier:
 | 26, replicated part | `RegisterSchObjectInContainer` | yes, `Generic.pas` | medium |
 | 26, footprint target | `CurrentComponent` | yes, `Lib_SetDesignator` | low |
 | 26, copied footprint | `MoveByXY` on a footprint's primitives | yes, `Library.pas`, on a 3D body | medium |
+| 27, lengths in mm | `TopXSize`, `TopYSize` on a pad, now from `CoordFromUnits` | yes, `Lib_AddFootprintPads` | low |
+| 27, new document | `ShowDocument` on the new document | yes, `App_SetActiveDocument` | low |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -228,7 +230,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.05.3`, `version_match` =
+Expect `altium_script_version` = `2026.10.06.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -1560,6 +1562,54 @@ because `IPCB_Region.Area` is the outer contour only; a pad's `Name`
 read empty through `obj_query`; and `pcb_place_pad` turned
 `shape=rectangular` into a round pad. Also open: a same-library copy
 of a footprint with 4 primitives counted 6.
+
+Items 11 and 12 verified on AD 26.10.1.6 with the script of 2026-10-06,
+build 1, on the same scratch board: a GND pour over an unnetted 50 mil
+via read `copper_area_mm2` 410.405 against an outline of 412.902, the
+ring of a 25 mil radius plus 10 mil clearance, with `copper_area_exact`
+true and the loop answering afterwards; `shape=rectangular` placed a
+rectangular pad whose `Name` read `P1` and matched a `Name=P1` filter,
+and `shape=square` was refused with nothing placed.
+
+---
+
+## 27. Lengths in millimetres, and a new document in front
+
+Footprint and pad tools took whole mils only, so a metric land pattern
+came out up to 12.7 um off its grid. `units="mm"` now carries lengths as
+given. On scratch documents only.
+
+1. **A new document is focused.** With another PcbLib in front,
+   `app_create_document kind=PCBLIB` on a scratch path: `focused` true,
+   and `app_get_active_document` names the new file. A path in a folder
+   that does not exist is refused with `NOT_SAVED`, naming the folder.
+2. **Pads in mm.** In the new library, `lib_create_footprint`, then
+   `lib_add_footprint_pads units=mm` with pads at x 1.625 and -1.625,
+   0.3 x 1.15: `lib_get_pad_geometry` reads 1.625 and 0.3 x 1.15 mm,
+   not 1.6256 and 0.3048. A pad with no size reads 1.524 mm (60 mil).
+3. **Tracks, arc and text in mm.** `lib_add_footprint_tracks units=mm`
+   with a 0.12 mm width, `lib_add_footprint_arc units=mm radius=0.5` and
+   `lib_add_footprint_text units=mm size=1`: each lands at the size
+   given. `units=inch` is refused on every one with nothing written.
+4. **Mils unchanged.** The same calls without units place what they did
+   before: 60 mil pads where no size is given, whole mils exact.
+5. **Board pad in mm.** On a scratch board, `pcb_place_pad units=mm
+   x=12.7 y=25.4 shape=rect x_size=0.3 y_size=1.15`: `pcb_get_pad_properties`
+   reads 500 and 1000 mil, 11.811 x 45.276.
+
+Verified on AD 26.10.1.6 with the script of 2026-10-06, build 1, on a
+scratch library and board kept out of every project, with a client sheet
+in front at the start: item 1 (`focused` true and the new library active;
+a missing folder refused, named); item 2 (pads at -1.62500056 and
+1.62500056 mm, 0.2999994 x 1.15000024 mm, each within one internal unit;
+the unsized pad 1.524 mm); item 3 (track, arc and text created in mm and
+`inch` refused with nothing written; their sizes have no readback tool,
+and they go through the same conversion as the pads); item 4 (plus and
+minus 1.27 mm, 0.762 x 1.016 mm, default 1.524 mm, as before); item 5
+(63.5 and 50.8 mm read 2500 and 2000 mil, 0.3 x 1.15 mm read 11.811 x
+45.2756 mil, rectangular). The first attempt at item 2 came back rounded
+to whole mils because the MCP server was still running the previous
+Python; a server restart is part of loading this change.
 
 ---
 

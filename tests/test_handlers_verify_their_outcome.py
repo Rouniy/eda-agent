@@ -197,7 +197,10 @@ def test_footprint_primitives_are_placed_relative_to_the_footprint():
         writes = re.findall(r"(?:Pad|Track|Arc|Text)\.\w*"
                             r"(?:X|Y|X1|Y1|X2|Y2|XCenter|YCenter|"
                             r"XLocation|YLocation)\s*:=\s*([^;]+);", body)
-        placement = [w for w in writes if "MilsToCoord" in w]
+        # CoordFromUnits converts mils or millimetres; either way the
+        # result is a length, and it still needs the footprint's origin.
+        placement = [w for w in writes
+                     if "MilsToCoord" in w or "CoordFromUnits" in w]
         assert placement, f"{func}: no coordinate writes found to check"
         for w in placement:
             assert "FootprintOrigin" in w or "Footprint." in w, (

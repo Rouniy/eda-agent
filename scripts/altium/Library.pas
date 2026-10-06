@@ -1371,7 +1371,9 @@ End;
 Function Lib_AddFootprintPad(Params : String; RequestId : String) : String;
 Var
     Designator, Shape, LayerStr : String;
-    X, Y, XSize, YSize, HoleSize, CornerRadius : Integer;
+    CornerRadius : Integer;
+    X, Y, XSize, YSize, HoleSize : Double;
+    UnitsStr : String;
     Rotation : Double;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
@@ -1379,12 +1381,18 @@ Var
     Pad : IPCB_Pad;
     PadLayer : TLayer;
 Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     Designator := ExtractJsonValue(Params, 'designator');
-    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
-    XSize := StrToIntDef(ExtractJsonValue(Params, 'x_size'), 60);
-    YSize := StrToIntDef(ExtractJsonValue(Params, 'y_size'), 60);
-    HoleSize := StrToIntDef(ExtractJsonValue(Params, 'hole_size'), 0);
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
+    XSize := StrToFloatDef(ExtractJsonValue(Params, 'x_size'), MilsInUnits(60, UnitsStr));
+    YSize := StrToFloatDef(ExtractJsonValue(Params, 'y_size'), MilsInUnits(60, UnitsStr));
+    HoleSize := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 0);
     Shape := ExtractJsonValue(Params, 'shape');
     LayerStr := ExtractJsonValue(Params, 'layer');
     Rotation := StrToFloatDef(ExtractJsonValue(Params, 'rotation'), 0);
@@ -1425,11 +1433,11 @@ Begin
     If Pad <> Nil Then
     Begin
         Pad.Name := Designator;
-        Pad.X := FootprintOriginX(Footprint) + MilsToCoord(X);
-        Pad.Y := FootprintOriginY(Footprint) + MilsToCoord(Y);
-        Pad.TopXSize := MilsToCoord(XSize);
-        Pad.TopYSize := MilsToCoord(YSize);
-        Pad.HoleSize := MilsToCoord(HoleSize);
+        Pad.X := FootprintOriginX(Footprint) + CoordFromUnits(X, UnitsStr);
+        Pad.Y := FootprintOriginY(Footprint) + CoordFromUnits(Y, UnitsStr);
+        Pad.TopXSize := CoordFromUnits(XSize, UnitsStr);
+        Pad.TopYSize := CoordFromUnits(YSize, UnitsStr);
+        Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
         Pad.Rotation := Rotation;
 
         Pad.Layer := PadLayer;
@@ -1479,7 +1487,9 @@ Function Lib_AddFootprintPads(Params : String; RequestId : String) : String;
 Var
     PadsStr, Op, Remaining, Shape, LayerStr, BadLayers : String;
     OpCount, Added, Failed : Integer;
-    X, Y, XSize, YSize, HoleSize, CornerRadius : Integer;
+    CornerRadius : Integer;
+    X, Y, XSize, YSize, HoleSize : Double;
+    UnitsStr : String;
     Rotation : Double;
     PadLayer : TLayer;
     PcbLib : IPCB_Library;
@@ -1487,6 +1497,12 @@ Var
     TargetProblem : String;
     Pad : IPCB_Pad;
 Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     PadsStr := ExtractJsonValue(Params, 'pads');
     If PadsStr = '' Then
     Begin
@@ -1521,11 +1537,11 @@ Begin
             Op := NextBatchOp(Remaining);
             If Op = '' Then Break;
             OpCount := OpCount + 1;
-            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
-            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
-            XSize := StrToIntDef(GetBatchField(Op, 'x_size'), 60);
-            YSize := StrToIntDef(GetBatchField(Op, 'y_size'), 60);
-            HoleSize := StrToIntDef(GetBatchField(Op, 'hole_size'), 0);
+            X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
+            XSize := StrToFloatDef(GetBatchField(Op, 'x_size'), MilsInUnits(60, UnitsStr));
+            YSize := StrToFloatDef(GetBatchField(Op, 'y_size'), MilsInUnits(60, UnitsStr));
+            HoleSize := StrToFloatDef(GetBatchField(Op, 'hole_size'), 0);
             Rotation := StrToFloatDef(GetBatchField(Op, 'rotation'), 0);
             Shape := GetBatchField(Op, 'shape');
             LayerStr := GetBatchField(Op, 'layer');
@@ -1554,11 +1570,11 @@ Begin
             End;
 
             Pad.Name := GetBatchField(Op, 'designator');
-            Pad.X := FootprintOriginX(Footprint) + MilsToCoord(X);
-            Pad.Y := FootprintOriginY(Footprint) + MilsToCoord(Y);
-            Pad.TopXSize := MilsToCoord(XSize);
-            Pad.TopYSize := MilsToCoord(YSize);
-            Pad.HoleSize := MilsToCoord(HoleSize);
+            Pad.X := FootprintOriginX(Footprint) + CoordFromUnits(X, UnitsStr);
+            Pad.Y := FootprintOriginY(Footprint) + CoordFromUnits(Y, UnitsStr);
+            Pad.TopXSize := CoordFromUnits(XSize, UnitsStr);
+            Pad.TopYSize := CoordFromUnits(YSize, UnitsStr);
+            Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
             Pad.Rotation := Rotation;
 
             { Layer FIRST (roundrect setters are layer-aware): drilled ->       }
@@ -1604,7 +1620,8 @@ End;
 
 Function Lib_AddFootprintTrack(Params : String; RequestId : String) : String;
 Var
-    X1, Y1, X2, Y2, Width : Integer;
+    X1, Y1, X2, Y2, Width : Double;
+    UnitsStr : String;
     LayerStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
@@ -1612,11 +1629,17 @@ Var
     Track : IPCB_Track;
     Layer : TLayer;
 Begin
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
-    Width := StrToIntDef(ExtractJsonValue(Params, 'width'), 10);
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
+    Width := StrToFloatDef(ExtractJsonValue(Params, 'width'), MilsInUnits(10, UnitsStr));
     LayerStr := ExtractJsonValue(Params, 'layer');
 
     PcbLib := PCBServer.GetCurrentPCBLibrary;
@@ -1649,11 +1672,11 @@ Begin
     Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
     If Track <> Nil Then
     Begin
-        Track.X1 := FootprintOriginX(Footprint) + MilsToCoord(X1);
-        Track.Y1 := FootprintOriginY(Footprint) + MilsToCoord(Y1);
-        Track.X2 := FootprintOriginX(Footprint) + MilsToCoord(X2);
-        Track.Y2 := FootprintOriginY(Footprint) + MilsToCoord(Y2);
-        Track.Width := MilsToCoord(Width);
+        Track.X1 := FootprintOriginX(Footprint) + CoordFromUnits(X1, UnitsStr);
+        Track.Y1 := FootprintOriginY(Footprint) + CoordFromUnits(Y1, UnitsStr);
+        Track.X2 := FootprintOriginX(Footprint) + CoordFromUnits(X2, UnitsStr);
+        Track.Y2 := FootprintOriginY(Footprint) + CoordFromUnits(Y2, UnitsStr);
+        Track.Width := CoordFromUnits(Width, UnitsStr);
         Track.Layer := Layer;
 
         Footprint.AddPCBObject(Track);
@@ -1688,13 +1711,20 @@ Function Lib_AddFootprintTracks(Params : String; RequestId : String) : String;
 Var
     TracksStr, Op, Remaining, LayerStr, BadLayers : String;
     OpCount, Added, Failed : Integer;
-    X1, Y1, X2, Y2, Width : Integer;
+    X1, Y1, X2, Y2, Width : Double;
+    UnitsStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     TargetProblem : String;
     Track : IPCB_Track;
     Layer : TLayer;
 Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     TracksStr := ExtractJsonValue(Params, 'tracks');
     If TracksStr = '' Then
     Begin
@@ -1729,11 +1759,11 @@ Begin
             Op := NextBatchOp(Remaining);
             If Op = '' Then Break;
             OpCount := OpCount + 1;
-            X1 := StrToIntDef(GetBatchField(Op, 'x1'), 0);
-            Y1 := StrToIntDef(GetBatchField(Op, 'y1'), 0);
-            X2 := StrToIntDef(GetBatchField(Op, 'x2'), 0);
-            Y2 := StrToIntDef(GetBatchField(Op, 'y2'), 0);
-            Width := StrToIntDef(GetBatchField(Op, 'width'), 10);
+            X1 := StrToFloatDef(GetBatchField(Op, 'x1'), 0);
+            Y1 := StrToFloatDef(GetBatchField(Op, 'y1'), 0);
+            X2 := StrToFloatDef(GetBatchField(Op, 'x2'), 0);
+            Y2 := StrToFloatDef(GetBatchField(Op, 'y2'), 0);
+            Width := StrToFloatDef(GetBatchField(Op, 'width'), MilsInUnits(10, UnitsStr));
             LayerStr := GetBatchField(Op, 'layer');
             { Empty -> silkscreen (the safe default); any named layer is        }
             { honoured so courtyard/assembly tracks can go on Mechanical layers.}
@@ -1755,11 +1785,11 @@ Begin
                 Continue;
             End;
 
-            Track.X1 := FootprintOriginX(Footprint) + MilsToCoord(X1);
-            Track.Y1 := FootprintOriginY(Footprint) + MilsToCoord(Y1);
-            Track.X2 := FootprintOriginX(Footprint) + MilsToCoord(X2);
-            Track.Y2 := FootprintOriginY(Footprint) + MilsToCoord(Y2);
-            Track.Width := MilsToCoord(Width);
+            Track.X1 := FootprintOriginX(Footprint) + CoordFromUnits(X1, UnitsStr);
+            Track.Y1 := FootprintOriginY(Footprint) + CoordFromUnits(Y1, UnitsStr);
+            Track.X2 := FootprintOriginX(Footprint) + CoordFromUnits(X2, UnitsStr);
+            Track.Y2 := FootprintOriginY(Footprint) + CoordFromUnits(Y2, UnitsStr);
+            Track.Width := CoordFromUnits(Width, UnitsStr);
             Track.Layer := Layer;
 
             Footprint.AddPCBObject(Track);
@@ -1792,7 +1822,8 @@ End;
 
 Function Lib_AddFootprintArc(Params : String; RequestId : String) : String;
 Var
-    XCenter, YCenter, Radius, Width : Integer;
+    XCenter, YCenter, Radius, Width : Double;
+    UnitsStr : String;
     { Angles are DOUBLE and are read with StrToFloatDef below. They are     }
     { declared `float` on the Python side, so the wire carries "360.0" and  }
     { StrToIntDef returned its DEFAULT on every call. EndAngle came through }
@@ -1807,12 +1838,18 @@ Var
     Arc : IPCB_Arc;
     Layer : TLayer;
 Begin
-    XCenter := StrToIntDef(ExtractJsonValue(Params, 'x_center'), 0);
-    YCenter := StrToIntDef(ExtractJsonValue(Params, 'y_center'), 0);
-    Radius := StrToIntDef(ExtractJsonValue(Params, 'radius'), 100);
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    XCenter := StrToFloatDef(ExtractJsonValue(Params, 'x_center'), 0);
+    YCenter := StrToFloatDef(ExtractJsonValue(Params, 'y_center'), 0);
+    Radius := StrToFloatDef(ExtractJsonValue(Params, 'radius'), MilsInUnits(100, UnitsStr));
     StartAngle := StrToFloatDef(ExtractJsonValue(Params, 'start_angle'), 0.0);
     EndAngle := StrToFloatDef(ExtractJsonValue(Params, 'end_angle'), 360.0);
-    Width := StrToIntDef(ExtractJsonValue(Params, 'width'), 10);
+    Width := StrToFloatDef(ExtractJsonValue(Params, 'width'), MilsInUnits(10, UnitsStr));
     LayerStr := ExtractJsonValue(Params, 'layer');
 
     PcbLib := PCBServer.GetCurrentPCBLibrary;
@@ -1845,12 +1882,12 @@ Begin
     Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
     If Arc <> Nil Then
     Begin
-        Arc.XCenter := FootprintOriginX(Footprint) + MilsToCoord(XCenter);
-        Arc.YCenter := FootprintOriginY(Footprint) + MilsToCoord(YCenter);
-        Arc.Radius := MilsToCoord(Radius);
+        Arc.XCenter := FootprintOriginX(Footprint) + CoordFromUnits(XCenter, UnitsStr);
+        Arc.YCenter := FootprintOriginY(Footprint) + CoordFromUnits(YCenter, UnitsStr);
+        Arc.Radius := CoordFromUnits(Radius, UnitsStr);
         Arc.StartAngle := StartAngle;
         Arc.EndAngle := EndAngle;
-        Arc.LineWidth := MilsToCoord(Width);
+        Arc.LineWidth := CoordFromUnits(Width, UnitsStr);
         Arc.Layer := Layer;
 
         Footprint.AddPCBObject(Arc);
@@ -1908,19 +1945,27 @@ Var
     Board : IPCB_Board;
     Iter : IPCB_LibraryIterator;
     Layer : TLayer;
-    X, Y, Size, Width, Rotation : Integer;
+    Rotation : Integer;
+    X, Y, Size, Width : Double;
+    UnitsStr : String;
     UseTTFont : Boolean;
 Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     TextStr := ExtractJsonValue(Params, 'text');
     If TextStr = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'text is required');
         Exit;
     End;
-    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
-    Size := StrToIntDef(ExtractJsonValue(Params, 'size'), 50);
-    Width := StrToIntDef(ExtractJsonValue(Params, 'width'), 8);
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
+    Size := StrToFloatDef(ExtractJsonValue(Params, 'size'), MilsInUnits(50, UnitsStr));
+    Width := StrToFloatDef(ExtractJsonValue(Params, 'width'), MilsInUnits(8, UnitsStr));
     Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopOverlay';
@@ -2014,13 +2059,13 @@ Begin
         End;
         { Relative to the footprint's own origin. Board.XOrigin is a board-wide
           reference and would drop the text far from the footprint. }
-        Text.XLocation := Footprint.X + MilsToCoord(X);
-        Text.YLocation := Footprint.Y + MilsToCoord(Y);
+        Text.XLocation := Footprint.X + CoordFromUnits(X, UnitsStr);
+        Text.YLocation := Footprint.Y + CoordFromUnits(Y, UnitsStr);
         Text.Layer := Layer;
         Text.UseTTFonts := UseTTFont;
         Text.UnderlyingString := TextStr;
-        Text.Size := MilsToCoord(Size);
-        Text.Width := MilsToCoord(Width);
+        Text.Size := CoordFromUnits(Size, UnitsStr);
+        Text.Width := CoordFromUnits(Width, UnitsStr);
         Try Text.MirrorFlag := Mirror; Except End;
         Try Text.Rotation := Rotation; Except End;
 
@@ -2043,8 +2088,8 @@ Begin
         ',"footprint":"' + EscapeJsonString(Footprint.Name) + '"' +
         ',"text":"' + EscapeJsonString(TextStr) + '"' +
         ',"layer":"' + EscapeJsonString(LayerStr) + '"' +
-        ',"x":' + IntToStr(X) +
-        ',"y":' + IntToStr(Y) + '}';
+        ',"x":' + FloatToJsonStr(X) +
+        ',"y":' + FloatToJsonStr(Y) + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 

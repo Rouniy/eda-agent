@@ -558,7 +558,7 @@ Var
     ServerDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
-    AddToProject, Saved, Added : Boolean;
+    AddToProject, Saved, Added, Focused : Boolean;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
     FilePath := ExtractJsonValue(Params, 'file_path');
@@ -637,10 +637,33 @@ Begin
         End;
     End;
 
+    { NOT SAVED IS NOT CREATED. It answered success with saved:false, which }
+    { is what a missing folder produces, and the next call went on as if   }
+    { the file were there.                                                 }
+    If Not Saved Then
+    Begin
+        If DirectoryExists(ExtractFilePath(FilePath)) Then
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document could not be saved to ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document was not saved: the folder does not exist: '
+                + ExtractFilePath(FilePath));
+        Exit;
+    End;
+
+    { FOCUS THE NEW DOCUMENT. It stayed behind whatever was in front, and  }
+    { the library and board tools act on the focused document, so the next }
+    { authoring call wrote into the old one and reported success. Checked  }
+    { by path afterwards, since a request to focus is not a focus.         }
+    Try Client.ShowDocument(ServerDoc); Except End;
+    Focused := UpperCase(CurrentFocusedDocPath(0)) = UpperCase(FilePath);
+
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"kind":"' + EscapeJsonString(DocKind) + '"' +
         ',"file_path":"' + EscapeJsonString(FilePath) + '"' +
         ',"saved":' + BoolToJsonStr(Saved) +
+        ',"focused":' + BoolToJsonStr(Focused) +
         ',"added_to_project":' + BoolToJsonStr(Added) + '}');
 End;
 

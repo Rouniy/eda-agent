@@ -8952,8 +8952,8 @@ Var
     Board : IPCB_Board;
     Pad : IPCB_Pad;
     X, Y : Double;   { sub-mil coordinates: local patch 2026-09-18 }
-    XSize, YSize, HoleSize : Integer;
-    Shape, NameStr, NetStr, LayerStr : String;
+    XSize, YSize, HoleSize : Double;
+    Shape, NameStr, NetStr, LayerStr, UnitsStr : String;
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
 Begin
@@ -8964,11 +8964,17 @@ Begin
         Exit;
     End;
 
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
-    XSize := StrToIntDef(ExtractJsonValue(Params, 'x_size'), 60);
-    YSize := StrToIntDef(ExtractJsonValue(Params, 'y_size'), 60);
-    HoleSize := StrToIntDef(ExtractJsonValue(Params, 'hole_size'), 0);
+    XSize := StrToFloatDef(ExtractJsonValue(Params, 'x_size'), MilsInUnits(60, UnitsStr));
+    YSize := StrToFloatDef(ExtractJsonValue(Params, 'y_size'), MilsInUnits(60, UnitsStr));
+    HoleSize := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 0);
     Shape := LowerCase(ExtractJsonValue(Params, 'shape'));
     NameStr := ExtractJsonValue(Params, 'name');
     NetStr := ExtractJsonValue(Params, 'net');
@@ -9007,11 +9013,11 @@ Begin
             Exit;
         End;
 
-        Pad.X := MilsToCoordF(X);
-        Pad.Y := MilsToCoordF(Y);
-        Pad.TopXSize := MilsToCoord(XSize);
-        Pad.TopYSize := MilsToCoord(YSize);
-        Pad.HoleSize := MilsToCoord(HoleSize);
+        Pad.X := CoordFromUnits(X, UnitsStr);
+        Pad.Y := CoordFromUnits(Y, UnitsStr);
+        Pad.TopXSize := CoordFromUnits(XSize, UnitsStr);
+        Pad.TopYSize := CoordFromUnits(YSize, UnitsStr);
+        Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
         Pad.Layer := TargetLayer;
         If NameStr <> '' Then Pad.Name := NameStr;
 
@@ -9033,11 +9039,13 @@ Begin
     End;
 
     MarkDocDirtyByPath(Board.FileName);
+    If UnitsAreMM(UnitsStr) Then UnitsStr := 'mm' Else UnitsStr := 'mil';
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
-        + '"x_size":' + IntToStr(XSize) + ',"y_size":' + IntToStr(YSize) + ','
-        + '"hole_size":' + IntToStr(HoleSize) + ','
+        + '"x_size":' + FloatToJsonStr(XSize) + ',"y_size":' + FloatToJsonStr(YSize) + ','
+        + '"hole_size":' + FloatToJsonStr(HoleSize) + ','
+        + '"units":"' + UnitsStr + '",'
         + '"shape":"' + EscapeJsonString(Shape) + '",'
         + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"name":"' + EscapeJsonString(NameStr) + '",'

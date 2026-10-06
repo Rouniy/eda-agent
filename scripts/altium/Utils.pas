@@ -35,6 +35,41 @@ Begin
     Result := Coord * 25.4 / 10000000;
 End;
 
+{ Lengths in the caller's unit: 'mil' (also empty, the default) or 'mm'.    }
+{ Authoring took whole mils only, so 1.625 mm arrived as 64 mil and read    }
+{ back as 1.6256 mm, off a metric grid on every pad. The mil path is        }
+{ MilsToCoordF, which equals MilsToCoord for whole mils, so a caller that   }
+{ never passes units places exactly what it did before.                     }
+Function UnitsAreMM(Units : String) : Boolean;
+Begin
+    Result := LowerCase(Trim(Units)) = 'mm';
+End;
+
+{ '' when the unit is one of the two, else the refusal to send.             }
+Function UnitsProblem(Units : String) : String;
+Var
+    U : String;
+Begin
+    Result := '';
+    U := LowerCase(Trim(Units));
+    If (U <> '') And (U <> 'mil') And (U <> 'mils') And (U <> 'mm') Then
+        Result := 'Unknown units: ' + Units + '. Use mil or mm.';
+End;
+
+Function CoordFromUnits(Value : Double; Units : String) : TCoord;
+Begin
+    If UnitsAreMM(Units) Then Result := MMToCoord(Value)
+    Else Result := MilsToCoordF(Value);
+End;
+
+{ A default written in mils, in the caller's unit. A bare default of 60 is  }
+{ 60 mils; read as millimetres it would be a 60 mm pad.                     }
+Function MilsInUnits(Mils : Double; Units : String) : Double;
+Begin
+    If UnitsAreMM(Units) Then Result := Mils * 0.0254
+    Else Result := Mils;
+End;
+
 {..............................................................................}
 { ResolveSchLibForLoad - any library path in, a loadable .SchLib path out.     }
 {                                                                              }

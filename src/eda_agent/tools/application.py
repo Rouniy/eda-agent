@@ -804,8 +804,16 @@ def register_application_tools(mcp):
             add_to_project: Attach the new file to the focused project.
                 Default True. Set False to leave it as a free document.
 
+        The new document is focused before this returns, and ``focused``
+        says whether that took: the library and board tools act on the
+        focused document, and a new one left behind the old meant the
+        next call wrote into the old one. A document that could not be
+        saved is an error (a missing folder is named), not a success with
+        ``saved: false``.
+
         Returns:
-            Dictionary with kind, file_path, saved, added_to_project.
+            Dictionary with kind, file_path, saved, focused,
+            added_to_project.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {

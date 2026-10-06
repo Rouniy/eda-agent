@@ -16,6 +16,7 @@ from ..library_db import (
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..config import get_config
+from ..units import format_length, length_in, normalise_units
 from ..atomicfile import replace_with_retry
 
 
@@ -330,7 +331,23 @@ def _payload_safe(value: object) -> str:
     return payload_safe(value)
 
 
-def _pads_payload(pads: list[dict[str, Any]]) -> tuple[str, int]:
+def _units_refusal(units: str) -> dict[str, Any] | None:
+    """The reply for a unit the authoring tools do not take, or None."""
+    if normalise_units(units) is None:
+        return {"error": f"units must be 'mil' or 'mm', not {units!r}"}
+    return None
+
+
+def _with_units(params: dict[str, Any], units: str) -> dict[str, Any]:
+    """Name millimetres on the wire; mils, the default, are left implicit
+    so a call that never mentions units sends what it always sent."""
+    if normalise_units(units) == "mm":
+        params["units"] = "mm"
+    return params
+
+
+def _pads_payload(pads: list[dict[str, Any]],
+                  units: str = "mil") -> tuple[str, int]:
     """Build the ``pads`` batch payload, and count what was dropped.
 
     Sibling of :func:`_pins_payload`, extracted for the same reason: the
@@ -356,11 +373,13 @@ def _pads_payload(pads: list[dict[str, Any]]) -> tuple[str, int]:
             continue
         fields = [
             f"designator={desig}",
-            f"x={round(p.get('x', 0))}",
-            f"y={round(p.get('y', 0))}",
-            f"x_size={round(p.get('x_size', 60))}",
-            f"y_size={round(p.get('y_size', 60))}",
-            f"hole_size={round(p.get('hole_size', 0))}",
+            # Lengths unrounded, in ``units``: round() here quantised every
+            # millimetre land pattern to whole mils before it left Python.
+            f"x={format_length(p.get('x', 0))}",
+            f"y={format_length(p.get('y', 0))}",
+            f"x_size={format_length(p.get('x_size', length_in(units, 60)))}",
+            f"y_size={format_length(p.get('y_size', length_in(units, 60)))}",
+            f"hole_size={format_length(p.get('hole_size', 0))}",
             f"shape={_payload_safe(p.get('shape', 'rectangular'))}",
             f"corner_radius={round(p.get('corner_radius', 25))}",
             f"rotation={_payload_safe(p.get('rotation', 0))}",
@@ -1364,16 +1383,17 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_add_footprint_pad(
         designator: str,
-        x: int,
-        y: int,
-        x_size: int = 60,
-        y_size: int = 60,
-        hole_size: int = 0,
+        x: float,
+        y: float,
+        x_size: Optional[float] = None,
+        y_size: Optional[float] = None,
+        hole_size: float = 0,
         shape: str = "rectangular",
         layer: str = "TopLayer",
         rotation: int = 0,
         corner_radius: int = 25,
         footprint_name: str = "",
+        units: str = "mil",
     ) -> dict[str, Any]:
         """Add a pad to a footprint: the named one, or the current one.
 
@@ -1381,9 +1401,9 @@ def register_library_tools(mcp):
             designator: Pad designator (e.g., "1", "2")
             x: X coordinate in mils
             y: Y coordinate in mils
-            x_size: Pad X size in mils
-            y_size: Pad Y size in mils
-            hole_size: Drill hole size in mils (0 for SMD). A drilled pad
+            x_size: Pad X size (default 60 mil)
+            y_size: Pad Y size (default 60 mil)
+            hole_size: Drill hole size (0 for SMD). A drilled pad
                 is forced through-hole (MultiLayer); a hole-less pad is
                 SMD on `layer`.
             shape: Pad shape -- "round", "rectangular", "octagonal", or
@@ -1399,18 +1419,26 @@ def register_library_tools(mcp):
                 current first and refuses if it cannot, since otherwise
                 the primitives land in whichever footprint another call
                 left current.
+            units: "mil" (default) or "mm", for every length and
+                coordinate here. Millimetres are kept exact: 1.625 mm
+                used to arrive as 64 mil and read back as 1.6256 mm.
 
         Returns:
             Dictionary confirming pad addition
         """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
         bridge = get_bridge()
         params: dict[str, Any] = {
             "designator": designator,
-            "x": x,
-            "y": y,
-            "x_size": x_size,
-            "y_size": y_size,
-            "hole_size": hole_size,
+            "x": format_length(x),
+            "y": format_length(y),
+            "x_size": format_length(
+                length_in(units, 60) if x_size is None else x_size),
+            "y_size": format_length(
+                length_in(units, 60) if y_size is None else y_size),
+            "hole_size": format_length(hole_size),
             "shape": shape,
             "layer": layer,
             "rotation": rotation,
@@ -1419,7 +1447,7 @@ def register_library_tools(mcp):
         if footprint_name:
             params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_pad", params)
+            "library.add_footprint_pad", _with_units(params, units))
         hint = BulkHintTracker.record_and_hint("lib_add_footprint_pad")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -1429,6 +1457,7 @@ def register_library_tools(mcp):
     async def lib_add_footprint_pads(
         pads: list[dict[str, Any]],
         footprint_name: str = "",
+        units: str = "mil",
     ) -> dict[str, Any]:
         """Add MANY pads to the current footprint in ONE call.
 
@@ -1466,10 +1495,17 @@ def register_library_tools(mcp):
         current first and refuses if it cannot, since otherwise the
         primitives land in whichever footprint another call left current.
 
+        ``units`` is "mil" (default) or "mm" for every pad in the call:
+        one land pattern, one unit, so half a footprint cannot be drawn
+        in the wrong one. Millimetres are kept exact.
+
         Returns:
             Dict with added, failed, total counts.
         """
-        payload, skipped_invalid = _pads_payload(pads)
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        payload, skipped_invalid = _pads_payload(pads, units)
 
         if not payload:
             return {
@@ -1484,20 +1520,21 @@ def register_library_tools(mcp):
         if footprint_name:
             params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_pads", params)
+            "library.add_footprint_pads", _with_units(params, units))
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
         return result
 
     @mcp.tool()
     async def lib_add_footprint_track(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        width: int = 10,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        width: Optional[float] = None,
         layer: str = "TopOverlay",
         footprint_name: str = "",
+        units: str = "mil",
     ) -> dict[str, Any]:
         """Add a track to the current footprint (for silkscreen/courtyard).
 
@@ -1514,17 +1551,27 @@ def register_library_tools(mcp):
             footprint_name: footprint to write into. Empty uses the
                 editor's current footprint; a name makes that footprint
                 current first and refuses if it cannot.
+            units: "mil" (default) or "mm", for every length and
+                coordinate here, kept exact rather than rounded to
+                whole mils.
 
         Returns:
             Dictionary confirming track addition
         """
         bridge = get_bridge()
-        params: dict[str, Any] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                                  "width": width, "layer": layer}
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
+        params: dict[str, Any] = {
+            "x1": format_length(x1), "y1": format_length(y1),
+            "x2": format_length(x2), "y2": format_length(y2),
+            "width": format_length(
+                length_in(units, 10) if width is None else width),
+            "layer": layer}
         if footprint_name:
             params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_track", params)
+            "library.add_footprint_track", _with_units(params, units))
         hint = BulkHintTracker.record_and_hint("lib_add_footprint_track")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -1534,6 +1581,7 @@ def register_library_tools(mcp):
     async def lib_add_footprint_tracks(
         tracks: list[dict[str, Any]],
         footprint_name: str = "",
+        units: str = "mil",
     ) -> dict[str, Any]:
         """Add MANY tracks to the current footprint in ONE call.
 
@@ -1563,9 +1611,15 @@ def register_library_tools(mcp):
         current first and refuses if it cannot, since otherwise the
         primitives land in whichever footprint another call left current.
 
+        ``units`` is "mil" (default) or "mm" for every track in the
+        call, kept exact rather than rounded to whole mils.
+
         Returns:
             Dict with added, failed, total counts.
         """
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
         op_strs: list[str] = []
         skipped_invalid = 0
         for t in tracks:
@@ -1573,11 +1627,11 @@ def register_library_tools(mcp):
                 skipped_invalid += 1
                 continue
             fields = [
-                f"x1={round(t.get('x1', 0))}",
-                f"y1={round(t.get('y1', 0))}",
-                f"x2={round(t.get('x2', 0))}",
-                f"y2={round(t.get('y2', 0))}",
-                f"width={round(t.get('width', 10))}",
+                f"x1={format_length(t.get('x1', 0))}",
+                f"y1={format_length(t.get('y1', 0))}",
+                f"x2={format_length(t.get('x2', 0))}",
+                f"y2={format_length(t.get('y2', 0))}",
+                f"width={format_length(t.get('width', length_in(units, 10)))}",
                 f"layer={_payload_safe(t.get('layer', 'TopOverlay'))}",
             ]
             op_strs.append(";".join(fields))
@@ -1595,21 +1649,22 @@ def register_library_tools(mcp):
         if footprint_name:
             params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_tracks", params)
+            "library.add_footprint_tracks", _with_units(params, units))
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
         return result
 
     @mcp.tool()
     async def lib_add_footprint_arc(
-        x_center: int,
-        y_center: int,
-        radius: int,
+        x_center: float,
+        y_center: float,
+        radius: float,
         start_angle: float = 0,
         end_angle: float = 360,
-        width: int = 10,
+        width: Optional[float] = None,
         layer: str = "TopOverlay",
         footprint_name: str = "",
+        units: str = "mil",
     ) -> dict[str, Any]:
         """Add an arc to the current footprint.
 
@@ -1626,39 +1681,47 @@ def register_library_tools(mcp):
             footprint_name: footprint to write into. Empty uses the
                 editor's current footprint; a name makes that footprint
                 current first and refuses if it cannot.
+            units: "mil" (default) or "mm", for every length and
+                coordinate here, kept exact rather than rounded to
+                whole mils.
 
         Returns:
             Dictionary confirming arc addition
         """
         bridge = get_bridge()
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
         params: dict[str, Any] = {
-            "x_center": x_center,
-            "y_center": y_center,
-            "radius": radius,
+            "x_center": format_length(x_center),
+            "y_center": format_length(y_center),
+            "radius": format_length(radius),
             "start_angle": start_angle,
             "end_angle": end_angle,
-            "width": width,
+            "width": format_length(
+                length_in(units, 10) if width is None else width),
             "layer": layer,
         }
         if footprint_name:
             params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_arc", params)
+            "library.add_footprint_arc", _with_units(params, units))
         return result
 
     @mcp.tool()
     async def lib_add_footprint_text(
         text: str,
-        x: int = 0,
-        y: int = 0,
-        size: int = 50,
-        width: int = 8,
+        x: float = 0,
+        y: float = 0,
+        size: Optional[float] = None,
+        width: Optional[float] = None,
         rotation: int = 0,
         layer: str = "TopOverlay",
         use_ttfont: bool = False,
         mirror: bool = False,
         library_path: Optional[str] = None,
         component_name: Optional[str] = None,
+        units: str = "mil",
     ) -> dict[str, Any]:
         """Add a text primitive to a PcbLib footprint.
 
@@ -1698,6 +1761,9 @@ def register_library_tools(mcp):
                 Defaults to the active document.
             component_name: Optional footprint name to switch to before
                 adding. Defaults to the currently active footprint.
+            units: "mil" (default) or "mm", for every length and
+                coordinate here, kept exact rather than rounded to
+                whole mils.
 
         Returns:
             Dict with ``success``, ``footprint``, ``text``, ``layer``,
@@ -1706,13 +1772,17 @@ def register_library_tools(mcp):
         if not text:
             return {"ok": False,
                     "reason": "text is required: pass the string to place"}
+        refusal = _units_refusal(units)
+        if refusal:
+            return refusal
         bridge = get_bridge()
-        params: dict[str, Any] = {
+        params: dict[str, Any] = _with_units({
             "text": text,
-            "x": x, "y": y,
-            "size": size, "width": width,
+            "x": format_length(x), "y": format_length(y),
+            "size": format_length(length_in(units, 50) if size is None else size),
+            "width": format_length(length_in(units, 8) if width is None else width),
             "rotation": rotation, "layer": layer,
-        }
+        }, units)
         if use_ttfont:
             params["use_ttfont"] = "true"
         if mirror:
