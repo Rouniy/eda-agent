@@ -7017,8 +7017,10 @@ Begin
       (live 2026-08-26: XVRAPPYA -> ASFAVKKE even after SetState_UniqueId
       pre-add). SCHM_PrimitiveRegistration does the same. Attach via
       RegisterSchObjectInContainer, then re-stamp UniqueId while still
-      inside this PreProcess. Do not send SCHM_PrimitiveRegistration. }
-    Try SchDoc.AddSchObject(NewComp); Except End;
+      inside this PreProcess. Do not send SCHM_PrimitiveRegistration.
+      ONE registration only: AddSchObject followed by this registered the
+      copy twice under one key, and the next move of either part raised
+      "An item with the same key has already been added". }
     Try SchDoc.RegisterSchObjectInContainer(NewComp); Except End;
     Try IdAfterAdd := NewComp.UniqueId; Except IdAfterAdd := ''; End;
     If (MasterId <> '') And (IdAfterAdd <> MasterId) Then

@@ -571,6 +571,12 @@ def register_route_tools(mcp):
             }
         result = route_problem(problem, options)
         result["geometry"] = _planned_against(geom, geom_source)
+        if problem.off_grid_terminals:
+            result["off_grid_terminals"] = problem.off_grid_terminals
+            result["grid_hint"] = (
+                f"{problem.off_grid_terminals} blocked pad(s) have no "
+                f"{grid_pitch_mils} mil grid point on their copper; a "
+                "grid_pitch_mils under half the pad width can reach them")
         if nets is not None:
             result["requested_nets"] = sorted(set(nets))
             result["unknown_nets"] = unknown

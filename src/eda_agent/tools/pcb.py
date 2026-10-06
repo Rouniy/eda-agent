@@ -26,6 +26,7 @@ from ..placement import (
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..bridge.payload import payload_safe
+from ..units import MILS_PER_MM
 
 
 def _build_objective_report(
@@ -4224,13 +4225,17 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_repour_polygons() -> dict[str, Any]:
-        """Repour all polygon pours on the active PCB.
+        """Repour every poured polygon on the open PCB, in pour order.
 
-        Triggers a full repour of all polygon copper pours, which
-        recalculates thermal reliefs and clearances.
+        Each polygon is rebuilt through the API, so a changed clearance
+        or board-edge rule takes effect. Shelved polygons stay shelved.
+        ``repoured`` is true only when at least one polygon was rebuilt
+        and none failed; each item reports its copper pieces and poured
+        area before and after, so a repour that changed nothing shows.
 
         Returns:
-            Dictionary confirming repour completed
+            ``repoured``, counts of ``polygons``, ``rebuilt``,
+            ``shelved`` and ``failed``, and per-polygon ``items``
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.repour_polygons", {})
@@ -4364,15 +4369,22 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_via(
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         net: str = "",
-        size: int = 50,
-        hole_size: int = 28,
+        size: float = 50,
+        hole_size: float = 28,
         low_layer: str = "TopLayer",
         high_layer: str = "BottomLayer",
+        size_mm: float | None = None,
+        hole_size_mm: float | None = None,
     ) -> dict[str, Any]:
         """Place a via at specific coordinates on the active PCB.
+
+        Sizes take fractions of a mil, or millimetres through ``size_mm``
+        and ``hole_size_mm``, so a 1.2/0.6 mm via is exactly that and
+        matches a metric Routing Via rule. Whole mils made it
+        1.194/0.610 mm. A hole as wide as the pad is refused.
 
         Args:
             x: Via X position in mils
@@ -4382,16 +4394,23 @@ def register_pcb_tools(mcp):
             hole_size: Drill hole diameter in mils (default 28)
             low_layer: Start layer (default "TopLayer")
             high_layer: End layer (default "BottomLayer")
+            size_mm: pad diameter in mm, used instead of ``size``
+            hole_size_mm: hole diameter in mm, used instead of
+                ``hole_size``
 
         Returns:
-            Dictionary with placed via position and size
+            Dictionary with placed via position and size (mils)
         """
+        if size_mm is not None:
+            size = float(size_mm) * MILS_PER_MM
+        if hole_size_mm is not None:
+            hole_size = float(hole_size_mm) * MILS_PER_MM
         bridge = get_bridge()
         params: dict[str, Any] = {
-            "x": str(x),
-            "y": str(y),
-            "size": str(size),
-            "hole_size": str(hole_size),
+            "x": _mils(x),
+            "y": _mils(y),
+            "size": _mils(size),
+            "hole_size": _mils(hole_size),
             "low_layer": low_layer,
             "high_layer": high_layer,
         }
@@ -5315,15 +5334,25 @@ def register_pcb_tools(mcp):
           - ``net``: assigned net (often ``GND`` / a power rail)
           - ``layer``: ``TopLayer``, ``InternalPlane1``, etc.
           - ``hatch_style``: ``Solid`` / ``45Degree`` / ``Horizontal`` ...
-          - ``pour_over``, ``remove_dead_copper``: pour-policy flags
-          - ``area_sqmils`` / ``area_mm2``: ACTUAL copper area after
-            the pour has been computed (excludes thermal-relief and
-            clearance cutouts). Use this for current-capacity audits
-            (multiply by copper thickness for cubic copper, then
-            apply IPC-2152 / IPC-2221).
+          - ``pour_over``: pour-policy flag
+          - ``area_sqmils`` / ``area_mm2``: the polygon OUTLINE's area.
+            It does not change when the pour does, and it includes
+            copper a clearance or the board edge has cut away.
+          - ``copper_area_mm2``: the copper actually poured, summed
+            over the polygon's regions with the holes cleared around
+            other nets taken off. Use this for current-capacity audits
+            (multiply by copper thickness for cubic copper, then apply
+            IPC-2152 / IPC-2221). A hatched pour is tracks, so it
+            reports ``copper_pieces`` with a region area of 0.
+          - ``copper_area_exact``: false when a region's holes could not
+            be read, in which case ``copper_area_mm2`` is the regions'
+            outer area and overstates the copper.
+          - ``copper_pieces``: how many pieces the pour is in; 0 on a
+            poured polygon means nothing was poured.
+          - ``poured``: false for a shelved polygon.
           - ``bbox_mm2``: bounding-rectangle area; ratio
-            ``area_mm2 / bbox_mm2`` shows how much of the outline is
-            real copper. Low ratio = pour is fighting with cutouts.
+            ``copper_area_mm2 / bbox_mm2`` shows how much of the
+            outline is real copper.
           - ``vertex_count``: a smooth pour has 4-8 vertices; many
             more usually means hand-editing that may have introduced
             narrow necks.
@@ -5684,7 +5713,9 @@ def register_pcb_tools(mcp):
             x, y: Position in mils
             name: Pad designator / label (optional)
             net: Net to connect to (optional)
-            shape: "round" (default) / "rect" / "oct"
+            shape: "round" (default) / "rect" / "oct", or spelled out as
+                the library tools take them ("rectangular", "octagonal").
+                Any other word is refused; it used to become a round pad.
             x_size, y_size: Pad dimensions in mils
             hole_size: Drill diameter in mils (0 = SMD)
             layer: Copper layer (default "TopLayer")

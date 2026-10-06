@@ -4846,12 +4846,142 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_RepourPolygons - Repour all polygon pours via RunProcess                }
+{ PolygonCopper - the copper a polygon has actually poured: its child pieces  }
+{ (regions for a solid pour, tracks and arcs for a hatched one) and the area  }
+{ of the regions in square mils. The outline's own area says nothing about    }
+{ this: it is the same before and after a repour, and it counts copper that   }
+{ a board-edge clearance has cut away.                                        }
+{ Two passes, because a typed IPCB_Region narrows only when it is assigned    }
+{ straight from an iterator.                                                  }
+{..............................................................................}
+
+{ Area in square mils inside one region contour (shoelace over its vertices), }
+{ the points numbered from Base. -1 when the contour cannot be read.          }
+Function ContourAreaSqMils(Contour : IPCB_Contour; Base : Integer) : Double;
+Var
+    J, K, N : Integer;
+    X0, Y0, X1, Y1, S : Double;
+Begin
+    Result := -1;
+    Try
+        N := Contour.Count;
+        S := 0;
+        For J := 0 To N - 1 Do
+        Begin
+            K := J + 1;
+            If K >= N Then K := 0;
+            X0 := Contour.X[J + Base] * 1.0;
+            Y0 := Contour.Y[J + Base] * 1.0;
+            X1 := Contour.X[K + Base] * 1.0;
+            Y1 := Contour.Y[K + Base] * 1.0;
+            S := S + X0 * Y1 - X1 * Y0;
+        End;
+        Result := Abs(S) / 2.0 / 100000000.0;
+    Except
+        Result := -1;
+    End;
+End;
+
+{ A region's copper in square mils: its Area less its holes. MEASURED: Area  }
+{ is the OUTER contour alone, so a pour that cleared a via read the same     }
+{ before and after. The holes are only taken off once the outer contour's    }
+{ own shoelace area agrees with Area, which also settles whether the points  }
+{ count from 0 or from 1; HolesOk is cleared when that check fails.          }
+Function RegionCopperSqMils(Region : IPCB_Region; Var HolesOk : Boolean) : Double;
+Var
+    Outer, Main, Hole : Double;
+    Base, H, HoleCount : Integer;
+    Contour : IPCB_Contour;
+Begin
+    Outer := 0;
+    Try Outer := Region.Area / 100000000.0; Except End;
+    Result := Outer;
+    HoleCount := 0;
+    Try HoleCount := Region.HoleCount; Except HoleCount := -1; End;
+    If HoleCount = 0 Then Exit;
+    If HoleCount < 0 Then
+    Begin
+        HolesOk := False;
+        Exit;
+    End;
+    Base := -1;
+    Contour := Region.MainContour;
+    Main := ContourAreaSqMils(Contour, 0);
+    If (Main >= 0) And (Abs(Main - Outer) <= Outer * 0.001 + 1) Then Base := 0;
+    If Base < 0 Then
+    Begin
+        Main := ContourAreaSqMils(Contour, 1);
+        If (Main >= 0) And (Abs(Main - Outer) <= Outer * 0.001 + 1) Then Base := 1;
+    End;
+    If Base < 0 Then
+    Begin
+        HolesOk := False;
+        Exit;
+    End;
+    For H := 0 To HoleCount - 1 Do
+    Begin
+        Contour := Region.Holes[H];
+        Hole := ContourAreaSqMils(Contour, Base);
+        If Hole < 0 Then HolesOk := False
+        Else Result := Result - Hole;
+    End;
+End;
+
+Function PolygonCopper(Polygon : IPCB_Polygon; Var AreaSqMils : Double; Var Exact : Boolean) : Integer;
+Var
+    Iter : IPCB_GroupIterator;
+    Region : IPCB_Region;
+    Obj : IPCB_Primitive;
+Begin
+    Result := 0;
+    AreaSqMils := 0;
+    Exact := True;
+    Iter := Polygon.GroupIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+    Region := Iter.FirstPCBObject;
+    While Region <> Nil Do
+    Begin
+        Inc(Result);
+        AreaSqMils := AreaSqMils + RegionCopperSqMils(Region, Exact);
+        Region := Iter.NextPCBObject;
+    End;
+    Polygon.GroupIterator_Destroy(Iter);
+
+    Iter := Polygon.GroupIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+    Obj := Iter.FirstPCBObject;
+    While Obj <> Nil Do
+    Begin
+        Inc(Result);
+        Obj := Iter.NextPCBObject;
+    End;
+    Polygon.GroupIterator_Destroy(Iter);
+End;
+
+{..............................................................................}
+{ PCB_RepourPolygons - Repour every poured polygon through the API, in pour   }
+{ order, and report what each one poured.                                     }
+{                                                                             }
+{ It used to run PCB:RepourAllPolygons, a process name nothing documents, and }
+{ answer repoured:true whatever happened: a pour that went past a corrected   }
+{ board-edge clearance stayed as it was until Repour All was run by hand.     }
+{ The API path is the one PolygonReFitBO and PolygonBenchmark use: the repour }
+{ option set so no yes/no prompt appears, then per polygon                    }
+{ SetState_CopperPourInvalid and Rebuild, lowest PourIndex first so later     }
+{ pours clear the earlier ones. A shelved polygon is left shelved.            }
 {..............................................................................}
 
 Function PCB_RepourPolygons(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Poly, Temp : IPCB_Polygon;
+    Polys : TInterfaceList;
+    I, J, Rebuilt, Shelved, Failed, Before, After : Integer;
+    RepourMode : Integer;
+    AreaBefore, AreaAfter : Double;
+    Ok, ExactBefore, ExactAfter : Boolean;
+    Items, NetName : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -4860,13 +4990,89 @@ Begin
         Exit;
     End;
 
-    ResetParameters;
-    RunProcess('PCB:RepourAllPolygons');
+    { Collected first: rebuilding a polygon adds and removes its children }
+    { under a live board iterator. Never freed (TInterfaceList.Free on    }
+    { design objects crashes Altium); the script host reclaims it.        }
+    Polys := CreateObject(TInterfaceList);
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
+    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Poly := Iter.FirstPCBObject;
+    While Poly <> Nil Do
+    Begin
+        Polys.Add(Poly);
+        Poly := Iter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iter);
 
-    // Board.ViewManager_FullUpdate;  // removed, expensive on large boards; Altium auto-refreshes on user interaction
+    For I := 0 To Polys.Count - 1 Do
+        For J := 0 To Polys.Count - 2 - I Do
+            If Polys[J].PourIndex > Polys[J + 1].PourIndex Then
+            Begin
+                Temp := Polys[J];
+                Polys[J] := Polys[J + 1];
+                Polys[J + 1] := Temp;
+            End;
+
+    RepourMode := PCBServer.SystemOptions.PolygonRepour;
+    PCBServer.SystemOptions.PolygonRepour := eAlwaysRepour;
+    Rebuilt := 0; Shelved := 0; Failed := 0;
+    Items := '';
+    Try
+        For I := 0 To Polys.Count - 1 Do
+        Begin
+            Poly := Polys[I];
+            NetName := '';
+            Try If Poly.Net <> Nil Then NetName := Poly.Net.Name; Except End;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{"name":"' + EscapeJsonString(Poly.Name) + '"'
+                + ',"layer":"' + EscapeJsonString(GetLayerString(Poly.Layer)) + '"'
+                + ',"net":"' + EscapeJsonString(NetName) + '"'
+                + ',"pour_index":' + IntToStr(Poly.PourIndex);
+            If Not Poly.Poured Then
+            Begin
+                Inc(Shelved);
+                Items := Items + ',"shelved":true}';
+            End
+            Else
+            Begin
+                Before := PolygonCopper(Poly, AreaBefore, ExactBefore);
+                Ok := True;
+                PCBServer.PreProcess;
+                Try
+                    Poly.BeginModify;
+                    Poly.SetState_CopperPourInvalid;
+                    Poly.Rebuild;
+                    Poly.EndModify;
+                    Poly.GraphicallyInvalidate;
+                Except
+                    Ok := False;
+                End;
+                PCBServer.PostProcess;
+                After := PolygonCopper(Poly, AreaAfter, ExactAfter);
+                If Ok Then Inc(Rebuilt) Else Inc(Failed);
+                Items := Items + ',"rebuilt":' + BoolToJsonStr(Ok)
+                    + ',"pieces_before":' + IntToStr(Before)
+                    + ',"pieces_after":' + IntToStr(After)
+                    + ',"copper_area_mm2_before":' + FloatToJsonStr(AreaBefore * 0.00064516)
+                    + ',"copper_area_mm2_after":' + FloatToJsonStr(AreaAfter * 0.00064516)
+                    + ',"copper_area_exact":' + BoolToJsonStr(ExactBefore And ExactAfter) + '}';
+            End;
+        End;
+    Finally
+        PCBServer.SystemOptions.PolygonRepour := RepourMode;
+    End;
+
+    If Rebuilt > 0 Then MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"repoured":true}');
+        '{"repoured":' + BoolToJsonStr((Rebuilt > 0) And (Failed = 0))
+        + ',"polygons":' + IntToStr(Polys.Count)
+        + ',"rebuilt":' + IntToStr(Rebuilt)
+        + ',"shelved":' + IntToStr(Shelved)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"items":[' + Items + ']}');
 End;
 
 {..............................................................................}
@@ -5068,7 +5274,9 @@ Var
     XStr, YStr, NetStr, SizeStr, HoleSizeStr, LowLayerStr, HighLayerStr : String;
     FoundNet : IPCB_Net;
     ViaX, ViaY : Double;   { sub-mil coordinates: local patch 2026-09-18 }
-    ViaSize, ViaHole : Integer;
+    { Fractional too: whole mils turned a 1.2/0.6 mm via into 1.194/0.610 }
+    { and broke a metric Routing Via rule.                                 }
+    ViaSize, ViaHole : Double;
     LowLayer, HighLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -5094,8 +5302,17 @@ Begin
 
     ViaX := StrToFloatDef(XStr, 0);
     ViaY := StrToFloatDef(YStr, 0);
-    ViaSize := StrToIntDef(SizeStr, 50);    // Default 50 mils pad size
-    ViaHole := StrToIntDef(HoleSizeStr, 28); // Default 28 mils hole
+    ViaSize := StrToFloatDef(SizeStr, 50);    // Default 50 mils pad size
+    ViaHole := StrToFloatDef(HoleSizeStr, 28); // Default 28 mils hole
+    { The same refusal obj_modify makes: a hole as wide as the pad leaves }
+    { no annular ring, and nothing downstream would say so.              }
+    If (ViaHole <= 0) Or (ViaSize <= ViaHole) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_SIZE',
+            'size must be larger than hole_size, and hole_size above 0 (got '
+            + FloatToJsonStr(ViaSize) + ' / ' + FloatToJsonStr(ViaHole) + ' mils)');
+        Exit;
+    End;
 
     { Resolve BEFORE PreProcess: an unresolvable name has to end the call, and }
     { returning from inside the Try would skip PostProcess.                    }
@@ -5129,8 +5346,8 @@ Begin
 
         Via.x := MilsToCoordF(ViaX);
         Via.y := MilsToCoordF(ViaY);
-        Via.Size := MilsToCoord(ViaSize);
-        Via.HoleSize := MilsToCoord(ViaHole);
+        Via.Size := MilsToCoordF(ViaSize);
+        Via.HoleSize := MilsToCoordF(ViaHole);
 
         // Set layers
         Via.LowLayer := LowLayer;
@@ -5158,8 +5375,8 @@ Begin
         '{"placed":true,'
         + '"x":' + FloatToJsonStr(ViaX) + ','
         + '"y":' + FloatToJsonStr(ViaY) + ','
-        + '"size":' + IntToStr(ViaSize) + ','
-        + '"hole_size":' + IntToStr(ViaHole) + ','
+        + '"size":' + FloatToJsonStr(ViaSize) + ','
+        + '"hole_size":' + FloatToJsonStr(ViaHole) + ','
         + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
         + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '"}');
 End;
@@ -5176,7 +5393,7 @@ Var
     X1Str, Y1Str, X2Str, Y2Str, WidthStr, LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
     TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
-    TWidth : Integer;
+    TWidth : Double;   { fractional mils, as PCB_PlaceTracks takes }
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -5204,7 +5421,7 @@ Begin
     TY1 := StrToFloatDef(Y1Str, 0);
     TX2 := StrToFloatDef(X2Str, 0);
     TY2 := StrToFloatDef(Y2Str, 0);
-    TWidth := StrToIntDef(WidthStr, 10);
+    TWidth := StrToFloatDef(WidthStr, 10);
 
     If LayerStr = '' Then TargetLayer := eTopLayer
     Else TargetLayer := ResolveLayerId(Board, LayerStr);
@@ -5229,7 +5446,7 @@ Begin
         Track.y1 := MilsToCoordF(TY1);
         Track.x2 := MilsToCoordF(TX2);
         Track.y2 := MilsToCoordF(TY2);
-        Track.Width := MilsToCoord(TWidth);
+        Track.Width := MilsToCoordF(TWidth);
 
         Track.Layer := TargetLayer;
 
@@ -5256,7 +5473,7 @@ Begin
         + '"y1":' + FloatToJsonStr(TY1) + ','
         + '"x2":' + FloatToJsonStr(TX2) + ','
         + '"y2":' + FloatToJsonStr(TY2) + ','
-        + '"width":' + IntToStr(TWidth) + ','
+        + '"width":' + FloatToJsonStr(TWidth) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(Track.Layer)) + '"}');
 End;
 
@@ -7383,9 +7600,10 @@ Var
     Polygon : IPCB_Polygon;
     JsonItems, NetName, LayerStr, HatchStr : String;
     First : Boolean;
-    Count, VCount : Integer;
+    Count, VCount, Pieces : Integer;
     AreaInternal : Int64;
-    AreaSqMils, AreaMm2, BBoxMm2 : Double;
+    AreaSqMils, AreaMm2, BBoxMm2, CopperSqMils : Double;
+    CopperExact : Boolean;
     BR : TCoordRect;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -7430,12 +7648,16 @@ Begin
         { area for the polygon outline. Used for current-capacity audits }
         { (multiply area_mm2 by copper thickness for cubic copper) and   }
         { for spotting accidentally-tiny power islands.                  }
-        { AreaSize is the polygon OUTLINE area. IPCB_Polygon.GeometricPolygon
-          is undeclared in this Altium script binding, so the actual-copper
-          area is not available here -- use AreaSize (outline) + bbox. }
+        { AreaSize is the polygon OUTLINE area: the same before and after  }
+        { a repour, and blind to copper an edge clearance cut away. The    }
+        { poured copper is the polygon's child regions, which PolygonCopper }
+        { sums; a hatched pour reports pieces but no region area.          }
         AreaSqMils := 0;
         Try AreaSqMils := PolygonAreaSqMils(Polygon); Except End;
         AreaMm2 := AreaSqMils * 0.00064516;
+        CopperSqMils := 0; Pieces := 0;
+        CopperExact := False;
+        Try Pieces := PolygonCopper(Polygon, CopperSqMils, CopperExact); Except End;
         BR := Polygon.BoundingRectangle;
         BBoxMm2 := CoordToMM(BR.Right - BR.Left)
                  * CoordToMM(BR.Top - BR.Bottom);
@@ -7451,6 +7673,10 @@ Begin
             + '"area_sqmils":' + IntToStr(Trunc(AreaSqMils)) + ','
             + '"area_mm2":' + FloatToJsonStr(AreaMm2) + ','
             + '"bbox_mm2":' + FloatToJsonStr(BBoxMm2) + ','
+            + '"poured":' + BoolToJsonStr(Polygon.Poured) + ','
+            + '"copper_pieces":' + IntToStr(Pieces) + ','
+            + '"copper_area_mm2":' + FloatToJsonStr(CopperSqMils * 0.00064516) + ','
+            + '"copper_area_exact":' + BoolToJsonStr(CopperExact) + ','
             + '"vertex_count":' + IntToStr(VCount) + '}';
         Inc(Count);
         Polygon := Iterator.NextPCBObject;
@@ -8757,6 +8983,19 @@ Begin
         Exit;
     End;
     If Shape = '' Then Shape := 'round';
+    { The library pad tools spell these out, so both spellings are taken.   }
+    { Any other word used to become a round pad while the reply echoed the  }
+    { shape asked for: a rectangular pad request read back as placed.       }
+    If Shape = 'rectangular' Then Shape := 'rect';
+    If Shape = 'octagonal' Then Shape := 'oct';
+    If (Shape = 'rounded') Or (Shape = 'circle') Or (Shape = 'oval') Or (Shape = 'obround') Then
+        Shape := 'round';
+    If (Shape <> 'rect') And (Shape <> 'oct') And (Shape <> 'round') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_SHAPE',
+            'Unknown pad shape: ' + Shape + '. Use round, rect (rectangular) or oct (octagonal).');
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try

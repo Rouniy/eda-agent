@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 from ..bridge import get_bridge
+from .pcb import _mils
 
 
 _NC_PIN_NAME = re.compile(
@@ -1007,7 +1008,7 @@ def register_audit_tools(mcp):
 
     @mcp.tool()
     async def audit_find_pads_near_board_edge(
-        clearance_mils: int = 25,
+        clearance_mils: float = 25,
     ) -> dict[str, Any]:
         """Find PCB pads / vias closer than ``clearance_mils`` to the
         board outline (depaneling damage hazard).
@@ -1019,8 +1020,10 @@ def register_audit_tools(mcp):
         boards going to depaneling rather than rounded-corner
         manufacture.
 
-        Uses ``Board.PrimPrimDistance(BoardOutline, prim)`` so non-
-        rectangular outlines are handled correctly.
+        The gap is measured from the outline's own segments, lines and
+        arcs, to the pad's copper: a via or round pad by its radius, a
+        rectangle by its nearest corner or edge midpoint, at whatever
+        rotation. Round and other curved outlines are covered.
 
         Args:
             clearance_mils: Minimum gap to flag as a violation
@@ -1030,6 +1033,8 @@ def register_audit_tools(mcp):
             Dict with:
               - ``checked``: total pads + vias inspected
               - ``violations``: how many are within the clearance
+              - ``unmeasured``: pads that could not be measured, which
+                are therefore neither passed nor flagged
               - ``clearance_mils``: echo of the threshold used
               - ``items``: per-violation `{kind, designator,
                 distance_mils, at}` where ``at`` is "(x,y)" mils.
@@ -1037,7 +1042,7 @@ def register_audit_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "audit.find_pads_near_board_edge",
-            {"clearance_mils": str(round(clearance_mils))},
+            {"clearance_mils": _mils(clearance_mils)},
         )
 
     @mcp.tool()

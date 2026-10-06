@@ -2081,17 +2081,127 @@ End;
 {                                                                              }
 { Response: checked, violations, clearance_mils, items where each entry has}
 { kind (pad / via), designator (refdes), distance_mils, at coords.          }
+{ Distance in mils from (Px, Py), in mils, to the board outline: every      }
+{ segment, line or arc, segment I running from vertex I to vertex I + 1.    }
+{ -1 for an outline with no segments.                                       }
+Function OutlineDistMils(Outline : IPCB_BoardOutline; Px, Py : Double) : Double;
+Var
+    I, N : Integer;
+    Ax, Ay, Bx, By, Cx, Cy, R, D : Double;
+Begin
+    Result := -1;
+    N := 0;
+    Try N := Outline.PointCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Ax := Outline.Segments[I].vx / 10000.0;
+        Ay := Outline.Segments[I].vy / 10000.0;
+        Bx := Outline.Segments[(I + 1) Mod N].vx / 10000.0;
+        By := Outline.Segments[(I + 1) Mod N].vy / 10000.0;
+        If Outline.Segments[I].Kind = ePolySegmentLine Then
+            D := SegDistMils(Px, Py, Ax, Ay, Bx, By)
+        Else
+        Begin
+            Cx := Outline.Segments[I].cx / 10000.0;
+            Cy := Outline.Segments[I].cy / 10000.0;
+            R := Sqrt((Ax - Cx) * (Ax - Cx) + (Ay - Cy) * (Ay - Cy));
+            D := ArcDistMils(Px, Py, Cx, Cy, R,
+                Outline.Segments[I].Angle1, Outline.Segments[I].Angle2);
+        End;
+        If (Result < 0) Or (D < Result) Then Result := D;
+    End;
+End;
+
+{ The outline distance of one point of a shape, given in the shape's own    }
+{ frame (Lx, Ly) about its centre (X, Y), turned by the cosine and sine C, S. }
+Function ShapePointGapMils(Outline : IPCB_BoardOutline; X, Y, C, S, Lx, Ly : Double) : Double;
+Begin
+    Result := OutlineDistMils(Outline, X + Lx * C - Ly * S, Y + Lx * S + Ly * C);
+End;
+
+{ How close a pad's or via's copper comes to the board outline, in mils,    }
+{ never below 0. A via or round pad is its centre less its radius, an        }
+{ obround pad the nearer of its two end centres less its half-width, both    }
+{ exact. Any other shape is the nearest of its corners and edge midpoints:   }
+{ exact against a straight edge and against an arc curving away from the     }
+{ pad, as a round board's edge does, and at worst a little generous where    }
+{ the outline bends in toward the pad.                                       }
+Function PadEdgeGapMils(Outline : IPCB_BoardOutline; Obj : IPCB_Primitive) : Double;
+Var
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    X, Y, Hx, Hy, Rot, C, S, Ux, Uy, R, D1, D2 : Double;
+Begin
+    X := Obj.x / 10000.0;
+    Y := Obj.y / 10000.0;
+    If Obj.ObjectId = eViaObject Then
+    Begin
+        Via := Obj;
+        Result := OutlineDistMils(Outline, X, Y) - Via.Size / 20000.0;
+    End
+    Else
+    Begin
+        Pad := Obj;
+        Hx := Pad.TopXSize / 20000.0;
+        Hy := Pad.TopYSize / 20000.0;
+        Rot := 0;
+        Try Rot := Pad.Rotation; Except Rot := 0; End;
+        C := Cos(Rot * 3.14159265358979 / 180.0);
+        S := Sin(Rot * 3.14159265358979 / 180.0);
+        If Pad.TopShape = eRounded Then
+        Begin
+            If Hx >= Hy Then
+            Begin
+                R := Hy; Ux := (Hx - Hy) * C; Uy := (Hx - Hy) * S;
+            End
+            Else
+            Begin
+                R := Hx; Ux := -(Hy - Hx) * S; Uy := (Hy - Hx) * C;
+            End;
+            D1 := OutlineDistMils(Outline, X + Ux, Y + Uy);
+            D2 := OutlineDistMils(Outline, X - Ux, Y - Uy);
+            If D2 < D1 Then D1 := D2;
+            Result := D1 - R;
+        End
+        Else
+        Begin
+            Result := ShapePointGapMils(Outline, X, Y, C, S, -Hx, -Hy);
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, Hx, -Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, Hx, Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, -Hx, Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, 0, -Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, Hx, 0);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, 0, Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, -Hx, 0);
+            If D1 < Result Then Result := D1;
+        End;
+    End;
+    If Result < 0 Then Result := 0;
+End;
+
+{ Audit_FindPadsNearBoardEdge                                                 }
+{                                                                              }
+{ It measured with Board.PrimPrimDistance(BoardOutline, prim) inside an empty }
+{ Try, counted a pad only when that answered, and found 0 of them on a round  }
+{ board with a connector pad 0.5 mm from the edge. Measured here from the     }
+{ outline's own segments instead, and a pad that cannot be measured is        }
+{ counted rather than passed.                                                 }
+
 Function Audit_FindPadsNearBoardEdge(Params, RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Outline : IPCB_BoardOutline;
     Iter : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
-    Checked, Violations : Integer;
-    ClearanceMils : Integer;
-    Clearance : TCoord;
-    Dist : TCoord;
-    DistMils : Integer;
+    Checked, Violations, Unmeasured : Integer;
+    ClearanceMils, Gap : Double;
+    Measured : Boolean;
     KindStr, DesStr, ItemsJson, EntryJson : String;
     First : Boolean;
 Begin
@@ -2112,12 +2222,12 @@ Begin
         Exit;
     End;
 
-    ClearanceMils := StrToIntDef(ExtractJsonValue(Params, 'clearance_mils'), 25);
+    ClearanceMils := StrToFloatDef(ExtractJsonValue(Params, 'clearance_mils'), 25);
     If ClearanceMils <= 0 Then ClearanceMils := 25;
-    Clearance := MilsToCoord(ClearanceMils);
 
     Checked := 0;
     Violations := 0;
+    Unmeasured := 0;
     ItemsJson := '';
     First := True;
 
@@ -2129,34 +2239,32 @@ Begin
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
         Begin
-            Try
-                Inc(Checked);
-                Dist := -1;
-                { PrimPrimDistance returns 0 for overlap, distance otherwise. }
-                { For a pad INSIDE the outline polygon the distance to the    }
-                { outline segments is the gap to the nearest edge, which is  }
-                { exactly what we want.                                       }
-                Try Dist := Board.PrimPrimDistance(Outline, Obj); Except End;
-                If (Dist >= 0) And (Dist < Clearance) Then
-                Begin
-                    Inc(Violations);
-                    DistMils := CoordToMils(Dist);
-                    If Obj.ObjectId = eViaObject Then KindStr := 'via'
-                    Else KindStr := 'pad';
-                    DesStr := '';
-                    If Obj.InComponent Then
-                        Try DesStr := Obj.Component.Name.Text; Except End;
-                    If Not First Then ItemsJson := ItemsJson + ',';
-                    First := False;
-                    EntryJson :=
-                        JsonStr('kind', KindStr) + ',' +
-                        JsonStr('designator', DesStr) + ',' +
-                        JsonInt('distance_mils', DistMils) + ',' +
-                        JsonStr('at', '(' + IntToStr(CoordToMils(Obj.x)) + ',' +
-                                      IntToStr(CoordToMils(Obj.y)) + ')');
-                    ItemsJson := ItemsJson + JsonObj(EntryJson);
-                End;
-            Except End;
+            Inc(Checked);
+            Measured := True;
+            Gap := 0;
+            Try Gap := PadEdgeGapMils(Outline, Obj); Except Measured := False; End;
+            If Not Measured Then
+            Begin
+                Inc(Unmeasured);
+            End
+            Else If Gap < ClearanceMils Then
+            Begin
+                Inc(Violations);
+                If Obj.ObjectId = eViaObject Then KindStr := 'via'
+                Else KindStr := 'pad';
+                DesStr := '';
+                If Obj.InComponent Then
+                    Try DesStr := Obj.Component.Name.Text; Except End;
+                If Not First Then ItemsJson := ItemsJson + ',';
+                First := False;
+                EntryJson :=
+                    JsonStr('kind', KindStr) + ',' +
+                    JsonStr('designator', DesStr) + ',' +
+                    JsonRaw('distance_mils', FloatToJsonStr(Round(Gap * 100) / 100.0)) + ',' +
+                    JsonStr('at', '(' + IntToStr(CoordToMils(Obj.x)) + ',' +
+                                  IntToStr(CoordToMils(Obj.y)) + ')');
+                ItemsJson := ItemsJson + JsonObj(EntryJson);
+            End;
             Obj := Iter.NextPCBObject;
         End;
     Finally
@@ -2167,7 +2275,8 @@ Begin
         JsonObj(
             JsonInt('checked', Checked) + ',' +
             JsonInt('violations', Violations) + ',' +
-            JsonInt('clearance_mils', ClearanceMils) + ',' +
+            JsonInt('unmeasured', Unmeasured) + ',' +
+            JsonRaw('clearance_mils', FloatToJsonStr(ClearanceMils)) + ',' +
             JsonRaw('items', '[' + ItemsJson + ']')
         ));
 End;

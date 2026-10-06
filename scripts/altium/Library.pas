@@ -1328,6 +1328,46 @@ Begin
     Try Result := Footprint.Y; Except End;
 End;
 
+{ PcbLibTarget - the footprint an authoring call writes into. With no name,  }
+{ the editor's current footprint, as before. With a name, that footprint,     }
+{ made current and checked by name: Board.AddPCBObject attaches to the        }
+{ CURRENT footprint whatever the caller meant, and nothing else moves the     }
+{ editor, so silkscreen meant for one footprint landed in whichever another   }
+{ call had left current. Problem is '' on success.                           }
+Function PcbLibTarget(PcbLib : IPCB_Library; Name : String; Var Problem : String) : IPCB_LibComponent;
+Var
+    Cur : IPCB_LibComponent;
+    CurName : String;
+Begin
+    Problem := '';
+    Result := Nil;
+    If Name = '' Then
+    Begin
+        Result := PcbLib.CurrentComponent;
+        If Result = Nil Then
+            Problem := 'No footprint is selected; pass footprint_name';
+        Exit;
+    End;
+    Try Result := PcbLib.GetComponentByName(Name); Except Result := Nil; End;
+    If Result = Nil Then
+    Begin
+        Problem := 'Footprint not found in the library: ' + Name;
+        Exit;
+    End;
+    Try PcbLib.CurrentComponent := Result; Except End;
+    CurName := '';
+    Try
+        Cur := PcbLib.CurrentComponent;
+        If Cur <> Nil Then CurName := Cur.Name;
+    Except End;
+    If CurName <> Name Then
+    Begin
+        Problem := 'Could not make ' + Name + ' the current footprint (the editor shows '
+            + CurName + '), so nothing was written';
+        Result := Nil;
+    End;
+End;
+
 Function Lib_AddFootprintPad(Params : String; RequestId : String) : String;
 Var
     Designator, Shape, LayerStr : String;
@@ -1335,6 +1375,7 @@ Var
     Rotation : Double;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Pad : IPCB_Pad;
     PadLayer : TLayer;
 Begin
@@ -1356,10 +1397,10 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
@@ -1443,6 +1484,7 @@ Var
     PadLayer : TLayer;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Pad : IPCB_Pad;
 Begin
     PadsStr := ExtractJsonValue(Params, 'pads');
@@ -1459,10 +1501,10 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
@@ -1566,6 +1608,7 @@ Var
     LayerStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Track : IPCB_Track;
     Layer : TLayer;
 Begin
@@ -1583,10 +1626,10 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
@@ -1648,6 +1691,7 @@ Var
     X1, Y1, X2, Y2, Width : Integer;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Track : IPCB_Track;
     Layer : TLayer;
 Begin
@@ -1665,10 +1709,10 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
@@ -1759,6 +1803,7 @@ Var
     LayerStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Arc : IPCB_Arc;
     Layer : TLayer;
 Begin
@@ -1777,10 +1822,10 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
@@ -3863,8 +3908,9 @@ Function Lib_Link3DModel(Params : String; RequestId : String) : String;
 Var
     ModelPath, ComponentName, FpName, AppliedJson : String;
     OffX, OffY, OffZ : Integer;
+    OrgX, OrgY : TCoord;
     RotZ : Double;
-    DidStandoff, DidRotation, DidMove : Boolean;
+    DidStandoff, DidRotation, DidMove, Shifted : Boolean;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     Iter : IPCB_LibraryIterator;
@@ -4001,15 +4047,25 @@ Begin
                 DidStandoff := False;
                 DidRotation := False;
                 DidMove := False;
+                Shifted := False;
                 If OffZ <> 0 Then
                     Try
                         Body.StandoffHeight := MilsToCoord(OffZ);
                         DidStandoff := True;
                     Except End;
-                If (OffX <> 0) Or (OffY <> 0) Then
+                { THE BODY ARRIVES AT THE BOARD ORIGIN, and a footprint made }
+                { current above sits at Altium's library origin (about     }
+                { 50000,50000 mil, see FootprintOriginX), so the body      }
+                { landed that far from its footprint and needed an offset   }
+                { of +50000 to come back. Moved by the footprint's origin   }
+                { as well as the caller's offset, which is relative to it. }
+                OrgX := FootprintOriginX(Footprint);
+                OrgY := FootprintOriginY(Footprint);
+                If (OrgX <> 0) Or (OrgY <> 0) Or (OffX <> 0) Or (OffY <> 0) Then
                     Try
-                        Body.MoveByXY(MilsToCoord(OffX), MilsToCoord(OffY));
-                        DidMove := True;
+                        Body.MoveByXY(OrgX + MilsToCoord(OffX), OrgY + MilsToCoord(OffY));
+                        Shifted := True;
+                        DidMove := (OffX <> 0) Or (OffY <> 0);
                     Except End;
 
                 AppliedJson := JsonBool('standoff_height', DidStandoff) + ','
@@ -4020,6 +4076,9 @@ Begin
                     JsonBool('success', True) + ','
                     + JsonStr('footprint', FpName) + ','
                     + JsonStr('model', ExtractFileName(ModelPath)) + ','
+                    + JsonBool('moved_to_footprint_origin', Shifted Or ((OrgX = 0) And (OrgY = 0))) + ','
+                    + JsonRaw('footprint_origin_mils', '[' + IntToStr(CoordToMils(OrgX))
+                        + ',' + IntToStr(CoordToMils(OrgY)) + ']') + ','
                     + JsonRaw('applied', JsonObj(AppliedJson))));
             End;
         End;
@@ -9015,6 +9074,61 @@ Begin
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
+{ AlignCopiedFootprint - after Footprint.CopyTo, put every primitive of the    }
+{ copy where it sat relative to its own footprint. CopyTo keeps ABSOLUTE       }
+{ coordinates, and a source open in the editor sits at Altium's library        }
+{ origin (about 50000,50000 mil, see FootprintOriginX) while a new footprint   }
+{ does not, so a copy within one library came out with every pad 50000 mil     }
+{ from its origin. Collected first and deduplicated by object address: a       }
+{ primitive registered in this session is yielded twice by the group iterator, }
+{ and moving it twice would be the same error the other way. The list is      }
+{ never freed (TInterfaceList.Free on design objects crashes Altium).          }
+{ Returns the primitives moved, or -1 when the two origins already agree.      }
+Function AlignCopiedFootprint(Src, Dest : IPCB_LibComponent) : Integer;
+Var
+    DX, DY : TCoord;
+    Iter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
+    Prims : TInterfaceList;
+    Seen : TStringList;
+    Addr : String;
+    I : Integer;
+Begin
+    Result := -1;
+    DX := FootprintOriginX(Dest) - FootprintOriginX(Src);
+    DY := FootprintOriginY(Dest) - FootprintOriginY(Src);
+    If (DX = 0) And (DY = 0) Then Exit;
+    Result := 0;
+    Prims := CreateObject(TInterfaceList);
+    Seen := TStringList.Create;
+    Iter := Dest.GroupIterator_Create;
+    Try
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            Addr := '';
+            Try Addr := IntToStr(Prim.I_ObjectAddress); Except End;
+            If (Addr = '') Or (Seen.IndexOf(Addr) < 0) Then
+            Begin
+                If Addr <> '' Then Seen.Add(Addr);
+                Prims.Add(Prim);
+            End;
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Dest.GroupIterator_Destroy(Iter);
+    End;
+    Seen.Free;
+    For I := 0 To Prims.Count - 1 Do
+    Begin
+        Prim := Prims.Items[I];
+        Try
+            Prim.MoveByXY(DX, DY);
+            Inc(Result);
+        Except End;
+    End;
+End;
+
 { Lib_MoveFootprints - bulk copy (+ optional delete) of footprints between two  }
 { PcbLibs, the PcbLib analog of Lib_MoveComponents. Uses the canonical combine   }
 { pattern: DestLib.CreateNewComponent + Footprint.CopyTo(NewFP, eFullCopy) +     }
@@ -9105,6 +9219,7 @@ Begin
         NewFP := DestLib.CreateNewComponent;
         If NewFP = Nil Then Begin Inc(Failed); Continue; End;
         Try Footprint.CopyTo(NewFP, eFullCopy); Except End;
+        AlignCopiedFootprint(Footprint, NewFP);
         Try NewFP.Name := Name; Except End;
         DestLib.RegisterComponent(NewFP);
 
@@ -9145,7 +9260,7 @@ Var
     Overwrite, SameLib : Boolean;
     SourceLib, DestLib : IPCB_Library;
     Footprint, NewFP, Existing, Fp : IPCB_LibComponent;
-    J : Integer;
+    J, Aligned : Integer;
 Begin
     SourceLibPath := ExtractJsonValue(Params, 'source_library');
     DestLibPath := ExtractJsonValue(Params, 'dest_library');
@@ -9235,6 +9350,7 @@ Begin
         Exit;
     End;
     Try Footprint.CopyTo(NewFP, eFullCopy); Except End;
+    Aligned := AlignCopiedFootprint(Footprint, NewFP);
     Try NewFP.Name := NewName; Except End;
     DestLib.RegisterComponent(NewFP);
     PCBServer.PostProcess;
@@ -9248,6 +9364,7 @@ Begin
         + ',"dest_library":"' + EscapeJsonString(DestLibPath) + '"'
         + ',"source":"' + EscapeJsonString(SourceName) + '"'
         + ',"new_name":"' + EscapeJsonString(NewName) + '"'
+        + ',"primitives_realigned":' + IntToStr(Aligned)
         + ',"same_library":' + BoolToJsonStr(SameLib) + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;

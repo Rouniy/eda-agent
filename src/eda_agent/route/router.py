@@ -41,6 +41,8 @@ from eda_agent.route.model import (
     dist_point_seg,
     dist_seg_rect,
     dist_seg_seg,
+    rect_extents,
+    to_rect_frame,
 )
 
 # Lower routes earlier. Unknown classes route with plain signals.
@@ -247,7 +249,8 @@ def validate_solution(problem: RoutingProblem,
             if g["kind"] == "rect":
                 need = ahw + clearance
                 d = dist_seg_rect(a["x1"], a["y1"], a["x2"], a["y2"],
-                                  g["cx"], g["cy"], g["hw"], g["hh"])
+                                  g["cx"], g["cy"], g["hw"], g["hh"],
+                                  g.get("rot", 0.0))
                 where = (g["cx"], g["cy"])
             elif g["kind"] == "seg":
                 need = ahw + g["hw"] + clearance
@@ -285,7 +288,8 @@ def validate_solution(problem: RoutingProblem,
             if g["kind"] == "rect":
                 need = vr + clearance
                 d = dist_point_rect_edge(v["x"], v["y"],
-                                         g["cx"], g["cy"], g["hw"], g["hh"])
+                                         g["cx"], g["cy"], g["hw"], g["hh"],
+                                         g.get("rot", 0.0))
             elif g["kind"] == "seg":
                 need = vr + g["hw"] + clearance
                 d = dist_point_seg(v["x"], v["y"],
@@ -403,10 +407,12 @@ def _islands(problem: RoutingProblem,
     for g in static:
         if g["kind"] == "rect":
             cx, cy, hw, hh = g["cx"], g["cy"], g["hw"], g["hh"]
+            rot = g.get("rot", 0.0)
+            ex, ey = rect_extents(hw, hh, rot)
             pad_items.append(len(items))
             items.append(("rect", g["layer"],
-                          (cx - hw, cy - hh, cx + hw, cy + hh),
-                          (cx, cy, hw, hh)))
+                          (cx - ex, cy - ey, cx + ex, cy + ey),
+                          (cx, cy, hw, hh, rot)))
         elif g["kind"] == "seg":
             _add_seg(g["layer"], g["x1"], g["y1"], g["x2"], g["y2"],
                      g["hw"])
@@ -458,7 +464,7 @@ def _islands(problem: RoutingProblem,
 def _copper_touches(ka: str, a: tuple[float, ...],
                     kb: str, b: tuple[float, ...]) -> bool:
     """True if two same-layer copper shapes touch (mils). Kinds are
-    ``seg`` (x1, y1, x2, y2, hw), ``rect`` (cx, cy, hw, hh) and
+    ``seg`` (x1, y1, x2, y2, hw), ``rect`` (cx, cy, hw, hh[, rot]) and
     ``circle`` (x, y, r)."""
     if ka > kb:  # canonical order: circle < rect < seg
         ka, a, kb, b = kb, b, ka, a
@@ -467,9 +473,18 @@ def _copper_touches(ka: str, a: tuple[float, ...],
     if ka == "rect" and kb == "seg":
         return dist_seg_rect(*b[:4], *a) <= b[4] + _EPS
     if ka == "rect":  # rect / rect
-        dx = max(0.0, abs(a[0] - b[0]) - a[2] - b[2])
-        dy = max(0.0, abs(a[1] - b[1]) - a[3] - b[3])
-        return math.hypot(dx, dy) <= _EPS
+        if not (a[4:] and a[4]) and not (b[4:] and b[4]):
+            dx = max(0.0, abs(a[0] - b[0]) - a[2] - b[2])
+            dy = max(0.0, abs(a[1] - b[1]) - a[3] - b[3])
+            return math.hypot(dx, dy) <= _EPS
+        # Turned pads: convex shapes touch when an edge of one reaches
+        # the other, or one sits wholly inside the other.
+        if (dist_point_rect(a[0], a[1], *b) <= _EPS
+                or dist_point_rect(b[0], b[1], *a) <= _EPS):
+            return True
+        pts = _rect_corners(*a)
+        return any(dist_seg_rect(*pts[i], *pts[(i + 1) % 4], *b) <= _EPS
+                   for i in range(4))
     if kb == "seg":  # circle / seg
         return dist_point_seg(a[0], a[1], *b[:4]) <= a[2] + b[4] + _EPS
     if kb == "rect":  # circle / rect
@@ -477,9 +492,20 @@ def _copper_touches(ka: str, a: tuple[float, ...],
     return math.hypot(a[0] - b[0], a[1] - b[1]) <= a[2] + b[2] + _EPS
 
 
+def _rect_corners(cx: float, cy: float, hw: float, hh: float,
+                  rot: float = 0.0) -> list[tuple[float, float]]:
+    """A rect's four corners in order, turned ``rot`` degrees about its
+    centre."""
+    a = math.radians(rot)
+    c, s = math.cos(a), math.sin(a)
+    return [(cx + dx * c - dy * s, cy + dx * s + dy * c)
+            for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))]
+
+
 def dist_point_rect_edge(px: float, py: float, cx: float, cy: float,
-                         hw: float, hh: float) -> float:
+                         hw: float, hh: float, rot: float = 0.0) -> float:
     """Distance from a point to a rect's boundary, 0 inside (mils)."""
+    px, py = to_rect_frame(px, py, cx, cy, rot)
     dx = max(0.0, abs(px - cx) - hw)
     dy = max(0.0, abs(py - cy) - hh)
     return math.hypot(dx, dy)

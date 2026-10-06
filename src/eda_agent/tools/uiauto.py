@@ -50,6 +50,17 @@ _MENU_EXPECT = {
 }
 
 
+def _dialog_state(hwnd):
+    """What a dialog shows, comparable before and after a press: its
+    title and every control's class, text, enabled and visible state.
+    None once the window is gone."""
+    window = windows.capture(hwnd)
+    if window is None:
+        return None
+    return (window.title, tuple(
+        (c.class_name, c.text, c.enabled, c.visible) for c in window.controls))
+
+
 def _altium_pid():
     """(pid, None) or (None, error-dict).
 
@@ -618,9 +629,17 @@ def register_uiauto_tools(mcp):
                         pressed = uia.invoke(target.hwnd, button_caption)
                         if pressed.get("ok"):
                             shut = windows.wait_for_close(target.hwnd, timeout=5.0)
-                            return {"ok": True, "dialog": target.title,
+                            # Invoked is not answered: a dismiss or advance
+                            # that leaves the dialog up did not take. No
+                            # keyboard retry, which could press twice.
+                            took = shut or role not in ("dismiss", "advance")
+                            return {"ok": took, "dialog": target.title,
                                     "pressed": button_caption, "method": "uia",
-                                    "dialog_closed": shut}
+                                    "dialog_closed": shut,
+                                    "outcome_verified": shut,
+                                    "reason": None if took else (
+                                        f"{button_caption!r} was invoked and "
+                                        f"{target.title!r} is still open")}
                     windows.press_key(target.hwnd, key)
                     shut = windows.wait_for_close(target.hwnd, timeout=5.0)
                     return {
@@ -649,6 +668,8 @@ def register_uiauto_tools(mcp):
                     f"{button.text!r} commits a change to the design. Pass "
                     f"allow_irreversible=True if that is intended.")}
 
+            before = _dialog_state(target.hwnd)
+            before_dialogs = {d.hwnd for d in open_dialogs}
             windows.click(button)
             closed = windows.wait_for_close(target.hwnd, timeout=5.0)
 
@@ -661,21 +682,31 @@ def register_uiauto_tools(mcp):
             # Staying open is NORMAL for some presses: Validate Changes
             # leaves the change order up on purpose, and a wizard page
             # advances without closing its window. So the verdict turns
-            # on the ROLE, not on closure alone. Only a press whose
-            # whole job is to dismiss can be judged by the window going
-            # away, and only when it was the sole way out.
+            # on the ROLE and on what the dialog did. A dismiss or an
+            # advance that leaves the same window up with the same title,
+            # the same controls saying the same things, and no new dialog
+            # beside it did not take, however many buttons it had: an
+            # Aceptar on a two-button prompt was reported pressed three
+            # times while a person had to click it.
+            changed, new_dialogs = False, []
+            if not closed:
+                after = _dialog_state(target.hwnd)
+                closed = after is None
+                new_dialogs = [d.title for d in windows.dialogs(pid)
+                               if d.hwnd not in before_dialogs]
+                changed = after != before or bool(new_dialogs)
             dismissing = role in ("dismiss", "advance")
-            only_way_out = len(target.buttons()) == 1
-            if not closed and dismissing and only_way_out:
+            if not closed and dismissing and not changed:
                 return {
                     "ok": False,
                     "dialog": target.title,
                     "pressed": button.text,
                     "role": role,
                     "dialog_closed": False,
+                    "dialog_changed": False,
                     "reason": (
-                        f"{button.text!r} was the only button on "
-                        f"{target.title!r} and the dialog is still open, so "
+                        f"{target.title!r} is still open after "
+                        f"{button.text!r} and nothing on it changed, so "
                         f"the press did not take. It was sent as a posted "
                         f"message, and some Altium prompts have been "
                         f"reported to ignore one while still answering "
@@ -683,10 +714,16 @@ def register_uiauto_tools(mcp):
                         f"caption through UI Automation instead, and is the "
                         f"next thing to try."),
                 }
-            return {"ok": True, "dialog": target.title,
-                    "pressed": button.text, "role": role,
-                    "dialog_closed": closed,
-                    "outcome_verified": bool(closed) or not dismissing}
+            out = {"ok": True, "dialog": target.title,
+                   "pressed": button.text, "role": role,
+                   "dialog_closed": closed,
+                   "outcome_verified": bool(closed) or (
+                       role == "advance" and changed)}
+            if not closed:
+                out["dialog_changed"] = changed
+                if new_dialogs:
+                    out["new_dialogs"] = new_dialogs
+            return out
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, press)

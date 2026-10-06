@@ -295,7 +295,10 @@ Begin
         Begin
             { Component Name is an IPCB_Text; return its .Text, not the object }
             { (Dispatch->OleStr otherwise crashed EscapeJsonString via modal). }
+            { A pad's Name is its designator, a plain string. It read as empty, }
+            { so a Name=1 filter matched no pad at all.                        }
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Name.Text; End;
+            If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin

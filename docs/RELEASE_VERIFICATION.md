@@ -1,4 +1,4 @@
-# Release verification: 2026.10.05.1
+# Release verification: 2026.10.05.3
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -47,6 +47,12 @@ works elsewhere cannot be an undeclared identifier:
 | 25, DbLib record key | `ParamByName`, `Value` on an ADO parameter | no, nowhere | high, and it can stop the loop |
 | 25, DbLib placement | `LoadComponentFromDatabaseLibrary` | no, nowhere | highest, and it edits the sheet |
 | 25, DbLib placement | `AddSchObject`, `SetState_Orientation` | yes, `Gen_PlaceSchComponentFromLibrary` | low |
+| 26, repour | `PolygonRepour` on the system options | no, nowhere | high, and it can stop the loop |
+| 26, ECO direction | `AddStringParameter` with `Action=UpdateMe` | yes, `Proj_UpdatePCB` | high, and executing it edits the board |
+| 26, exact vias | `Size`, `HoleSize` on a via, in fractions of a mil | yes, `PCB_PlaceVia` | low |
+| 26, replicated part | `RegisterSchObjectInContainer` | yes, `Generic.pas` | medium |
+| 26, footprint target | `CurrentComponent` | yes, `Lib_SetDesignator` | low |
+| 26, copied footprint | `MoveByXY` on a footprint's primitives | yes, `Library.pas`, on a 3D body | medium |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -222,7 +228,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.05.1`, `version_match` =
+Expect `altium_script_version` = `2026.10.05.3`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -1470,12 +1476,108 @@ Item 8 is new in the following build.
 
 ---
 
+## 26. Fixes from a second full board run
+
+Results that looked right and were not, from a board taken end to end on
+a Spanish Altium. On scratch documents only. New identifiers, all from
+Altium's API reference or two independent reference scripts:
+`SystemOptions.PolygonRepour` and `eAlwaysRepour` (documented),
+`SetState_CopperPourInvalid` (PolygonReFitBO.pas), `PourIndex` and
+`Poured` (PolygonBenchmark.pas and PCBObjectInspector.pas), and
+`IPCB_Region.Area` (documented). Any of them undeclared stops the loop at
+the first repour or polygon read, so run item 2 before relying on the rest.
+
+1. **Exact vias.** `pcb_place_via x=1000 y=1000 size_mm=1.2
+   hole_size_mm=0.6`, then `obj_query eViaObject properties="Size,HoleSize"`:
+   47.244 and 23.622 mil (1.2 and 0.6 mm), not 47 and 24. `size=20
+   hole_size=20` is refused with `BAD_SIZE` and places nothing.
+2. **Repour.** A scratch board with a solid pour that runs past the board
+   edge and a Board Outline Clearance rule. `pcb_get_polygons`: note
+   `copper_area_mm2` and `copper_pieces`. Raise the rule's clearance,
+   `pcb_repour_polygons`: `repoured` true, `rebuilt` 1, the item's
+   `copper_area_mm2_after` below `_before`, no yes/no prompt, and
+   `pcb_get_polygons` reads the new area while `area_mm2` (the outline)
+   is unchanged. Shelve the polygon and repour: `shelved` 1, `repoured`
+   false, nothing poured. `app_ping` after each.
+3. **STEP export.** With a schematic tab focused, `proj_export_step
+   output_path=<scratch>\board.step`: the board is focused, and either
+   `generated` true with the file there, or `generated` false with
+   `dispatched` true and nothing claimed. Record which; false means
+   `PCB:ExportSTEP3D` does not take `FileName` on this build.
+4. **ECO direction.** A scratch project whose schematic has one changed
+   footprint. With the SCHEMATIC focused, `proj_sync_pcb`: the board is
+   focused and the ECO dialog lists the PcbDoc, not the SchDoc, as the
+   affected document. Press Close without executing, and confirm the
+   schematic is unchanged.
+5. **Replicated part.** On a sheet with a dual op-amp `U1` part A,
+   `sch_replicate_component designator=U1 part_id=2`: `shared` true. Move
+   both parts with the mouse: no "An item with the same key has already
+   been added". Save, close and reopen the sheet: both parts are there,
+   once each.
+6. **Pads near a round edge.** A round scratch board with a pad turned
+   329.5 degrees 0.5 mm inside the edge. `audit_find_pads_near_board_edge
+   clearance_mils=118` lists it at about 19.7 mil, and `unmeasured` is 0.
+7. **Outline render.** `pcb_render_svg` on the same board draws a full
+   circle, with no straight edge across any quadrant.
+8. **Footprint target.** In a scratch PcbLib with footprints A and B, B
+   open in the editor: `lib_add_footprint_tracks footprint_name=A` puts
+   the tracks in A (`lib_probe_footprint` on both), and a name that does
+   not exist is refused with nothing written.
+9. **3D body origin.** `lib_link_3d_model component_name=A` with no
+   offset: `moved_to_footprint_origin` true, and after a save and reload
+   the body sits on A's origin, not 50000 mil away.
+10. **Footprint copy.** `lib_copy_footprint source_name=A new_name=A2`
+    in the same library with A open in the editor: `primitives_realigned`
+    above 0, and after a save and reload A2's pads read the same
+    coordinates as A's (`lib_get_pad_geometry`).
+11. **Copper less its holes.** On item 2's board, put the pour on a net
+    (`pcb_modify_polygon net=GND`) with an unnetted via inside it and
+    repour: `copper_area_mm2_after` drops by the cleared ring and
+    `copper_area_exact` is true. Reads `Region.MainContour`,
+    `Region.HoleCount`, `Region.Holes` and a contour's `X`/`Y`
+    (Hyperlynx_Exporter.pas), new here.
+12. **Pad name and shape.** `pcb_place_pad shape=rectangular name=P1`
+    places a rectangular pad, and `obj_query ePadObject
+    properties="Name"` reads `P1` (it read empty). `shape=square` is
+    refused with `BAD_SHAPE` and places nothing.
+
+Verified on AD 26.10.1.6 with the script of 2026-10-05, build 2, on a scratch board and
+library kept out of every project: item 1 (47.2441 and 23.622 mil read
+back; 20/20 refused, nothing placed); item 2 (no prompt, `app_ping`
+answered, and after the pour was put on GND the repour cleared the
+unnetted via, seen on screen); item 3 (`generated` false with `dispatched`
+true, no dialog and no file, so `PCB:ExportSTEP3D` takes no file name on
+this build); item 6 on a rectangular board, since no tool draws a round
+outline (a 47.2 mil via 500 mil in at 476.38 mil, and an obround
+12 x 45 mil pad turned 329.5 degrees at 9.78 mil, which is its end cap);
+item 8 (FP_A got its tracks with FP_B current; an unknown name refused);
+item 9 (the footprint origin read 50000,50000 mil and the body sat on it);
+item 10 (A2's pads at plus and minus 1.27 mm like A's, from a fresh read
+but not after a save and reload). Not run: items 4 and 5 need a person at
+the editor, item 7 a round outline. Found on the way, and items 11 and 12
+in the following build: `copper_area_mm2` stayed at the outline's area
+because `IPCB_Region.Area` is the outer contour only; a pad's `Name`
+read empty through `obj_query`; and `pcb_place_pad` turned
+`shape=rectangular` into a round pad. Also open: a same-library copy
+of a footprint with 4 primitives counted 6.
+
+---
+
 ## Still open, and not blocking
 
 * **#23** font size: the importer places symbol text but not its height.
   Altium's font size is not in mils and the conversion is undocumented,
   so the source range is reported rather than guessed. Calibrating it
   needs a live measurement.
+* **#39**, three items that need a live session before any change:
+  a `>` or `<` in a `pcb_create_design_rule` scope raised a parse modal
+  and left a rule Altium later called incorrectly defined; Board Outline
+  Clearance rules read `Gap` 0 while the real value sits in a per-object
+  matrix no documented property reaches; and 3D bodies deleted with
+  `lib_delete_footprint_primitives` came back on the next save. The last
+  one means removing a primitive from the library board as well as the
+  footprint, and a wrong removal sequence dangles an object, which takes
+  the loop down where `Try` cannot catch it.
 
 
 ## Generic property rejection on Altium 21 (live verified)

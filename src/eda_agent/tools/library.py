@@ -1373,8 +1373,9 @@ def register_library_tools(mcp):
         layer: str = "TopLayer",
         rotation: int = 0,
         corner_radius: int = 25,
+        footprint_name: str = "",
     ) -> dict[str, Any]:
-        """Add a pad to the current footprint.
+        """Add a pad to a footprint: the named one, or the current one.
 
         Args:
             designator: Pad designator (e.g., "1", "2")
@@ -1393,26 +1394,32 @@ def register_library_tools(mcp):
             rotation: Pad rotation in degrees
             corner_radius: Corner radius percentage for shape="roundrect"
                 (Altium stores RR radius as a %; 25 is typical).
+            footprint_name: footprint to write into. Empty uses the
+                editor's current footprint; a name makes that footprint
+                current first and refuses if it cannot, since otherwise
+                the primitives land in whichever footprint another call
+                left current.
 
         Returns:
             Dictionary confirming pad addition
         """
         bridge = get_bridge()
+        params: dict[str, Any] = {
+            "designator": designator,
+            "x": x,
+            "y": y,
+            "x_size": x_size,
+            "y_size": y_size,
+            "hole_size": hole_size,
+            "shape": shape,
+            "layer": layer,
+            "rotation": rotation,
+            "corner_radius": corner_radius,
+        }
+        if footprint_name:
+            params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_pad",
-            {
-                "designator": designator,
-                "x": x,
-                "y": y,
-                "x_size": x_size,
-                "y_size": y_size,
-                "hole_size": hole_size,
-                "shape": shape,
-                "layer": layer,
-                "rotation": rotation,
-                "corner_radius": corner_radius,
-            },
-        )
+            "library.add_footprint_pad", params)
         hint = BulkHintTracker.record_and_hint("lib_add_footprint_pad")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -1421,6 +1428,7 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_add_footprint_pads(
         pads: list[dict[str, Any]],
+        footprint_name: str = "",
     ) -> dict[str, Any]:
         """Add MANY pads to the current footprint in ONE call.
 
@@ -1453,6 +1461,11 @@ def register_library_tools(mcp):
                  "y_size": 40},
             ])
 
+        ``footprint_name`` picks the footprint to write into. Empty uses
+        the editor's current footprint; a name makes that footprint
+        current first and refuses if it cannot, since otherwise the
+        primitives land in whichever footprint another call left current.
+
         Returns:
             Dict with added, failed, total counts.
         """
@@ -1467,10 +1480,11 @@ def register_library_tools(mcp):
             }
 
         bridge = get_bridge()
+        params: dict[str, Any] = {"pads": payload}
+        if footprint_name:
+            params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_pads",
-            {"pads": payload},
-        )
+            "library.add_footprint_pads", params)
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
         return result
@@ -1483,6 +1497,7 @@ def register_library_tools(mcp):
         y2: int,
         width: int = 10,
         layer: str = "TopOverlay",
+        footprint_name: str = "",
     ) -> dict[str, Any]:
         """Add a track to the current footprint (for silkscreen/courtyard).
 
@@ -1496,15 +1511,20 @@ def register_library_tools(mcp):
                 Altium layer is accepted, e.g. "BottomOverlay" or
                 "Mechanical1".."Mechanical16" for courtyard / assembly
                 outlines.
+            footprint_name: footprint to write into. Empty uses the
+                editor's current footprint; a name makes that footprint
+                current first and refuses if it cannot.
 
         Returns:
             Dictionary confirming track addition
         """
         bridge = get_bridge()
+        params: dict[str, Any] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                                  "width": width, "layer": layer}
+        if footprint_name:
+            params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_track",
-            {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "width": width, "layer": layer},
-        )
+            "library.add_footprint_track", params)
         hint = BulkHintTracker.record_and_hint("lib_add_footprint_track")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -1513,6 +1533,7 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_add_footprint_tracks(
         tracks: list[dict[str, Any]],
+        footprint_name: str = "",
     ) -> dict[str, Any]:
         """Add MANY tracks to the current footprint in ONE call.
 
@@ -1536,6 +1557,11 @@ def register_library_tools(mcp):
                 {"x1":  50, "y1":  30, "x2": -50, "y2":  30},
                 {"x1": -50, "y1":  30, "x2": -50, "y2": -30},
             ])
+
+        ``footprint_name`` picks the footprint to write into. Empty uses
+        the editor's current footprint; a name makes that footprint
+        current first and refuses if it cannot, since otherwise the
+        primitives land in whichever footprint another call left current.
 
         Returns:
             Dict with added, failed, total counts.
@@ -1565,10 +1591,11 @@ def register_library_tools(mcp):
             }
 
         bridge = get_bridge()
+        params: dict[str, Any] = {"tracks": "~~".join(op_strs)}
+        if footprint_name:
+            params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_tracks",
-            {"tracks": "~~".join(op_strs)},
-        )
+            "library.add_footprint_tracks", params)
         if isinstance(result, dict) and skipped_invalid:
             result["skipped_invalid"] = skipped_invalid
         return result
@@ -1582,6 +1609,7 @@ def register_library_tools(mcp):
         end_angle: float = 360,
         width: int = 10,
         layer: str = "TopOverlay",
+        footprint_name: str = "",
     ) -> dict[str, Any]:
         """Add an arc to the current footprint.
 
@@ -1595,23 +1623,27 @@ def register_library_tools(mcp):
             layer: Layer name. Default "TopOverlay" (silkscreen). Any
                 Altium layer accepted, e.g. "Mechanical1".."Mechanical16"
                 for pin-1 / assembly markers.
+            footprint_name: footprint to write into. Empty uses the
+                editor's current footprint; a name makes that footprint
+                current first and refuses if it cannot.
 
         Returns:
             Dictionary confirming arc addition
         """
         bridge = get_bridge()
+        params: dict[str, Any] = {
+            "x_center": x_center,
+            "y_center": y_center,
+            "radius": radius,
+            "start_angle": start_angle,
+            "end_angle": end_angle,
+            "width": width,
+            "layer": layer,
+        }
+        if footprint_name:
+            params["footprint_name"] = footprint_name
         result = await bridge.send_command_async(
-            "library.add_footprint_arc",
-            {
-                "x_center": x_center,
-                "y_center": y_center,
-                "radius": radius,
-                "start_angle": start_angle,
-                "end_angle": end_angle,
-                "width": width,
-                "layer": layer,
-            },
-        )
+            "library.add_footprint_arc", params)
         return result
 
     @mcp.tool()
@@ -2264,7 +2296,12 @@ def register_library_tools(mcp):
         Args:
             component_name: Name of the footprint in the active PcbLib
             model_path: Path to the 3D model file (.step, .stp); must exist
-            offset_x: X offset in mils, applied via the body's MoveByXY
+            offset_x: X offset in mils from the FOOTPRINT's origin. The
+                body is always moved onto that origin first: it arrives
+                at the board origin, and a footprint open in the editor
+                sits at Altium's library origin, about 50000,50000 mil,
+                so an offset of 50000 used to be needed to bring it back.
+                Do not add that any more.
             offset_y: Y offset in mils, applied with offset_x
             offset_z: Z offset in mils, sets the body's StandoffHeight.
                 This is the common adjustment: lifting a connector body
@@ -2287,7 +2324,10 @@ def register_library_tools(mcp):
                 here. Rotate in the library editor for now.
 
         Returns:
-            Dict with ``success``, ``footprint``, ``model``, and
+            Dict with ``success``, ``footprint``, ``model``,
+            ``footprint_origin_mils`` and ``moved_to_footprint_origin``
+            (false means the body may sit at the board origin, away
+            from the footprint), and
             ``applied`` -- which adjustments were actually written to
             the body (``standoff_height``, ``rotation_z``,
             ``offset_xy``). Check it rather than assuming: each
