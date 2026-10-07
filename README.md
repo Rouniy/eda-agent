@@ -10,6 +10,12 @@ Claude Code reviewing a buck converter through eda-agent. The feedback resistor 
 
 [![eda-agent demo: Claude Code reviewing a buck converter](https://img.youtube.com/vi/snRyCx3OlxM/maxresdefault.jpg)](https://youtu.be/snRyCx3OlxM)
 
+## Support the project
+
+Developing eda-agent and testing it against Altium's scripting engine takes a significant amount of work. If you find eda-agent useful in your work, a donation helps keep the progress going.
+
+<a href="https://buymeacoffee.com/george.saliba"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="45"></a>
+
 ## Dashboard
 
 <img src="assets/dashboard.png" alt="eda-agent dashboard inside Altium Designer" width="320">
