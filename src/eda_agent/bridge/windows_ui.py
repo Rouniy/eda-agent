@@ -118,7 +118,9 @@ class WindowsUiInspector:
                 visible=visible,
                 enabled=bool(self._w.gui.IsWindowEnabled(hwnd)),
                 owner_handle=int(self._w.gui.GetWindow(hwnd, self._w.con.GW_OWNER) or 0),
-                is_dialog=(cls == "#32770"),
+                # Altium's SI warning uses the VCL TMessageForm class.
+                # Treat it as a dialog so a blocked editor is not reported idle.
+                is_dialog=(cls in {"#32770", "TMessageForm"}),
             ))
             return True
 

@@ -746,9 +746,15 @@ def register_generic_tools(mcp):
         that genuinely exposes no objects is distinguishable from one
         whose objects could not be read.
 
-        The array is capped at ``limit``; ``violation_count`` is the
-        project's true total either way. Check ``truncated`` before
-        concluding a project is clean of anything past the cap.
+        The array is capped at ``limit``. ``violation_count`` is the raw
+        compiled total, INCLUDING suppressed and No Report messages.
+        ``active_count``, ``warning_count``, ``error_count``, ``fatal_count``,
+        ``suppressed_count``, ``no_report_count`` and ``unknown_count`` scan
+        the complete list independently of that cap. Unknown metadata
+        prevents a verified clean result. Per row, ``error_level`` is
+        0=No Report, 1=Warning, 2=Error, 3=Fatal, -1=unavailable;
+        ``suppressed`` is true/false/null (null means unavailable).
+        These fields describe the last compiled state; compile after edits.
 
         Args:
             limit: Maximum violations to return (default 100). 0 or
@@ -1467,15 +1473,22 @@ def register_generic_tools(mcp):
     async def sch_place_no_erc(
         x: int,
         y: int,
+        template_unique_id: str = "",
+        template_document: str = "",
     ) -> dict[str, Any]:
-        """Place a No-ERC marker at coordinates to suppress specific ERC violations.
+        """Place a No-ERC marker on the active schematic.
 
-        Use this after running ERC to suppress known-good violations at specific
-        pin or wire locations.
+        Without a template this creates a GENERIC marker suppressing all
+        violations at that node. Prefer a native, reviewed specific template
+        when only one violation type should be allowed. A supplied template
+        must have SuppressAll=false; it is replicated with a fresh UniqueId.
+        Verify the saved marker and recompile to check the actual suppression.
 
         Args:
             x: X coordinate in mils
             y: Y coordinate in mils
+            template_unique_id: UniqueId of a reviewed specific NoERC to copy
+            template_document: Loaded source sheet path; empty uses active sheet
 
         Returns:
             Dictionary confirming placement with coordinates
@@ -1483,7 +1496,9 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.place_no_erc",
-            {"x": str(x), "y": str(y)},
+            {"x": str(x), "y": str(y),
+             "template_unique_id": template_unique_id,
+             "template_document": template_document},
         )
         return result
 

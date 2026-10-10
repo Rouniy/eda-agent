@@ -211,6 +211,18 @@ def test_inspector_enumerates_dialog_controls_without_live_windows():
     assert dialogs[0]["controls"][0]["text"] == "Delete"
 
 
+def test_inspector_finds_altium_vcl_message_form(monkeypatch):
+    backend = _Backend()
+    original = backend.gui.GetClassName
+    monkeypatch.setattr(backend.gui, "GetClassName",
+                        lambda hwnd: "TMessageForm" if hwnd == 20 else original(hwnd))
+    inspector = WindowsUiInspector(99, backend=backend)
+    dialogs = inspector.list_dialogs()
+    assert [d["handle"] for d in dialogs] == [20]
+    assert dialogs[0]["controls"][0]["text"] == "Delete"
+    assert backend.gui.posted == []
+
+
 def test_inspector_blocks_unconfirmed_and_destructive_clicks():
     backend = _Backend()
     inspector = WindowsUiInspector(99, backend=backend)

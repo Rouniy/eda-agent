@@ -110,7 +110,7 @@ Begin
         Doc := Workspace.DM_FocusedDocument;
         If Doc <> Nil Then
         Begin
-            FileName := Doc.DM_FileName;
+            FileName := Doc.DM_FullPath;
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
             Data := Data + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"}';
@@ -304,6 +304,8 @@ Function App_CloseDocument(Params : String; RequestId : String) : String;
 Var
     FilePath, SaveStr, DiscardStr : String;
     ServerDoc : IServerDocument;
+    Workspace : IWorkspace;
+    FocusedDoc : IDocument;
     SaveBeforeClose, DiscardChanges, WasModified : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
@@ -328,6 +330,27 @@ Begin
         Exit;
     End;
 
+    { CloseObject and DoFileSave can follow the active editor even when a
+      FileName parameter names another loaded document. Focus and verify the
+      absolute path before either operation; duplicate basenames are common. }
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', FilePath);
+    RunProcess('WorkspaceManager:OpenObject');
+    Workspace := GetWorkspace;
+    FocusedDoc := Nil;
+    If Workspace <> Nil Then FocusedDoc := Workspace.DM_FocusedDocument;
+    If FocusedDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FOCUS_FAILED', 'No focused document; refusing to close');
+        Exit;
+    End;
+    If LowerCase(FocusedDoc.DM_FullPath) <> LowerCase(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FOCUS_MISMATCH', 'Refusing to close a different document');
+        Exit;
+    End;
+
     WasModified := False;
     Try WasModified := ServerDoc.Modified; Except End;
     If WasModified And SaveBeforeClose Then
@@ -335,6 +358,11 @@ Begin
         Try ServerDoc.DoFileSave(''); Except
             Result := BuildErrorResponse(RequestId, 'SAVE_FAILED',
                 'Could not save dirty document before close: ' + FilePath);
+            Exit;
+        End;
+        If ServerDoc.Modified Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'Document remains dirty; refusing to close: ' + FilePath);
             Exit;
         End;
     End

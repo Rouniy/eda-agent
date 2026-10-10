@@ -291,6 +291,7 @@ End;
 
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
+    NoERC : ISch_NoERC;
     R : ISch_Rectangle;
     L : ISch_Line;
     C : ISch_Component;
@@ -375,6 +376,10 @@ Begin
         Begin
             If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.ComponentDescription; End;
         End
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := IntToStr(C.ComponentKind); End;
+        End
         Else If PropName = 'CurrentPartID' Then
         Begin
             If Obj.ObjectId = eSchComponent Then
@@ -442,6 +447,19 @@ Begin
         Else If PropName = 'FontId'      Then Result := IntToStr(Obj.FontId)
         Else If PropName = 'LineWidth'   Then Result := IntToStr(Obj.LineWidth)
         Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
+        Else If PropName = 'NoERC.SuppressAll' Then
+        Begin
+            If Obj.ObjectId = eNoERC Then Begin NoERC := Obj; Result := BoolToJsonStr(NoERC.SuppressAll); End;
+        End
+        Else If PropName = 'AutoSize' Then
+        Begin
+            If Obj.ObjectId = ePort Then Begin Port := Obj; Result := BoolToJsonStr(Port.AutoSize); End;
+        End
+        Else If PropName = 'Location.X_exact' Then Result := FloatToJsonStr(Obj.Location.X / 10000.0)
+        Else If PropName = 'Width_exact' Then
+        Begin
+            If Obj.ObjectId = ePort Then Begin Port := Obj; Result := FloatToJsonStr(Port.Width / 10000.0); End;
+        End
         Else If PropName = 'IOType' Then
         Begin
             If Obj.ObjectId = ePort Then Begin Port := Obj; Result := IntToStr(Port.IOType); End
@@ -681,6 +699,11 @@ Begin
         // is what ISch_Component actually exposes -- both accepted.
         Else If (PropName = 'ComponentDescription') Or (PropName = 'Description') Then
             Obj.ComponentDescription := Value
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then Begin C := Obj; C.ComponentKind := StrToInt(Value); End
+            Else Matched := False;
+        End
         Else If PropName = 'CurrentPartID' Then
         Begin
             If Obj.ObjectId = eSchComponent Then
@@ -742,6 +765,11 @@ Begin
         Else If PropName = 'FontId'      Then Obj.FontId := StrToIntDef(Value, 1)
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
         Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
+        Else If PropName = 'AutoSize' Then
+        Begin
+            If Obj.ObjectId = ePort Then Begin Port := Obj; Port.AutoSize := StrToBool(Value); End
+            Else Matched := False;
+        End
         Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
         Else If PropName = 'Alignment'   Then Obj.Alignment := StrToIntDef(Value, 0)
         Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
@@ -751,7 +779,11 @@ Begin
         Else If PropName = 'Justification' Then Obj.Justification := StrToIntDef(Value, 0)
 
         // Coord properties (expected in mils)
-        Else If PropName = 'Width'       Then Obj.Width := MilsToCoord(StrToIntDef(Value, 0))
+        Else If PropName = 'Width' Then
+        Begin
+            If Obj.ObjectId = ePort Then Begin Port := Obj; Port.Width := MilsToCoord(StrToIntDef(Value, 0)); End
+            Else Obj.Width := MilsToCoord(StrToIntDef(Value, 0));
+        End
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoord(StrToIntDef(Value, 0))
@@ -3008,10 +3040,12 @@ Var
     Project : IProject;
     Violation : IViolation;
     RelObj : IDMObject;
-    I, J, VCount, MaxItems, RelCount, Emitted : Integer;
+    I, J, VCount, MaxItems, RelCount, Emitted, ErrorLevel : Integer;
+    ActiveCount, SuppressedCount, UnknownCount, NoReportCount : Integer;
+    WarningCount, ErrorCount, FatalCount : Integer;
     JsonItems, RelItems : String;
     First, FirstRel : Boolean;
-    Desc, Detail, Kind, DocName, Probe : String;
+    Desc, Detail, Kind, DocName, Probe, SuppressedText : String;
 Begin
     MaxItems := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
 
@@ -3033,13 +3067,43 @@ Begin
     JsonItems := '';
     First := True;
     Emitted := 0;
+    ActiveCount := 0;
+    SuppressedCount := 0;
+    UnknownCount := 0;
+    NoReportCount := 0;
+    WarningCount := 0;
+    ErrorCount := 0;
+    FatalCount := 0;
 
     For I := 0 To VCount - 1 Do
     Begin
-        If (MaxItems > 0) And (I >= MaxItems) Then Break;
-
         Violation := Project.DM_Violations(I);
-        If Violation = Nil Then Continue;
+        If Violation = Nil Then
+        Begin
+            Inc(UnknownCount);
+            Continue;
+        End;
+
+        ErrorLevel := -1;
+        Try ErrorLevel := Violation.DM_ErrorLevel; Except End;
+        SuppressedText := 'null';
+        Try SuppressedText := BoolToJsonStr(Violation.DM_IsSuppressed); Except End;
+
+        { Scan every violation for counts, even when details are limited.
+          Unknown metadata must never be reported as a clean ERC result. }
+        If SuppressedText = 'true' Then Inc(SuppressedCount)
+        Else If (SuppressedText = 'null') Or (ErrorLevel < 0) Or (ErrorLevel > 3) Then Inc(UnknownCount)
+        Else If ErrorLevel = 0 Then Inc(NoReportCount)
+        Else
+        Begin
+            Inc(ActiveCount);
+            Case ErrorLevel Of
+                1: Inc(WarningCount);
+                2: Inc(ErrorCount);
+                3: Inc(FatalCount);
+            End;
+        End;
+        If (MaxItems > 0) And (Emitted >= MaxItems) Then Continue;
 
         Try
             Desc := Violation.DM_LongDescriptorString;
@@ -3106,6 +3170,8 @@ Begin
         If Not First Then JsonItems := JsonItems + ',';
         First := False;
         JsonItems := JsonItems + '{"index":' + IntToStr(I) +
+            ',"error_level":' + IntToStr(ErrorLevel) +
+            ',"suppressed":' + SuppressedText +
             ',"description":"' + EscapeJsonString(Desc) +
             '","detail":"' + EscapeJsonString(Detail) +
             '","related_object_count":' + IntToStr(RelCount) +
@@ -3113,11 +3179,17 @@ Begin
         Inc(Emitted);
     End;
 
-    { violation_count is the project's TRUE total; the array stops at      }
-    { `limit` (default 100). Without the flag the two read as the same     }
-    { number and a capped list looks like a complete one.                  }
+    { violation_count includes suppressed and No Report entries.
+      Active severity counts refer to the complete compiled project. }
     Result := BuildSuccessResponse(RequestId,
         '{"violation_count":' + IntToStr(VCount) +
+        ',"active_count":' + IntToStr(ActiveCount) +
+        ',"suppressed_count":' + IntToStr(SuppressedCount) +
+        ',"no_report_count":' + IntToStr(NoReportCount) +
+        ',"unknown_count":' + IntToStr(UnknownCount) +
+        ',"warning_count":' + IntToStr(WarningCount) +
+        ',"error_count":' + IntToStr(ErrorCount) +
+        ',"fatal_count":' + IntToStr(FatalCount) +
         ',"returned":' + IntToStr(Emitted) +
         ',"limit":' + IntToStr(MaxItems) +
         ',"truncated":' + BoolToJsonStr(VCount > Emitted) +
@@ -5024,11 +5096,17 @@ End;
 Function Gen_PlaceNoERC(Params : String; RequestId : String) : String;
 Var
     X, Y : Integer;
-    SchDoc : ISch_Document;
-    NoERC : ISch_GraphicalObject;
+    SchDoc, TemplateDoc : ISch_Document;
+    NoERC, TemplateObj, Candidate : ISch_GraphicalObject;
+    Specific : ISch_NoERC;
+    Iterator : ISch_Iterator;
+    Workspace : IWorkspace;
+    TemplatePath, TemplateId, NewId : String;
 Begin
     X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    TemplatePath := ExtractJsonValue(Params, 'template_document');
+    TemplateId := ExtractJsonValue(Params, 'template_unique_id');
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -5037,7 +5115,47 @@ Begin
         Exit;
     End;
 
-    NoERC := SchServer.SchObjectFactory(eNoERC, eCreate_Default);
+    If TemplateId <> '' Then
+    Begin
+        TemplateDoc := SchDoc;
+        If TemplatePath <> '' Then TemplateDoc := SchServer.GetSchDocumentByPath(TemplatePath);
+        If TemplateDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_LOADED', 'Open the template schematic first');
+            Exit;
+        End;
+        TemplateObj := Nil;
+        Iterator := TemplateDoc.SchIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eNoERC));
+        Candidate := Iterator.FirstSchObject;
+        While Candidate <> Nil Do
+        Begin
+            If Candidate.UniqueId = TemplateId Then TemplateObj := Candidate;
+            Candidate := Iterator.NextSchObject;
+        End;
+        TemplateDoc.SchIterator_Destroy(Iterator);
+        If TemplateObj = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_FOUND', 'No NoERC matches the template UniqueId');
+            Exit;
+        End;
+        Specific := TemplateObj;
+        If Specific.SuppressAll Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'GENERIC_TEMPLATE_REJECTED', 'Template must suppress specific violations only');
+            Exit;
+        End;
+        Workspace := GetWorkspace;
+        If Workspace = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'Cannot generate a new UniqueId');
+            Exit;
+        End;
+        NewId := Workspace.DM_GenerateUniqueID;
+        NoERC := TemplateObj.Replicate;
+        If NoERC <> Nil Then NoERC.UniqueId := NewId;
+    End
+    Else NoERC := SchServer.SchObjectFactory(eNoERC, eCreate_Default);
     If NoERC = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create No-ERC marker');
@@ -5053,7 +5171,9 @@ Begin
     SchDoc.GraphicallyInvalidate;
 
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
+        '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) +
+        ',"unique_id":"' + EscapeJsonString(NoERC.UniqueId) +
+        '","template_unique_id":"' + EscapeJsonString(TemplateId) + '"}');
 End;
 
 {..............................................................................}
@@ -8962,11 +9082,13 @@ Var
     Outline : IPCB_BoardOutline;
     OutlineJson, TracksJson, ArcsJson, PadsJson, ViasJson, TextsJson : String;
     RegionsJson, CompsJson : String;
+    TracksParts, ArcsParts, PadsParts, ViasParts, TextsParts : TStringList;
+    RegionsParts, CompsParts, RegionPoints : TStringList;
     NumTracks, NumArcs, NumPads, NumVias, NumTexts, NumOutline : Integer;
     NumRegions, NumComps : Integer;
     LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr : String;
     BR : TCoordRect;
-    I, K, PtCount : Integer;
+    I, K, PtCount, Seen : Integer;
     Seg : TPolySegment;
     RespJson : String;
     NameOnFlag, CommentOnFlag, IsHiddenFlag : Boolean;
@@ -8976,6 +9098,7 @@ Var
     LyrColor : Integer;
     LyrVisible, LyrFirst : Boolean;
 Begin
+    AppendLog(FormatLogStamp + ',0,_pcb_geometry,begin,' + RequestId);
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
     Begin
@@ -8983,6 +9106,7 @@ Begin
             'No PCB document is active');
         Exit;
     End;
+    AppendLog(FormatLogStamp + ',0,_pcb_geometry,board,' + RequestId);
 
     { Board outline: walk Segments. Each carries a vertex (vx, vy) and -- }
     { for arc segments -- a center (cx, cy) + radius + angles. v1 keeps   }
@@ -8992,7 +9116,9 @@ Begin
     Outline := Board.BoardOutline;
     If Outline <> Nil Then
     Begin
+        AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_rebuild,' + RequestId);
         Try Outline.Invalidate; Outline.Rebuild; Outline.Validate; Except End;
+        AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_ready,' + RequestId);
         For I := 0 To Outline.PointCount - 1 Do
         Begin
             Seg := Outline.Segments[I];
@@ -9020,6 +9146,7 @@ Begin
         End;
     End;
     OutlineJson := OutlineJson + ']';
+    AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_done,' + RequestId);
 
     BR := Board.BoardOutline.BoundingRectangle;
 
@@ -9031,15 +9158,30 @@ Begin
     RegionsJson := '['; NumRegions := 0;
     CompsJson := '[';   NumComps := 0;
 
+    { Appending to a megabyte-scale DelphiScript String for every object is }
+    { quadratic. Collect small fragments and join each array only once.   }
+    TracksParts := TStringList.Create;
+    ArcsParts := TStringList.Create;
+    PadsParts := TStringList.Create;
+    ViasParts := TStringList.Create;
+    TextsParts := TStringList.Create;
+    RegionsParts := TStringList.Create;
+    CompsParts := TStringList.Create;
+
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, ePadObject,
         eViaObject, eTextObject, eRegionObject, eComponentObject));
     Iter.AddFilter_LayerSet(AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Try
+        Seen := 0;
         Obj := Iter.FirstPCBObject;
+        AppendLog(FormatLogStamp + ',0,_pcb_geometry,iter_first,' + RequestId);
         While Obj <> Nil Do
         Begin
+            Inc(Seen);
+            If (Seen Mod 1000) = 0 Then
+                AppendLog(FormatLogStamp + ',0,_pcb_geometry,objects=' + IntToStr(Seen) + ',' + RequestId);
             LayerName := '';
             Try LayerName := GetLayerString(Obj.Layer); Except End;
 
@@ -9048,15 +9190,15 @@ Begin
                 Track := Obj;
                 NetName := '';
                 Try If Track.Net <> Nil Then NetName := Track.Net.Name; Except End;
-                If NumTracks > 0 Then TracksJson := TracksJson + ',';
-                TracksJson := TracksJson +
+                If NumTracks > 0 Then TracksParts.Add(',');
+                TracksParts.Add(
                     '{"x1":' + IntToStr(CoordToMils(Track.X1)) +
                     ',"y1":' + IntToStr(CoordToMils(Track.Y1)) +
                     ',"x2":' + IntToStr(CoordToMils(Track.X2)) +
                     ',"y2":' + IntToStr(CoordToMils(Track.Y2)) +
                     ',"width":' + IntToStr(CoordToMils(Track.Width)) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumTracks);
             End
             Else If Obj.ObjectId = eArcObject Then
@@ -9064,8 +9206,8 @@ Begin
                 Arc := Obj;
                 NetName := '';
                 Try If Arc.Net <> Nil Then NetName := Arc.Net.Name; Except End;
-                If NumArcs > 0 Then ArcsJson := ArcsJson + ',';
-                ArcsJson := ArcsJson +
+                If NumArcs > 0 Then ArcsParts.Add(',');
+                ArcsParts.Add(
                     '{"cx":' + IntToStr(CoordToMils(Arc.XCenter)) +
                     ',"cy":' + IntToStr(CoordToMils(Arc.YCenter)) +
                     ',"r":' + IntToStr(CoordToMils(Arc.Radius)) +
@@ -9073,7 +9215,7 @@ Begin
                     ',"end":' + FloatToJsonStr(Arc.EndAngle) +
                     ',"width":' + IntToStr(CoordToMils(Arc.LineWidth)) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumArcs);
             End
             Else If Obj.ObjectId = ePadObject Then
@@ -9106,8 +9248,8 @@ Begin
                 Try
                     If Pad.Component <> Nil Then TextStr := Pad.Component.Name.Text;
                 Except End;
-                If NumPads > 0 Then PadsJson := PadsJson + ',';
-                PadsJson := PadsJson +
+                If NumPads > 0 Then PadsParts.Add(',');
+                PadsParts.Add(
                     '{"x":' + IntToStr(CoordToMils(Pad.X)) +
                     ',"y":' + IntToStr(CoordToMils(Pad.Y)) +
                     ',"x_size":' + IntToStr(CoordToMils(Pad.TopXSize)) +
@@ -9121,7 +9263,7 @@ Begin
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name":"' + EscapeJsonString(PadName) + '"' +
                     ',"comp":"' + EscapeJsonString(TextStr) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumPads);
             End
             Else If Obj.ObjectId = eViaObject Then
@@ -9129,15 +9271,15 @@ Begin
                 Via := Obj;
                 NetName := '';
                 Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
-                If NumVias > 0 Then ViasJson := ViasJson + ',';
-                ViasJson := ViasJson +
+                If NumVias > 0 Then ViasParts.Add(',');
+                ViasParts.Add(
                     '{"x":' + IntToStr(CoordToMils(Via.X)) +
                     ',"y":' + IntToStr(CoordToMils(Via.Y)) +
                     ',"size":' + IntToStr(CoordToMils(Via.Size)) +
                     ',"hole_size":' + IntToStr(CoordToMils(Via.HoleSize)) +
                     ',"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"' +
                     ',"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumVias);
             End
             Else If Obj.ObjectId = eTextObject Then
@@ -9165,8 +9307,8 @@ Begin
                     Obj := Iter.NextPCBObject;
                     Continue;
                 End;
-                If NumTexts > 0 Then TextsJson := TextsJson + ',';
-                TextsJson := TextsJson +
+                If NumTexts > 0 Then TextsParts.Add(',');
+                TextsParts.Add(
                     '{"x":' + IntToStr(CoordToMils(Text.XLocation)) +
                     ',"y":' + IntToStr(CoordToMils(Text.YLocation)) +
                     ',"text":"' + EscapeJsonString(TextStr) + '"' +
@@ -9174,7 +9316,7 @@ Begin
                     ',"width":' + IntToStr(CoordToMils(Text.Width)) +
                     ',"rotation":' + FloatToJsonStr(Text.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"hidden":false}';
+                    ',"hidden":false}');
                 Inc(NumTexts);
             End
             Else If Obj.ObjectId = eRegionObject Then
@@ -9194,19 +9336,20 @@ Begin
                 End;
                 If (Contour <> Nil) And (PtCount >= 3) Then
                 Begin
-                    If NumRegions > 0 Then RegionsJson := RegionsJson + ',';
-                    RegionsJson := RegionsJson +
-                        '{"layer":"' + EscapeJsonString(LayerName) + '"' +
-                        ',"net":"' + EscapeJsonString(NetName) + '"' +
-                        ',"pts":[';
+                    RegionPoints := TStringList.Create;
                     For K := 1 To PtCount Do
                     Begin
-                        If K > 1 Then RegionsJson := RegionsJson + ',';
-                        RegionsJson := RegionsJson + '['
+                        If K > 1 Then RegionPoints.Add(',');
+                        RegionPoints.Add('['
                             + IntToStr(CoordToMils(Contour.X[K])) + ','
-                            + IntToStr(CoordToMils(Contour.Y[K])) + ']';
+                            + IntToStr(CoordToMils(Contour.Y[K])) + ']');
                     End;
-                    RegionsJson := RegionsJson + ']}';
+                    If NumRegions > 0 Then RegionsParts.Add(',');
+                    RegionsParts.Add(
+                        '{"layer":"' + EscapeJsonString(LayerName) + '"' +
+                        ',"net":"' + EscapeJsonString(NetName) + '"' +
+                        ',"pts":[' + RegionPoints.Text + ']}');
+                    RegionPoints.Free;
                     Inc(NumRegions);
                 End;
             End
@@ -9229,15 +9372,15 @@ Begin
                 Try NameOnFlag := CompObj.NameOn; Except End;
                 CommentOnFlag := True;
                 Try CommentOnFlag := CompObj.CommentOn; Except End;
-                If NumComps > 0 Then CompsJson := CompsJson + ',';
-                CompsJson := CompsJson +
+                If NumComps > 0 Then CompsParts.Add(',');
+                CompsParts.Add(
                     '{"des":"' + EscapeJsonString(TextStr) + '"' +
                     ',"x":' + IntToStr(CoordToMils(CompObj.X)) +
                     ',"y":' + IntToStr(CoordToMils(CompObj.Y)) +
                     ',"rotation":' + FloatToJsonStr(CompObj.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name_on":' + BoolToJsonStr(NameOnFlag) +
-                    ',"comment_on":' + BoolToJsonStr(CommentOnFlag) + '}';
+                    ',"comment_on":' + BoolToJsonStr(CommentOnFlag) + '}');
                 Inc(NumComps);
             End;
             Obj := Iter.NextPCBObject;
@@ -9245,14 +9388,22 @@ Begin
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
+    AppendLog(FormatLogStamp + ',0,_pcb_geometry,iter_done,' + RequestId);
 
-    TracksJson  := TracksJson  + ']';
-    ArcsJson    := ArcsJson    + ']';
-    PadsJson    := PadsJson    + ']';
-    ViasJson    := ViasJson    + ']';
-    TextsJson   := TextsJson   + ']';
-    RegionsJson := RegionsJson + ']';
-    CompsJson   := CompsJson   + ']';
+    TracksJson  := '[' + TracksParts.Text + ']';
+    ArcsJson    := '[' + ArcsParts.Text + ']';
+    PadsJson    := '[' + PadsParts.Text + ']';
+    ViasJson    := '[' + ViasParts.Text + ']';
+    TextsJson   := '[' + TextsParts.Text + ']';
+    RegionsJson := '[' + RegionsParts.Text + ']';
+    CompsJson   := '[' + CompsParts.Text + ']';
+    TracksParts.Free;
+    ArcsParts.Free;
+    PadsParts.Free;
+    ViasParts.Free;
+    TextsParts.Free;
+    RegionsParts.Free;
+    CompsParts.Free;
 
     { Layer colours + visibility, straight from Altium so the renderer can }
     { reproduce exactly what the user sees on the bench instead of guessing }

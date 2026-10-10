@@ -630,7 +630,8 @@ Begin
         { on-disk project structure in some code paths, and users hit this  }
         { tool precisely when the in-editor state has diverged from the     }
         { cached netlist.                                                   }
-        Try SaveAllDirty; Except End;
+        { A project-scoped read must never save unrelated open projects. }
+        Try SaveProjectMembers(Project); Except End;
         LastCompileTick := 0;
         SmartCompile(Project);
     End;
@@ -2429,6 +2430,27 @@ Begin
     Except
     End;
 
+    { .Focus alone may leave another editor active. Native generation uses
+      that editor, so verify an absolute document path before dispatch. }
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', OutJobPath);
+    RunProcess('WorkspaceManager:OpenObject');
+    Workspace := GetWorkspace;
+    Doc := Nil;
+    If Workspace <> Nil Then Doc := Workspace.DM_FocusedDocument;
+    If Doc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FOCUS_FAILED', 'No focused OutJob');
+        Exit;
+    End;
+    If LowerCase(Doc.DM_FullPath) <> LowerCase(OutJobPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FOCUS_MISMATCH', 'Refusing to generate a different document');
+        Exit;
+    End;
+    Project := Workspace.DM_FocusedProject;
+
     { Parse the INI to find the container and its type }
     Found := False;
     ContainerType := '';
@@ -2493,15 +2515,15 @@ Begin
 
     { Resolve the OutJob's configured output directory so callers can pick }
     { up the produced files without having to re-parse the INI. The INI    }
-    { stores OutputBasePath relative to the OutJob; absolute paths pass    }
+    { stores OutputBasePath relative to the project; absolute paths pass   }
     { through. Trailing slash normalised so Python can append filenames.   }
     OutputDir := '';
     If RelativePath <> '' Then
     Begin
         If (Length(RelativePath) >= 2) And (Copy(RelativePath, 2, 1) = ':') Then
             OutputDir := RelativePath
-        Else
-            OutputDir := ExtractFilePath(OutJobPath) + RelativePath;
+        Else If Project <> Nil Then
+            OutputDir := ExtractFilePath(Project.DM_ProjectFullPath) + RelativePath;
         If (Length(OutputDir) > 0) And
            (Copy(OutputDir, Length(OutputDir), 1) <> '\') Then
             OutputDir := OutputDir + '\';
@@ -2509,6 +2531,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true' +
+        ',"dispatched":true,"generation_verified":false' +
         ',"container_name":"' + EscapeJsonString(ContainerName) + '"' +
         ',"container_type":"' + EscapeJsonString(ContainerType) + '"' +
         ',"relative_path":"' + EscapeJsonString(RelativePath) + '"' +
@@ -3118,9 +3141,10 @@ Begin
             If Not First Then Data := Data + ',';
             First := False;
 
-            { Severity is deliberately omitted: DM_ErrorLevelString is a
-              compile-time undeclared identifier in DelphiScript, and
-              DM_ErrorLevel hasn't been confirmed as declared either. Use
+            { This legacy summary omits severity and suppression. For the
+              verified numeric DM_ErrorLevel and DM_IsSuppressed fields,
+              use Gen_GetErcViolations. DM_ErrorLevelString is not exposed.
+              Use
               DM_ShortDescriptorString (documented on IDMObject base) rather
               than the undocumented DM_DescriptorString. DM_OwnerDocumentName
               is documented on IDMObject and is safe. }
@@ -4323,7 +4347,7 @@ Begin
     End;
 
     PrevTick := LastCompileTick;
-    Try SaveAllDirty; Except End;
+    Try SaveProjectMembers(Project); Except End;
     LastCompileTick := 0;
     SmartCompile(Project);
     NewTick := LastCompileTick;

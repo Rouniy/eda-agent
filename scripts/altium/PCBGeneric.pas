@@ -22,7 +22,9 @@ Var
     Fill  : IPCB_Fill;
     Comp  : IPCB_Component;
     Txt   : IPCB_Text;
+    Cache : TPadCache;
     Oid   : Integer;
+    Rect : TCoordRect;
 Begin
     Result := '';
     Try
@@ -34,14 +36,111 @@ Begin
             If Oid = eViaObject Then Begin Via := Obj; Result := IntToStr(CoordToMils(Via.x)); End
             Else If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.x)); End
             Else If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(CoordToMils(Comp.x)); End
-            Else If Oid = eTextObject Then Begin Txt := Obj; Result := IntToStr(CoordToMils(Txt.x)); End;
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := IntToStr(CoordToMils(Txt.XLocation)); End;
         End
         Else If PropName = 'Y' Then
         Begin
             If Oid = eViaObject Then Begin Via := Obj; Result := IntToStr(CoordToMils(Via.y)); End
             Else If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.y)); End
             Else If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(CoordToMils(Comp.y)); End
-            Else If Oid = eTextObject Then Begin Txt := Obj; Result := IntToStr(CoordToMils(Txt.y)); End;
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := IntToStr(CoordToMils(Txt.YLocation)); End;
+        End
+        Else If PropName = 'Address' Then Result := IntToStr(Obj.I_ObjectAddress)
+        Else If PropName = 'ComponentDesignator' Then
+        Begin
+            If Obj.Component <> Nil Then Result := Obj.Component.Name.Text;
+        End
+        Else If PropName = 'PadName' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
+        End
+        Else If PropName = 'XCenter_mm' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(CoordToMM(Arc.XCenter)); End;
+        End
+        Else If PropName = 'YCenter_mm' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(CoordToMM(Arc.YCenter)); End;
+        End
+        Else If PropName = 'Radius_mm' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(CoordToMM(Arc.Radius)); End;
+        End
+        Else If PropName = 'BoundsLeft_mm' Then
+        Begin
+            Rect := Obj.BoundingRectangle; Result := FloatToJsonStr(CoordToMM(Rect.Left));
+        End
+        Else If PropName = 'BoundsBottom_mm' Then
+        Begin
+            Rect := Obj.BoundingRectangle; Result := FloatToJsonStr(CoordToMM(Rect.Bottom));
+        End
+        Else If PropName = 'BoundsRight_mm' Then
+        Begin
+            Rect := Obj.BoundingRectangle; Result := FloatToJsonStr(CoordToMM(Rect.Right));
+        End
+        Else If PropName = 'BoundsTop_mm' Then
+        Begin
+            Rect := Obj.BoundingRectangle; Result := FloatToJsonStr(CoordToMM(Rect.Top));
+        End
+        Else If PropName = 'IsHidden' Then Result := BoolToJsonStr(Obj.IsHidden)
+        Else If PropName = 'X1_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMM(Track.X1)); End;
+        End
+        Else If PropName = 'Y1_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMM(Track.Y1)); End;
+        End
+        Else If PropName = 'X2_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMM(Track.X2)); End;
+        End
+        Else If PropName = 'Y2_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMM(Track.Y2)); End;
+        End
+        Else If PropName = 'Width_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMM(Track.Width)); End
+            Else If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(CoordToMM(Arc.LineWidth)); End;
+        End
+        Else If PropName = 'X_mm' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(CoordToMM(Pad.X)); End
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMM(Txt.XLocation)); End;
+        End
+        Else If PropName = 'Y_mm' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(CoordToMM(Pad.Y)); End
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMM(Txt.YLocation)); End;
+        End
+        Else If PropName = 'TopXSize_mm' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(CoordToMM(Pad.TopXSize)); End;
+        End
+        Else If PropName = 'TopYSize_mm' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(CoordToMM(Pad.TopYSize)); End;
+        End
+        Else If PropName = 'HoleSize_mm' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(CoordToMM(Pad.HoleSize)); End;
+        End
+        Else If PropName = 'SolderMaskExpansion_mm' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Cache := Pad.GetState_Cache; Result := FloatToJsonStr(CoordToMM(Cache.SolderMaskExpansion)); End;
+        End
+        Else If PropName = 'SolderMaskBottomExpansion_mm' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Cache := Pad.GetState_Cache; Result := FloatToJsonStr(CoordToMM(Cache.SolderMaskBottomExpansion)); End;
+        End
+        Else If PropName = 'UseSeparateMaskExpansions' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Cache := Pad.GetState_Cache; Result := BoolToJsonStr(Cache.UseSeparateExpansions); End;
+        End
+        Else If PropName = 'SolderMaskExpansionMode' Then
+        Begin
+            If Oid = ePadObject Then Begin Pad := Obj; Cache := Pad.GetState_Cache; Result := IntToStr(Cache.SolderMaskExpansionValid); End;
         End
         Else If PropName = 'Layer'      Then Result := GetLayerString(Obj.Layer)
         Else If PropName = 'Descriptor' Then Result := Obj.Descriptor
@@ -135,6 +234,10 @@ Begin
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Pattern; End;
         End
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(Comp.ComponentKind); End;
+        End
         Else If PropName = 'SourceDesignator' Then
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.SourceDesignator; End;
@@ -169,18 +272,95 @@ End;
 Procedure SetPCBProperty(Obj : IPCB_Primitive; PropName : String; Value : String);
 Var
     Track : IPCB_Track;
+    Arc : IPCB_Arc;
     Pad   : IPCB_Pad;
     Comp  : IPCB_Component;
     Txt   : IPCB_Text;
+    Cache : TPadCache;
+    NumericValue : Double;
     Oid   : Integer;
 Begin
     Try
         Oid := Obj.ObjectId;
+        If Pos('_mm', PropName) > 0 Then
+        Begin
+            NumericValue := StrToFloatDef(Value, -999999);
+            If (NumericValue < -10000) Or (NumericValue > 10000) Then Exit;
+            If ((PropName = 'Width_mm') Or (PropName = 'Radius_mm')) And (NumericValue <= 0) Then Exit;
+        End;
         { Base members, settable on any primitive. }
         If PropName = 'X'             Then Obj.x := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'Y'        Then Obj.y := MilsToCoord(StrToIntDef(Value, 0))
+        Else If PropName = 'XCenter_mm' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.MoveByXY(MMToCoord(NumericValue) - Arc.XCenter, 0); End;
+        End
+        Else If PropName = 'Radius_mm' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.Radius := MMToCoord(NumericValue); End;
+        End
+        Else If PropName = 'X_mm' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Txt.MoveByXY(MMToCoord(NumericValue) - Txt.XLocation, 0); End;
+        End
+        Else If PropName = 'YCenter_mm' Then
+        Begin
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.MoveByXY(0, MMToCoord(NumericValue) - Arc.YCenter); End;
+        End
+        Else If PropName = 'Y_mm' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Txt.MoveByXY(0, MMToCoord(NumericValue) - Txt.YLocation); End;
+        End
+        Else If PropName = 'X1_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Track.X1 := MMToCoord(NumericValue); End;
+        End
+        Else If PropName = 'Y1_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Track.Y1 := MMToCoord(NumericValue); End;
+        End
+        Else If PropName = 'X2_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Track.X2 := MMToCoord(NumericValue); End;
+        End
+        Else If PropName = 'Y2_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Track.Y2 := MMToCoord(NumericValue); End;
+        End
+        Else If PropName = 'Width_mm' Then
+        Begin
+            If Oid = eTrackObject Then Begin Track := Obj; Track.Width := MMToCoord(NumericValue); End;
+            If Oid = eArcObject Then Begin Arc := Obj; Arc.LineWidth := MMToCoord(NumericValue); End;
+        End
+        Else If PropName = 'SolderMaskExpansion_mm' Then
+        Begin
+            If Oid = ePadObject Then
+            Begin
+                Pad := Obj;
+                Cache := Pad.GetState_Cache;
+                Cache.SolderMaskExpansionValid := eCacheManual;
+                Cache.SolderMaskExpansion := MMToCoord(NumericValue);
+                Pad.SetState_Cache := Cache;
+            End;
+        End
+        Else If PropName = 'SolderMaskBottomExpansion_mm' Then
+        Begin
+            If Oid = ePadObject Then
+            Begin
+                Pad := Obj;
+                Cache := Pad.GetState_Cache;
+                Cache.SolderMaskExpansionValid := eCacheManual;
+                Cache.UseSeparateExpansions := True;
+                Cache.SolderMaskBottomExpansion := MMToCoord(NumericValue);
+                Pad.SetState_Cache := Cache;
+            End;
+        End
         Else If PropName = 'Layer'    Then Obj.Layer := GetLayerFromString(Value)
         Else If PropName = 'Selected' Then Obj.Selected := StrToBool(Value)
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Comp.ComponentKind := StrToInt(Value); End;
+        End
         { Subtype members: narrow to a typed local via ObjectId first. }
         Else If PropName = 'X1' Then
         Begin
@@ -275,6 +455,8 @@ End;
 Function IsKnownPCBProperty(PropName : String) : Boolean;
 Begin
     Result :=
+        (PropName = 'SolderMaskBottomExpansion_mm') Or (PropName = 'UseSeparateMaskExpansions') Or (PropName = 'Address') Or (PropName = 'ComponentDesignator') Or (PropName = 'PadName') Or (PropName = 'X1_mm') Or (PropName = 'Y1_mm') Or (PropName = 'X2_mm') Or (PropName = 'Y2_mm') Or (PropName = 'Width_mm') Or (PropName = 'X_mm') Or (PropName = 'Y_mm') Or (PropName = 'TopXSize_mm') Or (PropName = 'TopYSize_mm') Or (PropName = 'HoleSize_mm') Or (PropName = 'SolderMaskExpansion_mm') Or (PropName = 'SolderMaskExpansionMode') Or
+        (PropName = 'XCenter_mm') Or (PropName = 'YCenter_mm') Or (PropName = 'Radius_mm') Or (PropName = 'BoundsLeft_mm') Or (PropName = 'BoundsBottom_mm') Or (PropName = 'BoundsRight_mm') Or (PropName = 'BoundsTop_mm') Or (PropName = 'IsHidden') Or
         (PropName = 'ObjectId') Or (PropName = 'X') Or (PropName = 'Y') Or
         (PropName = 'Layer') Or (PropName = 'Descriptor') Or
         (PropName = 'Selected') Or (PropName = 'Net') Or
@@ -289,7 +471,7 @@ Begin
         (PropName = 'Text') Or (PropName = 'Pattern') Or
         (PropName = 'Designator') Or (PropName = 'Designator.Text') Or
         (PropName = 'Comment') Or (PropName = 'Comment.Text') Or
-        (PropName = 'SourceDesignator');
+        (PropName = 'SourceDesignator') Or (PropName = 'ComponentKind');
 End;
 
 Function UnknownPCBProperties(PropsStr : String) : String;
@@ -318,7 +500,7 @@ End;
 
 Function KnownPCBPropertyList : String;
 Begin
-    Result := 'ObjectId, X, Y, Layer, Descriptor, Selected, Net, X1, Y1, '
+    Result := 'XCenter_mm, YCenter_mm, Radius_mm, BoundsLeft_mm, BoundsBottom_mm, BoundsRight_mm, BoundsTop_mm, IsHidden, Address, ComponentDesignator, PadName, X1_mm, Y1_mm, X2_mm, Y2_mm, Width_mm, X_mm, Y_mm, TopXSize_mm, TopYSize_mm, HoleSize_mm, SolderMaskExpansion_mm, SolderMaskExpansionMode, ObjectId, X, Y, Layer, Descriptor, Selected, Net, X1, Y1, '
         + 'X2, Y2, Width, Radius, StartAngle, EndAngle, XCenter, YCenter, '
         + 'HoleSize, Size, TopShape, TopXSize, TopYSize, Rotation, Name, '
         + 'Text, Pattern, Designator, Comment, SourceDesignator';

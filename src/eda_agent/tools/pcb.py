@@ -739,11 +739,14 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_run_drc() -> dict[str, Any]:
-        """Run Design Rule Check (DRC) on the active PCB.
+        """Open Altium's modal Design Rule Checker on the active PCB.
 
-        Executes the DRC and returns up to 100 violations with full
-        location data, so the agent can jump straight to the offending
-        spot instead of guessing from the description.
+        The dialog must be driven separately; canceling does not run DRC.
+        Returns cached violations after the process returns, up to 100 with
+        location data. Report existence alone confirms neither freshness nor
+        batch-rule coverage, so drc_confirmed remains false. Verify a newly
+        generated report, its board path and the rules actually processed.
+        Enabled rules can still be excluded by the separate Batch DRC flags.
 
         Per-violation shape:
           - ``name``, ``description``, ``rule``: text from Altium
@@ -931,20 +934,67 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async("pcb.teardrops", {})
 
     @mcp.tool()
-    async def pcb_autoplace_silkscreen() -> dict[str, Any]:
+    async def pcb_apply_silk_clip_plan(
+        board_path: str, plan_path: str, apply: bool = False,
+    ) -> dict[str, Any]:
+        """Validate/apply a local JSONL plan of exact overlay track changes.
+
+        Rows contain address, component, layer, assembly_layer, x1/y1/x2/y2/width in
+        internal units, and segments as pipe-separated x1,y1,x2,y2 tuples.
+        Verify Mechanical11/12 are the intended top/bottom assembly layers.
+        An empty segments value moves the original to that assembly layer;
+        otherwise the first segment shortens the original. Additional pieces
+        must already have been created with pcb_clone_silk_track_fragment.
+        Refuses stale or missing originals before applying anything. A partly
+        applied plan is accepted when each changed original exactly matches
+        its requested result (one internal unit allowance for prior mm writes).
+        Does not save. Native DRC and readback remain required.
+        """
+        return await get_bridge().send_command_async(
+            "pcb.apply_silk_clip_plan",
+            {"board_path": board_path, "plan_path": plan_path, "apply": str(apply).lower()},
+            timeout=240.0,
+        )
+
+    @mcp.tool()
+    async def pcb_clone_silk_track_fragment(
+        board_path: str, address: str,
+        x1_mm: float, y1_mm: float, x2_mm: float, y2_mm: float,
+    ) -> dict[str, Any]:
+        """Clone a subsegment of one overlay track, preserving its component.
+
+        Address comes from obj_query. Coordinates are absolute PCB millimeters.
+        Refuses another board, copper tracks, zero length or endpoints outside
+        the original line. Keeps original width/layer and does not save.
+        Use for a reviewed clipping plan; the original track remains untouched.
+        """
+        coords = dict(zip(("x1", "y1", "x2", "y2"), (x1_mm, y1_mm, x2_mm, y2_mm)))
+        if not all(math.isfinite(value) for value in coords.values()):
+            raise ValueError("fragment coordinates must be finite")
+        params = {"board_path": board_path, "address": address}
+        params.update({key: str(round(value / .00000254)) for key, value in coords.items()})
+        return await get_bridge().send_command_async("pcb.clone_silk_track_fragment", params)
+
+    @mcp.tool()
+    async def pcb_autoplace_silkscreen(designator: str = "") -> dict[str, Any]:
         """Reposition component designators to clear pads and other silk.
 
-        For every visible designator, tries a ring of auto-position anchors and
-        keeps the first that overlaps no pad or other silk text; otherwise
-        leaves the designator where it was. First-fit, not a global optimum;
-        pair with the silk audits and `design_visual_review` to check the
-        result.
+        Only colliding visible overlay designators move. Tries offsets up to
+        1.5 mm per axis, using conservative bounding boxes, 0.254 mm silk
+        clearance and pad mask expansion on the corresponding side. Failed
+        candidates restore their original coordinates. Text remains at least
+        2 mm inside the outline bounding box; this is not an arbitrary-board
+        cutout check. Run native DRC and inspect the result before saving.
+        Does not save the document or change the prior online DRC setting.
+        Supply designator to inspect/apply one component first. An empty
+        designator processes the board; this can take several minutes.
 
         Returns:
-            {"placed": N, "skipped": M, "total": T}.
+            Counts, saved=false and a changes journal with raw coordinates.
         """
         bridge = get_bridge()
-        return await bridge.send_command_async("pcb.autoplace_silkscreen", {})
+        params = {"designator": designator} if designator else {}
+        return await bridge.send_command_async("pcb.autoplace_silkscreen", params, timeout=480.0)
 
     @mcp.tool()
     async def pcb_tune_length(
@@ -4919,7 +4969,9 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with "vias" array (each with x, y, size, hole_size,
-            net, low_layer, high_layer) and "count"
+            net, low_layer, high_layer) and "count". Legacy size/hole_size
+            values are rounded integer mils. size_mm and hole_size_mm
+            retain sub-mil precision and are explicitly in millimeters.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.get_vias", {})

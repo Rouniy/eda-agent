@@ -1192,7 +1192,7 @@ Begin
     Else
         Result := BuildSuccessResponse(RequestId,
             '{"violation_count":' + IntToStr(ViolationCount) + ','
-            + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
+            + '"drc_confirmed":false,"reason":"Report existence does not establish freshness or batch-rule coverage",'
             + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
             + '"violations":[' + JsonItems + ']}');
 End;
@@ -3580,15 +3580,17 @@ Begin
             If Obj.ObjectId = eTrackObject Then
             Begin
                 Track := Obj;
-                DX := CoordToMils(Track.x2) - CoordToMils(Track.x1);
-                DY := CoordToMils(Track.y2) - CoordToMils(Track.y1);
+                { CoordToMils rounds to integer mils. Summing many short
+                  segments would accumulate that quantization error. }
+                DX := Track.x2 / 10000.0 - Track.x1 / 10000.0;
+                DY := Track.y2 / 10000.0 - Track.y1 / 10000.0;
                 SegLen := Sqrt(DX * DX + DY * DY);
             End
             Else If Obj.ObjectId = eArcObject Then
             Begin
                 Arc := Obj;
                 Try
-                    RadiusMils := CoordToMils(Arc.Radius);
+                    RadiusMils := Arc.Radius / 10000.0;
                     ArcAngle := Arc.EndAngle - Arc.StartAngle;
                     If ArcAngle < 0 Then ArcAngle := ArcAngle + 360;
                     SegLen := RadiusMils * ArcAngle * 3.14159265358979 / 180.0;
@@ -5079,12 +5081,13 @@ Begin
     End;
 
     ResetParameters;
-    RunProcess('PCB:RepourAllPolygons');
+    AddStringParameter('Action', 'RepourAllPolygons');
+    RunProcess('PCB:ChangeObject');
 
     // Board.ViewManager_FullUpdate;  // removed, expensive on large boards; Altium auto-refreshes on user interaction
 
     Result := BuildSuccessResponse(RequestId,
-        '{"repoured":true}');
+        '{"dispatched":true,"repour_verified":false}');
 End;
 
 { Resolve the canonical live net through a real pad. Multi-channel compiled
@@ -6638,6 +6641,8 @@ Begin
             + '"y":' + IntToStr(CoordToMils(Via.y)) + ','
             + '"size":' + IntToStr(CoordToMils(Via.Size)) + ','
             + '"hole_size":' + IntToStr(CoordToMils(Via.HoleSize)) + ','
+            + JsonFloat('hole_size_mm', CoordToMM(Via.HoleSize)) + ','
+            + JsonFloat('size_mm', CoordToMM(Via.Size)) + ','
             + '"net":"' + EscapeJsonString(NetName) + '",'
             + '"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '",'
             + '"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"}';
@@ -10294,13 +10299,16 @@ Begin
             Try
                 Via := Obj;
                 Inc(ViasTotal);
-                { Classify by start/stop layer -- through if Top to Bottom; }
+                { LowLayer/HighLayer are TLayer values, as in PCB_GetVias.  }
+                { StartLayer/StopLayer are layer objects on current AD;    }
+                { comparing them with enum constants misclassifies vias.  }
                 { blind if one side is outer (Top or Bottom) but not both;  }
                 { buried if both endpoints are inner layers.                 }
-                If (Via.StartLayer = eTopLayer) And (Via.StopLayer = eBottomLayer) Then
+                If ((Via.LowLayer = eTopLayer) And (Via.HighLayer = eBottomLayer))
+                   Or ((Via.LowLayer = eBottomLayer) And (Via.HighLayer = eTopLayer)) Then
                     Inc(ViasThrough)
-                Else If (Via.StartLayer = eTopLayer) Or (Via.StartLayer = eBottomLayer)
-                     Or (Via.StopLayer = eTopLayer) Or (Via.StopLayer = eBottomLayer) Then
+                Else If (Via.LowLayer = eTopLayer) Or (Via.LowLayer = eBottomLayer)
+                     Or (Via.HighLayer = eTopLayer) Or (Via.HighLayer = eBottomLayer) Then
                     Inc(ViasBlind)
                 Else
                     Inc(ViasBuried);
@@ -11522,29 +11530,61 @@ End;
 Function SilkCollides(Board : IPCB_Board; Slk : IPCB_Text; SelfAddr : Integer) : Boolean;
 Var
     SBB, OBB : TCoordRect;
-    Margin : Integer;
+    Margin, SearchMargin : Integer;
     Iter : IPCB_SpatialIterator;
     Obj : IPCB_Primitive;
+    Pad : IPCB_Pad;
+    Txt : IPCB_Text;
+    Cache : TPadCache;
+    Relevant : Boolean;
 Begin
     Result := False;
     SBB := Slk.BoundingRectangle;
-    Margin := MilsToCoord(2);
+    SearchMargin := MMToCoord(1);
     Iter := Board.SpatialIterator_Create;
     Try
-        Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTextObject));
+        Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTextObject, eTrackObject, eArcObject, eFillObject, eRegionObject));
         Iter.AddFilter_LayerSet(AllLayers);
-        Iter.AddFilter_Area(SBB.X1 - Margin, SBB.Y1 - Margin, SBB.X2 + Margin, SBB.Y2 + Margin);
+        Iter.AddFilter_Area(SBB.X1 - SearchMargin, SBB.Y1 - SearchMargin, SBB.X2 + SearchMargin, SBB.Y2 + SearchMargin);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
         Begin
-            If Obj.I_ObjectAddress <> SelfAddr Then
+            If Obj.I_ObjectAddress <> Slk.I_ObjectAddress Then
             Begin
-                Try
-                    OBB := Obj.BoundingRectangle;
-                    If RectsOverlap(SBB.X1, SBB.Y1, SBB.X2, SBB.Y2,
-                                    OBB.X1, OBB.Y1, OBB.X2, OBB.Y2, 0) Then
-                        Result := True;
-                Except End;
+                Margin := MMToCoord(0.254);
+                Relevant := Obj.Layer = Slk.Layer;
+                If Obj.ObjectId = ePadObject Then
+                Begin
+                    Relevant := (Obj.Layer = eMultiLayer)
+                        Or ((Slk.Layer = eTopOverlay) And (Obj.Layer = eTopLayer))
+                        Or ((Slk.Layer = eBottomOverlay) And (Obj.Layer = eBottomLayer));
+                    Pad := Obj;
+                    Cache := Pad.GetState_Cache;
+                    { Use the larger manual/default expansion conservatively. }
+                    Margin := Margin + MMToCoord(0.05);
+                    If Cache.SolderMaskExpansion > MMToCoord(0.05) Then
+                        Margin := MMToCoord(0.254) + Cache.SolderMaskExpansion;
+                    If Cache.UseSeparateExpansions Then
+                    Begin
+                        If (Slk.Layer = eTopOverlay) And (Cache.SolderMaskExpansion > MMToCoord(0.05)) Then
+                            Margin := MMToCoord(0.254) + Cache.SolderMaskExpansion;
+                        If (Slk.Layer = eBottomOverlay) And (Cache.SolderMaskBottomExpansion > MMToCoord(0.05)) Then
+                            Margin := MMToCoord(0.254) + Cache.SolderMaskBottomExpansion;
+                    End;
+                End;
+                If Obj.ObjectId = eTextObject Then
+                Begin
+                    Txt := Obj;
+                    If Txt.IsHidden Then Relevant := False;
+                End;
+                If Relevant Then
+                Begin
+                    Try
+                        OBB := Obj.BoundingRectangle;
+                        Result := RectsOverlap(SBB.X1, SBB.Y1, SBB.X2, SBB.Y2,
+                            OBB.X1, OBB.Y1, OBB.X2, OBB.Y2, Margin);
+                    Except Result := True; End;
+                End;
             End;
             If Result Then Break;
             Obj := Iter.NextPCBObject;
@@ -11742,8 +11782,11 @@ Var
     Iter : IPCB_BoardIterator;
     Comp : IPCB_Component;
     Slk : IPCB_Text;
-    I, Placed, Skipped, Total : Integer;
-    Ok : Boolean;
+    I, RadiusIndex, Placed, Skipped, Total, AlreadyClear : Integer;
+    OldX, OldY, DX, DY, StepC : Integer;
+    Ok, OldOnlineDRC : Boolean;
+    Bounds, TextBounds : TCoordRect;
+    Journal, FilterName, Diagnostics : String;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -11751,11 +11794,11 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
-
-    Placed := 0;
-    Skipped := 0;
-    Total := 0;
-    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
+    FilterName := ExtractJsonValue(Params, 'designator');
+    Placed := 0; Skipped := 0; Total := 0; AlreadyClear := 0; Journal := ''; Diagnostics := '';
+    Bounds := Board.BoardOutline.BoundingRectangle;
+    OldOnlineDRC := PCBServer.SystemOptions.DoOnlineDRC;
+    PCBServer.SystemOptions.DoOnlineDRC := False;
     PCBServer.PreProcess;
     Try
         Iter := Board.BoardIterator_Create;
@@ -11766,40 +11809,79 @@ Begin
             Comp := Iter.FirstPCBObject;
             While Comp <> Nil Do
             Begin
+                If (FilterName <> '') And (Comp.Name.Text <> FilterName) Then
+                Begin Comp := Iter.NextPCBObject; Continue; End;
                 Total := Total + 1;
-                Slk := Nil;
-                Try Slk := Comp.Name; Except End;
-                If (Slk <> Nil) And (Not Slk.IsHidden) Then
+                Slk := Comp.Name;
+                If (Slk <> Nil) And (Not Slk.IsHidden)
+                    And ((Slk.Layer = eTopOverlay) Or (Slk.Layer = eBottomOverlay)) Then
                 Begin
-                    Ok := False;
-                    Slk.BeginModify;
-                    For I := 0 To 7 Do
+                    If Not SilkCollides(Board, Slk, Slk.I_ObjectAddress) Then
+                        AlreadyClear := AlreadyClear + 1
+                    Else
                     Begin
-                        Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(I)); Except End;
-                        If Not SilkCollides(Board, Slk, Slk.I_ObjectAddress) Then
-                        Begin
-                            Ok := True;
-                            Break;
+                        OldX := Slk.XLocation; OldY := Slk.YLocation; Ok := False;
+                        Slk.BeginModify;
+                        Try
+                            For RadiusIndex := 1 To 6 Do
+                            Begin
+                                StepC := MMToCoord(0.25 * RadiusIndex);
+                                For I := 0 To 7 Do
+                                Begin
+                                    DX := 0; DY := 0;
+                                    Case I Of
+                                        0: DX := StepC;
+                                        1: DY := StepC;
+                                        2: DX := -StepC;
+                                        3: DY := -StepC;
+                                        4: Begin DX := StepC; DY := StepC; End;
+                                        5: Begin DX := -StepC; DY := StepC; End;
+                                        6: Begin DX := StepC; DY := -StepC; End;
+                                        7: Begin DX := -StepC; DY := -StepC; End;
+                                    End;
+                                    Slk.MoveByXY(OldX + DX - Slk.XLocation, OldY + DY - Slk.YLocation);
+                                    Slk.EndModify;
+                                    Slk.BeginModify;
+                                    TextBounds := Slk.BoundingRectangle;
+                                    If (FilterName <> '') And (Diagnostics = '') Then
+                                        Diagnostics := ',"first_candidate_bounds":[' + IntToStr(TextBounds.Left) + ',' + IntToStr(TextBounds.Bottom) + ',' + IntToStr(TextBounds.Right) + ',' + IntToStr(TextBounds.Top) + '],"board_bounds":[' + IntToStr(Bounds.Left) + ',' + IntToStr(Bounds.Bottom) + ',' + IntToStr(Bounds.Right) + ',' + IntToStr(Bounds.Top) + ']';
+                                    { Conservative inset avoids rounded board corners. }
+                                    If (TextBounds.Left > Bounds.Left + MMToCoord(2))
+                                        And (TextBounds.Right < Bounds.Right - MMToCoord(2))
+                                        And (TextBounds.Bottom > Bounds.Bottom + MMToCoord(2))
+                                        And (TextBounds.Top < Bounds.Top - MMToCoord(2)) Then
+                                        Ok := Not SilkCollides(Board, Slk, Slk.I_ObjectAddress);
+                                    If Ok Then Break;
+                                End;
+                                If Ok Then Break;
+                            End;
+                        Finally
+                            If Not Ok Then Slk.MoveByXY(OldX - Slk.XLocation, OldY - Slk.YLocation);
+                            Slk.EndModify;
                         End;
+                        If Ok Then
+                        Begin
+                            If Journal <> '' Then Journal := Journal + ',';
+                            Journal := Journal + '{"designator":"' + EscapeJsonString(Comp.Name.Text)
+                                + '","old_x_raw":' + IntToStr(OldX) + ',"old_y_raw":' + IntToStr(OldY)
+                                + ',"new_x_raw":' + IntToStr(Slk.XLocation) + ',"new_y_raw":' + IntToStr(Slk.YLocation) + '}';
+                            Placed := Placed + 1;
+                        End
+                        Else Skipped := Skipped + 1;
                     End;
-                    Slk.EndModify;
-                    If Ok Then Placed := Placed + 1 Else Skipped := Skipped + 1;
                 End
                 Else Skipped := Skipped + 1;
                 Comp := Iter.NextPCBObject;
             End;
-        Finally
-            Board.BoardIterator_Destroy(Iter);
-        End;
+        Finally Board.BoardIterator_Destroy(Iter); End;
     Finally
         PCBServer.PostProcess;
-        Try PCBServer.SystemOptions.DoOnlineDRC := True; Except End;
+        PCBServer.SystemOptions.DoOnlineDRC := OldOnlineDRC;
     End;
-
-    SaveDocByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"skipped":' + IntToStr(Skipped)
-        + ',"total":' + IntToStr(Total) + '}');
+        + ',"already_clear":' + IntToStr(AlreadyClear) + ',"total":' + IntToStr(Total)
+        + Diagnostics + ',"saved":false,"changes":[' + Journal + ']}');
 End;
 
 {..............................................................................}
@@ -13129,7 +13211,8 @@ Begin
     OrigList.Free;
 
     ResetParameters;
-    RunProcess('PCB:RepourAllPolygons');
+    AddStringParameter('Action', 'RepourAllPolygons');
+    RunProcess('PCB:ChangeObject');
     SaveDocByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
@@ -13484,6 +13567,252 @@ End;
 { HandlePCBCommand - Route PCB actions to handlers                            }
 {..............................................................................}
 
+
+Function SilkPointOnTrack(Track : IPCB_Track; X, Y : Integer) : Boolean;
+Var
+    DX, DY, Length2, CrossValue, DotValue, LengthValue : Double;
+Begin
+    DX := (Track.X2 - Track.X1) / 1.0; DY := (Track.Y2 - Track.Y1) / 1.0;
+    Length2 := DX * DX + DY * DY;
+    Result := False;
+    If Length2 = 0 Then Exit;
+    LengthValue := Sqrt(Length2);
+    CrossValue := (X - Track.X1) * DY - (Y - Track.Y1) * DX;
+    DotValue := (X - Track.X1) * DX + (Y - Track.Y1) * DY;
+    Result := (Abs(CrossValue) <= 3 * LengthValue)
+        And (DotValue >= -3 * LengthValue) And (DotValue <= Length2 + 3 * LengthValue);
+End;
+
+Function PCB_CloneSilkTrackFragment(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Track, FoundTrack, NewTrack : IPCB_Track;
+    Parent : IPCB_Component;
+    AddressText, BoardPath, ParentName : String;
+    X1, Y1, X2, Y2 : Integer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB is active'); Exit; End;
+    If (BoardPath = '') Or (LowerCase(Board.FileName) <> LowerCase(BoardPath)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'WRONG_BOARD', 'Focus the exact requested PCB first'); Exit; End;
+    AddressText := ExtractJsonValue(Params, 'address');
+    FoundTrack := Nil;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
+        Iter.AddFilter_LayerSet(MkSet(eTopOverlay, eBottomOverlay));
+        Iter.AddFilter_Method(eProcessAll);
+        Track := Iter.FirstPCBObject;
+        While Track <> Nil Do
+        Begin
+            If IntToStr(Track.I_ObjectAddress) = AddressText Then Begin FoundTrack := Track; Break; End;
+            Track := Iter.NextPCBObject;
+        End;
+    Finally Board.BoardIterator_Destroy(Iter); End;
+    If FoundTrack = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Address must identify an existing overlay track'); Exit; End;
+    X1 := StrToInt(ExtractJsonValue(Params, 'x1'));
+    Y1 := StrToInt(ExtractJsonValue(Params, 'y1'));
+    X2 := StrToInt(ExtractJsonValue(Params, 'x2'));
+    Y2 := StrToInt(ExtractJsonValue(Params, 'y2'));
+    If (Not SilkPointOnTrack(FoundTrack, X1, Y1)) Or (Not SilkPointOnTrack(FoundTrack, X2, Y2))
+        Or ((X1 = X2) And (Y1 = Y2)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_SUBSEGMENT', 'The fragment must lie on the original segment'); Exit; End;
+    Parent := FoundTrack.Component; ParentName := '';
+    If Parent <> Nil Then ParentName := Parent.Name.Text;
+    PCBServer.PreProcess;
+    Try
+        NewTrack := FoundTrack.Replicate;
+        If NewTrack = Nil Then
+        Begin Result := BuildErrorResponse(RequestId, 'CLONE_FAILED', 'Replicate returned Nil'); Exit; End;
+        NewTrack.X1 := X1; NewTrack.Y1 := Y1;
+        NewTrack.X2 := X2; NewTrack.Y2 := Y2;
+        If Parent <> Nil Then Parent.AddPCBObject(NewTrack);
+        Board.AddPCBObject(NewTrack);
+        If Parent <> Nil Then PCBServer.SendMessageToRobots(Parent.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, NewTrack.I_ObjectAddress);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, NewTrack.I_ObjectAddress);
+    Finally PCBServer.PostProcess; End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"created":true,"saved":false,"address":"' + IntToStr(NewTrack.I_ObjectAddress)
+        + '","component":"' + EscapeJsonString(ParentName) + '"}');
+End;
+
+
+Function SilkClipFirstCoordinates(Segments : String; Var X1, Y1, X2, Y2 : Integer) : Boolean;
+Var
+    I, P : Integer;
+    Token : String;
+Begin
+    Result := False;
+    P := Pos('|', Segments);
+    If P > 0 Then Segments := Copy(Segments, 1, P - 1);
+    For I := 0 To 3 Do
+    Begin
+        P := Pos(',', Segments);
+        If P = 0 Then Begin Token := Segments; Segments := ''; End
+        Else Begin Token := Copy(Segments, 1, P-1); Segments := Copy(Segments, P+1, Length(Segments)); End;
+        Case I Of
+            0: X1 := StrToInt(Token);
+            1: Y1 := StrToInt(Token);
+            2: X2 := StrToInt(Token);
+            3: Y2 := StrToInt(Token);
+        End;
+    End;
+    Result := (X1 <> X2) Or (Y1 <> Y2);
+End;
+
+Function PCB_ApplySilkClipPlan(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    ChildIter : IPCB_GroupIterator;
+    Parent : IPCB_Component;
+    OwnerName : String;
+    Track : IPCB_Track;
+    Lines, Lookup, Seen : TStringList;
+    BoardPath, Path, Line, AddressText, Segments, OrigLayer, TargetLayer : String;
+    X1, Y1, X2, Y2, I, Found, Changed, Already : Integer;
+    Original, Applied, ApplyNow : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    Path := ExtractJsonValue(Params, 'plan_path');
+    ApplyNow := ExtractJsonValue(Params, 'apply') = 'true';
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB is active'); Exit; End;
+    If (BoardPath = '') Or (LowerCase(Board.FileName) <> LowerCase(BoardPath)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'WRONG_BOARD', 'Focus the requested PCB first'); Exit; End;
+    If Not FileExists(Path) Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PLAN', 'Plan file does not exist'); Exit; End;
+    Lines := TStringList.Create; Lookup := TStringList.Create; Seen := TStringList.Create;
+    Changed := 0; Already := 0; Found := 0;
+    Try
+        Lines.LoadFromFile(Path);
+        For I := 0 To Lines.Count-1 Do
+        Begin
+            Line := Trim(Lines[I]);
+            If Line = '' Then Continue;
+            AddressText := ExtractJsonValue(Line, 'address');
+            OrigLayer := ExtractJsonValue(Line, 'layer');
+            TargetLayer := ExtractJsonValue(Line, 'assembly_layer');
+            If (AddressText = '') Or (Lookup.Values[AddressText] <> '')
+                Or ((OrigLayer <> 'TopOverlay') And (OrigLayer <> 'BottomOverlay'))
+                Or ((OrigLayer = 'TopOverlay') And (TargetLayer <> 'Mechanical11'))
+                Or ((OrigLayer = 'BottomOverlay') And (TargetLayer <> 'Mechanical12')) Then
+            Begin Result := BuildErrorResponse(RequestId, 'BAD_PLAN', 'Invalid or duplicate address / layer'); Exit; End;
+            Lookup.Values[AddressText] := Line;
+        End;
+        { Read-only validation; no primitive is changed during this walk. }
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Track := Iter.FirstPCBObject;
+            While Track <> Nil Do
+            Begin
+                AddressText := IntToStr(Track.I_ObjectAddress);
+                Line := Lookup.Values[AddressText];
+                If (Line <> '') And (Seen.IndexOf(AddressText) < 0) Then
+                Begin
+                    Seen.Add(AddressText);
+                            OrigLayer := ExtractJsonValue(Line, 'layer');
+                            TargetLayer := ExtractJsonValue(Line, 'assembly_layer');
+                            Segments := ExtractJsonValue(Line, 'segments');
+                            Original := (GetLayerString(Track.Layer) = OrigLayer)
+                                And (IntToStr(Track.X1) = ExtractJsonValue(Line, 'x1'))
+                                And (IntToStr(Track.Y1) = ExtractJsonValue(Line, 'y1'))
+                                And (IntToStr(Track.X2) = ExtractJsonValue(Line, 'x2'))
+                                And (IntToStr(Track.Y2) = ExtractJsonValue(Line, 'y2'));
+                            Applied := False;
+                            If Segments = '' Then
+                                Applied := (GetLayerString(Track.Layer) = TargetLayer)
+                                    And (IntToStr(Track.X1) = ExtractJsonValue(Line, 'x1'))
+                                    And (IntToStr(Track.Y1) = ExtractJsonValue(Line, 'y1'))
+                                    And (IntToStr(Track.X2) = ExtractJsonValue(Line, 'x2'))
+                                    And (IntToStr(Track.Y2) = ExtractJsonValue(Line, 'y2'))
+                            Else
+                            Begin
+                                If Not SilkClipFirstCoordinates(Segments, X1, Y1, X2, Y2) Then
+                                Begin Result := BuildErrorResponse(RequestId, 'BAD_PLAN', 'Zero-length fragment'); Exit; End;
+                                Applied := (GetLayerString(Track.Layer) = OrigLayer)
+                                    And (Abs(Track.X1-X1) <= 1) And (Abs(Track.Y1-Y1) <= 1)
+                                    And (Abs(Track.X2-X2) <= 1) And (Abs(Track.Y2-Y2) <= 1);
+                                If Original And ((Not SilkPointOnTrack(Track, X1, Y1)) Or (Not SilkPointOnTrack(Track, X2, Y2))) Then
+                                Begin Result := BuildErrorResponse(RequestId, 'BAD_PLAN', 'Fragment is outside the original segment'); Exit; End;
+                            End;
+                            If (IntToStr(Track.Width) <> ExtractJsonValue(Line, 'width')) Or ((Not Original) And (Not Applied)) Then
+                            Begin Result := BuildErrorResponse(RequestId, 'STALE_PLAN', 'Geometry changed for ' + AddressText); Exit; End;
+                    OwnerName := ExtractJsonValue(Line, 'component');
+                    Parent := Track.Component;
+                    If (OwnerName = '') Or (Parent = Nil) Then
+                    Begin Result := BuildErrorResponse(RequestId, 'BAD_OWNER', 'A component owner is required'); Exit; End;
+                    If Parent.Name.Text <> OwnerName Then
+                    Begin Result := BuildErrorResponse(RequestId, 'BAD_OWNER', 'Component ownership changed'); Exit; End;
+                    Found := Found + 1;
+                    If Applied Then Already := Already + 1;
+                End;
+                Track := Iter.NextPCBObject;
+            End;
+        Finally Board.BoardIterator_Destroy(Iter); End;
+        If Found <> Lookup.Count Then
+        Begin Result := BuildErrorResponse(RequestId, 'STALE_PLAN', 'Some planned addresses are missing; no changes applied'); Exit; End;
+        If ApplyNow Then
+        Begin
+            PCBServer.PreProcess;
+            Try
+                For I := 0 To Lines.Count-1 Do
+                Begin
+                    Line := Trim(Lines[I]);
+                    If Line = '' Then Continue;
+                    AddressText := ExtractJsonValue(Line, 'address');
+                    OwnerName := ExtractJsonValue(Line, 'component');
+                    Parent := Board.GetPcbComponentByRefDes(OwnerName);
+                    If Parent = Nil Then
+                    Begin Result := BuildErrorResponse(RequestId, 'BAD_OWNER', 'Component vanished after validation'); Exit; End;
+                    { A fresh, small group iterator supplies the correctly typed
+                      child interface. Close it BEFORE changing its layer/shape. }
+                    ChildIter := Parent.GroupIterator_Create;
+                    Try
+                        ChildIter.AddFilter_ObjectSet(MkSet(eTrackObject));
+                        ChildIter.AddFilter_LayerSet(AllLayers);
+                        Track := ChildIter.FirstPCBObject;
+                        While Track <> Nil Do
+                        Begin
+                            If IntToStr(Track.I_ObjectAddress) = AddressText Then Break;
+                            Track := ChildIter.NextPCBObject;
+                        End;
+                    Finally Parent.GroupIterator_Destroy(ChildIter); End;
+                    If Track = Nil Then
+                    Begin Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Child missing after validation'); Exit; End;
+                    Segments := ExtractJsonValue(Line, 'segments');
+                    TargetLayer := ExtractJsonValue(Line, 'assembly_layer');
+                    If Segments = '' Then Applied := GetLayerString(Track.Layer) = TargetLayer
+                    Else
+                    Begin
+                        SilkClipFirstCoordinates(Segments, X1, Y1, X2, Y2);
+                        Applied := (Abs(Track.X1-X1) <= 1) And (Abs(Track.Y1-Y1) <= 1)
+                            And (Abs(Track.X2-X2) <= 1) And (Abs(Track.Y2-Y2) <= 1);
+                    End;
+                    If Applied Then Continue;
+                    Track.BeginModify;
+                    Try
+                        If Segments = '' Then Track.Layer := GetLayerFromString(TargetLayer)
+                        Else Begin Track.X1 := X1; Track.Y1 := Y1; Track.X2 := X2; Track.Y2 := Y2; End;
+                    Finally Track.EndModify; End;
+                    Changed := Changed + 1;
+                End;
+            Finally PCBServer.PostProcess; End;
+        End;
+        Result := BuildSuccessResponse(RequestId, '{"validated":' + IntToStr(Found)
+            + ',"already_applied":' + IntToStr(Already) + ',"changed":' + IntToStr(Changed)
+            + ',"apply":' + BoolToJsonStr(ApplyNow) + ',"saved":false}');
+    Finally Seen.Free; Lookup.Free; Lines.Free; End;
+End;
+
 Function HandlePCBCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -13590,6 +13919,8 @@ Begin
         'fillet_corners':          Result := PCB_FilletCorners(Params, RequestId);
         'import_placement':        Result := PCB_ImportPlacement(Params, RequestId);
         'teardrops':               Result := PCB_Teardrops(Params, RequestId);
+        'apply_silk_clip_plan': Result := PCB_ApplySilkClipPlan(Params, RequestId);
+        'clone_silk_track_fragment': Result := PCB_CloneSilkTrackFragment(Params, RequestId);
         'autoplace_silkscreen':    Result := PCB_AutoplaceSilkscreen(Params, RequestId);
         'tune_length':             Result := PCB_TuneLength(Params, RequestId);
         'panelize':                Result := PCB_Panelize(Params, RequestId);
