@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from ..atomicfile import discard, replace_with_retry
 from .dialog_diagnostics import diagnose_dialogs
 
 
@@ -25,20 +26,10 @@ def _atomic_status(workspace: Path, payload: dict[str, Any]) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     tmp = workspace / f".{RESTART_STATUS_FILE}.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    last_error: OSError | None = None
-    for _ in range(10):
-        try:
-            tmp.replace(path)
-            return
-        except OSError as exc:
-            last_error = exc
-            time.sleep(0.05)
     try:
-        tmp.unlink()
-    except OSError:
-        pass
-    if last_error is not None:
-        raise last_error
+        replace_with_retry(tmp, path)
+    finally:
+        discard(tmp)
 
 
 def read_restart_status(workspace: Path) -> Optional[dict[str, Any]]:

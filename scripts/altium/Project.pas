@@ -154,6 +154,234 @@ Begin
         + 'focused project."}');
 End;
 
+{..............................................................................}
+{ Unsaved edits of ONE project, for a close that does not save.               }
+{                                                                             }
+{ A close issued while a member is still modified raises Altium's save        }
+{ prompt. RunProcess is synchronous, so the prompt blocks inside the handler, }
+{ the handler blocks the polling loop, and the loop is the only thing that    }
+{ could have answered it: every later call waits until a human clicks.        }
+{ Clearing the modified flag first leaves the close nothing to ask about,     }
+{ and closing a document that reads as clean drops its in-memory edits,       }
+{ which is exactly what save=false asks for.                                  }
+{                                                                             }
+{ SCOPED TO THE PROJECT: the same members SaveProjectMembers writes, and the  }
+{ project file. Never the workspace, which is how a close once reached a      }
+{ client project nobody had named.                                            }
+{..............................................................................}
+
+{ MEASURED 2026-09-13 on AD 26.10.1.6: after a ProcessControl edit the tab    }
+{ showed the sheet as modified while IServerDocument.Modified read False, and }
+{ CloseObject raised its save prompt anyway. A clear gated on that read       }
+{ cleared nothing, so the flag is cleared on every loaded member without      }
+{ reading it. Whether clearing it stops the prompt is still unmeasured, and   }
+{ proj_close answers the prompt from Python when it appears, which is what    }
+{ keeps the bridge from wedging.                                              }
+Function ClearDocModifiedByPath(Path : String) : Boolean;
+Var
+    ServerDoc : IServerDocument;
+Begin
+    Result := False;
+    If Path = '' Then Exit;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then Exit;
+    Try ServerDoc.SetModified(False); Except End;
+    Result := True;
+End;
+
+Function DiscardProjectMembers(Project : IProject) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := '';
+        Try Path := Doc.DM_FullPath; Except Path := ''; End;
+        If ClearDocModifiedByPath(Path) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + Path;
+        End;
+    End;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except Path := ''; End;
+    If ClearDocModifiedByPath(Path) Then
+    Begin
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+{ What is STILL modified after a discard. DocIsModified reads a flag that    }
+{ App_SaveAll records does not always propagate, so the discard is checked   }
+{ rather than trusted: one document left dirty is enough to raise the prompt. }
+Function DirtyProjectMembers(Project : IProject) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := '';
+        Try Path := Doc.DM_FullPath; Except Path := ''; End;
+        If (Path <> '') And DocIsModified(Path) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + Path;
+        End;
+    End;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except Path := ''; End;
+    If (Path <> '') And DocIsModified(Path) Then
+    Begin
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+Function PipePathsToJsonArray(PathList : String) : String;
+Var
+    Remaining, Path : String;
+    P : Integer;
+Begin
+    Result := '[';
+    Remaining := PathList;
+    While Remaining <> '' Do
+    Begin
+        P := Pos('|', Remaining);
+        If P > 0 Then
+        Begin
+            Path := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+        End
+        Else
+        Begin
+            Path := Remaining;
+            Remaining := '';
+        End;
+        If Result <> '[' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Path) + '"';
+    End;
+    Result := Result + ']';
+End;
+
+{..............................................................................}
+{ WorkspaceManager:CloseObject CLOSES THE FOCUSED PROJECT.                    }
+{                                                                             }
+{ MEASURED 2026-09-13 on AD 26.10.1.6: proj_close named a scratch project     }
+{ with no loaded document while Blinker555_v4's board was focused. The first  }
+{ CloseObject, given the scratch project's full path, closed Blinker555_v4,   }
+{ and the retry closed the scratch project. Every earlier close that worked   }
+{ had a sheet of the named project focused, so the two could not be told      }
+{ apart. The reference scripts never close a project by name: they focus it,  }
+{ check DM_FocusedProject, and close the focused one.                         }
+{                                                                             }
+{ It also explains a report from a managed project: a save prompt listing 49  }
+{ documents for a 10-document project, then a second call that listed 4 and   }
+{ closed. The first close was aimed at a different project.                   }
+{..............................................................................}
+
+Function OpenProjectPaths(Workspace : IWorkspace) : String;
+Var
+    I : Integer;
+    Proj : IProject;
+    P : String;
+Begin
+    Result := '';
+    If Workspace = Nil Then Exit;
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Workspace.DM_Projects(I);
+        If Proj = Nil Then Continue;
+        P := '';
+        Try P := Proj.DM_ProjectFullPath; Except P := ''; End;
+        If P = '' Then Continue;
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + P;
+    End;
+End;
+
+{ Focus follows the active DOCUMENT, so the project is focused by showing one  }
+{ of its documents. Only LOADED ones: opening a member here would load it as a }
+{ free document, the way App_SetActiveDocument records, and focus nothing.     }
+Function FocusProjectForClose(Project : IProject) : Boolean;
+Var
+    J : Integer;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    Path, Target : String;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    Target := '';
+    Try Target := Project.DM_ProjectFullPath; Except Target := ''; End;
+    If Target = '' Then Exit;
+    If FocusedProjectPathIs(Target) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := DocFullPath(Doc);
+        If Path = '' Then Continue;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+        If ServerDoc = Nil Then Continue;
+        Try Client.ShowDocument(ServerDoc); Except End;
+        If FocusedProjectPathIs(Target) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
+{ Paths in BeforeList that are gone from AfterList, other than TargetPath.   }
+Function PathsGoneOtherThan(BeforeList, AfterList, TargetPath : String) : String;
+Var
+    Remaining, P, UpAfter : String;
+    K : Integer;
+Begin
+    Result := '';
+    UpAfter := '|' + UpperCase(AfterList) + '|';
+    Remaining := BeforeList;
+    While Remaining <> '' Do
+    Begin
+        K := Pos('|', Remaining);
+        If K > 0 Then
+        Begin
+            P := Copy(Remaining, 1, K - 1);
+            Remaining := Copy(Remaining, K + 1, Length(Remaining) - K);
+        End
+        Else
+        Begin
+            P := Remaining;
+            Remaining := '';
+        End;
+        If (P <> '') And (UpperCase(P) <> UpperCase(TargetPath))
+            And (Pos('|' + UpperCase(P) + '|', UpAfter) = 0) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + P;
+        End;
+    End;
+End;
+
 Function Proj_Save(Params : String; RequestId : String) : String;
 Var
     ProjectPath : String;
@@ -204,13 +432,16 @@ End;
 { looking the project up again.                                               }
 Function Proj_Close(Params : String; RequestId : String) : String;
 Var
-    ProjectPath : String;
+    ProjectPath, Discarded, StillDirty, More : String;
+    ClosedInstead, BeforeClose, Why : String;
     SaveFirst, Closed : Boolean;
+    Attempts : Integer;
     Workspace : IWorkspace;
     Project : IProject;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     SaveFirst := ExtractJsonValue(Params, 'save') <> 'false';
+    Discarded := '';
 
     Workspace := GetWorkspace;
     If Workspace <> Nil Then
@@ -223,28 +454,118 @@ Begin
         If Project <> Nil Then
         Begin
             ProjectPath := Project.DM_ProjectFullPath;
-            If SaveFirst Then
-                SaveProjectMembers(Project);
 
-            ResetParameters;
-            AddStringParameter('ObjectKind', 'Project');
-            AddStringParameter('FileName', ProjectPath);
-            RunProcess('WorkspaceManager:CloseObject');
-
-            { Confirm. A cancelled save prompt aborts the close, and the      }
-            { process layer cannot report that.                               }
-            Closed := FindProjectByPath(Workspace, ProjectPath) = Nil;
-            If Closed Then
-                Result := BuildSuccessResponse(RequestId,
-                    '{"success":true,"closed":true,"project_path":"'
-                    + EscapeJsonString(ProjectPath) + '"}')
-            Else
+            { BEFORE ANY SAVE OR DISCARD, so a close that has to be refused  }
+            { leaves the project exactly as it found it.                     }
+            If Not FocusProjectForClose(Project) Then
+            Begin
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":false,"closed":false,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
-                    + ',"reason":"the project is still open after the close '
-                    + 'was issued, which is what happens when a save prompt '
-                    + 'is cancelled or a document refuses to close"}');
+                    + ',"discarded":[],"attempts":0,"closed_instead":[]'
+                    + ',"reason":"Altium closes the FOCUSED project, and this '
+                    + 'one could not be made focused because none of its '
+                    + 'documents is loaded. Nothing was closed or changed. '
+                    + 'Load a sheet with proj_load_sheets, or activate one of '
+                    + 'its documents, and close again."}');
+                Exit;
+            End;
+
+            If SaveFirst Then
+                SaveProjectMembers(Project)
+            Else
+            Begin
+                { DISCARD BEFORE CLOSING, then check the discard took. A close }
+                { issued with anything still modified raises a save prompt     }
+                { that blocks this loop until a human answers it, so refusing  }
+                { here is the only way the caller hears anything at all.       }
+                Discarded := DiscardProjectMembers(Project);
+                StillDirty := DirtyProjectMembers(Project);
+                If StillDirty <> '' Then
+                Begin
+                    Result := BuildSuccessResponse(RequestId,
+                        '{"success":false,"closed":false,"project_path":"'
+                        + EscapeJsonString(ProjectPath) + '"'
+                        + ',"still_modified":' + PipePathsToJsonArray(StillDirty)
+                        + ',"reason":"save=false could not clear the modified '
+                        + 'flag on these documents, so closing would raise a '
+                        + 'save prompt, and that prompt blocks the bridge until '
+                        + 'someone answers it in Altium. Nothing was closed. '
+                        + 'Pass save=true to write them first, or close the '
+                        + 'project in Altium."}');
+                    Exit;
+                End;
+            End;
+
+            { Confirm by looking the project up again. A cancelled save      }
+            { prompt aborts the close, and the process layer cannot say so.  }
+            { A close without saving is retried ONCE: reported on a managed  }
+            { project, the first close was abandoned after its prompt was    }
+            { answered and a second completed. Not retried when saving,      }
+            { where the likely cause is a prompt cancelled on purpose.       }
+            Attempts := 0;
+            Closed := False;
+            ClosedInstead := '';
+            While (Not Closed) And (Attempts < 2) Do
+            Begin
+                { CloseObject closes the FOCUSED project, whatever FileName  }
+                { says, so focus the named one before EVERY attempt: focus   }
+                { can move between one attempt and the next.                  }
+                Project := FindProjectByPath(Workspace, ProjectPath);
+                If Not FocusProjectForClose(Project) Then Break;
+                BeforeClose := OpenProjectPaths(Workspace);
+                Attempts := Attempts + 1;
+                ResetParameters;
+                AddStringParameter('ObjectKind', 'Project');
+                AddStringParameter('FileName', ProjectPath);
+                RunProcess('WorkspaceManager:CloseObject');
+                Closed := FindProjectByPath(Workspace, ProjectPath) = Nil;
+                ClosedInstead := PathsGoneOtherThan(BeforeClose,
+                    OpenProjectPaths(Workspace), ProjectPath);
+                { Never retry after something else closed. The retry is what }
+                { turned one wrong close into two.                            }
+                If ClosedInstead <> '' Then Break;
+                If SaveFirst Then Break;
+                If Not Closed Then
+                Begin
+                    Project := FindProjectByPath(Workspace, ProjectPath);
+                    More := DiscardProjectMembers(Project);
+                    If More <> '' Then
+                    Begin
+                        If Discarded <> '' Then Discarded := Discarded + '|';
+                        Discarded := Discarded + More;
+                    End;
+                End;
+            End;
+
+            If Closed And (ClosedInstead = '') Then
+                Result := BuildSuccessResponse(RequestId,
+                    '{"success":true,"closed":true,"project_path":"'
+                    + EscapeJsonString(ProjectPath) + '"'
+                    + ',"saved":' + BoolToJsonStr(SaveFirst)
+                    + ',"discarded":' + PipePathsToJsonArray(Discarded)
+                    + ',"attempts":' + IntToStr(Attempts)
+                    + ',"closed_instead":[]}')
+            Else
+            Begin
+                If ClosedInstead <> '' Then
+                    Why := 'closing this project also closed a project nobody '
+                        + 'named, listed under closed_instead. Altium closes '
+                        + 'the focused project; this stopped there and did not '
+                        + 'retry. Reopen those with proj_open.'
+                Else
+                    Why := 'the project is still open after the close was '
+                        + 'issued, which is what happens when a save prompt is '
+                        + 'cancelled, a document refuses to close, or focus '
+                        + 'could not be moved back to it for a second attempt';
+                Result := BuildSuccessResponse(RequestId,
+                    '{"success":false,"closed":' + BoolToJsonStr(Closed)
+                    + ',"project_path":"' + EscapeJsonString(ProjectPath) + '"'
+                    + ',"discarded":' + PipePathsToJsonArray(Discarded)
+                    + ',"attempts":' + IntToStr(Attempts)
+                    + ',"closed_instead":' + PipePathsToJsonArray(ClosedInstead)
+                    + ',"reason":"' + Why + '"}');
+            End;
         End
         Else
             Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'Project not found');
@@ -284,7 +605,7 @@ Begin
                 If Not First Then Data := Data + ',';
                 First := False;
                 DocInfo := '{"file_name":"' + EscapeJsonString(ExtractFileName(Doc.DM_FileName)) + '"';
-                DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(Doc.DM_FileName) + '"';
+                DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(DocFullPath(Doc)) + '"';
                 DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"}';
                 Data := Data + DocInfo;
             End;
@@ -630,8 +951,7 @@ Begin
         { on-disk project structure in some code paths, and users hit this  }
         { tool precisely when the in-editor state has diverged from the     }
         { cached netlist.                                                   }
-        { A project-scoped read must never save unrelated open projects. }
-        Try SaveProjectMembers(Project); Except End;
+        Try SaveAllDirty(0); Except End;
         LastCompileTick := 0;
         SmartCompile(Project);
     End;
@@ -1308,7 +1628,7 @@ Begin
 
         { 2) Walk the board, find the component by Name.Text, select it.    }
         Board := Nil;
-        Try Board := GetPCBBoardAnywhere; Except End;
+        Try Board := GetPCBBoardAnywhere(0); Except End;
         If Board = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -1537,7 +1857,7 @@ Var
     OutlineStr, LayerStr, Data, BoardFile : String;
     First : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active'); Exit; End;
 
     // Board outline vertices
@@ -1812,7 +2132,7 @@ Begin
                 End;
                 SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
                 SchDoc.GraphicallyInvalidate;
-                SaveDocByPath(FilePath);
+                MarkDocDirtyByPath(FilePath);
                 Continue;
             End;
 
@@ -1952,7 +2272,7 @@ Begin
                 Try SchServer.ProcessControl.PostProcess(SchDoc, 'Edit'); Except End;
                 Try SchDoc.GraphicallyInvalidate; Except End;
             End;
-            Try SaveDocByPath(TouchedDocs[I]); Except End;
+            Try MarkDocDirtyByPath(TouchedDocs[I]); Except End;
         End;
 
         { No CompList.Free -- releasing a TInterfaceList of live schematic
@@ -2072,18 +2392,57 @@ End;
 Function Proj_ExportSTEP(Params : String; RequestId : String) : String;
 Var
     OutputPath : String;
+    Board : IPCB_Board;
+    AgeBefore, AgeAfter : Integer;
 Begin
     OutputPath := ExtractJsonValue(Params, 'output_path');
+
+    { RunProcess acts on the FOCUSED view, and the board lookup puts the  }
+    { user's previous view back, so an export from a schematic tab went   }
+    { nowhere. ResolvePCBBoard leaves the board focused.                  }
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is open');
+        Exit;
+    End;
+    Board := ResolvePCBBoard(Board.FileName);
+
+    AgeBefore := -1;
+    If OutputPath <> '' Then
+        Try If FileExists(OutputPath) Then AgeBefore := FileAge(OutputPath); Except End;
 
     ResetParameters;
     If OutputPath <> '' Then
         AddStringParameter('FileName', OutputPath);
     RunProcess('PCB:ExportSTEP3D');
 
-    If OutputPath <> '' Then
-        Result := BuildSuccessResponse(RequestId, '{"success":true,"output_path":"' + EscapeJsonString(OutputPath) + '"}')
+    { success:true used to come back whatever happened, and a reported    }
+    { run that wrote nothing was indistinguishable from one that did.     }
+    If OutputPath = '' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId,
+            '{"generated":false,"dispatched":true'
+            + ',"reason":"the export was launched with no output_path, so '
+            + 'there is nothing to check; pass output_path, or run an OutJob '
+            + 'with an ExportSTEP output through proj_run_outjob"}');
+        Exit;
+    End;
+
+    AgeAfter := -1;
+    Try If FileExists(OutputPath) Then AgeAfter := FileAge(OutputPath); Except End;
+    If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
+        Result := BuildSuccessResponse(RequestId,
+            '{"generated":true,"success":true,"output_path":"'
+            + EscapeJsonString(OutputPath) + '"}')
     Else
-        Result := BuildSuccessResponse(RequestId, '{"success":true}');
+        Result := BuildSuccessResponse(RequestId,
+            '{"generated":false,"dispatched":true,"output_path":"'
+            + EscapeJsonString(OutputPath) + '"'
+            + ',"reason":"the export was launched but no new file is at '
+            + 'output_path. PCB:ExportSTEP3D is not documented to take a file '
+            + 'name; run an OutJob with an ExportSTEP output through '
+            + 'proj_run_outjob for a result that can be confirmed"}');
 End;
 
 {..............................................................................}
@@ -2529,9 +2888,13 @@ Begin
             OutputDir := OutputDir + '\';
     End;
 
+    { NOT A SUCCESS CLAIM. The process was issued, and nothing here can say }
+    { whether it wrote anything: a container bound to a managed release, or }
+    { with its outputs off, runs cleanly and produces no file, and this used }
+    { to reply success with an output_dir that had never been created. The  }
+    { Python tools check that directory afterwards and decide success there. }
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true' +
-        ',"dispatched":true,"generation_verified":false' +
+        '{"process_issued":true' +
         ',"container_name":"' + EscapeJsonString(ContainerName) + '"' +
         ',"container_type":"' + EscapeJsonString(ContainerType) + '"' +
         ',"relative_path":"' + EscapeJsonString(RelativePath) + '"' +
@@ -3645,10 +4008,10 @@ Begin
         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     End;
 
-    { Persist directly to disk via the IServerDocument API. SaveDocByPath
+    { Persist directly to disk via the IServerDocument API. MarkDocDirtyByPath
       does SetModified + DoFileSave. WorkspaceManager:SaveAll doesn't
       reach non-active sheets in our tests, so we don't rely on it. }
-    SaveDocByPath(FilePath);
+    MarkDocDirtyByPath(FilePath);
     Try SchDoc.GraphicallyInvalidate; Except End;
 
     If Found Then Action := 'updated' Else Action := 'added';
@@ -3827,33 +4190,17 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    { REFUSE while a schematic is focused. MEASURED 2026-08-17: with a
+    { FOCUS DECIDES WHAT THE COMPARE DOES. MEASURED 2026-08-17: with a
       child sheet focused, WorkspaceManager:Compare raised a modal reading
       "Cannot compare a source document against its owner project SCH"
-      and changed nothing, while this handler went on to report success
-      and components_in_sync. Catching it here turns a blocked editor
-      plus a false clean into a reason the caller can act on.
+      and changed nothing, while this handler went on to report success.
+      So the project's PCB is focused before the compare below and the
+      focus is checked, rather than refusing a schematic and leaving the
+      caller to pick a document.
 
       NOT applied to Proj_UpdateSchematic, which is the opposite
       direction and whose correct focus has not been measured. Guessing
       symmetry here would be inventing a precondition. }
-    FocusedKind := '';
-    Try
-        FocusedDoc := Workspace.DM_FocusedDocument;
-        If FocusedDoc <> Nil Then FocusedKind := FocusedDoc.DM_DocumentKind;
-    Except
-        FocusedKind := '';
-    End;
-    If FocusedKind = 'SCH' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'WRONG_FOCUS',
-            'A schematic is focused, and Altium refuses to compare a '
-            + 'source document against its owner project: it raises a '
-            + 'modal error and changes nothing. Focus the PCB document '
-            + 'first with app_set_active_document, then call this again.');
-        Exit;
-    End;
-
     SmartCompile(Project);
     Ok := ComputeECODifferences(Project, MatchedBefore, ExtraSchBefore, ExtraPcbBefore, PcbPath);
     If Not Ok Then
@@ -3864,19 +4211,40 @@ Begin
 
     { Fire the real ECO via the WorkspaceManager comparator. This is the
       ONLY evidenced scriptable launcher (ref: reference MultiPCBProject.pas,
-      Petar Perisin): WorkspaceManager:Compare with ObjectKind=Project +
-      Action=UpdateMe performs Design > Update PCB Document (schematic -> PCB)
-      when the target PCB is focused. UpdateOther is relative to focus and was
-      observed to reverse this into PCB -> schematic. The previous
-      'PCB:UpdatePCBFromProject' was NOT a real process id
-      (RunProcess silently ignores unknown ids -> the handler no-opped), and
-      DisableDialog/Silent/NoConfirm/AutoApply are invented flags that appear
-      in no Altium docs.
+      Petar Perisin). The previous 'PCB:UpdatePCBFromProject' was NOT a real
+      process id (RunProcess silently ignores unknown ids -> the handler
+      no-opped), and DisableDialog/Silent/NoConfirm/AutoApply are invented
+      flags that appear in no Altium docs.
+      DIRECTION. With the PCB focused, the reference spells the two actions
+      out: Action=UpdateOther is PCB -> Update Schematic, and Action=UpdateMe
+      is PCB -> Import Changes From the schematic. This handler sent
+       UpdateOther with the PCB focused, so it back-annotated:
+      an ECO opened with the SchDoc as the affected document, and executing
+      it reverted a footprint and a comment on the schematic. The PCB is
+      focused here, checked, and asked to import.
       DIALOG IS UNAVOIDABLE: Altium's Engineering Change Order dialog is
       non-suppressible BY DESIGN (altium.com .../keeping-synchronized). This
       process raises that modal and BLOCKS the polling loop until a human
       clicks "Execute Changes" (or closes it). There is no documented silent
-      variant. Keep the resolved target PCB focused and use UpdateMe. }
+      variant. }
+    ResolvePCBBoard(PcbPath);
+    FocusedKind := '';
+    Try
+        FocusedDoc := Workspace.DM_FocusedDocument;
+        If FocusedDoc <> Nil Then FocusedKind := FocusedDoc.DM_DocumentKind;
+    Except
+        FocusedKind := '';
+    End;
+    If FocusedKind <> 'PCB' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_FOCUS',
+            'The project''s PCB could not be focused (the focused document is '
+            + FocusedKind + '), and the update direction depends on it: with '
+            + 'anything else focused the same request can update the '
+            + 'schematic from the board. Focus ' + PcbPath
+            + ' with app_set_active_document, then call this again.');
+        Exit;
+    End;
     ResetParameters;
     AddStringParameter('ObjectKind', 'Project');
     AddStringParameter('Action', 'UpdateMe');
@@ -4347,7 +4715,7 @@ Begin
     End;
 
     PrevTick := LastCompileTick;
-    Try SaveProjectMembers(Project); Except End;
+    Try SaveAllDirty(0); Except End;
     LastCompileTick := 0;
     SmartCompile(Project);
     NewTick := LastCompileTick;
@@ -4588,7 +4956,7 @@ Begin
                     Finally
                         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
                     End;
-                    Try SaveDocByPath(FullPath); Except End;
+                    Try MarkDocDirtyByPath(FullPath); Except End;
                     Try SchDoc.GraphicallyInvalidate; Except End;
                     Inc(SheetsUpdated);
                 End;

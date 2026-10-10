@@ -97,7 +97,8 @@ _CATEGORY_BY_PREFIX = (
 # handler, and a tool is only covered when EVERY command it sends is,
 # because one unanswered call ends the run just as surely.
 _SIMULATOR_TOOLS = frozenset({
-    "app_detach", "app_get_active_document", "app_get_version",
+    "app_context", "app_detach", "app_get_active_document",
+    "app_get_version",
     "app_list_documents", "app_restart_altium_bridge",
     "app_set_active_document", "app_visual_context",
     "audit_find_missing_decoupling",
@@ -112,18 +113,19 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_create_symbol", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components",
     "lib_link_3d_model", "lib_link_footprint", "lib_search",
-    "obj_batch_delete", "obj_batch_modify", "obj_create", "obj_delete",
-    "obj_deselect_all", "obj_get_font_id", "obj_get_font_spec",
-    "obj_modify", "obj_query", "obj_run_process", "obj_select",
-    "obj_zoom", "pcb_bind_pad_nets", "pcb_build_from_project",
-    "pcb_create_nets_from_list", "pcb_get_board_outline",
-    "pcb_get_board_statistics", "pcb_get_components", "pcb_get_nets",
-    "pcb_get_pad_properties", "pcb_get_unrouted_nets", "pcb_get_vias",
-    "pcb_move_components", "pcb_place_components",
+    "obj_batch_delete", "obj_batch_modify",
+    "obj_create", "obj_delete", "obj_deselect_all", "obj_get_font_id",
+    "obj_get_font_spec", "obj_modify", "obj_query", "obj_run_process",
+    "obj_select", "obj_zoom", "pcb_bind_pad_nets",
+    "pcb_build_from_project", "pcb_create_nets_from_list",
+    "pcb_get_board_outline", "pcb_get_board_statistics",
+    "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
+    "pcb_get_unrouted_nets",
+    "pcb_get_vias", "pcb_move_components", "pcb_place_components",
     "pcb_place_diff_pair_vias", "pcb_place_tracks", "pcb_place_via",
     "pcb_plan_bga_fanout", "pcb_plan_return_vias",
     "pcb_rebuild_connectivity", "pcb_route_diff_pair", "pcb_run_drc",
-    "proj_add_document", "proj_annotate", "proj_close", "proj_compile",
+    "proj_add_document", "proj_annotate", "proj_compile",
     "proj_create", "proj_cross_probe", "proj_export_bom_html",
     "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
     "proj_get_bom", "proj_get_component_info", "proj_get_focused",
@@ -161,10 +163,18 @@ _DESIGN_BRIDGE = frozenset(
         "design_snapshot_inventory",
         "design_datasheet_checklist",
         "design_learn_from_layout",
+        "design_capture_snapshot",
         # Both fetch board state over the bridge before reporting.
         "design_lint_report",
         "design_visual_review",
-        "design_capture_snapshot",
+        # These three extract symbol geometry, or read the live sheet,
+        # over the bridge. Each CATCHES the failure and answers anyway,
+        # so with no Altium running they return a degraded result rather
+        # than an error, and calling them offline is what sends somebody
+        # to rely on that result.
+        "design_preview_plan",
+        "design_hints_from_sheet",
+        "design_plan_from_sheet",
     }
 )
 
@@ -189,7 +199,13 @@ INTERACTION_OVERRIDES = {
     # published as silent, so anything filtering for "keeps the session
     # responsive" was handed a tool that blocks the bridge until a human
     # answers a dialog. The dialog seen is named beside each one.
-    "pcb_run_drc": MODAL,             # Design Rule Checker (TDesignRuleCheckForm)
+    # Design Rule Checker (TDesignRuleCheckForm). Altium exposes no
+    # non-interactive DRC trigger, so the tool's only functional path is
+    # the modal one: it refuses unless called with allow_modal=True.
+    # Measured behind the dialog: a 30-minute dead loop to an 1800 s
+    # client timeout. pcb_get_clearance_violations reads stored
+    # violations instead and stays readonly.
+    "pcb_run_drc": MODAL,
     "proj_export_pdf": MODAL,         # Preview PCB / print preview
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and
@@ -219,6 +235,20 @@ INTERACTION_OVERRIDES = {
     # (mutates). State the truth explicitly rather than depending on a
     # side effect of another rule.
     "design_visual_review": READONLY,
+    # Reports a pin's root, its electrical connection point, and every
+    # object sitting on each. Pure inspection -- it exists precisely so a
+    # caller can debug connectivity WITHOUT touching the sheet. The obj_
+    # prefix defaults to "silent" (mutating), which is the opposite of
+    # the truth here, so say so explicitly.
+    "obj_explain_pin": READONLY,
+    # Reads the board (or a saved board model) and measures it: overlaps,
+    # gaps, connectivity, corners, return vias, plane islands. Nothing is
+    # written. The pcb_ prefix defaults to silent, which would tell anyone
+    # filtering for safe operations that an audit edits the board.
+    "pcb_layout_audit": READONLY,
+    # Reads a database library's declared tables and fields. The lib_ prefix
+    # does not make that clear to the classifier; it writes nothing.
+    "lib_dblib_info": READONLY,
     # part_fetch writes library files when given download_dir. The
     # "parts" category is offline, and offline falls back to READONLY,
     # which would advertise a tool that touches the filesystem as
@@ -226,6 +256,13 @@ INTERACTION_OVERRIDES = {
     # lib_extract_cse_zip, proj_export_pdf, pcb_render_svg) is SILENT,
     # so match them. part_search never writes and stays readonly.
     "part_fetch": SILENT,
+    # Refuses on this Altium build: the via soldermask write raises an
+    # access violation inside ScriptingSystem.DLL, so the handler
+    # answers NOT_SCRIPTABLE and touches nothing. The pcb_set_ prefix
+    # defaults to "silent" (mutates), which tells a caller filtering for
+    # safe operations the opposite of the truth. If a build is ever
+    # found where the write works, this goes back to SILENT with it.
+    "pcb_set_via_soldermask_relief": READONLY,
 }
 
 # --- explicit maturity overrides -------------------------------------------

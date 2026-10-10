@@ -197,7 +197,10 @@ def test_footprint_primitives_are_placed_relative_to_the_footprint():
         writes = re.findall(r"(?:Pad|Track|Arc|Text)\.\w*"
                             r"(?:X|Y|X1|Y1|X2|Y2|XCenter|YCenter|"
                             r"XLocation|YLocation)\s*:=\s*([^;]+);", body)
-        placement = [w for w in writes if "MilsToCoord" in w]
+        # CoordFromUnits converts mils or millimetres; either way the
+        # result is a length, and it still needs the footprint's origin.
+        placement = [w for w in writes
+                     if "MilsToCoord" in w or "CoordFromUnits" in w]
         assert placement, f"{func}: no coordinate writes found to check"
         for w in placement:
             assert "FootprintOrigin" in w or "Footprint." in w, (
@@ -299,27 +302,66 @@ def test_library_lookups_fall_back_to_walking_the_document():
     assert "Function ScanLibForComponent" in text
     assert "Function LookupLibComponent" in text
 
-    # Every caller goes through the wrapper; only the wrapper itself may
-    # touch the raw index lookup.
+    # Every caller goes through a wrapper; only the in-memory half may
+    # touch the raw index lookup, and LookupLibComponent is built on it.
     raw = [m for m in re.finditer(r"\w+\.GetState_SchComponentByLibRef\(", text)]
-    inside_helper = _body(text, "LookupLibComponent")
+    inside_helper = _body(text, "FindLibComponentInMemory")
     assert len(raw) == inside_helper.count(".GetState_SchComponentByLibRef("), (
-        "a by-name lookup bypasses LookupLibComponent, so it cannot see a "
+        "a by-name lookup bypasses the wrappers, so it cannot see a "
         "symbol created in this session")
+    assert "ScanLibForComponent" in inside_helper
+    assert "FindLibComponentInMemory(" in _body(text, "LookupLibComponent")
 
 
-def test_save_all_counts_what_is_still_dirty():
-    """MEASURED: saved:true while every save was being declined.
+def test_save_all_reports_what_reached_disk():
+    """MEASURED twice, and the second time the guard was the problem.
 
-    Altium refuses to save while a command is active in the editor and
-    asks whether to write a copy instead. DoFileSave does not raise, so
-    "no exception" was never evidence of anything.
+    First: saved:true while every save was being declined. Altium refuses
+    to save while a command is active in the editor and asks whether to
+    write a copy instead, and DoFileSave does not raise, so "no exception"
+    was never evidence of anything.
+
+    Then: saved:true while nothing was written at all, because the check
+    added for the first case walked the workspace exactly as the save
+    does. Same GetWorkspace, same DM_Projects loop, same silent Exit when
+    it comes back Nil, so an empty enumeration made the save write nothing
+    AND the count report zero, and zero read as success. A verifier that
+    shares the failure mode of the thing it verifies cannot catch it, and
+    a session lost 29 edits to exactly that.
+
+    So the evidence now has to be independent of Altium: a document either
+    got newer on disk or it did not.
     """
     body = _body(_decommented(_src("Application.pas")), "App_SaveAll")
-    assert "CountDirtyDocuments" in body, (
-        "app_save_all must count documents still modified after the pass")
-    assert '"saved":true' not in body.replace('"saved":true,"still_dirty":0', ""), (
-        "saved:true must be conditional on nothing being left dirty")
+
+    assert "CountChangedAges" in body, (
+        "app_save_all must verify by file timestamp, which is independent "
+        "of every Altium-side signal in this path. Both ServerDoc.Modified "
+        "and CountDirtyDocuments have been observed reporting clean while "
+        "changes were pending")
+    assert "documents_written" in body, (
+        "the reply must say how many documents actually got newer, or the "
+        "caller cannot tell a save from a no-op")
+
+    # Success must not be the only outcome the handler can produce.
+    assert '"saved":false' in body, (
+        "app_save_all has no failure branch, so it cannot report a save "
+        "that did not happen")
+
+    # And no claim of success may be made before the evidence is gathered.
+    save_call = body.index("SaveAllDirty(0)")
+    for pos in _positions(body, '"saved":true'):
+        assert pos > save_call, (
+            "app_save_all reports saved:true before the save pass has run, "
+            "so the claim cannot be based on anything")
+
+
+def _positions(text, needle):
+    out, at = [], text.find(needle)
+    while at != -1:
+        out.append(at)
+        at = text.find(needle, at + 1)
+    return out
 
 
 def test_a_pcb_query_refuses_a_scope_it_cannot_honour():

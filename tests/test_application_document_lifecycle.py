@@ -46,12 +46,11 @@ async def test_open_document_infers_kind_in_live_script(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_close_document_defaults_to_safe_save(monkeypatch):
+async def test_close_document_refuses_unsaved_changes_by_default(monkeypatch):
     tools, bridge = _tools(monkeypatch)
     await tools["app_close_document"]("C:\\p\\main.SchDoc")
     assert bridge.calls[-1][0] == "application.close_document"
-    assert bridge.calls[-1][1]["save"] == "true"
-    assert bridge.calls[-1][1]["discard_changes"] == "false"
+    assert bridge.calls[-1][1] == {"file_path": "C:\\p\\main.SchDoc"}
 
 
 @pytest.mark.asyncio

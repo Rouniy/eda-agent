@@ -36,7 +36,9 @@ def test_click_uses_physical_pixels_and_restores_negative_monitor_position(monke
     cursor=Cursor()
     monkeypatch.setattr(menu,'_u',lambda:cursor)
     monkeypatch.setattr(menu.time,'sleep',lambda _:None)
-    menu._click(330,43)
+    monkeypatch.setattr(menu,'frame',lambda _pid:SimpleNamespace(hwnd=1))
+    monkeypatch.setattr(menu.win,'require_foreground',lambda *_:None)
+    menu._click(123,330,43)
     assert cursor.events == [(menu._MOUSE_DOWN,(330,43)),(menu._MOUSE_UP,(330,43))]
     assert cursor.position == (-240,300)
 
@@ -66,7 +68,9 @@ def test_failed_or_clipped_move_never_clicks_another_control(monkeypatch, mode):
     cursor=Cursor(**{mode:True})
     monkeypatch.setattr(menu,'_u',lambda:cursor)
     monkeypatch.setattr(menu.time,'sleep',lambda _:None)
+    monkeypatch.setattr(menu,'frame',lambda _pid:SimpleNamespace(hwnd=1))
+    monkeypatch.setattr(menu.win,'require_foreground',lambda *_:None)
     with pytest.raises(OSError,match='no menu click sent'):
-        menu._click(330,43)
+        menu._click(123,330,43)
     assert cursor.events == []
     assert cursor.position == (-240,300)

@@ -2357,18 +2357,25 @@ class AltiumSimulator:
             if x in ("", None) or y in ("", None):
                 return _build_error_response(rid, "MISSING_PARAM",
                                              "place_via requires x and y")
+            # Sizes in fractions of a mil, as PCB_PlaceVia reads them, and
+            # the same refusal of a via with no annular ring.
+            size = float(params["size"]) if params.get("size") not in ("", None) else 50.0
+            hole = (float(params["hole_size"])
+                    if params.get("hole_size") not in ("", None) else 28.0)
+            if hole <= 0 or size <= hole:
+                return _build_error_response(rid, "BAD_SIZE",
+                                             "size must be larger than hole_size")
             via = MockVia(
                 x=int(float(x)), y=int(float(y)),
                 net=params.get("net", ""),
-                size=int(float(params["size"])) if params.get("size") not in ("", None) else 50,
-                hole_size=(int(float(params["hole_size"]))
-                           if params.get("hole_size") not in ("", None) else 28),
+                size=size, hole_size=hole,
                 low_layer=params.get("low_layer") or "Top Layer",
                 high_layer=params.get("high_layer") or "Bottom Layer",
             )
             board.vias.append(via)
             data = ('{"placed":true,"x":' + str(via.x) + ',"y":' + str(via.y) +
-                    ',"size":' + str(via.size) + ',"hole_size":' + str(via.hole_size) + '}')
+                    ',"size":' + json.dumps(via.size) +
+                    ',"hole_size":' + json.dumps(via.hole_size) + '}')
             return _build_success_response(rid, data)
 
         elif action == "batch_move_components":

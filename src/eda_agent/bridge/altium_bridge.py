@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass, field
 
+from eda_agent.atomicfile import discard, replace_with_retry
+
 # NOTE: no cross-process or publish lock is needed here. Each caller writes
 # its own request_<id>.json (staged to .json.tmp, then atomically renamed)
 # and polls its own response_<id>.json, so concurrent publishers -- threads
@@ -47,6 +49,8 @@ from .recovery import (
     CORRUPT_RESPONSE,
     MODAL_DIALOG,
 )
+
+from ..safety import refuse_command
 
 logger = logging.getLogger("eda_agent.bridge")
 
@@ -207,6 +211,14 @@ class CommandResponse:
     protocol_version: int = 0
     data: Any = None
     error: Optional[dict] = None
+    # Siblings the Pascal dispatcher appends to EVERY reply, success or
+    # error: the follow-up a handler named with NoteNextStep, and a note
+    # when the command moved the focused document. They were dropped here,
+    # so eight Pascal call sites of advice (a library that could not be
+    # flagged for saving, a part that could not be reached) never reached
+    # a caller, and a refusal read as a bare "not found".
+    next_step: str = ""
+    active_document_changed: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "CommandResponse":
@@ -216,7 +228,28 @@ class CommandResponse:
             protocol_version=data.get("protocol_version", 0),
             data=data.get("data"),
             error=data.get("error"),
+            next_step=data.get("next_step") or "",
+            active_document_changed=data.get("active_document_changed"),
         )
+
+
+def _with_envelope_notes(data: Any, response: CommandResponse) -> Any:
+    """Carry the envelope's notes into a successful reply's data.
+
+    Only a dict can take them without changing the reply's shape, so a
+    list or scalar reply is returned as it came. A key the handler already
+    set is left alone: the handler's own value is the more specific one.
+    """
+    if not isinstance(data, dict):
+        return data
+    if not response.next_step and not response.active_document_changed:
+        return data
+    data = dict(data)
+    if response.next_step and not data.get("next_step"):
+        data["next_step"] = response.next_step
+    if response.active_document_changed and "active_document_changed" not in data:
+        data["active_document_changed"] = response.active_document_changed
+    return data
 
 
 class AltiumBridge:
@@ -348,19 +381,44 @@ class AltiumBridge:
         return self.process_manager.is_altium_running()
 
     def get_altium_status(self) -> dict:
-        process = self.process_manager.get_altium_info()
-        if process:
+        """Which Altium is running, and whether that is certain.
+
+        ``pid`` is None with ``ambiguous`` set when more than one Altium
+        is running and none can be identified as the one running
+        StartMCPServer; ``reason`` explains and ``candidate_pids`` names
+        them all. Picking one silently used to send every UI tool to a
+        windowless orphan while bridge calls reached the real instance.
+        """
+        selection = self.process_manager.select_altium_process()
+        common = {
+            "candidate_count": len(selection.candidates),
+            "candidate_pids": [c.pid for c in selection.candidates],
+            "selected_by": selection.selected_by,
+        }
+        if selection.process:
             return {
                 "running": True,
-                "pid": process.pid,
-                "exe_path": process.exe_path,
+                "pid": selection.process.pid,
+                "exe_path": selection.process.exe_path,
                 "attached": self._attached,
+                **common,
+            }
+        if selection.candidates:
+            return {
+                "running": True,
+                "pid": None,
+                "exe_path": None,
+                "attached": self._attached,
+                "ambiguous": True,
+                "reason": selection.reason,
+                **common,
             }
         return {
             "running": False,
             "pid": None,
             "exe_path": None,
             "attached": False,
+            **common,
         }
 
     def attach(self) -> bool:
@@ -532,7 +590,16 @@ class AltiumBridge:
         tmp_path = request_path.with_suffix(".json.tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(request.to_dict(), f, indent=2)
-        tmp_path.replace(request_path)
+        # The rename can lose a race with a Windows scanner holding the
+        # target. Retried, then allowed to raise: a request that is never
+        # published leaves the caller waiting out the full poll timeout
+        # with nothing to explain the silence, so failing here with the
+        # real error is strictly better than failing there without one.
+        try:
+            replace_with_retry(tmp_path, request_path)
+        except PermissionError:
+            discard(tmp_path)
+            raise
         logger.debug("Published request %s: %s", request.id, request.command)
 
     def _poll_response(self, request_id: str, timeout: float,
@@ -647,14 +714,39 @@ class AltiumBridge:
                         details={"dialogs": early,
                                  "blocked_after_seconds": round(waited, 1)},
                     )
-            if response_path.exists():
-                if first_appearance is None:
-                    first_appearance = time.monotonic() - start
-                    _trace_log(
-                        workspace_dir,
-                        f"POLL_SEEN id={request_id[:8]} "
-                        f"after={first_appearance*1000:.0f}ms polls={poll_count}",
-                    )
+            # DO NOT OPEN AN EMPTY RESPONSE. SaveToFile creates the file
+            # and then writes it, so polling on existence alone opened a
+            # 0-byte file, failed to parse, and came straight back to open
+            # it again. Every one of those opens is a handle Altium's
+            # exclusive create can collide with, and that collision
+            # surfaces as an EFCreateError modal that stalls the polling
+            # loop rather than an exception the script can catch.
+            # stat() takes no handle, so this costs nothing.
+            #
+            # first_appearance IS SET ON APPEARANCE, not on the first
+            # successful open. The deadline branch below treats a None
+            # first_appearance as "never seen it" and loops again, so
+            # tying it to a successful parse made a permanently empty
+            # response spin forever instead of timing out. That is the
+            # exact hazard the comment down there warns about, reached
+            # through the other branch.
+            appeared = response_path.exists()
+            if appeared and first_appearance is None:
+                first_appearance = time.monotonic() - start
+                _trace_log(
+                    workspace_dir,
+                    f"POLL_SEEN id={request_id[:8]} "
+                    f"after={first_appearance*1000:.0f}ms polls={poll_count}",
+                )
+
+            ready = False
+            if appeared:
+                try:
+                    ready = response_path.stat().st_size > 0
+                except OSError:
+                    ready = False
+
+            if ready:
                 try:
                     with open(response_path, "r", encoding="utf-8-sig") as f:
                         data = json.load(f)
@@ -877,12 +969,20 @@ class AltiumBridge:
         if response.success:
             logger.info("Command %s succeeded", command)
             self._clear_fault_if_any(workspace_dir)
-            return self._maybe_attach_detach_hint(command, response.data)
+            return self._maybe_attach_detach_hint(
+                command, _with_envelope_notes(response.data, response))
 
         error = response.error or {}
         code = error.get("code", "UNKNOWN_ERROR")
         message = error.get("message", "Unknown error")
         details = error.get("details")
+        # The reason a handler recorded is often the only useful part of a
+        # refusal: "not found" for a symbol that exists, when what failed
+        # was reaching one of its parts.
+        if response.next_step:
+            message = f"{message} Next step: {response.next_step}"
+            details = dict(details) if isinstance(details, dict) else {}
+            details["next_step"] = response.next_step
         logger.warning("Command %s failed: %s - %s", command, code, message)
         raise_for_code(code, message, details)
 
@@ -1046,6 +1146,10 @@ class AltiumBridge:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Any:
+        refusal = refuse_command(command)
+        if refusal is not None:
+            return {"success": False, "error": {
+                "code": "REFUSED_BY_POLICY", "message": refusal}}
         if not self.is_altium_running():
             raise AltiumNotRunningError()
         if timeout is None:
@@ -1060,15 +1164,10 @@ class AltiumBridge:
         timeout: Optional[float] = None,
         max_extensions: Optional[int] = None,
     ) -> Any:
-        """Send a command and await its response.
-
-        ``max_extensions`` bounds the total wait at roughly
-        ``timeout * max_extensions`` seconds instead of the default
-        30-window ceiling. Use it for commands that can raise a modal
-        Altium dialog: the progress heartbeat is a presence marker, not a
-        tick, so a blocked handler otherwise consumes the whole default
-        budget before failing -- and fails with the wrong diagnosis.
-        """
+        refusal = refuse_command(command)
+        if refusal is not None:
+            return {"success": False, "error": {
+                "code": "REFUSED_BY_POLICY", "message": refusal}}
         if not self.is_altium_running():
             raise AltiumNotRunningError()
         if timeout is None:

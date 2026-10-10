@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.08.29.6';
+    SCRIPT_VERSION = '2026.10.06.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -51,9 +51,20 @@ Const
     SCHM_EndModify             = 3;
 
     // DelphiScript does NOT predefine Delphi's MaxInt (raises "Undeclared
-    // identifier" at runtime). Declare it explicitly. Used as a
+    // identifier" at runtime), so it is declared here. Used as a
     // "smallest seen so far" sentinel in board-statistics scans.
-    MAX_INT = 2147483647;
+    //
+    // NOT 2147483647. AD25 rejects that literal outright with "Invalid
+    // constant" while compiling the script, which stops the loop before
+    // it serves anything (issue #22, measured on AD25).
+    //
+    // 1e9 internal units is 100 inches, which is Altium's own maximum
+    // board dimension, so a coordinate could in principle equal it. That
+    // is acceptable here: the bounding-box scan carries its own Found
+    // flag as the real guard, and the dimension sentinels it initialises
+    // (track width, hole size, annular ring) are orders of magnitude
+    // below it.
+    MAX_INT = 1000000000;
 
 Var
     WorkspaceDir : String;
@@ -72,6 +83,9 @@ Var
     { pointer it was run against, so we only skip when the SAME project was    }
     { compiled recently. Reset to 0 / Nil at startup.                          }
     LastCompileTick : Cardinal;
+    { Documents the last save pass actually reached. See
+      SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
+    SaveAttempts : Integer;
     LastCompiledProject : IProject;
 
     { Silent cast-failure counter, incremented every time a defensive       }
@@ -124,7 +138,7 @@ Var
 { still leaves the loop with sane values.                                     }
 {..............................................................................}
 
-Procedure InitDefaultConfig;
+Procedure InitDefaultConfig(Dummy : Integer);
 Begin
     PollIntervalActiveMs := 10;
     PollIntervalIdleMs   := 30;
@@ -218,21 +232,69 @@ Var
     I : Integer;
     Doc : IDocument;
     ServerDoc : IServerDocument;
+    Readable : Boolean;
 Begin
+    { UNREADABLE IS NOT CLEAN. This used to swallow the exception and carry
+      on, so a project whose documents could not be reached at all reported
+      nothing dirty and the cached netlist was reused. Reading nothing and
+      there being nothing are different answers and only one of them means
+      the cache is still good.
+
+      A Nil ServerDoc is the exception to that and stays clean on purpose:
+      it means the document is not open in the editor, and a closed
+      document cannot be holding unsaved edits. Treating it as dirty would
+      force a recompile on every call for any project with a closed sheet,
+      which is most of them. }
     Result := False;
     If Project = Nil Then Exit;
     For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
     Begin
-        Doc := Project.DM_LogicalDocuments(I);
-        If Doc = Nil Then Continue;
+        Doc := Nil;
+        Try
+            Doc := Project.DM_LogicalDocuments(I);
+        Except
+            { Written out rather than swallowed, so the next reader can see
+              that the failure is handled by the Nil check below and not
+              simply ignored. }
+            Doc := Nil;
+        End;
+        If Doc = Nil Then
+        Begin
+            { The project structure would not answer for one of its own
+              documents. Say dirty and recompile rather than guess. }
+            Result := True;
+            Exit;
+        End;
+
+        ServerDoc := Nil;
+        Readable := False;
         Try
             ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
-            If (ServerDoc <> Nil) And ServerDoc.Modified Then
-            Begin
+            Readable := True;
+        Except
+            Readable := False;
+        End;
+
+        If Not Readable Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+
+        If ServerDoc <> Nil Then
+        Begin
+            Try
+                If ServerDoc.Modified Then
+                Begin
+                    Result := True;
+                    Exit;
+                End;
+            Except
+                { Could not read the flag, so it is not evidence of clean. }
                 Result := True;
                 Exit;
             End;
-        Except End;
+        End;
     End;
 End;
 
@@ -287,7 +349,7 @@ Begin
         Try Result := Project.DM_LogicalDocuments(Idx); Except End;
 End;
 
-Procedure InvalidateCompileCache;
+Procedure InvalidateCompileCache(Dummy : Integer);
 Begin
     LastCompileTick := 0;
     LastCompiledProject := Nil;
@@ -320,10 +382,16 @@ Begin
 End;
 
 {..............................................................................}
-{ Persist a specific document by path (deferred save: mark dirty only).        }
+{ Mark one document dirty by path. IT DOES NOT WRITE.                          }
+{                                                                              }
+{ Deferred save is deliberate: marking is cheap, and app_save_all flushes at   }
+{ a checkpoint. The hazard is the NAME. Called SaveDocByPath it produced a     }
+{ comment in Generic.pas claiming it wrote to disk, and three tool docstrings  }
+{ promising the caller a save. A caller who needs bytes on disk must call      }
+{ app_save_all or proj_save.                                                   }
 {..............................................................................}
 
-Procedure SaveDocByPath(FilePath : String);
+Procedure MarkDocDirtyByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
 Begin
@@ -334,10 +402,37 @@ Begin
 End;
 
 {..............................................................................}
+{ Read that same flag back. The counterpart to MarkDocDirtyByPath, and the     }
+{ one definition of "unsaved" for every handler that reports it.               }
+{                                                                              }
+{ A path with no resident IServerDocument reports False: a document that is    }
+{ not open in the editor holds no unsaved edits. Treat a True as reliable and  }
+{ a False as a floor, not a clean bill. App_SaveAll records that Modified does }
+{ not always propagate from ProcessControl, which is why that handler measures }
+{ file timestamps instead of trusting this.                                    }
+{..............................................................................}
+
+Function DocIsModified(FilePath : String) : Boolean;
+Var
+    ServerDoc : IServerDocument;
+Begin
+    Result := False;
+    If FilePath = '' Then Exit;
+    ServerDoc := Nil;
+    Try
+        ServerDoc := Client.GetDocumentByPath(FilePath);
+        If ServerDoc <> Nil Then
+            If ServerDoc.Modified Then Result := True;
+    Except
+        Result := False;
+    End;
+End;
+
+{..............................................................................}
 { GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
 {..............................................................................}
 
-Function GetPCBBoardAnywhere : IPCB_Board;
+Function GetPCBBoardAnywhere(Dummy : Integer): IPCB_Board;
 Var
     Workspace : IWorkspace;
     Project : IProject;
@@ -428,7 +523,7 @@ Begin
     Result := Nil;
     If Path = '' Then
     Begin
-        Result := GetPCBBoardAnywhere;
+        Result := GetPCBBoardAnywhere(0);
         Exit;
     End;
     ServerDoc := Nil;
@@ -437,12 +532,12 @@ Begin
     Begin
         { Path didn't resolve to a loadable PcbDoc; fall back rather than    }
         { silently returning Nil and erroring the whole call.                }
-        Result := GetPCBBoardAnywhere;
+        Result := GetPCBBoardAnywhere(0);
         Exit;
     End;
     Try Client.ShowDocument(ServerDoc); Except End;
     Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-    If Result = Nil Then Result := GetPCBBoardAnywhere;
+    If Result = Nil Then Result := GetPCBBoardAnywhere(0);
 End;
 
 {..............................................................................}
@@ -546,6 +641,11 @@ Var
 Begin
     If Doc = Nil Then Exit;
     Try
+        { Only a document OPEN in the editor has an IServerDocument. A
+          closed project member returns Nil and is skipped, correctly: it
+          cannot be holding unsaved edits. SaveAttempts counts the ones
+          actually reached, so a pass that wrote nothing because nothing
+          was open is not confused with one the editor declined. }
         ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath);
         { Unconditional flush, Modified flag does not always propagate from   }
         { ProcessControl.PostProcess to the IServerDocument layer in newer    }
@@ -553,6 +653,7 @@ Begin
         { on a clean doc is a fast no-op.                                     }
         If ServerDoc <> Nil Then
         Begin
+            SaveAttempts := SaveAttempts + 1;
             Try ServerDoc.SetModified(True); Except End;
             Try ServerDoc.DoFileSave(''); Except End;
         End;
@@ -605,7 +706,7 @@ Begin
     End;
 End;
 
-Function CountDirtyDocuments : Integer;
+Function CountDirtyDocuments(Dummy : Integer): Integer;
 Var
     Workspace : IWorkspace;
     I : Integer;
@@ -698,7 +799,176 @@ Begin
     Except End;
 End;
 
-Procedure SaveAllDirty;
+{ DocFullPath - the absolute path of a document, never its bare name.         }
+{                                                                             }
+{ DM_FileName is the file NAME. MEASURED on AD 26.10.1.6: a project member    }
+{ came back as "CloseSheet.SchDoc", and two handlers passed that on as        }
+{ file_path. A caller got a path that was not one, and a modified lookup on   }
+{ it could never resolve. DM_FullPath first, the name only as a last resort,  }
+{ and a bare result resolved against the open projects.                       }
+Function DocFullPath(Doc : IDocument) : String;
+Var
+    P, Resolved : String;
+Begin
+    Result := '';
+    If Doc = Nil Then Exit;
+    P := '';
+    Try P := Doc.DM_FullPath; Except P := ''; End;
+    If P = '' Then
+    Begin
+        Try P := Doc.DM_FileName; Except P := ''; End;
+    End;
+    If (P <> '') And (Not LooksAbsolutePath(P)) Then
+    Begin
+        Resolved := ResolveLoadedDocPath(P);
+        If Resolved <> '' Then P := Resolved;
+    End;
+    Result := P;
+End;
+
+{..............................................................................}
+{ Did the save actually write anything.                                        }
+{                                                                              }
+{ app_save_all used to answer this with CountDirtyDocuments, which walks the   }
+{ workspace exactly the way SaveAllDirty does: same GetWorkspace, same         }
+{ DM_Projects loop, same silent Exit when the workspace is Nil. So when the    }
+{ enumeration came back empty the save wrote nothing AND the check counted     }
+{ nothing, and zero was reported as success. A verifier that shares the        }
+{ failure mode of the thing it verifies cannot catch it.                       }
+{                                                                              }
+{ It also read ServerDoc.Modified, which SaveOneDocByDocRef already documents  }
+{ as unreliable: the flag does not always propagate from                       }
+{ ProcessControl.PostProcess to the IServerDocument layer on newer builds.     }
+{ MEASURED: dirty_doc_count 0 immediately after a wire placement and an entry  }
+{ move, and 29 property edits lost on reload while app_save_all reported       }
+{ saved:true throughout.                                                       }
+{                                                                              }
+{ FILE TIMESTAMPS ARE THE GROUND TRUTH. A document either got newer on disk    }
+{ or it did not, and that answer does not depend on any Altium flag.           }
+{..............................................................................}
+
+Function WorkspaceDocPaths(Dummy : Integer) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    I, J : Integer;
+    Path : String;
+Begin
+    Result := '';
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Project := Nil;
+        Try Project := Workspace.DM_Projects(I); Except End;
+        If Project = Nil Then Continue;
+        For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Nil;
+            Try Doc := Project.DM_LogicalDocuments(J); Except End;
+            If Doc = Nil Then Continue;
+            Path := '';
+            Try Path := Doc.DM_FullPath; Except End;
+            If Path <> '' Then
+            Begin
+                If Result <> '' Then Result := Result + '|';
+                Result := Result + Path;
+            End;
+        End;
+    End;
+End;
+
+{ File age for each pipe-separated path, as its own pipe-separated list.       }
+{ A path that does not exist yet reports -1, which simply cannot match a       }
+{ later age and therefore counts as written once it appears.                   }
+
+Function AgesForPaths(PathList : String) : String;
+Var
+    Remaining, Path : String;
+    P, Age : Integer;
+Begin
+    Result := '';
+    Remaining := PathList;
+    While Remaining <> '' Do
+    Begin
+        P := Pos('|', Remaining);
+        If P > 0 Then
+        Begin
+            Path := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+        End
+        Else
+        Begin
+            Path := Remaining;
+            Remaining := '';
+        End;
+        Age := -1;
+        Try Age := FileAge(Path); Except Age := -1; End;
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + IntToStr(Age);
+    End;
+End;
+
+{ How many entries differ between two age lists of the same shape.             }
+
+Function CountChangedAges(BeforeList : String; AfterList : String) : Integer;
+Var
+    RemA, RemB, A, B : String;
+    P : Integer;
+Begin
+    Result := 0;
+    RemA := BeforeList;
+    RemB := AfterList;
+    While (RemA <> '') And (RemB <> '') Do
+    Begin
+        P := Pos('|', RemA);
+        If P > 0 Then
+        Begin
+            A := Copy(RemA, 1, P - 1);
+            RemA := Copy(RemA, P + 1, Length(RemA) - P);
+        End
+        Else
+        Begin
+            A := RemA;
+            RemA := '';
+        End;
+
+        P := Pos('|', RemB);
+        If P > 0 Then
+        Begin
+            B := Copy(RemB, 1, P - 1);
+            RemB := Copy(RemB, P + 1, Length(RemB) - P);
+        End
+        Else
+        Begin
+            B := RemB;
+            RemB := '';
+        End;
+
+        If A <> B Then Result := Result + 1;
+    End;
+End;
+
+Function CountPathEntries(PathList : String) : Integer;
+Var
+    Remaining : String;
+    P : Integer;
+Begin
+    Result := 0;
+    Remaining := PathList;
+    While Remaining <> '' Do
+    Begin
+        Result := Result + 1;
+        P := Pos('|', Remaining);
+        If P > 0 Then
+            Remaining := Copy(Remaining, P + 1, Length(Remaining) - P)
+        Else
+            Remaining := '';
+    End;
+End;
+
+Procedure SaveAllDirty(Dummy : Integer);
 Var
     Workspace : IWorkspace;
     I : Integer;
@@ -727,7 +997,7 @@ End;
 { Fallback (pointer missing): C:\EDA Agent\workspace\                        }
 {..............................................................................}
 
-Function ResolveDefaultWorkspaceDir : String;
+Function ResolveDefaultWorkspaceDir(Dummy : Integer): String;
 Var
     PointerFile : String;
     F : TextFile;
@@ -830,6 +1100,37 @@ Begin
     { is transient (Defender scan, or Python reading the response mid-write),  }
     { so retry briefly. Mirrors ReadFileContent and the proven sibling-MCP     }
     { idiom (OutputLines.Text := json; SaveToFile).                           }
+    { CLEAR THE DESTINATION FIRST, with calls that cannot raise.
+
+      MEASURED: EFCreateError, "Cannot create file ... because it is
+      being used by another process", arrived as a modal and stalled the
+      polling loop. The retry below cannot help with that, because the
+      engine surfaces the exception before the surrounding Try/Except
+      runs, so the first failure is already a modal. Same behaviour that
+      defeated Try/Except around StrToFloat, same answer: stop the
+      exception happening rather than trying to catch it.
+
+      FileExists and DeleteFile return Booleans and do not raise, so this
+      loop is safe no matter who holds the file. Only once the name is
+      free is the raising create attempted.
+
+      tmp + RenameFile would be the tidier fix and is ruled out: the
+      sibling implementation in reference/CoAltium records that
+      DelphiScript's RenameFile silently failed for some paths and the
+      response never reached its final filename.
+
+      This does not make a create infallible. A fresh name can still be
+      grabbed between the check and the create, by a virus scanner most
+      likely. It removes the reported case, which is a create against a
+      name that is already there and already held. }
+    Attempt := 0;
+    While (Attempt < 40) And FileExists(FilePath) Do
+    Begin
+        Inc(Attempt);
+        DeleteFile(FilePath);
+        If FileExists(FilePath) Then Sleep(15);
+    End;
+
     Attempt := 0;
     While Attempt < 12 Do
     Begin
@@ -848,6 +1149,9 @@ Begin
             SL.Free;
         End;
         If Ok Then Exit;
+        { The destination may have reappeared, so clear it again before
+          the next create rather than repeating the failing call. }
+        If FileExists(FilePath) Then DeleteFile(FilePath);
         Sleep(15);
     End;
 End;
@@ -875,7 +1179,7 @@ Begin
     End;
 End;
 
-Function FormatLogStamp : String;
+Function FormatLogStamp(Dummy : Integer): String;
 Begin
     Try
         Result := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now);
@@ -887,7 +1191,7 @@ End;
 Procedure RecordCastError(Where : String);
 Begin
     Inc(CastErrorCount);
-    AppendLog(FormatLogStamp + ',0,_cast_error,' + Where);
+    AppendLog(FormatLogStamp(0) + ',0,_cast_error,' + Where);
 End;
 
 Function IsWhitespaceOrColon(S : String; Idx : Integer) : Boolean;
@@ -1133,6 +1437,51 @@ Begin
            Or (Pos('run_', Msg) > 0);
 End;
 
+{ What IS focused, for a refusal that only says what is not. "No schematic   }
+{ document is active" with a .SchLib in front of the editor sent a session   }
+{ hunting for the call that had stolen focus, when naming the .SchLib would  }
+{ have made the next move obvious.                                           }
+{ File name only: a full path carries the user's name into every log. DM     }
+{ calls only, which never load an editor server, so this cannot raise an     }
+{ uncatchable undeclared-identifier modal from inside an error path.         }
+Function FocusedDocumentNote(Dummy : Integer) : String;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Name : String;
+Begin
+    Result := '';
+    Try
+        Workspace := GetWorkspace;
+        If Workspace = Nil Then Exit;
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc = Nil Then
+        Begin
+            Result := 'No document has editor focus.';
+            Exit;
+        End;
+        Name := ExtractFileName(Doc.DM_FullPath);
+        If Name <> '' Then
+            Result := 'The focused document is ' + Name + ' ('
+                    + Doc.DM_DocumentKind + ').';
+    Except
+        Result := '';
+    End;
+End;
+
+{ Handler messages rarely end in a full stop, so a note appended to one ran  }
+{ on, live: "No schematic document is active No document has editor focus."  }
+Function WithFullStop(S : String) : String;
+Var
+    Last : String;
+Begin
+    Result := S;
+    If S = '' Then Exit;
+    Last := Copy(S, Length(S), 1);
+    If (Last <> '.') And (Last <> '!') And (Last <> '?') Then
+        Result := S + '.';
+End;
+
 Function CrossDocumentHint(ErrorCode : String) : String;
 Begin
     Result := '';
@@ -1153,14 +1502,26 @@ End;
 Function BuildErrorResponseDetailed(RequestId : String; ErrorCode : String;
                                     ErrorMsg : String; DetailsJson : String) : String;
 Var
-    EscMsg, Ch, HexDigits, Hint : String;
+    EscMsg, Ch, HexDigits, Hint, Focus : String;
     I, O : Integer;
+    Pointed : Boolean;
 Begin
-    { Only when the handler has not already pointed somewhere itself: a }
-    { specific pointer beats the generic one and must not be doubled.   }
+    { The generic hint goes on only when the handler has not already    }
+    { pointed somewhere itself: a specific pointer beats the generic one }
+    { and must not be doubled. Decided on the handler's own words,       }
+    { BEFORE the focus note is added, because a file name such as        }
+    { power_lib_parts.SchLib contains "lib_" and would read as a pointer.}
     Hint := CrossDocumentHint(ErrorCode);
-    If (Hint <> '') And (Not MessageNamesATool(ErrorMsg)) Then
-        ErrorMsg := ErrorMsg + ' ' + Hint;
+    Pointed := MessageNamesATool(ErrorMsg);
+    If Hint <> '' Then
+    Begin
+        { A fact, not a pointer, so it goes on every wrong-document refusal. }
+        Focus := FocusedDocumentNote(0);
+        If Focus <> '' Then
+            ErrorMsg := WithFullStop(ErrorMsg) + ' ' + Focus;
+        If Not Pointed Then
+            ErrorMsg := WithFullStop(ErrorMsg) + ' ' + Hint;
+    End;
 
     // Inline escape (EscapeJsonString is not yet declared in build order).
     // Must also \u00XX-escape control and non-ASCII bytes: one raw byte
@@ -1201,10 +1562,10 @@ Begin
     Result := BuildErrorResponseDetailed(RequestId, ErrorCode, ErrorMsg, '');
 End;
 
-Procedure EnsureWorkspaceDir;
+Procedure EnsureWorkspaceDir(Dummy : Integer);
 Begin
     If WorkspaceDir = '' Then
-        WorkspaceDir := ResolveDefaultWorkspaceDir;
+        WorkspaceDir := ResolveDefaultWorkspaceDir(0);
     If Not DirectoryExists(WorkspaceDir) Then
         ForceDirectories(WorkspaceDir);
 End;
@@ -1297,7 +1658,7 @@ End;
 { Wipe orphaned progress_*.json files at session start. A previous run that   }
 { crashed mid-handler would leave its progress marker behind; left untouched, }
 { Python could keep extending its deadline against a stale marker.            }
-Procedure CleanupOrphanProgress;
+Procedure CleanupOrphanProgress(Dummy : Integer);
 Var
     Files : TStringList;
     I : Integer;
@@ -1381,7 +1742,7 @@ End;
 {                                                                              }
 { The purged count is logged, so an operator can tell "the loop is slow" from }
 { "the loop is draining a backlog".                                          }
-Procedure CleanupOrphanRequests;
+Procedure CleanupOrphanRequests(Dummy : Integer);
 Var
     Files : TStringList;
     I, Purged : Integer;
@@ -1399,7 +1760,7 @@ Begin
         Files.Free;
     End;
     If Purged > 0 Then
-        AppendLog(FormatLogStamp + ',0,_purge_requests,count=' + IntToStr(Purged)
+        AppendLog(FormatLogStamp(0) + ',0,_purge_requests,count=' + IntToStr(Purged)
             + ',0,');
 End;
 
@@ -1408,7 +1769,8 @@ End;
 { leaves the response it never collected. These accumulate forever otherwise.}
 { Only safe at startup: no client can still be waiting on a response written }
 { by a session that has already ended.                                       }
-Procedure CleanupOrphanResponses;
+{ Hidden from the Run Script dialog by its argument; Dummy is never read. }
+Procedure CleanupOrphanResponses(Dummy : Integer);
 Var
     Files : TStringList;
     I, Purged : Integer;
@@ -1426,7 +1788,7 @@ Begin
         Files.Free;
     End;
     If Purged > 0 Then
-        AppendLog(FormatLogStamp + ',0,_purge_responses,count=' + IntToStr(Purged)
+        AppendLog(FormatLogStamp(0) + ',0,_purge_responses,count=' + IntToStr(Purged)
             + ',0,');
 End;
 
@@ -1437,7 +1799,7 @@ End;
 { InitDefaultConfig in place.                                                 }
 {..............................................................................}
 
-Procedure LoadMCPConfig;
+Procedure LoadMCPConfig(Dummy : Integer);
 Var
     ConfigPath, Content, V : String;
     N : Integer;
@@ -1490,7 +1852,9 @@ Begin
     End;
 End;
 
-{ Dispatcher and entry points are in Dispatcher.pas (compiles last) }
+{ Request dispatch and the poll timer are in StatusForm.pas (the pump's     }
+{ handler must live in the form's own unit); the StartMCPServer entry point }
+{ stays in Dispatcher.pas, which compiles last.                             }
 
 {=== Utils.pas ===}
 { SPDX-License-Identifier: Apache-2.0                                   }
@@ -1509,6 +1873,17 @@ Begin
     Result := Round(Coord / 10000);
 End;
 
+{ sub-mil coordinates: local patch 2026-09-18 }
+Function MilsToCoordF(Mils : Double) : TCoord;
+Begin
+    Result := Round(Mils * 10000);  // 1 mil = 10000 internal units, keeps 1e-4 mil
+End;
+
+Function CoordToMilsF(Coord : TCoord) : Double;
+Begin
+    Result := Coord / 10000;
+End;
+
 Function MMToCoord(MM : Double) : TCoord;
 Begin
     Result := Round(MM * 10000000 / 25.4);
@@ -1519,25 +1894,347 @@ Begin
     Result := Coord * 25.4 / 10000000;
 End;
 
+{ Lengths in the caller's unit: 'mil' (also empty, the default) or 'mm'.    }
+{ Authoring took whole mils only, so 1.625 mm arrived as 64 mil and read    }
+{ back as 1.6256 mm, off a metric grid on every pad. The mil path is        }
+{ MilsToCoordF, which equals MilsToCoord for whole mils, so a caller that   }
+{ never passes units places exactly what it did before.                     }
+Function UnitsAreMM(Units : String) : Boolean;
+Begin
+    Result := LowerCase(Trim(Units)) = 'mm';
+End;
+
+{ '' when the unit is one of the two, else the refusal to send.             }
+Function UnitsProblem(Units : String) : String;
+Var
+    U : String;
+Begin
+    Result := '';
+    U := LowerCase(Trim(Units));
+    If (U <> '') And (U <> 'mil') And (U <> 'mils') And (U <> 'mm') Then
+        Result := 'Unknown units: ' + Units + '. Use mil or mm.';
+End;
+
+Function CoordFromUnits(Value : Double; Units : String) : TCoord;
+Begin
+    If UnitsAreMM(Units) Then Result := MMToCoord(Value)
+    Else Result := MilsToCoordF(Value);
+End;
+
+{ A default written in mils, in the caller's unit. A bare default of 60 is  }
+{ 60 mils; read as millimetres it would be a 60 mm pad.                     }
+Function MilsInUnits(Mils : Double; Units : String) : Double;
+Begin
+    If UnitsAreMM(Units) Then Result := Mils * 0.0254
+    Else Result := Mils;
+End;
+
+{..............................................................................}
+{ ResolveSchLibForLoad - any library path in, a loadable .SchLib path out.     }
+{                                                                              }
+{ NEVER HAND AN .IntLib TO ALTIUM FROM THIS BRIDGE. CreateLibCompInfoReader    }
+{ and LoadComponentFromLibrary both accept the path and then raise the         }
+{ "Open Integrated Library" modal, which no Try/Except can catch and which     }
+{ wedges the polling loop. Reported from the field 2026-09-21 as a repeating   }
+{ dialog storm that had to be cleared with "Apply to all libraries" before     }
+{ the bridge answered again.                                                   }
+{                                                                              }
+{ THE ROUND TRIP IS WHY THIS KEEPS HAPPENING, and it is not caller error. A    }
+{ PLACED component records its source library as the .IntLib, so every path    }
+{ that READS a design (plan_from_sheet, component metadata) reports .IntLib,   }
+{ and every path that WRITES one needs .SchLib. Reading produced exactly what  }
+{ writing rejected, and the only symptom was LOAD_FAILED.                      }
+{                                                                              }
+{ The two candidate locations are the ones Lib_ExtractIntLib already probes    }
+{ after running IntegratedLibrary:ExtractSources: a sibling folder named after }
+{ the IntLib, then beside the IntLib itself. Both are checked with FileExists  }
+{ rather than handed to Altium, so an unresolvable path costs a disk stat and  }
+{ not a modal.                                                                 }
+{                                                                              }
+{ Returns '' when nothing usable exists, with Reason saying what was tried.    }
+{..............................................................................}
+
+Function ResolveSchLibForLoad(LibPath : String; Var Reason : String) : String;
+Var
+    Ext, BaseName, ParentDir, GrandDir, Candidate, Tried : String;
+Begin
+    Result := '';
+    Reason := '';
+    If LibPath = '' Then
+    Begin
+        Reason := 'no library path given';
+        Exit;
+    End;
+
+    Ext := UpperCase(ExtractFileExt(LibPath));
+
+    If Ext = '.SCHLIB' Then
+    Begin
+        If FileExists(LibPath) Then Result := LibPath
+        Else Reason := 'no such .SchLib on disk: ' + LibPath;
+        Exit;
+    End;
+
+    If Ext = '.INTLIB' Then
+    Begin
+        BaseName := ChangeFileExt(ExtractFileName(LibPath), '');
+        ParentDir := ExtractFilePath(LibPath);
+
+        Candidate := ParentDir + BaseName + '\' + BaseName + '.SchLib';
+        Tried := Candidate;
+        If FileExists(Candidate) Then
+        Begin
+            Result := Candidate;
+            Exit;
+        End;
+
+        Candidate := ParentDir + BaseName + '.SchLib';
+        Tried := Tried + ' and ' + Candidate;
+        If FileExists(Candidate) Then
+        Begin
+            Result := Candidate;
+            Exit;
+        End;
+
+        { THE LIBRARY-PACKAGE LAYOUT, which is what real libraries use and   }
+        { what the first two candidates miss. A .LibPkg compiles its .IntLib }
+        { into "Project Outputs for <Base>\", so the source .SchLib sits one }
+        { level UP from the .IntLib, beside the .LibPkg:                     }
+        {                                                                     }
+        {   <Base>\<Base>.SchLib                     <- source           }
+        {   <Base>\Project Outputs for <Base>\<Base>.IntLib <- compiled   }
+        {                                                                     }
+        { MEASURED 2026-09-21 against a real library package:                  }
+        { neither of the candidates above exists for them, only this one.     }
+        { Walking up by name rather than matching the folder's title keeps    }
+        { this working when the output folder is renamed or localised.        }
+        { Trimmed by hand: ExcludeTrailingBackslash is NOT declared in    }
+        { DelphiScript, and calling an undeclared identifier raises the    }
+        { modal this whole resolver exists to avoid. Copy/Length/          }
+        { ExtractFilePath are all attested in this codebase.               }
+        GrandDir := ParentDir;
+        If Length(GrandDir) > 0 Then
+            If Copy(GrandDir, Length(GrandDir), 1) = '\' Then
+                GrandDir := Copy(GrandDir, 1, Length(GrandDir) - 1);
+        GrandDir := ExtractFilePath(GrandDir);
+        If GrandDir <> '' Then
+        Begin
+            Candidate := GrandDir + BaseName + '.SchLib';
+            Tried := Tried + ' and ' + Candidate;
+            If FileExists(Candidate) Then
+            Begin
+                Result := Candidate;
+                Exit;
+            End;
+        End;
+
+        Reason := 'an .IntLib cannot be loaded directly and no extracted '
+            + '.SchLib was found. Looked in ' + Tried
+            + '. Run lib_extract_intlib on ' + LibPath + ' first.';
+        Exit;
+    End;
+
+    { No extension, or something else: only a bare name is worth a guess, and }
+    { only as a .SchLib. A bare name is NOT resolved against the library      }
+    { search path here on purpose, because that is the lookup that silently   }
+    { returns a reader for a different library.                               }
+    If Ext = '' Then
+    Begin
+        Candidate := LibPath + '.SchLib';
+        If FileExists(Candidate) Then
+        Begin
+            Result := Candidate;
+            Exit;
+        End;
+        Reason := 'library path has no extension and ' + Candidate
+            + ' does not exist; pass the full path to the .SchLib';
+        Exit;
+    End;
+
+    Reason := 'unsupported library type "' + Ext + '"; pass a .SchLib path';
+End;
+
+{ SafeSchLibPath - a library path that is safe to hand to Altium.              }
+{                                                                              }
+{ Wraps ResolveSchLibForLoad for the call sites that already handle a Nil      }
+{ reader and want no new error handling. An .IntLib that cannot be resolved    }
+{ comes back as '' rather than being passed through, because passing it is     }
+{ precisely what raises the modal; the caller's existing "reader is Nil" arm   }
+{ then reports an ordinary error. Anything else that fails to resolve is       }
+{ returned unchanged, so this cannot turn a call that works today into a       }
+{ failure.                                                                     }
+Function SafeSchLibPath(LibPath : String) : String;
+Var
+    Resolved, Reason : String;
+Begin
+    Resolved := ResolveSchLibForLoad(LibPath, Reason);
+    If Resolved <> '' Then
+    Begin
+        Result := Resolved;
+        Exit;
+    End;
+    If UpperCase(ExtractFileExt(LibPath)) = '.INTLIB' Then Result := ''
+    Else Result := LibPath;
+End;
+
+Function CoordWithinTol(A, B, Tol : Integer) : Boolean;
+Begin
+    Result := Abs(A - B) <= Tol;
+End;
+
+{ True if (X,Y) is within Tol of the segment (X1,Y1)-(X2,Y2). Orthogonal }
+{ schematic wires (the common case) are exact. Diagonal segments use a   }
+{ bounding-box test so we never need a 64-bit multiply.                  }
+Function PointNearSegment(X, Y, X1, Y1, X2, Y2, Tol : Integer) : Boolean;
+Var
+    Lo, Hi : Integer;
+Begin
+    Result := False;
+    If (X1 = X2) And (Y1 = Y2) Then
+    Begin
+        Result := CoordWithinTol(X, X1, Tol) And CoordWithinTol(Y, Y1, Tol);
+        Exit;
+    End;
+    If X1 = X2 Then
+    Begin
+        If Not CoordWithinTol(X, X1, Tol) Then Exit;
+        Lo := Y1;
+        If Y2 < Lo Then Lo := Y2;
+        Hi := Y1;
+        If Y2 > Hi Then Hi := Y2;
+        Result := (Y >= Lo - Tol) And (Y <= Hi + Tol);
+        Exit;
+    End;
+    If Y1 = Y2 Then
+    Begin
+        If Not CoordWithinTol(Y, Y1, Tol) Then Exit;
+        Lo := X1;
+        If X2 < Lo Then Lo := X2;
+        Hi := X1;
+        If X2 > Hi Then Hi := X2;
+        Result := (X >= Lo - Tol) And (X <= Hi + Tol);
+        Exit;
+    End;
+    Lo := X1;
+    If X2 < Lo Then Lo := X2;
+    Hi := X1;
+    If X2 > Hi Then Hi := X2;
+    If (X < Lo - Tol) Or (X > Hi + Tol) Then Exit;
+    Lo := Y1;
+    If Y2 < Lo Then Lo := Y2;
+    Hi := Y1;
+    If Y2 > Hi Then Hi := Y2;
+    Result := (Y >= Lo - Tol) And (Y <= Hi + Tol);
+End;
+
 Function BoolToJsonStr(Value : Boolean) : String;
 Begin
     If Value Then Result := 'true'
     Else Result := 'false';
 End;
 
+{ The first condition in a filter that is not Name=Value, or '' when every }
+{ one is. A filter is Name=Value pairs joined by |, nothing else. A bare     }
+{ name (IsDesignator) or an Altium query (OnLayer('TopLayer') Or ...) used   }
+{ to be skipped, which emptied the filter and matched every object: an       }
+{ obj_delete given one removed every track on the board and reported         }
+{ success. Names are letters, digits, '_' and '.' (Designator.Text).        }
+Function FilterProblem(FilterStr : String) : String;
+Var
+    Remaining, Condition, PropName, Ch : String;
+    PipePos, EqPos, I : Integer;
+    Ok : Boolean;
+Begin
+    Result := '';
+    Remaining := FilterStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Condition := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Condition := Remaining;
+            Remaining := '';
+        End;
+        If Trim(Condition) = '' Then Continue;
+        EqPos := Pos('=', Condition);
+        Ok := EqPos > 1;
+        If Ok Then
+        Begin
+            PropName := Copy(Condition, 1, EqPos - 1);
+            For I := 1 To Length(PropName) Do
+            Begin
+                Ch := Copy(PropName, I, 1);
+                If Pos(Ch, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.') = 0 Then
+                    Ok := False;
+            End;
+        End;
+        If Not Ok Then
+        Begin
+            Result := Condition;
+            Exit;
+        End;
+    End;
+End;
+
+Function BadFilterMessage(Condition : String) : String;
+Var
+    Hint : String;
+Begin
+    Hint := '';
+    If (Pos('=', Condition) = 0) And (Pos('(', Condition) = 0)
+       And (Pos(' ', Trim(Condition)) = 0) Then
+        Hint := 'For a true/false property write ' + Trim(Condition) + '=true. ';
+    Result := 'Filter condition "' + Condition + '" is not Name=Value. A filter '
+        + 'is Name=Value pairs joined by |, each matched exactly; Altium query '
+        + 'expressions (OnLayer(...), Or, And) and bare names are not understood. '
+        + Hint + 'Nothing was matched or changed.';
+End;
+
 Function FloatToJsonStr(Value : Double) : String;
 Var
-    OldSep : Char;
+    Sep, Ch, Swapped : String;
+    I : Integer;
 Begin
-    { Locale-agnostic float -> string. Delphi FloatToStr respects the global }
-    { DecimalSeparator, so on a system with comma-as-decimal it produces     }
-    { '90,0' which is invalid JSON. Force '.' for the duration of the call. }
-    OldSep := DecimalSeparator;
-    DecimalSeparator := '.';
-    Try
-        Result := FloatToStr(Value);
-    Finally
-        DecimalSeparator := OldSep;
+    { Locale-agnostic float -> string. Delphi FloatToStr respects the global
+      DecimalSeparator, so on a comma-decimal system it produces '90,0',
+      which is not valid JSON.
+
+      NO GLOBAL IS MUTATED. This used to set DecimalSeparator to '.' for the
+      duration of the call and restore it after. That works, but it leaves a
+      window in which a global the whole application shares has been changed
+      underneath it, and the window gets wider every time another call site
+      starts using this wrapper. Converting first and swapping the separator
+      character afterwards has no window at all.
+
+      Swapping is complete because FloatToStr emits only digits, a sign, an
+      exponent 'E' and the single decimal separator. It never emits a
+      thousands separator, which is FloatToStrF with ffNumber.
+
+      NAN AND INF ARE NOT JSON. FloatToStr writes them for a failed
+      computation, and the whole reply then failed to parse, which the
+      bridge could only report as a crash mid-write. They go out as null. }
+    Result := FloatToStr(Value);
+    If (Pos('NAN', UpperCase(Result)) > 0) Or (Pos('INF', UpperCase(Result)) > 0) Then
+    Begin
+        Result := 'null';
+        Exit;
+    End;
+    Sep := DecimalSeparator;
+    If Sep <> '.' Then
+    Begin
+        Swapped := '';
+        For I := 1 To Length(Result) Do
+        Begin
+            Ch := Copy(Result, I, 1);
+            If Ch = Sep Then Ch := '.';
+            Swapped := Swapped + Ch;
+        End;
+        Result := Swapped;
     End;
 End;
 
@@ -1661,6 +2358,132 @@ Begin
     If Acc <> '' Then Acc := Acc + ',';
     Acc := Acc + '{"item":"' + EscapeJsonString(Item)
         + '","reason":"' + EscapeJsonString(Reason) + '"}';
+End;
+
+{ The other half of the same reply: the things that DID happen.               }
+{                                                                             }
+{ A handler that reports only its failures is read as "everything else        }
+{ worked", which is the assumption that keeps turning out to be wrong here.   }
+{ Naming what changed makes a request that was accepted and ignored visible   }
+{ as an absence rather than invisible as a success.                           }
+{                                                                             }
+{ Acc is the array BODY, without the enclosing brackets.                      }
+Procedure AddChangedField(Var Acc : String; Name : String);
+Begin
+    If Acc <> '' Then Acc := Acc + ',';
+    Acc := Acc + '"' + EscapeJsonString(Name) + '"';
+End;
+
+{..............................................................................}
+{ Focus, saved and put back                                                    }
+{                                                                              }
+{ A LIBRARY READ MOVES THE ACTIVE DOCUMENT. Every lib_ handler that takes a    }
+{ library_path focuses it with WorkspaceManager:OpenObject when it is not      }
+{ already focused, because the PCBServer and SchServer accessors only ever     }
+{ answer about the CURRENT document. For a write that is unavoidable. For a    }
+{ read it is a side effect nobody asked for, and it does not announce itself.  }
+{                                                                              }
+{ MEASURED: lib_probe_footprint was called to inspect a footprint, which       }
+{ silently focused the PcbLib, and the obj_switch_view 3d that followed        }
+{ switched the LIBRARY into 3D rather than the board. The board looked         }
+{ unchanged, the model looked absent, and the session went looking for a bug   }
+{ in the placement that was not there.                                         }
+{                                                                              }
+{ The restore is deliberately NOT applied to writes. Library authoring is a    }
+{ sequence of calls against a current component, so lib_add_pins and the       }
+{ Lib_AddFootprint* family read the focus that the call before them left.      }
+{ Putting it back after those would break the flow this bridge is built on.    }
+{..............................................................................}
+
+{ Splice a field into a finished response envelope.                           }
+{                                                                             }
+{ BuildSuccessResponse and BuildErrorResponse both emit an object carrying     }
+{ protocol_version, id, success, data and error, in that order. The shape is   }
+{ fixed and built in one place, and the last character is a                    }
+{ closing brace. That makes appending a sibling of `data` safe in a way that   }
+{ editing `data` itself would not be: data is whatever a hundred and fifty     }
+{ handlers decided to return.                                                  }
+{..............................................................................}
+{ The follow-up a reply owes its caller                                        }
+{                                                                              }
+{ SOME EDITS ARE NOT FINISHED WHEN THE CALL RETURNS, and nothing said so.      }
+{ Two shapes of it, both measured:                                             }
+{                                                                              }
+{   * A pour option is recorded and changes no copper until the polygon is     }
+{     repoured. Reported from a live board as the setting "not applying".      }
+{   * A library or board edit is real in memory and absent from disk until     }
+{     app_save_all runs. Reads as a tool that silently did nothing.            }
+{                                                                              }
+{ In both, the tool did exactly what it was asked and the caller could not     }
+{ tell that from having done nothing. A sentence in a docstring does not fix   }
+{ that: it has to be found and believed BEFORE the call, and the moment it is  }
+{ needed is after.                                                             }
+{                                                                              }
+{ So the reply carries it. A handler that knows its work needs a second step   }
+{ says which one, and the dispatcher attaches it. Handlers with no follow-up   }
+{ call nothing and pay nothing.                                                }
+{..............................................................................}
+
+Var
+    _NextStepStr : String;
+
+Procedure ResetNextStep(Dummy : Integer);
+Begin
+    _NextStepStr := '';
+End;
+
+Procedure NoteNextStep(Text : String);
+Begin
+    { First writer wins. A handler that delegates would otherwise have its
+      own follow-up overwritten by the more general one underneath it, and
+      the specific advice is the useful one. }
+    If _NextStepStr = '' Then _NextStepStr := Text;
+End;
+
+Function PendingNextStep(Dummy : Integer): String;
+Begin
+    Result := _NextStepStr;
+End;
+
+Function AppendEnvelopeField(Envelope : String; FieldJson : String) : String;
+Var
+    L : Integer;
+Begin
+    Result := Envelope;
+    If (FieldJson = '') Or (Envelope = '') Then Exit;
+    L := Length(Envelope);
+    If Copy(Envelope, L, 1) <> '}' Then Exit;
+    Result := Copy(Envelope, 1, L - 1) + ',' + FieldJson + '}';
+End;
+
+Function CurrentFocusedDocPath(Dummy : Integer): String;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+Begin
+    Result := '';
+    Try
+        Workspace := GetWorkspace;
+        If Workspace = Nil Then Exit;
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then Result := Doc.DM_FullPath;
+    Except End;
+End;
+
+Procedure RestoreFocusedDoc(SavedPath : String);
+Begin
+    { Nothing to go back to, or never left. Both are the common case, and }
+    { re-opening the document that is already focused would cost a        }
+    { process call on every read for no reason.                            }
+    If SavedPath = '' Then Exit;
+    If UpperCase(CurrentFocusedDocPath(0)) = UpperCase(SavedPath) Then Exit;
+
+    Try
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', SavedPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    Except End;
 End;
 
 Function JsonInt(Name : String; Value : Integer) : String;
@@ -1822,6 +2645,71 @@ End;
 { StrToInt so a non-numeric value never raises EConvertError - the exception   }
 { was caught anyway, but Altium's IDE break-on-exception pops a modal that     }
 { blocks the polling loop.                                                     }
+{ Whether StrToFloat can be handed this without raising.                      }
+{                                                                             }
+{ THE Try/Except AROUND StrToFloat IS NOT A GUARD. Altium's script IDE
+  breaks on the exception BEFORE the handler runs, so a bad value stops
+  the script on the StrToFloat line with an EConvertError dialog and takes
+  the polling loop with it. Measured: a self-test passing 'abc' halted
+  there, and the Except three lines below never ran.
+
+  IsIntStr exists for exactly this reason on the integer side and says so.
+  The float side was left on Try/Except alone, so any tool handed a
+  non-numeric where it wanted a float had the same halt waiting for it:
+  an arc angle, a standoff height, a model offset.
+
+  Accepts a leading sign, digits, at most one '.', and an optional
+  exponent. Deliberately does NOT accept ',' as a decimal separator:
+  the caller forces '.' before parsing, so a comma is a bad value here
+  whatever the machine's regional settings say. }
+Function IsFloatStr(S : String) : Boolean;
+Var
+    I, StartPos : Integer;
+    Dots, Digits, Exponents : Integer;
+    Ch : String;
+Begin
+    S := Trim(S);
+    Result := False;
+    If S = '' Then Exit;
+    StartPos := 1;
+    If (S[1] = '-') Or (S[1] = '+') Then StartPos := 2;
+    If StartPos > Length(S) Then Exit;
+
+    Dots := 0;
+    Digits := 0;
+    Exponents := 0;
+    For I := StartPos To Length(S) Do
+    Begin
+        Ch := Copy(S, I, 1);
+        If (Ch >= '0') And (Ch <= '9') Then
+            Digits := Digits + 1
+        Else If Ch = '.' Then
+        Begin
+            Dots := Dots + 1;
+            If Dots > 1 Then Exit;
+            If Exponents > 0 Then Exit;   { 1e5.5 is not a number }
+        End
+        Else If (Ch = 'e') Or (Ch = 'E') Then
+        Begin
+            Exponents := Exponents + 1;
+            If Exponents > 1 Then Exit;
+            If Digits = 0 Then Exit;      { 'e5' has no mantissa }
+            { A sign may follow the exponent, and a digit must. }
+            If I = Length(S) Then Exit;
+            Ch := Copy(S, I + 1, 1);
+            If (Ch = '-') Or (Ch = '+') Then
+            Begin
+                If I + 1 = Length(S) Then Exit;
+                Ch := Copy(S, I + 2, 1);
+            End;
+            If (Ch < '0') Or (Ch > '9') Then Exit;
+        End
+        Else
+            Exit;                          { anything else is not a number }
+    End;
+    Result := Digits > 0;
+End;
+
 Function IsIntStr(S : String) : Boolean;
 Var
     I, StartPos : Integer;
@@ -1868,7 +2756,7 @@ Begin
         If S[I] <> C Then Result := Result + S[I];
 End;
 
-Function IeeeSymbolNames : String;
+Function IeeeSymbolNames(Dummy : Integer): String;
 Begin
     Result :=
         'no_symbol|dot|right_left_signal_flow|clock|active_low_input|' +
@@ -1889,7 +2777,7 @@ Begin
     { JSON output, where a bad read must not abort the whole response.       }
     Result := 'no_symbol';
     If V <= 0 Then Exit;
-    Names := IeeeSymbolNames + '|';
+    Names := IeeeSymbolNames(0) + '|';
     I := 0;
     While Names <> '' Do
     Begin
@@ -1941,7 +2829,7 @@ Begin
 
     { Altium's raw enum spelling ('eActiveLowInput') differs from the         }
     { canonical name only by a leading 'e', so retry once with it stripped.   }
-    Names := IeeeSymbolNames + '|';
+    Names := IeeeSymbolNames(0) + '|';
     I := 0;
     While Names <> '' Do
     Begin
@@ -1966,29 +2854,108 @@ End;
 
 Function StrToFloatDef(S : String; Default : Double) : Double;
 Var
-    OldSep : Char;
+    Sep, Ch, Work : String;
+    I : Integer;
 Begin
     { Locale-agnostic float parsing. JSON always uses '.' as the decimal      }
     { separator regardless of the user's Windows regional settings, but Delphi}
     { StrToFloat respects the global DecimalSeparator, so on a system with    }
     { comma-as-decimal (much of Europe) parsing "90.0" silently fails and     }
-    { the default value comes back instead. Temporarily force '.' for the    }
-    { duration of the parse, then restore whatever the system set.            }
+    { the default value comes back instead. The string is reshaped into the   }
+    { form THIS locale parses and the global is never touched; forcing the    }
+    { separator and restoring it was the earlier approach and is now          }
+    { forbidden by test_the_wrappers_do_not_mutate_the_global_separator.      }
     If (S = '') Or (S = 'null') Then
     Begin
         Result := Default;
         Exit;
     End;
-    OldSep := DecimalSeparator;
-    DecimalSeparator := '.';
-    Try
-        Try
-            Result := StrToFloat(S);
-        Except
-            Result := Default;
+    { PRE-CHECKED, not merely guarded. The Try/Except below cannot save
+      the session: the script IDE breaks on the exception before the
+      handler runs, so a value like 'abc' halts on the StrToFloat line
+      behind an EConvertError dialog and the polling loop stops with it.
+      StrToIntDef has carried this pre-check for the same reason. }
+    If Not IsFloatStr(S) Then
+    Begin
+        Result := Default;
+        Exit;
+    End;
+
+    { IsFloatStr above guarantees S is in dot form, so the conversion is
+      done by putting it into the form THIS locale parses rather than by
+      forcing the locale to match the string. Same reasoning as the emit
+      side: no global is touched, so there is no window.
+
+      The Try/Except is kept as a backstop and should now be unreachable:
+      a pre-validated, locale-formed string does not raise EConvertError.
+      It is deliberately not relied on, because the script engine surfaces
+      an RTL conversion error as a modal before the handler runs. }
+    Sep := DecimalSeparator;
+    Work := S;
+    If Sep <> '.' Then
+    Begin
+        Work := '';
+        For I := 1 To Length(S) Do
+        Begin
+            Ch := Copy(S, I, 1);
+            If Ch = '.' Then Ch := Sep;
+            Work := Work + Ch;
         End;
-    Finally
-        DecimalSeparator := OldSep;
+    End;
+
+    Try
+        Result := StrToFloat(Work);
+    Except
+        Result := Default;
+    End;
+End;
+
+{ The first length a rule's Descriptor states, in mils, or -1 when it     }
+{ states none. A descriptor carries the rule's value, as in "Clearance     }
+{ Constraint (Gap=6mil) (All),(All)", in the board's units. The silk rules }
+{ publish no typed member this code has verified, so their clearance is    }
+{ read from here rather than through an interface that could halt the      }
+{ polling loop. Units: mil, mm, in.                                        }
+Function GapMilsFromDescriptor(Desc : String) : Double;
+Var
+    I, J : Integer;
+    Num, Rest, Unt : String;
+    V : Double;
+Begin
+    Result := -1;
+    I := Pos('=', Desc);
+    While I > 0 Do
+    Begin
+        Rest := Copy(Desc, I + 1, Length(Desc));
+        J := 1;
+        Num := '';
+        While (J <= Length(Rest)) And (Pos(Copy(Rest, J, 1), '0123456789.') > 0) Do
+        Begin
+            Num := Num + Copy(Rest, J, 1);
+            J := J + 1;
+        End;
+        If (Num <> '') And IsFloatStr(Num) Then
+        Begin
+            V := StrToFloatDef(Num, -1);
+            Unt := LowerCase(Copy(Rest, J, 3));
+            If Unt = 'mil' Then
+            Begin
+                Result := V;
+                Exit;
+            End;
+            If Copy(Unt, 1, 2) = 'mm' Then
+            Begin
+                Result := V / 0.0254;
+                Exit;
+            End;
+            If Copy(Unt, 1, 2) = 'in' Then
+            Begin
+                Result := V * 1000.0;
+                Exit;
+            End;
+        End;
+        Desc := Copy(Desc, I + 1, Length(Desc));
+        I := Pos('=', Desc);
     End;
 End;
 
@@ -2236,20 +3203,91 @@ End;
 { runtime and took the scripting engine down with an access violation rather   }
 { than a compile error, since DelphiScript has no forward declarations.        }
 
+{..............................................................................}
+{ Object type names, spelled the way a caller actually spells them             }
+{                                                                              }
+{ MEASURED on a live board: one session asked for "Component", then "Sheet",   }
+{ then "Sheet Symbol", then "SheetSymbol", and every one came back             }
+{ INVALID_TYPE. Four attempts, four refusals, and not one of them said what    }
+{ the accepted spelling was. The vocabulary is closed, exact and case          }
+{ sensitive, and nothing published it at the point of failure.                 }
+{                                                                              }
+{ Normalising costs nothing and removes the whole class. The Altium name is    }
+{ still the canonical one; this only means a caller who writes it in the       }
+{ obvious way is understood rather than refused.                                }
+{..............................................................................}
+
+Function NormalizeTypeName(S : String) : String;
+Begin
+    Result := LowerCase(S);
+    Result := StringReplace(Result, ' ', '', -1);
+    Result := StringReplace(Result, '_', '', -1);
+    Result := StringReplace(Result, '-', '', -1);
+    { The leading 'e' is Altium's convention and the first thing a caller
+      drops. No type here is ambiguous once it is gone. }
+    If (Length(Result) > 1) And (Copy(Result, 1, 1) = 'e') Then
+        Result := Copy(Result, 2, Length(Result));
+End;
+
 Function ObjectTypeFromStringPCB(TypeStr : String) : Integer;
+Var
+    N : String;
 Begin
     Result := -1;
-    If TypeStr = 'eTrackObject'         Then Result := eTrackObject
-    Else If TypeStr = 'ePadObject'      Then Result := ePadObject
-    Else If TypeStr = 'eViaObject'      Then Result := eViaObject
-    Else If TypeStr = 'eComponentObject' Then Result := eComponentObject
-    Else If TypeStr = 'eArcObject'      Then Result := eArcObject
-    Else If TypeStr = 'eFillObject'     Then Result := eFillObject
-    Else If TypeStr = 'eTextObject'     Then Result := eTextObject
-    Else If TypeStr = 'ePolyObject'     Then Result := ePolyObject
-    Else If TypeStr = 'eRegionObject'   Then Result := eRegionObject
-    Else If TypeStr = 'eRuleObject'     Then Result := eRuleObject
-    Else If TypeStr = 'eDimensionObject' Then Result := eDimensionObject;
+    { Both the Altium spelling and the obvious one. "trackobject" and
+      "track" both arrive here as the same normalised word. }
+    N := NormalizeTypeName(TypeStr);
+    If N = 'trackobject'         Then Result := eTrackObject
+    Else If N = 'track'          Then Result := eTrackObject
+    Else If N = 'padobject'      Then Result := ePadObject
+    Else If N = 'pad'            Then Result := ePadObject
+    Else If N = 'viaobject'      Then Result := eViaObject
+    Else If N = 'via'            Then Result := eViaObject
+    Else If N = 'componentobject' Then Result := eComponentObject
+    Else If N = 'component'      Then Result := eComponentObject
+    Else If N = 'arcobject'      Then Result := eArcObject
+    Else If N = 'arc'            Then Result := eArcObject
+    Else If N = 'fillobject'     Then Result := eFillObject
+    Else If N = 'fill'           Then Result := eFillObject
+    Else If N = 'textobject'     Then Result := eTextObject
+    Else If N = 'text'           Then Result := eTextObject
+    Else If N = 'polyobject'     Then Result := ePolyObject
+    Else If N = 'poly'           Then Result := ePolyObject
+    Else If N = 'polygon'        Then Result := ePolyObject
+    Else If N = 'regionobject'   Then Result := eRegionObject
+    Else If N = 'region'         Then Result := eRegionObject
+    Else If N = 'ruleobject'     Then Result := eRuleObject
+    Else If N = 'rule'           Then Result := eRuleObject
+    Else If N = 'dimensionobject' Then Result := eDimensionObject
+    Else If N = 'dimension'      Then Result := eDimensionObject
+    { THE RATSNEST WAS UNREADABLE. pcb_get_unrouted_nets counts its lines  }
+    { per net and nothing could say which two points a line joins, so an   }
+    { unrouted count that disagreed with the layout engine's could not be  }
+    { followed to the pads concerned.                                      }
+    Else If N = 'connectionobject' Then Result := eConnectionObject
+    Else If N = 'connection'     Then Result := eConnectionObject
+    Else If N = 'ratsnest'       Then Result := eConnectionObject
+    { A FREE 3D BODY WAS UNREACHABLE. pcb_place_3d_body could put one on
+      a board and nothing could then find it, move it or take it off
+      again, because this vocabulary is what obj_query, obj_modify and
+      obj_delete resolve a type name through. Placement without removal
+      is a worse tool than no placement at all: a body in the wrong spot
+      had to be cleaned up in the editor by hand. }
+    Else If N = 'componentbodyobject' Then Result := eComponentBodyObject
+    Else If N = 'componentbody' Then Result := eComponentBodyObject
+    Else If N = 'body'           Then Result := eComponentBodyObject
+    Else If N = '3dbody'         Then Result := eComponentBodyObject;
+End;
+
+{ What the refusal should have said. Listed from the resolver above so the
+  two cannot drift: a message naming types the resolver does not accept is
+  worse than no message. }
+Function PCBObjectTypeNames(Dummy : Integer): String;
+Begin
+    Result := 'eTrackObject, ePadObject, eViaObject, eComponentObject, '
+            + 'eArcObject, eFillObject, eTextObject, ePolyObject, '
+            + 'eRegionObject, eRuleObject, eDimensionObject, '
+            + 'eComponentBodyObject, eConnectionObject';
 End;
 
 { Inverse of ObjectTypeFromStringPCB. Written here, next to it, so the
@@ -2275,11 +3313,13 @@ Begin
     Else If Id = eComponentObject    Then Result := 'component'
     Else If Id = eArcObject          Then Result := 'arc'
     Else If Id = eFillObject         Then Result := 'fill'
+    Else If Id = eComponentBodyObject Then Result := 'component_body'
     Else If Id = eTextObject         Then Result := 'text'
     Else If Id = ePolyObject         Then Result := 'polygon'
     Else If Id = eRegionObject       Then Result := 'region'
     Else If Id = eRuleObject         Then Result := 'rule'
     Else If Id = eDimensionObject    Then Result := 'dimension'
+    Else If Id = eConnectionObject   Then Result := 'connection'
     Else Result := 'objectid_' + IntToStr(Id);
 End;
 
@@ -2401,7 +3441,7 @@ End;
 { hex literal has silently aborted a unit in this dialect before.              }
 {..............................................................................}
 
-Function MechLayerIdBase : Integer;
+Function MechLayerIdBase(Dummy : Integer): Integer;
 Begin
     Result := 16908288;
 End;
@@ -2431,8 +3471,8 @@ Begin
     { A raw layer id, as stored in the file. }
     If Value > 1024 Then
     Begin
-        If (Value > MechLayerIdBase) And (Value <= MechLayerIdBase + 1024) Then
-            Result := Value - MechLayerIdBase;
+        If (Value > MechLayerIdBase(0)) And (Value <= MechLayerIdBase(0) + 1024) Then
+            Result := Value - MechLayerIdBase(0);
         Exit;
     End;
 
@@ -2457,6 +3497,190 @@ Begin
     End;
 End;
 
+
+{..............................................................................}
+{ LAYER NAMES THAT COME FROM A CALLER.                                         }
+{                                                                              }
+{ GetLayerFromString above matches canonical space-free tokens ONLY, and its    }
+{ Else branch answers eTopLayer for EVERY name it does not recognise. Handlers  }
+{ fed that result straight into an object's Layer, so "Internal Plane 1" - the  }
+{ exact spelling pcb_get_layer_stackup PRINTS - placed the object on the TOP    }
+{ layer while the response echoed the REQUESTED name, so nothing looked wrong.  }
+{ Measured on a real board: two full-board pours on different nets both landed  }
+{ on TopLayer, each answering "placed":true, and shorted the board.             }
+{                                                                              }
+{ ResolveLayerId answers eNoLayer rather than guessing. Every handler that      }
+{ takes a layer name from the caller MUST resolve through it, MUST report       }
+{ eNoLayer as an error, and MUST echo the RESOLVED layer rather than the        }
+{ string it was handed. Silently retargeting the top layer is the bug.          }
+{                                                                              }
+{ Resolution order, first hit wins:                                            }
+{   1. the copper stack's own layer names - exactly what get_layer_stackup      }
+{      reports - compared with spaces stripped and case folded, so a renamed    }
+{      plane or signal layer resolves;                                          }
+{   2. the mechanical layers' names, read the same way; they are not part of    }
+{      the FirstLayer/NextLayer walk;                                           }
+{   3. the canonical token, but ONLY when GetLayerString round-trips it. That   }
+{      round-trip is the guard: without it the eTopLayer Else branch comes      }
+{      back as a confident wrong answer for any typo at all;                    }
+{   4. Mechanical17..1024, which have no canonical token.                       }
+{..............................................................................}
+
+{ Spaces stripped and case folded: the form every comparison below uses, so    }
+{ "Internal Plane 1", "InternalPlane1" and "internalplane1" are one name.      }
+
+Function NormalizeLayerName(S : String) : String;
+Begin
+    Result := UpperCase(StripChar(Trim(S), ' '));
+End;
+
+Function ResolveLayerIdInStack(LayerStack : IPCB_LayerStack_V7; LayerName : String) : TLayer;
+Var
+    Obj : IPCB_LayerObject_V7;
+    Stripped, Wanted, ThisName : String;
+    Candidate, Lyr, Hit : TLayer;
+    MechNum : Integer;
+Begin
+    Result := eNoLayer;
+    Stripped := StripChar(Trim(LayerName), ' ');
+    If Stripped = '' Then Exit;
+    Wanted := UpperCase(Stripped);
+
+    If LayerStack <> Nil Then
+    Begin
+        Obj := Nil;
+        Try Obj := LayerStack.FirstLayer; Except Obj := Nil; End;
+        While Obj <> Nil Do
+        Begin
+            ThisName := '';
+            Try ThisName := Obj.Name; Except ThisName := ''; End;
+            If NormalizeLayerName(ThisName) = Wanted Then
+            Begin
+                Hit := eNoLayer;
+                Try Hit := Obj.LayerID; Except Hit := eNoLayer; End;
+                If Hit <> eNoLayer Then
+                Begin
+                    Result := Hit;
+                    Exit;
+                End;
+            End;
+            Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
+        End;
+
+        For Lyr := eMechanical1 To eMechanical16 Do
+        Begin
+            Obj := Nil;
+            Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
+            If Obj <> Nil Then
+            Begin
+                ThisName := '';
+                Try ThisName := Obj.Name; Except ThisName := ''; End;
+                If NormalizeLayerName(ThisName) = Wanted Then
+                Begin
+                    Result := Lyr;
+                    Exit;
+                End;
+            End;
+        End;
+    End;
+
+    Candidate := GetLayerFromString(Stripped);
+    If UpperCase(GetLayerString(Candidate)) = Wanted Then
+    Begin
+        Result := Candidate;
+        Exit;
+    End;
+
+    If Copy(Wanted, 1, 4) = 'MECH' Then
+    Begin
+        MechNum := ParseMechLayerNumber(Stripped);
+        If MechNum > 0 Then Result := MechLayerFromNumber(MechNum);
+    End;
+End;
+
+{ The same resolution for the handlers that hold an IPCB_Board rather than a   }
+{ stack. A board whose stack cannot be read still resolves canonical tokens.   }
+
+Function ResolveLayerId(Board : IPCB_Board; LayerName : String) : TLayer;
+Var
+    LayerStack : IPCB_LayerStack_V7;
+Begin
+    LayerStack := Nil;
+    If Board <> Nil Then
+    Begin
+        Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    End;
+    Result := ResolveLayerIdInStack(LayerStack, LayerName);
+End;
+
+{ The names this board actually answers to, appended to an UNKNOWN_LAYER       }
+{ message so the caller can correct the call without a second round trip.      }
+{ Bounded: the stack's own names, then the mechanical layers' names.           }
+
+Function BoardLayerNamesHint(Board : IPCB_Board) : String;
+Var
+    LayerStack : IPCB_LayerStack_V7;
+    Obj : IPCB_LayerObject_V7;
+    Names, ThisName : String;
+    Lyr : TLayer;
+    Count : Integer;
+Begin
+    Names := '';
+    Count := 0;
+    LayerStack := Nil;
+    If Board <> Nil Then
+    Begin
+        Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    End;
+
+    If LayerStack <> Nil Then
+    Begin
+        Obj := Nil;
+        Try Obj := LayerStack.FirstLayer; Except Obj := Nil; End;
+        While (Obj <> Nil) And (Count < 64) Do
+        Begin
+            ThisName := '';
+            Try ThisName := Obj.Name; Except ThisName := ''; End;
+            If ThisName <> '' Then
+            Begin
+                If Names <> '' Then Names := Names + ', ';
+                Names := Names + ThisName;
+                Inc(Count);
+            End;
+            Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
+        End;
+
+        For Lyr := eMechanical1 To eMechanical16 Do
+        Begin
+            If Count < 64 Then
+            Begin
+                Obj := Nil;
+                Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
+                If Obj <> Nil Then
+                Begin
+                    ThisName := '';
+                    Try ThisName := Obj.Name; Except ThisName := ''; End;
+                    If ThisName <> '' Then
+                    Begin
+                        If Names <> '' Then Names := Names + ', ';
+                        Names := Names + ThisName;
+                        Inc(Count);
+                    End;
+                End;
+            End;
+        End;
+    End;
+
+    If Names = '' Then
+        Result := 'Valid names are canonical tokens such as TopLayer, '
+            + 'BottomLayer, MidLayer1, InternalPlane1, TopOverlay, TopPaste, '
+            + 'TopSolder, MultiLayer, KeepOutLayer, Mechanical1.'
+    Else
+        Result := 'Layers on this board: ' + Names
+            + '. Canonical tokens are also accepted (TopLayer, MidLayer1, '
+            + 'InternalPlane1, TopOverlay, TopPaste, TopSolder, MultiLayer, '
+            + 'KeepOutLayer, Mechanical1..16).';
+End;
 {..............................................................................}
 { Paired mechanical layer kinds.                                               }
 {                                                                              }
@@ -2570,6 +3794,143 @@ Begin
         End;
 End;
 
+{..............................................................................}
+{ Property-write diagnostics, for BOTH property writers                       }
+{                                                                              }
+{ SetSchProperty and SetPCBProperty append here every time a property name    }
+{ is not recognised or a write throws, so a modify can stop silently          }
+{ swallowing "set=Description=..." style mis-spellings and names this build   }
+{ does not write. The bridge is single-request, so a module-level buffer is   }
+{ safe.                                                                        }
+{                                                                              }
+{ IT LIVES IN Utils BECAUSE THE PCB SIDE COULD NOT REACH IT. This started in  }
+{ Generic.pas, which the build compiles AFTER PCBGeneric.pas, and DelphiScript}
+{ has no forward declarations, so SetPCBProperty could not have called it     }
+{ where it was. The schematic writer was fixed to report unwritten properties }
+{ and the PCB writer was not, and the gap showed up as obj_modify answering   }
+{ matched:2 for a polygon property it had never heard of.                     }
+{                                                                              }
+{ One buffer, both writers, so the next fix to one of them cannot leave the   }
+{ other behind.                                                                }
+{..............................................................................}
+
+Var
+    _PropertyDiagStr : String;
+
+{ Buffer is a String, not a TStringList. DelphiScript drops class-method  }
+{ visibility on TStringList declared at module scope (Undeclared          }
+{ identifier: Count on `_Buf.Count`), and on TStringList returned by a    }
+{ Function, even though the equivalent declared as a Function local works.}
+{ A pipe-delimited String avoids the entire trap.                          }
+{                                                                            }
+{ Each record is "kind:propname"; records are joined with '|'.            }
+
+Procedure ResetPropertyDiag(Dummy : Integer);
+Begin
+    _PropertyDiagStr := '';
+End;
+
+Procedure NotePropertyDiag(Kind : String; PropName : String);
+{ Dedup so a 50-row modify with one bad prop name records it once, not 50x. }
+Var
+    Entry : String;
+Begin
+    Entry := Kind + ':' + PropName;
+    { Bracket the buffer with '|' on both sides so a Pos check finds an      }
+    { exact record (and not e.g. "unknown:Foo" matching inside "...Foobar"). }
+    If Pos('|' + Entry + '|', '|' + _PropertyDiagStr + '|') > 0 Then Exit;
+    If _PropertyDiagStr = '' Then
+        _PropertyDiagStr := Entry
+    Else
+        _PropertyDiagStr := _PropertyDiagStr + '|' + Entry;
+End;
+
+Function RenderPropertyDiagJson(Dummy : Integer): String;
+Var
+    UJson, FJson, RJson, Remaining, Entry, Kind, Nm : String;
+    UCount, FCount, RCount, P : Integer;
+Begin
+    UJson := '['; UCount := 0;
+    FJson := '['; FCount := 0;
+    { 'unreadable' was RECORDED AND THEN DROPPED. Only unknown and failed
+      were rendered, so a property that exists but cannot be read on this
+      object type came back as an empty string with nothing to say why.
+      That is the same blank-versus-unreadable confusion the sheet-symbol
+      text hit, and it hid the type refusals added for issue #22. }
+    RJson := '['; RCount := 0;
+    Remaining := _PropertyDiagStr;
+    While Length(Remaining) > 0 Do
+    Begin
+        P := Pos('|', Remaining);
+        If P = 0 Then
+        Begin
+            Entry := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Entry := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining));
+        End;
+        P := Pos(':', Entry);
+        If P = 0 Then Continue;
+        Kind := Copy(Entry, 1, P - 1);
+        Nm := Copy(Entry, P + 1, Length(Entry));
+        If Kind = 'unknown' Then
+        Begin
+            If UCount > 0 Then UJson := UJson + ',';
+            UJson := UJson + '"' + EscapeJsonString(Nm) + '"';
+            Inc(UCount);
+        End
+        Else If Kind = 'failed' Then
+        Begin
+            If FCount > 0 Then FJson := FJson + ',';
+            FJson := FJson + '"' + EscapeJsonString(Nm) + '"';
+            Inc(FCount);
+        End
+        Else If Kind = 'unreadable' Then
+        Begin
+            If RCount > 0 Then RJson := RJson + ',';
+            RJson := RJson + '"' + EscapeJsonString(Nm) + '"';
+            Inc(RCount);
+        End;
+    End;
+    UJson := UJson + ']';
+    FJson := FJson + ']';
+    RJson := RJson + ']';
+    Result := '{"unknown_count":' + IntToStr(UCount)
+            + ',"unknown":' + UJson
+            + ',"failed_count":' + IntToStr(FCount)
+            + ',"failed":' + FJson
+            + ',"unreadable_count":' + IntToStr(RCount)
+            + ',"unreadable":' + RJson + '}';
+End;
+
+{ The tail every modify reply carries, so what was WRITTEN is reported      }
+{ alongside what was matched.                                               }
+{                                                                           }
+{ MEASURED: obj_modify was asked to set a sheet symbol's FileName and       }
+{ answered matched:1, saved:true three times over while writing nothing.    }
+{ That property is readable and has no case in the writer, so every attempt }
+{ was recorded here as an unknown name and then discarded, because only     }
+{ batch_modify ever rendered this buffer. Nothing in the reply distinguished }
+{ it from a real one, and an operator spent a session working around a      }
+{ rename that had never happened.                                           }
+{                                                                           }
+{ matched counts what the FILTER selected. It says nothing about whether a  }
+{ property write landed, so reporting it alone made a mis-spelled or        }
+{ unsupported name indistinguishable from success.                          }
+Function ModifyOutcomeJson(Dummy : Integer): String;
+Begin
+    Result := ',"properties":' + RenderPropertyDiagJson(0);
+    If _PropertyDiagStr <> '' Then
+        Result := Result + ',"success":false,"reason":"one or more properties '
+            + 'were not written. properties.unknown lists names this build '
+            + 'does not write, properties.failed lists writes that threw."'
+    Else
+        Result := Result + ',"success":true';
+End;
+
 {=== Application.pas ===}
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
@@ -2578,13 +3939,32 @@ End;
 {..............................................................................}
 
 Function App_Ping(RequestId : String) : String;
+Var
+    Ver : String;
 Begin
     // Return the compiled-in SCRIPT_VERSION so Python can detect a stale
     // Altium script cache. cast_errors surfaces the silent-cast counter
     // (see RecordCastError), non-zero at session end indicates an
     // interface mismatch worth investigating.
+    //
+    // altium_version rides along because a bug report without it costs a
+    // round trip, and twice now the answer changed the diagnosis: two
+    // reports of a wedged polling loop were both an Altium far below the
+    // versions this is developed against, naming interfaces that build
+    // does not declare. It is reported, never acted on: an old build
+    // runs most of this toolset perfectly well, and refusing to start
+    // would take away the part that works to prevent the part that does
+    // not. Empty when the API will not answer, which is itself a fact
+    // worth having.
+    Ver := '';
+    Try
+        Ver := Client.GetProductVersion;
+    Except
+        Ver := '';
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"pong":true,"script_version":"' + SCRIPT_VERSION +
+        '","altium_version":"' + EscapeJsonString(Ver) +
         '","protocol_version":' + IntToStr(PROTOCOL_VERSION) +
         ',"cast_errors":' + IntToStr(CastErrorCount) + '}');
 End;
@@ -2612,7 +3992,7 @@ Var
     Project : IProject;
     Doc : IDocument;
     I, J : Integer;
-    Data, DocInfo, FileName, FullPath, Kind, LoadedStr : String;
+    Data, DocInfo, FileName, FullPath, Kind, LoadedStr, ModifiedStr : String;
     FirstItem, IsLoaded : Boolean;
 Begin
     Workspace := GetWorkspace;
@@ -2654,10 +4034,18 @@ Begin
                         Except IsLoaded := False; End;
                         If IsLoaded Then LoadedStr := 'true' Else LoadedStr := 'false';
 
+                        // Unsaved state. app_context filters this list on
+                        // "modified" to warn about pending edits, so a missing
+                        // key made that warning unreachable and every session
+                        // read as clean.
+                        If DocIsModified(FullPath) Then ModifiedStr := 'true'
+                        Else ModifiedStr := 'false';
+
                         DocInfo := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
                         DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(FullPath) + '"';
                         DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Kind) + '"';
-                        DocInfo := DocInfo + ',"loaded":' + LoadedStr + '}';
+                        DocInfo := DocInfo + ',"loaded":' + LoadedStr;
+                        DocInfo := DocInfo + ',"modified":' + ModifiedStr + '}';
                         Data := Data + DocInfo;
                     End;
                 End;
@@ -2683,10 +4071,11 @@ Begin
         Doc := Workspace.DM_FocusedDocument;
         If Doc <> Nil Then
         Begin
-            FileName := Doc.DM_FileName;
+            FileName := DocFullPath(Doc);
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
-            Data := Data + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"}';
+            Data := Data + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
         End;
     End;
 
@@ -2704,19 +4093,21 @@ Begin
             FileName := SchDoc.DocumentName;
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
-            Data := Data + ',"document_kind":"SCH"}';
+            Data := Data + ',"document_kind":"SCH"';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
         End;
     End;
     If Data = '' Then
     Begin
         Board := Nil;
-        Try Board := GetPCBBoardAnywhere; Except Board := Nil; End;
+        Try Board := GetPCBBoardAnywhere(0); Except Board := Nil; End;
         If Board <> Nil Then
         Begin
             FileName := Board.FileName;
             Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
             Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
-            Data := Data + ',"document_kind":"PCB"}';
+            Data := Data + ',"document_kind":"PCB"';
+            Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
         End;
     End;
 
@@ -2797,12 +4188,52 @@ Begin
     Result := BuildSuccessResponse(RequestId, '{"success":true,"file_path":"' + EscapeJsonString(ServerDoc.FileName) + '"}');
 End;
 
-{..............................................................................}
-{ Open an existing document from disk and focus it. Client.OpenDocument is    }
-{ used deliberately: unlike the Client:OpenDocument process it preserves the  }
-{ association of files that already belong to the focused project.             }
-{ Params: file_path (required), kind (optional; inferred from extension).       }
-{..............................................................................}
+{ Close ONE document, found by its full path, whatever has the focus.        }
+{ WorkspaceManager:CloseObject acts on the FOCUSED object, not the one named: }
+{ a close by path once closed a different project. This closes the document }
+{ object itself, as the reference scripts do (Client.CloseDocument), refuses }
+{ one that reads modified (a floor only: that read can miss editor edits),  }
+{ and looks it up again afterwards to say whether it is really gone.        }
+{ With discard, the modified flag is cleared first, unread, which is what   }
+{ keeps the save prompt away; the edits are lost.                           }
+Function App_CloseDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath : String;
+    ServerDoc, Again : IServerDocument;
+    WasModified, Discard : Boolean;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    Discard := LowerCase(ExtractJsonValue(Params, 'discard')) = 'true';
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Exit;
+    End;
+    ServerDoc := Client.GetDocumentByPath(FilePath);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED', 'Document not loaded: ' + FilePath);
+        Exit;
+    End;
+    WasModified := False;
+    Try WasModified := ServerDoc.Modified; Except WasModified := False; End;
+    If WasModified And Not Discard Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MODIFIED',
+            'The document has unsaved changes, so it was not closed: ' + FilePath);
+        Exit;
+    End;
+    If Discard Then
+    Begin
+        Try ServerDoc.SetModified(False); Except End;
+    End;
+    Client.CloseDocument(ServerDoc);
+    Again := Nil;
+    Try Again := Client.GetDocumentByPath(FilePath); Except Again := Nil; End;
+    Result := BuildSuccessResponse(RequestId, '{"closed":' + BoolToJsonStr(Again = Nil)
+        + ',"discarded":' + BoolToJsonStr(Discard And WasModified)
+        + ',"file_path":"' + EscapeJsonString(FilePath) + '"}');
+End;
 
 Function App_OpenDocument(Params : String; RequestId : String) : String;
 Var
@@ -2867,104 +4298,56 @@ Begin
         '","already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
 End;
 
-{..............................................................................}
-{ Close one loaded document. Dirty documents are saved by default. When save  }
-{ is false a dirty document is refused unless discard_changes=true, preventing }
-{ an unexpected Altium prompt from blocking the MCP polling loop.              }
-{..............................................................................}
-
-Function App_CloseDocument(Params : String; RequestId : String) : String;
-Var
-    FilePath, SaveStr, DiscardStr : String;
-    ServerDoc : IServerDocument;
-    SaveBeforeClose, DiscardChanges, WasModified : Boolean;
-Begin
-    FilePath := ExtractJsonValue(Params, 'file_path');
-    SaveStr := LowerCase(ExtractJsonValue(Params, 'save'));
-    DiscardStr := LowerCase(ExtractJsonValue(Params, 'discard_changes'));
-    SaveBeforeClose := (SaveStr = '') Or (SaveStr = 'true');
-    DiscardChanges := (DiscardStr = 'true');
-
-    If FilePath = '' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
-            'file_path is required');
-        Exit;
-    End;
-    ServerDoc := Nil;
-    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
-    If ServerDoc = Nil Then
-    Begin
-        Result := BuildSuccessResponse(RequestId,
-            '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
-            '","already_closed":true}');
-        Exit;
-    End;
-
-    WasModified := False;
-    Try WasModified := ServerDoc.Modified; Except End;
-    If WasModified And SaveBeforeClose Then
-    Begin
-        Try ServerDoc.DoFileSave(''); Except
-            Result := BuildErrorResponse(RequestId, 'SAVE_FAILED',
-                'Could not save dirty document before close: ' + FilePath);
-            Exit;
-        End;
-    End
-    Else If WasModified And (Not DiscardChanges) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'DIRTY_DOCUMENT',
-            'Document has unsaved changes. Set save=true or explicitly set discard_changes=true.');
-        Exit;
-    End
-    Else If WasModified And DiscardChanges Then
-        Try ServerDoc.SetModified(False); Except End;
-
-    ResetParameters;
-    AddStringParameter('ObjectKind', 'Document');
-    AddStringParameter('FileName', FilePath);
-    Try RunProcess('WorkspaceManager:CloseObject'); Except End;
-    Try Application.ProcessMessages; Except End;
-
-    ServerDoc := Nil;
-    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
-    If ServerDoc <> Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'CLOSE_FAILED',
-            'Document is still loaded after CloseObject: ' + FilePath);
-        Exit;
-    End;
-    Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
-        '","saved":' + BoolToJsonStr(WasModified And SaveBeforeClose) +
-        ',"discarded":' + BoolToJsonStr(WasModified And DiscardChanges) + '}');
-End;
-
 Function App_ReloadDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath, DocKind, SaveStr, DiscardStr, CloseParams, OpenParams : String;
-    CloseResp : String;
+    FilePath, DocKind, CloseParams, OpenParams, CloseResp : String;
+    ServerDoc : IServerDocument;
+    SaveBeforeClose, DiscardChanges : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocKind := ExtractJsonValue(Params, 'kind');
-    SaveStr := ExtractJsonValue(Params, 'save_before_close');
-    DiscardStr := ExtractJsonValue(Params, 'discard_changes');
-    If SaveStr = '' Then SaveStr := 'false';
-    If DiscardStr = '' Then DiscardStr := 'false';
-
-    CloseParams := '{"file_path":"' + EscapeJsonString(FilePath) +
-        '","save":"' + EscapeJsonString(SaveStr) +
-        '","discard_changes":"' + EscapeJsonString(DiscardStr) + '"}';
+    SaveBeforeClose := LowerCase(ExtractJsonValue(Params, 'save_before_close')) = 'true';
+    DiscardChanges := LowerCase(ExtractJsonValue(Params, 'discard_changes')) = 'true';
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Exit;
+    End;
+    If SaveBeforeClose And DiscardChanges Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CONFLICTING_OPTIONS',
+            'Choose save_before_close or discard_changes');
+        Exit;
+    End;
+    ServerDoc := Client.GetDocumentByPath(FilePath);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED', 'Document not loaded: ' + FilePath);
+        Exit;
+    End;
+    If SaveBeforeClose Then
+    Begin
+        Try ServerDoc.DoFileSave(''); Except
+            Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'Could not save ' + FilePath);
+            Exit;
+        End;
+        If ServerDoc.Modified Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'Document remains modified: ' + FilePath);
+            Exit;
+        End;
+    End;
+    CloseParams := '{"file_path":"' + EscapeJsonString(FilePath) + '"';
+    If DiscardChanges Then CloseParams := CloseParams + ',"discard":"true"';
+    CloseParams := CloseParams + '}';
     CloseResp := App_CloseDocument(CloseParams, RequestId);
     If Pos('"success":false', CloseResp) > 0 Then
     Begin
         Result := CloseResp;
         Exit;
     End;
-
     OpenParams := '{"file_path":"' + EscapeJsonString(FilePath) + '"';
-    If DocKind <> '' Then
-        OpenParams := OpenParams + ',"kind":"' + EscapeJsonString(DocKind) + '"';
+    If DocKind <> '' Then OpenParams := OpenParams + ',"kind":"' + EscapeJsonString(DocKind) + '"';
     OpenParams := OpenParams + '}';
     Result := App_OpenDocument(OpenParams, RequestId);
 End;
@@ -3031,7 +4414,7 @@ Begin
 
     { Try to get PCB preferences from the active board }
     Try
-        Board := GetPCBBoardAnywhere;
+        Board := GetPCBBoardAnywhere(0);
         If Board <> Nil Then
         Begin
             Data := Data + '"pcb":{';
@@ -3226,7 +4609,7 @@ Var
     ServerDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
-    AddToProject, Saved, Added : Boolean;
+    AddToProject, Saved, Added, Focused : Boolean;
     I : Integer;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
@@ -3324,18 +4707,34 @@ Begin
         End;
     End;
 
-    { OpenNewDocument does not reliably make the new editor active when a
-      script document owns focus. Explicitly show/focus it so the very next
-      SCHLIB/PCBLIB command targets the document just created. }
+    { NOT SAVED IS NOT CREATED. It answered success with saved:false, which }
+    { is what a missing folder produces, and the next call went on as if   }
+    { the file were there.                                                 }
+    If Not Saved Then
+    Begin
+        If DirectoryExists(ExtractFilePath(FilePath)) Then
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document could not be saved to ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document was not saved: the folder does not exist: '
+                + ExtractFilePath(FilePath));
+        Exit;
+    End;
+
+    { FOCUS THE NEW DOCUMENT. It stayed behind whatever was in front, and  }
+    { the library and board tools act on the focused document, so the next }
+    { authoring call wrote into the old one and reported success. Checked  }
+    { by path afterwards, since a request to focus is not a focus.         }
     Try Client.ShowDocument(ServerDoc); Except End;
-    Try ServerDoc.Focus; Except End;
+    Focused := UpperCase(CurrentFocusedDocPath(0)) = UpperCase(FilePath);
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"kind":"' + EscapeJsonString(DocKind) + '"' +
         ',"file_path":"' + EscapeJsonString(FilePath) + '"' +
         ',"saved":' + BoolToJsonStr(Saved) +
-        ',"added_to_project":' + BoolToJsonStr(Added) +
-        ',"focused":true}');
+        ',"focused":' + BoolToJsonStr(Focused) +
+        ',"added_to_project":' + BoolToJsonStr(Added) + '}');
 End;
 
 {..............................................................................}
@@ -3344,32 +4743,68 @@ End;
 
 Function App_SaveAll(RequestId : String) : String;
 Var
-    StillDirty : Integer;
+    StillDirty, Seen, Written : Integer;
+    Paths, AgesBefore, AgesAfter : String;
 Begin
     Try
         // Iterate every IServerDocument the editor has open and DoFileSave
         // each modified one. This bypasses WorkspaceManager:SaveAll, which
         // silently no-ops in some workspace states, and project-walk-based
         // saves, which skip free documents.
-        SaveAllDirty;
+        { WHAT REACHED DISK, measured by file timestamp, because every
+          Altium-side signal here has been observed lying. DoFileSave does
+          not raise when the editor declines. ServerDoc.Modified does not
+          always propagate from ProcessControl. And CountDirtyDocuments
+          walks the workspace exactly as SaveAllDirty does, so an empty
+          enumeration made both of them report zero and zero read as
+          success while 29 edits were lost. }
+        Paths := WorkspaceDocPaths(0);
+        Seen := CountPathEntries(Paths);
+        AgesBefore := AgesForPaths(Paths);
 
-        { COUNT WHAT IS STILL DIRTY. DoFileSave does not raise when the      }
-        { editor declines, so "no exception" was never evidence of a save.   }
-        { MEASURED: Altium raised "A command is currently active and save    }
-        { cannot be completed at this time" once per dirty document, every   }
-        { one of those saves was declined, and this returned saved:true.     }
-        StillDirty := CountDirtyDocuments;
-        If StillDirty = 0 Then
+        SaveAttempts := 0;
+        SaveAllDirty(0);
+
+        AgesAfter := AgesForPaths(Paths);
+        Written := CountChangedAges(AgesBefore, AgesAfter);
+        StillDirty := CountDirtyDocuments(0);
+
+        If Seen = 0 Then
             Result := BuildSuccessResponse(RequestId,
-                '{"saved":true,"still_dirty":0}')
+                '{"saved":false,"documents_seen":0,"documents_written":0'
+                + ',"still_dirty":' + IntToStr(StillDirty)
+                + ',"reason":"no documents were enumerated, so nothing was '
+                + 'even attempted. This is NOT an empty-and-clean workspace: '
+                + 'the walk that saves and the count that verifies share a '
+                + 'workspace lookup, so when it comes back empty both report '
+                + 'zero. Use proj_save, which resolves the focused project '
+                + 'directly."}')
+        Else If SaveAttempts = 0 Then
+            Result := BuildSuccessResponse(RequestId,
+                '{"saved":true,"documents_seen":' + IntToStr(Seen)
+                + ',"documents_attempted":0,"documents_written":0'
+                + ',"still_dirty":' + IntToStr(StillDirty)
+                + ',"note":"nothing was open to save. Only a document open '
+                + 'in the editor has an IServerDocument; the rest are project '
+                + 'members that cannot be holding unsaved edits. Writing '
+                + 'nothing is the correct outcome here, not a failure."}')
+        Else If Written = 0 Then
+            Result := BuildSuccessResponse(RequestId,
+                '{"saved":false,"documents_seen":' + IntToStr(Seen)
+                + ',"documents_attempted":' + IntToStr(SaveAttempts)
+                + ',"documents_written":0'
+                + ',"still_dirty":' + IntToStr(StillDirty)
+                + ',"reason":"every open document was written to and not one '
+                + 'got newer on disk. Altium declines a save while a command '
+                + 'is active in the editor, and an abandoned transaction '
+                + 'leaves it in that state with nothing visible on screen. '
+                + 'Unwind the active command and retry, or use proj_save."}')
         Else
             Result := BuildSuccessResponse(RequestId,
-                '{"saved":false,"still_dirty":' + IntToStr(StillDirty) + ''
-                + ',"reason":"documents remain modified after the save pass. '
-                + 'Altium declines a save while a command is active in the '
-                + 'editor, and asks whether to write a copy instead; that '
-                + 'prompt is answered by a human, not here. Clear the active '
-                + 'command and retry."}');
+                '{"saved":true,"documents_seen":' + IntToStr(Seen)
+                + ',"documents_attempted":' + IntToStr(SaveAttempts)
+                + ',"documents_written":' + IntToStr(Written)
+                + ',"still_dirty":' + IntToStr(StillDirty) + '}');
     Except
         Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'SaveAllDirty raised an exception');
     End;
@@ -3458,7 +4893,7 @@ Var
     PcbOk, SchOk : Boolean;
     DirtyBefore, DirtyAfter, I : Integer;
 Begin
-    DirtyBefore := CountDirtyDocuments;
+    DirtyBefore := CountDirtyDocuments(0);
 
     { REPEATED, because PreProcess NESTS and one leak is not the only shape.  }
     { A single PostProcess was measured NOT to clear a real stuck state, and  }
@@ -3482,7 +4917,7 @@ Begin
         SchOk := True;
     Except End;
 
-    DirtyAfter := CountDirtyDocuments;
+    DirtyAfter := CountDirtyDocuments(0);
 
     Result := BuildSuccessResponse(RequestId,
         '{"pcb_post_process":' + BoolToJsonStr(PcbOk)
@@ -3503,8 +4938,8 @@ Begin
         'get_open_documents':  Result := App_GetOpenDocuments(RequestId);
         'get_active_document': Result := App_GetActiveDocument(RequestId);
         'set_active_document': Result := App_SetActiveDocument(Params, RequestId);
-        'open_document':       Result := App_OpenDocument(Params, RequestId);
         'close_document':      Result := App_CloseDocument(Params, RequestId);
+        'open_document':       Result := App_OpenDocument(Params, RequestId);
         'reload_document':     Result := App_ReloadDocument(Params, RequestId);
         'run_process':         Result := App_RunProcess(Params, RequestId);
         'get_preferences':     Result := App_GetPreferences(RequestId);
@@ -3513,7 +4948,7 @@ Begin
         'create_document':     Result := App_CreateDocument(Params, RequestId);
         'save_all':            Result := App_SaveAll(RequestId);
         'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
-        'stop_server':         Begin SaveAllDirty; Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
+        'stop_server':         Begin SaveAllDirty(0); Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;
@@ -3676,6 +5111,234 @@ Begin
         + 'focused project."}');
 End;
 
+{..............................................................................}
+{ Unsaved edits of ONE project, for a close that does not save.               }
+{                                                                             }
+{ A close issued while a member is still modified raises Altium's save        }
+{ prompt. RunProcess is synchronous, so the prompt blocks inside the handler, }
+{ the handler blocks the polling loop, and the loop is the only thing that    }
+{ could have answered it: every later call waits until a human clicks.        }
+{ Clearing the modified flag first leaves the close nothing to ask about,     }
+{ and closing a document that reads as clean drops its in-memory edits,       }
+{ which is exactly what save=false asks for.                                  }
+{                                                                             }
+{ SCOPED TO THE PROJECT: the same members SaveProjectMembers writes, and the  }
+{ project file. Never the workspace, which is how a close once reached a      }
+{ client project nobody had named.                                            }
+{..............................................................................}
+
+{ MEASURED 2026-09-13 on AD 26.10.1.6: after a ProcessControl edit the tab    }
+{ showed the sheet as modified while IServerDocument.Modified read False, and }
+{ CloseObject raised its save prompt anyway. A clear gated on that read       }
+{ cleared nothing, so the flag is cleared on every loaded member without      }
+{ reading it. Whether clearing it stops the prompt is still unmeasured, and   }
+{ proj_close answers the prompt from Python when it appears, which is what    }
+{ keeps the bridge from wedging.                                              }
+Function ClearDocModifiedByPath(Path : String) : Boolean;
+Var
+    ServerDoc : IServerDocument;
+Begin
+    Result := False;
+    If Path = '' Then Exit;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then Exit;
+    Try ServerDoc.SetModified(False); Except End;
+    Result := True;
+End;
+
+Function DiscardProjectMembers(Project : IProject) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := '';
+        Try Path := Doc.DM_FullPath; Except Path := ''; End;
+        If ClearDocModifiedByPath(Path) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + Path;
+        End;
+    End;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except Path := ''; End;
+    If ClearDocModifiedByPath(Path) Then
+    Begin
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+{ What is STILL modified after a discard. DocIsModified reads a flag that    }
+{ App_SaveAll records does not always propagate, so the discard is checked   }
+{ rather than trusted: one document left dirty is enough to raise the prompt. }
+Function DirtyProjectMembers(Project : IProject) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    Path : String;
+Begin
+    Result := '';
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := '';
+        Try Path := Doc.DM_FullPath; Except Path := ''; End;
+        If (Path <> '') And DocIsModified(Path) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + Path;
+        End;
+    End;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except Path := ''; End;
+    If (Path <> '') And DocIsModified(Path) Then
+    Begin
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + Path;
+    End;
+End;
+
+Function PipePathsToJsonArray(PathList : String) : String;
+Var
+    Remaining, Path : String;
+    P : Integer;
+Begin
+    Result := '[';
+    Remaining := PathList;
+    While Remaining <> '' Do
+    Begin
+        P := Pos('|', Remaining);
+        If P > 0 Then
+        Begin
+            Path := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+        End
+        Else
+        Begin
+            Path := Remaining;
+            Remaining := '';
+        End;
+        If Result <> '[' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Path) + '"';
+    End;
+    Result := Result + ']';
+End;
+
+{..............................................................................}
+{ WorkspaceManager:CloseObject CLOSES THE FOCUSED PROJECT.                    }
+{                                                                             }
+{ MEASURED 2026-09-13 on AD 26.10.1.6: proj_close named a scratch project     }
+{ with no loaded document while Blinker555_v4's board was focused. The first  }
+{ CloseObject, given the scratch project's full path, closed Blinker555_v4,   }
+{ and the retry closed the scratch project. Every earlier close that worked   }
+{ had a sheet of the named project focused, so the two could not be told      }
+{ apart. The reference scripts never close a project by name: they focus it,  }
+{ check DM_FocusedProject, and close the focused one.                         }
+{                                                                             }
+{ It also explains a report from a managed project: a save prompt listing 49  }
+{ documents for a 10-document project, then a second call that listed 4 and   }
+{ closed. The first close was aimed at a different project.                   }
+{..............................................................................}
+
+Function OpenProjectPaths(Workspace : IWorkspace) : String;
+Var
+    I : Integer;
+    Proj : IProject;
+    P : String;
+Begin
+    Result := '';
+    If Workspace = Nil Then Exit;
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Workspace.DM_Projects(I);
+        If Proj = Nil Then Continue;
+        P := '';
+        Try P := Proj.DM_ProjectFullPath; Except P := ''; End;
+        If P = '' Then Continue;
+        If Result <> '' Then Result := Result + '|';
+        Result := Result + P;
+    End;
+End;
+
+{ Focus follows the active DOCUMENT, so the project is focused by showing one  }
+{ of its documents. Only LOADED ones: opening a member here would load it as a }
+{ free document, the way App_SetActiveDocument records, and focus nothing.     }
+Function FocusProjectForClose(Project : IProject) : Boolean;
+Var
+    J : Integer;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    Path, Target : String;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    Target := '';
+    Try Target := Project.DM_ProjectFullPath; Except Target := ''; End;
+    If Target = '' Then Exit;
+    If FocusedProjectPathIs(Target) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Project.DM_LogicalDocuments(J);
+        If Doc = Nil Then Continue;
+        Path := DocFullPath(Doc);
+        If Path = '' Then Continue;
+        ServerDoc := Nil;
+        Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+        If ServerDoc = Nil Then Continue;
+        Try Client.ShowDocument(ServerDoc); Except End;
+        If FocusedProjectPathIs(Target) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
+{ Paths in BeforeList that are gone from AfterList, other than TargetPath.   }
+Function PathsGoneOtherThan(BeforeList, AfterList, TargetPath : String) : String;
+Var
+    Remaining, P, UpAfter : String;
+    K : Integer;
+Begin
+    Result := '';
+    UpAfter := '|' + UpperCase(AfterList) + '|';
+    Remaining := BeforeList;
+    While Remaining <> '' Do
+    Begin
+        K := Pos('|', Remaining);
+        If K > 0 Then
+        Begin
+            P := Copy(Remaining, 1, K - 1);
+            Remaining := Copy(Remaining, K + 1, Length(Remaining) - K);
+        End
+        Else
+        Begin
+            P := Remaining;
+            Remaining := '';
+        End;
+        If (P <> '') And (UpperCase(P) <> UpperCase(TargetPath))
+            And (Pos('|' + UpperCase(P) + '|', UpAfter) = 0) Then
+        Begin
+            If Result <> '' Then Result := Result + '|';
+            Result := Result + P;
+        End;
+    End;
+End;
+
 Function Proj_Save(Params : String; RequestId : String) : String;
 Var
     ProjectPath : String;
@@ -3726,13 +5389,16 @@ End;
 { looking the project up again.                                               }
 Function Proj_Close(Params : String; RequestId : String) : String;
 Var
-    ProjectPath : String;
+    ProjectPath, Discarded, StillDirty, More : String;
+    ClosedInstead, BeforeClose, Why : String;
     SaveFirst, Closed : Boolean;
+    Attempts : Integer;
     Workspace : IWorkspace;
     Project : IProject;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     SaveFirst := ExtractJsonValue(Params, 'save') <> 'false';
+    Discarded := '';
 
     Workspace := GetWorkspace;
     If Workspace <> Nil Then
@@ -3745,28 +5411,118 @@ Begin
         If Project <> Nil Then
         Begin
             ProjectPath := Project.DM_ProjectFullPath;
-            If SaveFirst Then
-                SaveProjectMembers(Project);
 
-            ResetParameters;
-            AddStringParameter('ObjectKind', 'Project');
-            AddStringParameter('FileName', ProjectPath);
-            RunProcess('WorkspaceManager:CloseObject');
-
-            { Confirm. A cancelled save prompt aborts the close, and the      }
-            { process layer cannot report that.                               }
-            Closed := FindProjectByPath(Workspace, ProjectPath) = Nil;
-            If Closed Then
-                Result := BuildSuccessResponse(RequestId,
-                    '{"success":true,"closed":true,"project_path":"'
-                    + EscapeJsonString(ProjectPath) + '"}')
-            Else
+            { BEFORE ANY SAVE OR DISCARD, so a close that has to be refused  }
+            { leaves the project exactly as it found it.                     }
+            If Not FocusProjectForClose(Project) Then
+            Begin
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":false,"closed":false,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
-                    + ',"reason":"the project is still open after the close '
-                    + 'was issued, which is what happens when a save prompt '
-                    + 'is cancelled or a document refuses to close"}');
+                    + ',"discarded":[],"attempts":0,"closed_instead":[]'
+                    + ',"reason":"Altium closes the FOCUSED project, and this '
+                    + 'one could not be made focused because none of its '
+                    + 'documents is loaded. Nothing was closed or changed. '
+                    + 'Load a sheet with proj_load_sheets, or activate one of '
+                    + 'its documents, and close again."}');
+                Exit;
+            End;
+
+            If SaveFirst Then
+                SaveProjectMembers(Project)
+            Else
+            Begin
+                { DISCARD BEFORE CLOSING, then check the discard took. A close }
+                { issued with anything still modified raises a save prompt     }
+                { that blocks this loop until a human answers it, so refusing  }
+                { here is the only way the caller hears anything at all.       }
+                Discarded := DiscardProjectMembers(Project);
+                StillDirty := DirtyProjectMembers(Project);
+                If StillDirty <> '' Then
+                Begin
+                    Result := BuildSuccessResponse(RequestId,
+                        '{"success":false,"closed":false,"project_path":"'
+                        + EscapeJsonString(ProjectPath) + '"'
+                        + ',"still_modified":' + PipePathsToJsonArray(StillDirty)
+                        + ',"reason":"save=false could not clear the modified '
+                        + 'flag on these documents, so closing would raise a '
+                        + 'save prompt, and that prompt blocks the bridge until '
+                        + 'someone answers it in Altium. Nothing was closed. '
+                        + 'Pass save=true to write them first, or close the '
+                        + 'project in Altium."}');
+                    Exit;
+                End;
+            End;
+
+            { Confirm by looking the project up again. A cancelled save      }
+            { prompt aborts the close, and the process layer cannot say so.  }
+            { A close without saving is retried ONCE: reported on a managed  }
+            { project, the first close was abandoned after its prompt was    }
+            { answered and a second completed. Not retried when saving,      }
+            { where the likely cause is a prompt cancelled on purpose.       }
+            Attempts := 0;
+            Closed := False;
+            ClosedInstead := '';
+            While (Not Closed) And (Attempts < 2) Do
+            Begin
+                { CloseObject closes the FOCUSED project, whatever FileName  }
+                { says, so focus the named one before EVERY attempt: focus   }
+                { can move between one attempt and the next.                  }
+                Project := FindProjectByPath(Workspace, ProjectPath);
+                If Not FocusProjectForClose(Project) Then Break;
+                BeforeClose := OpenProjectPaths(Workspace);
+                Attempts := Attempts + 1;
+                ResetParameters;
+                AddStringParameter('ObjectKind', 'Project');
+                AddStringParameter('FileName', ProjectPath);
+                RunProcess('WorkspaceManager:CloseObject');
+                Closed := FindProjectByPath(Workspace, ProjectPath) = Nil;
+                ClosedInstead := PathsGoneOtherThan(BeforeClose,
+                    OpenProjectPaths(Workspace), ProjectPath);
+                { Never retry after something else closed. The retry is what }
+                { turned one wrong close into two.                            }
+                If ClosedInstead <> '' Then Break;
+                If SaveFirst Then Break;
+                If Not Closed Then
+                Begin
+                    Project := FindProjectByPath(Workspace, ProjectPath);
+                    More := DiscardProjectMembers(Project);
+                    If More <> '' Then
+                    Begin
+                        If Discarded <> '' Then Discarded := Discarded + '|';
+                        Discarded := Discarded + More;
+                    End;
+                End;
+            End;
+
+            If Closed And (ClosedInstead = '') Then
+                Result := BuildSuccessResponse(RequestId,
+                    '{"success":true,"closed":true,"project_path":"'
+                    + EscapeJsonString(ProjectPath) + '"'
+                    + ',"saved":' + BoolToJsonStr(SaveFirst)
+                    + ',"discarded":' + PipePathsToJsonArray(Discarded)
+                    + ',"attempts":' + IntToStr(Attempts)
+                    + ',"closed_instead":[]}')
+            Else
+            Begin
+                If ClosedInstead <> '' Then
+                    Why := 'closing this project also closed a project nobody '
+                        + 'named, listed under closed_instead. Altium closes '
+                        + 'the focused project; this stopped there and did not '
+                        + 'retry. Reopen those with proj_open.'
+                Else
+                    Why := 'the project is still open after the close was '
+                        + 'issued, which is what happens when a save prompt is '
+                        + 'cancelled, a document refuses to close, or focus '
+                        + 'could not be moved back to it for a second attempt';
+                Result := BuildSuccessResponse(RequestId,
+                    '{"success":false,"closed":' + BoolToJsonStr(Closed)
+                    + ',"project_path":"' + EscapeJsonString(ProjectPath) + '"'
+                    + ',"discarded":' + PipePathsToJsonArray(Discarded)
+                    + ',"attempts":' + IntToStr(Attempts)
+                    + ',"closed_instead":' + PipePathsToJsonArray(ClosedInstead)
+                    + ',"reason":"' + Why + '"}');
+            End;
         End
         Else
             Result := BuildErrorResponse(RequestId, 'PROJECT_NOT_FOUND', 'Project not found');
@@ -3806,7 +5562,7 @@ Begin
                 If Not First Then Data := Data + ',';
                 First := False;
                 DocInfo := '{"file_name":"' + EscapeJsonString(ExtractFileName(Doc.DM_FileName)) + '"';
-                DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(Doc.DM_FileName) + '"';
+                DocInfo := DocInfo + ',"file_path":"' + EscapeJsonString(DocFullPath(Doc)) + '"';
                 DocInfo := DocInfo + ',"document_kind":"' + EscapeJsonString(Doc.DM_DocumentKind) + '"}';
                 Data := Data + DocInfo;
             End;
@@ -4152,7 +5908,7 @@ Begin
         { on-disk project structure in some code paths, and users hit this  }
         { tool precisely when the in-editor state has diverged from the     }
         { cached netlist.                                                   }
-        Try SaveAllDirty; Except End;
+        Try SaveAllDirty(0); Except End;
         LastCompileTick := 0;
         SmartCompile(Project);
     End;
@@ -4829,7 +6585,7 @@ Begin
 
         { 2) Walk the board, find the component by Name.Text, select it.    }
         Board := Nil;
-        Try Board := GetPCBBoardAnywhere; Except End;
+        Try Board := GetPCBBoardAnywhere(0); Except End;
         If Board = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -5058,7 +6814,7 @@ Var
     OutlineStr, LayerStr, Data, BoardFile : String;
     First : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active'); Exit; End;
 
     // Board outline vertices
@@ -5333,7 +7089,7 @@ Begin
                 End;
                 SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
                 SchDoc.GraphicallyInvalidate;
-                SaveDocByPath(FilePath);
+                MarkDocDirtyByPath(FilePath);
                 Continue;
             End;
 
@@ -5473,7 +7229,7 @@ Begin
                 Try SchServer.ProcessControl.PostProcess(SchDoc, 'Edit'); Except End;
                 Try SchDoc.GraphicallyInvalidate; Except End;
             End;
-            Try SaveDocByPath(TouchedDocs[I]); Except End;
+            Try MarkDocDirtyByPath(TouchedDocs[I]); Except End;
         End;
 
         { No CompList.Free -- releasing a TInterfaceList of live schematic
@@ -5593,18 +7349,57 @@ End;
 Function Proj_ExportSTEP(Params : String; RequestId : String) : String;
 Var
     OutputPath : String;
+    Board : IPCB_Board;
+    AgeBefore, AgeAfter : Integer;
 Begin
     OutputPath := ExtractJsonValue(Params, 'output_path');
+
+    { RunProcess acts on the FOCUSED view, and the board lookup puts the  }
+    { user's previous view back, so an export from a schematic tab went   }
+    { nowhere. ResolvePCBBoard leaves the board focused.                  }
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is open');
+        Exit;
+    End;
+    Board := ResolvePCBBoard(Board.FileName);
+
+    AgeBefore := -1;
+    If OutputPath <> '' Then
+        Try If FileExists(OutputPath) Then AgeBefore := FileAge(OutputPath); Except End;
 
     ResetParameters;
     If OutputPath <> '' Then
         AddStringParameter('FileName', OutputPath);
     RunProcess('PCB:ExportSTEP3D');
 
-    If OutputPath <> '' Then
-        Result := BuildSuccessResponse(RequestId, '{"success":true,"output_path":"' + EscapeJsonString(OutputPath) + '"}')
+    { success:true used to come back whatever happened, and a reported    }
+    { run that wrote nothing was indistinguishable from one that did.     }
+    If OutputPath = '' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId,
+            '{"generated":false,"dispatched":true'
+            + ',"reason":"the export was launched with no output_path, so '
+            + 'there is nothing to check; pass output_path, or run an OutJob '
+            + 'with an ExportSTEP output through proj_run_outjob"}');
+        Exit;
+    End;
+
+    AgeAfter := -1;
+    Try If FileExists(OutputPath) Then AgeAfter := FileAge(OutputPath); Except End;
+    If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
+        Result := BuildSuccessResponse(RequestId,
+            '{"generated":true,"success":true,"output_path":"'
+            + EscapeJsonString(OutputPath) + '"}')
     Else
-        Result := BuildSuccessResponse(RequestId, '{"success":true}');
+        Result := BuildSuccessResponse(RequestId,
+            '{"generated":false,"dispatched":true,"output_path":"'
+            + EscapeJsonString(OutputPath) + '"'
+            + ',"reason":"the export was launched but no new file is at '
+            + 'output_path. PCB:ExportSTEP3D is not documented to take a file '
+            + 'name; run an OutJob with an ExportSTEP output through '
+            + 'proj_run_outjob for a result that can be confirmed"}');
 End;
 
 {..............................................................................}
@@ -5951,6 +7746,27 @@ Begin
     Except
     End;
 
+    { .Focus alone may leave another editor active. Native generation uses
+      that editor, so verify an absolute document path before dispatch. }
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', OutJobPath);
+    RunProcess('WorkspaceManager:OpenObject');
+    Workspace := GetWorkspace;
+    Doc := Nil;
+    If Workspace <> Nil Then Doc := Workspace.DM_FocusedDocument;
+    If Doc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FOCUS_FAILED', 'No focused OutJob');
+        Exit;
+    End;
+    If LowerCase(Doc.DM_FullPath) <> LowerCase(OutJobPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FOCUS_MISMATCH', 'Refusing to generate a different document');
+        Exit;
+    End;
+    Project := Workspace.DM_FocusedProject;
+
     { Parse the INI to find the container and its type }
     Found := False;
     ContainerType := '';
@@ -6015,22 +7831,27 @@ Begin
 
     { Resolve the OutJob's configured output directory so callers can pick }
     { up the produced files without having to re-parse the INI. The INI    }
-    { stores OutputBasePath relative to the OutJob; absolute paths pass    }
+    { stores OutputBasePath relative to the project; absolute paths pass   }
     { through. Trailing slash normalised so Python can append filenames.   }
     OutputDir := '';
     If RelativePath <> '' Then
     Begin
         If (Length(RelativePath) >= 2) And (Copy(RelativePath, 2, 1) = ':') Then
             OutputDir := RelativePath
-        Else
-            OutputDir := ExtractFilePath(OutJobPath) + RelativePath;
+        Else If Project <> Nil Then
+            OutputDir := ExtractFilePath(Project.DM_ProjectFullPath) + RelativePath;
         If (Length(OutputDir) > 0) And
            (Copy(OutputDir, Length(OutputDir), 1) <> '\') Then
             OutputDir := OutputDir + '\';
     End;
 
+    { NOT A SUCCESS CLAIM. The process was issued, and nothing here can say }
+    { whether it wrote anything: a container bound to a managed release, or }
+    { with its outputs off, runs cleanly and produces no file, and this used }
+    { to reply success with an output_dir that had never been created. The  }
+    { Python tools check that directory afterwards and decide success there. }
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true' +
+        '{"process_issued":true' +
         ',"container_name":"' + EscapeJsonString(ContainerName) + '"' +
         ',"container_type":"' + EscapeJsonString(ContainerType) + '"' +
         ',"relative_path":"' + EscapeJsonString(RelativePath) + '"' +
@@ -6640,9 +8461,10 @@ Begin
             If Not First Then Data := Data + ',';
             First := False;
 
-            { Severity is deliberately omitted: DM_ErrorLevelString is a
-              compile-time undeclared identifier in DelphiScript, and
-              DM_ErrorLevel hasn't been confirmed as declared either. Use
+            { This legacy summary omits severity and suppression. For the
+              verified numeric DM_ErrorLevel and DM_IsSuppressed fields,
+              use Gen_GetErcViolations. DM_ErrorLevelString is not exposed.
+              Use
               DM_ShortDescriptorString (documented on IDMObject base) rather
               than the undocumented DM_DescriptorString. DM_OwnerDocumentName
               is documented on IDMObject and is safe. }
@@ -7143,10 +8965,10 @@ Begin
         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     End;
 
-    { Persist directly to disk via the IServerDocument API. SaveDocByPath
+    { Persist directly to disk via the IServerDocument API. MarkDocDirtyByPath
       does SetModified + DoFileSave. WorkspaceManager:SaveAll doesn't
       reach non-active sheets in our tests, so we don't rely on it. }
-    SaveDocByPath(FilePath);
+    MarkDocDirtyByPath(FilePath);
     Try SchDoc.GraphicallyInvalidate; Except End;
 
     If Found Then Action := 'updated' Else Action := 'added';
@@ -7325,33 +9147,17 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    { REFUSE while a schematic is focused. MEASURED 2026-08-17: with a
+    { FOCUS DECIDES WHAT THE COMPARE DOES. MEASURED 2026-08-17: with a
       child sheet focused, WorkspaceManager:Compare raised a modal reading
       "Cannot compare a source document against its owner project SCH"
-      and changed nothing, while this handler went on to report success
-      and components_in_sync. Catching it here turns a blocked editor
-      plus a false clean into a reason the caller can act on.
+      and changed nothing, while this handler went on to report success.
+      So the project's PCB is focused before the compare below and the
+      focus is checked, rather than refusing a schematic and leaving the
+      caller to pick a document.
 
       NOT applied to Proj_UpdateSchematic, which is the opposite
       direction and whose correct focus has not been measured. Guessing
       symmetry here would be inventing a precondition. }
-    FocusedKind := '';
-    Try
-        FocusedDoc := Workspace.DM_FocusedDocument;
-        If FocusedDoc <> Nil Then FocusedKind := FocusedDoc.DM_DocumentKind;
-    Except
-        FocusedKind := '';
-    End;
-    If FocusedKind = 'SCH' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'WRONG_FOCUS',
-            'A schematic is focused, and Altium refuses to compare a '
-            + 'source document against its owner project: it raises a '
-            + 'modal error and changes nothing. Focus the PCB document '
-            + 'first with app_set_active_document, then call this again.');
-        Exit;
-    End;
-
     SmartCompile(Project);
     Ok := ComputeECODifferences(Project, MatchedBefore, ExtraSchBefore, ExtraPcbBefore, PcbPath);
     If Not Ok Then
@@ -7362,19 +9168,40 @@ Begin
 
     { Fire the real ECO via the WorkspaceManager comparator. This is the
       ONLY evidenced scriptable launcher (ref: reference MultiPCBProject.pas,
-      Petar Perisin): WorkspaceManager:Compare with ObjectKind=Project +
-      Action=UpdateMe performs Design > Update PCB Document (schematic -> PCB)
-      when the target PCB is focused. UpdateOther is relative to focus and was
-      observed to reverse this into PCB -> schematic. The previous
-      'PCB:UpdatePCBFromProject' was NOT a real process id
-      (RunProcess silently ignores unknown ids -> the handler no-opped), and
-      DisableDialog/Silent/NoConfirm/AutoApply are invented flags that appear
-      in no Altium docs.
+      Petar Perisin). The previous 'PCB:UpdatePCBFromProject' was NOT a real
+      process id (RunProcess silently ignores unknown ids -> the handler
+      no-opped), and DisableDialog/Silent/NoConfirm/AutoApply are invented
+      flags that appear in no Altium docs.
+      DIRECTION. With the PCB focused, the reference spells the two actions
+      out: Action=UpdateOther is PCB -> Update Schematic, and Action=UpdateMe
+      is PCB -> Import Changes From the schematic. This handler sent
+       UpdateOther with the PCB focused, so it back-annotated:
+      an ECO opened with the SchDoc as the affected document, and executing
+      it reverted a footprint and a comment on the schematic. The PCB is
+      focused here, checked, and asked to import.
       DIALOG IS UNAVOIDABLE: Altium's Engineering Change Order dialog is
       non-suppressible BY DESIGN (altium.com .../keeping-synchronized). This
       process raises that modal and BLOCKS the polling loop until a human
       clicks "Execute Changes" (or closes it). There is no documented silent
-      variant. Keep the resolved target PCB focused and use UpdateMe. }
+      variant. }
+    ResolvePCBBoard(PcbPath);
+    FocusedKind := '';
+    Try
+        FocusedDoc := Workspace.DM_FocusedDocument;
+        If FocusedDoc <> Nil Then FocusedKind := FocusedDoc.DM_DocumentKind;
+    Except
+        FocusedKind := '';
+    End;
+    If FocusedKind <> 'PCB' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_FOCUS',
+            'The project''s PCB could not be focused (the focused document is '
+            + FocusedKind + '), and the update direction depends on it: with '
+            + 'anything else focused the same request can update the '
+            + 'schematic from the board. Focus ' + PcbPath
+            + ' with app_set_active_document, then call this again.');
+        Exit;
+    End;
     ResetParameters;
     AddStringParameter('ObjectKind', 'Project');
     AddStringParameter('Action', 'UpdateMe');
@@ -7845,7 +9672,7 @@ Begin
     End;
 
     PrevTick := LastCompileTick;
-    Try SaveAllDirty; Except End;
+    Try SaveAllDirty(0); Except End;
     LastCompileTick := 0;
     SmartCompile(Project);
     NewTick := LastCompileTick;
@@ -8086,7 +9913,7 @@ Begin
                     Finally
                         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
                     End;
-                    Try SaveDocByPath(FullPath); Except End;
+                    Try MarkDocDirtyByPath(FullPath); Except End;
                     Try SchDoc.GraphicallyInvalidate; Except End;
                     Inc(SheetsUpdated);
                 End;
@@ -8323,28 +10150,55 @@ End;
 { no save_all changes are needed.                                            }
 Procedure MarkLibDirty(SchLib : ISch_Lib);
 Var
-    Workspace : IWorkspace;
-    Doc : IDocument;
     FullPath : String;
     ServerDoc : IServerDocument;
 Begin
     If SchLib = Nil Then Exit;
-    Workspace := GetWorkspace;
-    If Workspace <> Nil Then
+
+    { EVERY DEFERRED SAVE PASSES THROUGH HERE, which is why the follow-up
+      is noted here rather than in the forty-odd handlers that call it.
+      The edit is real in memory and absent from disk until app_save_all
+      runs, and a caller who does not know that sees a tool that reported
+      success and changed no file. }
+    NoteNextStep('This edit is in memory only. Run app_save_all to write '
+        + 'it to disk, and check still_dirty in the reply.');
+
+    { MARK THE LIBRARY THAT WAS EDITED, NOT WHATEVER HAPPENS TO BE FOCUSED.
+      This used to dirty Workspace.DM_FocusedDocument and ignore the SchLib
+      it was handed. When the focused document was anything else -- a sheet,
+      or another library -- the edited library was never flagged, so it was
+      skipped by app_save_all, by SaveAllDirty, and by Altium's own
+      File > Save, all of which correctly decline to write a clean document.
+
+      MEASURED 2026-09-21: a component copied into a .SchLib read back in
+      full through lib_get_component_details while the file on disk stayed
+      byte-identical, 662016 bytes, with zero occurrences of the new name,
+      across all three save routes. The edit was real and in memory; nothing
+      had asked for it to be written.
+
+      SchLib.DocumentName is the library's OWN path. Compare the helper
+      directly below, which exists to catch this same wrong-library
+      confusion when resolving one. }
+    FullPath := '';
+    Try FullPath := SchLib.DocumentName; Except End;
+    If FullPath <> '' Then
     Begin
-        Doc := Workspace.DM_FocusedDocument;
-        If Doc <> Nil Then
-        Begin
-            FullPath := '';
-            Try FullPath := Doc.DM_FullPath; Except End;
-            If FullPath <> '' Then
-            Begin
-                ServerDoc := Client.GetDocumentByPath(FullPath);
-                If ServerDoc <> Nil Then
-                    Try ServerDoc.SetModified(True); Except End;
-            End;
-        End;
-    End;
+        ServerDoc := Client.GetDocumentByPath(FullPath);
+        If ServerDoc <> Nil Then
+            Try ServerDoc.SetModified(True); Except End
+        Else
+            { NO SILENT FALLBACK TO THE FOCUSED DOCUMENT. Marking a
+              different document is what caused the defect above, and it
+              cannot be distinguished from success afterwards. Say so
+              instead. }
+            NoteNextStep('The edited library is not open as a document, so '
+                + 'it could not be flagged for saving and app_save_all will '
+                + 'skip it. Open it first, then repeat the edit.');
+    End
+    Else
+        NoteNextStep('The edited library did not report its own path, so it '
+            + 'could not be flagged for saving. Verify the file on disk '
+            + 'changed before relying on this edit.');
     { Force a SchLib editor redraw -- without this, primitives that were just }
     { committed (lines, rectangles, pins, polygons, arcs added by Lib_Add*)   }
     { are saved to memory + disk but the open lib editor window doesn't show  }
@@ -8551,20 +10405,39 @@ Begin
     AddStringParameter('FileName', LibPath);
     RunProcess('WorkspaceManager:OpenObject');
 
-    Try Result := SchServer.GetCurrentSchDocument; Except End;
+    { THE LIBRARY THAT WAS REOPENED, OR NOTHING. This used to return        }
+    { whatever schematic document was current afterwards, and reopening a   }
+    { library does not always make it current. Live 2026-09-23: a lookup   }
+    { into a new, empty library searched the library focused before it,    }
+    { found the part there, and lib_move_components skipped it as already  }
+    { present. SchLibIsAtPath exists for exactly this.                     }
+    Try Result := SchServer.GetSchDocumentByPath(LibPath); Except Result := Nil; End;
+    If Result = Nil Then
+        Try Result := SchServer.GetCurrentSchDocument; Except End;
+    If Not SchLibIsAtPath(Result, LibPath) Then
+        Result := Nil;
 End;
 
-{ LookupLibComponent - the index, then the walk, then a reopen.               }
+{ FindLibComponentInMemory - the index, the walk, and the symbol created or   }
+{ renamed this session. NEVER REOPENS the library.                           }
 {                                                                             }
-{ Use this everywhere instead of calling GetState_SchComponentByLibRef.       }
-{ The third step is the one that actually finds a symbol created earlier in   }
-{ the same session, see RefreshSchLibFromDisk for what was measured.          }
-{ RefreshingLib guards against re-entering: the retry must not be able to     }
-{ trigger another reopen.                                                     }
-Function LookupLibComponent(SchLib : ISch_Lib; Name : String) : ISch_Component;
-Var
-    LibPath : String;
-    Fresh : ISch_Lib;
+{ Use it for "does this name already exist?" before an edit. The full        }
+{ LookupLibComponent reopens on a miss, and a miss is the NORMAL answer to   }
+{ that question: RefreshSchLibFromDisk saves the library, closes it and     }
+{ opens it again, and every reference the caller is holding -- the library,  }
+{ the component it is about to rename or copy -- then points into a closed  }
+{ document. The edit lands on nothing, and each later save writes the       }
+{ reopened library without it.                                              }
+{                                                                             }
+{ Live 2026-09-23 (AD 26.10.1.6, scratch library read back from disk after  }
+{ every save): lib_rename_component and lib_copy_component both answered    }
+{ verified:true while the file kept the old name and never gained the copy. }
+{ lib_batch_rename, which does the same remove, rename and add but never    }
+{ asks whether the new name exists, persisted.                              }
+{                                                                             }
+{ The cost is a name created this session and no longer the last one made: }
+{ it can miss here, where the reopen would have found it.                   }
+Function FindLibComponentInMemory(SchLib : ISch_Lib; Name : String) : ISch_Component;
 Begin
     Result := Nil;
     If (SchLib = Nil) Or (Name = '') Then Exit;
@@ -8580,18 +10453,36 @@ Begin
     { when it was made, and that outlives the command because the polling    }
     { loop does. This is the case that actually bites: author a symbol, then }
     { set a parameter or link a footprint on it in the very next call.       }
-    {                                                                         }
-    { Checked BEFORE the reopen because it costs nothing and does not disturb }
-    { the editor, where a reopen changes focus and the current component.     }
     { The name is compared against the one recorded at the time, NOT read }
     { back off the interface. See LastCreatedLibComponentName in Main for }
     { what a property read on a freed component does to the session.      }
     If (LastCreatedLibComponent <> Nil) And
        (LastCreatedLibComponentName = Name) Then
-    Begin
         Result := LastCreatedLibComponent;
-        Exit;
-    End;
+End;
+
+{ LookupLibComponent - the index, then the walk, then a reopen.               }
+{                                                                             }
+{ Use this everywhere instead of calling GetState_SchComponentByLibRef.       }
+{ The third step is the one that actually finds a symbol created earlier in   }
+{ the same session, see RefreshSchLibFromDisk for what was measured.          }
+{ RefreshingLib guards against re-entering: the retry must not be able to     }
+{ trigger another reopen.                                                     }
+{                                                                             }
+{ THE REOPEN INVALIDATES WHAT THE CALLER HOLDS. Fine for a read. Before an    }
+{ edit, ask FindLibComponentInMemory instead.                                 }
+Function LookupLibComponent(SchLib : ISch_Lib; Name : String) : ISch_Component;
+Var
+    LibPath : String;
+    Fresh : ISch_Lib;
+Begin
+    Result := Nil;
+    If (SchLib = Nil) Or (Name = '') Then Exit;
+
+    { Everything that costs nothing and does not disturb the editor, where a }
+    { reopen changes focus and the current component.                        }
+    Result := FindLibComponentInMemory(SchLib, Name);
+    If Result <> Nil Then Exit;
 
     { Last resort: the document has not caught up with its own contents. }
     If RefreshingLib Then Exit;
@@ -8603,10 +10494,7 @@ Begin
     Try
         Fresh := RefreshSchLibFromDisk(LibPath);
         If Fresh <> Nil Then
-        Begin
-            Try Result := Fresh.GetState_SchComponentByLibRef(Name); Except End;
-            If Result = Nil Then Result := ScanLibForComponent(Fresh, Name);
-        End;
+            Result := FindLibComponentInMemory(Fresh, Name);
     Finally
         RefreshingLib := False;
     End;
@@ -8769,49 +10657,275 @@ End;
 { after each step), so it is used here rather than a property that reports    }
 { success and changes nothing.                                                }
 {                                                                             }
-{ Bounded by PartCount: the command WRAPS past the last part, so a target     }
-{ that can never be reached would spin forever rather than fail.              }
-{ Returns whether the editor is now showing Target.                           }
+{ ONE STEP, NOT A SEARCH, and this is the second version of this function.   }
+{ The first walked NextComponentPart until the DOCUMENT reported the target.  }
+{ That walk is unnecessary, because the command's destination is determined:  }
 {                                                                             }
-{ TRUE ALSO WHEN THE PART ID CANNOT BE READ, because a build that does not    }
-{ report one leaves nothing to check and refusing there would break every     }
-{ single-part symbol. FALSE only when the id WAS readable and the target was  }
-{ never reached, which is the case a caller must not act on: the editor is    }
-{ then showing some other part, and a query against it answers about the      }
-{ wrong one. That silent answer is the whole defect this replaces.            }
+{   Component.CurrentPartID := K   sets the property and does NOT move the    }
+{                                  displayed part.                            }
+{   SCH:NextComponentPart          moves the display to CurrentPartID + 1     }
+{                                  and syncs the property to where it landed. }
+{                                                                             }
+{ So parking the property one below the target and stepping once arrives at   }
+{ the target directly. Reported against a 4-part TPS23881B on AD 26.8.1.31    }
+{ (GH #11), where it was verified by prediction rather than observation: with }
+{ the display on part 4 and CurrentPartID set to 1, the model says the step   }
+{ lands on part 2, and it did, returning exactly the 17 pins part 2 holds.    }
+{                                                                             }
+{ WHY THE WALK HAD TO GO, and it is not tidying. The walk was gated on a      }
+{ readback it could not count on: GetState_CurrentSchComponentPartId is       }
+{ DECLARED on that build but returns -1 at runtime, and the guard treated     }
+{ "cannot read" as "nothing to check" and returned True WITHOUT STEPPING AT   }
+{ ALL. So a query scoped to part 3 was answered about whatever part happened  }
+{ to be displayed, reporting success, which is the exact defect the walk was  }
+{ added to stop. A guard that passes in precisely the case it exists to catch }
+{ is worse than no guard, because the caller stops looking.                   }
+{                                                                             }
+{ Target is always >= 2 here: the caller only steps when a part was named,    }
+{ and part 1 is where selecting the component already leaves the editor.      }
+{ That matters, because the step cannot REACH part 1 (CurrentPartID clamps    }
+{ at 1, so stepping from it goes to 2) and SCH:PrevComponentPart does not     }
+{ exist; Altium accepts the unknown process name and does nothing.            }
+{                                                                             }
+{ VERIFIED TWO WAYS, and it now fails closed. The document's part id is still }
+{ preferred. When it cannot be read, CurrentPartID is read back INSTEAD, and  }
+{ that readback is meaningful only because of the order above: we parked it   }
+{ at Target - 1 ourselves, so if the step did nothing it still reads          }
+{ Target - 1, and only a step that actually moved makes it read Target. That  }
+{ is why the property is trusted here and nowhere else, and why the old note  }
+{ against reading it does not apply: it is not being asked what is displayed, }
+{ it is being asked whether the command ran.                                  }
 Function StepLibComponentPartTo(SchLib : ISch_Lib; Component : ISch_Component;
     Target : Integer) : Boolean;
 Var
-    Count, Steps, Seen : Integer;
+    Count, Seen, Parked : Integer;
 Begin
-    Result := True;
+    Result := False;
 
     Count := 1;
     Try Count := Component.PartCount; Except End;
     If Count < 1 Then Count := 1;
 
-    Seen := CurrentLibPartId(SchLib);
-    { No reported part id means there is nothing to verify against, and       }
-    { stepping blind would move the editor off whatever the user was on.      }
-    If Seen < 0 Then Exit;
-
-    Steps := 0;
-    While (Seen <> Target) And (Steps < Count) Do
+    { A symbol with one part has nowhere to go and nothing to verify. }
+    If (Count <= 1) And (Target <= 1) Then
     Begin
-        ResetParameters;
-        RunProcess('SCH:NextComponentPart');
-        Steps := Steps + 1;
-        Seen := CurrentLibPartId(SchLib);
-        { Readable a moment ago and not now: stop, and do not claim the  }
-        { editor is on the target when that can no longer be checked.    }
-        If Seen < 0 Then
-        Begin
-            Result := False;
-            Exit;
-        End;
+        Result := True;
+        Exit;
     End;
 
+    Parked := Target - 1;
+    If Parked < 1 Then Parked := 1;
+    Try Component.CurrentPartID := Parked; Except End;
+
+    ResetParameters;
+    RunProcess('SCH:NextComponentPart');
+
+    Seen := CurrentLibPartId(SchLib);
+    If Seen >= 0 Then
+    Begin
+        Result := (Seen = Target);
+        Exit;
+    End;
+
+    { Document silent. Did the command move the property off where we put it? }
+    Seen := -1;
+    Try Seen := Component.CurrentPartID; Except End;
     Result := (Seen = Target);
+End;
+
+{ DisplayedPartByPins - which part the SchLib editor is showing, judged by    }
+{ the pins the iterator actually yields.                                       }
+{                                                                              }
+{ This is the SAME iterator a lib_component query answers from, so it tests   }
+{ exactly what the caller is about to receive rather than a proxy for it.    }
+{ Needed because the document's own part id is declared but returns -1 on    }
+{ AD 26.8.1.31, which is the build GH #11 reported from.                     }
+{                                                                              }
+{ Returns the single OwnerPartId seen on a part-specific pin, 0 when only    }
+{ shared (OwnerPartId 0) pins or no pins are visible, and -1 when pins from  }
+{ more than one part appear, which should not happen and is not trusted.     }
+Function DisplayedPartByPins(SchLib : ISch_Lib) : Integer;
+Var
+    Iter : ISch_Iterator;
+    Pin : ISch_Pin;
+    Owner, Seen : Integer;
+Begin
+    Result := 0;
+    Seen := 0;
+    Iter := SchLib.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePin));
+        Pin := Iter.FirstSchObject;
+        While Pin <> Nil Do
+        Begin
+            Owner := 0;
+            Try Owner := Pin.OwnerPartId; Except End;
+            If Owner > 0 Then
+            Begin
+                If Seen = 0 Then
+                Begin
+                    Seen := Owner;
+                End
+                Else If Seen <> Owner Then
+                Begin
+                    Seen := -1;
+                End;
+            End;
+            Pin := Iter.NextSchObject;
+        End;
+    Finally
+        SchLib.SchIterator_Destroy(Iter);
+    End;
+    Result := Seen;
+End;
+
+{ PartOneEvidence - 1 when the editor provably shows part 1, -1 when it       }
+{ provably shows some other part, 0 when nothing present can tell.            }
+{                                                                              }
+{ PINS ONLY. This used to ask the document's own part id first, and that is   }
+{ not evidence here: ReachLibPartOne assigns CurrentPartID := 1 just before   }
+{ asking. Live on AD 26.10.1.6 (2026-09-23), @1 was accepted while the editor }
+{ still showed part 3 and the pins this iterator yields were part 3's; the    }
+{ document's answer was the only thing that could have passed it.            }
+Function PartOneEvidence(SchLib : ISch_Lib) : Integer;
+Var
+    Seen : Integer;
+Begin
+    Seen := DisplayedPartByPins(SchLib);
+    If Seen = 1 Then
+    Begin
+        Result := 1;
+    End
+    Else If Seen = 0 Then
+    Begin
+        Result := 0;
+    End
+    Else
+    Begin
+        Result := -1;
+    End;
+End;
+
+{ OtherLibComponentName - the name of any component in this library other     }
+{ than Name, or '' when there is none.                                        }
+{                                                                              }
+{ CreateLibCompInfoReader, not SchIterator: an eSchComponent iterator returns }
+{ nothing at all on a SchLib, because each symbol is its own internal sheet   }
+{ rather than a component placed on the library's canvas.                    }
+Function OtherLibComponentName(SchLib : ISch_Lib; Name : String) : String;
+Var
+    Reader : ILibCompInfoReader;
+    Info : IComponentInfo;
+    I, N : Integer;
+Begin
+    Result := '';
+    Reader := Nil;
+    Try Reader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(SchLib.DocumentName)); Except End;
+    If Reader = Nil Then Exit;
+    Try
+        Try Reader.ReadAllComponentInfo; Except End;
+        N := 0;
+        Try N := Reader.NumComponentInfos; Except End;
+        For I := 0 To N - 1 Do
+        Begin
+            Info := Reader.ComponentInfos[I];
+            If Info <> Nil Then
+            Begin
+                If Info.CompName <> Name Then
+                Begin
+                    Result := Info.CompName;
+                    Break;
+                End;
+            End;
+        End;
+    Finally
+        Try SchServer.DestroyCompInfoReader(Reader); Except End;
+    End;
+End;
+
+{ ReachLibPartOne - make part 1 the displayed part, and prove it.              }
+{                                                                              }
+{ Part 1 cannot be reached by stepping: SCH:NextComponentPart moves to       }
+{ CurrentPartID + 1, CurrentPartID clamps at 1, so a step from it lands on 2, }
+{ and SCH:PrevComponentPart does not exist. What DOES reset the display to    }
+{ part 1 is selecting a DIFFERENT component and then reselecting this one;    }
+{ reassigning the same component leaves the display where it was. Measured   }
+{ 2026-09-19 on a purpose-built 4-part symbol, and confirmed independently    }
+{ in GH #11 on a 4-part part.                                                 }
+{                                                                              }
+{ The bounce is only done when part 1 is not already provably showing, so a  }
+{ lookup that is already right moves nothing.                                }
+{                                                                              }
+{ After the bounce, success means no pin from another part is visible. That  }
+{ is the property that matters: the #11 defect was answering about part 4    }
+{ when part 1 was asked for, and a query cannot do that while the iterator   }
+{ shows nothing from part 4. A part 1 carrying only shared pins reads as     }
+{ "nothing can tell", which after the measured reset is accepted.            }
+{                                                                              }
+{ A LIBRARY WITH ONE COMPONENT HAS NOTHING TO BOUNCE OFF. There is then no    }
+{ known way back to part 1 once the display has left it, and this says so    }
+{ rather than answering about whichever part is showing.                     }
+Function ReachLibPartOne(SchLib : ISch_Lib; Component : ISch_Component;
+    Name : String) : Boolean;
+Var
+    Count, Evidence : Integer;
+    OtherName : String;
+    Other : ISch_Component;
+Begin
+    Result := False;
+
+    Count := 1;
+    Try Count := Component.PartCount; Except End;
+    If Count <= 1 Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+
+    If PartOneEvidence(SchLib) = 1 Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+
+    OtherName := OtherLibComponentName(SchLib, Name);
+    If OtherName = '' Then
+    Begin
+        { "Saved" is deliberate: candidates are read from the file on disk,
+          so a component created this session and not yet saved is not one. }
+        NoteNextStep('Part 1 of ' + Name + ' cannot be reached: the display '
+            + 'is on another part, and the saved library holds no other '
+            + 'component to reselect from, which is the only known way back '
+            + 'to part 1. A component created this session counts once the '
+            + 'library is saved. Otherwise select part 1 by hand in the '
+            + 'library editor.');
+        Exit;
+    End;
+
+    Other := Nil;
+    { Through the wrapper, never the raw index: the index only knows   }
+    { what the library was LOADED with. The name came from the file on  }
+    { disk, so this resolves at the wrapper's first step and never     }
+    { reaches its close-and-reopen last resort.                         }
+    Other := LookupLibComponent(SchLib, OtherName);
+    If Other = Nil Then Exit;
+
+    { The editor acts on a selection when it processes its messages, not  }
+    { when the property is assigned. The measured reset was three separate }
+    { calls with the UI running between them; done back to back inside one }
+    { handler, the display stayed on part 3 (live, 2026-09-23).            }
+    Try SchLib.CurrentSchComponent := Other; Except End;
+    Try Application.ProcessMessages; Except End;
+    Try SchLib.CurrentSchComponent := Component; Except End;
+    Try Application.ProcessMessages; Except End;
+    Try Component.CurrentPartID := 1; Except End;
+
+    Evidence := PartOneEvidence(SchLib);
+    Result := (Evidence >= 0);
+    If Not Result Then
+        NoteNextStep('Part 1 of ' + Name + ' was not reached: after '
+            + 'reselecting the component the editor still shows pins from '
+            + 'another part.');
 End;
 
 { SelectLibComponentPart - focus a library symbol and make PART PartId the    }
@@ -8869,9 +10983,10 @@ Begin
     { ignored outright. Nothing errored either way.                           }
     {                                                                          }
     { The displayed part is moved by the editor's own command, not by a       }
-    { property. Step it and read the document's part id back after each step. }
-    { Bounded by PartCount because the command WRAPS at the last part, so an  }
-    { unreachable target would otherwise spin forever.                        }
+    { property. StepLibComponentPartTo parks CurrentPartID one below the      }
+    { target and issues one SCH:NextComponentPart, which lands on the target  }
+    { and syncs the property to it; see the note on that function for why it  }
+    { no longer walks, and for the readback that used to fail open.           }
     { NIL RATHER THAN THE WRONG PART. Returning the component when the
       editor never reached the requested part is exactly what GH #11
       reported: a query scoped to part 3 answered about part 1 and
@@ -8898,6 +11013,35 @@ Begin
     Begin
         If Not StepLibComponentPartTo(SchLib, Component, Target) Then
         Begin
+            { THE DISPLAY HAS MOVED EVEN THOUGH THE TARGET WAS NOT REACHED.
+              Stepping happens before the check, so a part that cannot be
+              reached still leaves the editor somewhere other than where it
+              started, and this build cannot read back where that is. Left
+              unsaid it compounds badly: the caller does not know which part
+              is showing, and scope @1 is the one suffix that cannot be
+              trusted to return to part 1. Reported GH #11, 2026-09-22. }
+            NoteNextStep('Part ' + IntToStr(Target) + ' was not reached, and '
+                + 'the displayed part has moved. Select a different '
+                + 'component and reselect this one to return to part 1; a '
+                + 'suffixed scope cannot reliably do it.');
+            Result := Nil;
+            Exit;
+        End;
+    End;
+
+    { EXPLICIT PART 1, and only explicit. PartId 0 is the plain lookup with no
+      suffix, which every lib_ tool reaches through SelectLibComponent and
+      which must stay exactly as it was: when the step-and-verify once ran on
+      every lookup, lib_link_footprint and lib_batch_rename refused
+      components that demonstrably existed. PartId 1 now means "@1 was
+      written", and that is a request for part 1 that has to be honoured
+      rather than answered about whichever part happens to be displayed.
+      Reported GH #11, 2026-09-22: with the editor on part 3, @1 returned
+      part 3's pins. }
+    If PartId = 1 Then
+    Begin
+        If Not ReachLibPartOne(SchLib, Component, Name) Then
+        Begin
             Result := Nil;
             Exit;
         End;
@@ -8909,7 +11053,9 @@ End;
 
 Function SelectLibComponent(Name : String) : ISch_Component;
 Begin
-    Result := SelectLibComponentPart(Name, 1);
+    { 0, NOT 1. Zero is the plain lookup and takes the historical   }
+    { path unchanged; 1 now means an explicit @1 and is verified.  }
+    Result := SelectLibComponentPart(Name, 0);
 End;
 
 Function Lib_SetCurrentComponent(Params : String; RequestId : String) : String;
@@ -9246,22 +11392,71 @@ Begin
     Try Result := Footprint.Y; Except End;
 End;
 
+{ PcbLibTarget - the footprint an authoring call writes into. With no name,  }
+{ the editor's current footprint, as before. With a name, that footprint,     }
+{ made current and checked by name: Board.AddPCBObject attaches to the        }
+{ CURRENT footprint whatever the caller meant, and nothing else moves the     }
+{ editor, so silkscreen meant for one footprint landed in whichever another   }
+{ call had left current. Problem is '' on success.                           }
+Function PcbLibTarget(PcbLib : IPCB_Library; Name : String; Var Problem : String) : IPCB_LibComponent;
+Var
+    Cur : IPCB_LibComponent;
+    CurName : String;
+Begin
+    Problem := '';
+    Result := Nil;
+    If Name = '' Then
+    Begin
+        Result := PcbLib.CurrentComponent;
+        If Result = Nil Then
+            Problem := 'No footprint is selected; pass footprint_name';
+        Exit;
+    End;
+    Try Result := PcbLib.GetComponentByName(Name); Except Result := Nil; End;
+    If Result = Nil Then
+    Begin
+        Problem := 'Footprint not found in the library: ' + Name;
+        Exit;
+    End;
+    Try PcbLib.CurrentComponent := Result; Except End;
+    CurName := '';
+    Try
+        Cur := PcbLib.CurrentComponent;
+        If Cur <> Nil Then CurName := Cur.Name;
+    Except End;
+    If CurName <> Name Then
+    Begin
+        Problem := 'Could not make ' + Name + ' the current footprint (the editor shows '
+            + CurName + '), so nothing was written';
+        Result := Nil;
+    End;
+End;
+
 Function Lib_AddFootprintPad(Params : String; RequestId : String) : String;
 Var
     Designator, Shape, LayerStr, FootprintName : String;
-    X, Y, XSize, YSize, HoleSize, CornerRadius : Integer;
+    CornerRadius : Integer;
+    X, Y, XSize, YSize, HoleSize : Double;
+    UnitsStr : String;
     Rotation : Double;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
-    LibIter : IPCB_LibraryIterator;
+    TargetProblem : String;
     Pad : IPCB_Pad;
+    PadLayer : TLayer;
 Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     Designator := ExtractJsonValue(Params, 'designator');
-    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
-    XSize := StrToIntDef(ExtractJsonValue(Params, 'x_size'), 60);
-    YSize := StrToIntDef(ExtractJsonValue(Params, 'y_size'), 60);
-    HoleSize := StrToIntDef(ExtractJsonValue(Params, 'hole_size'), 0);
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
+    XSize := StrToFloatDef(ExtractJsonValue(Params, 'x_size'), MilsInUnits(60, UnitsStr));
+    YSize := StrToFloatDef(ExtractJsonValue(Params, 'y_size'), MilsInUnits(60, UnitsStr));
+    HoleSize := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 0);
     Shape := ExtractJsonValue(Params, 'shape');
     LayerStr := ExtractJsonValue(Params, 'layer');
     Rotation := StrToFloatDef(ExtractJsonValue(Params, 'rotation'), 0);
@@ -9275,28 +11470,25 @@ Begin
         Exit;
     End;
 
-    Footprint := Nil;
-    If FootprintName <> '' Then
-    Begin
-        LibIter := PcbLib.LibraryIterator_Create;
-        Try
-            Footprint := LibIter.FirstPCBObject;
-            While Footprint <> Nil Do
-            Begin
-                If Footprint.Name = FootprintName Then Break;
-                Footprint := LibIter.NextPCBObject;
-            End;
-        Finally
-            PcbLib.LibraryIterator_Destroy(LibIter);
-        End;
-        If Footprint <> Nil Then
-            Try PcbLib.SetState_CurrentComponent(Footprint); Except End;
-    End
-    Else
-        Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
+        Exit;
+    End;
+
+    { Layer FIRST (the rounded-rect setters below are layer-aware): a drilled  }
+    { pad is through-hole (MultiLayer); a hole-less pad is SMD on a single      }
+    { layer (the named layer, default Top). Resolved before PreProcess so an    }
+    { unresolvable name ends the call rather than reaching the old eTopLayer    }
+    { fallback and putting a silkscreen pad on top copper.                      }
+    If HoleSize > 0 Then PadLayer := eMultiLayer
+    Else If LayerStr = '' Then PadLayer := eTopLayer
+    Else PadLayer := ResolveLayerId(PcbLib.Board, LayerStr);
+    If PadLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
         Exit;
     End;
     PCBServer.PreProcess;
@@ -9305,22 +11497,14 @@ Begin
     If Pad <> Nil Then
     Begin
         Pad.Name := Designator;
-        Pad.X := FootprintOriginX(Footprint) + MilsToCoord(X);
-        Pad.Y := FootprintOriginY(Footprint) + MilsToCoord(Y);
-        Pad.TopXSize := MilsToCoord(XSize);
-        Pad.TopYSize := MilsToCoord(YSize);
-        Pad.HoleSize := MilsToCoord(HoleSize);
+        Pad.X := FootprintOriginX(Footprint) + CoordFromUnits(X, UnitsStr);
+        Pad.Y := FootprintOriginY(Footprint) + CoordFromUnits(Y, UnitsStr);
+        Pad.TopXSize := CoordFromUnits(XSize, UnitsStr);
+        Pad.TopYSize := CoordFromUnits(YSize, UnitsStr);
+        Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
         Pad.Rotation := Rotation;
 
-        { Layer FIRST (the rounded-rect setters below are layer-aware): a      }
-        { drilled pad is through-hole (MultiLayer); a hole-less pad is SMD on   }
-        { a single layer (the named layer, default Top).                       }
-        If HoleSize > 0 Then
-            Pad.Layer := eMultiLayer
-        Else If LayerStr <> '' Then
-            Pad.Layer := GetLayerFromString(LayerStr)
-        Else
-            Pad.Layer := eTopLayer;
+        Pad.Layer := PadLayer;
 
         { Shape. roundrect = the modern IPC default: set the layer-stack shape }
         { then the corner-radius percentage (Altium stores RR radius as a %).  }
@@ -9356,7 +11540,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create pad');
 
     PCBServer.PostProcess;
-    SaveDocByPath(PcbLib.Board.FileName);
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
 { Batch pad authoring: same shape as Lib_AddPins but for PCB pads. Receives a }
@@ -9367,16 +11551,25 @@ End;
 { singular Lib_AddFootprintPad field set / defaults exactly).                 }
 Function Lib_AddFootprintPads(Params : String; RequestId : String) : String;
 Var
-    PadsStr, Op, Remaining, Shape, LayerStr : String;
+    PadsStr, Op, Remaining, Shape, LayerStr, BadLayers : String;
     OpCount, Added, Failed : Integer;
-    X, Y, XSize, YSize, HoleSize, CornerRadius : Integer;
-    PasteMaskExpansion, SolderMaskExpansion : Integer;
+    CornerRadius : Integer;
+    X, Y, XSize, YSize, HoleSize : Double;
+    UnitsStr : String;
     Rotation : Double;
+    PadLayer : TLayer;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Pad : IPCB_Pad;
     Cache : TPadCache;
 Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     PadsStr := ExtractJsonValue(Params, 'pads');
     If PadsStr = '' Then
     Begin
@@ -9391,16 +11584,17 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
     Added := 0;
     Failed := 0;
     OpCount := 0;
+    BadLayers := '';
     Remaining := PadsStr;
 
     PCBServer.PreProcess;
@@ -9410,17 +11604,32 @@ Begin
             Op := NextBatchOp(Remaining);
             If Op = '' Then Break;
             OpCount := OpCount + 1;
-            X := StrToIntDef(GetBatchField(Op, 'x'), 0);
-            Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
-            XSize := StrToIntDef(GetBatchField(Op, 'x_size'), 60);
-            YSize := StrToIntDef(GetBatchField(Op, 'y_size'), 60);
-            HoleSize := StrToIntDef(GetBatchField(Op, 'hole_size'), 0);
+            X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
+            Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
+            XSize := StrToFloatDef(GetBatchField(Op, 'x_size'), MilsInUnits(60, UnitsStr));
+            YSize := StrToFloatDef(GetBatchField(Op, 'y_size'), MilsInUnits(60, UnitsStr));
+            HoleSize := StrToFloatDef(GetBatchField(Op, 'hole_size'), 0);
             Rotation := StrToFloatDef(GetBatchField(Op, 'rotation'), 0);
             Shape := GetBatchField(Op, 'shape');
             LayerStr := GetBatchField(Op, 'layer');
             CornerRadius := StrToIntDef(GetBatchField(Op, 'corner_radius'), 25);
             PasteMaskExpansion := StrToIntDef(GetBatchField(Op, 'paste_mask_expansion'), 0);
             SolderMaskExpansion := StrToIntDef(GetBatchField(Op, 'solder_mask_expansion'), 0);
+
+            { Resolve the layer BEFORE creating anything. GetLayerFromString    }
+            { answered eTopLayer for every name it did not know, so one         }
+            { "Top Overlay" in a batch silently put that pad on top copper.     }
+            If HoleSize > 0 Then PadLayer := eMultiLayer
+            Else If LayerStr = '' Then PadLayer := eTopLayer
+            Else PadLayer := ResolveLayerId(PcbLib.Board, LayerStr);
+            If PadLayer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
 
             Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
             If Pad = Nil Then
@@ -9430,21 +11639,16 @@ Begin
             End;
 
             Pad.Name := GetBatchField(Op, 'designator');
-            Pad.X := FootprintOriginX(Footprint) + MilsToCoord(X);
-            Pad.Y := FootprintOriginY(Footprint) + MilsToCoord(Y);
-            Pad.TopXSize := MilsToCoord(XSize);
-            Pad.TopYSize := MilsToCoord(YSize);
-            Pad.HoleSize := MilsToCoord(HoleSize);
+            Pad.X := FootprintOriginX(Footprint) + CoordFromUnits(X, UnitsStr);
+            Pad.Y := FootprintOriginY(Footprint) + CoordFromUnits(Y, UnitsStr);
+            Pad.TopXSize := CoordFromUnits(XSize, UnitsStr);
+            Pad.TopYSize := CoordFromUnits(YSize, UnitsStr);
+            Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
             Pad.Rotation := Rotation;
 
             { Layer FIRST (roundrect setters are layer-aware): drilled ->       }
             { through-hole (MultiLayer); hole-less -> SMD on a single layer.    }
-            If HoleSize > 0 Then
-                Pad.Layer := eMultiLayer
-            Else If LayerStr <> '' Then
-                Pad.Layer := GetLayerFromString(LayerStr)
-            Else
-                Pad.Layer := eTopLayer;
+            Pad.Layer := PadLayer;
 
             If Shape = 'rectangular' Then Pad.TopShape := eRectangular
             Else If Shape = 'octagonal' Then Pad.TopShape := eOctagonal
@@ -9490,28 +11694,36 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    MarkPcbLibDirty(PcbLib);
-    SaveDocByPath(PcbLib.Board.FileName);
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
 
 Function Lib_AddFootprintTrack(Params : String; RequestId : String) : String;
 Var
-    X1, Y1, X2, Y2, Width : Integer;
+    X1, Y1, X2, Y2, Width : Double;
+    UnitsStr : String;
     LayerStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Track : IPCB_Track;
     Layer : TLayer;
 Begin
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
-    Width := StrToIntDef(ExtractJsonValue(Params, 'width'), 10);
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
+    Width := StrToFloatDef(ExtractJsonValue(Params, 'width'), MilsInUnits(10, UnitsStr));
     LayerStr := ExtractJsonValue(Params, 'layer');
 
     PcbLib := PCBServer.GetCurrentPCBLibrary;
@@ -9521,28 +11733,34 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
     { Empty -> silkscreen (the safe default); any named layer is honoured so   }
     { courtyard/assembly tracks can go on Mechanical layers, not just overlay. }
     If LayerStr = '' Then Layer := eTopOverlay
-    Else Layer := GetLayerFromString(LayerStr);
+    Else Layer := ResolveLayerId(PcbLib.Board, LayerStr);
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
 
     Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
     If Track <> Nil Then
     Begin
-        Track.X1 := FootprintOriginX(Footprint) + MilsToCoord(X1);
-        Track.Y1 := FootprintOriginY(Footprint) + MilsToCoord(Y1);
-        Track.X2 := FootprintOriginX(Footprint) + MilsToCoord(X2);
-        Track.Y2 := FootprintOriginY(Footprint) + MilsToCoord(Y2);
-        Track.Width := MilsToCoord(Width);
+        Track.X1 := FootprintOriginX(Footprint) + CoordFromUnits(X1, UnitsStr);
+        Track.Y1 := FootprintOriginY(Footprint) + CoordFromUnits(Y1, UnitsStr);
+        Track.X2 := FootprintOriginX(Footprint) + CoordFromUnits(X2, UnitsStr);
+        Track.Y2 := FootprintOriginY(Footprint) + CoordFromUnits(Y2, UnitsStr);
+        Track.Width := CoordFromUnits(Width, UnitsStr);
         Track.Layer := Layer;
 
         Footprint.AddPCBObject(Track);
@@ -9566,7 +11784,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create track');
 
     PCBServer.PostProcess;
-    SaveDocByPath(PcbLib.Board.FileName);
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
 { Batch track authoring: same shape as Lib_AddFootprintPads. A `tracks` array }
@@ -9575,14 +11793,22 @@ End;
 { layer (TopOverlay default / BottomOverlay), mirroring the singular handler. }
 Function Lib_AddFootprintTracks(Params : String; RequestId : String) : String;
 Var
-    TracksStr, Op, Remaining, LayerStr : String;
+    TracksStr, Op, Remaining, LayerStr, BadLayers : String;
     OpCount, Added, Failed : Integer;
-    X1, Y1, X2, Y2, Width : Integer;
+    X1, Y1, X2, Y2, Width : Double;
+    UnitsStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Track : IPCB_Track;
     Layer : TLayer;
 Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     TracksStr := ExtractJsonValue(Params, 'tracks');
     If TracksStr = '' Then
     Begin
@@ -9597,16 +11823,17 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
     Added := 0;
     Failed := 0;
     OpCount := 0;
+    BadLayers := '';
     Remaining := TracksStr;
 
     PCBServer.PreProcess;
@@ -9616,16 +11843,24 @@ Begin
             Op := NextBatchOp(Remaining);
             If Op = '' Then Break;
             OpCount := OpCount + 1;
-            X1 := StrToIntDef(GetBatchField(Op, 'x1'), 0);
-            Y1 := StrToIntDef(GetBatchField(Op, 'y1'), 0);
-            X2 := StrToIntDef(GetBatchField(Op, 'x2'), 0);
-            Y2 := StrToIntDef(GetBatchField(Op, 'y2'), 0);
-            Width := StrToIntDef(GetBatchField(Op, 'width'), 10);
+            X1 := StrToFloatDef(GetBatchField(Op, 'x1'), 0);
+            Y1 := StrToFloatDef(GetBatchField(Op, 'y1'), 0);
+            X2 := StrToFloatDef(GetBatchField(Op, 'x2'), 0);
+            Y2 := StrToFloatDef(GetBatchField(Op, 'y2'), 0);
+            Width := StrToFloatDef(GetBatchField(Op, 'width'), MilsInUnits(10, UnitsStr));
             LayerStr := GetBatchField(Op, 'layer');
             { Empty -> silkscreen (the safe default); any named layer is        }
             { honoured so courtyard/assembly tracks can go on Mechanical layers.}
             If LayerStr = '' Then Layer := eTopOverlay
-            Else Layer := GetLayerFromString(LayerStr);
+            Else Layer := ResolveLayerId(PcbLib.Board, LayerStr);
+            If Layer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
 
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
@@ -9634,11 +11869,11 @@ Begin
                 Continue;
             End;
 
-            Track.X1 := FootprintOriginX(Footprint) + MilsToCoord(X1);
-            Track.Y1 := FootprintOriginY(Footprint) + MilsToCoord(Y1);
-            Track.X2 := FootprintOriginX(Footprint) + MilsToCoord(X2);
-            Track.Y2 := FootprintOriginY(Footprint) + MilsToCoord(Y2);
-            Track.Width := MilsToCoord(Width);
+            Track.X1 := FootprintOriginX(Footprint) + CoordFromUnits(X1, UnitsStr);
+            Track.Y1 := FootprintOriginY(Footprint) + CoordFromUnits(Y1, UnitsStr);
+            Track.X2 := FootprintOriginX(Footprint) + CoordFromUnits(X2, UnitsStr);
+            Track.Y2 := FootprintOriginY(Footprint) + CoordFromUnits(Y2, UnitsStr);
+            Track.Width := CoordFromUnits(Width, UnitsStr);
             Track.Layer := Layer;
 
             Footprint.AddPCBObject(Track);
@@ -9661,17 +11896,18 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    MarkPcbLibDirty(PcbLib);
-    SaveDocByPath(PcbLib.Board.FileName);
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"added":' + IntToStr(Added) + ',"failed":' + IntToStr(Failed)
+        + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(OpCount) + '}');
 End;
 
 Function Lib_AddFootprintArc(Params : String; RequestId : String) : String;
 Var
-    XCenter, YCenter, Radius, Width : Integer;
+    XCenter, YCenter, Radius, Width : Double;
+    UnitsStr : String;
     { Angles are DOUBLE and are read with StrToFloatDef below. They are     }
     { declared `float` on the Python side, so the wire carries "360.0" and  }
     { StrToIntDef returned its DEFAULT on every call. EndAngle came through }
@@ -9682,15 +11918,22 @@ Var
     LayerStr : String;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
+    TargetProblem : String;
     Arc : IPCB_Arc;
     Layer : TLayer;
 Begin
-    XCenter := StrToIntDef(ExtractJsonValue(Params, 'x_center'), 0);
-    YCenter := StrToIntDef(ExtractJsonValue(Params, 'y_center'), 0);
-    Radius := StrToIntDef(ExtractJsonValue(Params, 'radius'), 100);
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    XCenter := StrToFloatDef(ExtractJsonValue(Params, 'x_center'), 0);
+    YCenter := StrToFloatDef(ExtractJsonValue(Params, 'y_center'), 0);
+    Radius := StrToFloatDef(ExtractJsonValue(Params, 'radius'), MilsInUnits(100, UnitsStr));
     StartAngle := StrToFloatDef(ExtractJsonValue(Params, 'start_angle'), 0.0);
     EndAngle := StrToFloatDef(ExtractJsonValue(Params, 'end_angle'), 360.0);
-    Width := StrToIntDef(ExtractJsonValue(Params, 'width'), 10);
+    Width := StrToFloatDef(ExtractJsonValue(Params, 'width'), MilsInUnits(10, UnitsStr));
     LayerStr := ExtractJsonValue(Params, 'layer');
 
     PcbLib := PCBServer.GetCurrentPCBLibrary;
@@ -9700,29 +11943,35 @@ Begin
         Exit;
     End;
 
-    Footprint := PcbLib.CurrentComponent;
+    Footprint := PcbLibTarget(PcbLib, ExtractJsonValue(Params, 'footprint_name'), TargetProblem);
     If Footprint = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', 'No footprint is selected');
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', TargetProblem);
         Exit;
     End;
 
     { Empty -> silkscreen (the safe default); any named layer is honoured so   }
     { pin-1 / assembly arcs can go on Mechanical layers, not just overlay.      }
     If LayerStr = '' Then Layer := eTopOverlay
-    Else Layer := GetLayerFromString(LayerStr);
+    Else Layer := ResolveLayerId(PcbLib.Board, LayerStr);
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
 
     Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
     If Arc <> Nil Then
     Begin
-        Arc.XCenter := FootprintOriginX(Footprint) + MilsToCoord(XCenter);
-        Arc.YCenter := FootprintOriginY(Footprint) + MilsToCoord(YCenter);
-        Arc.Radius := MilsToCoord(Radius);
+        Arc.XCenter := FootprintOriginX(Footprint) + CoordFromUnits(XCenter, UnitsStr);
+        Arc.YCenter := FootprintOriginY(Footprint) + CoordFromUnits(YCenter, UnitsStr);
+        Arc.Radius := CoordFromUnits(Radius, UnitsStr);
         Arc.StartAngle := StartAngle;
         Arc.EndAngle := EndAngle;
-        Arc.LineWidth := MilsToCoord(Width);
+        Arc.LineWidth := CoordFromUnits(Width, UnitsStr);
         Arc.Layer := Layer;
 
         Footprint.AddPCBObject(Arc);
@@ -9746,7 +11995,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create arc');
 
     PCBServer.PostProcess;
-    SaveDocByPath(PcbLib.Board.FileName);
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
 { Lib_AddFootprintText - Stamp a text primitive onto a PcbLib footprint.       }
@@ -9780,19 +12029,27 @@ Var
     Board : IPCB_Board;
     Iter : IPCB_LibraryIterator;
     Layer : TLayer;
-    X, Y, Size, Width, Rotation : Integer;
+    Rotation : Integer;
+    X, Y, Size, Width : Double;
+    UnitsStr : String;
     UseTTFont : Boolean;
 Begin
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
     TextStr := ExtractJsonValue(Params, 'text');
     If TextStr = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'text is required');
         Exit;
     End;
-    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
-    Size := StrToIntDef(ExtractJsonValue(Params, 'size'), 50);
-    Width := StrToIntDef(ExtractJsonValue(Params, 'width'), 8);
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
+    Size := StrToFloatDef(ExtractJsonValue(Params, 'size'), MilsInUnits(50, UnitsStr));
+    Width := StrToFloatDef(ExtractJsonValue(Params, 'width'), MilsInUnits(8, UnitsStr));
     Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopOverlay';
@@ -9867,7 +12124,13 @@ Begin
     End;
 
     Board := PcbLib.Board;
-    Layer := GetLayerFromString(LayerStr);
+    Layer := ResolveLayerId(Board, LayerStr);
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -9880,13 +12143,13 @@ Begin
         End;
         { Relative to the footprint's own origin. Board.XOrigin is a board-wide
           reference and would drop the text far from the footprint. }
-        Text.XLocation := Footprint.X + MilsToCoord(X);
-        Text.YLocation := Footprint.Y + MilsToCoord(Y);
+        Text.XLocation := Footprint.X + CoordFromUnits(X, UnitsStr);
+        Text.YLocation := Footprint.Y + CoordFromUnits(Y, UnitsStr);
         Text.Layer := Layer;
         Text.UseTTFonts := UseTTFont;
         Text.UnderlyingString := TextStr;
-        Text.Size := MilsToCoord(Size);
-        Text.Width := MilsToCoord(Width);
+        Text.Size := CoordFromUnits(Size, UnitsStr);
+        Text.Width := CoordFromUnits(Width, UnitsStr);
         Try Text.MirrorFlag := Mirror; Except End;
         Try Text.Rotation := Rotation; Except End;
 
@@ -9909,8 +12172,8 @@ Begin
         ',"footprint":"' + EscapeJsonString(Footprint.Name) + '"' +
         ',"text":"' + EscapeJsonString(TextStr) + '"' +
         ',"layer":"' + EscapeJsonString(LayerStr) + '"' +
-        ',"x":' + IntToStr(X) +
-        ',"y":' + IntToStr(Y) + '}';
+        ',"x":' + FloatToJsonStr(X) +
+        ',"y":' + FloatToJsonStr(Y) + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
@@ -11774,8 +14037,9 @@ Function Lib_Link3DModel(Params : String; RequestId : String) : String;
 Var
     ModelPath, ComponentName, FpName, AppliedJson : String;
     OffX, OffY, OffZ : Integer;
+    OrgX, OrgY : TCoord;
     RotZ : Double;
-    DidStandoff, DidRotation, DidMove : Boolean;
+    DidStandoff, DidRotation, DidMove, Shifted : Boolean;
     PcbLib : IPCB_Library;
     Footprint : IPCB_LibComponent;
     Iter : IPCB_LibraryIterator;
@@ -11912,15 +14176,25 @@ Begin
                 DidStandoff := False;
                 DidRotation := False;
                 DidMove := False;
+                Shifted := False;
                 If OffZ <> 0 Then
                     Try
                         Body.StandoffHeight := MilsToCoord(OffZ);
                         DidStandoff := True;
                     Except End;
-                If (OffX <> 0) Or (OffY <> 0) Then
+                { THE BODY ARRIVES AT THE BOARD ORIGIN, and a footprint made }
+                { current above sits at Altium's library origin (about     }
+                { 50000,50000 mil, see FootprintOriginX), so the body      }
+                { landed that far from its footprint and needed an offset   }
+                { of +50000 to come back. Moved by the footprint's origin   }
+                { as well as the caller's offset, which is relative to it. }
+                OrgX := FootprintOriginX(Footprint);
+                OrgY := FootprintOriginY(Footprint);
+                If (OrgX <> 0) Or (OrgY <> 0) Or (OffX <> 0) Or (OffY <> 0) Then
                     Try
-                        Body.MoveByXY(MilsToCoord(OffX), MilsToCoord(OffY));
-                        DidMove := True;
+                        Body.MoveByXY(OrgX + MilsToCoord(OffX), OrgY + MilsToCoord(OffY));
+                        Shifted := True;
+                        DidMove := (OffX <> 0) Or (OffY <> 0);
                     Except End;
 
                 AppliedJson := JsonBool('standoff_height', DidStandoff) + ','
@@ -11931,6 +14205,9 @@ Begin
                     JsonBool('success', True) + ','
                     + JsonStr('footprint', FpName) + ','
                     + JsonStr('model', ExtractFileName(ModelPath)) + ','
+                    + JsonBool('moved_to_footprint_origin', Shifted Or ((OrgX = 0) And (OrgY = 0))) + ','
+                    + JsonRaw('footprint_origin_mils', '[' + IntToStr(CoordToMils(OrgX))
+                        + ',' + IntToStr(CoordToMils(OrgY)) + ']') + ','
                     + JsonRaw('applied', JsonObj(AppliedJson))));
             End;
         End;
@@ -11938,7 +14215,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(PcbLib.Board.FileName);
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
 End;
 
 Function Lib_GetComponents(Params : String; RequestId : String) : String;
@@ -12028,7 +14305,7 @@ Begin
     // a fast metadata reader, it returns CompName, AliasName, PartCount and
     // Description directly from the lib file without loading every symbol's
     // primitives, so the cheap path scales linearly with file IO.
-    LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+    LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
     If LibReader = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'READER_FAILED', 'Failed to create library reader for: ' + LibPath);
@@ -12177,7 +14454,7 @@ Begin
     Result := False;
     LowerQuery := LowerCase(Query);
 
-    LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+    LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
     If LibReader = Nil Then Exit;
 
     Try
@@ -12484,7 +14761,7 @@ Begin
 
         { Read Altium's own copy of the name at this position. }
         WantName := '';
-        LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+        LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
         If LibReader = Nil Then
         Begin
             ErrCode := 'READER_FAILED';
@@ -12658,7 +14935,7 @@ Begin
     AliasName := '';
     PartCount := 1;
     FoundInfo := False;
-    LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+    LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
     If LibReader <> Nil Then
     Begin
         Try
@@ -13174,12 +15451,12 @@ Begin
     If (PathA = '') Or (PathB = '') Then
     Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'library_a and library_b are required'); Exit; End;
 
-    ReaderA := SchServer.CreateLibCompInfoReader(PathA);
+    ReaderA := SchServer.CreateLibCompInfoReader(SafeSchLibPath(PathA));
     If ReaderA = Nil Then Begin Result := BuildErrorResponse(RequestId, 'READER_FAILED', 'Cannot read library A'); Exit; End;
     ReaderA.ReadAllComponentInfo;
     NumA := ReaderA.NumComponentInfos;
 
-    ReaderB := SchServer.CreateLibCompInfoReader(PathB);
+    ReaderB := SchServer.CreateLibCompInfoReader(SafeSchLibPath(PathB));
     If ReaderB = Nil Then
     Begin
         SchServer.DestroyCompInfoReader(ReaderA);
@@ -13551,7 +15828,8 @@ Begin
                 ',"y":' + IntToStr(CoordToMils(Pin.Location.Y)) +
                 ',"orientation":' + IntToStr(Pin.Orientation) +
                 ',"length":' + IntToStr(CoordToMils(Pin.PinLength)) +
-                ',"hidden":' + BoolToJsonStr(Pin.IsHidden) + '}';
+                ',"hidden":' + BoolToJsonStr(Pin.IsHidden) +
+                ',"owner_part_id":' + IntToStr(Pin.OwnerPartId) + '}';
             Inc(PinCount);
 
             Pin := PinIterator.NextSchObject;
@@ -13685,7 +15963,10 @@ Begin
     End;
 
     Overwrote := False;
-    Existing := LookupLibComponent(DestLib, NewName);
+    { In memory only: a miss is the usual answer, and the reopening lookup   }
+    { would close DestLib under us and the copy would land on nothing. See   }
+    { FindLibComponentInMemory.                                             }
+    Existing := FindLibComponentInMemory(DestLib, NewName);
     If Existing <> Nil Then
     Begin
         If Not Overwrite Then
@@ -13711,6 +15992,29 @@ Begin
     { auto name and every later lookup of new_name missed it.              }
     NewComp.LibReference := NewName;
     SchServer.ProcessControl.PostProcess(DestLib, 'Edit');
+
+    { REGISTER THE NEW COMPONENT, or it does not reach disk. Lib_CreateSymbol
+      broadcasts this and persists; this path did not and did not, which is
+      the whole difference between the two. Without the broadcast the symbol
+      lives in the data model -- lib_get_component_details reads it back in
+      full, and the copy reports verified -- while the document is never told
+      anything was added, so every save route writes nothing.
+
+      MEASURED 2026-09-21: a copied component read back correctly while the
+      .SchLib stayed byte-identical at 662016 bytes across app_save_all,
+      WorkspaceManager:SaveObject and Altium's own File > Save, with zero
+      occurrences of the new name. Creating the same symbol from scratch
+      grew the file, because that path registers.
+
+      source=Nil, dest=Nil, broadcast: the new-component pattern from
+      Altium's own createcomp_in_lib.pas, not the per-primitive
+      SchRegisterObject(Container, Obj) which sends from the container. }
+    Try
+        SchServer.RobotManager.SendMessage(
+            Nil, Nil, SCHM_PrimitiveRegistration,
+            NewComp.I_ObjectAddress);
+    Except End;
+
     DestLib.CurrentSchComponent := NewComp;
     LastCreatedLibComponent := NewComp;
     LastCreatedLibComponentName := NewName;
@@ -14252,7 +16556,7 @@ Begin
     { in document order; for each name we load the live ISch_Component via }
     { GetState_SchComponentByLibRef to read its designator/comment/parameter}
     { style records. This is the same pattern Lib_GetComponents uses.        }
-    LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+    LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
     If LibReader = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'READER_FAILED',
@@ -14651,7 +16955,7 @@ Begin
             { Bulk mode: walk library via CompInfoReader, same enumeration as }
             { Lib_GetComponents and Lib_AuditStyles.                            }
             Scope := 'bulk';
-            LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+            LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
             If LibReader = Nil Then
             Begin
                 Result := BuildErrorResponse(RequestId, 'READER_FAILED',
@@ -14914,7 +17218,7 @@ Begin
             Else
             Begin
                 Scope := 'bulk';
-                LibReader := SchServer.CreateLibCompInfoReader(LibPath);
+                LibReader := SchServer.CreateLibCompInfoReader(SafeSchLibPath(LibPath));
                 If LibReader = Nil Then
                 Begin
                     Result := BuildErrorResponse(RequestId, 'READER_FAILED',
@@ -15420,6 +17724,148 @@ Begin
 End;
 
 {..............................................................................}
+{ Lib_SetPinOwnerPart - reassign named pins of a multi-part symbol to a       }
+{ sub-part, or to Part Zero (owner_part_id=0) so ONE pin is shared by the     }
+{ whole package rather than redrawn at every sub-part origin. Part Zero is    }
+{ Altium's documented placement for a multi-part component's supply pins.     }
+{ Params: component_name (optional, defaults to the editor's current symbol), }
+{         pin_designators (required, comma-separated), owner_part_id (req).   }
+{..............................................................................}
+Function Lib_SetPinOwnerPart(Params : String; RequestId : String) : String;
+Var
+    SchLib : ISch_Lib;
+    Component : ISch_Component;
+    Iter : ISch_Iterator;
+    Pin : ISch_Pin;
+    WantName, WantPins, OwnerStr, Haystack, Changed : String;
+    OwnerId, ChangedCount, PartTotal : Integer;
+    First : Boolean;
+Begin
+    SchLib := SchServer.GetCurrentSchDocument;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB', 'No schematic library is active');
+        Exit;
+    End;
+
+    WantPins := ExtractJsonValue(Params, 'pin_designators');
+    { "3, 12" would otherwise build ',3, 12,' and match nothing, returning }
+    { count 0 as if the pins did not exist.                                }
+    WantPins := StringReplace(WantPins, ' ', '', MkSet(rfReplaceAll));
+    OwnerStr := ExtractJsonValue(Params, 'owner_part_id');
+    If (WantPins = '') Or (OwnerStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'pin_designators and owner_part_id are required');
+        Exit;
+    End;
+    OwnerId := StrToIntDef(OwnerStr, -1);
+    If OwnerId < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'owner_part_id must be 0 or greater');
+        Exit;
+    End;
+
+    { Resolve through the library, never off the editor's current component:  }
+    { SchIterator_Create is undeclared on a component fetched that way.       }
+    WantName := ExtractJsonValue(Params, 'component_name');
+    If WantName = '' Then
+    Begin
+        Component := GetTargetLibComponent(SchLib);
+        If Component <> Nil Then
+            Try
+                WantName := Component.LibReference;
+            Except
+                WantName := '';
+            End;
+    End;
+    If WantName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No component is selected; pass component_name to name one');
+        Exit;
+    End;
+
+    { LookupLibComponent, not the raw index. GetState_SchComponentByLibRef
+      asks an index the library only builds when it LOADS, so a symbol
+      created earlier in this same session is invisible to it: author a
+      symbol, then move its pins to a sub-part in the very next call, and
+      the second call reports COMPONENT_NOT_FOUND for a symbol that is
+      plainly there. The helper tries the index, then walks the document,
+      then the reference the script still holds from creation. }
+    Component := LookupLibComponent(SchLib, WantName);
+    If Component = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
+            'Component not found in library: ' + WantName);
+        Exit;
+    End;
+
+    { An OwnerPartId above the symbol's part count is accepted by the       }
+    { assignment but maps to no displayable part, so the pin silently       }
+    { disappears from every sub-part view. Refuse rather than corrupt. Part }
+    { Zero is always legal. PartCount reads high by one on some symbols,    }
+    { which only makes this bound permissive, never wrong.                  }
+    PartTotal := 0;
+    Try PartTotal := Component.PartCount; Except End;
+    If PartTotal < 1 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PART_COUNT',
+            'Could not read PartCount for ' + WantName + '; refusing to '
+            + 'assign an unvalidated owner_part_id');
+        Exit;
+    End;
+    If OwnerId > PartTotal Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'owner_part_id ' + IntToStr(OwnerId) + ' exceeds PartCount '
+            + IntToStr(PartTotal) + ' for ' + WantName);
+        Exit;
+    End;
+
+    Haystack := ',' + WantPins + ',';
+    ChangedCount := 0;
+    Changed := '';
+    First := True;
+
+    SchServer.ProcessControl.PreProcess(SchLib, '');
+    Try
+        Iter := Component.SchIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(ePin));
+            Pin := Iter.FirstSchObject;
+            While Pin <> Nil Do
+            Begin
+                If Pos(',' + Pin.Designator + ',', Haystack) > 0 Then
+                Begin
+                    Try
+                        Pin.OwnerPartId := OwnerId;
+                        If Not First Then Changed := Changed + ',';
+                        First := False;
+                        Changed := Changed + '"' + EscapeJsonString(Pin.Designator) + '"';
+                        ChangedCount := ChangedCount + 1;
+                    Except End;
+                End;
+                Pin := Iter.NextSchObject;
+            End;
+        Finally
+            Component.SchIterator_Destroy(Iter);
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchLib, '');
+    End;
+
+    MarkLibDirty(SchLib);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"component":"' + EscapeJsonString(WantName) +
+        '","owner_part_id":' + IntToStr(OwnerId) +
+        ',"pins_changed":[' + Changed + ']' +
+        ',"count":' + IntToStr(ChangedCount) + '}');
+End;
+
+{..............................................................................}
 { Lib_InstallLibrary / Lib_UninstallLibrary - register or unregister a library }
 { (.IntLib / .SchLib / .PcbLib) with the environment's Available Libraries.    }
 {..............................................................................}
@@ -15473,6 +17919,119 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"uninstalled":' + BoolToJsonStr(Ok) + ',"library_path":"'
         + EscapeJsonString(Path) + '"}');
+End;
+
+{..............................................................................}
+{ Lib_GetInstalledLibraries - what the environment has installed.              }
+{                                                                              }
+{ install_library and uninstall_library have been here from the start and      }
+{ nothing could report the result, so the only way to answer "what is          }
+{ installed?" was to read the registry from outside Altium. lib_search only    }
+{ walks SchLibs already open in the workspace, which is a different and much   }
+{ smaller set.                                                                 }
+{                                                                              }
+{ TWO LISTS, NOT ONE, and they are not interchangeable. Installed* is what is  }
+{ switched on for the current environment; Available* is every library known   }
+{ to it. The TYPE is published only on the Available side, so the type of an   }
+{ installed library is found by matching its path across, which is what the    }
+{ published example scripts do.                                                }
+{                                                                              }
+{ The type ordinal is returned as an Integer and named separately rather than  }
+{ compared against enum identifiers: an identifier this build does not declare }
+{ faults at runtime as a modal the polling loop cannot catch, and the ordinals }
+{ are stable where the names are not.                                          }
+{ Params: with_counts (optional, "false" skips the per-library component count,}
+{         which opens each library and is the expensive half).                 }
+{..............................................................................}
+Function LibTypeName(Ordinal : Integer) : String;
+Begin
+    { TLibraryType, in declaration order. }
+    If Ordinal = 0 Then Result := 'integrated'
+    Else If Ordinal = 1 Then Result := 'source'
+    Else If Ordinal = 2 Then Result := 'datafile'
+    Else If Ordinal = 3 Then Result := 'database'
+    Else If Ordinal = 4 Then Result := 'none'
+    Else If Ordinal = 5 Then Result := 'query'
+    Else If Ordinal = 6 Then Result := 'design_items'
+    Else Result := 'unknown';
+End;
+
+Function InstalledLibTypeOrdinal(LibPath : String) : Integer;
+Var
+    I, AvailCount : Integer;
+Begin
+    { -1 means the path is installed but absent from the Available list, }
+    { which is a real state worth reporting rather than flattening to a  }
+    { type name that would then be wrong.                                }
+    Result := -1;
+    AvailCount := 0;
+    Try AvailCount := IntegratedLibraryManager.AvailableLibraryCount; Except End;
+    For I := 0 To AvailCount - 1 Do
+    Begin
+        Try
+            If IntegratedLibraryManager.AvailableLibraryPath(I) = LibPath Then
+            Begin
+                Result := IntegratedLibraryManager.AvailableLibraryType(I);
+                Break;
+            End;
+        Except
+        End;
+    End;
+End;
+
+Function Lib_GetInstalledLibraries(Params : String; RequestId : String) : String;
+Var
+    JsonItems, LibPath, WithCounts : String;
+    I, InstCount, AvailCount, TypeOrd, CompCount : Integer;
+    First, WantCounts : Boolean;
+Begin
+    If IntegratedLibraryManager = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MANAGER', 'IntegratedLibraryManager unavailable');
+        Exit;
+    End;
+
+    WithCounts := ExtractJsonValue(Params, 'with_counts');
+    WantCounts := (WithCounts <> 'false') And (WithCounts <> 'False') And (WithCounts <> '0');
+
+    InstCount := 0;
+    Try InstCount := IntegratedLibraryManager.InstalledLibraryCount; Except End;
+    AvailCount := 0;
+    Try AvailCount := IntegratedLibraryManager.AvailableLibraryCount; Except End;
+
+    JsonItems := '';
+    First := True;
+    For I := 0 To InstCount - 1 Do
+    Begin
+        LibPath := '';
+        Try LibPath := IntegratedLibraryManager.InstalledLibraryPath(I); Except End;
+        If LibPath = '' Then Continue;
+
+        TypeOrd := InstalledLibTypeOrdinal(LibPath);
+
+        { GetComponentCount opens the library to answer, so it is the one }
+        { expensive call here and the caller can decline it. -1 says not  }
+        { asked, which is not the same as an empty library.               }
+        CompCount := -1;
+        If WantCounts Then
+        Begin
+            Try CompCount := IntegratedLibraryManager.GetComponentCount(LibPath); Except End;
+        End;
+
+        If Not First Then JsonItems := JsonItems + ',';
+        First := False;
+        JsonItems := JsonItems + '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+            + ',"file_name":"' + EscapeJsonString(ExtractFileName(LibPath)) + '"'
+            + ',"library_type":"' + LibTypeName(TypeOrd) + '"'
+            + ',"library_type_ordinal":' + IntToStr(TypeOrd)
+            + ',"component_count":' + IntToStr(CompCount) + '}';
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"libraries":[' + JsonItems + ']'
+        + ',"installed_count":' + IntToStr(InstCount)
+        + ',"available_count":' + IntToStr(AvailCount)
+        + ',"counts_included":' + BoolToJsonStr(WantCounts) + '}');
 End;
 
 { Lib_DeleteComponent - remove one symbol from a schematic library (.SchLib).  }
@@ -15624,7 +18183,10 @@ Begin
 
     { Refuse to collide with an existing part. If new_name already resolves }
     { and it is a different object, the rename would create a duplicate.    }
-    Existing := LookupLibComponent(SchLib, NewName);
+    { In memory only: the reopening lookup would close SchLib under us, and }
+    { the rename would land on a component in a closed document. See       }
+    { FindLibComponentInMemory.                                             }
+    Existing := FindLibComponentInMemory(SchLib, NewName);
     If (Existing <> Nil) And (Existing <> Component) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NAME_EXISTS',
@@ -15764,11 +18326,19 @@ Begin
     Try PcbLib.RemoveComponent(Target); Except End;
     Try PcbLib.DeRegisterComponent(Target); Except End;
     PCBServer.PostProcess;
-    SaveDocByPath(PcbLib.Board.FileName);
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
 
+    { SAY THAT THE WRITE IS DEFERRED. The footprint is gone from the
+      in-memory library and the file on disk still contains it until a
+      flush. Reported by a user who read success, reloaded, and found the
+      footprint still there with an unchanged timestamp. The docstring is
+      not enough: the reply is what a caller reads. }
     RespJson :=
         '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"' +
-        ',"deleted":"' + EscapeJsonString(FpWanted) + '"}';
+        ',"deleted":"' + EscapeJsonString(FpWanted) + '"' +
+        ',"written_to_disk":false,"pending_save":true' +
+        ',"note":"removed in memory and the library marked dirty. The file '
+        + 'still contains it until app_save_all or proj_save flushes."}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
@@ -15940,7 +18510,7 @@ Begin
     PCBServer.PostProcess;
     Try PcbLib.Board.ViewManager_FullUpdate; Except End;
     Try PcbLib.RefreshView; Except End;
-    SaveDocByPath(PcbLib.Board.FileName);
+    MarkDocDirtyByPath(PcbLib.Board.FileName);
 
     RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
         + ',"footprint":"' + EscapeJsonString(FpName) + '"'
@@ -16526,77 +19096,6 @@ Begin
         Exit;
     End;
 
-    If UpperCase(ExtractFileExt(LibPath)) = '.SCHDOC' Then
-    Begin
-        SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(LibPath); Except End;
-        If SchDoc = Nil Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'No loaded schematic document at ' + LibPath);
-            Exit;
-        End;
-        Component := Nil;
-        CompIter := SchDoc.SchIterator_Create;
-        Try
-            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
-            Component := CompIter.FirstSchObject;
-            While Component <> Nil Do
-            Begin
-                If Component.Designator.Text = CompName Then Break;
-                Component := CompIter.NextSchObject;
-            End;
-        Finally
-            SchDoc.SchIterator_Destroy(CompIter);
-        End;
-        If Component = Nil Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND', 'Placed component not found in ' + LibPath + ': ' + CompName);
-            Exit;
-        End;
-        Target := Nil;
-        ImplIter := Component.SchIterator_Create;
-        Try
-            ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
-            Impl := ImplIter.FirstSchObject;
-            While Impl <> Nil Do
-            Begin
-                CurName := '';
-                Try CurName := Impl.ModelName; Except End;
-                If (OldName = '') Or (CurName = OldName) Then
-                Begin Target := Impl; Break; End;
-                Impl := ImplIter.NextSchObject;
-            End;
-        Finally
-            Component.SchIterator_Destroy(ImplIter);
-        End;
-        If Target = Nil Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'MODEL_NOT_FOUND', 'No matching model on placed component ' + CompName);
-            Exit;
-        End;
-        SchServer.ProcessControl.PreProcess(SchDoc, 'Set model name');
-        SchBeginModify(Target);
-        Try Target.ModelName := NewName; Except End;
-        LinkCount := 0;
-        Try LinkCount := Target.DatafileLinkCount; Except End;
-        For J := 0 To LinkCount - 1 Do
-        Begin
-            Link := Nil;
-            Try Link := Target.DatafileLink[J]; Except End;
-            If Link <> Nil Then Try Link.EntityName := NewName; Except End;
-        End;
-        SchEndModify(Target);
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Set model name');
-        Try SchDoc.GraphicallyInvalidate; Except End;
-        ServerDoc := Client.GetDocumentByPath(LibPath);
-        If ServerDoc <> Nil Then Try ServerDoc.SetModified(True); Except End;
-        RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
-            + ',"component":"' + EscapeJsonString(CompName) + '"'
-            + ',"new_model_name":"' + EscapeJsonString(NewName) + '","scope":"SchDoc"}';
-        Result := BuildSuccessResponse(RequestId, RespJson);
-        Exit;
-    End;
-
     SchLib := FocusSchLib(LibPath);
     If SchLib = Nil Then
     Begin
@@ -16875,7 +19374,9 @@ Begin
         SourceComp := LookupLibComponent(SourceLib, Name);
         If SourceComp = Nil Then Begin Inc(Failed); Continue; End;
 
-        Existing := LookupLibComponent(DestLib, Name);
+        { In memory only, or a miss reopens DestLib under the loop. See }
+        { FindLibComponentInMemory.                                     }
+        Existing := FindLibComponentInMemory(DestLib, Name);
         If (Existing <> Nil) And (Not Overwrite) Then Begin Inc(Skipped); Continue; End;
 
         NewComp := SourceComp.Replicate;
@@ -16885,6 +19386,16 @@ Begin
         SchServer.ProcessControl.PreProcess(DestLib, '');
         If Existing <> Nil Then Try DestLib.RemoveSchComponent(Existing); Except End;
         DestLib.AddSchComponent(NewComp);
+        { REGISTER IT IN THE DESTINATION, or the move does not reach disk.
+          Same defect as the copy path: the component is added to a library
+          that is never told, so it reads back correctly and no save route
+          writes it. Broadcast as a new component, the pattern from Altium's
+          createcomp_in_lib.pas. }
+        Try
+            SchServer.RobotManager.SendMessage(
+                Nil, Nil, SCHM_PrimitiveRegistration,
+                NewComp.I_ObjectAddress);
+        Except End;
         SchServer.ProcessControl.PostProcess(DestLib, 'Move component');
 
         If DeleteFromSource Then
@@ -16915,6 +19426,61 @@ Begin
         + ',"skipped":' + IntToStr(Skipped)
         + ',"failed":' + IntToStr(Failed) + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
+End;
+
+{ AlignCopiedFootprint - after Footprint.CopyTo, put every primitive of the    }
+{ copy where it sat relative to its own footprint. CopyTo keeps ABSOLUTE       }
+{ coordinates, and a source open in the editor sits at Altium's library        }
+{ origin (about 50000,50000 mil, see FootprintOriginX) while a new footprint   }
+{ does not, so a copy within one library came out with every pad 50000 mil     }
+{ from its origin. Collected first and deduplicated by object address: a       }
+{ primitive registered in this session is yielded twice by the group iterator, }
+{ and moving it twice would be the same error the other way. The list is      }
+{ never freed (TInterfaceList.Free on design objects crashes Altium).          }
+{ Returns the primitives moved, or -1 when the two origins already agree.      }
+Function AlignCopiedFootprint(Src, Dest : IPCB_LibComponent) : Integer;
+Var
+    DX, DY : TCoord;
+    Iter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
+    Prims : TInterfaceList;
+    Seen : TStringList;
+    Addr : String;
+    I : Integer;
+Begin
+    Result := -1;
+    DX := FootprintOriginX(Dest) - FootprintOriginX(Src);
+    DY := FootprintOriginY(Dest) - FootprintOriginY(Src);
+    If (DX = 0) And (DY = 0) Then Exit;
+    Result := 0;
+    Prims := CreateObject(TInterfaceList);
+    Seen := TStringList.Create;
+    Iter := Dest.GroupIterator_Create;
+    Try
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            Addr := '';
+            Try Addr := IntToStr(Prim.I_ObjectAddress); Except End;
+            If (Addr = '') Or (Seen.IndexOf(Addr) < 0) Then
+            Begin
+                If Addr <> '' Then Seen.Add(Addr);
+                Prims.Add(Prim);
+            End;
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Dest.GroupIterator_Destroy(Iter);
+    End;
+    Seen.Free;
+    For I := 0 To Prims.Count - 1 Do
+    Begin
+        Prim := Prims.Items[I];
+        Try
+            Prim.MoveByXY(DX, DY);
+            Inc(Result);
+        Except End;
+    End;
 End;
 
 { Lib_MoveFootprints - bulk copy (+ optional delete) of footprints between two  }
@@ -17007,6 +19573,7 @@ Begin
         NewFP := DestLib.CreateNewComponent;
         If NewFP = Nil Then Begin Inc(Failed); Continue; End;
         Try Footprint.CopyTo(NewFP, eFullCopy); Except End;
+        AlignCopiedFootprint(Footprint, NewFP);
         Try NewFP.Name := Name; Except End;
         DestLib.RegisterComponent(NewFP);
 
@@ -17022,8 +19589,8 @@ Begin
 
     Try DestLib.Board.ViewManager_FullUpdate; Except End;
     Try DestLib.RefreshView; Except End;
-    SaveDocByPath(DestLib.Board.FileName);
-    If DeleteFromSource Then SaveDocByPath(SourceLib.Board.FileName);
+    MarkDocDirtyByPath(DestLib.Board.FileName);
+    If DeleteFromSource Then MarkDocDirtyByPath(SourceLib.Board.FileName);
 
     RespJson := '{"success":true'
         + ',"source_library":"' + EscapeJsonString(SourcePath) + '"'
@@ -17047,7 +19614,7 @@ Var
     Overwrite, SameLib : Boolean;
     SourceLib, DestLib : IPCB_Library;
     Footprint, NewFP, Existing, Fp : IPCB_LibComponent;
-    J : Integer;
+    J, Aligned : Integer;
 Begin
     SourceLibPath := ExtractJsonValue(Params, 'source_library');
     DestLibPath := ExtractJsonValue(Params, 'dest_library');
@@ -17137,19 +19704,21 @@ Begin
         Exit;
     End;
     Try Footprint.CopyTo(NewFP, eFullCopy); Except End;
+    Aligned := AlignCopiedFootprint(Footprint, NewFP);
     Try NewFP.Name := NewName; Except End;
     DestLib.RegisterComponent(NewFP);
     PCBServer.PostProcess;
 
     Try DestLib.Board.ViewManager_FullUpdate; Except End;
     Try DestLib.RefreshView; Except End;
-    SaveDocByPath(DestLib.Board.FileName);
+    MarkDocDirtyByPath(DestLib.Board.FileName);
 
     RespJson := '{"success":true'
         + ',"source_library":"' + EscapeJsonString(SourceLibPath) + '"'
         + ',"dest_library":"' + EscapeJsonString(DestLibPath) + '"'
         + ',"source":"' + EscapeJsonString(SourceName) + '"'
         + ',"new_name":"' + EscapeJsonString(NewName) + '"'
+        + ',"primitives_realigned":' + IntToStr(Aligned)
         + ',"same_library":' + BoolToJsonStr(SameLib) + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
@@ -18246,7 +20815,7 @@ Begin
     End;
 
     Try Board.ViewManager_FullUpdate; Except End;
-    SaveDocByPath(Where);
+    MarkDocDirtyByPath(Where);
 
     Result := BuildSuccessResponse(RequestId,
         '{"document":"' + EscapeJsonString(Where) + '",'
@@ -18538,7 +21107,7 @@ Begin
     If Removed > 0 Then
     Begin
         Try PcbLib.Board.ViewManager_FullUpdate; Except End;
-        SaveDocByPath(LibPath);
+        MarkDocDirtyByPath(LibPath);
     End;
 
     Result := BuildSuccessResponse(RequestId,
@@ -18623,6 +21192,2095 @@ Begin
         ExtractJsonValue(Params, 'tidy_pairs') = 'true', LibPath, RequestId);
 End;
 
+{..............................................................................}
+{ DATABASE LIBRARIES (DbLib)                                                   }
+{                                                                              }
+{ A .DbLib holds no parts. It is a connection string plus a list of tables,    }
+{ and every row of an enabled table is a component: the row names a symbol in  }
+{ a .SchLib and footprints in .PcbLibs, and carries the parameters. lib_search }
+{ reads open .SchLib files only, so a user whose parts live in a DbLib got 0   }
+{ hits from it.                                                                }
+{                                                                              }
+{ WHAT ALTIUM PUBLISHES, AND WHAT IS USED HERE. The integrated-library API     }
+{ lists the DbLib members of IntegratedLibraryManager (GetAvailableDBLibDoc-   }
+{ AtPath, GetComponentLocationFromDatabase, GetDatabaseDatafileLocation and    }
+{ others) by name only, with no signature and no description. Community        }
+{ scripts show GetAvailableDBLibDocAtPath answering a document with            }
+{ GetTableCount, GetTableNameAt and GetConnectionString, and nothing that      }
+{ lists a table's columns or rows. So the table definitions are read from the  }
+{ .DbLib file itself, inside this handler and not from Python: it is an INI    }
+{ with a ConnectionString, one [TableN] section per table and one Options=     }
+{ line per mapped column. The rows are read through ADO, with TADOConnection   }
+{ and TADOQuery exactly as libADOQuery.pas in the reference drives them from   }
+{ DelphiScript.                                                                }
+{                                                                              }
+{ READ ONLY. Every statement is a SELECT assembled from the DbLib's own        }
+{ declared table names and the key column it names, quoted with the DbLib's    }
+{ quote characters by DbLibQuoteIdent, which refuses any name that could       }
+{ close the quote. Text a caller supplies never enters a statement: a search   }
+{ is matched here, row by row, and a record key is bound as an ADO parameter.  }
+{ Access and Excel sources are opened with Mode=Read, which is also what lets  }
+{ a second reader open a file Altium holds Share Deny Write.                   }
+{                                                                              }
+{ A CONNECTION STRING CAN CARRY A PASSWORD. It is never returned and never put }
+{ in an error. DbLibRedactConnStr blanks every Password and Pwd value before   }
+{ the string is reported, and no error here quotes the connection or ADO's own }
+{ message text.                                                                }
+{..............................................................................}
+
+{ The text after the first '=' of an INI line. }
+Function DbLibLineValue(Line : String) : String;
+Var
+    P : Integer;
+    Value : String;
+Begin
+    Value := '';
+    P := Pos('=', Line);
+    If P > 0 Then Value := Copy(Line, P + 1, Length(Line));
+    Result := Value;
+End;
+
+{ True when an INI line sets Key. Case and spaces around the key are ignored. }
+Function DbLibLineHasKey(Line : String; Key : String) : Boolean;
+Var
+    P : Integer;
+Begin
+    Result := False;
+    P := Pos('=', Line);
+    If P < 2 Then Exit;
+    Result := LowerCase(Trim(Copy(Line, 1, P - 1))) = LowerCase(Key);
+End;
+
+{ The name inside a section header line, or '' for any other line. }
+Function DbLibSectionName(Line : String) : String;
+Var
+    S, Name : String;
+Begin
+    Name := '';
+    S := Trim(Line);
+    If (Length(S) >= 3) And (Copy(S, 1, 1) = '[') And (Copy(S, Length(S), 1) = ']')
+        And (Pos('=', S) = 0) Then
+        Name := Copy(S, 2, Length(S) - 2);
+    Result := Name;
+End;
+
+{ True for the sections that declare a table: Table1, Table2 and so on. }
+Function DbLibIsTableSection(Name : String) : Boolean;
+Var
+    I : Integer;
+    Rest, Ch : String;
+Begin
+    Result := False;
+    If LowerCase(Copy(Name, 1, 5)) <> 'table' Then Exit;
+    Rest := Copy(Name, 6, Length(Name));
+    If Rest = '' Then Exit;
+    For I := 1 To Length(Rest) Do
+    Begin
+        Ch := Copy(Rest, I, 1);
+        If (Ch < '0') Or (Ch > '9') Then Exit;
+    End;
+    Result := True;
+End;
+
+{ The first value of Key outside the table sections, '' when absent. }
+Function DbLibGlobalValue(Lines : TStringList; Key : String) : String;
+Var
+    I : Integer;
+    InTable, Found : Boolean;
+    Line, Section, Value : String;
+Begin
+    Value := '';
+    InTable := False;
+    Found := False;
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        If Found Then Break;
+        Line := Lines.Get(I);
+        Section := DbLibSectionName(Line);
+        If Section <> '' Then
+        Begin
+            InTable := DbLibIsTableSection(Section);
+            Continue;
+        End;
+        If (Not InTable) And DbLibLineHasKey(Line, Key) Then
+        Begin
+            Value := DbLibLineValue(Line);
+            Found := True;
+        End;
+    End;
+    Result := Value;
+End;
+
+{ Every table the DbLib declares, in file order, separated by tabs. A table   }
+{ section with no TableName is skipped.                                       }
+Function DbLibTableNames(Lines : TStringList) : String;
+Var
+    I : Integer;
+    InTable : Boolean;
+    Line, Section, Names, Name : String;
+Begin
+    Names := '';
+    InTable := False;
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        Line := Lines.Get(I);
+        Section := DbLibSectionName(Line);
+        If Section <> '' Then
+        Begin
+            InTable := DbLibIsTableSection(Section);
+            Continue;
+        End;
+        If InTable And DbLibLineHasKey(Line, 'TableName') Then
+        Begin
+            Name := Trim(DbLibLineValue(Line));
+            If Name <> '' Then
+            Begin
+                If Names <> '' Then Names := Names + #9;
+                Names := Names + Name;
+            End;
+        End;
+    End;
+    Result := Names;
+End;
+
+{ Every section name in the file, separated by tabs. Reported when no table   }
+{ is found, so a file laid out differently can be diagnosed from the reply.   }
+Function DbLibSectionNames(Lines : TStringList) : String;
+Var
+    I : Integer;
+    Section, Names : String;
+Begin
+    Names := '';
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        Section := DbLibSectionName(Lines.Get(I));
+        If Section <> '' Then
+        Begin
+            If Names <> '' Then Names := Names + #9;
+            Names := Names + Section;
+        End;
+    End;
+    Result := Names;
+End;
+
+{ The value of Key in the table section whose TableName is Table, matched    }
+{ without case. TableName need not come first in its section, so a section   }
+{ is only judged once it ends. '' when the table or the key is absent.        }
+Function DbLibTableAttr(Lines : TStringList; Table : String; Key : String) : String;
+Var
+    I : Integer;
+    InTable, Done, HaveValue : Boolean;
+    Line, Section, SecTable, SecValue, Value : String;
+Begin
+    Value := '';
+    InTable := False;
+    Done := False;
+    HaveValue := False;
+    SecTable := '';
+    SecValue := '';
+    For I := 0 To Lines.Count Do
+    Begin
+        If Done Then Break;
+        If I < Lines.Count Then
+        Begin
+            Line := Lines.Get(I);
+            Section := DbLibSectionName(Line);
+        End
+        Else
+        Begin
+            Line := '';
+            Section := 'end of file';
+        End;
+        If Section <> '' Then
+        Begin
+            If InTable And (SecTable <> '')
+                And (LowerCase(SecTable) = LowerCase(Trim(Table))) Then
+            Begin
+                Value := SecValue;
+                Done := True;
+            End;
+            InTable := DbLibIsTableSection(Section);
+            SecTable := '';
+            SecValue := '';
+            HaveValue := False;
+        End
+        Else
+        Begin
+            If InTable Then
+            Begin
+                If DbLibLineHasKey(Line, 'TableName') Then
+                    SecTable := Trim(DbLibLineValue(Line));
+                If (Not HaveValue) And DbLibLineHasKey(Line, Key) Then
+                Begin
+                    SecValue := DbLibLineValue(Line);
+                    HaveValue := True;
+                End;
+            End;
+        End;
+    End;
+    Result := Value;
+End;
+
+{ One Name=Value item out of an Options= body, whose items are separated by  }
+{ '|'. '' when the item is absent.                                           }
+Function DbLibOptionValue(Body : String; Name : String) : String;
+Var
+    Rest, Item, Value : String;
+    P, Q : Integer;
+    Found : Boolean;
+Begin
+    Value := '';
+    Found := False;
+    Rest := Body;
+    While (Rest <> '') And (Not Found) Do
+    Begin
+        P := Pos('|', Rest);
+        If P > 0 Then
+        Begin
+            Item := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Item := Rest;
+            Rest := '';
+        End;
+        Q := Pos('=', Item);
+        If (Q > 1) And (LowerCase(Trim(Copy(Item, 1, Q - 1))) = LowerCase(Name)) Then
+        Begin
+            Value := Copy(Item, Q + 1, Length(Item));
+            Found := True;
+        End;
+    End;
+    Result := Value;
+End;
+
+{ The column a table maps to a system parameter such as [Library Ref], read   }
+{ from the DbLib's Options= lines. '' when the DbLib maps nothing to it.      }
+Function DbLibMappedField(Lines : TStringList; Table : String; ParamName : String) : String;
+Var
+    I, P : Integer;
+    Line, Body, Field, Full : String;
+    Found : Boolean;
+Begin
+    Field := '';
+    Found := False;
+    For I := 0 To Lines.Count - 1 Do
+    Begin
+        If Found Then Break;
+        Line := Lines.Get(I);
+        If Not DbLibLineHasKey(Line, 'Options') Then Continue;
+        Body := DbLibLineValue(Line);
+        If LowerCase(Trim(DbLibOptionValue(Body, 'TableNameOnly'))) <> LowerCase(Trim(Table)) Then Continue;
+        If LowerCase(Trim(DbLibOptionValue(Body, 'ParameterName'))) <> LowerCase(ParamName) Then Continue;
+        Field := Trim(DbLibOptionValue(Body, 'FieldNameOnly'));
+        If Field = '' Then
+        Begin
+            Full := Trim(DbLibOptionValue(Body, 'FieldName'));
+            P := Pos('.', Full);
+            While P > 0 Do
+            Begin
+                Full := Copy(Full, P + 1, Length(Full));
+                P := Pos('.', Full);
+            End;
+            Field := Full;
+        End;
+        If Field <> '' Then Found := True;
+    End;
+    Result := Field;
+End;
+
+{ The column a where-clause lookup matches on, from a clause shaped like      }
+{ [Part Number] = '...': the first quoted name, else the text before '='.    }
+Function DbLibKeyFromWhere(Where : String; LeftQ : String; RightQ : String) : String;
+Var
+    W, Rest, Key : String;
+    P, E : Integer;
+Begin
+    Key := '';
+    W := Trim(Where);
+    If (LeftQ <> '') And (RightQ <> '') Then
+    Begin
+        P := Pos(LeftQ, W);
+        If P > 0 Then
+        Begin
+            Rest := Copy(W, P + Length(LeftQ), Length(W));
+            E := Pos(RightQ, Rest);
+            If E > 1 Then Key := Copy(Rest, 1, E - 1);
+        End;
+    End;
+    If Key = '' Then
+    Begin
+        E := Pos('=', W);
+        If E > 1 Then Key := Trim(Copy(W, 1, E - 1));
+        While (Key <> '') And (Copy(Key, 1, 1) = '(') Do
+            Key := Trim(Copy(Key, 2, Length(Key)));
+    End;
+    Result := Key;
+End;
+
+{ The position of Name in Names, matched without case, or -1. }
+Function DbLibIndexOfName(Names : TStringList; Name : String) : Integer;
+Var
+    I, Found : Integer;
+    Want : String;
+Begin
+    Found := -1;
+    Want := LowerCase(Trim(Name));
+    If Want <> '' Then
+    Begin
+        For I := 0 To Names.Count - 1 Do
+        Begin
+            If LowerCase(Trim(Names.Get(I))) = Want Then
+            Begin
+                Found := I;
+                Break;
+            End;
+        End;
+    End;
+    Result := Found;
+End;
+
+{ The declared spelling of Name in a tab-separated list, matched without     }
+{ case, or '' when the list does not hold it.                                }
+Function DbLibFindTab(TabList : String; Name : String) : String;
+Var
+    Rest, One, Found : String;
+Begin
+    Found := '';
+    Rest := TabList;
+    While (Rest <> '') And (Found = '') Do
+    Begin
+        One := SplitNextTab(Rest);
+        If (One <> '') And (LowerCase(One) = LowerCase(Trim(Name))) Then Found := One;
+    End;
+    Result := Found;
+End;
+
+{ True for a path ending in .DbLib or .SVNDbLib. }
+Function DbLibHasDbLibExt(Path : String) : Boolean;
+Var
+    L : String;
+Begin
+    L := LowerCase(Trim(Path));
+    Result := (Copy(L, Length(L) - 5, 6) = '.dblib')
+        Or (Copy(L, Length(L) - 8, 9) = '.svndblib');
+End;
+
+{ Why a library_path cannot be used, or '' when it can. }
+Function DbLibPathProblem(Path : String) : String;
+Var
+    Problem : String;
+Begin
+    Problem := '';
+    If Trim(Path) = '' Then
+        Problem := 'library_path is required: the full path of a .DbLib file'
+    Else
+    Begin
+        If Not DbLibHasDbLibExt(Path) Then
+            Problem := 'library_path must name a .DbLib or .SVNDbLib file; '
+                + 'a .SchLib is searched with lib_search and an .IntLib '
+                + 'with lib_extract_intlib';
+    End;
+    Result := Problem;
+End;
+
+{ One Key=Value pair out of a connection string, starting at P and moving P  }
+{ past it. A value may be quoted with a double or single quote, in which a    }
+{ doubled quote stands for itself, or braced as ODBC does, and either form    }
+{ may hold a ';'. RawValue keeps the quotes. HasEq is False for a bare word.  }
+{ Returns False when nothing is left.                                         }
+Function DbLibConnNextPair(S : String; Var P : Integer; Var Key : String;
+    Var RawValue : String; Var HasEq : Boolean) : Boolean;
+Var
+    N, Start, Mode : Integer;
+    Ch, Closer, Raw : String;
+Begin
+    Result := False;
+    Key := '';
+    RawValue := '';
+    HasEq := False;
+    N := Length(S);
+    While (P <= N) And ((Copy(S, P, 1) = ';') Or (Copy(S, P, 1) = ' ')) Do
+        Inc(P);
+    If P > N Then Exit;
+    Start := P;
+    While (P <= N) And (Copy(S, P, 1) <> '=') And (Copy(S, P, 1) <> ';') Do
+        Inc(P);
+    Key := Trim(Copy(S, Start, P - Start));
+    Result := True;
+    If (P > N) Or (Copy(S, P, 1) = ';') Then Exit;
+    HasEq := True;
+    Inc(P);
+    Raw := '';
+    Mode := 0;
+    Closer := '';
+    While P <= N Do
+    Begin
+        Ch := Copy(S, P, 1);
+        If Mode = 0 Then
+        Begin
+            If Ch = ';' Then Break;
+            If Trim(Raw) = '' Then
+            Begin
+                If (Ch = '"') Or (Ch = '''') Then
+                Begin
+                    Mode := 1;
+                    Closer := Ch;
+                End;
+                If Ch = '{' Then
+                Begin
+                    Mode := 1;
+                    Closer := '}';
+                End;
+            End;
+            Raw := Raw + Ch;
+            Inc(P);
+        End
+        Else
+        Begin
+            Raw := Raw + Ch;
+            Inc(P);
+            If Ch = Closer Then
+            Begin
+                If Copy(S, P, 1) = Closer Then
+                Begin
+                    Raw := Raw + Closer;
+                    Inc(P);
+                End
+                Else
+                    Mode := 0;
+            End;
+        End;
+    End;
+    RawValue := Raw;
+End;
+
+{ A connection-string value without its quotes or braces. }
+Function DbLibUnquote(Raw : String) : String;
+Var
+    S, Opener, Closer, Inner, Value, Ch : String;
+    I : Integer;
+Begin
+    S := Trim(Raw);
+    Value := S;
+    Opener := Copy(S, 1, 1);
+    Closer := '';
+    If (Opener = '"') Or (Opener = '''') Then Closer := Opener;
+    If Opener = '{' Then Closer := '}';
+    If (Closer <> '') And (Length(S) >= 2) And (Copy(S, Length(S), 1) = Closer) Then
+    Begin
+        Inner := Copy(S, 2, Length(S) - 2);
+        Value := '';
+        I := 1;
+        While I <= Length(Inner) Do
+        Begin
+            Ch := Copy(Inner, I, 1);
+            Value := Value + Ch;
+            If (Ch = Closer) And (Copy(Inner, I + 1, 1) = Closer) Then Inc(I);
+            Inc(I);
+        End;
+    End;
+    Result := Value;
+End;
+
+{ S with every C written twice, which is how a quote is kept inside a value   }
+{ quoted with that same character.                                            }
+Function DbLibDoubled(S : String; C : String) : String;
+Var
+    I : Integer;
+    Value, Ch : String;
+Begin
+    Value := '';
+    For I := 1 To Length(S) Do
+    Begin
+        Ch := Copy(S, I, 1);
+        Value := Value + Ch;
+        If Ch = C Then Value := Value + C;
+    End;
+    Result := Value;
+End;
+
+{ True for a connection-string key whose value is a credential. }
+Function DbLibIsSecretKey(Key : String) : Boolean;
+Var
+    K : String;
+Begin
+    K := LowerCase(Trim(Key));
+    Result := (Pos('pwd', K) > 0) Or (Pos('password', K) > 0)
+        Or (Pos('secret', K) > 0) Or (Pos('token', K) > 0);
+End;
+
+{ The connection string with every credential value replaced by ***. A value }
+{ that itself holds Key=Value pairs, as an ODBC string inside Extended       }
+{ Properties does, is redacted the same way, so a nested Pwd is caught too.  }
+Function DbLibRedactConnStr(S : String) : String;
+Var
+    P : Integer;
+    Key, Raw, Piece, Redacted, Inner, Opener, Closer : String;
+    HasEq : Boolean;
+Begin
+    Redacted := '';
+    P := 1;
+    While DbLibConnNextPair(S, P, Key, Raw, HasEq) Do
+    Begin
+        If Not HasEq Then
+            Piece := Key
+        Else
+        Begin
+            If DbLibIsSecretKey(Key) Then
+                Piece := Key + '=***'
+            Else
+            Begin
+                Piece := Key + '=' + Raw;
+                If Pos('=', Raw) > 0 Then
+                Begin
+                    Inner := DbLibRedactConnStr(DbLibUnquote(Raw));
+                    Opener := Copy(Trim(Raw), 1, 1);
+                    Closer := '';
+                    If (Opener = '"') Or (Opener = '''') Then Closer := Opener;
+                    If Opener = '{' Then Closer := '}';
+                    If Closer <> '' Then
+                        Piece := Key + '=' + Opener + DbLibDoubled(Inner, Closer) + Closer
+                    Else
+                        Piece := Key + '=' + Inner;
+                End;
+            End;
+        End;
+        If Redacted <> '' Then Redacted := Redacted + ';';
+        Redacted := Redacted + Piece;
+    End;
+    Result := Redacted;
+End;
+
+{ True when the connection string carries a non-empty credential anywhere. }
+Function DbLibConnHasSecret(S : String) : Boolean;
+Var
+    P : Integer;
+    Key, Raw : String;
+    HasEq, Found : Boolean;
+Begin
+    Found := False;
+    P := 1;
+    While (Not Found) And DbLibConnNextPair(S, P, Key, Raw, HasEq) Do
+    Begin
+        If HasEq Then
+        Begin
+            If DbLibIsSecretKey(Key) Then
+                Found := Trim(DbLibUnquote(Raw)) <> ''
+            Else
+            Begin
+                If Pos('=', Raw) > 0 Then Found := DbLibConnHasSecret(DbLibUnquote(Raw));
+            End;
+        End;
+    End;
+    Result := Found;
+End;
+
+{ The unquoted value of Key in a connection string, '' when absent. }
+Function DbLibConnValue(S : String; Key : String) : String;
+Var
+    P : Integer;
+    K, Raw, Value : String;
+    HasEq, Found : Boolean;
+Begin
+    Value := '';
+    Found := False;
+    P := 1;
+    While (Not Found) And DbLibConnNextPair(S, P, K, Raw, HasEq) Do
+    Begin
+        If HasEq And (LowerCase(K) = LowerCase(Key)) Then
+        Begin
+            Value := DbLibUnquote(Raw);
+            Found := True;
+        End;
+    End;
+    Result := Value;
+End;
+
+{ The connection string with Key set to NewRaw: the first occurrence is       }
+{ replaced and any repeat dropped, or the pair appended when Key is absent.   }
+{ Every other pair, credentials included, is carried through unchanged.       }
+Function DbLibSetConnValue(S : String; Key : String; NewRaw : String) : String;
+Var
+    P : Integer;
+    K, Raw, Rebuilt, Piece : String;
+    HasEq, Replaced : Boolean;
+Begin
+    Rebuilt := '';
+    Replaced := False;
+    P := 1;
+    While DbLibConnNextPair(S, P, K, Raw, HasEq) Do
+    Begin
+        If HasEq Then Piece := K + '=' + Raw Else Piece := K;
+        If LowerCase(K) = LowerCase(Key) Then
+        Begin
+            If Replaced Then
+                Piece := ''
+            Else
+            Begin
+                Piece := K + '=' + NewRaw;
+                Replaced := True;
+            End;
+        End;
+        If Piece <> '' Then
+        Begin
+            If Rebuilt <> '' Then Rebuilt := Rebuilt + ';';
+            Rebuilt := Rebuilt + Piece;
+        End;
+    End;
+    If Not Replaced Then
+    Begin
+        If Rebuilt <> '' Then Rebuilt := Rebuilt + ';';
+        Rebuilt := Rebuilt + Key + '=' + NewRaw;
+    End;
+    Result := Rebuilt;
+End;
+
+{ True when the provider is the Jet or ACE engine, which reads Access and     }
+{ Excel files and is the one that honours Mode=Read.                          }
+Function DbLibIsJetOrAce(S : String) : Boolean;
+Var
+    Prov : String;
+Begin
+    Prov := LowerCase(DbLibConnValue(S, 'Provider'));
+    Result := (Pos('jet.oledb', Prov) > 0) Or (Pos('ace.oledb', Prov) > 0);
+End;
+
+{ True for a drive-letter, UNC or root path. }
+Function DbLibIsAbsolutePath(Path : String) : Boolean;
+Begin
+    Result := (Copy(Path, 2, 1) = ':') Or (Copy(Path, 1, 1) = '\')
+        Or (Copy(Path, 1, 1) = '/');
+End;
+
+{ The connection string this handler opens: for a Jet or ACE file, a Data     }
+{ Source relative to the DbLib is made absolute against BaseDir and the       }
+{ connection is set to Mode=Read. Other providers are left as written; they   }
+{ are kept read-only by issuing nothing but SELECT.                          }
+Function DbLibConnectionForRead(S : String; BaseDir : String) : String;
+Var
+    Conn, Src, Dir : String;
+Begin
+    Conn := S;
+    If DbLibIsJetOrAce(Conn) Then
+    Begin
+        Src := Trim(DbLibConnValue(Conn, 'Data Source'));
+        If (Src <> '') And (Not DbLibIsAbsolutePath(Src)) And (BaseDir <> '') Then
+        Begin
+            Dir := BaseDir;
+            If (Copy(Dir, Length(Dir), 1) <> '\') And (Copy(Dir, Length(Dir), 1) <> '/') Then
+                Dir := Dir + '\';
+            Src := Dir + Src;
+            If Pos(';', Src) > 0 Then Src := '"' + DbLibDoubled(Src, '"') + '"';
+            Conn := DbLibSetConnValue(Conn, 'Data Source', Src);
+        End;
+        Conn := DbLibSetConnValue(Conn, 'Mode', 'Read');
+    End;
+    Result := Conn;
+End;
+
+{ The kind of database behind a connection string, for the reply. }
+Function DbLibConnKind(S : String) : String;
+Var
+    Prov, Ext, Src, Kind : String;
+Begin
+    Kind := '';
+    Prov := LowerCase(DbLibConnValue(S, 'Provider'));
+    If DbLibIsJetOrAce(S) Then
+    Begin
+        Ext := LowerCase(DbLibConnValue(S, 'Extended Properties'));
+        Src := LowerCase(Trim(DbLibConnValue(S, 'Data Source')));
+        If (Pos('excel', Ext) > 0) Or (Pos('.xls', Src) > 0) Then
+            Kind := 'excel'
+        Else
+            Kind := 'access';
+    End;
+    If (Kind = '') And ((Pos('sqloledb', Prov) > 0) Or (Pos('sqlncli', Prov) > 0)
+        Or (Pos('msoledbsql', Prov) > 0)) Then
+        Kind := 'sql_server';
+    If (Kind = '') And ((Pos('msdasql', Prov) > 0) Or ((Prov = '')
+        And ((DbLibConnValue(S, 'DSN') <> '') Or (DbLibConnValue(S, 'Driver') <> '')))) Then
+        Kind := 'odbc';
+    If (Kind = '') And ((Pos('oraoledb', Prov) > 0) Or (Pos('msdaora', Prov) > 0)) Then
+        Kind := 'oracle';
+    If Kind = '' Then Kind := 'other';
+    Result := Kind;
+End;
+
+{ True for a letter, digit, underscore or dollar sign: the only characters    }
+{ allowed in a name that has to go into a statement unquoted.                 }
+Function DbLibIsPlainIdentChar(Ch : String) : Boolean;
+Begin
+    Result := ((Ch >= 'a') And (Ch <= 'z')) Or ((Ch >= 'A') And (Ch <= 'Z'))
+        Or ((Ch >= '0') And (Ch <= '9')) Or (Ch = '_') Or (Ch = '$');
+End;
+
+{ A table or column name ready to go into a SELECT, or '' when it cannot go   }
+{ in safely. The name is wrapped in the DbLib's quote characters. It is       }
+{ refused outright if it holds a control character, either quote character,   }
+{ a quote of any other kind, ';' or ':' (which ADO would read as a parameter).}
+{ With no usable quote pair only letters, digits, '_' and '$' are allowed.    }
+{ Callers pass only names the DbLib itself declares, or that ADO reported, so }
+{ this is the second check, not the first.                                    }
+Function DbLibQuoteIdent(Name : String; LeftQ : String; RightQ : String) : String;
+Var
+    I : Integer;
+    Ch, Quoted : String;
+    Plain, Ok : Boolean;
+Begin
+    Quoted := '';
+    Ok := (Name <> '') And (Length(Name) <= 128) And (Trim(Name) = Name);
+    Plain := (Length(LeftQ) <> 1) Or (Length(RightQ) <> 1);
+    I := 1;
+    While Ok And (I <= Length(Name)) Do
+    Begin
+        Ch := Copy(Name, I, 1);
+        If (Ch < ' ') Or (Ch = ':') Or (Ch = ';') Or (Ch = '''') Or (Ch = '"')
+            Or (Ch = '`') Then
+            Ok := False;
+        If (Not Plain) And ((Ch = LeftQ) Or (Ch = RightQ)) Then Ok := False;
+        If Plain And (Not DbLibIsPlainIdentChar(Ch)) Then Ok := False;
+        Inc(I);
+    End;
+    If Ok Then
+    Begin
+        If Plain Then
+            Quoted := Name
+        Else
+            Quoted := LeftQ + Name + RightQ;
+    End;
+    Result := Quoted;
+End;
+
+{ A table name ready for a FROM clause, schema-qualified when the DbLib gives }
+{ a schema. '' when either part is refused.                                   }
+Function DbLibQualifiedTable(Schema : String; Table : String; LeftQ : String;
+    RightQ : String) : String;
+Var
+    QT, QS, Qualified : String;
+Begin
+    Qualified := '';
+    QT := DbLibQuoteIdent(Table, LeftQ, RightQ);
+    If QT <> '' Then
+    Begin
+        If Trim(Schema) = '' Then
+            Qualified := QT
+        Else
+        Begin
+            QS := DbLibQuoteIdent(Trim(Schema), LeftQ, RightQ);
+            If QS <> '' Then Qualified := QS + '.' + QT;
+        End;
+    End;
+    Result := Qualified;
+End;
+
+{ The column a table maps to ParamName, else the column literally named      }
+{ ColName when the table has one. The mapping wins because a DbLib can map    }
+{ [Library Ref] from a column with any name.                                  }
+Function DbLibResolveField(Lines : TStringList; Cols : TStringList; Table : String;
+    ParamName : String; ColName : String) : String;
+Var
+    Field : String;
+    I : Integer;
+Begin
+    Field := DbLibMappedField(Lines, Table, ParamName);
+    If Field = '' Then
+    Begin
+        I := DbLibIndexOfName(Cols, ColName);
+        If I >= 0 Then Field := Cols.Get(I);
+    End;
+    Result := Field;
+End;
+
+{ The column a table's rows are looked up by, and where that answer came     }
+{ from: the table's Key setting, the column its where clause matches on, a    }
+{ column named Part Number (Altium's default key), or the first column. A     }
+{ name the columns hold is returned in the columns' own spelling.             }
+Function DbLibKeyField(Lines : TStringList; Cols : TStringList; Table : String;
+    LeftQ : String; RightQ : String; Var Source : String) : String;
+Var
+    KeyName, FromWhere, UserWhere : String;
+    I : Integer;
+Begin
+    KeyName := '';
+    Source := '';
+    UserWhere := LowerCase(Trim(DbLibTableAttr(Lines, Table, 'UserWhere')));
+    FromWhere := DbLibKeyFromWhere(DbLibTableAttr(Lines, Table, 'UserWhereText'), LeftQ, RightQ);
+    If ((UserWhere = '1') Or (UserWhere = 'true')) And (FromWhere <> '') Then
+    Begin
+        KeyName := FromWhere;
+        Source := 'where_clause';
+    End;
+    If KeyName = '' Then
+    Begin
+        KeyName := Trim(DbLibTableAttr(Lines, Table, 'Key'));
+        If KeyName <> '' Then Source := 'key_setting';
+    End;
+    If (KeyName = '') And (FromWhere <> '') Then
+    Begin
+        KeyName := FromWhere;
+        Source := 'where_clause';
+    End;
+    If (KeyName = '') And (DbLibIndexOfName(Cols, 'Part Number') >= 0) Then
+    Begin
+        KeyName := 'Part Number';
+        Source := 'part_number_column';
+    End;
+    If (KeyName = '') And (Cols.Count > 0) Then
+    Begin
+        KeyName := Cols.Get(0);
+        Source := 'first_column';
+    End;
+    I := DbLibIndexOfName(Cols, KeyName);
+    If I >= 0 Then KeyName := Cols.Get(I);
+    Result := KeyName;
+End;
+
+{ The footprint columns of a table, as two tab-separated lists in step:       }
+{ [Footprint Ref] with [Footprint Path], then [Footprint Ref 2] with          }
+{ [Footprint Path 2], up to eight. A library column may be empty.             }
+Procedure DbLibFootprintFields(Lines : TStringList; Cols : TStringList; Table : String;
+    Var RefFields : String; Var LibFields : String);
+Var
+    N : Integer;
+    Suffix, RefF, LibF : String;
+Begin
+    RefFields := '';
+    LibFields := '';
+    For N := 1 To 8 Do
+    Begin
+        Suffix := '';
+        If N > 1 Then Suffix := ' ' + IntToStr(N);
+        RefF := DbLibResolveField(Lines, Cols, Table, '[Footprint Ref' + Suffix + ']',
+            'Footprint Ref' + Suffix);
+        LibF := DbLibResolveField(Lines, Cols, Table, '[Footprint Path' + Suffix + ']',
+            'Footprint Path' + Suffix);
+        If RefF <> '' Then
+        Begin
+            If RefFields <> '' Then
+            Begin
+                RefFields := RefFields + #9;
+                LibFields := LibFields + #9;
+            End;
+            RefFields := RefFields + RefF;
+            LibFields := LibFields + LibF;
+        End;
+    End;
+End;
+
+{ A tab-separated list as a JSON array of strings. }
+Function DbLibTabsToJson(TabList : String) : String;
+Var
+    Rest, One, Json : String;
+Begin
+    Json := '';
+    Rest := TabList;
+    While Rest <> '' Do
+    Begin
+        One := SplitNextTab(Rest);
+        If Json <> '' Then Json := Json + ',';
+        Json := Json + '"' + EscapeJsonString(One) + '"';
+    End;
+    Result := '[' + Json + ']';
+End;
+
+{ Every setting of one table section, Options= lines aside, as a JSON object. }
+{ Reported so the keys a real DbLib uses can be read off the reply.           }
+Function DbLibTableSettingsJson(Lines : TStringList; Table : String) : String;
+Var
+    I, P : Integer;
+    InTable : Boolean;
+    Line, Section, SecTable, SecJson, Json, KeyName : String;
+Begin
+    Json := '';
+    InTable := False;
+    SecTable := '';
+    SecJson := '';
+    For I := 0 To Lines.Count Do
+    Begin
+        If I < Lines.Count Then
+        Begin
+            Line := Lines.Get(I);
+            Section := DbLibSectionName(Line);
+        End
+        Else
+        Begin
+            Line := '';
+            Section := 'end of file';
+        End;
+        If Section <> '' Then
+        Begin
+            If InTable And (Json = '') And (SecTable <> '')
+                And (LowerCase(SecTable) = LowerCase(Trim(Table))) Then
+                Json := SecJson;
+            InTable := DbLibIsTableSection(Section);
+            SecTable := '';
+            SecJson := '';
+        End
+        Else
+        Begin
+            P := Pos('=', Line);
+            If InTable And (P > 1) And (Not DbLibLineHasKey(Line, 'Options')) Then
+            Begin
+                KeyName := Trim(Copy(Line, 1, P - 1));
+                If LowerCase(KeyName) = 'tablename' Then
+                    SecTable := Trim(DbLibLineValue(Line));
+                If SecJson <> '' Then SecJson := SecJson + ',';
+                SecJson := SecJson + '"' + EscapeJsonString(KeyName) + '":"'
+                    + EscapeJsonString(DbLibLineValue(Line)) + '"';
+            End;
+        End;
+    End;
+    Result := '{' + Json + '}';
+End;
+
+{ One table of a DbLib as a JSON object: its settings, the columns that carry }
+{ the key, the symbol and the footprints, and (when HaveCols) its columns.    }
+Function DbLibTableJson(Lines : TStringList; Cols : TStringList; Table : String;
+    LeftQ : String; RightQ : String; HaveCols : Boolean; QueryErr : String) : String;
+Var
+    Enabled, Schema, KeyField, KeySource, SymField, SymLibField, DescField : String;
+    RefFields, LibFields, FpJson, ColsJson, Json, ErrJson, OneRef, OneLib : String;
+    I : Integer;
+Begin
+    Enabled := LowerCase(Trim(DbLibTableAttr(Lines, Table, 'Enabled')));
+    Schema := Trim(DbLibTableAttr(Lines, Table, 'SchemaName'));
+    KeySource := '';
+    KeyField := DbLibKeyField(Lines, Cols, Table, LeftQ, RightQ, KeySource);
+    SymField := DbLibResolveField(Lines, Cols, Table, '[Library Ref]', 'Library Ref');
+    SymLibField := DbLibResolveField(Lines, Cols, Table, '[Library Path]', 'Library Path');
+    DescField := DbLibResolveField(Lines, Cols, Table, '[Description]', 'Description');
+    DbLibFootprintFields(Lines, Cols, Table, RefFields, LibFields);
+    FpJson := '';
+    While RefFields <> '' Do
+    Begin
+        OneRef := SplitNextTab(RefFields);
+        OneLib := SplitNextTab(LibFields);
+        If FpJson <> '' Then FpJson := FpJson + ',';
+        FpJson := FpJson + '{"ref_field":"' + EscapeJsonString(OneRef)
+            + '","library_field":"' + EscapeJsonString(OneLib) + '"}';
+    End;
+    ColsJson := 'null';
+    If HaveCols Then
+    Begin
+        ColsJson := '';
+        For I := 0 To Cols.Count - 1 Do
+        Begin
+            If ColsJson <> '' Then ColsJson := ColsJson + ',';
+            ColsJson := ColsJson + '"' + EscapeJsonString(Cols.Get(I)) + '"';
+        End;
+        ColsJson := '[' + ColsJson + ']';
+    End;
+    ErrJson := 'null';
+    If QueryErr <> '' Then ErrJson := '"' + EscapeJsonString(QueryErr) + '"';
+    Json := '{"name":"' + EscapeJsonString(Table) + '"'
+        + ',"enabled":' + BoolToJsonStr((Enabled = '') Or (Enabled = 'true') Or (Enabled = '1'))
+        + ',"schema":"' + EscapeJsonString(Schema) + '"'
+        + ',"key_field":"' + EscapeJsonString(KeyField) + '"'
+        + ',"key_field_source":"' + EscapeJsonString(KeySource) + '"'
+        + ',"key_field_found":' + BoolToJsonStr(HaveCols And (DbLibIndexOfName(Cols, KeyField) >= 0))
+        + ',"symbol_ref_field":"' + EscapeJsonString(SymField) + '"'
+        + ',"symbol_library_field":"' + EscapeJsonString(SymLibField) + '"'
+        + ',"description_field":"' + EscapeJsonString(DescField) + '"'
+        + ',"footprint_fields":[' + FpJson + ']'
+        + ',"fields":' + ColsJson
+        + ',"field_count":' + IntToStr(Cols.Count)
+        + ',"error":' + ErrJson
+        + ',"settings":' + DbLibTableSettingsJson(Lines, Table) + '}';
+    Result := Json;
+End;
+
+{ Lib_GetDbLibInfo - what a DbLib declares and how it connects.               }
+{                                                                              }
+{ Params: library_path (the .DbLib), with_fields ("false" reads the file only  }
+{ and opens no database connection).                                           }
+{ Response: connection (provider, kind, data_source, has_password, redacted,   }
+{ read_only), quote characters, search_path, tables (each with its key,        }
+{ symbol and footprint columns, its settings and, when fields were read, every }
+{ column), and connected, which is null when no connection was attempted.      }
+Function Lib_GetDbLibInfo(Params : String; RequestId : String) : String;
+Var
+    LibPath, ConnStr, ReadConn, LeftQ, RightQ, TableList, Rest, Table : String;
+    QTable, Problem, TablesJson, ConnJson, Response, QueryErr, ConnectedJson : String;
+    Lines, Cols : TStringList;
+    Conn : TADOConnection;
+    Q : TADOQuery;
+    I, TableCount : Integer;
+    Loaded, WantFields, Connected, Opened, Tried : Boolean;
+Begin
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    WantFields := ExtractJsonValue(Params, 'with_fields') <> 'false';
+    Problem := DbLibPathProblem(LibPath);
+    If Problem <> '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'BAD_LIBRARY_PATH', Problem);
+        Result := Response;
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No DbLib file at ' + LibPath);
+        Result := Response;
+        Exit;
+    End;
+
+    Response := '';
+    Lines := TStringList.Create;
+    Try
+        Loaded := False;
+        Try
+            Lines.LoadFromFile(LibPath);
+            Loaded := True;
+        Except
+            Loaded := False;
+        End;
+
+        If Not Loaded Then
+            Response := BuildErrorResponse(RequestId, 'READ_FAILED', 'Could not read ' + LibPath)
+        Else
+        Begin
+            ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
+            LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
+            RightQ := DbLibGlobalValue(Lines, 'RightQuote');
+            If LeftQ = '' Then LeftQ := '[';
+            If RightQ = '' Then RightQ := ']';
+            TableList := DbLibTableNames(Lines);
+
+            Tried := WantFields And (Trim(ConnStr) <> '') And (TableList <> '');
+            Connected := False;
+            Conn := Nil;
+            If Tried Then
+            Begin
+                ReadConn := DbLibConnectionForRead(ConnStr, ExtractFilePath(LibPath));
+                Try
+                    Conn := TADOConnection.Create(Nil);
+                    Conn.ConnectionString := ReadConn;
+                    Conn.LoginPrompt := False;
+                    Conn.Connected := True;
+                    Connected := True;
+                Except
+                    Connected := False;
+                End;
+            End;
+
+            TablesJson := '';
+            TableCount := 0;
+            Rest := TableList;
+            While Rest <> '' Do
+            Begin
+                Table := SplitNextTab(Rest);
+                If Table = '' Then Continue;
+                QueryErr := '';
+                Cols := TStringList.Create;
+                If Connected Then
+                Begin
+                    QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Table, 'SchemaName'),
+                        Table, LeftQ, RightQ);
+                    If QTable = '' Then
+                        QueryErr := 'TABLE_NAME_REFUSED'
+                    Else
+                    Begin
+                        Opened := False;
+                        Q := TADOQuery.Create(Nil);
+                        Try
+                            Q.Connection := Conn;
+                            Q.SQL.Add('SELECT * FROM ' + QTable + ' WHERE 1=0');
+                            Q.Open;
+                            Opened := True;
+                        Except
+                            Opened := False;
+                        End;
+                        If Opened Then
+                        Begin
+                            For I := 0 To Q.FieldCount - 1 Do
+                                Cols.Add(Q.Fields[I].DisplayName);
+                            Try Q.Close; Except End;
+                        End
+                        Else
+                            QueryErr := 'QUERY_FAILED';
+                        Q.Free;
+                    End;
+                End;
+                If TablesJson <> '' Then TablesJson := TablesJson + ',';
+                TablesJson := TablesJson + DbLibTableJson(Lines, Cols, Table, LeftQ, RightQ,
+                    Connected And (QueryErr = ''), QueryErr);
+                Cols.Free;
+                Inc(TableCount);
+            End;
+            If Conn <> Nil Then Conn.Free;
+
+            ConnectedJson := 'null';
+            If Tried Then ConnectedJson := BoolToJsonStr(Connected);
+            ConnJson := '{"provider":"' + EscapeJsonString(DbLibConnValue(ConnStr, 'Provider')) + '"'
+                + ',"kind":"' + DbLibConnKind(ConnStr) + '"'
+                + ',"data_source":"' + EscapeJsonString(DbLibConnValue(ConnStr, 'Data Source')) + '"'
+                + ',"has_password":' + BoolToJsonStr(DbLibConnHasSecret(ConnStr))
+                + ',"redacted":"' + EscapeJsonString(DbLibRedactConnStr(ConnStr)) + '"'
+                + ',"read_only":' + BoolToJsonStr(DbLibIsJetOrAce(ConnStr)) + '}';
+
+            Response := BuildSuccessResponse(RequestId,
+                '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+                + ',"connection":' + ConnJson
+                + ',"left_quote":"' + EscapeJsonString(LeftQ) + '"'
+                + ',"right_quote":"' + EscapeJsonString(RightQ) + '"'
+                + ',"search_path":"' + EscapeJsonString(DbLibGlobalValue(Lines, 'LibrarySearchPath')) + '"'
+                + ',"table_count":' + IntToStr(TableCount)
+                + ',"tables":[' + TablesJson + ']'
+                + ',"sections":' + DbLibTabsToJson(DbLibSectionNames(Lines))
+                + ',"fields_included":' + BoolToJsonStr(Connected)
+                + ',"connected":' + ConnectedJson + '}');
+        End;
+    Finally
+        Lines.Free;
+    End;
+    Result := Response;
+End;
+
+{ DbLibSearchOne - case-insensitive substring search over one DbLib's rows.   }
+{                                                                              }
+{ Each searched table is read with SELECT * FROM <table>, the table name being }
+{ one the DbLib declares, and each row is matched HERE against the lowered     }
+{ query. Nothing the caller typed reaches the database. Stops at Limit hits   }
+{ in total or MaxRows rows read in total, whichever comes first.              }
+{ Appends hits to ResultsJson and one summary object to LibsJson.             }
+Function DbLibSearchOne(LibPath : String; LowerQuery : String; TableFilter : String;
+    FieldsFilter : String; Limit : Integer; MaxRows : Integer;
+    Var HitCount : Integer; Var Scanned : Integer; Var Capped : Boolean;
+    Var ResultsJson : String; Var LibsJson : String) : Boolean;
+Var
+    ConnStr, ReadConn, LeftQ, RightQ, TableList, Rest, Table, QTable, Enabled : String;
+    ErrCode, SearchedJson, FailedJson, UnknownJson, FieldRest, OneField : String;
+    KeyField, KeySource, SymField, SymLibField, DescField, RefFields, LibFields : String;
+    V, Matched, MatchedVal, KeyV, SymV, SymLibV, DescV, FpJson, RefRest, LibRest : String;
+    OneRef, OneLib, RefV, LibV, ErrJson : String;
+    Lines, Cols, SearchIdx : TStringList;
+    Conn : TADOConnection;
+    Q : TADOQuery;
+    I, J, Idx, KeyIdx, SymIdx, SymLibIdx, DescIdx, RefIdx, LibIdx : Integer;
+    Loaded, Connected, Opened, Stopped : Boolean;
+Begin
+    Result := False;
+    ErrCode := '';
+    SearchedJson := '';
+    FailedJson := '';
+    UnknownJson := '';
+    Lines := TStringList.Create;
+    Try
+        Loaded := False;
+        Try
+            Lines.LoadFromFile(LibPath);
+            Loaded := True;
+        Except
+            Loaded := False;
+        End;
+        If Not Loaded Then ErrCode := 'READ_FAILED';
+
+        If ErrCode = '' Then
+        Begin
+            ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
+            LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
+            RightQ := DbLibGlobalValue(Lines, 'RightQuote');
+            If LeftQ = '' Then LeftQ := '[';
+            If RightQ = '' Then RightQ := ']';
+            TableList := DbLibTableNames(Lines);
+            If TableFilter <> '' Then
+            Begin
+                Table := DbLibFindTab(TableList, TableFilter);
+                If Table = '' Then ErrCode := 'TABLE_UNKNOWN';
+                TableList := Table;
+            End;
+            If (ErrCode = '') And (TableList = '') Then ErrCode := 'NO_TABLES';
+            If (ErrCode = '') And (Trim(ConnStr) = '') Then ErrCode := 'NO_CONNECTION_STRING';
+        End;
+
+        Connected := False;
+        Conn := Nil;
+        If ErrCode = '' Then
+        Begin
+            ReadConn := DbLibConnectionForRead(ConnStr, ExtractFilePath(LibPath));
+            Try
+                Conn := TADOConnection.Create(Nil);
+                Conn.ConnectionString := ReadConn;
+                Conn.LoginPrompt := False;
+                Conn.Connected := True;
+                Connected := True;
+            Except
+                Connected := False;
+            End;
+            If Not Connected Then ErrCode := 'CONNECT_FAILED';
+        End;
+
+        Rest := '';
+        If ErrCode = '' Then Rest := TableList;
+        While Rest <> '' Do
+        Begin
+            Table := SplitNextTab(Rest);
+            If Table = '' Then Continue;
+            If (HitCount >= Limit) Or (Scanned >= MaxRows) Then Break;
+            { A disabled table is skipped, as Altium skips it, unless it was }
+            { asked for by name.                                             }
+            Enabled := LowerCase(Trim(DbLibTableAttr(Lines, Table, 'Enabled')));
+            If (TableFilter = '') And (Enabled <> '') And (Enabled <> 'true')
+                And (Enabled <> '1') Then
+                Continue;
+            QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Table, 'SchemaName'),
+                Table, LeftQ, RightQ);
+            If QTable = '' Then
+            Begin
+                If FailedJson <> '' Then FailedJson := FailedJson + ',';
+                FailedJson := FailedJson + '{"table":"' + EscapeJsonString(Table)
+                    + '","reason":"TABLE_NAME_REFUSED"}';
+                Continue;
+            End;
+
+            Opened := False;
+            Q := TADOQuery.Create(Nil);
+            Try
+                Q.Connection := Conn;
+                Q.SQL.Add('SELECT * FROM ' + QTable);
+                Q.Open;
+                Opened := True;
+            Except
+                Opened := False;
+            End;
+            If Not Opened Then
+            Begin
+                Q.Free;
+                If FailedJson <> '' Then FailedJson := FailedJson + ',';
+                FailedJson := FailedJson + '{"table":"' + EscapeJsonString(Table)
+                    + '","reason":"QUERY_FAILED"}';
+                Continue;
+            End;
+
+            Cols := TStringList.Create;
+            SearchIdx := TStringList.Create;
+            Try
+                For I := 0 To Q.FieldCount - 1 Do
+                    Cols.Add(Q.Fields[I].DisplayName);
+
+                { Which columns to match: the ones asked for that this table }
+                { has, else every column. A name the table lacks is reported }
+                { rather than silently searched as nothing.                  }
+                If FieldsFilter <> '' Then
+                Begin
+                    FieldRest := FieldsFilter;
+                    While FieldRest <> '' Do
+                    Begin
+                        I := Pos('|', FieldRest);
+                        If I > 0 Then
+                        Begin
+                            OneField := Trim(Copy(FieldRest, 1, I - 1));
+                            FieldRest := Copy(FieldRest, I + 1, Length(FieldRest));
+                        End
+                        Else
+                        Begin
+                            OneField := Trim(FieldRest);
+                            FieldRest := '';
+                        End;
+                        If OneField = '' Then Continue;
+                        Idx := DbLibIndexOfName(Cols, OneField);
+                        If Idx >= 0 Then
+                            SearchIdx.Add(IntToStr(Idx))
+                        Else
+                        Begin
+                            If UnknownJson <> '' Then UnknownJson := UnknownJson + ',';
+                            UnknownJson := UnknownJson + '{"table":"' + EscapeJsonString(Table)
+                                + '","field":"' + EscapeJsonString(OneField) + '"}';
+                        End;
+                    End;
+                End
+                Else
+                Begin
+                    For I := 0 To Cols.Count - 1 Do
+                        SearchIdx.Add(IntToStr(I));
+                End;
+
+                KeySource := '';
+                KeyField := DbLibKeyField(Lines, Cols, Table, LeftQ, RightQ, KeySource);
+                SymField := DbLibResolveField(Lines, Cols, Table, '[Library Ref]', 'Library Ref');
+                SymLibField := DbLibResolveField(Lines, Cols, Table, '[Library Path]', 'Library Path');
+                DescField := DbLibResolveField(Lines, Cols, Table, '[Description]', 'Description');
+                DbLibFootprintFields(Lines, Cols, Table, RefFields, LibFields);
+                KeyIdx := DbLibIndexOfName(Cols, KeyField);
+                SymIdx := DbLibIndexOfName(Cols, SymField);
+                SymLibIdx := DbLibIndexOfName(Cols, SymLibField);
+                DescIdx := DbLibIndexOfName(Cols, DescField);
+
+                If SearchedJson <> '' Then SearchedJson := SearchedJson + ',';
+                SearchedJson := SearchedJson + '"' + EscapeJsonString(Table) + '"';
+
+                Stopped := False;
+                Try Q.First; Except End;
+                While (Not Stopped) And (Not Q.Eof) And (HitCount < Limit) And (Scanned < MaxRows) Do
+                Begin
+                    Scanned := Scanned + 1;
+                    Matched := '';
+                    MatchedVal := '';
+                    For J := 0 To SearchIdx.Count - 1 Do
+                    Begin
+                        Idx := StrToIntDef(SearchIdx[J], -1);
+                        If Idx < 0 Then Continue;
+                        V := '';
+                        Try V := Q.Fields[Idx].AsString; Except V := ''; End;
+                        If Pos(LowerQuery, LowerCase(V)) > 0 Then
+                        Begin
+                            Matched := Cols[Idx];
+                            MatchedVal := V;
+                            Break;
+                        End;
+                    End;
+
+                    If Matched <> '' Then
+                    Begin
+                        KeyV := '';
+                        SymV := '';
+                        SymLibV := '';
+                        DescV := '';
+                        If KeyIdx >= 0 Then
+                        Begin
+                            Try KeyV := Q.Fields[KeyIdx].AsString; Except End;
+                        End;
+                        If SymIdx >= 0 Then
+                        Begin
+                            Try SymV := Q.Fields[SymIdx].AsString; Except End;
+                        End;
+                        If SymLibIdx >= 0 Then
+                        Begin
+                            Try SymLibV := Q.Fields[SymLibIdx].AsString; Except End;
+                        End;
+                        If DescIdx >= 0 Then
+                        Begin
+                            Try DescV := Q.Fields[DescIdx].AsString; Except End;
+                        End;
+                        FpJson := '';
+                        RefRest := RefFields;
+                        LibRest := LibFields;
+                        While RefRest <> '' Do
+                        Begin
+                            OneRef := SplitNextTab(RefRest);
+                            OneLib := SplitNextTab(LibRest);
+                            RefV := '';
+                            LibV := '';
+                            RefIdx := DbLibIndexOfName(Cols, OneRef);
+                            LibIdx := DbLibIndexOfName(Cols, OneLib);
+                            If RefIdx >= 0 Then
+                            Begin
+                                Try RefV := Q.Fields[RefIdx].AsString; Except End;
+                            End;
+                            If LibIdx >= 0 Then
+                            Begin
+                                Try LibV := Q.Fields[LibIdx].AsString; Except End;
+                            End;
+                            If RefV <> '' Then
+                            Begin
+                                If FpJson <> '' Then FpJson := FpJson + ',';
+                                FpJson := FpJson + '{"ref":"' + EscapeJsonString(RefV)
+                                    + '","library":"' + EscapeJsonString(LibV) + '"}';
+                            End;
+                        End;
+
+                        If ResultsJson <> '' Then ResultsJson := ResultsJson + ',';
+                        ResultsJson := ResultsJson
+                            + '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+                            + ',"table":"' + EscapeJsonString(Table) + '"'
+                            + ',"key":"' + EscapeJsonString(KeyV) + '"'
+                            + ',"key_field":"' + EscapeJsonString(KeyField) + '"'
+                            + ',"symbol_ref":"' + EscapeJsonString(SymV) + '"'
+                            + ',"symbol_library":"' + EscapeJsonString(SymLibV) + '"'
+                            + ',"footprints":[' + FpJson + ']'
+                            + ',"description":"' + EscapeJsonString(DescV) + '"'
+                            + ',"matched_field":"' + EscapeJsonString(Matched) + '"'
+                            + ',"matched_value":"' + EscapeJsonString(Copy(MatchedVal, 1, 200)) + '"}';
+                        HitCount := HitCount + 1;
+                    End;
+                    Try Q.Next; Except Stopped := True; End;
+                End;
+                If (Scanned >= MaxRows) And (Not Q.Eof) Then Capped := True;
+                Try Q.Close; Except End;
+            Finally
+                Cols.Free;
+                SearchIdx.Free;
+                Q.Free;
+            End;
+        End;
+        If Conn <> Nil Then Conn.Free;
+    Finally
+        Lines.Free;
+    End;
+
+    ErrJson := 'null';
+    If ErrCode <> '' Then ErrJson := '"' + ErrCode + '"';
+    If LibsJson <> '' Then LibsJson := LibsJson + ',';
+    LibsJson := LibsJson + '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+        + ',"searched":' + BoolToJsonStr(ErrCode = '')
+        + ',"error":' + ErrJson
+        + ',"tables_searched":[' + SearchedJson + ']'
+        + ',"tables_failed":[' + FailedJson + ']'
+        + ',"unknown_fields":[' + UnknownJson + ']}';
+    Result := ErrCode = '';
+End;
+
+{ Lib_QueryDbLib - search database libraries for components.                  }
+{                                                                              }
+{ Params: query (required, case-insensitive substring), library_path (one     }
+{ .DbLib; omitted searches every installed database library), table (one     }
+{ declared table), fields ("|"-separated column names; omitted matches every  }
+{ column), limit (hits, default 50), max_rows (rows read in total, default    }
+{ 20000).                                                                      }
+{ Response: query, count, limit, truncated, rows_scanned, scan_capped,        }
+{ libraries (one summary per DbLib, with its error code if it could not be    }
+{ searched) and results (library_path, table, key, key_field, symbol_ref,     }
+{ symbol_library, footprints, description, matched_field, matched_value).     }
+Function Lib_QueryDbLib(Params : String; RequestId : String) : String;
+Var
+    LibPath, Query, TableFilter, FieldsFilter, Paths, Rest, OnePath, Problem : String;
+    ResultsJson, LibsJson, Response, InstPath : String;
+    Limit, MaxRows, HitCount, Scanned, I, InstCount, TypeOrd : Integer;
+    Capped : Boolean;
+Begin
+    Query := ExtractJsonValue(Params, 'query');
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    TableFilter := Trim(ExtractJsonValue(Params, 'table'));
+    FieldsFilter := ExtractJsonValue(Params, 'fields');
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 50);
+    MaxRows := StrToIntDef(ExtractJsonValue(Params, 'max_rows'), 20000);
+    If Limit < 1 Then Limit := 1;
+    If Limit > 1000 Then Limit := 1000;
+    If MaxRows < 1 Then MaxRows := 1;
+    If MaxRows > 1000000 Then MaxRows := 1000000;
+
+    If Trim(Query) = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'query is required');
+        Result := Response;
+        Exit;
+    End;
+
+    Paths := '';
+    If LibPath <> '' Then
+    Begin
+        Problem := DbLibPathProblem(LibPath);
+        If Problem <> '' Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'BAD_LIBRARY_PATH', Problem);
+            Result := Response;
+            Exit;
+        End;
+        If Not FileExists(LibPath) Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No DbLib file at ' + LibPath);
+            Result := Response;
+            Exit;
+        End;
+        Paths := LibPath;
+    End
+    Else
+    Begin
+        If IntegratedLibraryManager = Nil Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'NO_MANAGER',
+                'IntegratedLibraryManager unavailable');
+            Result := Response;
+            Exit;
+        End;
+        { Every installed database library. The type is matched by its      }
+        { TLibraryType ordinal (3), not an enum name, as get_installed_      }
+        { libraries does; an installed path missing from the available list  }
+        { (ordinal -1) still counts when it is a .DbLib file.                }
+        InstCount := 0;
+        Try InstCount := IntegratedLibraryManager.InstalledLibraryCount; Except End;
+        For I := 0 To InstCount - 1 Do
+        Begin
+            InstPath := '';
+            Try InstPath := IntegratedLibraryManager.InstalledLibraryPath(I); Except End;
+            If InstPath = '' Then Continue;
+            TypeOrd := InstalledLibTypeOrdinal(InstPath);
+            If (TypeOrd = 3) Or ((TypeOrd = -1) And DbLibHasDbLibExt(InstPath)) Then
+            Begin
+                If Paths <> '' Then Paths := Paths + #9;
+                Paths := Paths + InstPath;
+            End;
+        End;
+    End;
+
+    HitCount := 0;
+    Scanned := 0;
+    Capped := False;
+    ResultsJson := '';
+    LibsJson := '';
+    Rest := Paths;
+    While Rest <> '' Do
+    Begin
+        OnePath := SplitNextTab(Rest);
+        If OnePath = '' Then Continue;
+        If (HitCount >= Limit) Or (Scanned >= MaxRows) Then
+        Begin
+            If LibsJson <> '' Then LibsJson := LibsJson + ',';
+            LibsJson := LibsJson + '{"library_path":"' + EscapeJsonString(OnePath) + '"'
+                + ',"searched":false,"error":"LIMIT_REACHED","tables_searched":[]'
+                + ',"tables_failed":[],"unknown_fields":[]}';
+            Continue;
+        End;
+        DbLibSearchOne(OnePath, LowerCase(Query), TableFilter, FieldsFilter, Limit,
+            MaxRows, HitCount, Scanned, Capped, ResultsJson, LibsJson);
+    End;
+
+    Response := BuildSuccessResponse(RequestId,
+        '{"query":"' + EscapeJsonString(Query) + '"'
+        + ',"count":' + IntToStr(HitCount)
+        + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr(HitCount >= Limit)
+        + ',"rows_scanned":' + IntToStr(Scanned)
+        + ',"scan_capped":' + BoolToJsonStr(Capped)
+        + ',"libraries":[' + LibsJson + ']'
+        + ',"results":[' + ResultsJson + ']}');
+    Result := Response;
+End;
+
+{ Lib_GetDbLibRecord - every column of one row of a DbLib table.              }
+{                                                                              }
+{ The table must be one the DbLib declares and the key column one the table   }
+{ has. The key VALUE is bound as an ADO parameter. If the parameterised query }
+{ cannot run (a key value the column's type will not accept, or a provider    }
+{ without named parameters) the table is read and compared here instead, and  }
+{ the reply says which lookup answered.                                       }
+{ Params: library_path, table, key (all required), key_field (optional        }
+{ override, checked against the table's columns), max_rows (scan bound).     }
+Function Lib_GetDbLibRecord(Params : String; RequestId : String) : String;
+Var
+    LibPath, Table, KeyValue, KeyOverride, Problem, ConnStr, ReadConn, LeftQ, RightQ : String;
+    TableList, Declared, QTable, QKey, KeyField, KeySource, Lookup, ErrCode, ErrMsg : String;
+    FieldsJson, V, WantKey, SymField, SymLibField, DescField, RefFields, LibFields : String;
+    FpJson, OneRef, OneLib, RefV, LibV, SymV, SymLibV, DescV, Response, Probe : String;
+    Lines, Cols, Vals : TStringList;
+    Conn : TADOConnection;
+    Q : TADOQuery;
+    I, KeyIdx, MatchCount, MaxRows, Scanned, Idx : Integer;
+    Loaded, Connected, Opened, ParamWorked, Capped, Stopped : Boolean;
+Begin
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    Table := Trim(ExtractJsonValue(Params, 'table'));
+    KeyValue := ExtractJsonValue(Params, 'key');
+    KeyOverride := Trim(ExtractJsonValue(Params, 'key_field'));
+    MaxRows := StrToIntDef(ExtractJsonValue(Params, 'max_rows'), 100000);
+    If MaxRows < 1 Then MaxRows := 1;
+
+    Problem := DbLibPathProblem(LibPath);
+    If Problem = '' Then
+    Begin
+        If Table = '' Then Problem := 'table is required';
+    End;
+    If Problem = '' Then
+    Begin
+        If Trim(KeyValue) = '' Then Problem := 'key is required';
+    End;
+    If Problem <> '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', Problem);
+        Result := Response;
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No DbLib file at ' + LibPath);
+        Result := Response;
+        Exit;
+    End;
+
+    ErrCode := '';
+    ErrMsg := '';
+    Lookup := '';
+    MatchCount := 0;
+    Scanned := 0;
+    Capped := False;
+    FieldsJson := '';
+    KeyField := '';
+    KeySource := '';
+    SymV := '';
+    SymLibV := '';
+    DescV := '';
+    FpJson := '';
+    Declared := '';
+    Conn := Nil;
+    Lines := TStringList.Create;
+    Cols := TStringList.Create;
+    Vals := TStringList.Create;
+    Try
+        Loaded := False;
+        Try
+            Lines.LoadFromFile(LibPath);
+            Loaded := True;
+        Except
+            Loaded := False;
+        End;
+        If Not Loaded Then
+        Begin
+            ErrCode := 'READ_FAILED';
+            ErrMsg := 'Could not read ' + LibPath;
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            ConnStr := DbLibGlobalValue(Lines, 'ConnectionString');
+            LeftQ := DbLibGlobalValue(Lines, 'LeftQuote');
+            RightQ := DbLibGlobalValue(Lines, 'RightQuote');
+            If LeftQ = '' Then LeftQ := '[';
+            If RightQ = '' Then RightQ := ']';
+            TableList := DbLibTableNames(Lines);
+            Declared := DbLibFindTab(TableList, Table);
+            If Declared = '' Then
+            Begin
+                ErrCode := 'TABLE_UNKNOWN';
+                ErrMsg := 'The DbLib declares no table named "' + Table + '". It declares: '
+                    + StringReplace(TableList, #9, ', ', MkSet(rfReplaceAll));
+            End;
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            QTable := DbLibQualifiedTable(DbLibTableAttr(Lines, Declared, 'SchemaName'),
+                Declared, LeftQ, RightQ);
+            If QTable = '' Then
+            Begin
+                ErrCode := 'TABLE_NAME_REFUSED';
+                ErrMsg := 'The table name holds a character that cannot be quoted safely';
+            End;
+        End;
+
+        Connected := False;
+        If ErrCode = '' Then
+        Begin
+            ReadConn := DbLibConnectionForRead(ConnStr, ExtractFilePath(LibPath));
+            Try
+                Conn := TADOConnection.Create(Nil);
+                Conn.ConnectionString := ReadConn;
+                Conn.LoginPrompt := False;
+                Conn.Connected := True;
+                Connected := True;
+            Except
+                Connected := False;
+            End;
+            If Not Connected Then
+            Begin
+                ErrCode := 'CONNECT_FAILED';
+                ErrMsg := 'Could not open the database this DbLib names. Check it with '
+                    + 'lib_dblib_info, which reports the provider and data source.';
+            End;
+        End;
+
+        { The table's columns, to check the key column against. }
+        If ErrCode = '' Then
+        Begin
+            Opened := False;
+            Q := TADOQuery.Create(Nil);
+            Try
+                Q.Connection := Conn;
+                Q.SQL.Add('SELECT * FROM ' + QTable + ' WHERE 1=0');
+                Q.Open;
+                Opened := True;
+            Except
+                Opened := False;
+            End;
+            If Opened Then
+            Begin
+                For I := 0 To Q.FieldCount - 1 Do
+                    Cols.Add(Q.Fields[I].DisplayName);
+                Try Q.Close; Except End;
+            End;
+            Q.Free;
+            If Not Opened Then
+            Begin
+                ErrCode := 'QUERY_FAILED';
+                ErrMsg := 'The table could not be read';
+            End;
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            If KeyOverride <> '' Then
+            Begin
+                KeyField := KeyOverride;
+                KeySource := 'caller';
+            End
+            Else
+                KeyField := DbLibKeyField(Lines, Cols, Declared, LeftQ, RightQ, KeySource);
+            KeyIdx := DbLibIndexOfName(Cols, KeyField);
+            If KeyIdx < 0 Then
+            Begin
+                ErrCode := 'KEY_FIELD_UNKNOWN';
+                ErrMsg := 'The table has no column "' + KeyField + '" (key from '
+                    + KeySource + '). Pass key_field with one of its columns; '
+                    + 'lib_dblib_info lists them.';
+            End
+            Else
+                KeyField := Cols.Get(KeyIdx);
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            QKey := DbLibQuoteIdent(KeyField, LeftQ, RightQ);
+            If QKey = '' Then
+            Begin
+                ErrCode := 'KEY_FIELD_REFUSED';
+                ErrMsg := 'The key column name holds a character that cannot be quoted safely';
+            End;
+        End;
+
+        If ErrCode = '' Then
+        Begin
+            WantKey := LowerCase(Trim(KeyValue));
+            { First choice: the key bound as a parameter, so the database }
+            { does the lookup and the value never becomes SQL text.       }
+            ParamWorked := False;
+            Q := TADOQuery.Create(Nil);
+            Try
+                Q.Connection := Conn;
+                Q.SQL.Add('SELECT * FROM ' + QTable + ' WHERE ' + QKey + ' = :dblibkey');
+                Q.Parameters.ParamByName('dblibkey').Value := KeyValue;
+                Q.Open;
+                ParamWorked := True;
+            Except
+                ParamWorked := False;
+            End;
+            If ParamWorked Then
+            Begin
+                Lookup := 'parameter';
+                Stopped := False;
+                Try Q.First; Except End;
+                While (Not Stopped) And (Not Q.Eof) Do
+                Begin
+                    Probe := '';
+                    Try Probe := Q.Fields[KeyIdx].AsString; Except End;
+                    If LowerCase(Trim(Probe)) = WantKey Then
+                    Begin
+                        MatchCount := MatchCount + 1;
+                        If MatchCount = 1 Then
+                        Begin
+                            For I := 0 To Q.FieldCount - 1 Do
+                            Begin
+                                V := '';
+                                Try V := Q.Fields[I].AsString; Except End;
+                                Vals.Add(V);
+                            End;
+                        End;
+                    End;
+                    Try Q.Next; Except Stopped := True; End;
+                End;
+                Try Q.Close; Except End;
+            End;
+            Q.Free;
+
+            { Fallback: read the table and compare here. Still no caller }
+            { text in the statement, only the declared table name.       }
+            If Not ParamWorked Then
+            Begin
+                Lookup := 'scan';
+                Opened := False;
+                Q := TADOQuery.Create(Nil);
+                Try
+                    Q.Connection := Conn;
+                    Q.SQL.Add('SELECT * FROM ' + QTable);
+                    Q.Open;
+                    Opened := True;
+                Except
+                    Opened := False;
+                End;
+                If Opened Then
+                Begin
+                    Stopped := False;
+                    Try Q.First; Except End;
+                    While (Not Stopped) And (Not Q.Eof) And (Scanned < MaxRows) Do
+                    Begin
+                        Scanned := Scanned + 1;
+                        Probe := '';
+                        Try Probe := Q.Fields[KeyIdx].AsString; Except End;
+                        If LowerCase(Trim(Probe)) = WantKey Then
+                        Begin
+                            MatchCount := MatchCount + 1;
+                            If MatchCount = 1 Then
+                            Begin
+                                For I := 0 To Q.FieldCount - 1 Do
+                                Begin
+                                    V := '';
+                                    Try V := Q.Fields[I].AsString; Except End;
+                                    Vals.Add(V);
+                                End;
+                            End;
+                        End;
+                        Try Q.Next; Except Stopped := True; End;
+                    End;
+                    If (Scanned >= MaxRows) And (Not Q.Eof) Then Capped := True;
+                    Try Q.Close; Except End;
+                End
+                Else
+                Begin
+                    ErrCode := 'QUERY_FAILED';
+                    ErrMsg := 'The table could not be read';
+                End;
+                Q.Free;
+            End;
+        End;
+
+        If (ErrCode = '') And (MatchCount > 0) Then
+        Begin
+            For I := 0 To Cols.Count - 1 Do
+            Begin
+                V := '';
+                If I < Vals.Count Then V := Vals[I];
+                If FieldsJson <> '' Then FieldsJson := FieldsJson + ',';
+                FieldsJson := FieldsJson + '"' + EscapeJsonString(Cols[I]) + '":"'
+                    + EscapeJsonString(V) + '"';
+            End;
+            SymField := DbLibResolveField(Lines, Cols, Declared, '[Library Ref]', 'Library Ref');
+            SymLibField := DbLibResolveField(Lines, Cols, Declared, '[Library Path]', 'Library Path');
+            DescField := DbLibResolveField(Lines, Cols, Declared, '[Description]', 'Description');
+            Idx := DbLibIndexOfName(Cols, SymField);
+            If (Idx >= 0) And (Idx < Vals.Count) Then SymV := Vals[Idx];
+            Idx := DbLibIndexOfName(Cols, SymLibField);
+            If (Idx >= 0) And (Idx < Vals.Count) Then SymLibV := Vals[Idx];
+            Idx := DbLibIndexOfName(Cols, DescField);
+            If (Idx >= 0) And (Idx < Vals.Count) Then DescV := Vals[Idx];
+            DbLibFootprintFields(Lines, Cols, Declared, RefFields, LibFields);
+            While RefFields <> '' Do
+            Begin
+                OneRef := SplitNextTab(RefFields);
+                OneLib := SplitNextTab(LibFields);
+                RefV := '';
+                LibV := '';
+                Idx := DbLibIndexOfName(Cols, OneRef);
+                If (Idx >= 0) And (Idx < Vals.Count) Then RefV := Vals[Idx];
+                Idx := DbLibIndexOfName(Cols, OneLib);
+                If (Idx >= 0) And (Idx < Vals.Count) Then LibV := Vals[Idx];
+                If RefV <> '' Then
+                Begin
+                    If FpJson <> '' Then FpJson := FpJson + ',';
+                    FpJson := FpJson + '{"ref":"' + EscapeJsonString(RefV)
+                        + '","library":"' + EscapeJsonString(LibV) + '"}';
+                End;
+            End;
+        End;
+        If Conn <> Nil Then Conn.Free;
+    Finally
+        Lines.Free;
+        Cols.Free;
+        Vals.Free;
+    End;
+
+    If ErrCode <> '' Then
+        Response := BuildErrorResponse(RequestId, ErrCode, ErrMsg)
+    Else
+        Response := BuildSuccessResponse(RequestId,
+            '{"library_path":"' + EscapeJsonString(LibPath) + '"'
+            + ',"table":"' + EscapeJsonString(Declared) + '"'
+            + ',"key":"' + EscapeJsonString(KeyValue) + '"'
+            + ',"key_field":"' + EscapeJsonString(KeyField) + '"'
+            + ',"key_field_source":"' + EscapeJsonString(KeySource) + '"'
+            + ',"lookup":"' + Lookup + '"'
+            + ',"found":' + BoolToJsonStr(MatchCount > 0)
+            + ',"match_count":' + IntToStr(MatchCount)
+            + ',"rows_scanned":' + IntToStr(Scanned)
+            + ',"scan_capped":' + BoolToJsonStr(Capped)
+            + ',"symbol_ref":"' + EscapeJsonString(SymV) + '"'
+            + ',"symbol_library":"' + EscapeJsonString(SymLibV) + '"'
+            + ',"footprints":[' + FpJson + ']'
+            + ',"description":"' + EscapeJsonString(DescV) + '"'
+            + ',"fields":{' + FieldsJson + '}}');
+    Result := Response;
+End;
+
+{ Lib_PlaceDbLibComponent - place one DbLib row on a schematic sheet.         }
+{                                                                              }
+{ NOT INTERACTIVE. The process Sch:PlaceIntegratedComponentFromDB, which the   }
+{ reference examples use, attaches the part to the cursor for a person to drop }
+{ and has been reported to place nothing when a script runs it. This uses      }
+{ SchServer.LoadComponentFromDatabaseLibrary, declared in the schematic API    }
+{ and used that way by CompPlaceFromLib.pas in the reference, which hands back }
+{ the component built from the database row; it is then added, moved and      }
+{ rotated as Gen_PlaceSchComponentFromLibrary does for a .SchLib symbol.       }
+{                                                                              }
+{ Altium resolves the DbLib by its file name among the libraries it has        }
+{ available, so the DbLib must be installed or in the project: that is checked }
+{ first, and so is the table, against the DbLib's own list.                    }
+{ Params: library_path, table, key (required), x, y (mils), rotation (0, 90,   }
+{ 180, 270), designator, sheet_path (optional; default the active sheet).      }
+Function Lib_PlaceDbLibComponent(Params : String; RequestId : String) : String;
+Var
+    LibPath, Table, KeyValue, SheetPath, DesigStr, TableList, Declared, Problem : String;
+    LibRef, DbTable, Response, AvailPath : String;
+    X, Y, Rotation, OrientationVal, I, AvailCount : Integer;
+    Lines : TStringList;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+    Available : Boolean;
+Begin
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    Table := Trim(ExtractJsonValue(Params, 'table'));
+    KeyValue := ExtractJsonValue(Params, 'key');
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    DesigStr := ExtractJsonValue(Params, 'designator');
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
+
+    Problem := DbLibPathProblem(LibPath);
+    If (Problem = '') And (Table = '') Then Problem := 'table is required';
+    If (Problem = '') And (Trim(KeyValue) = '') Then Problem := 'key is required';
+    If (Problem = '') And (Rotation <> 0) And (Rotation <> 90) And (Rotation <> 180)
+        And (Rotation <> 270) Then
+        Problem := 'rotation must be 0, 90, 180 or 270';
+    If Problem <> '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', Problem);
+        Result := Response;
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No DbLib file at ' + LibPath);
+        Result := Response;
+        Exit;
+    End;
+
+    TableList := '';
+    Lines := TStringList.Create;
+    Try
+        Try
+            Lines.LoadFromFile(LibPath);
+            TableList := DbLibTableNames(Lines);
+        Except
+            TableList := '';
+        End;
+    Finally
+        Lines.Free;
+    End;
+    Declared := DbLibFindTab(TableList, Table);
+    If Declared = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'TABLE_UNKNOWN',
+            'The DbLib declares no table named "' + Table + '". It declares: '
+            + StringReplace(TableList, #9, ', ', MkSet(rfReplaceAll)));
+        Result := Response;
+        Exit;
+    End;
+
+    If IntegratedLibraryManager = Nil Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NO_MANAGER', 'IntegratedLibraryManager unavailable');
+        Result := Response;
+        Exit;
+    End;
+    Available := False;
+    AvailCount := 0;
+    Try AvailCount := IntegratedLibraryManager.AvailableLibraryCount; Except End;
+    For I := 0 To AvailCount - 1 Do
+    Begin
+        AvailPath := '';
+        Try AvailPath := IntegratedLibraryManager.AvailableLibraryPath(I); Except End;
+        If UpperCase(AvailPath) = UpperCase(LibPath) Then
+        Begin
+            Available := True;
+            Break;
+        End;
+    End;
+    If Not Available Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NOT_AVAILABLE',
+            'Altium does not have ' + ExtractFileName(LibPath) + ' among its available '
+            + 'libraries, and it finds a DbLib part by the library''s name. Install it '
+            + 'with lib_install_library, or add it to the project, and place again.');
+        Result := Response;
+        Exit;
+    End;
+
+    SchDoc := Nil;
+    If SheetPath <> '' Then
+    Begin
+        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'SHEET_NOT_LOADED',
+                'No SchDoc loaded at ' + SheetPath + '. Open it first.');
+            Result := Response;
+            Exit;
+        End;
+    End
+    Else
+    Begin
+        SchDoc := SchServer.GetCurrentSchDocument;
+        If SchDoc = Nil Then
+        Begin
+            Response := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+                'No schematic document is active');
+            Result := Response;
+            Exit;
+        End;
+    End;
+    If SchDoc.ObjectId <> eSheet Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'WRONG_DOC_KIND',
+            'Target document is not a schematic sheet (ObjectId='
+            + IntToStr(SchDoc.ObjectId) + '). Pass sheet_path to a .SchDoc.');
+        Result := Response;
+        Exit;
+    End;
+
+    { Load before the sheet's transaction opens, as the .SchLib placer does. }
+    Comp := Nil;
+    Try
+        Comp := SchServer.LoadComponentFromDatabaseLibrary(ExtractFileName(LibPath),
+            Declared, KeyValue);
+    Except
+        Comp := Nil;
+    End;
+    If Comp = Nil Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'PLACE_FAILED',
+            'Altium returned no component for key "' + KeyValue + '" in table "'
+            + Declared + '" of ' + ExtractFileName(LibPath) + '. Check the key with '
+            + 'lib_dblib_get_record.');
+        Result := Response;
+        Exit;
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try SchDoc.AddSchObject(Comp); Except End;
+    Try Comp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    OrientationVal := 0;
+    If Rotation = 90 Then OrientationVal := 1;
+    If Rotation = 180 Then OrientationVal := 2;
+    If Rotation = 270 Then OrientationVal := 3;
+    Try Comp.SetState_Orientation(OrientationVal); Except End;
+    If DesigStr <> '' Then
+    Begin
+        Try Comp.Designator.Text := DesigStr; Except End;
+    End;
+    SchRegisterObject(SchDoc, Comp);
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchDoc.GraphicallyInvalidate;
+    MarkDocDirtyByPath(SchDoc.DocumentName);
+
+    { Read back what Altium built. DatabaseTableName is empty on a part     }
+    { that came from a .SchLib, so it says whether the database link held.  }
+    LibRef := '';
+    Try LibRef := Comp.LibReference; Except End;
+    DbTable := '';
+    Try DbTable := Comp.DatabaseTableName; Except End;
+
+    Response := BuildSuccessResponse(RequestId,
+        '{"placed":true'
+        + ',"library_path":"' + EscapeJsonString(LibPath) + '"'
+        + ',"table":"' + EscapeJsonString(Declared) + '"'
+        + ',"key":"' + EscapeJsonString(KeyValue) + '"'
+        + ',"lib_reference":"' + EscapeJsonString(LibRef) + '"'
+        + ',"database_table":"' + EscapeJsonString(DbTable) + '"'
+        + ',"database_linked":' + BoolToJsonStr(DbTable <> '')
+        + ',"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
+        + ',"rotation":' + IntToStr(Rotation)
+        + ',"designator":"' + EscapeJsonString(DesigStr) + '"}');
+    Result := Response;
+End;
+
 { Force a library_path onto a parameter object.                              }
 {                                                                             }
 { ExtractJsonValue finds the FIRST occurrence of a key, so prepending is      }
@@ -18655,10 +23313,40 @@ Begin
     Result := ExtractJsonValue(Response, Key);
 End;
 
+{ Which library actions only LOOK, and so must leave the active document  }
+{ where they found it.                                                     }
+{                                                                          }
+{ Listed by name rather than inferred, because there is no property of a   }
+{ handler this can read to tell reading from writing. The cost of the list }
+{ going stale is a read that moves focus again, which is the bug it exists }
+{ to prevent, so a new read-only handler belongs here on the day it is     }
+{ written.                                                                 }
+{                                                                          }
+{ Writes are deliberately absent. Library authoring is a sequence of calls }
+{ against a current component: lib_add_pins and the Lib_AddFootprint*      }
+{ family read the focus the call before them left, so restoring it after a }
+{ write would break the flow the bridge is built on. }
+Function LibActionIsReadOnly(Action : String) : Boolean;
+Begin
+    Result := (Action = 'get_footprints')
+           Or (Action = 'get_footprint_pads')
+           Or (Action = 'get_library_geometry')
+           Or (Action = 'get_component_details')
+           Or (Action = 'get_pad_geometry')
+           Or (Action = 'probe_footprint')
+           Or (Action = 'probe_designator')
+           Or (Action = 'audit_styles')
+           Or (Action = 'search')
+           Or (Action = 'get_dblib_info')
+           Or (Action = 'query_dblib')
+           Or (Action = 'get_dblib_record');
+End;
+
 Function HandleLibraryCommand(Action : String; Params : String; RequestId : String) : String;
 Var
     SweepLibs, SweepAction, OnePath, OneParams, OneReply : String;
     ItemsJson, DataJson, ErrJson, OkStr : String;
+    SavedFocus : String;
     BarPos, Succeeded, FailedCount : Integer;
     FirstItem : Boolean;
 Begin
@@ -18786,6 +23474,14 @@ Begin
         Exit;
     End;
 
+    { Remember where the caller was looking, for the reads that are about to
+      focus a library to answer. Captured HERE rather than inside each
+      handler because they exit from several places apiece, and a restore
+      that only runs on the success path leaves the focus moved on exactly
+      the calls that already went wrong. }
+    SavedFocus := '';
+    If LibActionIsReadOnly(Action) Then SavedFocus := CurrentFocusedDocPath(0);
+
     Case Action Of
         'create_symbol':        Result := Lib_CreateSymbol(Params, RequestId);
         'add_pin':              Result := Lib_AddPin(Params, RequestId);
@@ -18823,6 +23519,7 @@ Begin
         'add_symbol_polygon': Result := Lib_AddSymbolPolygon(Params, RequestId);
         'set_component_description': Result := Lib_SetComponentDescription(Params, RequestId);
         'get_pin_list':       Result := Lib_GetPinList(Params, RequestId);
+        'set_pin_owner_part': Result := Lib_SetPinOwnerPart(Params, RequestId);
         'copy_component':     Result := Lib_CopyComponent(Params, RequestId);
         'move_components':    Result := Lib_MoveComponents(Params, RequestId);
         'move_footprints':    Result := Lib_MoveFootprints(Params, RequestId);
@@ -18835,6 +23532,7 @@ Begin
         'update_footprint_heights_from_3d': Result := Lib_UpdateFootprintHeightsFrom3D(Params, RequestId);
         'set_footprint_height': Result := Lib_SetFootprintHeight(Params, RequestId);
         'split_pin_functions':  Result := Lib_SplitPinFunctions(Params, RequestId);
+        'get_installed_libraries': Result := Lib_GetInstalledLibraries(Params, RequestId);
         'install_library':      Result := Lib_InstallLibrary(Params, RequestId);
         'uninstall_library':    Result := Lib_UninstallLibrary(Params, RequestId);
         'delete_component':     Result := Lib_DeleteComponent(Params, RequestId);
@@ -18850,9 +23548,17 @@ Begin
         'get_pad_geometry':     Result := Lib_GetPadGeometry(Params, RequestId);
         'normalize_implementations': Result := Lib_NormalizeImplementations(Params, RequestId);
         'clear_source_library': Result := Lib_ClearSourceLibrary(Params, RequestId);
+        'get_dblib_info':       Result := Lib_GetDbLibInfo(Params, RequestId);
+        'query_dblib':          Result := Lib_QueryDbLib(Params, RequestId);
+        'get_dblib_record':     Result := Lib_GetDbLibRecord(Params, RequestId);
+        'place_dblib_component': Result := Lib_PlaceDbLibComponent(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown library action: ' + Action);
     End;
+
+    { Put the caller's document back. A no-op unless a read actually moved
+      it, and it runs whether the handler succeeded or refused. }
+    RestoreFocusedDoc(SavedFocus);
 End;
 
 {=== PCBGeneric.pas ===}
@@ -18871,6 +23577,104 @@ End;
 { PCB Property Getter, late-bound, returns '' on unsupported properties     }
 {..............................................................................}
 
+{ WHERE A PCB PRIMITIVE KEEPS ITS POSITION, WHICH IS NOT ONE MEMBER.        }
+{                                                                            }
+{ Reading Obj.x off the declared IPCB_Primitive worked for the types that     }
+{ happen to publish it and raised "Undeclared identifier: x" for the rest.    }
+{ That is not a tool error: the script engine shows it as a modal before any  }
+{ Try/Except runs, so it stops the polling loop and the session has to be     }
+{ restarted by hand. Reported from a live board by an obj_query for X on an   }
+{ eTextObject.                                                                }
+{                                                                            }
+{ The mapping below uses only members this build already exercises elsewhere: }
+{ Pad.x / Via.x / Comp.x in PCB.pas, Text.XLocation in Generic.pas and        }
+{ Library.pas, Arc.XCenter and Fill.X1Location in PCB.pas.                    }
+{                                                                            }
+{ A track, a region and a polygon have no single position and are reported    }
+{ as unreadable rather than answered with one end of themselves. Same reason  }
+{ the schematic side gained SchObjectHasText: a type that lacks the member is }
+{ told so, and the caller gets a reply instead of a stalled loop.             }
+Function PCBPrimitivePos(Obj : IPCB_Primitive; WantY : Boolean;
+                         Var Found : Boolean) : Integer;
+Var
+    Oid   : Integer;
+    Pad   : IPCB_Pad;
+    Via   : IPCB_Via;
+    Comp  : IPCB_Component;
+    Txt   : IPCB_Text;
+    Arc   : IPCB_Arc;
+    Fill  : IPCB_Fill;
+    Body  : IPCB_ComponentBody;
+Begin
+    Result := 0;
+    Found := False;
+    Oid := Obj.ObjectId;
+    Try
+        If Oid = ePadObject Then
+        Begin
+            Pad := Obj;
+            If WantY Then Result := Pad.y Else Result := Pad.x;
+            Found := True;
+        End
+        Else If Oid = eViaObject Then
+        Begin
+            Via := Obj;
+            If WantY Then Result := Via.y Else Result := Via.x;
+            Found := True;
+        End
+        Else If Oid = eComponentObject Then
+        Begin
+            Comp := Obj;
+            If WantY Then Result := Comp.y Else Result := Comp.x;
+            Found := True;
+        End
+        Else If Oid = eComponentBodyObject Then
+        Begin
+            Body := Obj;
+            If WantY Then Result := Body.y Else Result := Body.x;
+            Found := True;
+        End
+        Else If Oid = eTextObject Then
+        Begin
+            Txt := Obj;
+            If WantY Then Result := Txt.YLocation Else Result := Txt.XLocation;
+            Found := True;
+        End
+        Else If Oid = eArcObject Then
+        Begin
+            Arc := Obj;
+            If WantY Then Result := Arc.YCenter Else Result := Arc.XCenter;
+            Found := True;
+        End
+        Else If Oid = eFillObject Then
+        Begin
+            Fill := Obj;
+            If WantY Then Result := Fill.Y1Location Else Result := Fill.X1Location;
+            Found := True;
+        End;
+    Except
+        Found := False;
+    End;
+End;
+
+{ A ratsnest line's redundancy and connection mode. Each is read in a     }
+{ function of its own: both come from the API reference and neither had   }
+{ been called from a script here, and an identifier the script engine does }
+{ not know halts the polling loop where no Try catches it. Apart, a build  }
+{ without one fails only a query that asks for it.                         }
+Function PCBConnRedundant(Conn : IPCB_Connection) : String;
+Begin
+    Result := BoolToJsonStr(Conn.IsRedundant);
+End;
+
+Function PCBConnMode(Conn : IPCB_Connection) : String;
+Var
+    M : Integer;
+Begin
+    M := Conn.Mode;
+    Result := IntToStr(M);
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -18880,26 +23684,32 @@ Var
     Fill  : IPCB_Fill;
     Comp  : IPCB_Component;
     Txt   : IPCB_Text;
+    Rgn   : IPCB_Region;
+    Poly  : IPCB_Polygon;
+    Body  : IPCB_ComponentBody;
+    Conn  : IPCB_Connection;
     Oid   : Integer;
+    PosVal : Integer;
+    PosFound : Boolean;
 Begin
     Result := '';
     Try
         Oid := Obj.ObjectId;
         { Base IPCB_Primitive members, valid to read on ANY primitive. }
         If PropName = 'ObjectId'        Then Result := IntToStr(Oid)
-        Else If PropName = 'X' Then
+        Else If (PropName = 'X') Or (PropName = 'Y') Then
         Begin
-            If Oid = eViaObject Then Begin Via := Obj; Result := IntToStr(CoordToMils(Via.x)); End
-            Else If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.x)); End
-            Else If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(CoordToMils(Comp.x)); End
-            Else If Oid = eTextObject Then Begin Txt := Obj; Result := IntToStr(CoordToMils(Txt.x)); End;
-        End
-        Else If PropName = 'Y' Then
-        Begin
-            If Oid = eViaObject Then Begin Via := Obj; Result := IntToStr(CoordToMils(Via.y)); End
-            Else If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.y)); End
-            Else If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(CoordToMils(Comp.y)); End
-            Else If Oid = eTextObject Then Begin Txt := Obj; Result := IntToStr(CoordToMils(Txt.y)); End;
+            PosVal := PCBPrimitivePos(Obj, PropName = 'Y', PosFound);
+            If PosFound Then
+                Result := FloatToJsonStr(CoordToMilsF(PosVal))   { sub-mil coordinates: local patch 2026-09-18 }
+            Else
+            Begin
+                { A track has two ends and a region has an outline, so       }
+                { answering with either would be a coordinate the caller     }
+                { would then act on. Say it is not on this type instead.     }
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
         End
         Else If PropName = 'Layer'      Then Result := GetLayerString(Obj.Layer)
         Else If PropName = 'Descriptor' Then Result := Obj.Descriptor
@@ -18915,32 +23725,80 @@ Begin
         Begin
             If Obj.Net <> Nil Then Result := Obj.Net.Name;
         End
+        { WHAT A PRIMITIVE BELONGS TO. The walk below takes every primitive  }
+        { on the board, so a footprint's own tracks and a hatched pour's     }
+        { tracks come through with the routing, on the same copper layers,   }
+        { and a filter on Layer alone cannot keep to routing. These let it:  }
+        { InComponent=false|InPolygon=false is free copper.                  }
+        Else If PropName = 'InComponent' Then
+        Begin
+            Result := BoolToJsonStr(Obj.InComponent);
+        End
+        Else If PropName = 'InPolygon' Then
+        Begin
+            Result := BoolToJsonStr(Obj.InPolygon);
+        End
+        Else If PropName = 'IsKeepout' Then
+        Begin
+            Result := BoolToJsonStr(Obj.IsKeepout);
+        End
+        Else If PropName = 'Locked' Then
+        Begin
+            Result := BoolToJsonStr(Not Obj.Moveable);
+        End
+        Else If PropName = 'Component' Then
+        Begin
+            { The owning footprint's designator; empty for a free primitive. }
+            If Obj.InComponent Then
+            Begin
+                If Obj.Component <> Nil Then Result := Obj.Component.Name.Text;
+            End;
+        End
         { Subtype members. DelphiScript resolves members against the DECLARED }
         { type, so Obj.X1 on an IPCB_Primitive is "Undeclared identifier".    }
         { Narrow to a typed local via ObjectId (no Forward casts in script).  }
+        { A ratsnest line has two ends the same way a track does. }
         Else If PropName = 'X1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.X1)); End
-            Else If Oid = eFillObject Then Begin Fill := Obj; Result := IntToStr(CoordToMils(Fill.X1)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.X1)); End
+            Else If Oid = eConnectionObject Then Begin Conn := Obj; Result := FloatToJsonStr(CoordToMilsF(Conn.X1)); End;
         End
         Else If PropName = 'Y1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Y1)); End
-            Else If Oid = eFillObject Then Begin Fill := Obj; Result := IntToStr(CoordToMils(Fill.Y1)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Y1)); End
+            Else If Oid = eConnectionObject Then Begin Conn := Obj; Result := FloatToJsonStr(CoordToMilsF(Conn.Y1)); End;
         End
         Else If PropName = 'X2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.X2)); End
-            Else If Oid = eFillObject Then Begin Fill := Obj; Result := IntToStr(CoordToMils(Fill.X2)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.X2)); End
+            Else If Oid = eConnectionObject Then Begin Conn := Obj; Result := FloatToJsonStr(CoordToMilsF(Conn.X2)); End;
         End
         Else If PropName = 'Y2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Y2)); End
-            Else If Oid = eFillObject Then Begin Fill := Obj; Result := IntToStr(CoordToMils(Fill.Y2)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Y2)); End
+            Else If Oid = eConnectionObject Then Begin Conn := Obj; Result := FloatToJsonStr(CoordToMilsF(Conn.Y2)); End;
+        End
+        Else If PropName = 'Layer1' Then
+        Begin
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := GetLayerString(Conn.Layer1); End;
+        End
+        Else If PropName = 'Layer2' Then
+        Begin
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := GetLayerString(Conn.Layer2); End;
+        End
+        Else If PropName = 'IsRedundant' Then
+        Begin
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := PCBConnRedundant(Conn); End;
+        End
+        Else If PropName = 'Mode' Then
+        Begin
+            If Oid = eConnectionObject Then Begin Conn := Obj; Result := PCBConnMode(Conn); End;
         End
         Else If PropName = 'Width' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Result := IntToStr(CoordToMils(Track.Width)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Result := FloatToJsonStr(CoordToMilsF(Track.Width)); End
+            Else If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(CoordToMilsF(Arc.LineWidth)); End
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Width)); End;
         End
         Else If PropName = 'XCenter' Then
         Begin
@@ -18956,24 +23814,24 @@ Begin
         End
         Else If PropName = 'StartAngle' Then
         Begin
-            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToStr(Arc.StartAngle); End;
+            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(Arc.StartAngle); End;
         End
         Else If PropName = 'EndAngle' Then
         Begin
-            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToStr(Arc.EndAngle); End;
+            If Oid = eArcObject Then Begin Arc := Obj; Result := FloatToJsonStr(Arc.EndAngle); End;
         End
         Else If PropName = 'HoleSize' Then
         Begin
-            If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.HoleSize)); End
-            Else If Oid = eViaObject Then Begin Via := Obj; Result := IntToStr(CoordToMils(Via.HoleSize)); End;
+            If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(CoordToMilsF(Pad.HoleSize)); End
+            Else If Oid = eViaObject Then Begin Via := Obj; Result := FloatToJsonStr(CoordToMilsF(Via.HoleSize)); End;
         End
         Else If PropName = 'TopXSize' Then
         Begin
-            If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.TopXSize)); End;
+            If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(CoordToMilsF(Pad.TopXSize)); End;
         End
         Else If PropName = 'TopYSize' Then
         Begin
-            If Oid = ePadObject Then Begin Pad := Obj; Result := IntToStr(CoordToMils(Pad.TopYSize)); End;
+            If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(CoordToMilsF(Pad.TopYSize)); End;
         End
         Else If PropName = 'TopShape' Then
         Begin
@@ -18981,17 +23839,22 @@ Begin
         End
         Else If PropName = 'Size' Then
         Begin
-            If Oid = eViaObject Then Begin Via := Obj; Result := IntToStr(CoordToMils(Via.Size)); End;
+            If Oid = eViaObject Then Begin Via := Obj; Result := FloatToJsonStr(CoordToMilsF(Via.Size)); End
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Size)); End;
         End
         Else If PropName = 'Rotation' Then
         Begin
-            If Oid = eComponentObject Then Begin Comp := Obj; Result := FloatToStr(Comp.Rotation); End
-            Else If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToStr(Pad.Rotation); End
-            Else If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToStr(Txt.Rotation); End;
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := FloatToJsonStr(Comp.Rotation); End
+            Else If Oid = ePadObject Then Begin Pad := Obj; Result := FloatToJsonStr(Pad.Rotation); End
+            Else If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(Txt.Rotation); End;
         End
         Else If PropName = 'Pattern' Then
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Pattern; End;
+        End
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(Comp.ComponentKind); End;
         End
         Else If PropName = 'SourceDesignator' Then
         Begin
@@ -19001,7 +23864,10 @@ Begin
         Begin
             { Component Name is an IPCB_Text; return its .Text, not the object }
             { (Dispatch->OleStr otherwise crashed EscapeJsonString via modal). }
+            { A pad's Name is its designator, a plain string. It read as empty, }
+            { so a Name=1 filter matched no pad at all.                        }
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Name.Text; End;
+            If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
@@ -19014,6 +23880,83 @@ Begin
         Else If PropName = 'Text' Then
         Begin
             If Oid = eTextObject Then Begin Txt := Obj; Result := Txt.Text; End;
+        End
+        { A text's height and stroke width under the names a caller reaches  }
+        { for (Altium's own are Size and Width), and whether it is a        }
+        { component's designator or comment, so a filter can pick those out. }
+        Else If PropName = 'Height' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Size)); End;
+        End
+        Else If PropName = 'StrokeWidth' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Result := FloatToJsonStr(CoordToMilsF(Txt.Width)); End;
+        End
+        Else If PropName = 'IsDesignator' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Result := BoolToJsonStr(Txt.IsDesignator); End;
+        End
+        Else If PropName = 'IsComment' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Result := BoolToJsonStr(Txt.IsComment); End;
+        End
+        Else If PropName = 'UseTTFonts' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Result := BoolToJsonStr(Txt.UseTTFonts); End;
+        End
+        { WRITABLE AND UNREADABLE IS THE SAME BUG IN THE OTHER DIRECTION.
+          These three were added to the writer and not to this reader, so
+          a caller could set a pour option and had no way to confirm it,
+          which is the exact failure the writer was fixed for. Found by
+          asking for them on a live board and being told they are not PCB
+          properties. }
+        Else If PropName = 'RemoveDead' Then
+        Begin
+            If Oid = ePolyObject Then
+            Begin Poly := Obj; Result := BoolToJsonStr(Poly.RemoveDead); End;
+        End
+        Else If PropName = 'RemoveNarrowNecks' Then
+        Begin
+            If Oid = ePolyObject Then
+            Begin Poly := Obj; Result := BoolToJsonStr(Poly.RemoveNarrowNecks); End;
+        End
+        Else If PropName = 'RemoveIslandsByArea' Then
+        Begin
+            If Oid = ePolyObject Then
+            Begin Poly := Obj; Result := BoolToJsonStr(Poly.RemoveIslandsByArea); End;
+        End
+        Else If PropName = 'StandoffHeight' Then
+        Begin
+            If Oid = eComponentBodyObject Then
+            Begin Body := Obj; Result := IntToStr(CoordToMils(Body.StandoffHeight)); End;
+        End
+        Else If PropName = 'OverallHeight' Then
+        Begin
+            If Oid = eComponentBodyObject Then
+            Begin Body := Obj; Result := IntToStr(CoordToMils(Body.OverallHeight)); End;
+        End
+        { A REGION'S KIND IS WHAT MAKES IT A BOARD CUTOUT, and nothing
+          here could see it. Reported from a live board as the flag not
+          being reachable through this API; it is
+            Property Kind : TRegionKind Read GetState_Kind
+                                        Write SetState_Kind;
+          and we had simply never exposed it.
+
+          Returned as a word rather than an ordinal. The numbers are not
+          documented anywhere this project can verify, and publishing an
+          unverified number invites a caller to write it back. }
+        Else If (PropName = 'Kind') Or (PropName = 'RegionKind') Then
+        Begin
+            If Oid = eRegionObject Then
+            Begin
+                Rgn := Obj;
+                If Rgn.Kind = eRegionKind_BoardCutout Then Result := 'board_cutout'
+                Else If Rgn.Kind = eRegionKind_Cutout Then Result := 'cutout'
+                Else If Rgn.Kind = eRegionKind_Copper Then Result := 'copper'
+                Else If Rgn.Kind = eRegionKind_NamedRegion Then Result := 'named_region'
+                Else If Rgn.Kind = eRegionKind_Cavity Then Result := 'cavity'
+                Else Result := 'unknown';
+            End;
         End;
     Except
         Result := '';
@@ -19024,65 +23967,363 @@ End;
 { PCB Property Setter                                                        }
 {..............................................................................}
 
-Procedure SetPCBProperty(Obj : IPCB_Primitive; PropName : String; Value : String);
+{ A caller-supplied layer name reaching a primitive through obj_modify.       }
+{ GetLayerFromString answered eTopLayer for every name it did not know, so    }
+{ set="Layer=Internal Plane 1" MOVED the primitive to the top copper layer.   }
+{ ResolveLayerId asks the board's own stack instead, and an unresolvable      }
+{ name is refused rather than silently rounded to the top.                    }
+{                                                                             }
+{ Reports whether it applied, because the caller now has somewhere to put     }
+{ that. ProcessActivePCBDoc still rejects the whole call up front via         }
+{ UnresolvedLayerAssignment, before any object has been touched, which is     }
+{ the stronger guarantee: a partly-applied batch is worse than a refused one. }
+Function SetPrimitiveLayerByName(Obj : IPCB_Primitive; Value : String) : Boolean;
+Var
+    Lyr : TLayer;
+Begin
+    Result := False;
+    Lyr := ResolveLayerId(GetPCBBoardAnywhere(0), Value);
+    If Lyr <> eNoLayer Then
+    Begin
+        Obj.Layer := Lyr;
+        Result := True;
+    End;
+End;
+
+{ Returns: 1 = handled, 0 = unknown property name, -1 = write threw.        }
+{                                                                           }
+{ THIS USED TO BE A Procedure, and that is the whole bug. It reported       }
+{ nothing, so a caller could not tell a property this build writes from one }
+{ it has never heard of, and modify_objects answered with a match count     }
+{ either way. Measured on a live board: setting RemoveDead on a polygon     }
+{ came back matched:2 having written nothing, and the operator reasonably   }
+{ concluded the property was not writable. It is:                           }
+{ IPCB_Polygon declares                                                     }
+{   Property RemoveDead : Boolean Read GetState_RemoveDead                  }
+{                                 Write SetState_RemoveDead;                }
+{ There was simply no case for it here.                                     }
+{                                                                           }
+{ The schematic writer was given this contract and the PCB one was not, so  }
+{ the same class of silent failure survived on this side. Both now feed the }
+{ one buffer in Utils.                                                       }
+{                                                                           }
+{ The error channel this adds is the one SetPrimitiveLayerByName above was   }
+{ written without: an unresolvable layer name is now reported as a failed    }
+{ write rather than left quietly unapplied.                                  }
+{ Properties whose value is a length in mils. }
+Function IsLengthProperty(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'X') Or (PropName = 'Y') Or (PropName = 'X1') Or
+        (PropName = 'Y1') Or (PropName = 'X2') Or (PropName = 'Y2') Or
+        (PropName = 'Width') Or (PropName = 'HoleSize') Or
+        (PropName = 'TopXSize') Or (PropName = 'TopYSize') Or
+        (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
+        (PropName = 'Height') Or (PropName = 'StrokeWidth') Or
+        (PropName = 'Size');
+End;
+
+{ A text's height or stroke width, inside the modify bracket Altium wants: }
+{ the text's own, and its component's when it is a designator or comment,  }
+{ as the community designator scripts do it (AdjustDesignators2.pas).      }
+Procedure SetTextGeometry(Txt : IPCB_Text; Height : Boolean; Coord : TCoord);
+Var
+    Owner : IPCB_Component;
+Begin
+    Owner := Nil;
+    If Txt.InComponent Then Owner := Txt.Component;
+    If Owner <> Nil Then Owner.BeginModify;
+    Txt.BeginModify;
+    If Height Then Txt.Size := Coord Else Txt.Width := Coord;
+    Txt.EndModify;
+    Txt.GraphicallyInvalidate;
+    If Owner <> Nil Then Owner.EndModify;
+End;
+
+{ A via's diameter and hole, written together inside the via's modify    }
+{ messages, in the order that never leaves the hole as large as the pad   }
+{ on the way: the hole first when it fits inside the current pad, else    }
+{ the diameter first. Refused, writing nothing, when the result has no    }
+{ annular ring: pcb_normalize_vias once set nearly every via on a board  }
+{ to a pad no larger than its hole. True only when both read back.       }
+Function SetViaGeometry(Via : IPCB_Via; Size, Hole : TCoord) : Boolean;
+Begin
+    Result := False;
+    If (Hole <= 0) Or (Size <= Hole) Then Exit;
+    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+        PCBM_BeginModify, c_NoEventData);
+    If Hole < Via.Size Then
+    Begin
+        Via.HoleSize := Hole;
+        Via.Size := Size;
+    End
+    Else
+    Begin
+        Via.Size := Size;
+        Via.HoleSize := Hole;
+    End;
+    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+        PCBM_EndModify, c_NoEventData);
+    Result := (Via.Size = Size) And (Via.HoleSize = Hole);
+End;
+
+Function SetPCBProperty(Obj : IPCB_Primitive; PropName : String; Value : String) : Integer;
 Var
     Track : IPCB_Track;
+    Arc : IPCB_Arc;
     Pad   : IPCB_Pad;
+    Via   : IPCB_Via;
     Comp  : IPCB_Component;
     Txt   : IPCB_Text;
+    Poly  : IPCB_Polygon;
+    Body  : IPCB_ComponentBody;
+    Rgn   : IPCB_Region;
     Oid   : Integer;
+    Matched, Refused : Boolean;
+    PosVal : Integer;
+    PosFound : Boolean;
 Begin
+    Result := 0;
+    Matched := True;
+    Refused := False;
     Try
         Oid := Obj.ObjectId;
+        { A LENGTH GOES IN AS DECIMAL MILS. It was read with StrToIntDef,  }
+        { so 3.5 became 0: a fractional width wrote zero and a fractional  }
+        { X moved the object to the origin. A value that is not a number   }
+        { is refused and reported as failed, never written as zero.        }
+        Refused := IsLengthProperty(PropName) And (Not IsFloatStr(Value));
         { Base members, settable on any primitive. }
-        If PropName = 'X'             Then Obj.x := MilsToCoord(StrToIntDef(Value, 0))
-        Else If PropName = 'Y'        Then Obj.y := MilsToCoord(StrToIntDef(Value, 0))
-        Else If PropName = 'Layer'    Then Obj.Layer := GetLayerFromString(Value)
+        { EVERY PRIMITIVE IS MOVED, NOT ASSIGNED.
+          Writing x or y directly is not something this codebase has done
+          successfully, and the one time it tried on a component body the
+          PCB engine went down with an access violation. It was also
+          unreachable for half the types, since x is not declared on all
+          of them. MoveByXY is inherited from IPCB_Primitive,
+          PCB_ReplicateLayout already calls it, and Lib_Link3DModel
+          positions bodies with it, so it is the proven route, and taking
+          the delta from PCBPrimitivePos makes one path serve every type
+          that has a position at all. }
+        If Refused Then
+        Begin
+            Matched := True;
+        End
+        Else If (PropName = 'X') Or (PropName = 'Y') Then
+        Begin
+            { Moved as a DELTA off wherever the primitive currently is, so   }
+            { one shared path covers a pad, a via, a text and an arc without }
+            { each needing its own writable member. A type with no single    }
+            { position is refused rather than moved by one corner.           }
+            PosVal := PCBPrimitivePos(Obj, PropName = 'Y', PosFound);
+            If Not PosFound Then
+            Begin
+                { Reported as unreadable and NOT as a failure or an unknown
+                  name: X is a real property spelled correctly, and the tail
+                  of this function turns 0 into "unknown" and -1 into
+                  "failed", either of which would send the caller looking
+                  for a spelling mistake that is not there. }
+                NotePropertyDiag('unreadable', PropName);
+                Result := 1;
+                Exit;
+            End;
+            If PropName = 'X' Then
+                Obj.MoveByXY(MilsToCoordF(StrToFloatDef(Value, 0)) - PosVal, 0)
+            Else
+                Obj.MoveByXY(0, MilsToCoordF(StrToFloatDef(Value, 0)) - PosVal);
+        End
+        Else If PropName = 'Layer'    Then SetPrimitiveLayerByName(Obj, Value)
         Else If PropName = 'Selected' Then Obj.Selected := StrToBool(Value)
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Comp.ComponentKind := StrToInt(Value); End
+            Else Matched := False;
+        End
         { Subtype members: narrow to a typed local via ObjectId first. }
         Else If PropName = 'X1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Track.X1 := MilsToCoord(StrToIntDef(Value, 0)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Track.X1 := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
         End
         Else If PropName = 'Y1' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Track.Y1 := MilsToCoord(StrToIntDef(Value, 0)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Track.Y1 := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
         End
         Else If PropName = 'X2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Track.X2 := MilsToCoord(StrToIntDef(Value, 0)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Track.X2 := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
         End
         Else If PropName = 'Y2' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Track.Y2 := MilsToCoord(StrToIntDef(Value, 0)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Track.Y2 := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
         End
         Else If PropName = 'Width' Then
         Begin
-            If Oid = eTrackObject Then Begin Track := Obj; Track.Width := MilsToCoord(StrToIntDef(Value, 0)); End;
+            If Oid = eTrackObject Then Begin Track := Obj; Track.Width := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else If Oid = eTextObject Then Begin Txt := Obj; SetTextGeometry(Txt, False, MilsToCoordF(StrToFloatDef(Value, 0))); End
+            Else Matched := False;
         End
         Else If PropName = 'Rotation' Then
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Comp.Rotation := StrToFloatDef(Value, 0); End
-            Else If Oid = ePadObject Then Begin Pad := Obj; Pad.Rotation := StrToFloatDef(Value, 0); End;
+            Else If Oid = ePadObject Then Begin Pad := Obj; Pad.Rotation := StrToFloatDef(Value, 0); End
+            Else Matched := False;
         End
+        { A VIA'S HOLE AND DIAMETER. HoleSize had a pad branch only, and a   }
+        { branch that matches the name but not the type used to report     }
+        { success while writing nothing; Size had no branch at all. A via   }
+        { write that would leave the hole as large as the pad is refused.   }
+        { To grow a via, give Size before HoleSize; to shrink it, HoleSize  }
+        { first: each write is checked against the via as it stands.       }
         Else If PropName = 'HoleSize' Then
         Begin
-            If Oid = ePadObject Then Begin Pad := Obj; Pad.HoleSize := MilsToCoord(StrToIntDef(Value, 0)); End;
+            If Oid = ePadObject Then Begin Pad := Obj; Pad.HoleSize := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else If Oid = eViaObject Then
+            Begin
+                Via := Obj;
+                If Not SetViaGeometry(Via, Via.Size, MilsToCoordF(StrToFloatDef(Value, 0))) Then
+                    Refused := True;
+            End
+            Else Matched := False;
+        End
+        Else If PropName = 'Size' Then
+        Begin
+            If Oid = eViaObject Then
+            Begin
+                Via := Obj;
+                If Not SetViaGeometry(Via, MilsToCoordF(StrToFloatDef(Value, 0)), Via.HoleSize) Then
+                    Refused := True;
+            End
+            Else If Oid = eTextObject Then
+            Begin
+                If StrToFloatDef(Value, 0) <= 0 Then
+                Begin
+                    Refused := True;
+                End
+                Else
+                Begin
+                    Txt := Obj;
+                    SetTextGeometry(Txt, True, MilsToCoordF(StrToFloatDef(Value, 0)));
+                End;
+            End
+            Else Matched := False;
         End
         Else If PropName = 'TopXSize' Then
         Begin
-            If Oid = ePadObject Then Begin Pad := Obj; Pad.TopXSize := MilsToCoord(StrToIntDef(Value, 0)); End;
+            If Oid = ePadObject Then Begin Pad := Obj; Pad.TopXSize := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
         End
         Else If PropName = 'TopYSize' Then
         Begin
-            If Oid = ePadObject Then Begin Pad := Obj; Pad.TopYSize := MilsToCoord(StrToIntDef(Value, 0)); End;
+            If Oid = ePadObject Then Begin Pad := Obj; Pad.TopYSize := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
         End
         Else If PropName = 'Text' Then
         Begin
-            If Oid = eTextObject Then Begin Txt := Obj; Txt.Text := Value; End;
+            If Oid = eTextObject Then Begin Txt := Obj; Txt.Text := Value; End
+            Else Matched := False;
+        End
+        { A text's height and stroke width: silkscreen designator size is a }
+        { fabrication requirement, and only the create path could set it.   }
+        Else If (PropName = 'Height') Or (PropName = 'StrokeWidth') Then
+        Begin
+            If Oid <> eTextObject Then
+            Begin
+                Matched := False;
+            End
+            Else
+            Begin
+                If StrToFloatDef(Value, 0) <= 0 Then
+                Begin
+                    Refused := True;
+                End
+                Else
+                Begin
+                    Txt := Obj;
+                    SetTextGeometry(Txt, PropName = 'Height', MilsToCoordF(StrToFloatDef(Value, 0)));
+                End;
+            End;
+        End
+
+        { Polygon pour options. All three are declared on IPCB_Polygon with
+          both a Read and a Write accessor, so they are settable; they were
+          simply absent here. Setting one does NOT repour: the flags decide
+          what the NEXT pour does, so pcb_repour_polygons has to follow. }
+        { The body's own writable members, from its declared interface:
+          Property StandoffHeight : TCoord Read GetStandoffHeight
+                                           Write SetStandoffHeight;
+          and the same shape for OverallHeight. Identifier is read-only
+          and is deliberately absent. }
+        Else If PropName = 'StandoffHeight' Then
+        Begin
+            If Oid = eComponentBodyObject Then
+            Begin Body := Obj; Body.StandoffHeight := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
+        End
+        Else If PropName = 'OverallHeight' Then
+        Begin
+            If Oid = eComponentBodyObject Then
+            Begin Body := Obj; Body.OverallHeight := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
+        End
+        { Turning a region INTO a board cutout, the other half of the
+          read above. The five identifiers are attested: four independent
+          scripts in reference/ compare against them, so they exist in
+          DelphiScript. What none of them does is ASSIGN one, so the
+          write is unproven in the way StandoffHeight is, and it is
+          ranked accordingly in the release procedure.
+
+          If/Else If rather than Case, because Case on an enum crashes
+          the script engine here. }
+        Else If (PropName = 'Kind') Or (PropName = 'RegionKind') Then
+        Begin
+            If Oid = eRegionObject Then
+            Begin
+                Rgn := Obj;
+                If Value = 'board_cutout' Then Rgn.Kind := eRegionKind_BoardCutout
+                Else If Value = 'cutout' Then Rgn.Kind := eRegionKind_Cutout
+                Else If Value = 'copper' Then Rgn.Kind := eRegionKind_Copper
+                Else If Value = 'named_region' Then Rgn.Kind := eRegionKind_NamedRegion
+                Else If Value = 'cavity' Then Rgn.Kind := eRegionKind_Cavity
+                Else Matched := False;
+            End
+            Else Matched := False;
+        End
+        Else If PropName = 'RemoveDead' Then
+        Begin
+            If Oid = ePolyObject Then
+            Begin Poly := Obj; Poly.RemoveDead := StrToBool(Value); End
+            Else Matched := False;
+        End
+        Else If PropName = 'RemoveNarrowNecks' Then
+        Begin
+            If Oid = ePolyObject Then
+            Begin Poly := Obj; Poly.RemoveNarrowNecks := StrToBool(Value); End
+            Else Matched := False;
+        End
+        Else If PropName = 'RemoveIslandsByArea' Then
+        Begin
+            If Oid = ePolyObject Then
+            Begin Poly := Obj; Poly.RemoveIslandsByArea := StrToBool(Value); End
+            Else Matched := False;
+        End
+        Else Matched := False;
+
+        If Refused Then
+        Begin
+            Result := -1;
+        End
+        Else
+        Begin
+            If Matched Then Result := 1 Else Result := 0;
         End;
     Except
+        Result := -1;
     End;
+
+    If Result = 0 Then NotePropertyDiag('unknown', PropName)
+    Else If Result = -1 Then NotePropertyDiag('failed', PropName);
 End;
 
 {..............................................................................}
@@ -19106,8 +24347,11 @@ Begin
             Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
         End
         Else Begin Condition := Remaining; Remaining := ''; End;
+        { A condition that is not Name=Value matches nothing (see
+          FilterProblem): skipped, it matched every object. }
+        If Trim(Condition) = '' Then Continue;
         EqPos := Pos('=', Condition);
-        If EqPos = 0 Then Continue;
+        If EqPos < 2 Then Begin Result := False; Exit; End;
         PropName := Copy(Condition, 1, EqPos - 1);
         Expected := Copy(Condition, EqPos + 1, Length(Condition));
         Actual := GetPCBProperty(Obj, PropName);
@@ -19132,7 +24376,12 @@ End;
 
 Function IsKnownPCBProperty(PropName : String) : Boolean;
 Begin
+    { Kind, RegionKind, the three pour options and the two body heights  }
+    { were answered by the getter and refused here, so a query for them  }
+    { was told they do not exist: the lag the list below warns about.    }
     Result :=
+        (PropName = 'SolderMaskBottomExpansion_mm') Or (PropName = 'UseSeparateMaskExpansions') Or (PropName = 'Address') Or (PropName = 'ComponentDesignator') Or (PropName = 'PadName') Or (PropName = 'X1_mm') Or (PropName = 'Y1_mm') Or (PropName = 'X2_mm') Or (PropName = 'Y2_mm') Or (PropName = 'Width_mm') Or (PropName = 'X_mm') Or (PropName = 'Y_mm') Or (PropName = 'TopXSize_mm') Or (PropName = 'TopYSize_mm') Or (PropName = 'HoleSize_mm') Or (PropName = 'SolderMaskExpansion_mm') Or (PropName = 'SolderMaskExpansionMode') Or
+        (PropName = 'XCenter_mm') Or (PropName = 'YCenter_mm') Or (PropName = 'Radius_mm') Or (PropName = 'BoundsLeft_mm') Or (PropName = 'BoundsBottom_mm') Or (PropName = 'BoundsRight_mm') Or (PropName = 'BoundsTop_mm') Or (PropName = 'IsHidden') Or
         (PropName = 'ObjectId') Or (PropName = 'X') Or (PropName = 'Y') Or
         (PropName = 'Layer') Or (PropName = 'Descriptor') Or
         (PropName = 'Selected') Or (PropName = 'Net') Or
@@ -19147,7 +24396,18 @@ Begin
         (PropName = 'Text') Or (PropName = 'Pattern') Or
         (PropName = 'Designator') Or (PropName = 'Designator.Text') Or
         (PropName = 'Comment') Or (PropName = 'Comment.Text') Or
-        (PropName = 'SourceDesignator');
+        (PropName = 'SourceDesignator') Or (PropName = 'ComponentKind') Or
+        (PropName = 'Kind') Or (PropName = 'RegionKind') Or
+        (PropName = 'RemoveDead') Or (PropName = 'RemoveNarrowNecks') Or
+        (PropName = 'RemoveIslandsByArea') Or
+        (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
+        (PropName = 'InComponent') Or (PropName = 'Component') Or
+        (PropName = 'InPolygon') Or (PropName = 'IsKeepout') Or
+        (PropName = 'Locked') Or (PropName = 'Layer1') Or
+        (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
+        (PropName = 'Mode') Or (PropName = 'Height') Or
+        (PropName = 'StrokeWidth') Or (PropName = 'IsDesignator') Or
+        (PropName = 'IsComment') Or (PropName = 'UseTTFonts');
 End;
 
 Function UnknownPCBProperties(PropsStr : String) : String;
@@ -19174,12 +24434,29 @@ Begin
     End;
 End;
 
-Function KnownPCBPropertyList : String;
+{ HIDDEN FROM THE RUN SCRIPT DIALOG BY ITS ARGUMENT.
+  Altium lists only parameterless routines there, so this project puts
+  fifty-five internal helpers in front of a user whose four real entry
+  points are StartMCPServer, StopMCPServer, RunSelfTest and
+  ShowStatusForm. A parameter is the only lever DelphiScript offers:
+  there are no visibility modifiers and every unit in the project is
+  scanned.
+
+  Dummy is never read. It exists to change the arity and nothing else.
+  Reported by a user as too many functions listed to find the right one. }
+Function KnownPCBPropertyList(Dummy : Integer) : String;
 Begin
-    Result := 'ObjectId, X, Y, Layer, Descriptor, Selected, Net, X1, Y1, '
+    Result := 'XCenter_mm, YCenter_mm, Radius_mm, BoundsLeft_mm, BoundsBottom_mm, BoundsRight_mm, BoundsTop_mm, IsHidden, Address, ComponentDesignator, PadName, X1_mm, Y1_mm, X2_mm, Y2_mm, Width_mm, X_mm, Y_mm, TopXSize_mm, TopYSize_mm, HoleSize_mm, SolderMaskExpansion_mm, SolderMaskExpansionMode, ObjectId, X, Y, Layer, Descriptor, Selected, Net, X1, Y1, '
         + 'X2, Y2, Width, Radius, StartAngle, EndAngle, XCenter, YCenter, '
         + 'HoleSize, Size, TopShape, TopXSize, TopYSize, Rotation, Name, '
-        + 'Text, Pattern, Designator, Comment, SourceDesignator';
+        + 'Text, Pattern, Designator, Comment, SourceDesignator, ComponentKind, '
+        { Everything the reader above answers. A list that lags the reader
+          tells a caller a property does not exist when it does, which is
+          how the pour flags were reported as unreachable. }
+        + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
+        + 'StandoffHeight, OverallHeight, InComponent, Component, '
+        + 'InPolygon, IsKeepout, Locked, Layer1, Layer2, IsRedundant, Mode, '
+        + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;
@@ -19237,7 +24514,8 @@ Var
     Obj, FoundObj : IPCB_Primitive;
     ObjJson : String;
     First : Boolean;
-    MaxIter : Integer;
+    I : Integer;
+    Victims : TInterfaceList;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -19261,34 +24539,41 @@ Begin
     { on arbitrary primitives, so raising is an ordinary outcome here rather   }
     { than a remote possibility. AltiumScriptCentral ships a whole recovery    }
     { script for this symptom, which is a fair measure of how often it bites.  }
+    { COLLECT, THEN REMOVE, the way Altium's own DeletePCBObjects example  }
+    { does. Finding one match and restarting the walk after each removal   }
+    { built a new iterator per object and walked again past everything the }
+    { filter rejects, so taking the routing off a board walked the board   }
+    { once per track. Nothing is removed while the iterator is live, and   }
+    { the list is never Freed: releasing board-primitive refs through it   }
+    { faults in oleaut32 (see PCB_SetTrackWidth). Items come back as the   }
+    { base IPCB_Primitive, the type RemovePCBObject takes.                 }
     If Mode = 'delete' Then
     Begin
+        Victims := TInterfaceList.Create;
+        Iterator := Board.BoardIterator_Create;
+        Try
+            Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_Method(eProcessAll);
+            Obj := Iterator.FirstPCBObject;
+            While Obj <> Nil Do
+            Begin
+                If MatchesFilterPCB(Obj, FilterStr) Then Victims.Add(Obj);
+                Obj := Iterator.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iterator);
+        End;
         PCBServer.PreProcess;
         Try
-            MaxIter := 100000;
-            While MaxIter > 0 Do
+            For I := 0 To Victims.Count - 1 Do
             Begin
-                Iterator := Board.BoardIterator_Create;
-                Try
-                    Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
-                    Iterator.AddFilter_LayerSet(AllLayers);
-                    Iterator.AddFilter_Method(eProcessAll);
-                    FoundObj := Nil;
-                    Obj := Iterator.FirstPCBObject;
-                    While Obj <> Nil Do
-                    Begin
-                        If MatchesFilterPCB(Obj, FilterStr) Then Begin FoundObj := Obj; Break; End;
-                        Obj := Iterator.NextPCBObject;
-                    End;
-                Finally
-                    Board.BoardIterator_Destroy(Iterator);
-                End;
-                If FoundObj = Nil Then Break;
+                FoundObj := Victims.Items[I];
+                If FoundObj = Nil Then Continue;
                 PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                     PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
                 Board.RemovePCBObject(FoundObj);
                 Inc(TotalMatched);
-                Dec(MaxIter);
             End;
         Finally
             PCBServer.PostProcess;
@@ -19296,38 +24581,216 @@ Begin
         Exit;
     End;
 
-    If Mode = 'modify' Then PCBServer.PreProcess;
-    Try
+    { MODIFY COLLECTS FIRST AND CHANGES AFTER, like delete above: an object }
+    { changed while the board iterator walks can move in its spatial index  }
+    { under it.                                                             }
+    If Mode = 'modify' Then
+    Begin
+        Victims := TInterfaceList.Create;
         Iterator := Board.BoardIterator_Create;
         Try
             Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
             Iterator.AddFilter_LayerSet(AllLayers);
             Iterator.AddFilter_Method(eProcessAll);
-
             Obj := Iterator.FirstPCBObject;
             While Obj <> Nil Do
             Begin
-                If (Limit > 0) And (TotalMatched >= Limit) Then Break;
-                If MatchesFilterPCB(Obj, FilterStr) Then
-                Begin
-                    If Mode = 'query' Then
-                    Begin
-                        ObjJson := BuildObjectJsonPCB(Obj, PropsStr);
-                        If Not First Then Result := Result + ',';
-                        First := False;
-                        Result := Result + ObjJson;
-                    End
-                    Else If Mode = 'modify' Then
-                        ApplySetPropertiesPCB(Obj, SetStr);
-                    Inc(TotalMatched);
-                End;
+                If (Limit > 0) And (Victims.Count >= Limit) Then Break;
+                If MatchesFilterPCB(Obj, FilterStr) Then Victims.Add(Obj);
                 Obj := Iterator.NextPCBObject;
             End;
         Finally
             Board.BoardIterator_Destroy(Iterator);
         End;
+        PCBServer.PreProcess;
+        Try
+            For I := 0 To Victims.Count - 1 Do
+            Begin
+                FoundObj := Victims.Items[I];
+                If FoundObj = Nil Then Continue;
+                ApplySetPropertiesPCB(FoundObj, SetStr);
+                Inc(TotalMatched);
+            End;
+        Finally
+            PCBServer.PostProcess;
+        End;
+        Exit;
+    End;
+
+    Iterator := Board.BoardIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Obj := Iterator.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            If (Limit > 0) And (TotalMatched >= Limit) Then Break;
+            If MatchesFilterPCB(Obj, FilterStr) Then
+            Begin
+                ObjJson := BuildObjectJsonPCB(Obj, PropsStr);
+                If Not First Then Result := Result + ',';
+                First := False;
+                Result := Result + ObjJson;
+                Inc(TotalMatched);
+            End;
+            Obj := Iterator.NextPCBObject;
+        End;
     Finally
-        If Mode = 'modify' Then PCBServer.PostProcess;
+        Board.BoardIterator_Destroy(Iterator);
+    End;
+End;
+
+{ The first Layer= assignment in a set string this board cannot resolve, or    }
+{ '' when every one of them resolves. Checked before the iteration starts so   }
+{ a bad name costs nothing rather than relocating half the matched objects.    }
+
+Function UnresolvedLayerAssignment(Board : IPCB_Board; SetStr : String) : String;
+Var
+    Remaining, Assignment, PropName, PropValue : String;
+    PipePos, EqPos : Integer;
+Begin
+    Result := '';
+    Remaining := SetStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin Assignment := Copy(Remaining, 1, PipePos - 1); Remaining := Copy(Remaining, PipePos + 1, Length(Remaining)); End
+        Else Begin Assignment := Remaining; Remaining := ''; End;
+        EqPos := Pos('=', Assignment);
+        If EqPos > 0 Then
+        Begin
+            PropName := UpperCase(Trim(Copy(Assignment, 1, EqPos - 1)));
+            PropValue := Trim(Copy(Assignment, EqPos + 1, Length(Assignment)));
+            If (PropName = 'LAYER') And (PropValue <> '') Then
+            Begin
+                If ResolveLayerId(Board, PropValue) = eNoLayer Then
+                Begin
+                    Result := PropValue;
+                    Exit;
+                End;
+            End;
+        End;
+    End;
+End;
+
+{ Whether angle A (degrees) lies on the counter-clockwise sweep A1 -> A2.  }
+Function AngleOnSweep(A, A1, A2 : Double) : Boolean;
+Var
+    Sweep, Off : Double;
+Begin
+    Sweep := A2 - A1;
+    While Sweep < 0 Do Sweep := Sweep + 360.0;
+    If Sweep = 0 Then Sweep := 360.0;
+    Off := A - A1;
+    While Off < 0 Do Off := Off + 360.0;
+    While Off >= 360.0 Do Off := Off - 360.0;
+    Result := Off <= Sweep;
+End;
+
+{ The board outline's extents in internal units, from its own segments:    }
+{ every vertex, and for an arc its two ends and any of 0, 90, 180 and 270   }
+{ degrees its sweep crosses. The outline's BoundingRectangle is a cached    }
+{ size that a reshape did not refresh: a board set larger kept reporting    }
+{ its old rectangle, and renders built from it cut off a third of the       }
+{ board. The arguments are left as they came when the outline is empty.     }
+Procedure OutlineExtents(Outline : IPCB_BoardOutline; Var L, B, R, T : Integer);
+Var
+    I, K, N : Integer;
+    Vx, Vy, Cx, Cy, Rr, A1, A2, Ang, Px, Py, ToRad : Double;
+    MinX, MinY, MaxX, MaxY : Double;
+Begin
+    N := 0;
+    Try N := Outline.PointCount; Except N := 0; End;
+    If N <= 0 Then Exit;
+    ToRad := 3.14159265358979 / 180.0;
+    MinX := 1e30;
+    MinY := 1e30;
+    MaxX := -1e30;
+    MaxY := -1e30;
+    For I := 0 To N - 1 Do
+    Begin
+        Vx := Outline.Segments[I].vx * 1.0;
+        Vy := Outline.Segments[I].vy * 1.0;
+        If Vx < MinX Then MinX := Vx;
+        If Vx > MaxX Then MaxX := Vx;
+        If Vy < MinY Then MinY := Vy;
+        If Vy > MaxY Then MaxY := Vy;
+        If Outline.Segments[I].Kind <> ePolySegmentLine Then
+        Begin
+            Cx := Outline.Segments[I].cx * 1.0;
+            Cy := Outline.Segments[I].cy * 1.0;
+            A1 := Outline.Segments[I].Angle1;
+            A2 := Outline.Segments[I].Angle2;
+            Rr := Sqrt((Vx - Cx) * (Vx - Cx) + (Vy - Cy) * (Vy - Cy));
+            For K := 0 To 5 Do
+            Begin
+                Ang := K * 90.0;
+                If K = 4 Then Ang := A1;
+                If K = 5 Then Ang := A2;
+                If (K >= 4) Or AngleOnSweep(Ang, A1, A2) Then
+                Begin
+                    Px := Cx + Rr * Cos(Ang * ToRad);
+                    Py := Cy + Rr * Sin(Ang * ToRad);
+                    If Px < MinX Then MinX := Px;
+                    If Px > MaxX Then MaxX := Px;
+                    If Py < MinY Then MinY := Py;
+                    If Py > MaxY Then MaxY := Py;
+                End;
+            End;
+        End;
+    End;
+    L := Round(MinX);
+    B := Round(MinY);
+    R := Round(MaxX);
+    T := Round(MaxY);
+End;
+
+{ After the outline is rewritten: Altium's own refresh of the cached size,   }
+{ as the community outline scripts do (PolygonReFitBO.pas). Apart from the  }
+{ caller, so these two calls are the only new identifiers in one place.      }
+Procedure RefreshBoardOutline(Board : IPCB_Board);
+Begin
+    Board.BoardOutline.SetState_XSizeYSize;
+    Board.BoardOutline.GraphicallyInvalidate;
+    Board.UpdateBoardOutline;
+End;
+
+{ The first property a filter names that the PCB getter does not answer,  }
+{ or ''. The getter returns '' for an unknown name, so Foo= matched every   }
+{ object and Foo=x matched none, neither of which the caller meant.         }
+Function UnknownPCBFilterProperty(FilterStr : String) : String;
+Var
+    Remaining, Condition, PropName : String;
+    PipePos, EqPos : Integer;
+Begin
+    Result := '';
+    Remaining := FilterStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Condition := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Condition := Remaining;
+            Remaining := '';
+        End;
+        EqPos := Pos('=', Condition);
+        If EqPos > 1 Then
+        Begin
+            PropName := Copy(Condition, 1, EqPos - 1);
+            If Not IsKnownPCBProperty(PropName) Then
+            Begin
+                Result := PropName;
+                Exit;
+            End;
+        End;
     End;
 End;
 
@@ -19337,8 +24800,22 @@ Function ProcessActivePCBDoc(ObjTypeInt : Integer;
 Var
     Board : IPCB_Board;
     TotalMatched : Integer;
-    JsonItems, Why : String;
+    JsonItems, Why, BadLayer, BadCond : String;
 Begin
+    BadCond := FilterProblem(FilterStr);
+    If BadCond <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FILTER', BadFilterMessage(BadCond));
+        Exit;
+    End;
+    BadCond := UnknownPCBFilterProperty(FilterStr);
+    If BadCond <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
+            'Not a PCB property in the filter: ' + BadCond + '. Nothing was '
+            + 'matched or changed. Available: ' + KnownPCBPropertyList(0) + '.');
+        Exit;
+    End;
     { A READ MAY WANDER; AN EDIT MAY NOT.                                   }
     {                                                                        }
     { GetPCBBoardAnywhere opens the first board it can find when none is     }
@@ -19361,12 +24838,23 @@ Begin
         End;
     End
     Else
-        Board := GetPCBBoardAnywhere;
+        Board := GetPCBBoardAnywhere(0);
 
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
+    End;
+
+    If SetStr <> '' Then
+    Begin
+        BadLayer := UnresolvedLayerAssignment(Board, SetStr);
+        If BadLayer <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                'Unknown layer name: ' + BadLayer + '. ' + BoardLayerNamesHint(Board));
+            Exit;
+        End;
     End;
     TotalMatched := 0;
     JsonItems := ProcessPCBBoardObjects(Board, ObjTypeInt,
@@ -19375,15 +24863,19 @@ Begin
     If (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create') Then
     Begin
         Board.GraphicalView_ZoomRedraw;
-        SaveDocByPath(Board.FileName);
+        MarkDocDirtyByPath(Board.FileName);
     End;
 
     If Mode = 'query' Then
         Result := BuildSuccessResponse(RequestId,
             '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched) + '}')
     Else
+        { matched counts what the FILTER selected, and said nothing about
+          whether a property write landed. The tail reports that, the same
+          way the schematic modify replies do. }
         Result := BuildSuccessResponse(RequestId,
-            '{"matched":' + IntToStr(TotalMatched) + '}');
+            '{"matched":' + IntToStr(TotalMatched)
+            + ModifyOutcomeJson(0) + '}');
 End;
 
 {..............................................................................}
@@ -19437,6 +24929,33 @@ End;
 { Helper: Find a net object by name on the given board.                       }
 { Returns Nil if not found.                                                   }
 {..............................................................................}
+
+{ TELL THE NET ABOUT THE PRIMITIVE, not just the primitive about the net.  }
+{                                                                            }
+{ Assigning Prim.Net sets a reference and nothing else. The NET keeps its own }
+{ collection, and connectivity, the ratsnest and the polygon engine all walk  }
+{ THAT. A via placed with only the assignment therefore has a net, reports    }
+{ its net when queried, and is invisible to everything that matters: no       }
+{ thermal relief where the pour meets it, no connection in the DRC's view,    }
+{ and an un-routed net reported for copper that is plainly on the board.      }
+{ Measured on a live board, where a jumper via read as connected and the      }
+{ pour ignored it.                                                            }
+{                                                                            }
+{ PCB_TuneLength and PCB_ReplicateLayout already do both, which is why their  }
+{ copper connects; every other placement handler did only the assignment.     }
+{ Wrapped so a type that will not take it degrades to the old behaviour       }
+{ rather than ending the call.                                                }
+Function BindPrimitiveToNet(NetObj : IPCB_Net; Prim : IPCB_Primitive) : Boolean;
+Begin
+    Result := False;
+    If (NetObj = Nil) Or (Prim = Nil) Then Exit;
+    Try
+        Prim.Net := NetObj;
+        NetObj.AddPCBObject(Prim);
+        Result := True;
+    Except
+    End;
+End;
 
 Function FindNetByName(Board : IPCB_Board; NetName : String) : IPCB_Net;
 Var
@@ -19527,7 +25046,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -19577,7 +25096,7 @@ Var
     Force, WantThis : Boolean;
     I, DeletedCount, SkippedCount : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -19679,7 +25198,7 @@ Begin
     Targets.Free;
     ToDelete.Free;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"deleted":' + IntToStr(DeletedCount)
@@ -19700,7 +25219,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -19754,7 +25273,7 @@ Var
     ClassExists : Boolean;
     CommaPos, AddedCount : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -19827,7 +25346,7 @@ Begin
         End;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"class_name":"' + EscapeJsonString(ClassName) + '",'
         + '"class_created":' + BoolToJsonStr(Not ClassExists) + ','
@@ -19847,7 +25366,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -19957,7 +25476,7 @@ Var
     Remaining : String;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -20097,7 +25616,7 @@ Var
     Rule : IPCB_Rule;
     RuleName : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -20169,14 +25688,18 @@ Var
     RuleClearIter : IPCB_ClearanceConstraint;
     RuleWidthIter : IPCB_MaxMinWidthConstraint;
     RuleHoleIter : IPCB_MaxMinHoleSizeConstraint;
+    RuleViaIter : IPCB_RoutingViaStyleRule;
     RuleName, V, GapStr, MinWStr, MaxWStr, FavWStr, MinHStr, MaxHStr : String;
+    VMinS, VMaxS, VPrefS, VMinH, VMaxH, VPrefH, ViaReport, ViaDesc, ViaProblem : String;
+    NMinS, NMaxS, NPrefS, NMinH, NMaxH, NPrefH : TCoord;
+    ViaAsked, ViaWritten : Integer;
     UpdatedCount, Kind, ValMils : Integer;
     GapWanted, GapBefore, GapAfter : TCoord;
     GapReport, GapMMStr : String;
     L : TLayer;
     Found, GapVerified, GapKindSupported : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -20254,6 +25777,12 @@ Begin
     FavWStr := ExtractJsonValue(Params, 'favored_width_mils');
     MinHStr := ExtractJsonValue(Params, 'min_hole_size_mils');
     MaxHStr := ExtractJsonValue(Params, 'max_hole_size_mils');
+    VMinS := ExtractJsonValue(Params, 'min_via_size_mils');
+    VMaxS := ExtractJsonValue(Params, 'max_via_size_mils');
+    VPrefS := ExtractJsonValue(Params, 'preferred_via_size_mils');
+    VMinH := ExtractJsonValue(Params, 'min_via_hole_mils');
+    VMaxH := ExtractJsonValue(Params, 'max_via_hole_mils');
+    VPrefH := ExtractJsonValue(Params, 'preferred_via_hole_mils');
 
     { 63 is BoardOutlineClearance, added because a board-clearance rule
       was reachable as an object and unwritable through every exposed
@@ -20405,7 +25934,91 @@ Begin
         End;
     End;
 
-    SaveDocByPath(Board.FileName);
+    { THE ROUTING VIA RULE'S SIZES, through a typed local assigned straight }
+    { from the iterator, the one place DelphiScript narrows an interface   }
+    { (see PCB_SetRuleProperties' header). The six values are checked as a }
+    { set before any is written: minimum <= preferred <= maximum for the   }
+    { diameter and the hole, and every diameter larger than its hole. Each }
+    { is read back. A rule in template mode is written but its sizes are   }
+    { not what it checks, and the reply says so.                           }
+    ViaReport := '';
+    ViaAsked := 0;
+    ViaWritten := 0;
+    If (VMinS <> '') Or (VMaxS <> '') Or (VPrefS <> '')
+       Or (VMinH <> '') Or (VMaxH <> '') Or (VPrefH <> '') Then
+    Begin
+        ViaProblem := '';
+        If ((VMinS <> '') And (Not IsFloatStr(VMinS))) Or ((VMaxS <> '') And (Not IsFloatStr(VMaxS)))
+           Or ((VPrefS <> '') And (Not IsFloatStr(VPrefS))) Or ((VMinH <> '') And (Not IsFloatStr(VMinH)))
+           Or ((VMaxH <> '') And (Not IsFloatStr(VMaxH))) Or ((VPrefH <> '') And (Not IsFloatStr(VPrefH))) Then
+            ViaProblem := 'via sizes are numbers in mils';
+        If Kind <> eRule_RoutingViaStyle Then
+            ViaProblem := 'via sizes apply to a Routing Via rule; this is kind ' + IntToStr(Kind);
+        Iter := Board.BoardIterator_Create;
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Found := False;
+        Try
+            RuleViaIter := Iter.FirstPCBObject;
+            While (RuleViaIter <> Nil) And (Not Found) And (ViaProblem = '') Do
+            Begin
+                If (RuleViaIter.RuleKind = eRule_RoutingViaStyle)
+                    And (RuleViaIter.Name = RuleName) Then
+                Begin
+                    Found := True;
+                    ViaDesc := '';
+                    Try ViaDesc := RuleViaIter.Descriptor; Except End;
+                    NMinS := RuleViaIter.MinWidth;
+                    NMaxS := RuleViaIter.MaxWidth;
+                    NPrefS := RuleViaIter.PreferedWidth;
+                    NMinH := RuleViaIter.MinHoleWidth;
+                    NMaxH := RuleViaIter.MaxHoleWidth;
+                    NPrefH := RuleViaIter.PreferedHoleWidth;
+                    If VMinS <> '' Then NMinS := MilsToCoordF(StrToFloatDef(VMinS, -1));
+                    If VMaxS <> '' Then NMaxS := MilsToCoordF(StrToFloatDef(VMaxS, -1));
+                    If VPrefS <> '' Then NPrefS := MilsToCoordF(StrToFloatDef(VPrefS, -1));
+                    If VMinH <> '' Then NMinH := MilsToCoordF(StrToFloatDef(VMinH, -1));
+                    If VMaxH <> '' Then NMaxH := MilsToCoordF(StrToFloatDef(VMaxH, -1));
+                    If VPrefH <> '' Then NPrefH := MilsToCoordF(StrToFloatDef(VPrefH, -1));
+                    If (NMinH <= 0) Or (NMinS <= 0) Or (NMinS > NPrefS) Or (NPrefS > NMaxS)
+                       Or (NMinH > NPrefH) Or (NPrefH > NMaxH) Then
+                        ViaProblem := 'the via sizes must run minimum <= preferred <= maximum, holes above zero'
+                    Else If (NMinS <= NMinH) Or (NPrefS <= NPrefH) Or (NMaxS <= NMaxH) Then
+                        ViaProblem := 'every via diameter must be larger than its hole';
+                    If ViaProblem = '' Then
+                    Begin
+                        If VMinS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MinWidth := NMinS; Except End; If RuleViaIter.MinWidth = NMinS Then Inc(ViaWritten); End;
+                        If VMaxS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MaxWidth := NMaxS; Except End; If RuleViaIter.MaxWidth = NMaxS Then Inc(ViaWritten); End;
+                        If VPrefS <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.PreferedWidth := NPrefS; Except End; If RuleViaIter.PreferedWidth = NPrefS Then Inc(ViaWritten); End;
+                        If VMinH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MinHoleWidth := NMinH; Except End; If RuleViaIter.MinHoleWidth = NMinH Then Inc(ViaWritten); End;
+                        If VMaxH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.MaxHoleWidth := NMaxH; Except End; If RuleViaIter.MaxHoleWidth = NMaxH Then Inc(ViaWritten); End;
+                        If VPrefH <> '' Then Begin Inc(ViaAsked); Try RuleViaIter.PreferedHoleWidth := NPrefH; Except End; If RuleViaIter.PreferedHoleWidth = NPrefH Then Inc(ViaWritten); End;
+                        UpdatedCount := UpdatedCount + ViaWritten;
+                        ViaReport := ',"via_sizes_mils":{"min_size":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MinWidth))
+                            + ',"max_size":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MaxWidth))
+                            + ',"preferred_size":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.PreferedWidth))
+                            + ',"min_hole":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MinHoleWidth))
+                            + ',"max_hole":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.MaxHoleWidth))
+                            + ',"preferred_hole":' + FloatToJsonStr(CoordToMilsF(RuleViaIter.PreferedHoleWidth)) + '}'
+                            + ',"via_sizes_written":' + BoolToJsonStr(ViaWritten = ViaAsked);
+                        If Pos('TEMPLATE', UpperCase(ViaDesc)) > 0 Then
+                            ViaReport := ViaReport + ',"via_note":"This rule checks via templates ('
+                                + EscapeJsonString(ViaDesc) + '); its size fields were written but '
+                                + 'are not what it checks while it is in template mode."';
+                    End;
+                End;
+                If Not Found Then RuleViaIter := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+        If ViaProblem <> '' Then
+            ViaReport := ',"via_sizes_written":false,"via_note":"' + EscapeJsonString(ViaProblem)
+                + '. No via size was written."';
+    End;
+
+    MarkDocDirtyByPath(Board.FileName);
 
     { When a gap was asked for, say what became of it. A bare count is
       what let a refused constraint write read as a success: the number
@@ -20417,7 +26030,7 @@ Begin
             GapReport := ',"gap_requested_mm":' + GapMMStr
         Else GapReport := ',"gap_requested_mils":' + GapStr;
         GapReport := GapReport
-            + ',"gap_after_mm":' + FloatToStr(CoordToMM(GapAfter))
+            + ',"gap_after_mm":' + FloatToJsonStr(CoordToMM(GapAfter))
             + ',"gap_written":' + BoolToJsonStr(GapVerified);
         If GapBefore >= 0 Then
             GapReport := GapReport + ',"gap_before_mils":'
@@ -20447,7 +26060,7 @@ Begin
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
-        + GapReport + '}');
+        + GapReport + ViaReport + '}');
 End;
 
 {..............................................................................}
@@ -20545,21 +26158,38 @@ Var
     ViolationCount : Integer;
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
-    JsonItems, ReportPath : String;
-    First, ReportPresent : Boolean;
+    JsonItems, ReportPath, AllowStr : String;
+    First, ReportPresent, AllowModal : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
 
-    // Run DRC via the documented process. Per TR0124 Server Process
-    // Reference v1.5, the correct identifier is "PCB:DesignRuleCheck"
-    // (not "PCB:RunDRC" which doesn't exist). Called with no params,
-    // it runs the rule check; with InspectViolation=True it would open
-    // the violation viewer instead.
+    { PCB:DesignRuleCheck is the documented process (TR0124 Server Process  }
+    { Reference v1.5; "PCB:RunDRC" does not exist) -- but it raises the      }
+    { MODAL "Design Rule Checker" setup dialog and BLOCKS this              }
+    { single-threaded polling loop until a human clicks it. Observed: one   }
+    { call left the loop dead for 30+ min, the client timed out at 1800 s,  }
+    { and a scripting-engine access violation sat hidden behind the dialog. }
+    { No documented parameter suppresses that dialog, so the trigger is     }
+    { OPT-IN: the caller must pass allow_modal=true and accept the block.   }
+    { Everything else reads the violations already stored on the board --   }
+    { see PCB_GetClearanceViolations, which never triggers a run.           }
+    AllowStr := LowerCase(ExtractJsonValue(Params, 'allow_modal'));
+    AllowModal := (AllowStr = 'true') Or (AllowStr = '1');
+    If Not AllowModal Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MODAL_BLOCKED',
+            'PCB:DesignRuleCheck opens the modal Design Rule Checker dialog and '
+            + 'blocks the bridge until a human closes it. Pass allow_modal=true '
+            + 'to accept that block, or call pcb.get_clearance_violations to read '
+            + 'the violations left on the board by the last DRC run.');
+        Exit;
+    End;
+
     ResetParameters;
     AddStringParameter('InspectViolation', 'False');
     RunProcess('PCB:DesignRuleCheck');
@@ -20609,6 +26239,7 @@ Begin
     If (ViolationCount = 0) And (Not ReportPresent) Then
         Result := BuildSuccessResponse(RequestId,
             '{"violation_count":0,"violations":[],"drc_confirmed":false'
+            + ',"drc_triggered":true'
             + ',"report_present":false'
             + ',"report_path":"' + EscapeJsonString(ReportPath) + '"'
             + ',"reason":"no violations were found AND no .DRC report exists, '
@@ -20619,6 +26250,7 @@ Begin
     Else
         Result := BuildSuccessResponse(RequestId,
             '{"violation_count":' + IntToStr(ViolationCount) + ','
+            + '"drc_triggered":true,'
             + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
             + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
             + '"violations":[' + JsonItems + ']}');
@@ -20636,12 +26268,12 @@ Var
     Comp : IPCB_Component;
     Prim : IPCB_Primitive;
     BBox, PrimBBox, PlacementBBox : TCoordRect;
-    JsonItems, Designator, Footprint, LayerStr, CommentStr, SrcDesignator,
-    SrcUniqueId, UniqueIdStr : String;
+    JsonItems, Designator, Footprint, LayerStr : String;
+    CommentStr, SrcDesignator, SrcUniqueId, UniqueIdStr : String;
     First, HasPlacementBBox : Boolean;
     Count, HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -20838,7 +26470,7 @@ Var
     CollisionCount, PipePos, TmpOffset : Integer;
     Overlap : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -21046,8 +26678,9 @@ Var
     NewX, NewY : Integer;
     NewRot : Double;
     HasX, HasY, HasRot : Boolean;
+    CurX, CurY, DeltaX, DeltaY : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -21091,8 +26724,19 @@ Begin
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
 
-        If HasX Then Comp.x := MilsToCoord(NewX);
-        If HasY Then Comp.y := MilsToCoord(NewY);
+        { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents for why. A
+          component owns its pads, and assigning x leaves them behind in
+          the board's structures, where the polygon engine still sees
+          them. }
+        If HasX Or HasY Then
+        Begin
+            CurX := Comp.x;
+            CurY := Comp.y;
+            If HasX Then DeltaX := MilsToCoord(NewX) - CurX Else DeltaX := 0;
+            If HasY Then DeltaY := MilsToCoord(NewY) - CurY Else DeltaY := 0;
+            If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                Comp.MoveByXY(DeltaX, DeltaY);
+        End;
         If HasRot Then Comp.Rotation := NewRot;
 
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
@@ -21101,7 +26745,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
@@ -21142,7 +26786,7 @@ Var
     First, PairOk : Boolean;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -21334,7 +26978,7 @@ Var
     Notes : String;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -21638,7 +27282,7 @@ Begin
                 + 'shared with the rest of the board, so nothing was copied. '
                 + 'Pass an explicit "nets" list to force specific nets. ';
 
-        SaveDocByPath(Board.FileName);
+        MarkDocDirtyByPath(Board.FileName);
 
         Result := BuildSuccessResponse(RequestId,
             JsonObj(
@@ -21720,7 +27364,7 @@ Begin
     End;
 
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD', 'No active PCB board');
@@ -22030,7 +27674,7 @@ Begin
         End;
         MapJson := MapJson + ']';
 
-        Try SaveDocByPath(PcbLib.Board.FileName); Except End;
+        Try MarkDocDirtyByPath(PcbLib.Board.FileName); Except End;
 
         Result := BuildSuccessResponse(RequestId,
             JsonObj(
@@ -22079,7 +27723,7 @@ Begin
     StepStr := ExtractJsonValue(Params, 'angle_step');
 
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD', 'No active PCB board');
@@ -22141,7 +27785,7 @@ Begin
         JsonObj(
             JsonInt('copied', Copied) + ',' +
             JsonInt('count', Count) + ',' +
-            JsonStr('angle_step', FloatToStr(StepDeg))
+            JsonStr('angle_step', FloatToJsonStr(StepDeg))
         ));
 End;
 
@@ -22190,7 +27834,7 @@ Begin
     End;
 
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD', 'No active PCB board');
@@ -22326,7 +27970,7 @@ Begin
         JsonObj(
             JsonInt('scaled', Scaled) + ',' +
             JsonInt('skipped', Skipped) + ',' +
-            JsonStr('ratio', FloatToStr(R)) + ',' +
+            JsonStr('ratio', FloatToJsonStr(R)) + ',' +
             JsonInt('anchor_x', CoordToMils(X)) + ',' +
             JsonInt('anchor_y', CoordToMils(Y))
         ));
@@ -22370,7 +28014,7 @@ Var
     MatchedPrim, UpdatedPrim, MatchedComp, UpdatedComp : Integer;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -22549,7 +28193,7 @@ Var
     DryStr : String;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -22663,7 +28307,7 @@ Begin
                         Via.HoleSize := ViaHole;
                         Try Via.LowLayer := eTopLayer; Except End;
                         Try Via.HighLayer := eBottomLayer; Except End;
-                        Try Via.Net := Net; Except End;
+                        BindPrimitiveToNet(Net, Via);
                         Board.AddPCBObject(Via);
                         Inc(Placed);
                     End;
@@ -22723,7 +28367,7 @@ Var
     NameMark : String;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -22808,6 +28452,205 @@ End;
 
 
 {..............................................................................}
+{ PCB_SetTextStyle - height and stroke width of component designators and    }
+{ comments. Silkscreen text size is a fabrication requirement, and only the  }
+{ create path could set it.                                                  }
+{                                                                              }
+{ Params:                                                                     }
+{   designators -- pipe-separated designators; empty for every component     }
+{   which       -- designator (default), comment, or both                    }
+{   height_mils -- text height; empty leaves it                               }
+{   stroke_mils -- stroke width; empty leaves it (not both empty)            }
+{                                                                              }
+{ The components are collected first and changed after, each inside the     }
+{ component's and the text's modify brackets as the community designator    }
+{ scripts do it (AdjustDesignators2.pas, QuickSilk.pas). Every text is read  }
+{ back: one whose height or stroke did not take is counted as failed.        }
+{                                                                              }
+{ Response: matched, changed, failed, not_found, texts.                      }
+{..............................................................................}
+
+Function PCB_SetTextStyle(Params, RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    Obj : IPCB_Primitive;
+    Txt : IPCB_Text;
+    Comps : TInterfaceList;
+    DesStr, Which, HStr, SStr, CompName, Kind, Items, Seen, Missing, Rest, One : String;
+    WantName, WantComment, HasFilter, SetH, SetS, Ok : Boolean;
+    H, S, GotH, GotS : Double;
+    I, K, Changed, Failed, Listed, PipePos : Integer;
+Begin
+    Board := Nil;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_BOARD',
+            'No active PCB board. Open the .PcbDoc and try again.');
+        Exit;
+    End;
+
+    DesStr := ExtractJsonValue(Params, 'designators');
+    Which := LowerCase(ExtractJsonValue(Params, 'which'));
+    HStr := ExtractJsonValue(Params, 'height_mils');
+    SStr := ExtractJsonValue(Params, 'stroke_mils');
+    If Which = '' Then Which := 'designator';
+    WantName := (Which = 'designator') Or (Which = 'both');
+    WantComment := (Which = 'comment') Or (Which = 'both');
+    If (Not WantName) And (Not WantComment) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'which must be designator, comment or both, not "' + Which + '"');
+        Exit;
+    End;
+    SetH := HStr <> '';
+    SetS := SStr <> '';
+    If (Not SetH) And (Not SetS) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'Give height_mils, stroke_mils or both');
+        Exit;
+    End;
+    If (SetH And (Not IsFloatStr(HStr))) Or (SetS And (Not IsFloatStr(SStr))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'height_mils and stroke_mils are numbers in mils');
+        Exit;
+    End;
+    H := StrToFloatDef(HStr, 0);
+    S := StrToFloatDef(SStr, 0);
+    If (SetH And (H <= 0)) Or (SetS And (S <= 0)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'height_mils and stroke_mils must be above zero');
+        Exit;
+    End;
+    HasFilter := DesStr <> '';
+
+    Comps := TInterfaceList.Create;
+    Seen := '|';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            Comp := Obj;
+            CompName := '';
+            Try CompName := Comp.Name.Text; Except End;
+            If (Not HasFilter) Or (Pos('|' + CompName + '|', '|' + DesStr + '|') > 0) Then
+            Begin
+                Comps.Add(Comp);
+                Seen := Seen + CompName + '|';
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    { Designators asked for that are not on this board. }
+    Missing := '';
+    Rest := DesStr;
+    While Rest <> '' Do
+    Begin
+        PipePos := Pos('|', Rest);
+        If PipePos > 0 Then
+        Begin
+            One := Copy(Rest, 1, PipePos - 1);
+            Rest := Copy(Rest, PipePos + 1, Length(Rest));
+        End
+        Else
+        Begin
+            One := Rest;
+            Rest := '';
+        End;
+        If (One <> '') And (Pos('|' + One + '|', Seen) = 0) Then
+        Begin
+            If Missing <> '' Then Missing := Missing + ',';
+            Missing := Missing + '"' + EscapeJsonString(One) + '"';
+        End;
+    End;
+
+    Changed := 0;
+    Failed := 0;
+    Listed := 0;
+    Items := '';
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Comps.Count - 1 Do
+        Begin
+            Comp := Comps.Items[I];
+            If Comp = Nil Then Continue;
+            CompName := '';
+            Try CompName := Comp.Name.Text; Except End;
+            For K := 0 To 1 Do
+            Begin
+                Txt := Nil;
+                Kind := '';
+                If (K = 0) And WantName Then
+                Begin
+                    Txt := Comp.Name;
+                    Kind := 'designator';
+                End;
+                If (K = 1) And WantComment Then
+                Begin
+                    Txt := Comp.Comment;
+                    Kind := 'comment';
+                End;
+                If Txt = Nil Then Continue;
+                Ok := True;
+                Try
+                    Comp.BeginModify;
+                    Txt.BeginModify;
+                    If SetH Then Txt.Size := MilsToCoordF(H);
+                    If SetS Then Txt.Width := MilsToCoordF(S);
+                    Txt.EndModify;
+                    Txt.GraphicallyInvalidate;
+                    Comp.EndModify;
+                Except
+                    Ok := False;
+                End;
+                GotH := CoordToMilsF(Txt.Size);
+                GotS := CoordToMilsF(Txt.Width);
+                If SetH And (Abs(GotH - H) > 0.01) Then Ok := False;
+                If SetS And (Abs(GotS - S) > 0.01) Then Ok := False;
+                If Ok Then Inc(Changed) Else Inc(Failed);
+                If Listed < 500 Then
+                Begin
+                    If Items <> '' Then Items := Items + ',';
+                    Items := Items + '{"designator":"' + EscapeJsonString(CompName)
+                        + '","kind":"' + Kind
+                        + '","height_mils":' + FloatToJsonStr(GotH)
+                        + ',"stroke_mils":' + FloatToJsonStr(GotS)
+                        + ',"ok":' + BoolToJsonStr(Ok) + '}';
+                    Inc(Listed);
+                End;
+            End;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    Try Board.GraphicallyInvalidate; Except End;
+    If Changed > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":' + BoolToJsonStr((Failed = 0) And (Missing = '')) + ','
+        + '"matched":' + IntToStr(Comps.Count) + ','
+        + '"changed":' + IntToStr(Changed) + ','
+        + '"failed":' + IntToStr(Failed) + ','
+        + '"not_found":[' + Missing + '],'
+        + '"texts":[' + Items + '],'
+        + '"texts_truncated":' + BoolToJsonStr(Changed + Failed > Listed) + '}');
+End;
+
+
+{..............................................................................}
 { PCB_BatchMoveComponents - Move/rotate many components in ONE IPC call.      }
 { Param 'moves' is a pipe-separated list; each entry is 4 comma-separated     }
 { fields: designator,x,y,rotation. Empty field = leave that property          }
@@ -22839,8 +28682,9 @@ Var
     NewX, NewY : Integer;
     NewRot : Double;
     HasX, HasY, HasRot : Boolean;
+    CurX, CurY, DeltaX, DeltaY : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -22929,9 +28773,33 @@ Begin
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
 
-            If HasX Then Comp.x := MilsToCoord(NewX);
-            If HasY Then Comp.y := MilsToCoord(NewY);
+            { MOVED, NOT ASSIGNED, and the pour is how you find out.
+              A component owns its pads. Writing Comp.x moves the
+              component record and leaves every child pad at its old
+              coordinate in the board's own structures, so the polygon
+              engine keeps clearing the hole where the part used to be.
+              Reported from a live board: a part was moved through here,
+              repoured, and the copper still avoided the old pad while
+              shorting the new one; repouring from the menu did not help,
+              because the board still believed the pad had not moved.
+
+              MoveByXY is inherited from IPCB_Primitive, PCB_Place3DBody
+              and PCB_ReplicateLayout already call it, and four published
+              scripts move a component with it, so it is not an undeclared
+              identifier. The delta is taken from where the component
+              actually is, and rotation is applied first so the move lands
+              the origin exactly where the caller asked whatever the
+              rotation did to it. }
             If HasRot Then Comp.Rotation := NewRot;
+            If HasX Or HasY Then
+            Begin
+                CurX := Comp.x;
+                CurY := Comp.y;
+                If HasX Then DeltaX := MilsToCoord(NewX) - CurX Else DeltaX := 0;
+                If HasY Then DeltaY := MilsToCoord(NewY) - CurY Else DeltaY := 0;
+                If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                    Comp.MoveByXY(DeltaX, DeltaY);
+            End;
 
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
@@ -22942,7 +28810,7 @@ Begin
         Applied := Applied + 1;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"moves_applied":' + IntToStr(Applied) + ','
@@ -22972,7 +28840,7 @@ Var
     I, FoundIdx : Integer;
     SegLen, DX, DY, ArcAngle, RadiusMils, Accum : Double;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -23007,15 +28875,17 @@ Begin
             If Obj.ObjectId = eTrackObject Then
             Begin
                 Track := Obj;
-                DX := CoordToMils(Track.x2) - CoordToMils(Track.x1);
-                DY := CoordToMils(Track.y2) - CoordToMils(Track.y1);
+                { CoordToMils rounds to integer mils. Summing many short
+                  segments would accumulate that quantization error. }
+                DX := Track.x2 / 10000.0 - Track.x1 / 10000.0;
+                DY := Track.y2 / 10000.0 - Track.y1 / 10000.0;
                 SegLen := Sqrt(DX * DX + DY * DY);
             End
             Else If Obj.ObjectId = eArcObject Then
             Begin
                 Arc := Obj;
                 Try
-                    RadiusMils := CoordToMils(Arc.Radius);
+                    RadiusMils := Arc.Radius / 10000.0;
                     ArcAngle := Arc.EndAngle - Arc.StartAngle;
                     If ArcAngle < 0 Then ArcAngle := ArcAngle + 360;
                     SegLen := RadiusMils * ArcAngle * 3.14159265358979 / 180.0;
@@ -23026,9 +28896,6 @@ Begin
             If FoundIdx >= 0 Then
             Begin
                 Accum := StrToFloatDef(NetLengthStrs[FoundIdx], 0) + SegLen;
-                { Keep the intermediate value locale-independent.             }
-                { StrToFloatDef deliberately parses JSON-style decimal points, }
-                { while FloatToStr emits a comma on many Windows locales.      }
                 NetLengthStrs[FoundIdx] := FloatToJsonStr(Accum);
             End
             Else
@@ -23370,7 +29237,7 @@ Begin
     Finally
         PCBServer.PostProcess;
     End;
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"net":"' + EscapeJsonString(FilterNet) + '","removed":'
         + IntToStr(Removed) + '}');
@@ -23814,7 +29681,7 @@ Var
     Count : Integer;
     CopperThickMils, DielectricHeightMils, DielectricConst : Double;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -23889,7 +29756,7 @@ Var
     LayerName : String;
     TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -23904,11 +29771,11 @@ Begin
         Exit;
     End;
 
-    TargetLayer := GetLayerFromString(LayerName);
+    TargetLayer := ResolveLayerId(Board, LayerName);
     If TargetLayer = eNoLayer Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerName);
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerName + '. ' + BoardLayerNamesHint(Board));
         Exit;
     End;
 
@@ -23928,9 +29795,9 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '"}');
 End;
 
 {..............................................................................}
@@ -23946,7 +29813,7 @@ Var
     LayerName : String;
     TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -23960,11 +29827,11 @@ Begin
         Exit;
     End;
 
-    TargetLayer := GetLayerFromString(LayerName);
+    TargetLayer := ResolveLayerId(Board, LayerName);
     If TargetLayer = eNoLayer Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerName);
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerName + '. ' + BoardLayerNamesHint(Board));
         Exit;
     End;
 
@@ -23992,9 +29859,49 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+        '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '"}');
+End;
+
+{..............................................................................}
+{ ResolveStackLayerObject - The IPCB_LayerObject_V7 a caller meant, or Nil.    }
+{                                                                              }
+{ Thin wrapper over ResolveLayerIdInStack (Utils.pas), which is the ONE place  }
+{ a caller-supplied layer name is turned into a TLayer. Keeping the name walk  }
+{ here as well would let the two copies drift, and the drift is exactly what   }
+{ costs a board: GetLayerFromString answers eTopLayer for every name it does   }
+{ not know, so any handler still resolving on its own writes to the top layer  }
+{ and reports success.                                                          }
+{..............................................................................}
+
+Function ResolveStackLayerObject(LayerStack : IPCB_LayerStack_V7; LayerName : String) : IPCB_LayerObject_V7;
+Var
+    Resolved : TLayer;
+Begin
+    Result := Nil;
+    If LayerStack = Nil Then Exit;
+    Resolved := ResolveLayerIdInStack(LayerStack, LayerName);
+    If Resolved = eNoLayer Then Exit;
+    Try Result := LayerStack.LayerObject_V7[Resolved]; Except Result := Nil; End;
+End;
+
+{ The dielectric type of a layer in the same vocabulary modify_layer accepts,  }
+{ so a read-back can be compared against what the caller asked for. An empty   }
+{ result means the property could not be read at all.                          }
+
+Function DielectricTypeToken(LayerObj : IPCB_LayerObject_V7) : String;
+Begin
+    Result := '';
+    Try
+        If LayerObj.Dielectric.DielectricType = eNoDielectric Then Result := 'none'
+        Else If LayerObj.Dielectric.DielectricType = eCore Then Result := 'core'
+        Else If LayerObj.Dielectric.DielectricType = ePrePreg Then Result := 'prepreg'
+        Else If LayerObj.Dielectric.DielectricType = eSurfaceMaterial Then Result := 'surface'
+        Else Result := 'other';
+    Except
+        Result := '';
+    End;
 End;
 
 {..............................................................................}
@@ -24012,9 +29919,12 @@ Var
     LayerObj : IPCB_LayerObject_V7;
     LayerName, NewName, TypeStr, Material : String;
     ThickStr, HeightStr, ConstStr : String;
-    TargetLayer : TLayer;
+    ResolvedName, NameBack, TypeBack, MaterialBack : String;
+    AppliedJson, RejectedJson : String;
+    ThickBack, HeightBack, ConstBack : Double;
+    AllOk : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24028,14 +29938,6 @@ Begin
         Exit;
     End;
 
-    TargetLayer := GetLayerFromString(LayerName);
-    If TargetLayer = eNoLayer Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerName);
-        Exit;
-    End;
-
     LayerStack := Board.LayerStack_V7;
     If LayerStack = Nil Then
     Begin
@@ -24043,13 +29945,20 @@ Begin
         Exit;
     End;
 
-    LayerObj := LayerStack.LayerObject_V7[TargetLayer];
+    LayerObj := ResolveStackLayerObject(LayerStack, LayerName);
     If LayerObj = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK',
-            'Layer ' + LayerName + ' is not present in the current stack');
+            'Layer ' + LayerName + ' is not present in the current stack. Use a '
+            + 'name exactly as pcb_get_layer_stackup reports it, or a canonical '
+            + 'token such as InternalPlane1.');
         Exit;
     End;
+
+    { The name the stack knows this layer by, captured before a rename lands, }
+    { so the response identifies the layer that was actually written.         }
+    ResolvedName := LayerName;
+    Try ResolvedName := LayerObj.Name; Except End;
 
     NewName := ExtractJsonValue(Params, 'name');
     ThickStr := ExtractJsonValue(Params, 'copper_thickness_mils');
@@ -24087,9 +29996,255 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    { Read back rather than trusting the write. Every assignment above is late }
+    { bound and carries its own Except, so a refused write raises nothing and  }
+    { answering "success" from the fact that nothing escaped reports success   }
+    { for doing nothing - which is how a whole stackup came to be recorded as  }
+    { set while the board still read zeros. Only a value that comes back       }
+    { MATCHING counts as applied; every other field is named in "rejected".    }
+    AppliedJson := '';
+    RejectedJson := '';
+    AllOk := True;
+
+    If NewName <> '' Then
+    Begin
+        NameBack := '';
+        Try NameBack := LayerObj.Name; Except NameBack := ''; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"name":"' + EscapeJsonString(NameBack) + '"';
+        If NameBack <> NewName Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"name"';
+            AllOk := False;
+        End;
+    End;
+
+    If ThickStr <> '' Then
+    Begin
+        ThickBack := -1;
+        Try ThickBack := LayerObj.CopperThickness / 10000; Except ThickBack := -1; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"copper_thickness_mils":' + FloatToJsonStr(ThickBack);
+        If Abs(ThickBack - StrToIntDef(ThickStr, 0)) > 0.01 Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"copper_thickness_mils"';
+            AllOk := False;
+        End;
+    End;
+
+    If TypeStr <> '' Then
+    Begin
+        TypeBack := DielectricTypeToken(LayerObj);
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"dielectric_type":"' + EscapeJsonString(TypeBack) + '"';
+        If TypeBack <> TypeStr Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"dielectric_type"';
+            AllOk := False;
+        End;
+    End;
+
+    If HeightStr <> '' Then
+    Begin
+        HeightBack := -1;
+        Try HeightBack := LayerObj.Dielectric.DielectricHeight / 10000; Except HeightBack := -1; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"dielectric_height_mils":' + FloatToJsonStr(HeightBack);
+        If Abs(HeightBack - StrToIntDef(HeightStr, 0)) > 0.01 Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"dielectric_height_mils"';
+            AllOk := False;
+        End;
+    End;
+
+    If ConstStr <> '' Then
+    Begin
+        ConstBack := -1;
+        Try ConstBack := LayerObj.Dielectric.DielectricConstant; Except ConstBack := -1; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"dielectric_constant":' + FloatToJsonStr(ConstBack);
+        If Abs(ConstBack - StrToFloatDef(ConstStr, 1.0)) > 0.001 Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"dielectric_constant"';
+            AllOk := False;
+        End;
+    End;
+
+    If Material <> '' Then
+    Begin
+        MaterialBack := '';
+        Try MaterialBack := LayerObj.Dielectric.DielectricMaterial; Except MaterialBack := ''; End;
+        If AppliedJson <> '' Then AppliedJson := AppliedJson + ',';
+        AppliedJson := AppliedJson + '"dielectric_material":"' + EscapeJsonString(MaterialBack) + '"';
+        If MaterialBack <> Material Then
+        Begin
+            If RejectedJson <> '' Then RejectedJson := RejectedJson + ',';
+            RejectedJson := RejectedJson + '"dielectric_material"';
+            AllOk := False;
+        End;
+    End;
+
+    { Only persist a change that actually took. Saving a board whose write was }
+    { refused writes the unchanged stackup back over itself, and the fresh     }
+    { file timestamp then reads as a completed edit.                           }
+    If AllOk Then MarkDocDirtyByPath(Board.FileName);
+
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"layer":"' + EscapeJsonString(LayerName) + '"}');
+        '{"success":' + BoolToJsonStr(AllOk) + ','
+        + '"layer":"' + EscapeJsonString(ResolvedName) + '",'
+        + '"applied":{' + AppliedJson + '},'
+        + '"rejected":[' + RejectedJson + ']}');
+End;
+
+{..............................................................................}
+{ PCB_SetPlaneNet - Give an internal plane layer its net.                     }
+{                                                                              }
+{ An Altium internal plane is a NEGATIVE layer: the copper is everywhere       }
+{ except where the plane is cleared, and the net association lives on the      }
+{ LAYER itself rather than on any poured object. A polygon poured on a plane   }
+{ layer is a different thing entirely and does not connect the plane, which is }
+{ why plane nets were being attempted with pcb_place_polygon_rect - there was  }
+{ no other way to reach them, pcb_modify_layer having no net parameter.        }
+{                                                                              }
+{ THE WRITE PATH IS NOT CONFIRMED. The DelphiScript reference carried in this  }
+{ repo (docs/altium-delphiscript/) documents no plane-net accessor at all, so  }
+{ the layer object's Net property is attempted under Try/Except and then READ  }
+{ BACK. If this script binding does not carry that property, the write raises  }
+{ nothing and the read-back disagrees, and the call answers success=false with }
+{ applied=false rather than claiming a write that did not land - the same      }
+{ honesty contract pcb_modify_layer and pcb_set_layer_color already keep. The  }
+{ board is saved only when the read-back agrees.                               }
+{                                                                              }
+{ Params: layer (required, plane name or InternalPlaneN), net (required)       }
+{..............................................................................}
+
+Function PCB_SetPlaneNet(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    NetObj : IPCB_Net;
+    LayerStr, NetStr, ResolvedName, NetBack, NoteStr : String;
+    TargetLayer : TLayer;
+    Applied : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    LayerStr := ExtractJsonValue(Params, 'layer');
+    If LayerStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'layer required, for example "InternalPlane1" or the plane''s name '
+            + 'as pcb_get_layer_stackup reports it');
+        Exit;
+    End;
+
+    NetStr := ExtractJsonValue(Params, 'net');
+    If NetStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'net required');
+        Exit;
+    End;
+
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
+    If (TargetLayer < eInternalPlane1) Or (TargetLayer > eInternalPlane16) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_PLANE',
+            'Layer ' + GetLayerString(TargetLayer) + ' is not an internal plane. '
+            + 'Only InternalPlane1..InternalPlane16 carry a net on the layer. '
+            + 'For a signal layer, pour copper with pcb_place_polygon_rect '
+            + 'instead.');
+        Exit;
+    End;
+
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    If LayerStack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP', 'Could not access layer stack');
+        Exit;
+    End;
+
+    LayerObj := Nil;
+    Try LayerObj := LayerStack.LayerObject_V7[TargetLayer]; Except LayerObj := Nil; End;
+    If LayerObj = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK',
+            'Layer ' + GetLayerString(TargetLayer) + ' is not present in the '
+            + 'current stack. Add it with pcb_add_layer first.');
+        Exit;
+    End;
+
+    NetObj := FindNetByName(Board, NetStr);
+    If NetObj = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NET_NOT_FOUND',
+            'No net named "' + NetStr + '" exists on this board. Read '
+            + 'pcb_get_nets for the names it does carry; a plane can only be '
+            + 'tied to a net the board already knows.');
+        Exit;
+    End;
+
+    { The name the stack knows this plane by, so the response names the layer }
+    { that was written rather than the string the caller happened to pass.    }
+    ResolvedName := GetLayerString(TargetLayer);
+    Try ResolvedName := LayerObj.Name; Except End;
+
+    PCBServer.PreProcess;
+    Try
+        Try LayerObj.Net := NetObj; Except End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    NetBack := '';
+    Try
+        If LayerObj.Net <> Nil Then NetBack := LayerObj.Net.Name;
+    Except
+        NetBack := '';
+    End;
+
+    Applied := (NetBack <> '') And (UpperCase(NetBack) = UpperCase(NetStr));
+
+    If Applied Then
+    Begin
+        MarkDocDirtyByPath(Board.FileName);
+        NoteStr := '';
+    End
+    Else
+        NoteStr := 'The plane still reads back as "' + NetBack + '". The net '
+            + 'was NOT assigned. This build may not expose a plane net through '
+            + 'the script binding; assign it in the Layer Stack Manager '
+            + '(Design > Layer Stack Manager, the plane row''s Net Name '
+            + 'column). The board was not saved.';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":' + BoolToJsonStr(Applied) + ','
+        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
+        + '"layer_name":"' + EscapeJsonString(ResolvedName) + '",'
+        + '"net":"' + EscapeJsonString(NetStr) + '",'
+        + '"net_readback":"' + EscapeJsonString(NetBack) + '",'
+        + '"applied":' + BoolToJsonStr(Applied) + ','
+        + '"note":"' + EscapeJsonString(NoteStr) + '"}');
 End;
 
 {..............................................................................}
@@ -24104,9 +30259,9 @@ Var
     BR : TCoordRect;
     JsonItems, SegKind : String;
     First : Boolean;
-    I : Integer;
+    I, EL, EB, ER, ET : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24127,8 +30282,11 @@ Begin
     Except
     End;
 
-    // Bounding rectangle
+    // Bounding rectangle, from the vertices it is reported with (see
+    // OutlineExtents): the cached one went stale after a reshape.
     BR := Outline.BoundingRectangle;
+    EL := BR.Left; EB := BR.Bottom; ER := BR.Right; ET := BR.Top;
+    OutlineExtents(Outline, EL, EB, ER, ET);
 
     // Iterate vertices
     JsonItems := '';
@@ -24163,10 +30321,10 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"point_count":' + IntToStr(Outline.PointCount) + ','
         + '"vertices":[' + JsonItems + '],'
-        + '"bounding_rect":{"left":' + IntToStr(CoordToMils(BR.Left))
-        + ',"bottom":' + IntToStr(CoordToMils(BR.Bottom))
-        + ',"right":' + IntToStr(CoordToMils(BR.Right))
-        + ',"top":' + IntToStr(CoordToMils(BR.Top)) + '}}');
+        + '"bounding_rect":{"left":' + IntToStr(CoordToMils(EL))
+        + ',"bottom":' + IntToStr(CoordToMils(EB))
+        + ',"right":' + IntToStr(CoordToMils(ER))
+        + ',"top":' + IntToStr(CoordToMils(ET)) + '}}');
 End;
 
 {..............................................................................}
@@ -24181,7 +30339,7 @@ Var
     First : Boolean;
     I, Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24301,7 +30459,7 @@ Var
     First, Visible : Boolean;
     Color, Count, Shown : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24379,7 +30537,7 @@ Var
     LayerID : TLayer;
     Wanted, Readback : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24409,11 +30567,11 @@ Begin
         Exit;
     End;
 
-    LayerID := GetLayerFromString(LayerStr);
+    LayerID := ResolveLayerId(Board, LayerStr);
     If LayerID = eNoLayer Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerStr);
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
         Exit;
     End;
 
@@ -24461,7 +30619,7 @@ Var
     LayerID : TLayer;
     Visible : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24477,7 +30635,13 @@ Begin
         Exit;
     End;
 
-    LayerID := GetLayerFromString(LayerStr);
+    LayerID := ResolveLayerId(Board, LayerStr);
+    If LayerID = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     Visible := (LowerCase(VisibleStr) = 'true') Or (VisibleStr = '1');
 
     Board.LayerIsDisplayed[LayerID] := Visible;
@@ -24486,65 +30650,238 @@ Begin
     // Board.ViewManager_FullUpdate;  // removed, expensive on large boards; Altium auto-refreshes on user interaction
 
     Result := BuildSuccessResponse(RequestId,
-        '{"layer":"' + EscapeJsonString(LayerStr) + '",'
+        '{"layer":"' + EscapeJsonString(GetLayerString(LayerID)) + '",'
         + '"visible":' + BoolToJsonStr(Visible) + '}');
 End;
 
 {..............................................................................}
-{ PCB_RepourPolygons - Repour all polygon pours via RunProcess                }
+{ PolygonCopper - the copper a polygon has actually poured: its child pieces  }
+{ (regions for a solid pour, tracks and arcs for a hatched one) and the area  }
+{ of the regions in square mils. The outline's own area says nothing about    }
+{ this: it is the same before and after a repour, and it counts copper that   }
+{ a board-edge clearance has cut away.                                        }
+{ Two passes, because a typed IPCB_Region narrows only when it is assigned    }
+{ straight from an iterator.                                                  }
+{..............................................................................}
+
+{ Area in square mils inside one region contour (shoelace over its vertices), }
+{ the points numbered from Base. -1 when the contour cannot be read.          }
+Function ContourAreaSqMils(Contour : IPCB_Contour; Base : Integer) : Double;
+Var
+    J, K, N : Integer;
+    X0, Y0, X1, Y1, S : Double;
+Begin
+    Result := -1;
+    Try
+        N := Contour.Count;
+        S := 0;
+        For J := 0 To N - 1 Do
+        Begin
+            K := J + 1;
+            If K >= N Then K := 0;
+            X0 := Contour.X[J + Base] * 1.0;
+            Y0 := Contour.Y[J + Base] * 1.0;
+            X1 := Contour.X[K + Base] * 1.0;
+            Y1 := Contour.Y[K + Base] * 1.0;
+            S := S + X0 * Y1 - X1 * Y0;
+        End;
+        Result := Abs(S) / 2.0 / 100000000.0;
+    Except
+        Result := -1;
+    End;
+End;
+
+{ A region's copper in square mils: its Area less its holes. MEASURED: Area  }
+{ is the OUTER contour alone, so a pour that cleared a via read the same     }
+{ before and after. The holes are only taken off once the outer contour's    }
+{ own shoelace area agrees with Area, which also settles whether the points  }
+{ count from 0 or from 1; HolesOk is cleared when that check fails.          }
+Function RegionCopperSqMils(Region : IPCB_Region; Var HolesOk : Boolean) : Double;
+Var
+    Outer, Main, Hole : Double;
+    Base, H, HoleCount : Integer;
+    Contour : IPCB_Contour;
+Begin
+    Outer := 0;
+    Try Outer := Region.Area / 100000000.0; Except End;
+    Result := Outer;
+    HoleCount := 0;
+    Try HoleCount := Region.HoleCount; Except HoleCount := -1; End;
+    If HoleCount = 0 Then Exit;
+    If HoleCount < 0 Then
+    Begin
+        HolesOk := False;
+        Exit;
+    End;
+    Base := -1;
+    Contour := Region.MainContour;
+    Main := ContourAreaSqMils(Contour, 0);
+    If (Main >= 0) And (Abs(Main - Outer) <= Outer * 0.001 + 1) Then Base := 0;
+    If Base < 0 Then
+    Begin
+        Main := ContourAreaSqMils(Contour, 1);
+        If (Main >= 0) And (Abs(Main - Outer) <= Outer * 0.001 + 1) Then Base := 1;
+    End;
+    If Base < 0 Then
+    Begin
+        HolesOk := False;
+        Exit;
+    End;
+    For H := 0 To HoleCount - 1 Do
+    Begin
+        Contour := Region.Holes[H];
+        Hole := ContourAreaSqMils(Contour, Base);
+        If Hole < 0 Then HolesOk := False
+        Else Result := Result - Hole;
+    End;
+End;
+
+Function PolygonCopper(Polygon : IPCB_Polygon; Var AreaSqMils : Double; Var Exact : Boolean) : Integer;
+Var
+    Iter : IPCB_GroupIterator;
+    Region : IPCB_Region;
+    Obj : IPCB_Primitive;
+Begin
+    Result := 0;
+    AreaSqMils := 0;
+    Exact := True;
+    Iter := Polygon.GroupIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+    Region := Iter.FirstPCBObject;
+    While Region <> Nil Do
+    Begin
+        Inc(Result);
+        AreaSqMils := AreaSqMils + RegionCopperSqMils(Region, Exact);
+        Region := Iter.NextPCBObject;
+    End;
+    Polygon.GroupIterator_Destroy(Iter);
+
+    Iter := Polygon.GroupIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+    Obj := Iter.FirstPCBObject;
+    While Obj <> Nil Do
+    Begin
+        Inc(Result);
+        Obj := Iter.NextPCBObject;
+    End;
+    Polygon.GroupIterator_Destroy(Iter);
+End;
+
+{..............................................................................}
+{ PCB_RepourPolygons - Repour every poured polygon through the API, in pour   }
+{ order, and report what each one poured.                                     }
+{                                                                             }
+{ It used to run PCB:RepourAllPolygons, a process name nothing documents, and }
+{ answer repoured:true whatever happened: a pour that went past a corrected   }
+{ board-edge clearance stayed as it was until Repour All was run by hand.     }
+{ The API path is the one PolygonReFitBO and PolygonBenchmark use: the repour }
+{ option set so no yes/no prompt appears, then per polygon                    }
+{ SetState_CopperPourInvalid and Rebuild, lowest PourIndex first so later     }
+{ pours clear the earlier ones. A shelved polygon is left shelved.            }
 {..............................................................................}
 
 Function PCB_RepourPolygons(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Poly, Temp : IPCB_Polygon;
+    Polys : TInterfaceList;
+    I, J, Rebuilt, Shelved, Failed, Before, After : Integer;
+    RepourMode : Integer;
+    AreaBefore, AreaAfter : Double;
+    Ok, ExactBefore, ExactAfter : Boolean;
+    Items, NetName : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
 
-    ResetParameters;
-    RunProcess('PCB:RepourAllPolygons');
-
-    // Board.ViewManager_FullUpdate;  // removed, expensive on large boards; Altium auto-refreshes on user interaction
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"repoured":true}');
-End;
-
-{ Resolve the canonical live net through a real pad. Multi-channel compiled
-  boards can retain more than one board-net object with the same display name;
-  FindNetByName may then return an object different from Pad.Net, and copper
-  looks correctly named but never joins the pads' topology. }
-Function FindPadNetByName(Board : IPCB_Board; NetName : String) : IPCB_Net;
-Var
-    Iter : IPCB_BoardIterator;
-    Pad : IPCB_Pad;
-Begin
-    Result := Nil;
-    If (Board = Nil) Or (NetName = '') Then Exit;
+    { Collected first: rebuilding a polygon adds and removes its children }
+    { under a live board iterator. Never freed (TInterfaceList.Free on    }
+    { design objects crashes Altium); the script host reclaims it.        }
+    Polys := CreateObject(TInterfaceList);
     Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
+    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Poly := Iter.FirstPCBObject;
+    While Poly <> Nil Do
+    Begin
+        Polys.Add(Poly);
+        Poly := Iter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iter);
+
+    For I := 0 To Polys.Count - 1 Do
+        For J := 0 To Polys.Count - 2 - I Do
+            If Polys[J].PourIndex > Polys[J + 1].PourIndex Then
+            Begin
+                Temp := Polys[J];
+                Polys[J] := Polys[J + 1];
+                Polys[J + 1] := Temp;
+            End;
+
+    RepourMode := PCBServer.SystemOptions.PolygonRepour;
+    PCBServer.SystemOptions.PolygonRepour := eAlwaysRepour;
+    Rebuilt := 0; Shelved := 0; Failed := 0;
+    Items := '';
     Try
-        Iter.AddFilter_ObjectSet(MkSet(ePadObject));
-        Iter.AddFilter_LayerSet(AllLayers);
-        Iter.AddFilter_Method(eProcessAll);
-        Pad := Iter.FirstPCBObject;
-        While Pad <> Nil Do
+        For I := 0 To Polys.Count - 1 Do
         Begin
-            Try
-                If (Pad.Net <> Nil) And (Pad.Net.Name = NetName) Then
-                Begin
-                    Result := Pad.Net;
-                    Exit;
+            Poly := Polys[I];
+            NetName := '';
+            Try If Poly.Net <> Nil Then NetName := Poly.Net.Name; Except End;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{"name":"' + EscapeJsonString(Poly.Name) + '"'
+                + ',"layer":"' + EscapeJsonString(GetLayerString(Poly.Layer)) + '"'
+                + ',"net":"' + EscapeJsonString(NetName) + '"'
+                + ',"pour_index":' + IntToStr(Poly.PourIndex);
+            If Not Poly.Poured Then
+            Begin
+                Inc(Shelved);
+                Items := Items + ',"shelved":true}';
+            End
+            Else
+            Begin
+                Before := PolygonCopper(Poly, AreaBefore, ExactBefore);
+                Ok := True;
+                PCBServer.PreProcess;
+                Try
+                    Poly.BeginModify;
+                    Poly.SetState_CopperPourInvalid;
+                    Poly.Rebuild;
+                    Poly.EndModify;
+                    Poly.GraphicallyInvalidate;
+                Except
+                    Ok := False;
                 End;
-            Except End;
-            Pad := Iter.NextPCBObject;
+                PCBServer.PostProcess;
+                After := PolygonCopper(Poly, AreaAfter, ExactAfter);
+                If Ok Then Inc(Rebuilt) Else Inc(Failed);
+                Items := Items + ',"rebuilt":' + BoolToJsonStr(Ok)
+                    + ',"pieces_before":' + IntToStr(Before)
+                    + ',"pieces_after":' + IntToStr(After)
+                    + ',"copper_area_mm2_before":' + FloatToJsonStr(AreaBefore * 0.00064516)
+                    + ',"copper_area_mm2_after":' + FloatToJsonStr(AreaAfter * 0.00064516)
+                    + ',"copper_area_exact":' + BoolToJsonStr(ExactBefore And ExactAfter) + '}';
+            End;
         End;
     Finally
-        Board.BoardIterator_Destroy(Iter);
+        PCBServer.SystemOptions.PolygonRepour := RepourMode;
     End;
+
+    If Rebuilt > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"repoured":' + BoolToJsonStr((Rebuilt > 0) And (Failed = 0))
+        + ',"polygons":' + IntToStr(Polys.Count)
+        + ',"rebuilt":' + IntToStr(Rebuilt)
+        + ',"shelved":' + IntToStr(Shelved)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"items":[' + Items + ']}');
 End;
 
 {..............................................................................}
@@ -24553,15 +30890,205 @@ End;
 {         low_layer=<layer>, high_layer=<layer>                              }
 {..............................................................................}
 
+{..............................................................................}
+{ PCB_Place3DBody - put a STEP model straight onto the open board.             }
+{                                                                              }
+{ WHY THIS EXISTS. lib_link_3d_model was the only STEP importer in the whole   }
+{ toolset and it writes into a .PcbLib footprint, so a caller who wanted a     }
+{ model on a BOARD had to invent a library, author a footprint, place it as a  }
+{ component and delete the lot afterwards. Measured: a session did exactly     }
+{ that, could not see the result because probing the library had moved the     }
+{ active document, and reasonably concluded the API could not do it. Altium    }
+{ can: Place > 3D Body > Generic STEP Model is a free body on the document.    }
+{                                                                              }
+{ The call sequence is the one Lib_Link3DModel already uses, minus the         }
+{ footprint binding: factory, load the model, SetState_FromModel, assign,      }
+{ add to the board, register. Every identifier here is exercised there, which  }
+{ is the whole reason to copy the shape rather than improve on it.             }
+{                                                                              }
+{ ROTATION IS NOT ACCEPTED, and that is deliberate. IPCB_ComponentBody exposes }
+{ no Rotation on AD26 26.9.1.9: assigning it raised "Undeclared identifier",   }
+{ which DelphiScript cannot catch, and it took the polling loop down. The      }
+{ rotation lives on the MODEL via SetState(90,0,0,0), whose four arguments are }
+{ documented nowhere this project can verify. Guessing them would repeat that. }
+{                                                                              }
+{ NO identifier PARAMETER EITHER, for the same reason and caught the same    }
+{ way. IPCB_ComponentBody declares                                            }
+{   Property Identifier : TPCBString Read GetState_Identifier;                }
+{ with no Write accessor, so naming the body from here is not on offer. It    }
+{ was written and removed before shipping, on the strength of reading the     }
+{ declaration rather than assuming the property was symmetric.                }
+{                                                                             }
+{ Params: model_path (required), x, y (mils), layer (default TopLayer),       }
+{         standoff_height (mils).                                             }
+{..............................................................................}
+
+Function PCB_Place3DBody(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Body : IPCB_ComponentBody;
+    Model : IPCB_Model;
+    ModelPath, LayerStr, Why : String;
+    BodyX, BodyY, Standoff, CurX, CurY : Integer;
+    DidStandoff, DidMove : Boolean;
+    ReadBackX, ReadBackY : Integer;
+Begin
+    ModelPath := ExtractJsonValue(Params, 'model_path');
+    If ModelPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'model_path is required');
+        Exit;
+    End;
+
+    { Checked before anything is created. ModelFactory_FromFilename on a
+      path that is not there returns Nil and leaves an orphan body behind,
+      and "could not load" is a worse answer than "no such file". }
+    If Not FileExists(ModelPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FILE_NOT_FOUND',
+            'No file at ' + ModelPath);
+        Exit;
+    End;
+
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+
+    BodyX := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    BodyY := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    Standoff := Round(StrToFloatDef(ExtractJsonValue(Params, 'standoff_height'), 0));
+    LayerStr := ExtractJsonValue(Params, 'layer');
+    If LayerStr = '' Then LayerStr := 'TopLayer';
+
+    DidStandoff := False;
+    DidMove := False;
+
+    PCBServer.PreProcess;
+    Try
+        Body := PCBServer.PCBObjectFactory(eComponentBodyObject, eNoDimension,
+            eCreate_Default);
+        If Body = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+                'PCBObjectFactory returned Nil for eComponentBodyObject');
+            Exit;
+        End;
+
+        Model := Body.ModelFactory_FromFilename(ModelPath, False);
+        If Model = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MODEL_LOAD_FAILED',
+                'Could not load a 3D model from ' + ModelPath
+                + '. The file exists, so it is the format Altium refused.');
+            Exit;
+        End;
+
+        Body.SetState_FromModel;
+        Body.Model := Model;
+
+        { ADD IT TO THE BOARD BEFORE TOUCHING ANY PROPERTY.
+          MEASURED, by crashing Altium: an earlier version of this set
+          Layer, x, y and StandoffHeight on the body while it still
+          belonged to nothing, and the PCB engine went down with
+          "Access violation ... Read of address 0x20" inside ADVPCB.DLL.
+          A null dereference at a small field offset is a setter reaching
+          into state an owning board is supposed to provide.
+
+          The reference does it in this order and so does
+          Lib_Link3DModel: factory, load, SetState_FromModel, assign the
+          model, ADD, register, and only then adjust. This handler's own
+          comment claimed to copy that sequence and did not. }
+        Board.AddPCBObject(Body);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, Body.I_ObjectAddress);
+
+        Try Body.Layer := GetLayerFromString(LayerStr); Except End;
+
+        { MOVED, NOT ASSIGNED. Lib_Link3DModel positions a body with
+          MoveByXY, which is inherited from IPCB_Primitive and already
+          called by PCB_ReplicateLayout, so it cannot be an undeclared
+          identifier. Writing x and y directly on a body is not something
+          this codebase has ever done successfully, and it was the other
+          half of the crash.
+
+          The delta is computed from where the factory actually put the
+          body rather than assuming it starts at the origin. }
+        Try
+            CurX := CoordToMils(Body.x);
+            CurY := CoordToMils(Body.y);
+        Except
+            CurX := 0;
+            CurY := 0;
+        End;
+        If (BodyX <> CurX) Or (BodyY <> CurY) Then
+            Try
+                Body.MoveByXY(MilsToCoord(BodyX - CurX),
+                              MilsToCoord(BodyY - CurY));
+                DidMove := True;
+            Except End;
+
+        If Standoff <> 0 Then
+            Try
+                Body.StandoffHeight := MilsToCoord(Standoff);
+                DidStandoff := True;
+            Except End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    { READ THE POSITION BACK. The placement is the one thing a caller cannot
+      check without opening the 3D view, and this tool exists because a
+      session spent a long time unable to see whether anything had landed. }
+    ReadBackX := BodyX;
+    ReadBackY := BodyY;
+    Try
+        ReadBackX := CoordToMils(Body.x);
+        ReadBackY := CoordToMils(Body.y);
+    Except End;
+
+    MarkDocDirtyByPath(Board.FileName);
+
+    { The one thing a caller cannot check from here. }
+    NoteNextStep('Look at it before trusting the placement: obj_switch_view '
+        + '3d. The body sits at the model''s own origin, so where it lands '
+        + 'depends on how the STEP was authored. obj_modify on '
+        + 'eComponentBodyObject moves it, and obj_delete removes it.');
+
+    Result := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonBool('success', True) + ',' +
+            JsonStr('model_path', ModelPath) + ',' +
+            JsonInt('x', ReadBackX) + ',' +
+            JsonInt('y', ReadBackY) + ',' +
+            JsonStr('layer', LayerStr) + ',' +
+            JsonInt('standoff_height', Standoff) + ',' +
+            JsonBool('standoff_applied', DidStandoff) + ',' +
+            JsonBool('moved', DidMove) + ',' +
+            JsonBool('rotation_applied', False) + ',' +
+            JsonStr('note', 'rotation is not settable from here: '
+                + 'IPCB_ComponentBody exposes no Rotation, and the model-level '
+                + 'SetState signature is undocumented. Rotate in the editor if '
+                + 'the orientation is wrong.')
+        ));
+End;
+
 Function PCB_PlaceVia(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Via : IPCB_Via;
     XStr, YStr, NetStr, SizeStr, HoleSizeStr, LowLayerStr, HighLayerStr : String;
     FoundNet : IPCB_Net;
-    ViaX, ViaY, ViaSize, ViaHole : Integer;
+    ViaX, ViaY : Double;   { sub-mil coordinates: local patch 2026-09-18 }
+    { Fractional too: whole mils turned a 1.2/0.6 mm via into 1.194/0.610 }
+    { and broke a metric Routing Via rule.                                 }
+    ViaSize, ViaHole : Double;
+    LowLayer, HighLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24582,10 +31109,39 @@ Begin
         Exit;
     End;
 
-    ViaX := StrToIntDef(XStr, 0);
-    ViaY := StrToIntDef(YStr, 0);
-    ViaSize := StrToIntDef(SizeStr, 50);    // Default 50 mils pad size
-    ViaHole := StrToIntDef(HoleSizeStr, 28); // Default 28 mils hole
+    ViaX := StrToFloatDef(XStr, 0);
+    ViaY := StrToFloatDef(YStr, 0);
+    ViaSize := StrToFloatDef(SizeStr, 50);    // Default 50 mils pad size
+    ViaHole := StrToFloatDef(HoleSizeStr, 28); // Default 28 mils hole
+    { The same refusal obj_modify makes: a hole as wide as the pad leaves }
+    { no annular ring, and nothing downstream would say so.              }
+    If (ViaHole <= 0) Or (ViaSize <= ViaHole) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_SIZE',
+            'size must be larger than hole_size, and hole_size above 0 (got '
+            + FloatToJsonStr(ViaSize) + ' / ' + FloatToJsonStr(ViaHole) + ' mils)');
+        Exit;
+    End;
+
+    { Resolve BEFORE PreProcess: an unresolvable name has to end the call, and }
+    { returning from inside the Try would skip PostProcess.                    }
+    If LowLayerStr = '' Then LowLayer := eTopLayer
+    Else LowLayer := ResolveLayerId(Board, LowLayerStr);
+    If LowLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown low_layer name: ' + LowLayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
+    If HighLayerStr = '' Then HighLayer := eBottomLayer
+    Else HighLayer := ResolveLayerId(Board, HighLayerStr);
+    If HighLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown high_layer name: ' + HighLayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -24597,21 +31153,14 @@ Begin
             Exit;
         End;
 
-        Via.x := MilsToCoord(ViaX);
-        Via.y := MilsToCoord(ViaY);
-        Via.Size := MilsToCoord(ViaSize);
-        Via.HoleSize := MilsToCoord(ViaHole);
+        Via.x := MilsToCoordF(ViaX);
+        Via.y := MilsToCoordF(ViaY);
+        Via.Size := MilsToCoordF(ViaSize);
+        Via.HoleSize := MilsToCoordF(ViaHole);
 
         // Set layers
-        If LowLayerStr <> '' Then
-            Via.LowLayer := GetLayerFromString(LowLayerStr)
-        Else
-            Via.LowLayer := eTopLayer;
-
-        If HighLayerStr <> '' Then
-            Via.HighLayer := GetLayerFromString(HighLayerStr)
-        Else
-            Via.HighLayer := eBottomLayer;
+        Via.LowLayer := LowLayer;
+        Via.HighLayer := HighLayer;
 
         // Assign net
         If NetStr <> '' Then
@@ -24619,9 +31168,7 @@ Begin
             FoundNet := FindPadNetByName(Board, NetStr);
             If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
-            Begin
-                Via.Net := FoundNet;
-            End;
+                BindPrimitiveToNet(FoundNet, Via);
         End;
 
         Board.AddPCBObject(Via);
@@ -24634,14 +31181,16 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x":' + IntToStr(ViaX) + ','
-        + '"y":' + IntToStr(ViaY) + ','
-        + '"size":' + IntToStr(ViaSize) + ','
-        + '"hole_size":' + IntToStr(ViaHole) + '}');
+        + '"x":' + FloatToJsonStr(ViaX) + ','
+        + '"y":' + FloatToJsonStr(ViaY) + ','
+        + '"size":' + FloatToJsonStr(ViaSize) + ','
+        + '"hole_size":' + FloatToJsonStr(ViaHole) + ','
+        + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
+        + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '"}');
 End;
 
 {..............................................................................}
@@ -24655,9 +31204,11 @@ Var
     Track : IPCB_Track;
     X1Str, Y1Str, X2Str, Y2Str, WidthStr, LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
-    TX1, TY1, TX2, TY2, TWidth : Integer;
+    TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
+    TWidth : Double;   { fractional mils, as PCB_PlaceTracks takes }
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24678,11 +31229,20 @@ Begin
         Exit;
     End;
 
-    TX1 := StrToIntDef(X1Str, 0);
-    TY1 := StrToIntDef(Y1Str, 0);
-    TX2 := StrToIntDef(X2Str, 0);
-    TY2 := StrToIntDef(Y2Str, 0);
-    TWidth := StrToIntDef(WidthStr, 10);
+    TX1 := StrToFloatDef(X1Str, 0);
+    TY1 := StrToFloatDef(Y1Str, 0);
+    TX2 := StrToFloatDef(X2Str, 0);
+    TY2 := StrToFloatDef(Y2Str, 0);
+    TWidth := StrToFloatDef(WidthStr, 10);
+
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -24694,23 +31254,20 @@ Begin
             Exit;
         End;
 
-        Track.x1 := MilsToCoord(TX1);
-        Track.y1 := MilsToCoord(TY1);
-        Track.x2 := MilsToCoord(TX2);
-        Track.y2 := MilsToCoord(TY2);
-        Track.Width := MilsToCoord(TWidth);
+        Track.x1 := MilsToCoordF(TX1);
+        Track.y1 := MilsToCoordF(TY1);
+        Track.x2 := MilsToCoordF(TX2);
+        Track.y2 := MilsToCoordF(TY2);
+        Track.Width := MilsToCoordF(TWidth);
 
-        If LayerStr <> '' Then
-            Track.Layer := GetLayerFromString(LayerStr)
-        Else
-            Track.Layer := eTopLayer;
+        Track.Layer := TargetLayer;
 
         If NetStr <> '' Then
         Begin
                     FoundNet := FindPadNetByName(Board, NetStr);
                     If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
-                Track.Net := FoundNet;
+                BindPrimitiveToNet(FoundNet, Track);
         End;
 
         Board.AddPCBObject(Track);
@@ -24721,15 +31278,15 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x1":' + IntToStr(TX1) + ','
-        + '"y1":' + IntToStr(TY1) + ','
-        + '"x2":' + IntToStr(TX2) + ','
-        + '"y2":' + IntToStr(TY2) + ','
-        + '"width":' + IntToStr(TWidth) + ','
+        + '"x1":' + FloatToJsonStr(TX1) + ','
+        + '"y1":' + FloatToJsonStr(TY1) + ','
+        + '"x2":' + FloatToJsonStr(TX2) + ','
+        + '"y2":' + FloatToJsonStr(TY2) + ','
+        + '"width":' + FloatToJsonStr(TWidth) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(Track.Layer)) + '"}');
 End;
 
@@ -24749,18 +31306,18 @@ Var
     ExistingIter : IPCB_BoardIterator;
     ExistingKeys : TStringList;
     TracksStr, TrackStr, Remaining, Field : String;
-    PipePos, CommaPos, Placed, Failed, SkippedExisting, FieldIdx : Integer;
-    NetMissing : Integer;
-    ConnRebuilt : Boolean;
-    TX1, TY1, TX2, TY2, TWidth : Integer;
-    LayerStr, NetStr, ExistingNetStr, TrackKey, P1, P2 : String;
+    PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
+    TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
+    TWidth : Double;               { a 0.1 mm rule is 3.937 mil, not an integer }
+    LayerStr, NetStr, BadLayers : String;
     FoundNet : IPCB_Net;
+    TrackLayer : TLayer;
     { 7 named locals instead of `Array[0..6] Of String` - fixed-size       }
     { string arrays as function locals corrupt the function return slot   }
     { in DelphiScript, see [[delphiscript_fixed_string_array_bug]].       }
     F0, F1, F2, F3, F4, F5, F6, Token : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24776,8 +31333,7 @@ Begin
 
     Placed := 0;
     Failed := 0;
-    SkippedExisting := 0;
-    NetMissing := 0;
+    BadLayers := '';
     Remaining := TracksStr;
 
     { Build a board-wide exact-track index once. Route retries are common and
@@ -24859,11 +31415,11 @@ Begin
                 Inc(FieldIdx);
             End;
 
-            TX1 := StrToIntDef(F0, 0);
-            TY1 := StrToIntDef(F1, 0);
-            TX2 := StrToIntDef(F2, 0);
-            TY2 := StrToIntDef(F3, 0);
-            TWidth := StrToIntDef(F4, 10);
+            TX1 := StrToFloatDef(F0, 0);
+            TY1 := StrToFloatDef(F1, 0);
+            TX2 := StrToFloatDef(F2, 0);
+            TY2 := StrToFloatDef(F3, 0);
+            TWidth := StrToFloatDef(F4, 10);
             LayerStr := F5;
             NetStr := F6;
             If LayerStr = '' Then LayerStr := 'TopLayer';
@@ -24879,6 +31435,20 @@ Begin
                 Continue;
             End;
 
+            { An unresolvable name used to fall through to eTopLayer, so one   }
+            { typo in a batch quietly stacked that track on the top layer.     }
+            { Skip it and name the layer in the response instead.              }
+            If LayerStr = '' Then TrackLayer := eTopLayer
+            Else TrackLayer := ResolveLayerId(Board, LayerStr);
+            If TrackLayer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
             If Track = Nil Then
             Begin
@@ -24886,28 +31456,19 @@ Begin
                 Continue;
             End;
 
-            Track.x1 := MilsToCoord(TX1);
-            Track.y1 := MilsToCoord(TY1);
-            Track.x2 := MilsToCoord(TX2);
-            Track.y2 := MilsToCoord(TY2);
-            Track.Width := MilsToCoord(TWidth);
+            Track.x1 := MilsToCoordF(TX1);
+            Track.y1 := MilsToCoordF(TY1);
+            Track.x2 := MilsToCoordF(TX2);
+            Track.y2 := MilsToCoordF(TY2);
+            Track.Width := MilsToCoordF(TWidth);
 
-            If LayerStr <> '' Then
-                Track.Layer := GetLayerFromString(LayerStr)
-            Else
-                Track.Layer := eTopLayer;
+            Track.Layer := TrackLayer;
 
             FoundNet := Nil;
             If NetStr <> '' Then
             Begin
-                FoundNet := FindPadNetByName(Board, NetStr);
-                If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
-                If FoundNet <> Nil Then
-                Begin
-                    Track.Net := FoundNet;
-                End
-                Else
-                    Inc(NetMissing);
+                FoundNet := FindNetByName(Board, NetStr);
+                BindPrimitiveToNet(FoundNet, Track);
             End;
 
             Board.AddPCBObject(Track);
@@ -24939,7 +31500,7 @@ Begin
       ConnRebuilt := False;
       If Placed > 0 Then ConnRebuilt := RebuildPCBConnectivity(Board);
 
-      SaveDocByPath(Board.FileName);
+      MarkDocDirtyByPath(Board.FileName);
 
       Result := BuildSuccessResponse(RequestId,
           '{"placed":' + IntToStr(Placed) + ','
@@ -24950,6 +31511,164 @@ Begin
     Finally
         ExistingKeys.Free;
     End;
+
+    MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":' + IntToStr(Placed) + ','
+        + '"failed":' + IntToStr(Failed) + ','
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_PlaceVias - Place many vias in a single IPC round-trip.                  }
+{ Param 'vias' is a pipe-separated list; each via is 7 comma-separated       }
+{ fields: x,y,size,hole,low_layer,high_layer,net. Coordinates and sizes are   }
+{ mils with decimals: a router's grid is not whole mils, and a rule in mm is  }
+{ not either. One PreProcess/PostProcess and one broadcast for the batch.    }
+{..............................................................................}
+
+Function PCB_PlaceVias(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Via : IPCB_Via;
+    ViasStr, ViaStr, Remaining, Token, BadLayers : String;
+    PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
+    VX, VY, VSize, VHole : Double;
+    LowLayer, HighLayer : TLayer;
+    FoundNet : IPCB_Net;
+    F0, F1, F2, F3, F4, F5, F6 : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    ViasStr := ExtractJsonValue(Params, 'vias');
+    If ViasStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'vias parameter required');
+        Exit;
+    End;
+
+    Placed := 0;
+    Failed := 0;
+    BadLayers := '';
+    Remaining := ViasStr;
+
+    PCBServer.PreProcess;
+    Try
+        While Length(Remaining) > 0 Do
+        Begin
+            PipePos := Pos('|', Remaining);
+            If PipePos = 0 Then
+            Begin
+                ViaStr := Remaining;
+                Remaining := '';
+            End
+            Else
+            Begin
+                ViaStr := Copy(Remaining, 1, PipePos - 1);
+                Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            End;
+
+            If ViaStr = '' Then Continue;
+
+            F0 := '';
+            F1 := '';
+            F2 := '';
+            F3 := '';
+            F4 := '';
+            F5 := '';
+            F6 := '';
+            FieldIdx := 0;
+            While (ViaStr <> '') And (FieldIdx <= 6) Do
+            Begin
+                CommaPos := Pos(',', ViaStr);
+                If CommaPos = 0 Then
+                Begin
+                    Token := ViaStr;
+                    ViaStr := '';
+                End
+                Else
+                Begin
+                    Token := Copy(ViaStr, 1, CommaPos - 1);
+                    ViaStr := Copy(ViaStr, CommaPos + 1, Length(ViaStr));
+                End;
+                Case FieldIdx Of
+                    0: F0 := Token;
+                    1: F1 := Token;
+                    2: F2 := Token;
+                    3: F3 := Token;
+                    4: F4 := Token;
+                    5: F5 := Token;
+                    6: F6 := Token;
+                End;
+                Inc(FieldIdx);
+            End;
+
+            VX := StrToFloatDef(F0, 0);
+            VY := StrToFloatDef(F1, 0);
+            VSize := StrToFloatDef(F2, 50);
+            VHole := StrToFloatDef(F3, 28);
+
+            If F4 = '' Then LowLayer := eTopLayer
+            Else LowLayer := ResolveLayerId(Board, F4);
+            If F5 = '' Then HighLayer := eBottomLayer
+            Else HighLayer := ResolveLayerId(Board, F5);
+            If (LowLayer = eNoLayer) Or (HighLayer = eNoLayer) Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then
+                Begin
+                    BadLayers := F4 + '/' + F5;
+                End
+                Else
+                Begin
+                    If Pos(F4 + '/' + F5, BadLayers) = 0 Then
+                        BadLayers := BadLayers + ', ' + F4 + '/' + F5;
+                End;
+                Continue;
+            End;
+
+            Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
+            If Via = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            Via.x := MilsToCoordF(VX);
+            Via.y := MilsToCoordF(VY);
+            Via.Size := MilsToCoordF(VSize);
+            Via.HoleSize := MilsToCoordF(VHole);
+            Via.LowLayer := LowLayer;
+            Via.HighLayer := HighLayer;
+
+            If F6 <> '' Then
+            Begin
+                FoundNet := FindNetByName(Board, F6);
+                If FoundNet <> Nil Then
+                    BindPrimitiveToNet(FoundNet, Via);
+            End;
+
+            Board.AddPCBObject(Via);
+            Inc(Placed);
+        End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":' + IntToStr(Placed) + ','
+        + '"failed":' + IntToStr(Failed) + ','
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
 End;
 
 {..............................................................................}
@@ -24964,8 +31683,9 @@ Var
     XCStr, YCStr, RadStr, SAStr, EAStr, WidthStr, LayerStr : String;
     ArcXC, ArcYC, ArcRad, ArcWidth : Integer;
     ArcSA, ArcEA : Double;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -24993,6 +31713,15 @@ Begin
     ArcEA := StrToFloatDef(EAStr, 360);
     ArcWidth := StrToIntDef(WidthStr, 10);
 
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
@@ -25010,10 +31739,7 @@ Begin
         Arc.EndAngle := ArcEA;
         Arc.LineWidth := MilsToCoord(ArcWidth);
 
-        If LayerStr <> '' Then
-            Arc.Layer := GetLayerFromString(LayerStr)
-        Else
-            Arc.Layer := eTopLayer;
+        Arc.Layer := TargetLayer;
 
         Board.AddPCBObject(Arc);
 
@@ -25023,7 +31749,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -25038,18 +31764,20 @@ End;
 
 {..............................................................................}
 { PCB_PlaceText - Place text string on the PCB                                }
-{ Params: text, x, y (mils), layer, height (mils), rotation (deg)           }
+{ Params: text, x, y (mils), layer, height (mils), rotation (deg),          }
+{         stroke (mils, optional; Altium's default when empty)              }
 {..............................................................................}
 
 Function PCB_PlaceText(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     TextObj : IPCB_Text;
-    TextStr, XStr, YStr, LayerStr, HeightStr, RotStr : String;
-    TX, TY, THeight : Integer;
-    TRot : Double;
+    TextStr, XStr, YStr, LayerStr, HeightStr, RotStr, StrokeStr : String;
+    TX, TY : Integer;
+    TRot, THeight, TStroke : Double;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25062,6 +31790,7 @@ Begin
     LayerStr := ExtractJsonValue(Params, 'layer');
     HeightStr := ExtractJsonValue(Params, 'height');
     RotStr := ExtractJsonValue(Params, 'rotation');
+    StrokeStr := ExtractJsonValue(Params, 'stroke');
 
     If TextStr = '' Then
     Begin
@@ -25077,8 +31806,24 @@ Begin
 
     TX := StrToIntDef(XStr, 0);
     TY := StrToIntDef(YStr, 0);
-    THeight := StrToIntDef(HeightStr, 60);
+    THeight := StrToFloatDef(HeightStr, 60);
+    TStroke := StrToFloatDef(StrokeStr, 0);
     TRot := StrToFloatDef(RotStr, 0);
+    If (THeight <= 0) Or (TStroke < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'height must be above zero and stroke not below it');
+        Exit;
+    End;
+
+    If LayerStr = '' Then TargetLayer := eTopOverlay
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -25093,13 +31838,11 @@ Begin
         TextObj.XLocation := MilsToCoord(TX);
         TextObj.YLocation := MilsToCoord(TY);
         TextObj.Text := TextStr;
-        TextObj.Size := MilsToCoord(THeight);
+        TextObj.Size := MilsToCoordF(THeight);
+        If TStroke > 0 Then TextObj.Width := MilsToCoordF(TStroke);
         TextObj.Rotation := TRot;
 
-        If LayerStr <> '' Then
-            TextObj.Layer := GetLayerFromString(LayerStr)
-        Else
-            TextObj.Layer := eTopOverlay;
+        TextObj.Layer := TargetLayer;
 
         Board.AddPCBObject(TextObj);
 
@@ -25109,14 +31852,15 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
         + '"text":"' + EscapeJsonString(TextStr) + '",'
         + '"x":' + IntToStr(TX) + ','
         + '"y":' + IntToStr(TY) + ','
-        + '"height":' + IntToStr(THeight) + ','
+        + '"height":' + FloatToJsonStr(CoordToMilsF(TextObj.Size)) + ','
+        + '"stroke":' + FloatToJsonStr(CoordToMilsF(TextObj.Width)) + ','
         + '"rotation":' + FloatToJsonStr(TRot) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(TextObj.Layer)) + '"}');
 End;
@@ -25133,8 +31877,9 @@ Var
     X1Str, Y1Str, X2Str, Y2Str, LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
     FX1, FY1, FX2, FY2 : Integer;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25159,6 +31904,15 @@ Begin
     FX2 := StrToIntDef(X2Str, 0);
     FY2 := StrToIntDef(Y2Str, 0);
 
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
@@ -25175,16 +31929,13 @@ Begin
         Fill.Y2Location := MilsToCoord(FY2);
         Fill.Rotation := 0;
 
-        If LayerStr <> '' Then
-            Fill.Layer := GetLayerFromString(LayerStr)
-        Else
-            Fill.Layer := eTopLayer;
+        Fill.Layer := TargetLayer;
 
         If NetStr <> '' Then
         Begin
             FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
-                Fill.Net := FoundNet;
+                BindPrimitiveToNet(FoundNet, Fill);
         End;
 
         Board.AddPCBObject(Fill);
@@ -25195,7 +31946,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -25217,7 +31968,7 @@ Var
     Board : IPCB_Board;
     LayerStr, NetStr : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25245,8 +31996,10 @@ End;
 
 {..............................................................................}
 { PCB_CreateDesignRule - Create a new design rule                             }
-{ Params: rule_type (clearance/width/via_size), name, value (mils),          }
-{         scope (query expression for Scope1)                                }
+{ Params: rule_type (clearance / width / via_size / differential_pairs /     }
+{         solder_mask_expansion / paste_mask_expansion / vias_under_smd),    }
+{         name, value (mils, signed for the mask kinds), allowed (bool,      }
+{         vias_under_smd only), scope (query expression for Scope1)          }
 {..............................................................................}
 
 Function PCB_CreateDesignRule(Params : String; RequestId : String) : String;
@@ -25257,13 +32010,16 @@ Var
     RuleWidth : IPCB_MaxMinWidthConstraint;
     RuleHole : IPCB_MaxMinHoleSizeConstraint;
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
+    RuleSMask : IPCB_SolderMaskExpansionRule;
+    RulePMask : IPCB_PasteMaskExpansionRule;
+    RuleVUS : IPCB_ViasUnderSMDConstraint;
     RuleTypeStr, RuleName, ValueStr, MaxValueStr, FavoredValueStr : String;
-    ScopeStr, NetScopeStr, MaxUncoupStr : String;
+    ScopeStr, NetScopeStr, MaxUncoupStr, AllowedStr : String;
     RuleValue, MaxValue, FavoredValue, MaxUncoupVal, NetScopeVal : Integer;
-    HasMaxValue : Boolean;
+    HasMaxValue, AllowedVal : Boolean;
     L : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25278,6 +32034,7 @@ Begin
     MaxUncoupStr := ExtractJsonValue(Params, 'max_uncoupled_length');
     ScopeStr := ExtractJsonValue(Params, 'scope');
     NetScopeStr := LowerCase(ExtractJsonValue(Params, 'net_scope'));
+    AllowedStr := ExtractJsonValue(Params, 'allowed');
 
     If RuleName = '' Then
     Begin
@@ -25310,6 +32067,13 @@ Begin
     MaxValue := StrToIntDef(MaxValueStr, RuleValue * 5);
     FavoredValue := StrToIntDef(FavoredValueStr, RuleValue);
     MaxUncoupVal := StrToIntDef(MaxUncoupStr, 1000);
+
+    { vias_under_smd is a yes/no rule, not a measurement. Absent means      }
+    { True, matching Altium's own default: the rule exists to FORBID, so a  }
+    { caller who omits the flag has created one that changes nothing rather }
+    { than one that silently bans vias under every SMD pad on the board.    }
+    If AllowedStr = '' Then AllowedVal := True
+    Else AllowedVal := StrToBool(AllowedStr);
 
     { Constraint values are NOT properties of the base IPCB_Rule interface,    }
     { they live on the per-kind subtypes (IPCB_ClearanceConstraint,            }
@@ -25387,11 +32151,51 @@ Begin
                 RuleDiff.Scope1Expression := ScopeStr;
             Rule := RuleDiff;
         End
+        Else If RuleTypeStr = 'solder_mask_expansion' Then
+        Begin
+            { The mask opening at each pad and via site, expanded or        }
+            { contracted radially by this amount. A NEGATIVE value shrinks  }
+            { the opening, which is how a via gets covered, so the value is }
+            { passed through signed rather than clamped at zero.            }
+            { Scope1Expression is what selects vias only: IsVia.            }
+            RuleSMask := PCBServer.PCBRuleFactory(eRule_SolderMaskExpansion);
+            RuleSMask.Name := RuleName;
+            RuleSMask.Expansion := MilsToCoord(RuleValue);
+            If ScopeStr <> '' Then
+                RuleSMask.Scope1Expression := ScopeStr;
+            Rule := RuleSMask;
+        End
+        Else If RuleTypeStr = 'paste_mask_expansion' Then
+        Begin
+            { Same shape, stencil side. NofittedNoPaste.pas in the          }
+            { reference corpus creates one exactly this way, which is why   }
+            { this kind is the least speculative of the three added here.   }
+            RulePMask := PCBServer.PCBRuleFactory(eRule_PasteMaskExpansion);
+            RulePMask.Name := RuleName;
+            RulePMask.Expansion := MilsToCoord(RuleValue);
+            If ScopeStr <> '' Then
+                RulePMask.Scope1Expression := ScopeStr;
+            Rule := RulePMask;
+        End
+        Else If RuleTypeStr = 'vias_under_smd' Then
+        Begin
+            { A boolean rule: value is ignored and "allowed" decides. This  }
+            { is the DRC that catches via-in-pad, which a fabricator has to }
+            { fill and cap and which the router here avoids by default.     }
+            RuleVUS := PCBServer.PCBRuleFactory(eRule_ViasUnderSMD);
+            RuleVUS.Name := RuleName;
+            RuleVUS.Allowed := AllowedVal;
+            If ScopeStr <> '' Then
+                RuleVUS.Scope1Expression := ScopeStr;
+            Rule := RuleVUS;
+        End
         Else
         Begin
             PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
-                'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, via_size, or differential_pairs');
+                'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, '
+                + 'via_size, differential_pairs, solder_mask_expansion, '
+                + 'paste_mask_expansion, or vias_under_smd');
             Exit;
         End;
 
@@ -25403,13 +32207,22 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
-    Result := BuildSuccessResponse(RequestId,
-        '{"created":true,'
-        + '"name":"' + EscapeJsonString(RuleName) + '",'
-        + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
-        + '"value_mils":' + IntToStr(RuleValue) + '}');
+    { vias_under_smd carries no measurement, so reporting value_mils for it }
+    { would be reporting a number the rule does not hold.                   }
+    If RuleTypeStr = 'vias_under_smd' Then
+        Result := BuildSuccessResponse(RequestId,
+            '{"created":true,'
+            + '"name":"' + EscapeJsonString(RuleName) + '",'
+            + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
+            + '"allowed":' + BoolToJsonStr(AllowedVal) + '}')
+    Else
+        Result := BuildSuccessResponse(RequestId,
+            '{"created":true,'
+            + '"name":"' + EscapeJsonString(RuleName) + '",'
+            + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
+            + '"value_mils":' + IntToStr(RuleValue) + '}');
 End;
 
 {..............................................................................}
@@ -25425,7 +32238,7 @@ Var
     RuleName : String;
     Found : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25473,7 +32286,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"deleted":true,"name":"' + EscapeJsonString(RuleName) + '"}');
@@ -25494,7 +32307,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25565,7 +32378,7 @@ Var
     Comp : IPCB_Component;
     DesStr, OldLayer, NewLayer : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25606,7 +32419,7 @@ Begin
     End;
 
     Try NewLayer := GetLayerString(Comp.Layer); Except NewLayer := 'Unknown'; End;
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
@@ -25690,7 +32503,7 @@ Begin
     Finally
         PCBServer.PostProcess;
     End;
-    If Changed > 0 Then SaveDocByPath(Board.FileName);
+    If Changed > 0 Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"side":"' + EscapeJsonString(SideStr) + '","requested":' + IntToStr(Requested)
         + ',"changed":' + IntToStr(Changed) + ',"already":' + IntToStr(Already)
@@ -25717,8 +32530,9 @@ Var
     { first pass to validate + measure bounds, second pass to apply.      }
     Resolved : TStringList;
     MinX, MaxX, MinY, MaxY, CenterX, CenterY : Integer;
+    DeltaX, DeltaY : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25796,18 +32610,26 @@ Begin
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_BeginModify, c_NoEventData);
 
+                { MOVED, NOT ASSIGNED: a component owns its pads, and
+                  writing x leaves them where they were in the board's
+                  own structures, so the pour and the DRC keep seeing the
+                  old footprint. See PCB_BatchMoveComponents. }
+                DeltaX := 0;
+                DeltaY := 0;
                 If AlignStr = 'left' Then
-                    Comp.x := MilsToCoord(MinX)
+                    DeltaX := MilsToCoord(MinX) - Comp.x
                 Else If AlignStr = 'right' Then
-                    Comp.x := MilsToCoord(MaxX)
+                    DeltaX := MilsToCoord(MaxX) - Comp.x
                 Else If AlignStr = 'top' Then
-                    Comp.y := MilsToCoord(MaxY)
+                    DeltaY := MilsToCoord(MaxY) - Comp.y
                 Else If AlignStr = 'bottom' Then
-                    Comp.y := MilsToCoord(MinY)
+                    DeltaY := MilsToCoord(MinY) - Comp.y
                 Else If AlignStr = 'center_x' Then
-                    Comp.x := MilsToCoord(CenterX)
+                    DeltaX := MilsToCoord(CenterX) - Comp.x
                 Else If AlignStr = 'center_y' Then
-                    Comp.y := MilsToCoord(CenterY);
+                    DeltaY := MilsToCoord(CenterY) - Comp.y;
+                If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                    Comp.MoveByXY(DeltaX, DeltaY);
 
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_EndModify, c_NoEventData);
@@ -25816,7 +32638,7 @@ Begin
             PCBServer.PostProcess;
         End;
 
-        SaveDocByPath(Board.FileName);
+        MarkDocDirtyByPath(Board.FileName);
 
         Result := BuildSuccessResponse(RequestId,
             '{"aligned":true,'
@@ -25830,6 +32652,16 @@ End;
 {..............................................................................}
 { PCB_GetClearanceViolations - Get clearance violations for a net             }
 { Params: net (optional) - if specified, only show violations for this net   }
+{                                                                            }
+{ READ-ONLY: this reports the eViolationObject records ALREADY on the board  }
+{ (left by the last DRC run, batch or online). It does NOT trigger a DRC.    }
+{ It used to call RunProcess('PCB:DesignRuleCheck'), which raises the modal  }
+{ "Design Rule Checker" setup dialog and wedged the whole bridge for 30+ min }
+{ on a 241-component board -- a "get" tool must never do that. A fresh run   }
+{ is PCB_RunDRC with allow_modal=true, which is opt-in for that reason.      }
+{ Because nothing is triggered here, violation_count = 0 means "no stored    }
+{ violations", which on a board where DRC has never run is NOT a pass; the   }
+{ response says so via drc_triggered / note.                                 }
 {..............................................................................}
 
 Function PCB_GetClearanceViolations(Params : String; RequestId : String) : String;
@@ -25842,7 +32674,7 @@ Var
     First : Boolean;
     Count, Emitted : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25852,11 +32684,8 @@ Begin
     Emitted := 0;
     FilterNet := ExtractJsonValue(Params, 'net');
 
-    { Do NOT call PCB:DesignRuleCheck here. Despite its process-like name it
-      opens the modal Design Rule Checker options form and blocks the MCP
-      polling loop. This read tool returns the violations already present on
-      the board. An attended DRC run must be a separate explicit operation. }
-
+    { No DRC trigger here -- see the header. Iterating eViolationObject is   }
+    { a pure board read: it opens no dialog and cannot block the loop.       }
     JsonItems := '';
     First := True;
     Count := 0;
@@ -25889,12 +32718,10 @@ Begin
     Board.BoardIterator_Destroy(Iterator);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"refreshed":false,"stale_possible":true,'
-        + '"violation_count":' + IntToStr(Count) + ','
-        { violation_count is the TRUE total; the array stops at 200. Say so }
-        { rather than making the caller compare lengths to find out.        }
-        + '"returned":' + IntToStr(Emitted) + ','
-        + '"truncated":' + BoolToJsonStr(Count > Emitted) + ','
+        '{"violation_count":' + IntToStr(Count) + ','
+        + '"drc_triggered":false,'
+        + '"note":"Existing violations only -- no DRC was run. 0 does not mean '
+        + 'the board passes if DRC has never been run on it.",'
         + '"violations":[' + JsonItems + ']}');
 End;
 
@@ -25909,8 +32736,9 @@ Var
     Comp : IPCB_Component;
     DesStr, GridStr : String;
     GridSize, OldX, OldY, NewX, NewY : Integer;
+    DeltaX, DeltaY : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -25948,8 +32776,11 @@ Begin
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
 
-        Comp.x := MilsToCoord(NewX);
-        Comp.y := MilsToCoord(NewY);
+        { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents. }
+        DeltaX := MilsToCoord(NewX) - Comp.x;
+        DeltaY := MilsToCoord(NewY) - Comp.y;
+        If (DeltaX <> 0) Or (DeltaY <> 0) Then
+            Comp.MoveByXY(DeltaX, DeltaY);
 
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
@@ -25957,7 +32788,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
@@ -25982,7 +32813,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -26034,7 +32865,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -26065,6 +32896,8 @@ Begin
             + '"y":' + IntToStr(CoordToMils(Via.y)) + ','
             + '"size":' + IntToStr(CoordToMils(Via.Size)) + ','
             + '"hole_size":' + IntToStr(CoordToMils(Via.HoleSize)) + ','
+            + JsonFloat('hole_size_mm', CoordToMM(Via.HoleSize)) + ','
+            + JsonFloat('size_mm', CoordToMM(Via.Size)) + ','
             + '"net":"' + EscapeJsonString(NetName) + '",'
             + '"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '",'
             + '"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"}';
@@ -26077,9 +32910,85 @@ Begin
         '{"vias":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
 End;
 
+{ Distance in mils from (Px, Py) to the segment A-B, every input in mils.   }
+Function SegDistMils(Px, Py, Ax, Ay, Bx, By : Double) : Double;
+Var
+    Dx, Dy, L2, T, Qx, Qy : Double;
+Begin
+    Dx := Bx - Ax;
+    Dy := By - Ay;
+    L2 := Dx * Dx + Dy * Dy;
+    T := 0.0;
+    If L2 > 0.000001 Then
+    Begin
+        T := ((Px - Ax) * Dx + (Py - Ay) * Dy) / L2;
+        If T < 0 Then T := 0.0;
+        If T > 1 Then T := 1.0;
+    End;
+    Qx := Ax + T * Dx - Px;
+    Qy := Ay + T * Dy - Py;
+    Result := Sqrt(Qx * Qx + Qy * Qy);
+End;
+
+{ Distance in mils from (Px, Py) to a rectangle in internal units; 0 inside. }
+Function RectDistMils(Px, Py : Double; R : TCoordRect) : Double;
+Var
+    L, Rt, B, T, Dx, Dy : Double;
+Begin
+    L := R.Left / 10000.0;
+    Rt := R.Right / 10000.0;
+    B := R.Bottom / 10000.0;
+    T := R.Top / 10000.0;
+    Dx := 0.0;
+    Dy := 0.0;
+    If Px < L Then Dx := L - Px;
+    If Px > Rt Then Dx := Px - Rt;
+    If Py < B Then Dy := B - Py;
+    If Py > T Then Dy := Py - T;
+    Result := Sqrt(Dx * Dx + Dy * Dy);
+End;
+
+{ Distance in mils from (Px, Py) to an arc's centreline: to the curve where }
+{ the point lies inside the sweep (counter-clockwise from Start to End),    }
+{ else to the nearer end.                                                   }
+Function ArcDistMils(Px, Py, Cx, Cy, R, StartDeg, EndDeg : Double) : Double;
+Var
+    D, Ang, Sweep, Off, E1x, E1y, E2x, E2y, D1, D2, ToRad : Double;
+Begin
+    ToRad := 3.14159265358979 / 180.0;
+    D := Sqrt((Px - Cx) * (Px - Cx) + (Py - Cy) * (Py - Cy));
+    Ang := ArcTan2(Py - Cy, Px - Cx) / ToRad;
+    Sweep := EndDeg - StartDeg;
+    While Sweep < 0 Do Sweep := Sweep + 360.0;
+    If Sweep = 0 Then Sweep := 360.0;
+    Off := Ang - StartDeg;
+    While Off < 0 Do Off := Off + 360.0;
+    While Off >= 360.0 Do Off := Off - 360.0;
+    If Off <= Sweep Then
+    Begin
+        Result := Abs(D - R);
+    End
+    Else
+    Begin
+        E1x := Cx + R * Cos(StartDeg * ToRad);
+        E1y := Cy + R * Sin(StartDeg * ToRad);
+        E2x := Cx + R * Cos(EndDeg * ToRad);
+        E2y := Cy + R * Sin(EndDeg * ToRad);
+        D1 := Sqrt((Px - E1x) * (Px - E1x) + (Py - E1y) * (Py - E1y));
+        D2 := Sqrt((Px - E2x) * (Px - E2x) + (Py - E2y) * (Py - E2y));
+        If D1 < D2 Then Result := D1 Else Result := D2;
+    End;
+End;
+
 {..............................................................................}
 { PCB_DeleteObject - Delete a PCB object at specific coordinates on a layer  }
 { Params: x, y (mils), layer, object_type (track/via/fill/text)             }
+{                                                                            }
+{ DISTANCE IS TO THE OBJECT, NOT TO A REFERENCE POINT. It used to be to a    }
+{ track's midpoint and to everything else's centre, so a point exactly on a  }
+{ long track was "not found within 100 mils". Now: a track by its segment    }
+{ less half its width, an arc by its curve, a via by its centre less its     }
+{ radius, anything else by its bounding rectangle (0 inside).               }
 {..............................................................................}
 
 Function PCB_DeleteObject(Params : String; RequestId : String) : String;
@@ -26088,15 +32997,18 @@ Var
     Iterator : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
     TrkObj : IPCB_Track;
+    ArcObj : IPCB_Arc;
+    ViaObj : IPCB_Via;
     XStr, YStr, LayerStr, ObjTypeStr : String;
-    TargetX, TargetY, ObjX, ObjY : Integer;
+    TargetX, TargetY : Integer;
     TargetLayer : TLayer;
     ObjFilter : TObjectId;
     Found, ConnRebuilt : Boolean;
     FoundObj : IPCB_Primitive;
-    Dist, BestDist : Double;
+    Dist, BestDist, Px, Py : Double;
+    Ties : Integer;
     BRect : TCoordRect;
-    Why : String;
+    Why, NetName : String;
 Begin
     { This DELETES, so it may not wander to find a board. See
       GetPCBBoardForMutation: the wandering lookup opens the first board
@@ -26126,10 +33038,14 @@ Begin
     TargetX := StrToIntDef(XStr, 0);
     TargetY := StrToIntDef(YStr, 0);
 
-    If LayerStr <> '' Then
-        TargetLayer := GetLayerFromString(LayerStr)
-    Else
-        TargetLayer := eTopLayer;
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     // Map object type string to filter
     If ObjTypeStr = 'track' Then
@@ -26168,41 +33084,53 @@ Begin
     Iterator.AddFilter_LayerSet(MkSet(TargetLayer));
     Iterator.AddFilter_Method(eProcessAll);
 
+    Px := TargetX * 1.0;
+    Py := TargetY * 1.0;
+    Ties := 0;
     Obj := Iterator.FirstPCBObject;
     While Obj <> Nil Do
     Begin
-        // Get object position based on type
-        If ObjFilter = eTrackObject Then
-        Begin
-            TrkObj := Obj;
-            ObjX := CoordToMils((TrkObj.X1 + TrkObj.X2) Div 2);
-            ObjY := CoordToMils((TrkObj.Y1 + TrkObj.Y2) Div 2);
-        End
-        Else If (ObjFilter = eViaObject) Or (ObjFilter = ePadObject) Then
-        Begin
-            ObjX := CoordToMils(Obj.x);
-            ObjY := CoordToMils(Obj.y);
-        End
-        Else If ObjFilter = eFillObject Then
-        Begin
-            ObjX := CoordToMils((Obj.X1Location + Obj.X2Location) Div 2);
-            ObjY := CoordToMils((Obj.Y1Location + Obj.Y2Location) Div 2);
-        End
-        Else
-        Begin
-            { Polygons, regions, components, arcs and text: use the bounding
-              rectangle centre -- XLocation is not exposed on every type. }
-            BRect := Obj.BoundingRectangle;
-            ObjX := CoordToMils((BRect.Left + BRect.Right) Div 2);
-            ObjY := CoordToMils((BRect.Bottom + BRect.Top) Div 2);
+        Dist := 1e30;
+        Try
+            If ObjFilter = eTrackObject Then
+            Begin
+                TrkObj := Obj;
+                Dist := SegDistMils(Px, Py, TrkObj.X1 / 10000.0, TrkObj.Y1 / 10000.0,
+                    TrkObj.X2 / 10000.0, TrkObj.Y2 / 10000.0) - TrkObj.Width / 20000.0;
+            End
+            Else If ObjFilter = eArcObject Then
+            Begin
+                ArcObj := Obj;
+                Dist := ArcDistMils(Px, Py, ArcObj.XCenter / 10000.0, ArcObj.YCenter / 10000.0,
+                    ArcObj.Radius / 10000.0, ArcObj.StartAngle, ArcObj.EndAngle)
+                    - ArcObj.LineWidth / 20000.0;
+            End
+            Else If ObjFilter = eViaObject Then
+            Begin
+                ViaObj := Obj;
+                Dist := Sqrt((ViaObj.x / 10000.0 - Px) * (ViaObj.x / 10000.0 - Px)
+                    + (ViaObj.y / 10000.0 - Py) * (ViaObj.y / 10000.0 - Py)) - ViaObj.Size / 20000.0;
+            End
+            Else
+            Begin
+                BRect := Obj.BoundingRectangle;
+                Dist := RectDistMils(Px, Py, BRect);
+            End;
+        Except
+            Dist := 1e30;
         End;
+        If Dist < 0 Then Dist := 0.0;
 
-        Dist := Sqrt((ObjX - TargetX) * (ObjX - TargetX) + (ObjY - TargetY) * (ObjY - TargetY));
-        If Dist < BestDist Then
+        If Dist < BestDist - 0.001 Then
         Begin
             BestDist := Dist;
             FoundObj := Obj;
             Found := True;
+            Ties := 1;
+        End
+        Else
+        Begin
+            If Abs(Dist - BestDist) <= 0.001 Then Inc(Ties);
         End;
 
         Obj := Iterator.NextPCBObject;
@@ -26216,6 +33144,11 @@ Begin
         Exit;
     End;
 
+    { Described BEFORE it goes, so the caller can check it was the one meant. }
+    NetName := '';
+    Try If FoundObj.Net <> Nil Then NetName := FoundObj.Net.Name; Except End;
+    BRect := FoundObj.BoundingRectangle;
+
     PCBServer.PreProcess;
     Try
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
@@ -26225,18 +33158,20 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    { Removing copper changes the net topology as much as adding it, so the }
-    { ratsnest has to be recomputed here too, or the next unrouted-nets     }
-    { query answers from a stale model.                                      }
     ConnRebuilt := RebuildPCBConnectivity(Board);
-
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"deleted":true,'
-        + '"object_type":"' + EscapeJsonString(ObjTypeStr) + '",'
         + '"connectivity_rebuilt":' + BoolToJsonStr(ConnRebuilt) + ','
-        + '"distance_mils":' + FloatToJsonStr(BestDist) + '}');
+        + '"object_type":"' + EscapeJsonString(ObjTypeStr) + '",'
+        + '"distance_mils":' + FloatToJsonStr(BestDist) + ','
+        + '"net":"' + EscapeJsonString(NetName) + '",'
+        + '"bbox_mils":[' + FloatToJsonStr(BRect.Left / 10000.0) + ','
+        + FloatToJsonStr(BRect.Bottom / 10000.0) + ','
+        + FloatToJsonStr(BRect.Right / 10000.0) + ','
+        + FloatToJsonStr(BRect.Top / 10000.0) + '],'
+        + '"others_as_close":' + IntToStr(Ties - 1) + '}');
 End;
 
 {..............................................................................}
@@ -26304,7 +33239,7 @@ Var
     First, Emit : Boolean;
     Count, Matched, Scanned, OffsetVal, LimitVal : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -26448,7 +33383,7 @@ Var
     NewWidth, ModCount, I : Integer;
     Matches : TInterfaceList;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -26525,7 +33460,7 @@ Begin
       FFFFFFFF). PCB_Scale / CollectSelectedPCBPrims leave the list to the
       script host for the same reason. }
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"modified":true,'
@@ -26572,6 +33507,48 @@ End;
 { rebuild=false to read the cached state on a board you know is fresh.        }
 {..............................................................................}
 
+{ Have Altium re-derive the ratsnest of every net that has a connection   }
+{ line, as it does after an edit. Boards whose nets were all joined were  }
+{ reported with open connections, a routed public board with 25 on GND:   }
+{ the stored lines had not been brought up to date. Kept apart and run    }
+{ only when asked: AnalyzeNet had not been called                         }
+{ from a script here, and a build without it fails this call alone.        }
+Procedure ReanalyzeConnectedNets(Board : IPCB_Board);
+Var
+    Iter : IPCB_BoardIterator;
+    Conn : IPCB_Connection;
+    Net : IPCB_Net;
+    Names : TStringList;
+    I : Integer;
+Begin
+    Names := TStringList.Create;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eConnectionObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Conn := Iter.FirstPCBObject;
+        While Conn <> Nil Do
+        Begin
+            Try
+                If Conn.Net <> Nil Then
+                Begin
+                    If Names.IndexOf(Conn.Net.Name) < 0 Then Names.Add(Conn.Net.Name);
+                End;
+            Except End;
+            Conn := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    For I := 0 To Names.Count - 1 Do
+    Begin
+        Net := FindNetByName(Board, Names[I]);
+        If Net <> Nil Then Board.AnalyzeNet(Net);
+    End;
+    Names.Free;
+End;
+
 Function PCB_GetUnroutedNets(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -26587,13 +33564,16 @@ Var
     { array-of-int trigger it, the originally-documented narrower theory   }
     { was wrong. See [[delphiscript_fixed_string_array_bug]].              }
     NetNames, NetCounts : TStringList;
+    Reanalyze : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+    Reanalyze := LowerCase(ExtractJsonValue(Params, 'reanalyze')) = 'true';
+    If Reanalyze Then ReanalyzeConnectedNets(Board);
 
     RebuildStr := ExtractJsonValue(Params, 'rebuild');
     DidRebuild := False;
@@ -26652,7 +33632,8 @@ Begin
         FinalResp := BuildSuccessResponse(RequestId,
             '{"unrouted_nets":[' + JsonItems + '],"net_count":' + IntToStr(NetNames.Count)
             + ',"total_unrouted":' + IntToStr(Count)
-            + ',"connectivity_rebuilt":' + BoolToJsonStr(DidRebuild) + '}');
+            + ',"connectivity_rebuilt":' + BoolToJsonStr(DidRebuild)
+            + ',"reanalyzed":' + BoolToJsonStr(Reanalyze) + '}');
         Result := FinalResp;
     Finally
         NetCounts.Free;
@@ -26712,12 +33693,13 @@ Var
     Polygon : IPCB_Polygon;
     JsonItems, NetName, LayerStr, HatchStr : String;
     First : Boolean;
-    Count, VCount : Integer;
+    Count, VCount, Pieces : Integer;
     AreaInternal : Int64;
-    AreaSqMils, AreaMm2, BBoxMm2 : Double;
+    AreaSqMils, AreaMm2, BBoxMm2, CopperSqMils : Double;
+    CopperExact : Boolean;
     BR : TCoordRect;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -26759,12 +33741,16 @@ Begin
         { area for the polygon outline. Used for current-capacity audits }
         { (multiply area_mm2 by copper thickness for cubic copper) and   }
         { for spotting accidentally-tiny power islands.                  }
-        { AreaSize is the polygon OUTLINE area. IPCB_Polygon.GeometricPolygon
-          is undeclared in this Altium script binding, so the actual-copper
-          area is not available here -- use AreaSize (outline) + bbox. }
+        { AreaSize is the polygon OUTLINE area: the same before and after  }
+        { a repour, and blind to copper an edge clearance cut away. The    }
+        { poured copper is the polygon's child regions, which PolygonCopper }
+        { sums; a hatched pour reports pieces but no region area.          }
         AreaSqMils := 0;
         Try AreaSqMils := PolygonAreaSqMils(Polygon); Except End;
         AreaMm2 := AreaSqMils * 0.00064516;
+        CopperSqMils := 0; Pieces := 0;
+        CopperExact := False;
+        Try Pieces := PolygonCopper(Polygon, CopperSqMils, CopperExact); Except End;
         BR := Polygon.BoundingRectangle;
         BBoxMm2 := CoordToMM(BR.Right - BR.Left)
                  * CoordToMM(BR.Top - BR.Bottom);
@@ -26780,6 +33766,10 @@ Begin
             + '"area_sqmils":' + IntToStr(Trunc(AreaSqMils)) + ','
             + '"area_mm2":' + FloatToJsonStr(AreaMm2) + ','
             + '"bbox_mm2":' + FloatToJsonStr(BBoxMm2) + ','
+            + '"poured":' + BoolToJsonStr(Polygon.Poured) + ','
+            + '"copper_pieces":' + IntToStr(Pieces) + ','
+            + '"copper_area_mm2":' + FloatToJsonStr(CopperSqMils * 0.00064516) + ','
+            + '"copper_area_exact":' + BoolToJsonStr(CopperExact) + ','
             + '"vertex_count":' + IntToStr(VCount) + '}';
         Inc(Count);
         Polygon := Iterator.NextPCBObject;
@@ -26802,12 +33792,15 @@ Var
     Iterator : IPCB_BoardIterator;
     Polygon : IPCB_Polygon;
     IndexStr, NetStr, LayerStr, HatchStr : String;
+    DeadStr, NecksStr, IslandsStr : String;
+    Changed, Failed : String;
     TargetIdx, CurIdx : Integer;
     FoundPoly : IPCB_Polygon;
     FoundNet : IPCB_Net;
-    Found : Boolean;
+    Found, Want : Boolean;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -26818,6 +33811,11 @@ Begin
     NetStr := ExtractJsonValue(Params, 'net');
     LayerStr := ExtractJsonValue(Params, 'layer');
     HatchStr := ExtractJsonValue(Params, 'hatch_style');
+    DeadStr := ExtractJsonValue(Params, 'remove_dead');
+    NecksStr := ExtractJsonValue(Params, 'remove_narrow_necks');
+    IslandsStr := ExtractJsonValue(Params, 'remove_islands_by_area');
+    Changed := '';
+    Failed := '';
 
     If IndexStr = '' Then
     Begin
@@ -26830,6 +33828,18 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'Invalid index value');
         Exit;
+    End;
+
+    TargetLayer := eNoLayer;
+    If LayerStr <> '' Then
+    Begin
+        TargetLayer := ResolveLayerId(Board, LayerStr);
+        If TargetLayer = eNoLayer Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+            Exit;
+        End;
     End;
 
     // Find the polygon at the specified index
@@ -26867,29 +33877,97 @@ Begin
         PCBServer.SendMessageToRobots(FoundPoly.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
 
-        // Modify net
+        // Modify net. A name that resolves to nothing is REPORTED. It used
+        // to leave the net alone and still answer modified:true, so a typo
+        // in a net name read as a successful reassignment.
         If NetStr <> '' Then
         Begin
             FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
+            Begin
                 FoundPoly.Net := FoundNet;
+                AddChangedField(Changed, 'net');
+            End
+            Else
+                AddFailReason(Failed, 'net',
+                    'no net named "' + NetStr + '" on this board');
         End;
 
         // Modify layer
+        { RESOLVED AGAINST THE BOARD'S OWN STACK, not GetLayerFromString,
+          which answered eTopLayer for every name it did not recognise. A
+          polygon asked for "Internal Plane 1" was moved to the top copper
+          layer and the reply said it had worked. }
         If LayerStr <> '' Then
-            FoundPoly.Layer := GetLayerFromString(LayerStr);
+        Begin
+            If TargetLayer <> eNoLayer Then
+            Begin
+                FoundPoly.Layer := TargetLayer;
+                AddChangedField(Changed, 'layer');
+            End
+            Else
+                AddFailReason(Failed, 'layer',
+                    'no layer named "' + LayerStr + '" on this board');
+        End;
 
-        // Modify hatch style
+        // Modify hatch style.
+        //
+        // FOUR WORDS, NOT SIX. The tool used to document Horizontal and
+        // Vertical as well, and no branch here ever handled them, so asking
+        // for one changed nothing and reported success. They are not added
+        // rather than removed because this codebase uses exactly four hatch
+        // members and the published reference lists no enum for the type:
+        // inventing an identifier that DelphiScript does not declare would
+        // fault where Try/Except cannot catch it and stop the polling loop.
         If HatchStr <> '' Then
         Begin
             If HatchStr = 'Solid' Then
-                FoundPoly.PolyHatchStyle := ePolySolid
+            Begin FoundPoly.PolyHatchStyle := ePolySolid; AddChangedField(Changed, 'hatch_style'); End
             Else If HatchStr = 'NoHatch' Then
-                FoundPoly.PolyHatchStyle := ePolyNoHatch
+            Begin FoundPoly.PolyHatchStyle := ePolyNoHatch; AddChangedField(Changed, 'hatch_style'); End
             Else If HatchStr = '45Degree' Then
-                FoundPoly.PolyHatchStyle := ePolyHatch45
+            Begin FoundPoly.PolyHatchStyle := ePolyHatch45; AddChangedField(Changed, 'hatch_style'); End
             Else If HatchStr = '90Degree' Then
-                FoundPoly.PolyHatchStyle := ePolyHatch90;
+            Begin FoundPoly.PolyHatchStyle := ePolyHatch90; AddChangedField(Changed, 'hatch_style'); End
+            Else
+                AddFailReason(Failed, 'hatch_style',
+                    'unknown style "' + HatchStr + '". Use Solid, NoHatch, '
+                    + '45Degree or 90Degree');
+        End;
+
+        // Pour options. These decide what the NEXT pour does; none of them
+        // repours on its own, which is why the reply says so and the tool
+        // points at pcb_repour_polygons.
+        //
+        // Each is read back rather than assumed. Reported absent from this
+        // API once already, on the strength of a modify that answered with a
+        // match count and wrote nothing.
+        If DeadStr <> '' Then
+        Begin
+            Want := StrToBool(DeadStr);
+            FoundPoly.RemoveDead := Want;
+            If FoundPoly.RemoveDead = Want Then
+                AddChangedField(Changed, 'remove_dead')
+            Else
+                AddFailReason(Failed, 'remove_dead', 'the flag did not take');
+        End;
+        If NecksStr <> '' Then
+        Begin
+            Want := StrToBool(NecksStr);
+            FoundPoly.RemoveNarrowNecks := Want;
+            If FoundPoly.RemoveNarrowNecks = Want Then
+                AddChangedField(Changed, 'remove_narrow_necks')
+            Else
+                AddFailReason(Failed, 'remove_narrow_necks', 'the flag did not take');
+        End;
+        If IslandsStr <> '' Then
+        Begin
+            Want := StrToBool(IslandsStr);
+            FoundPoly.RemoveIslandsByArea := Want;
+            If FoundPoly.RemoveIslandsByArea = Want Then
+                AddChangedField(Changed, 'remove_islands_by_area')
+            Else
+                AddFailReason(Failed, 'remove_islands_by_area', 'the flag did not take');
         End;
 
         PCBServer.SendMessageToRobots(FoundPoly.I_ObjectAddress, c_Broadcast,
@@ -26898,12 +33976,31 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
+    { The pour options and the hatch style decide what the NEXT pour does, }
+    { so the copper is unchanged until this runs. Reported from a live     }
+    { board as the setting "not applying".                                  }
+    If Changed <> '' Then
+        NoteNextStep('Nothing is repoured yet. Run pcb_repour_polygons to '
+            + 'apply these options to the copper.');
+
+    { modified reports whether anything actually changed, not whether the  }
+    { call ran. An index that resolves and a request that is entirely      }
+    { ignored used to look identical from here.                            }
     Result := BuildSuccessResponse(RequestId,
-        '{"modified":true,'
-        + '"index":' + IntToStr(TargetIdx) + ','
-        + '"name":"' + EscapeJsonString(FoundPoly.Name) + '"}');
+        JsonObj(
+            JsonBool('modified', Changed <> '') + ',' +
+            JsonBool('success', Failed = '') + ',' +
+            JsonInt('index', TargetIdx) + ',' +
+            JsonStr('name', FoundPoly.Name) + ',' +
+            JsonStr('layer', GetLayerString(FoundPoly.Layer)) + ',' +
+            JsonRaw('changed', '[' + Changed + ']') + ',' +
+            JsonRaw('not_applied', '[' + Failed + ']') + ',' +
+            JsonBool('repour_needed', Changed <> '') + ',' +
+            JsonStr('note', 'pour options and hatch style take effect on the '
+                + 'next pour. Run pcb_repour_polygons to see them.')
+        ));
 End;
 
 {..............................................................................}
@@ -26922,7 +34019,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -26994,7 +34091,7 @@ Var
     RX1, RY1, RX2, RY2, CommaPos : Integer;
     First : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27081,7 +34178,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"created":true,'
@@ -27113,7 +34210,7 @@ Var
     TotalTraceLen, DX, DY : Double;
     BoardWidth, BoardHeight, BoardArea : Double;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27222,7 +34319,7 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27282,7 +34379,7 @@ Var
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     Seg : TPolySegment;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27319,11 +34416,13 @@ Begin
         Board.BoardOutline.Invalidate;
         Board.BoardOutline.Rebuild;
         Board.BoardOutline.Validate;
+        { Without this the outline's cached size kept the old rectangle. }
+        RefreshBoardOutline(Board);
     Finally
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,'
@@ -27345,8 +34444,9 @@ Var
     NetStr, LayerStr, PourOverStr : String;
     FoundNet : IPCB_Net;
     Seg : TPolySegment;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27366,6 +34466,20 @@ Begin
     Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
     Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
 
+    { The layer is resolved BEFORE anything is created. "Internal Plane 1"    }
+    { used to reach GetLayerFromString, miss the canonical table, and come     }
+    { back as eTopLayer - so a PGND pour and a VBUS_PROT pour both landed on   }
+    { the top layer, each answering placed:true with layer echoing the        }
+    { REQUESTED plane name. That is a board-wide short.                       }
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Polygon := PCBServer.PCBObjectFactory(ePolyObject, eNoDimension, eCreate_Default);
@@ -27376,8 +34490,7 @@ Begin
             Exit;
         End;
 
-        If LayerStr = '' Then LayerStr := 'TopLayer';
-        Polygon.Layer := GetLayerFromString(LayerStr);
+        Polygon.Layer := TargetLayer;
 
         Polygon.PolyHatchStyle := ePolySolid;
 
@@ -27418,13 +34531,13 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
-        + '"layer":"' + EscapeJsonString(LayerStr) + '",'
+        + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -27444,7 +34557,7 @@ Var
     Ix, Iy, PlacedCount : Integer;
     LowLayer, HighLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27471,9 +34584,21 @@ Begin
         Try FoundNet := FindNetByName(Board,NetStr); Except End;
 
     If LowLayerStr = '' Then LowLayer := eTopLayer
-    Else LowLayer := GetLayerFromString(LowLayerStr);
+    Else LowLayer := ResolveLayerId(Board, LowLayerStr);
+    If LowLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown low_layer name: ' + LowLayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     If HighLayerStr = '' Then HighLayer := eBottomLayer
-    Else HighLayer := GetLayerFromString(HighLayerStr);
+    Else HighLayer := ResolveLayerId(Board, HighLayerStr);
+    If HighLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown high_layer name: ' + HighLayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PlacedCount := 0;
     PCBServer.PreProcess;
@@ -27493,7 +34618,7 @@ Begin
                     Via.HoleSize := MilsToCoord(ViaHole);
                     Via.LowLayer := LowLayer;
                     Via.HighLayer := HighLayer;
-                    If FoundNet <> Nil Then Via.Net := FoundNet;
+                    BindPrimitiveToNet(FoundNet, Via);
                     Board.AddPCBObject(Via);
                     PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                         PCBM_BoardRegisteration, Via.I_ObjectAddress);
@@ -27507,13 +34632,15 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(PlacedCount) + ','
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
         + '"pitch":' + IntToStr(Pitch) + ','
+        + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
+        + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -27529,7 +34656,7 @@ Var
     DPName, PosNet, NegNet : String;
     PosNetObj, NegNetObj : IPCB_Net;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27580,7 +34707,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"created":true,"name":"' + EscapeJsonString(DPName) + '",'
@@ -27604,8 +34731,9 @@ Var
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     LayerStr, NetStr : String;
     FoundNet : IPCB_Net;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27624,6 +34752,15 @@ Begin
     Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
     Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
 
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+
     PCBServer.PreProcess;
     Try
         Region := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
@@ -27634,8 +34771,7 @@ Begin
             Exit;
         End;
 
-        If LayerStr = '' Then LayerStr := 'TopLayer';
-        Region.Layer := GetLayerFromString(LayerStr);
+        Region.Layer := TargetLayer;
 
         { IPCB_Region uses MainContour + SetOutlineContour (NOT the polygon
           Segments API). Note that the contour X[I]/Y[I] arrays are
@@ -27651,7 +34787,7 @@ Begin
         If NetStr <> '' Then
         Begin
             Try FoundNet := FindNetByName(Board,NetStr); Except FoundNet := Nil; End;
-            If FoundNet <> Nil Then Region.Net := FoundNet;
+            BindPrimitiveToNet(FoundNet, Region);
         End;
 
         Board.AddPCBObject(Region);
@@ -27661,13 +34797,13 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
-        + '"layer":"' + EscapeJsonString(LayerStr) + '",'
+        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -27711,7 +34847,7 @@ Begin
     End;
     ResetParameters;
     Try RunProcess('PCB:RebuildConnectivity'); Except End;
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"rebound":' + IntToStr(Count) + ',"connectivity_rebuilt":true}');
 End;
@@ -27727,7 +34863,8 @@ Var
     Obj : IPCB_Primitive;
     OldNet, TargetNet : IPCB_Net;
     NetName : String;
-    Rebound, Seen : Integer;
+    Objects : TInterfaceList;
+    Rebound, Seen, I : Integer;
 Begin
     Board := GetPCBBoardAnywhere;
     If Board = Nil Then
@@ -27736,15 +34873,27 @@ Begin
         Exit;
     End;
     Rebound := 0; Seen := 0;
-    Iter := Board.BoardIterator_Create;
-    Try
-        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject, eArcObject,
-            eFillObject, eRegionObject));
-        Iter.AddFilter_LayerSet(AllLayers);
-        Iter.AddFilter_Method(eProcessAll);
-        Obj := Iter.FirstPCBObject;
-        While Obj <> Nil Do
-        Begin
+    Objects := TInterfaceList.Create;
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject, eArcObject,
+                eFillObject, eRegionObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Obj := Iter.FirstPCBObject;
+            While Obj <> Nil Do
+            Begin
+                Objects.Add(Obj);
+                Obj := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+        PCBServer.PreProcess;
+        Try
+          For I := 0 To Objects.Count - 1 Do
+          Begin
+            Obj := Objects.Items[I];
             OldNet := Nil; NetName := '';
             Try OldNet := Obj.Net; Except End;
             Try If OldNet <> Nil Then NetName := OldNet.Name; Except End;
@@ -27763,13 +34912,13 @@ Begin
                     Except End;
                 End;
             End;
-            Obj := Iter.NextPCBObject;
+          End;
+        Finally
+            PCBServer.PostProcess;
         End;
-    Finally
-        Board.BoardIterator_Destroy(Iter);
-    End;
+    { DelphiScript faults when releasing a TInterfaceList of board refs. }
     RebuildPCBConnectivity(Board);
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"seen":' + IntToStr(Seen) + ',"rebound":' + IntToStr(Rebound)
         + ',"connectivity_rebuilt":true}');
@@ -27858,7 +35007,7 @@ Begin
         If NetStr <> '' Then
         Begin
             Try FoundNet := FindNetByName(Board, NetStr); Except FoundNet := Nil; End;
-            If FoundNet <> Nil Then Region.Net := FoundNet;
+            If FoundNet <> Nil Then BindPrimitiveToNet(FoundNet, Region);
         End;
         Board.AddPCBObject(Region);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
@@ -27866,7 +35015,7 @@ Begin
     Finally
         PCBServer.PostProcess;
     End;
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"vertex_count":' + IntToStr(PtCount)
         + ',"layer":"' + EscapeJsonString(LayerStr) + '"}');
@@ -27888,8 +35037,9 @@ Var
     CompList : TInterfaceList;
     Comp : IPCB_Component;
     Iterator : IPCB_BoardIterator;
+    DeltaX, DeltaY : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -27974,10 +35124,19 @@ Begin
             NewPos := StartVal + Round(Step * I);
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
+            { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents. }
             If AxisX Then
-                Comp.x := MilsToCoord(NewPos)
+            Begin
+                DeltaX := MilsToCoord(NewPos) - Comp.x;
+                DeltaY := 0;
+            End
             Else
-                Comp.y := MilsToCoord(NewPos);
+            Begin
+                DeltaX := 0;
+                DeltaY := MilsToCoord(NewPos) - Comp.y;
+            End;
+            If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                Comp.MoveByXY(DeltaX, DeltaY);
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
         End;
@@ -27985,7 +35144,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"distributed":' + IntToStr(Count) + ','
@@ -28004,8 +35163,9 @@ Var
     Dim : IPCB_Dimension;
     X1, Y1, X2, Y2, TextX, TextY : Integer;
     Orient, LayerStr : String;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -28020,6 +35180,13 @@ Begin
     Orient := LowerCase(ExtractJsonValue(Params, 'orientation'));
 
     If LayerStr = '' Then LayerStr := 'TopOverlay';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     { Auto-detect orientation if unset: whichever axis has the larger delta. }
     If Orient = '' Then
     Begin
@@ -28050,7 +35217,7 @@ Begin
             Exit;
         End;
 
-        Dim.Layer := GetLayerFromString(LayerStr);
+        Dim.Layer := TargetLayer;
         Dim.DimensionKind := eLinearDimension;
         Dim.X1Location := MilsToCoord(X1);
         Dim.Y1Location := MilsToCoord(Y1);
@@ -28071,7 +35238,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -28091,29 +35258,57 @@ Function PCB_PlacePad(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Pad : IPCB_Pad;
-    X, Y, XSize, YSize, HoleSize : Integer;
-    Shape, NameStr, NetStr, LayerStr : String;
+    X, Y : Double;   { sub-mil coordinates: local patch 2026-09-18 }
+    XSize, YSize, HoleSize : Double;
+    Shape, NameStr, NetStr, LayerStr, UnitsStr : String;
     FoundNet : IPCB_Net;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
 
-    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
-    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
-    XSize := StrToIntDef(ExtractJsonValue(Params, 'x_size'), 60);
-    YSize := StrToIntDef(ExtractJsonValue(Params, 'y_size'), 60);
-    HoleSize := StrToIntDef(ExtractJsonValue(Params, 'hole_size'), 0);
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
+    XSize := StrToFloatDef(ExtractJsonValue(Params, 'x_size'), MilsInUnits(60, UnitsStr));
+    YSize := StrToFloatDef(ExtractJsonValue(Params, 'y_size'), MilsInUnits(60, UnitsStr));
+    HoleSize := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 0);
     Shape := LowerCase(ExtractJsonValue(Params, 'shape'));
     NameStr := ExtractJsonValue(Params, 'name');
     NetStr := ExtractJsonValue(Params, 'net');
     LayerStr := ExtractJsonValue(Params, 'layer');
 
     If LayerStr = '' Then LayerStr := 'TopLayer';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     If Shape = '' Then Shape := 'round';
+    { The library pad tools spell these out, so both spellings are taken.   }
+    { Any other word used to become a round pad while the reply echoed the  }
+    { shape asked for: a rectangular pad request read back as placed.       }
+    If Shape = 'rectangular' Then Shape := 'rect';
+    If Shape = 'octagonal' Then Shape := 'oct';
+    If (Shape = 'rounded') Or (Shape = 'circle') Or (Shape = 'oval') Or (Shape = 'obround') Then
+        Shape := 'round';
+    If (Shape <> 'rect') And (Shape <> 'oct') And (Shape <> 'round') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_SHAPE',
+            'Unknown pad shape: ' + Shape + '. Use round, rect (rectangular) or oct (octagonal).');
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -28125,12 +35320,12 @@ Begin
             Exit;
         End;
 
-        Pad.X := MilsToCoord(X);
-        Pad.Y := MilsToCoord(Y);
-        Pad.TopXSize := MilsToCoord(XSize);
-        Pad.TopYSize := MilsToCoord(YSize);
-        Pad.HoleSize := MilsToCoord(HoleSize);
-        Pad.Layer := GetLayerFromString(LayerStr);
+        Pad.X := CoordFromUnits(X, UnitsStr);
+        Pad.Y := CoordFromUnits(Y, UnitsStr);
+        Pad.TopXSize := CoordFromUnits(XSize, UnitsStr);
+        Pad.TopYSize := CoordFromUnits(YSize, UnitsStr);
+        Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
+        Pad.Layer := TargetLayer;
         If NameStr <> '' Then Pad.Name := NameStr;
 
         If Shape = 'rect' Then Pad.TopShape := eRectangular
@@ -28140,7 +35335,7 @@ Begin
         If NetStr <> '' Then
         Begin
             Try FoundNet := FindNetByName(Board,NetStr); Except FoundNet := Nil; End;
-            If FoundNet <> Nil Then Pad.Net := FoundNet;
+            BindPrimitiveToNet(FoundNet, Pad);
         End;
 
         Board.AddPCBObject(Pad);
@@ -28150,14 +35345,16 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
+    If UnitsAreMM(UnitsStr) Then UnitsStr := 'mm' Else UnitsStr := 'mil';
 
     Result := BuildSuccessResponse(RequestId,
-        '{"placed":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
-        + '"x_size":' + IntToStr(XSize) + ',"y_size":' + IntToStr(YSize) + ','
-        + '"hole_size":' + IntToStr(HoleSize) + ','
+        '{"placed":true,"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
+        + '"x_size":' + FloatToJsonStr(XSize) + ',"y_size":' + FloatToJsonStr(YSize) + ','
+        + '"hole_size":' + FloatToJsonStr(HoleSize) + ','
+        + '"units":"' + UnitsStr + '",'
         + '"shape":"' + EscapeJsonString(Shape) + '",'
-        + '"layer":"' + EscapeJsonString(LayerStr) + '",'
+        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"name":"' + EscapeJsonString(NameStr) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
@@ -28189,6 +35386,7 @@ Var
     Rotation : Double;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr, LoadStr : String;
     UniqueIdStr, PadNetsStr, PadName, NetName, BoardPathStr : String;
+    CompLayer : TLayer;
 Begin
     { Target a specific board by path when several PcbDocs are open, so a    }
     { placement can't silently land on the wrong (focused) board. Empty      }
@@ -28227,6 +35425,13 @@ Begin
     End;
     If LibRef = '' Then LibRef := Footprint;
     If LayerStr = '' Then LayerStr := 'TopLayer';
+    CompLayer := ResolveLayerId(Board, LayerStr);
+    If CompLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -28242,10 +35447,10 @@ Begin
         LoadStr := 'SourceLibReference=' + LibRef + '|FootPrint=' + Footprint
                  + '|SourceComponentLibrary=' + LibPath;
         Comp.LoadFromLibrary(LoadStr);
-        OldX := Comp.X;
-        OldY := Comp.Y;
-        DX := MilsToCoord(X) - OldX;
-        DY := MilsToCoord(Y) - OldY;
+        Comp.Layer := CompLayer;
+        Comp.x := MilsToCoord(X);
+        Comp.y := MilsToCoord(Y);
+        Comp.Rotation := Rotation;
         If Designator <> '' Then Comp.Name.Text := Designator;
         If Comment <> '' Then Comp.Comment.Text := Comment;
 
@@ -28264,50 +35469,10 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Comp.I_ObjectAddress);
 
-        { Assign the registered component origin exactly once.  Altium moves
-          every grouped footprint primitive with Comp.X/Y; manually moving the
-          group first applies the library-origin delta twice. }
-        Comp.Layer := GetLayerFromString(LayerStr);
-        Comp.x := MilsToCoord(X);
-        Comp.y := MilsToCoord(Y);
-        Comp.Rotation := Rotation;
-
-        { LoadFromLibrary applies a board-context-dependent translation when
-          the registered origin/rotation is assigned.  Measure the resulting
-          pad centroid and translate the grouped geometry once, after the
-          final component pose is established. }
-        CenterX := 0; CenterY := 0; CenterCount := 0;
-        GrpIter := Comp.GroupIterator_Create;
-        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
-        Pad := GrpIter.FirstPCBObject;
-        While Pad <> Nil Do
-        Begin
-            CenterX := CenterX + Pad.X;
-            CenterY := CenterY + Pad.Y;
-            Inc(CenterCount);
-            Pad := GrpIter.NextPCBObject;
-        End;
-        Comp.GroupIterator_Destroy(GrpIter);
-        If CenterCount > 0 Then
-        Begin
-            DX := MilsToCoord(X) - (CenterX Div CenterCount);
-            DY := MilsToCoord(Y) - (CenterY Div CenterCount);
-            GrpIter := Comp.GroupIterator_Create;
-            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
-                eArcObject, eFillObject, eRegionObject, eComponentBodyObject));
-            Prim := GrpIter.FirstPCBObject;
-            While Prim <> Nil Do
-            Begin
-                Prim.BeginModify;
-                Prim.MoveByXY(DX, DY);
-                Prim.EndModify;
-                Prim := GrpIter.NextPCBObject;
-            End;
-            Comp.GroupIterator_Destroy(GrpIter);
-        End;
-
-        { pad nets: create each named net if missing, assign it to the pad,    }
-        { giving the board real connectivity (ratsnest + DRC) without an ECO.  }
+        { pad nets: create each named net if missing and JOIN the pad to it.   }
+        { This comment used to promise "real connectivity (ratsnest + DRC)"    }
+        { off an assignment alone, which does not deliver it: the net has to   }
+        { be told about the pad or nothing downstream sees the connection.     }
         If PadNetsStr <> '' Then
         Begin
             GrpIter := Comp.GroupIterator_Create;
@@ -28323,7 +35488,7 @@ Begin
                     Net := EnsureNet(Board, NetName);
                     If Net <> Nil Then
                     Begin
-                        Pad.Net := Net;
+                        BindPrimitiveToNet(Net, Pad);
                         NetsAssigned := NetsAssigned + 1;
                     End;
                 End;
@@ -28335,7 +35500,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"footprint":"' + EscapeJsonString(Footprint) + '",'
@@ -28398,11 +35563,12 @@ Var
     Net : IPCB_Net;
     PlacementsStr, BoardPathStr, OnePlace, Remaining, LoadStr : String;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr : String;
-    UniqueIdStr, PadNetsStr, PadName, NetName : String;
+    UniqueIdStr, PadNetsStr, PadName, NetName, BadLayers : String;
     X, Y, PlacedCount, FailedCount, SepPos : Integer;
     OldX, OldY, DX, DY, CenterX, CenterY : TCoord;
     CenterCount : Integer;
     Rotation : Double;
+    CompLayer : TLayer;
 Begin
     BoardPathStr  := ExtractJsonValue(Params, 'board_path');
     PlacementsStr := ExtractJsonValue(Params, 'placements');
@@ -28415,6 +35581,7 @@ Begin
 
     PlacedCount := 0;
     FailedCount := 0;
+    BadLayers := '';
 
     PCBServer.PreProcess;
     Try
@@ -28453,6 +35620,15 @@ Begin
             End;
             If LibRef = '' Then LibRef := Footprint;
             If LayerStr = '' Then LayerStr := 'TopLayer';
+            CompLayer := ResolveLayerId(Board, LayerStr);
+            If CompLayer = eNoLayer Then
+            Begin
+                FailedCount := FailedCount + 1;
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
 
             Comp := PCBServer.PCBObjectFactory(eComponentObject, eNoDimension, eCreate_Default);
             If Comp = Nil Then
@@ -28465,10 +35641,10 @@ Begin
             LoadStr := 'SourceLibReference=' + LibRef + '|FootPrint=' + Footprint
                      + '|SourceComponentLibrary=' + LibPath;
             Comp.LoadFromLibrary(LoadStr);
-            OldX := Comp.X;
-            OldY := Comp.Y;
-            DX := MilsToCoord(X) - OldX;
-            DY := MilsToCoord(Y) - OldY;
+            Comp.Layer := CompLayer;
+            Comp.x := MilsToCoord(X);
+            Comp.y := MilsToCoord(Y);
+            Comp.Rotation := Rotation;
             If Designator <> '' Then Comp.Name.Text := Designator;
             If Comment <> '' Then Comp.Comment.Text := Comment;
             If UniqueIdStr <> '' Then
@@ -28537,7 +35713,7 @@ Begin
                     If NetName <> '' Then
                     Begin
                         Net := EnsureNet(Board, NetName);
-                        If Net <> Nil Then Pad.Net := Net;
+                        BindPrimitiveToNet(Net, Pad);
                     End;
                     Pad := GrpIter.NextPCBObject;
                 End;
@@ -28550,11 +35726,12 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(PlacedCount)
         + ',"failed":' + IntToStr(FailedCount)
+        + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"total":' + IntToStr(PlacedCount + FailedCount) + '}');
 End;
 
@@ -28594,8 +35771,9 @@ Var
     Dim : IPCB_Dimension;
     Cx, Cy, X1, Y1, X2, Y2, Radius : Integer;
     LayerStr : String;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -28611,6 +35789,13 @@ Begin
     Radius := StrToIntDef(ExtractJsonValue(Params, 'radius'), 100);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopOverlay';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -28621,7 +35806,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create angular dimension');
             Exit;
         End;
-        Dim.Layer := GetLayerFromString(LayerStr);
+        Dim.Layer := TargetLayer;
         Dim.DimensionKind := eAngularDimension;
         Dim.X1Location := MilsToCoord(Cx);
         Dim.Y1Location := MilsToCoord(Cy);
@@ -28634,7 +35819,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"kind":"angular","center_x":' + IntToStr(Cx)
@@ -28653,8 +35838,9 @@ Var
     Dim : IPCB_Dimension;
     Cx, Cy, Radius : Integer;
     LayerStr : String;
+    TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -28666,6 +35852,13 @@ Begin
     Radius := StrToIntDef(ExtractJsonValue(Params, 'radius'), 100);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopOverlay';
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     PCBServer.PreProcess;
     Try
@@ -28676,7 +35869,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create radial dimension');
             Exit;
         End;
-        Dim.Layer := GetLayerFromString(LayerStr);
+        Dim.Layer := TargetLayer;
         Dim.DimensionKind := eRadialDimension;
         Dim.X1Location := MilsToCoord(Cx);
         Dim.Y1Location := MilsToCoord(Cy);
@@ -28690,7 +35883,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"kind":"radial","center_x":' + IntToStr(Cx)
@@ -28715,7 +35908,7 @@ Var
     X, Y, Rows, Cols, RowSpace, ColSpace : Integer;
     TargetLayer : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -28738,10 +35931,14 @@ Begin
     LayerStr := ExtractJsonValue(Params, 'layer');
     MirrorStr := LowerCase(ExtractJsonValue(Params, 'mirror'));
 
-    If LayerStr <> '' Then
-        TargetLayer := GetLayerFromString(LayerStr)
-    Else
-        TargetLayer := eTopLayer;
+    If LayerStr = '' Then TargetLayer := eTopLayer
+    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     Emb := PCBServer.PCBObjectFactory(eEmbeddedBoardObject, eNoDimension, eCreate_Default);
     If Emb = Nil Then
@@ -28772,10 +35969,11 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"child_path":"' + EscapeJsonString(ChildPath) + '",'
+        + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"rows":' + IntToStr(Rows) + ',"cols":' + IntToStr(Cols)
         + ',"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
 End;
@@ -28823,7 +36021,7 @@ Var
     ItemsPlaced, ItemsSkipped, NetName : String;
     FirstPlaced, FirstSkipped : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -28969,7 +36167,7 @@ Begin
                                     Pad.HoleSize := 0;
                                 End;
                                 Pad.Name := 'TP_' + NetName;
-                                Pad.Net := Net;
+                                BindPrimitiveToNet(Net, Pad);
                                 Try Pad.IsTestpoint_Top := FabTop; Except End;
                                 Try Pad.IsTestpoint_Bottom := FabBot; Except End;
                                 Try Pad.IsAssyTestpoint_Top := AssyTop; Except End;
@@ -28995,7 +36193,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    If Placed > 0 Then SaveDocByPath(Board.FileName);
+    If Placed > 0 Then MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         JsonObj(
@@ -29053,7 +36251,7 @@ Var
     PadRot : Double;
     FillX1, FillY1, FillX2, FillY2 : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -29223,7 +36421,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         JsonObj(
@@ -29290,7 +36488,7 @@ Begin
     RestoreStr := LowerCase(ExtractJsonValue(Params, 'restore'));
     Restore := (RestoreStr = 'true') Or (RestoreStr = '1');
 
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB',
@@ -29469,7 +36667,7 @@ Var
     First, BothRouted : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -29556,7 +36754,7 @@ Var
     Total, Cleared : Integer;
     UseFilter, Match : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -29611,7 +36809,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    If Cleared > 0 Then SaveDocByPath(Board.FileName);
+    If Cleared > 0 Then MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         JsonObj(
@@ -29661,7 +36859,7 @@ Var
     R : TCoordRect;
     HasAny : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -29721,13 +36919,16 @@ Begin
             Try
                 Via := Obj;
                 Inc(ViasTotal);
-                { Classify by start/stop layer -- through if Top to Bottom; }
+                { LowLayer/HighLayer are TLayer values, as in PCB_GetVias.  }
+                { StartLayer/StopLayer are layer objects on current AD;    }
+                { comparing them with enum constants misclassifies vias.  }
                 { blind if one side is outer (Top or Bottom) but not both;  }
                 { buried if both endpoints are inner layers.                 }
-                If (Via.StartLayer = eTopLayer) And (Via.StopLayer = eBottomLayer) Then
+                If ((Via.LowLayer = eTopLayer) And (Via.HighLayer = eBottomLayer))
+                   Or ((Via.LowLayer = eBottomLayer) And (Via.HighLayer = eTopLayer)) Then
                     Inc(ViasThrough)
-                Else If (Via.StartLayer = eTopLayer) Or (Via.StartLayer = eBottomLayer)
-                     Or (Via.StopLayer = eTopLayer) Or (Via.StopLayer = eBottomLayer) Then
+                Else If (Via.LowLayer = eTopLayer) Or (Via.LowLayer = eBottomLayer)
+                     Or (Via.HighLayer = eTopLayer) Or (Via.HighLayer = eBottomLayer) Then
                     Inc(ViasBlind)
                 Else
                     Inc(ViasBuried);
@@ -29925,7 +37126,7 @@ Var
     SaveNeeded : Boolean;
     ApplyOk : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB',
@@ -30016,15 +37217,19 @@ Begin
                 For Endpoint := 1 To 2 Do
                 Begin
                     Try
+                        { REALS: an Integer difference kept in a Double  }
+                        { variable stays an Integer in DelphiScript, and }
+                        { its square overflowed on any track longer than }
+                        { about 4.6 mil. The * 1.0 makes it a real.      }
                         If Endpoint = 1 Then
                         Begin
                             PX := Track.X1; PY := Track.Y1;
-                            V1X := Track.X2 - PX; V1Y := Track.Y2 - PY;
+                            V1X := (Track.X2 - PX) * 1.0; V1Y := (Track.Y2 - PY) * 1.0;
                         End
                         Else
                         Begin
                             PX := Track.X2; PY := Track.Y2;
-                            V1X := Track.X1 - PX; V1Y := Track.Y1 - PY;
+                            V1X := (Track.X1 - PX) * 1.0; V1Y := (Track.Y1 - PY) * 1.0;
                         End;
                         L1 := Sqrt(V1X * V1X + V1Y * V1Y);
                         If L1 < 1 Then Continue;
@@ -30079,16 +37284,16 @@ Begin
                                        And (Abs(Other.Y1 - PY) <= Tol) Then
                                     Begin
                                         OtherEndpoint := 1;
-                                        V2X := Other.X2 - PX;
-                                        V2Y := Other.Y2 - PY;
+                                        V2X := (Other.X2 - PX) * 1.0;
+                                        V2Y := (Other.Y2 - PY) * 1.0;
                                         OX := Other.X2; OY := Other.Y2;
                                     End
                                     Else If (Abs(Other.X2 - PX) <= Tol)
                                             And (Abs(Other.Y2 - PY) <= Tol) Then
                                     Begin
                                         OtherEndpoint := 2;
-                                        V2X := Other.X1 - PX;
-                                        V2Y := Other.Y1 - PY;
+                                        V2X := (Other.X1 - PX) * 1.0;
+                                        V2Y := (Other.Y1 - PY) * 1.0;
                                         OX := Other.X1; OY := Other.Y1;
                                     End
                                     Else
@@ -30227,7 +37432,7 @@ Begin
                                                 Arc.LineWidth := Track.Width;
                                                 Arc.Layer := Track.Layer;
                                                 If Track.Net <> Nil Then
-                                                    Arc.Net := Track.Net;
+                                                    BindPrimitiveToNet(Track.Net, Arc);
                                                 Board.AddPCBObject(Arc);
                                                 PCBServer.SendMessageToRobots(
                                                     Board.I_ObjectAddress,
@@ -30323,7 +37528,7 @@ Begin
     If SaveNeeded Then
     Begin
         Try Board.GraphicallyInvalidate; Except End;
-        Try SaveDocByPath(Board.FileName); Except End;
+        Try MarkDocDirtyByPath(Board.FileName); Except End;
     End;
 
     Result := BuildSuccessResponse(RequestId,
@@ -30358,7 +37563,7 @@ Var
     First, Keep : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -30419,75 +37624,34 @@ End;
 {..............................................................................}
 
 Function PCB_SetViaSoldermaskRelief(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Iterator : IPCB_BoardIterator;
-    Via : IPCB_Via;
-    NetFilter, NetName, ExpStr : String;
-    ExpMils, Count : Integer;
-    Keep : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
+    { THIS WRITE TAKES THE SCRIPTING ENGINE DOWN, MEASURED TWICE.
+      Setting SolderMaskExpansion / SolderMaskExpansionFromHoleEdge on an
+      IPCB_Via raises "Access violation in ScriptingSystem.DLL, read of
+      address 0x38" on AD 26.10.1.6. The fault is in the write itself: it
+      was measured once through Via.BeginModify and once through
+      SendMessageToRobots, on a scratch board holding three vias and
+      nothing else, and it is identical both ways. It is not catchable
+      either, because the engine shows a modal before any Except runs, so
+      the polling loop stops and the session needs a manual restart.
 
-    NetFilter := ExtractJsonValue(Params, 'net');
-    ExpStr := ExtractJsonValue(Params, 'expansion_mils');
-    ExpMils := StrToIntDef(ExpStr, 4);
-    Count := 0;
+      The handler therefore does not attempt it. Refusing is not the
+      preferred answer anywhere in this bridge and is right here only
+      because the operation cannot complete: every caller who tried it
+      lost their session and changed nothing on the board.
 
-    Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
-    Iterator.AddFilter_LayerSet(AllLayers);
-    Iterator.AddFilter_Method(eProcessAll);
-
-    PCBServer.PreProcess;
-    Try
-        Via := Iterator.FirstPCBObject;
-        While Via <> Nil Do
-        Begin
-            NetName := '';
-            Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
-            Keep := True;
-            If (NetFilter <> '') And (NetName <> NetFilter) Then Keep := False;
-            If Keep Then
-            Begin
-                Try
-                    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
-                        PCBM_BeginModify, c_NoEventData);
-                    Via.SolderMaskExpansionFromHoleEdge := True;
-                    Via.SolderMaskExpansion := MilsToCoord(ExpMils);
-                    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
-                        PCBM_EndModify, c_NoEventData);
-                    Inc(Count);
-                Except
-                End;
-            End;
-            Via := Iterator.NextPCBObject;
-        End;
-    Finally
-        PCBServer.PostProcess;
-    End;
-    Board.BoardIterator_Destroy(Iterator);
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"modified":' + IntToStr(Count) + ','
-        + '"expansion_mils":' + IntToStr(ExpMils) + '}');
+      Altium's own route for tenting is a Solder Mask Expansion rule
+      scoped IsVia, which covers every via at once and survives a
+      repour. PCB_CreateDesignRule builds that kind, so the pointer is
+      to a tool rather than to a dialog. }
+    Result := BuildErrorResponse(RequestId, 'NOT_SCRIPTABLE',
+        'Writing a via soldermask expansion crashes the Altium scripting '
+        + 'engine on this build (access violation in ScriptingSystem.DLL), '
+        + 'which stops the polling loop and needs a manual restart, so this '
+        + 'handler does not attempt it. Tent vias with a Solder Mask '
+        + 'Expansion rule instead: pcb_create_design_rule with '
+        + 'rule_type=solder_mask_expansion and scope=IsVia.');
 End;
-
-{..............................................................................}
-{ PCB_SetMechLayerKind - Assign the kind of one mechanical layer.             }
-{ Params: layer, kind (a name such as 'Courtyard Top', or its number)         }
-{                                                                              }
-{ A kind belongs to ONE layer at a time. Assigning a kind that another layer  }
-{ already holds leaves two layers claiming the same purpose, so the previous  }
-{ holder is cleared first and reported, rather than leaving the board in a    }
-{ state the stack manager did not intend.                                      }
-{..............................................................................}
-
 Function PCB_SetMechLayerKind(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -30501,7 +37665,7 @@ Var
     MechPairs : IPCB_MechanicalLayerPairs;
     First, Paired, PairApplied : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -30533,11 +37697,11 @@ Begin
         Exit;
     End;
 
-    TargetLayer := GetLayerFromString(LayerName);
+    TargetLayer := ResolveLayerId(Board, LayerName);
     If TargetLayer = eNoLayer Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_LAYER',
-            'Unknown layer name: ' + LayerName);
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerName + '. ' + BoardLayerNamesHint(Board));
         Exit;
     End;
 
@@ -30588,7 +37752,7 @@ Begin
     PairKind := MechPairKindFromLayerKind(KindId);
     PartnerName := ExtractJsonValue(Params, 'partner_layer');
     PartnerLayer := eNoLayer;
-    If PartnerName <> '' Then PartnerLayer := GetLayerFromString(PartnerName);
+    If PartnerName <> '' Then PartnerLayer := ResolveLayerId(Board, PartnerName);
 
     If (PartnerKind >= 0) And (PartnerLayer = eNoLayer) Then
     Begin
@@ -30738,7 +37902,7 @@ Begin
     If PartnerLayer <> eNoLayer Then
         PartnerJson := '"' + EscapeJsonString(GetLayerString(PartnerLayer)) + '"';
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"kind":"' + EscapeJsonString(MechKindToString(KindId)) + '",'
@@ -30773,7 +37937,7 @@ Var
     Board : IPCB_Board;
     Where : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB',
@@ -30836,7 +38000,7 @@ Var
     First, Disp, Enabled, WantAll : Boolean;
     Count, KindId, Num, Prims, Occupied : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -30944,33 +38108,68 @@ Begin
     End;
 End;
 
-{ True if the designator text Slk overlaps any pad or other silk text in its  }
-{ immediate vicinity. SelfAddr excludes the text object itself from the test. }
-Function SilkCollides(Board : IPCB_Board; Slk : IPCB_Text; SelfAddr : Integer) : Boolean;
+{ True when the designator Slk comes closer than SilkGap to anything else on }
+{ its own overlay layer (component outlines, texts, fills, regions), closer   }
+{ than MaskGap to a pad on its side of the board, or leaves the board's       }
+{ extents BL..BT. All internal units. Rectangles throughout, so it errs       }
+{ towards blocked. The check it replaces looked at pads and texts only, on   }
+{ any layer and with no clearance, which let a designator onto a neighbour's  }
+{ outline at 0 mm.                                                            }
+Function SilkBlocked(Board : IPCB_Board; Slk : IPCB_Text; SilkGap, MaskGap : Integer;
+    BL, BB, BR, BT : Integer) : Boolean;
 Var
     SBB, OBB : TCoordRect;
-    Margin : Integer;
+    Reach, Gap, Oid : Integer;
     Iter : IPCB_SpatialIterator;
     Obj : IPCB_Primitive;
+    Txt : IPCB_Text;
+    SilkLayer, CopperSide : TLayer;
 Begin
     Result := False;
     SBB := Slk.BoundingRectangle;
-    Margin := MilsToCoord(2);
+    If (SBB.Left < BL) Or (SBB.Right > BR) Or (SBB.Bottom < BB) Or (SBB.Top > BT) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    SilkLayer := Slk.Layer;
+    If SilkLayer = eBottomOverlay Then CopperSide := eBottomLayer Else CopperSide := eTopLayer;
+    Reach := SilkGap;
+    If MaskGap > Reach Then Reach := MaskGap;
     Iter := Board.SpatialIterator_Create;
     Try
-        Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTextObject));
+        Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTextObject, eTrackObject,
+            eArcObject, eFillObject, eRegionObject));
         Iter.AddFilter_LayerSet(AllLayers);
-        Iter.AddFilter_Area(SBB.X1 - Margin, SBB.Y1 - Margin, SBB.X2 + Margin, SBB.Y2 + Margin);
+        Iter.AddFilter_Area(SBB.Left - Reach, SBB.Bottom - Reach, SBB.Right + Reach, SBB.Top + Reach);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
         Begin
-            If Obj.I_ObjectAddress <> SelfAddr Then
+            If Obj.I_ObjectAddress <> Slk.I_ObjectAddress Then
             Begin
+                Gap := -1;
                 Try
-                    OBB := Obj.BoundingRectangle;
-                    If RectsOverlap(SBB.X1, SBB.Y1, SBB.X2, SBB.Y2,
-                                    OBB.X1, OBB.Y1, OBB.X2, OBB.Y2, 0) Then
-                        Result := True;
+                    Oid := Obj.ObjectId;
+                    If Oid = ePadObject Then
+                    Begin
+                        If (Obj.Layer = eMultiLayer) Or (Obj.Layer = CopperSide) Then Gap := MaskGap;
+                    End
+                    Else If Obj.Layer = SilkLayer Then
+                    Begin
+                        Gap := SilkGap;
+                        If Oid = eTextObject Then
+                        Begin
+                            Txt := Obj;
+                            If Txt.IsHidden Then Gap := -1;
+                        End;
+                    End;
+                    If Gap >= 0 Then
+                    Begin
+                        OBB := Obj.BoundingRectangle;
+                        If RectsOverlap(SBB.Left, SBB.Bottom, SBB.Right, SBB.Top,
+                                        OBB.Left, OBB.Bottom, OBB.Right, OBB.Top, Gap) Then
+                            Result := True;
+                    End;
                 Except End;
             End;
             If Result Then Break;
@@ -31031,11 +38230,12 @@ Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
     ListStr, RecStr, Remaining, Token : String;
-    Desig, XStr, YStr, RotStr, LayerStr : String;
+    Desig, XStr, YStr, RotStr, LayerStr, BadLayers : String;
     PipePos, CommaPos, FieldIdx, Applied, Failed : Integer;
     TargetLayer : TLayer;
+    DeltaX, DeltaY : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -31051,6 +38251,7 @@ Begin
 
     Applied := 0;
     Failed := 0;
+    BadLayers := '';
     Remaining := ListStr;
     While Length(Remaining) > 0 Do
     Begin
@@ -31104,16 +38305,39 @@ Begin
             Continue;
         End;
 
+        TargetLayer := eNoLayer;
+        If LayerStr <> '' Then
+        Begin
+            TargetLayer := ResolveLayerId(Board, LayerStr);
+            If TargetLayer = eNoLayer Then
+            Begin
+                Failed := Failed + 1;
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+        End;
+
         PCBServer.PreProcess;
         Try
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
-            If XStr <> '' Then Comp.x := MilsToCoord(StrToIntDef(XStr, 0));
-            If YStr <> '' Then Comp.y := MilsToCoord(StrToIntDef(YStr, 0));
+            { MOVED, NOT ASSIGNED: these components are already on the
+              board, so writing x leaves their pads behind in its own
+              structures and every later pour and DRC reads the old
+              footprint. See PCB_BatchMoveComponents. Rotation first, so
+              the move lands the origin where the file says whatever the
+              rotation did to it. }
             If RotStr <> '' Then Comp.Rotation := StrToFloatDef(RotStr, 0);
-            If LayerStr <> '' Then
+            If XStr <> '' Then DeltaX := MilsToCoord(StrToIntDef(XStr, 0)) - Comp.x
+            Else DeltaX := 0;
+            If YStr <> '' Then DeltaY := MilsToCoord(StrToIntDef(YStr, 0)) - Comp.y
+            Else DeltaY := 0;
+            If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                Comp.MoveByXY(DeltaX, DeltaY);
+            If TargetLayer <> eNoLayer Then
             Begin
-                TargetLayer := GetLayerFromString(LayerStr);
                 If Comp.Layer <> TargetLayer Then Comp.Layer := TargetLayer;
             End;
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
@@ -31124,9 +38348,10 @@ Begin
         Applied := Applied + 1;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"applied":' + IntToStr(Applied) + ',"failed":' + IntToStr(Failed) + '}');
+        '{"applied":' + IntToStr(Applied) + ',"failed":' + IntToStr(Failed) + ','
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
 End;
 
 {..............................................................................}
@@ -31138,7 +38363,7 @@ Function PCB_Teardrops(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -31158,75 +38383,246 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_AutoplaceSilkscreen - reposition component designators to clear pads    }
-{ and other silk. For each visible designator, try a ring of auto-position    }
-{ anchors and keep the first that collides with nothing; otherwise leave it.  }
-{ Approximate (first-fit), not a global optimum.                              }
+{ PCB_AutoplaceSilkscreen - move component designators that are too close to  }
+{ other silk, to a pad's mask opening, or off the board, onto the first of a  }
+{ ring of auto-position anchors that clears. First-fit, not a global optimum. }
+{                                                                              }
+{ A DESIGNATOR THAT IS ALREADY CLEAR IS NOT TOUCHED, and one that no anchor   }
+{ clears goes back where it was. Every designator used to be moved, onto the  }
+{ first anchor clear of pads and texts alone or else the last anchor tried,  }
+{ and a board with no Silk To Silk violations came back with two.             }
+{                                                                              }
+{ Clearances: silk_clearance_mils / mask_clearance_mils when given, else the  }
+{ largest enabled Silk To Silk (kind 55) / Silk To Solder Mask (kind 54) rule,}
+{ read from the rule's Descriptor (GapMilsFromDescriptor). Refused when       }
+{ neither gives one. A pad's mask opening is taken as its copper plus         }
+{ mask_expansion_mils (default 4, Altium's default expansion).               }
+{ Params: designators (pipe list, optional), the three above.                }
 {..............................................................................}
 Function PCB_AutoplaceSilkscreen(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Iter : IPCB_BoardIterator;
+    Rule : IPCB_Rule;
     Comp : IPCB_Component;
+    Obj : IPCB_Primitive;
     Slk : IPCB_Text;
-    I, Placed, Skipped, Total : Integer;
-    Ok : Boolean;
+    Comps : TInterfaceList;
+    BRect : TCoordRect;
+    I, K, Kind, Placed, AlreadyClear, Unplaced, Hidden : Integer;
+    BL, BB, BR, BT, SilkGap, MaskGap, OrigX, OrigY : Integer;
+    OrigAuto : TTextAutoposition;
+    SilkMils, MaskMils, ExpMils, RuleMils : Double;
+    SilkSrc, MaskSrc, DesStr, CompName, PlacedList, UnplacedList, S : String;
+    Ok, WasOnline : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
 
-    Placed := 0;
-    Skipped := 0;
-    Total := 0;
-    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
-    PCBServer.PreProcess;
-    Try
+    SilkMils := -1;
+    MaskMils := -1;
+    ExpMils := 4;
+    SilkSrc := '';
+    MaskSrc := '';
+    S := ExtractJsonValue(Params, 'silk_clearance_mils');
+    If S <> '' Then
+    Begin
+        If Not IsFloatStr(S) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', 'silk_clearance_mils is a number in mils');
+            Exit;
+        End;
+        SilkMils := StrToFloatDef(S, -1);
+        SilkSrc := 'argument';
+    End;
+    S := ExtractJsonValue(Params, 'mask_clearance_mils');
+    If S <> '' Then
+    Begin
+        If Not IsFloatStr(S) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', 'mask_clearance_mils is a number in mils');
+            Exit;
+        End;
+        MaskMils := StrToFloatDef(S, -1);
+        MaskSrc := 'argument';
+    End;
+    S := ExtractJsonValue(Params, 'mask_expansion_mils');
+    If S <> '' Then
+    Begin
+        If Not IsFloatStr(S) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', 'mask_expansion_mils is a number in mils');
+            Exit;
+        End;
+        ExpMils := StrToFloatDef(S, 4);
+    End;
+    DesStr := ExtractJsonValue(Params, 'designators');
+
+    If (SilkSrc = '') Or (MaskSrc = '') Then
+    Begin
         Iter := Board.BoardIterator_Create;
         Try
-            Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+            Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
             Iter.AddFilter_LayerSet(AllLayers);
             Iter.AddFilter_Method(eProcessAll);
-            Comp := Iter.FirstPCBObject;
-            While Comp <> Nil Do
+            Rule := Iter.FirstPCBObject;
+            While Rule <> Nil Do
             Begin
-                Total := Total + 1;
-                Slk := Nil;
-                Try Slk := Comp.Name; Except End;
-                If (Slk <> Nil) And (Not Slk.IsHidden) Then
+                Kind := -1;
+                Try Kind := Rule.RuleKind; Except Kind := -1; End;
+                If ((Kind = 55) Or (Kind = 54)) And Rule.Enabled Then
                 Begin
-                    Ok := False;
-                    Slk.BeginModify;
-                    For I := 0 To 7 Do
+                    RuleMils := GapMilsFromDescriptor(Rule.Descriptor);
+                    If (Kind = 55) And (SilkSrc <> 'argument') And (RuleMils > SilkMils) Then
                     Begin
-                        Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(I)); Except End;
-                        If Not SilkCollides(Board, Slk, Slk.I_ObjectAddress) Then
-                        Begin
-                            Ok := True;
-                            Break;
-                        End;
+                        SilkMils := RuleMils;
+                        SilkSrc := 'rule ' + Rule.Name;
                     End;
-                    Slk.EndModify;
-                    If Ok Then Placed := Placed + 1 Else Skipped := Skipped + 1;
-                End
-                Else Skipped := Skipped + 1;
-                Comp := Iter.NextPCBObject;
+                    If (Kind = 54) And (MaskSrc <> 'argument') And (RuleMils > MaskMils) Then
+                    Begin
+                        MaskMils := RuleMils;
+                        MaskSrc := 'rule ' + Rule.Name;
+                    End;
+                End;
+                Rule := Iter.NextPCBObject;
             End;
         Finally
             Board.BoardIterator_Destroy(Iter);
         End;
-    Finally
-        PCBServer.PostProcess;
-        Try PCBServer.SystemOptions.DoOnlineDRC := True; Except End;
+    End;
+    If (SilkMils < 0) Or (MaskMils < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_CLEARANCE',
+            'No clearance to keep: this board has no enabled, readable Silk To Silk '
+            + 'or Silk To Solder Mask rule for the one not given. Pass '
+            + 'silk_clearance_mils and mask_clearance_mils. Nothing was moved.');
+        Exit;
     End;
 
-    SaveDocByPath(Board.FileName);
+    SilkGap := MilsToCoordF(SilkMils);
+    MaskGap := MilsToCoordF(MaskMils + ExpMils);
+    BRect := Board.BoardOutline.BoundingRectangle;
+    BL := BRect.Left;
+    BB := BRect.Bottom;
+    BR := BRect.Right;
+    BT := BRect.Top;
+    OutlineExtents(Board.BoardOutline, BL, BB, BR, BT);
+
+    { Collected first: nothing moves while the board iterator walks. }
+    Comps := TInterfaceList.Create;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            Comp := Obj;
+            CompName := '';
+            Try CompName := Comp.Name.Text; Except End;
+            If (DesStr = '') Or (Pos('|' + CompName + '|', '|' + DesStr + '|') > 0) Then
+                Comps.Add(Comp);
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Placed := 0;
+    AlreadyClear := 0;
+    Unplaced := 0;
+    Hidden := 0;
+    PlacedList := '';
+    UnplacedList := '';
+    WasOnline := True;
+    Try WasOnline := PCBServer.SystemOptions.DoOnlineDRC; Except End;
+    Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Comps.Count - 1 Do
+        Begin
+            Comp := Comps.Items[I];
+            If Comp = Nil Then Continue;
+            Slk := Nil;
+            Try Slk := Comp.Name; Except End;
+            If Slk = Nil Then
+            Begin
+                Inc(Hidden);
+                Continue;
+            End;
+            If Slk.IsHidden Then
+            Begin
+                Inc(Hidden);
+                Continue;
+            End;
+            CompName := '';
+            Try CompName := Slk.Text; Except End;
+            If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+            Begin
+                Inc(AlreadyClear);
+                Continue;
+            End;
+
+            OrigAuto := Comp.NameAutoPosition;
+            OrigX := Slk.XLocation;
+            OrigY := Slk.YLocation;
+            Ok := False;
+            For K := 0 To 7 Do
+            Begin
+                Comp.BeginModify;
+                Try Comp.ChangeNameAutoposition(SilkAnchorForIndex(K)); Except End;
+                Comp.EndModify;
+                If Not SilkBlocked(Board, Slk, SilkGap, MaskGap, BL, BB, BR, BT) Then
+                Begin
+                    Ok := True;
+                    Break;
+                End;
+            End;
+
+            If Ok Then
+            Begin
+                Inc(Placed);
+                If PlacedList <> '' Then PlacedList := PlacedList + ',';
+                PlacedList := PlacedList + '"' + EscapeJsonString(CompName) + '"';
+            End
+            Else
+            Begin
+                Comp.BeginModify;
+                Try Comp.ChangeNameAutoposition(OrigAuto); Except End;
+                If (Slk.XLocation <> OrigX) Or (Slk.YLocation <> OrigY) Then
+                    Slk.MoveToXY(OrigX, OrigY);
+                Comp.EndModify;
+                Inc(Unplaced);
+                If UnplacedList <> '' Then UnplacedList := UnplacedList + ',';
+                UnplacedList := UnplacedList + '"' + EscapeJsonString(CompName) + '"';
+            End;
+        End;
+    Finally
+        PCBServer.PostProcess;
+        Try PCBServer.SystemOptions.DoOnlineDRC := WasOnline; Except End;
+    End;
+
+    If Placed + Unplaced > 0 Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"placed":' + IntToStr(Placed) + ',"skipped":' + IntToStr(Skipped)
-        + ',"total":' + IntToStr(Total) + '}');
+        '{"success":' + BoolToJsonStr(Unplaced = 0) + ','
+        + '"placed":' + IntToStr(Placed) + ','
+        + '"already_clear":' + IntToStr(AlreadyClear) + ','
+        + '"unplaced":' + IntToStr(Unplaced) + ','
+        + '"hidden":' + IntToStr(Hidden) + ','
+        + '"skipped":' + IntToStr(Unplaced + Hidden) + ','
+        + '"total":' + IntToStr(Comps.Count) + ','
+        + '"placed_designators":[' + PlacedList + '],'
+        + '"unplaced_designators":[' + UnplacedList + '],'
+        + '"silk_clearance_mils":' + FloatToJsonStr(SilkMils) + ','
+        + '"silk_clearance_source":"' + EscapeJsonString(SilkSrc) + '",'
+        + '"mask_clearance_mils":' + FloatToJsonStr(MaskMils) + ','
+        + '"mask_clearance_source":"' + EscapeJsonString(MaskSrc) + '",'
+        + '"mask_expansion_mils":' + FloatToJsonStr(ExpMils) + '}');
 End;
 
 {..............................................................................}
@@ -31247,7 +38643,7 @@ Var
     BeforeLen, AfterLen, AmpC, WidthC, X, Step : Integer;
     Trk : IPCB_Track;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -31273,7 +38669,14 @@ Begin
     Amp := StrToIntDef(ExtractJsonValue(Params, 'amplitude_mils'), 40);
     WidthMils := StrToIntDef(ExtractJsonValue(Params, 'width_mils'), 6);
     LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr <> '' Then Layer := GetLayerFromString(LayerStr) Else Layer := eTopLayer;
+    If LayerStr = '' Then Layer := eTopLayer
+    Else Layer := ResolveLayerId(Board, LayerStr);
+    If Layer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
 
     If (AddLen <= 0) Or (Amp <= 0) Then
     Begin
@@ -31330,7 +38733,7 @@ Begin
     ResetParameters;
     RunProcess('PCB:UpdateConnectivity');
     AfterLen := CoordToMils(Net.RoutedLength);
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"net":"' + EscapeJsonString(NetName) + '",'
@@ -31358,7 +38761,7 @@ Var
     MechL : TLayer;
     AddFid, AddTool : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active (open the blank panel board first)');
@@ -31448,7 +38851,7 @@ Begin
     AddStringParameter('Mode', 'BOARDOUTLINE_FROM_SEL_PRIMS');
     RunProcess('PCB:PlaceBoardOutline');
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"child_path":"' + EscapeJsonString(ChildPath) + '",'
         + '"rows":' + IntToStr(Rows) + ',"cols":' + IntToStr(Cols) + ','
@@ -31473,7 +38876,7 @@ Var
     Removed, Guard : Integer;
     FoundOne : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -31539,7 +38942,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"removed":' + IntToStr(Removed) + '}');
 End;
@@ -31559,7 +38962,7 @@ Var
     Checked, Offenders : Integer;
     ItemsJson, Des : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -31646,7 +39049,7 @@ Var
     MechL : TLayer;
     Found : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -31706,15 +39109,112 @@ Begin
     AddStringParameter('Mode', 'BOARDOUTLINE_FROM_SEL_PRIMS');
     RunProcess('PCB:PlaceBoardOutline');
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"width_mils":' + IntToStr(CoordToMils(MaxX - MinX))
         + ',"height_mils":' + IntToStr(CoordToMils(MaxY - MinY)) + '}');
 End;
 
+{ One more of Key in a Name=Count list. An '=' in the key (a rule        }
+{ descriptor has them) would split it, so it is written as ':'.          }
+Procedure HistAdd(L : TStringList; Key : String);
+Var
+    I, N : Integer;
+    Line, Safe, Ch : String;
+Begin
+    Safe := '';
+    For I := 1 To Length(Key) Do
+    Begin
+        Ch := Copy(Key, I, 1);
+        If Ch = '=' Then Ch := ':';
+        Safe := Safe + Ch;
+    End;
+    Key := Safe;
+    I := L.IndexOfName(Key);
+    If I < 0 Then
+    Begin
+        L.Add(Key + '=1');
+        Exit;
+    End;
+    Line := L.Get(I);
+    N := StrToIntDef(Copy(Line, Length(Key) + 2, Length(Line)), 0);
+    L.Strings[I] := Key + '=' + IntToStr(N + 1);
+End;
+
+{ A Name=Count list as a JSON object. }
+Function HistJson(L : TStringList) : String;
+Var
+    I, EqPos : Integer;
+    Line : String;
+Begin
+    Result := '';
+    For I := 0 To L.Count - 1 Do
+    Begin
+        Line := L.Get(I);
+        EqPos := Pos('=', Line);
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + '"' + EscapeJsonString(Copy(Line, 1, EqPos - 1)) + '":'
+            + Copy(Line, EqPos + 1, Length(Line));
+    End;
+    Result := '{' + Result + '}';
+End;
+
+{ "diameter/hole" in mils, the key the via histograms count under. }
+Function ViaSizeKey(Size, Hole : TCoord) : String;
+Begin
+    Result := FloatToJsonStr(CoordToMilsF(Size)) + '/' + FloatToJsonStr(CoordToMilsF(Hole));
+End;
+
+{ Whether a via passes the optional net and current-size filters. A size   }
+{ filter of 0 is no filter; sizes match within a twentieth of a mil.       }
+Function ViaPassesFilter(Via : IPCB_Via; NetFilter : String; FromSize, FromHole : TCoord) : Boolean;
+Var
+    NetName : String;
+    Tol : TCoord;
+Begin
+    Result := False;
+    Tol := MilsToCoordF(0.05);
+    If NetFilter <> '' Then
+    Begin
+        NetName := '';
+        Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
+        If NetName <> NetFilter Then Exit;
+    End;
+    If (FromSize > 0) And (Abs(Via.Size - FromSize) > Tol) Then Exit;
+    If (FromHole > 0) And (Abs(Via.HoleSize - FromHole) > Tol) Then Exit;
+    Result := True;
+End;
+
+{ The optional size filters and targets of the via tools, in mils. Sets  }
+{ Problem and returns 0 for a value that is not a positive number.       }
+Function ViaParamCoord(Params, Key : String; Var Problem : String) : TCoord;
+Var
+    S : String;
+Begin
+    Result := 0;
+    S := ExtractJsonValue(Params, Key);
+    If S = '' Then Exit;
+    If (Not IsFloatStr(S)) Or (StrToFloatDef(S, 0) <= 0) Then
+    Begin
+        Problem := Key + ' must be a positive number of mils, not "' + S + '"';
+        Exit;
+    End;
+    Result := MilsToCoordF(StrToFloatDef(S, 0));
+End;
+
 {..............................................................................}
-{ PCB_NormalizeVias - snap every via's diameter + hole to its dominant routing }
-{ via-style rule's preferred values.                                          }
+{ PCB_NormalizeVias - set free vias to their dominant Routing Via rule's      }
+{ preferred diameter and hole, or to size_mils / hole_mils when given.        }
+{                                                                              }
+{ A TEMPLATE-BASED RULE IS REFUSED. In template mode ("Templates Used To      }
+{ Check Via" in its descriptor) the rule's size fields are not what it        }
+{ checks, and reading them set nearly every via on a board to a pad no      }
+{ larger than its hole. A target with no annular ring is refused whatever   }
+{ its source.                                                                 }
+{ Refused vias are left as they were and counted.                            }
+{                                                                              }
+{ Params: size_mils + hole_mils (together), net, from_size_mils,             }
+{ from_hole_mils (only vias at that size now), dry_run.                      }
 {..............................................................................}
 Function PCB_NormalizeVias(Params : String; RequestId : String) : String;
 Var
@@ -31724,21 +39224,50 @@ Var
     Via : IPCB_Via;
     Rule : IPCB_Rule;
     Matches : TInterfaceList;
-    I, Checked, Changed : Integer;
+    Before, After, Refusals : TStringList;
+    I, Checked, Matched, Changed, Unchanged, Children, Filtered : Integer;
+    TemplateRule, NoRing, NoRule, Failed : Integer;
+    WantSize, WantHole, FromSize, FromHole, TSize, THole : TCoord;
+    Problem, NetFilter, Desc, RuleName : String;
+    HasTarget, DryRun : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
 
-    Checked := 0;
-    Changed := 0;
+    Problem := '';
+    WantSize := ViaParamCoord(Params, 'size_mils', Problem);
+    WantHole := ViaParamCoord(Params, 'hole_mils', Problem);
+    FromSize := ViaParamCoord(Params, 'from_size_mils', Problem);
+    FromHole := ViaParamCoord(Params, 'from_hole_mils', Problem);
+    If Problem <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE', Problem);
+        Exit;
+    End;
+    If (WantSize > 0) <> (WantHole > 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'Give size_mils and hole_mils together, or neither to use the rules.');
+        Exit;
+    End;
+    HasTarget := WantSize > 0;
+    If HasTarget And (WantSize <= WantHole) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_ANNULAR_RING',
+            'size_mils must be larger than hole_mils. Nothing was changed.');
+        Exit;
+    End;
+    NetFilter := ExtractJsonValue(Params, 'net');
+    DryRun := LowerCase(ExtractJsonValue(Params, 'dry_run')) = 'true';
 
     { Collect first, THEN modify -- mutating primitives while the BoardIterator
       is walking corrupts the iterator. Collect as the base IPCB_Primitive and
       never Free the list (releasing board-interface refs faults in oleaut32). }
+    Checked := 0;
     Matches := CreateObject(TInterfaceList);
     Iter := Board.BoardIterator_Create;
     Try
@@ -31756,7 +39285,19 @@ Begin
         Board.BoardIterator_Destroy(Iter);
     End;
 
-    PCBServer.PreProcess;
+    Before := TStringList.Create;
+    After := TStringList.Create;
+    Refusals := TStringList.Create;
+    Matched := 0;
+    Changed := 0;
+    Unchanged := 0;
+    Children := 0;
+    Filtered := 0;
+    TemplateRule := 0;
+    NoRing := 0;
+    NoRule := 0;
+    Failed := 0;
+    If Not DryRun Then PCBServer.PreProcess;
     Try
         For I := 0 To Matches.Count - 1 Do
         Begin
@@ -31764,29 +39305,305 @@ Begin
             If Prim = Nil Then Continue;
             { Only free vias -- a via owned by a component footprint, polygon,
               or dimension is a child primitive; modifying it faults. }
-            If Prim.InComponent Or Prim.InPolygon Or Prim.InDimension Then Continue;
-            Try
-                Via := Prim;
-                Rule := Board.FindDominantRuleForObject(Via, eRule_RoutingViaStyle);
-                If Rule <> Nil Then
+            If Prim.InComponent Or Prim.InPolygon Or Prim.InDimension Then
+            Begin
+                Inc(Children);
+                Continue;
+            End;
+            Via := Prim;
+            If Not ViaPassesFilter(Via, NetFilter, FromSize, FromHole) Then
+            Begin
+                Inc(Filtered);
+                Continue;
+            End;
+            Inc(Matched);
+            HistAdd(Before, ViaSizeKey(Via.Size, Via.HoleSize));
+
+            TSize := WantSize;
+            THole := WantHole;
+            RuleName := 'size_mils/hole_mils';
+            If Not HasTarget Then
+            Begin
+                Rule := Nil;
+                Try Rule := Board.FindDominantRuleForObject(Via, eRule_RoutingViaStyle); Except Rule := Nil; End;
+                If Rule = Nil Then
                 Begin
-                    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
-                        PCBM_BeginModify, c_NoEventData);
-                    Via.Size := Rule.PreferedWidth;
-                    Via.HoleSize := Rule.PreferedHoleWidth;
-                    PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
-                        PCBM_EndModify, c_NoEventData);
-                    Changed := Changed + 1;
+                    Inc(NoRule);
+                    HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+                    Continue;
                 End;
-            Except End;
+                RuleName := '';
+                Desc := '';
+                Try RuleName := Rule.Name; Except End;
+                Try Desc := Rule.Descriptor; Except End;
+                If Pos('TEMPLATE', UpperCase(Desc)) > 0 Then
+                Begin
+                    Inc(TemplateRule);
+                    HistAdd(Refusals, 'template rule ' + RuleName + ': ' + Desc);
+                    HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+                    Continue;
+                End;
+                TSize := Rule.PreferedWidth;
+                THole := Rule.PreferedHoleWidth;
+            End;
+            If (THole <= 0) Or (TSize <= THole) Then
+            Begin
+                Inc(NoRing);
+                HistAdd(Refusals, 'no annular ring from ' + RuleName + ': ' + ViaSizeKey(TSize, THole));
+                HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+                Continue;
+            End;
+            If (Via.Size = TSize) And (Via.HoleSize = THole) Then
+            Begin
+                Inc(Unchanged);
+                HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+                Continue;
+            End;
+            If DryRun Then
+            Begin
+                Inc(Changed);
+                HistAdd(After, ViaSizeKey(TSize, THole));
+                Continue;
+            End;
+            If SetViaGeometry(Via, TSize, THole) Then Inc(Changed) Else Inc(Failed);
+            HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
         End;
     Finally
-        PCBServer.PostProcess;
+        If Not DryRun Then PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    If (Not DryRun) And (Changed + Failed > 0) Then MarkDocDirtyByPath(Board.FileName);
+    Result := '{"success":' + BoolToJsonStr((Failed = 0) And (TemplateRule = 0) And (NoRing = 0))
+        + ',"dry_run":' + BoolToJsonStr(DryRun)
+        + ',"checked":' + IntToStr(Checked)
+        + ',"matched":' + IntToStr(Matched)
+        + ',"changed":' + IntToStr(Changed)
+        + ',"unchanged":' + IntToStr(Unchanged)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"refused_template_rule":' + IntToStr(TemplateRule)
+        + ',"refused_no_annular_ring":' + IntToStr(NoRing)
+        + ',"no_rule":' + IntToStr(NoRule)
+        + ',"skipped_child_vias":' + IntToStr(Children)
+        + ',"filtered_out":' + IntToStr(Filtered)
+        + ',"before":' + HistJson(Before)
+        + ',"after":' + HistJson(After)
+        + ',"refusals":' + HistJson(Refusals);
+    If TemplateRule > 0 Then
+        Result := Result + ',"note":"The Routing Via rule checks via templates, so its '
+            + 'size fields are not the sizes it checks and were not used. Copy the '
+            + 'template from a via that has it with pcb_apply_via_template, or pass '
+            + 'size_mils and hole_mils."';
+    Result := BuildSuccessResponse(RequestId, Result + '}');
+    Before.Free;
+    After.Free;
+    Refusals.Free;
+End;
+
+{..............................................................................}
+{ PCB_ApplyViaTemplate - make free vias match a source via: its pad/via       }
+{ template link, its mode, its hole and its diameter. The link is copied the  }
+{ way the FormatCopy reference script does it (Source.TemplateLink.CopyTo of  }
+{ the target's link), the only template access any reference demonstrates;   }
+{ nothing there reads a template's name or looks one up, so the template is   }
+{ chosen by pointing at a via that already has it.                            }
+{                                                                              }
+{ Params: source_x, source_y (mils; the via whose pad covers that point,     }
+{ nearest centre wins), net, from_size_mils, from_hole_mils, dry_run.        }
+{ A source with a per-layer stack, or with no annular ring, is refused.     }
+{ The reply confirms diameter and hole by read-back; the link itself has no }
+{ member this code can read back.                                           }
+{..............................................................................}
+Function PCB_ApplyViaTemplate(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj, Prim : IPCB_Primitive;
+    Via, Src : IPCB_Via;
+    DstT : IPCB_ViaTemplate;
+    Matches : TInterfaceList;
+    Before, After : TStringList;
+    I, Major, Checked, Matched, Changed, Failed, Children, Filtered : Integer;
+    SX, SY, FromSize, FromHole : TCoord;
+    Best, D : Double;
+    Problem, NetFilter, Ver, SrcNet : String;
+    DryRun, Ok : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    { Templates arrived with Altium Designer 22; TemplateLink on an older }
+    { build is an undeclared identifier, which halts the polling loop.     }
+    Ver := '';
+    Try Ver := Client.GetProductVersion; Except Ver := ''; End;
+    Major := 0;
+    If Pos('.', Ver) > 1 Then Major := StrToIntDef(Copy(Ver, 1, Pos('.', Ver) - 1), 0);
+    If Major < 22 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNSUPPORTED',
+            'Via templates need Altium Designer 22 or later; this build reports "'
+            + Ver + '". Nothing was changed.');
+        Exit;
+    End;
+
+    If (Not IsFloatStr(ExtractJsonValue(Params, 'source_x')))
+       Or (Not IsFloatStr(ExtractJsonValue(Params, 'source_y'))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'source_x and source_y (mils) name the via to copy from');
+        Exit;
+    End;
+    SX := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'source_x'), 0));
+    SY := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'source_y'), 0));
+    Problem := '';
+    FromSize := ViaParamCoord(Params, 'from_size_mils', Problem);
+    FromHole := ViaParamCoord(Params, 'from_hole_mils', Problem);
+    If Problem <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE', Problem);
+        Exit;
+    End;
+    NetFilter := ExtractJsonValue(Params, 'net');
+    DryRun := LowerCase(ExtractJsonValue(Params, 'dry_run')) = 'true';
+
+    Checked := 0;
+    Src := Nil;
+    Best := 1e30;
+    Matches := CreateObject(TInterfaceList);
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            Checked := Checked + 1;
+            Matches.Add(Obj);
+            Via := Obj;
+            D := Sqrt(((Via.x - SX) * 1.0) * (Via.x - SX) + ((Via.y - SY) * 1.0) * (Via.y - SY));
+            If (D <= Via.Size / 2.0) And (D < Best) Then
+            Begin
+                Best := D;
+                Src := Via;
+            End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    If Src = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'No via covers (' + ExtractJsonValue(Params, 'source_x') + ', '
+            + ExtractJsonValue(Params, 'source_y') + ') mils. Point at the via to copy from.');
+        Exit;
+    End;
+    If Src.Mode <> ePadMode_Simple Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LOCAL_STACK',
+            'The source via has a per-layer stack; this copies a simple via only. Nothing was changed.');
+        Exit;
+    End;
+    If (Src.HoleSize <= 0) Or (Src.Size <= Src.HoleSize) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_ANNULAR_RING',
+            'The source via is ' + ViaSizeKey(Src.Size, Src.HoleSize)
+            + ' mils, with no annular ring. Nothing was changed.');
+        Exit;
+    End;
+    SrcNet := '';
+    Try If Src.Net <> Nil Then SrcNet := Src.Net.Name; Except End;
+
+    Before := TStringList.Create;
+    After := TStringList.Create;
+    Matched := 0;
+    Changed := 0;
+    Failed := 0;
+    Children := 0;
+    Filtered := 0;
+    If Not DryRun Then PCBServer.PreProcess;
+    Try
+        For I := 0 To Matches.Count - 1 Do
+        Begin
+            Prim := Matches.Items[I];
+            If Prim = Nil Then Continue;
+            If Prim.I_ObjectAddress = Src.I_ObjectAddress Then Continue;
+            If Prim.InComponent Or Prim.InPolygon Or Prim.InDimension Then
+            Begin
+                Inc(Children);
+                Continue;
+            End;
+            Via := Prim;
+            If Not ViaPassesFilter(Via, NetFilter, FromSize, FromHole) Then
+            Begin
+                Inc(Filtered);
+                Continue;
+            End;
+            Inc(Matched);
+            HistAdd(Before, ViaSizeKey(Via.Size, Via.HoleSize));
+            If DryRun Then
+            Begin
+                HistAdd(After, ViaSizeKey(Src.Size, Src.HoleSize));
+                Continue;
+            End;
+            Ok := True;
+            Try
+                PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                    PCBM_BeginModify, c_NoEventData);
+                DstT := Via.TemplateLink;
+                Src.TemplateLink.CopyTo(DstT);
+                If Via.Mode <> Src.Mode Then Via.Mode := Src.Mode;
+                If Src.HoleSize < Via.Size Then
+                Begin
+                    Via.HoleSize := Src.HoleSize;
+                    Via.Size := Src.Size;
+                End
+                Else
+                Begin
+                    Via.Size := Src.Size;
+                    Via.HoleSize := Src.HoleSize;
+                End;
+                PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                    PCBM_EndModify, c_NoEventData);
+            Except
+                Ok := False;
+            End;
+            If Ok And (Via.Size = Src.Size) And (Via.HoleSize = Src.HoleSize) Then
+                Inc(Changed)
+            Else
+                Inc(Failed);
+            HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
+        End;
+    Finally
+        If Not DryRun Then PCBServer.PostProcess;
+    End;
+
+    If (Not DryRun) And (Changed + Failed > 0) Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
-        '{"checked":' + IntToStr(Checked) + ',"changed":' + IntToStr(Changed) + '}');
+        '{"success":' + BoolToJsonStr(Failed = 0)
+        + ',"dry_run":' + BoolToJsonStr(DryRun)
+        + ',"source":{"x_mils":' + FloatToJsonStr(CoordToMilsF(Src.x))
+        + ',"y_mils":' + FloatToJsonStr(CoordToMilsF(Src.y))
+        + ',"size_mils":' + FloatToJsonStr(CoordToMilsF(Src.Size))
+        + ',"hole_mils":' + FloatToJsonStr(CoordToMilsF(Src.HoleSize))
+        + ',"net":"' + EscapeJsonString(SrcNet) + '"}'
+        + ',"checked":' + IntToStr(Checked)
+        + ',"matched":' + IntToStr(Matched)
+        + ',"changed":' + IntToStr(Changed)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"skipped_child_vias":' + IntToStr(Children)
+        + ',"filtered_out":' + IntToStr(Filtered)
+        + ',"before":' + HistJson(Before)
+        + ',"after":' + HistJson(After)
+        + ',"note":"Diameter and hole are read back; the template link is copied '
+        + 'but has no member to read back, so check one via in the Properties panel."}');
+    Before.Free;
+    After.Free;
 End;
 
 {..............................................................................}
@@ -31805,7 +39622,7 @@ Var
     MechL : TLayer;
     Copied : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -31813,7 +39630,14 @@ Begin
     End;
 
     LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr <> '' Then MechL := GetLayerFromString(LayerStr) Else MechL := eMechanical1;
+    If LayerStr = '' Then MechL := eMechanical1
+    Else MechL := ResolveLayerId(Board, LayerStr);
+    If MechL = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     Copied := 0;
 
     PCBServer.PreProcess;
@@ -31845,7 +39669,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"copied":' + IntToStr(Copied) + ',"layer":"'
         + EscapeJsonString(GetLayerString(MechL)) + '"}');
@@ -31872,7 +39696,7 @@ Var
     dxv, dyv, len2, t, nx, ny : Double;
     NewMx, NewMy, OldMxMils, OldMyMils : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -31905,11 +39729,12 @@ Begin
         Begin
             e1x := Track.x1; e1y := Track.y1;
             e2x := Track.x2; e2y := Track.y2;
-            D := (e1x - MilsToCoord(FromX)) * (e1x - MilsToCoord(FromX))
-               + (e1y - MilsToCoord(FromY)) * (e1y - MilsToCoord(FromY));
+            { As reals: the Integer square overflowed past about 4.6 mil. }
+            D := ((e1x - MilsToCoord(FromX)) * 1.0) * (e1x - MilsToCoord(FromX))
+               + ((e1y - MilsToCoord(FromY)) * 1.0) * (e1y - MilsToCoord(FromY));
             If D < BestD Then Begin BestD := D; Best := Track; MoveEnd := 1; End;
-            D := (e2x - MilsToCoord(FromX)) * (e2x - MilsToCoord(FromX))
-               + (e2y - MilsToCoord(FromY)) * (e2y - MilsToCoord(FromY));
+            D := ((e2x - MilsToCoord(FromX)) * 1.0) * (e2x - MilsToCoord(FromX))
+               + ((e2y - MilsToCoord(FromY)) * 1.0) * (e2y - MilsToCoord(FromY));
             If D < BestD Then Begin BestD := D; Best := Track; MoveEnd := 2; End;
             Track := Iter.NextPCBObject;
         End;
@@ -31960,7 +39785,7 @@ Begin
     Finally
         PCBServer.PostProcess;
     End;
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"moved_end":' + IntToStr(MoveEnd)
@@ -31983,6 +39808,209 @@ Function TrackNetNm(T : IPCB_Track) : String;
 Begin
     Result := '';
     Try If T.Net <> Nil Then Result := T.Net.Name; Except End;
+End;
+
+{..............................................................................}
+{ PCB_Unroute - take up the board's routing: the free tracks and arcs on       }
+{ signal layers, and the free vias, that carry a net.                          }
+{                                                                              }
+{ Params: expect_file (refused when the board is another one), nets (comma    }
+{ list, empty for every net; a name not on the board refuses the call before   }
+{ anything is removed), include_locked ('true' takes locked routing as well;   }
+{ by default it stays, since locking is how a designer keeps a route).         }
+{                                                                              }
+{ Never taken: a footprint's own copper, a pour and its hatching, dimensions,  }
+{ keepouts, and copper with no net, which is drawn rather than routed (an      }
+{ antenna, a logo, a heat spreader).                                           }
+{                                                                              }
+{ Collected first and removed after, as Altium's own DeletePCBObjects example  }
+{ does, so nothing is removed while an iterator is live. The list is never     }
+{ Freed: releasing board-primitive refs through it faults in oleaut32 (see     }
+{ PCB_SetTrackWidth).                                                          }
+{..............................................................................}
+Function PCB_Unroute(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Net : IPCB_Net;
+    Victims : TInterfaceList;
+    Targets, Found, BoardNets : TStringList;
+    NetsStr, Rest, Why, ExpectFile, NName, UnknownJson, Flag : String;
+    IncludeLocked, Take : Boolean;
+    I, P, Pass, Oid, Tracks, Arcs, Vias, KeptLocked, Failed : Integer;
+Begin
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'AMBIGUOUS_TARGET', Why);
+        Exit;
+    End;
+    ExpectFile := ExtractJsonValue(Params, 'expect_file');
+    If (ExpectFile <> '') And (UpperCase(ExpectFile) <> UpperCase(Board.FileName)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'The board is ' + Board.FileName + ', not ' + ExpectFile
+            + '. Nothing was removed.');
+        Exit;
+    End;
+
+    NetsStr := ExtractJsonValue(Params, 'nets');
+    Flag := LowerCase(ExtractJsonValue(Params, 'include_locked'));
+    IncludeLocked := (Flag = 'true') Or (Flag = '1');
+
+    Targets := TStringList.Create;
+    Found := TStringList.Create;
+    Rest := NetsStr;
+    While Rest <> '' Do
+    Begin
+        P := Pos(',', Rest);
+        If P > 0 Then
+        Begin
+            NName := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            NName := Rest;
+            Rest := '';
+        End;
+        If NName <> '' Then Targets.Add(NName);
+    End;
+
+    { A misspelt net refuses the call: taking up some of the nets asked  }
+    { for and not the others is harder to see afterwards than nothing.   }
+    If Targets.Count > 0 Then
+    Begin
+        BoardNets := TStringList.Create;
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eNetObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Net := Iter.FirstPCBObject;
+            While Net <> Nil Do
+            Begin
+                BoardNets.Add(Net.Name);
+                Net := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+        UnknownJson := '';
+        For I := 0 To Targets.Count - 1 Do
+        Begin
+            If BoardNets.IndexOf(Targets[I]) < 0 Then
+            Begin
+                If UnknownJson <> '' Then UnknownJson := UnknownJson + ', ';
+                UnknownJson := UnknownJson + Targets[I];
+            End;
+        End;
+        BoardNets.Free;
+        If UnknownJson <> '' Then
+        Begin
+            Targets.Free;
+            Found.Free;
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_NET',
+                'Not a net on this board: ' + UnknownJson + '. Nothing was removed.');
+            Exit;
+        End;
+    End;
+
+    Tracks := 0;
+    Arcs := 0;
+    Vias := 0;
+    KeptLocked := 0;
+    Failed := 0;
+    Victims := TInterfaceList.Create;
+    { Pass 1: tracks and arcs on the signal layers. Pass 2: vias, which   }
+    { sit on the multi-layer and are copper wherever they are.            }
+    For Pass := 1 To 2 Do
+    Begin
+        Iter := Board.BoardIterator_Create;
+        Try
+            If Pass = 1 Then
+            Begin
+                Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+                Iter.AddFilter_LayerSet(SignalLayers);
+            End
+            Else
+            Begin
+                Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+                Iter.AddFilter_LayerSet(AllLayers);
+            End;
+            Iter.AddFilter_Method(eProcessAll);
+            Prim := Iter.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                Take := False;
+                NName := '';
+                Try
+                    If Prim.Net <> Nil Then NName := Prim.Net.Name;
+                    Take := (NName <> '') And (Not Prim.InComponent)
+                        And (Not Prim.InPolygon) And (Not Prim.InDimension)
+                        And (Not Prim.IsKeepout);
+                    If Take And (Targets.Count > 0) Then
+                        Take := (Targets.IndexOf(NName) >= 0);
+                    If Take And (Not IncludeLocked) And (Not Prim.Moveable) Then
+                    Begin
+                        Take := False;
+                        Inc(KeptLocked);
+                    End;
+                Except
+                    Take := False;
+                End;
+                If Take Then
+                Begin
+                    Victims.Add(Prim);
+                    If Found.IndexOf(NName) < 0 Then Found.Add(NName);
+                End;
+                Prim := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+    End;
+
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Victims.Count - 1 Do
+        Begin
+            Prim := Victims.Items[I];
+            If Prim = Nil Then Continue;
+            Try
+                Oid := Prim.ObjectId;
+                PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                    PCBM_BoardRegisteration, Prim.I_ObjectAddress);
+                Board.RemovePCBObject(Prim);
+                If Oid = eTrackObject Then
+                Begin
+                    Inc(Tracks);
+                End
+                Else
+                Begin
+                    If Oid = eArcObject Then Inc(Arcs) Else Inc(Vias);
+                End;
+            Except
+                Inc(Failed);
+            End;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    Board.GraphicalView_ZoomRedraw;
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"file":"' + EscapeJsonString(Board.FileName) + '"'
+        + ',"tracks":' + IntToStr(Tracks)
+        + ',"arcs":' + IntToStr(Arcs)
+        + ',"vias":' + IntToStr(Vias)
+        + ',"nets":' + IntToStr(Found.Count)
+        + ',"kept_locked":' + IntToStr(KeptLocked)
+        + ',"failed":' + IntToStr(Failed) + '}');
+    Targets.Free;
+    Found.Free;
 End;
 
 {..............................................................................}
@@ -32015,7 +40043,7 @@ Var
     NewWidth : Integer;
     NewNet : IPCB_Net;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -32124,13 +40152,14 @@ Begin
                                 Else If PointsNearC(Round(a2x), Round(a2y), Round(b2x), Round(b2y), TolC) Then
                                 Begin Sx := Round(a2x); Sy := Round(a2y); FarAx := Round(a1x); FarAy := Round(a1y); FarBx := Round(b1x); FarBy := Round(b1y); End
                                 Else
-                                    Sx := -2147483647;  { sentinel: no shared endpoint }
+                                    Sx := -MAX_INT;  { sentinel: no shared endpoint }
 
-                                If Sx <> -2147483647 Then
+                                If Sx <> -MAX_INT Then
                                 Begin
                                     { collinear continuation: far ends point opposite directions through S }
-                                    sax := FarAx - Sx; say := FarAy - Sy;
-                                    sbx := FarBx - Sx; sby := FarBy - Sy;
+                                    { Reals, or the squares below overflow. }
+                                    sax := (FarAx - Sx) * 1.0; say := (FarAy - Sy) * 1.0;
+                                    sbx := (FarBx - Sx) * 1.0; sby := (FarBy - Sy) * 1.0;
                                     lna := Sqrt(sax * sax + say * say);
                                     lnb := Sqrt(sbx * sbx + sby * sby);
                                     If (lna > 0) And (lnb > 0) Then
@@ -32186,7 +40215,7 @@ Begin
                     NewT.Width := NewWidth;
                     NewT.x1 := FarAx; NewT.y1 := FarAy;
                     NewT.x2 := FarBx; NewT.y2 := FarBy;
-                    If NewNet <> Nil Then NewT.Net := NewNet;
+                    BindPrimitiveToNet(NewNet, NewT);
                     Board.AddPCBObject(NewT);
                     PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                         PCBM_BoardRegisteration, NewT.I_ObjectAddress);
@@ -32201,7 +40230,7 @@ Begin
         End;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"slivers_deleted":' + IntToStr(SliverDeleted)
         + ',"merged":' + IntToStr(Merged)
@@ -32230,7 +40259,7 @@ Var
     Blocked : Boolean;
     NewPad : IPCB_Pad;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -32246,7 +40275,14 @@ Begin
     BR := Outline.BoundingRectangle;
 
     LayerStr := ExtractJsonValue(Params, 'layer');
-    If LayerStr <> '' Then Lyr := GetLayerFromString(LayerStr) Else Lyr := eTopLayer;
+    If LayerStr = '' Then Lyr := eTopLayer
+    Else Lyr := ResolveLayerId(Board, LayerStr);
+    If Lyr = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     PadSize := StrToIntDef(ExtractJsonValue(Params, 'pad_size_mils'), 20);
     Pitch := StrToIntDef(ExtractJsonValue(Params, 'pitch_mils'), 50);
     Clearance := StrToIntDef(ExtractJsonValue(Params, 'clearance_mils'), 15);
@@ -32306,7 +40342,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"scanned":' + IntToStr(Scanned)
         + ',"layer":"' + EscapeJsonString(GetLayerString(Lyr)) + '"}');
@@ -32330,9 +40366,12 @@ Var
     NetStr, LayerStr : String;
     TargetNet : IPCB_Net;
     TargetLayer : TLayer;
-    ViaSize, ViaHole, Moved, ViasAdded : Integer;
+    ViaSize, ViaHole, Moved, ViasAdded, I : Integer;
+    Prim : IPCB_Primitive;
+    Movers : TInterfaceList;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Movers := CreateObject(TInterfaceList);
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -32352,7 +40391,13 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Net not found: ' + NetStr);
         Exit;
     End;
-    TargetLayer := GetLayerFromString(LayerStr);
+    TargetLayer := ResolveLayerId(Board, LayerStr);
+    If TargetLayer = eNoLayer Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown target_layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
     ViaSize := StrToIntDef(ExtractJsonValue(Params, 'via_size_mils'), 50);
     ViaHole := StrToIntDef(ExtractJsonValue(Params, 'via_hole_mils'), 28);
     Moved := 0; ViasAdded := 0;
@@ -32365,22 +40410,37 @@ Begin
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
             Iter.AddFilter_LayerSet(AllLayers);
             Iter.AddFilter_Method(eProcessAll);
-            Trk := Iter.FirstPCBObject;
-            While Trk <> Nil Do
+            { COLLECT FIRST. A layer change re-indexes the track in the
+              board's own structures, so making it mid-walk corrupts the
+              iterator the same way a width change does; PCB_SetTrackWidth
+              carries the note this follows. Held as the base primitive and
+              narrowed after retrieval, because a TInterfaceList item
+              assigned straight to a derived interface skips QueryInterface
+              and faults in oleaut32 on the first call through it. }
+            Prim := Iter.FirstPCBObject;
+            While Prim <> Nil Do
             Begin
+                Trk := Prim;
                 If (TrackNetNm(Trk) = NetStr) And (Trk.Layer <> TargetLayer) Then
-                Begin
-                    PCBServer.SendMessageToRobots(Trk.I_ObjectAddress, c_Broadcast,
-                        PCBM_BeginModify, c_NoEventData);
-                    Trk.Layer := TargetLayer;
-                    PCBServer.SendMessageToRobots(Trk.I_ObjectAddress, c_Broadcast,
-                        PCBM_EndModify, c_NoEventData);
-                    Moved := Moved + 1;
-                End;
-                Trk := Iter.NextPCBObject;
+                    Movers.Add(Prim);
+                Prim := Iter.NextPCBObject;
             End;
         Finally
             Board.BoardIterator_Destroy(Iter);
+        End;
+
+        For I := 0 To Movers.Count - 1 Do
+        Begin
+            Prim := Movers.Items[I];
+            If Prim = Nil Then Continue;
+            Try
+                Trk := Prim;
+                Trk.BeginModify;
+                Trk.Layer := TargetLayer;
+                Trk.EndModify;
+                Moved := Moved + 1;
+            Except
+            End;
         End;
 
         { via pass: same-net SMD pad off the target layer now needs a via }
@@ -32403,7 +40463,7 @@ Begin
                             Via.HoleSize := MilsToCoord(ViaHole);
                             Via.LowLayer := eTopLayer;
                             Via.HighLayer := eBottomLayer;
-                            Via.Net := TargetNet;
+                            BindPrimitiveToNet(TargetNet, Via);
                             Board.AddPCBObject(Via);
                             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                                 PCBM_BoardRegisteration, Via.I_ObjectAddress);
@@ -32418,7 +40478,7 @@ Begin
         PCBServer.PostProcess;
     End;
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"net":"' + EscapeJsonString(NetStr) + '","target_layer":"'
         + EscapeJsonString(GetLayerString(TargetLayer)) + '","moved":'
@@ -32446,7 +40506,7 @@ Var
     Seg : TPolySegment;
     HasArc : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -32528,8 +40588,9 @@ Begin
             S := OrigList[K];   P := Pos('|', S);
             vnx := StrToIntDef(Copy(S, 1, P - 1), 0); vny := StrToIntDef(Copy(S, P + 1, Length(S)), 0);
 
-            upx := vpx - vix; upy := vpy - viy; lenp := Sqrt(upx * upx + upy * upy);
-            unx := vnx - vix; uny := vny - viy; lenn := Sqrt(unx * unx + uny * uny);
+            { Reals, or the squares overflow on any edge over 4.6 mil. }
+            upx := (vpx - vix) * 1.0; upy := (vpy - viy) * 1.0; lenp := Sqrt(upx * upx + upy * upy);
+            unx := (vnx - vix) * 1.0; uny := (vny - viy) * 1.0; lenn := Sqrt(unx * unx + uny * uny);
             dd := dC;
             If lenp > 0 Then If dd > 0.45 * lenp Then dd := 0.45 * lenp;
             If lenn > 0 Then If dd > 0.45 * lenn Then dd := 0.45 * lenn;
@@ -32557,7 +40618,7 @@ Begin
 
     ResetParameters;
     RunProcess('PCB:RepourAllPolygons');
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"beveled":true,"index":' + IntToStr(Idx)
@@ -32584,7 +40645,7 @@ Var
     NetsStr, NetName, Remaining : String;
     PipePos, CreatedCount, ExistingCount : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -32659,7 +40720,7 @@ Begin
     End;
 
     Existing.Free;
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"created":' + IntToStr(CreatedCount)
@@ -32727,7 +40788,7 @@ Var
     Bound, Failed, NetIdx, I : Integer;
     MissingCompCount, MissingPadCount, MissingNetCount : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -32842,7 +40903,7 @@ Begin
             { child while detached, then add it back so the complete updated }
             { payload is registered with the board serializer.               }
             Board.RemovePCBObject(Comp);
-            PadFound.Net := Net;
+            BindPrimitiveToNet(Net, PadFound);
             Board.AddPCBObject(Comp);
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, PadFound.I_ObjectAddress);
@@ -32888,7 +40949,7 @@ Begin
     { No NetRefs.Free -- releasing a TInterfaceList of board interface refs   }
     { faults in oleaut32; leave it to the script host.                        }
 
-    SaveDocByPath(Board.FileName);
+    MarkDocDirtyByPath(Board.FileName);
 
     { Each missing_* list stops at 50 entries. Report the true totals and }
     { a per-list truncation flag: a caller repairing an incomplete ECO off  }
@@ -32908,8 +40969,1221 @@ Begin
 End;
 
 {..............................................................................}
+{ LAYOUT MODEL READ, pcb.get_layout_model                                      }
+{                                                                              }
+{ Everything the in-house placer and router need to decide something that     }
+{ holds on the real board, in EXACT internal units: 10000 per mil, integers.  }
+{ The older geometry read rounds to whole mils, which at 0.5 mm pitch is a    }
+{ third of a mil of error on every pad, and that is too much to judge a       }
+{ clearance by.                                                               }
+{                                                                              }
+{ One section per call: board, components, pads, copper, rules, classes. A   }
+{ dense board does not fit one reply comfortably, so pads and copper page     }
+{ with offset and limit and say where to continue.                            }
+{                                                                              }
+{ Every Altium identifier here is already exercised elsewhere in this        }
+{ codebase, or read exactly this way in Altium's own example scripts. An      }
+{ undeclared one faults outside Try/Except and stops the polling loop.        }
+{..............................................................................}
+
+Function LmShapeName(S : Integer) : String;
+Var
+    Name : String;
+Begin
+    Name := 'round';
+    If S = eRectangular Then Name := 'rect';
+    If S = eOctagonal Then Name := 'octagon';
+    If S = eRoundedRectangular Then Name := 'roundrect';
+    Result := Name;
+End;
+
+{ A contour's vertices as a JSON array of [x, y]. Contours are 1-based. }
+Function LmContourPts(Contour : IPCB_Contour) : String;
+Var
+    K, N : Integer;
+    S : String;
+Begin
+    S := '';
+    N := 0;
+    Try N := Contour.Count; Except N := 0; End;
+    For K := 1 To N Do
+    Begin
+        If S <> '' Then S := S + ',';
+        S := S + '[' + IntToStr(Contour.X[K]) + ',' + IntToStr(Contour.Y[K]) + ']';
+    End;
+    Result := '[' + S + ']';
+End;
+
+{ A region's outline and its holes, as two JSON members. }
+Function LmRegionShape(Region : IPCB_Region) : String;
+Var
+    Contour : IPCB_Contour;
+    H, N : Integer;
+    Outer, Holes, Body : String;
+Begin
+    Outer := '[]';
+    Contour := Nil;
+    Try Contour := Region.MainContour; Except Contour := Nil; End;
+    If Contour <> Nil Then Outer := LmContourPts(Contour);
+    Holes := '';
+    N := 0;
+    Try N := Region.HoleCount; Except N := 0; End;
+    For H := 0 To N - 1 Do
+    Begin
+        Contour := Nil;
+        Try Contour := Region.Holes[H]; Except Contour := Nil; End;
+        If Contour <> Nil Then
+        Begin
+            If Holes <> '' Then Holes := Holes + ',';
+            Holes := Holes + LmContourPts(Contour);
+        End;
+    End;
+    Body := '"pts":' + Outer + ',"holes":[' + Holes + ']';
+    Result := Body;
+End;
+
+{ Owning designator of a primitive that belongs to a footprint, else empty. }
+Function LmOwner(Prim : IPCB_Primitive) : String;
+Var
+    Name : String;
+Begin
+    Name := '';
+    Try
+        If Prim.InComponent Then Name := Prim.Component.Name.Text;
+    Except
+        Name := '';
+    End;
+    Result := Name;
+End;
+
+Function LmNetName(Prim : IPCB_Primitive) : String;
+Var
+    Name : String;
+Begin
+    Name := '';
+    Try
+        If Prim.Net <> Nil Then Name := Prim.Net.Name;
+    Except
+        Name := '';
+    End;
+    Result := Name;
+End;
+
+Function LmBoardSection(Board : IPCB_Board) : String;
+Var
+    Outline : IPCB_BoardOutline;
+    Seg : TPolySegment;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    Iter : IPCB_BoardIterator;
+    GIter : IPCB_GroupIterator;
+    Split : IPCB_SplitPlane;
+    Region : IPCB_Region;
+    I, Num, KindId, Order : Integer;
+    Lyr : TLayer;
+    OutlineJson, LayersJson, MechJson, Kind, Body : String;
+    SplitsJson, SplitNet, Regions : String;
+    Enabled : Boolean;
+Begin
+    OutlineJson := '';
+    Outline := Board.BoardOutline;
+    If Outline <> Nil Then
+    Begin
+        Try Outline.Invalidate; Outline.Rebuild; Outline.Validate; Except End;
+        For I := 0 To Outline.PointCount - 1 Do
+        Begin
+            Seg := Outline.Segments[I];
+            If OutlineJson <> '' Then OutlineJson := OutlineJson + ',';
+            If Seg.Kind = ePolySegmentLine Then
+            Begin
+                OutlineJson := OutlineJson + '[' + IntToStr(Seg.vx) + ','
+                    + IntToStr(Seg.vy) + ']';
+            End
+            Else
+            Begin
+                OutlineJson := OutlineJson + '[' + IntToStr(Seg.vx) + ','
+                    + IntToStr(Seg.vy) + ',' + IntToStr(Seg.cx) + ','
+                    + IntToStr(Seg.cy) + ',' + IntToStr(Seg.Radius) + ','
+                    + FloatToJsonStr(Seg.Angle1) + ','
+                    + FloatToJsonStr(Seg.Angle2) + ']';
+            End;
+        End;
+    End;
+
+    { Copper layers in stack order, top first. A plane carries its net. }
+    LayersJson := '';
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    Order := 0;
+    If LayerStack <> Nil Then
+    Begin
+        LayerObj := LayerStack.FirstLayer;
+        While LayerObj <> Nil Do
+        Begin
+            Lyr := LayerObj.LayerID;
+            Kind := 'signal';
+            If (Lyr >= eInternalPlane1) And (Lyr <= eInternalPlane16) Then
+                Kind := 'plane';
+            { NO NET HERE. LayerObj.Net faulted live as an undeclared     }
+            { identifier (2026-09-24, on the first board with planes), and }
+            { Try/Except cannot catch that. A plane's net comes from its   }
+            { split plane objects below, the way Altium's own HyperLynx    }
+            { exporter reads it.                                          }
+            If LayersJson <> '' Then LayersJson := LayersJson + ',';
+            LayersJson := LayersJson + '{"id":"' + EscapeJsonString(GetLayerString(Lyr))
+                + '","name":"' + EscapeJsonString(LayerObj.Name)
+                + '","kind":"' + Kind
+                + '","order":' + IntToStr(Order)
+                + ',"copper":' + IntToStr(LayerObj.CopperThickness) + '}';
+            Inc(Order);
+            LayerObj := LayerStack.NextLayer(LayerObj);
+        End;
+    End;
+
+    { Enabled mechanical layers and what each is FOR. The courtyard is }
+    { found by its kind here, not guessed from a layer name.             }
+    MechJson := '';
+    If LayerStack <> Nil Then
+    Begin
+        For Num := 1 To MechScanLimit Do
+        Begin
+            Lyr := MechLayerFromNumber(Num);
+            If Lyr = eNoLayer Then Continue;
+            LayerObj := Nil;
+            Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except LayerObj := Nil; End;
+            If LayerObj = Nil Then Continue;
+            Enabled := False;
+            Try Enabled := LayerObj.MechanicalLayerEnabled; Except Enabled := False; End;
+            If Not Enabled Then Continue;
+            KindId := ReadMechKind(LayerObj);
+            If MechJson <> '' Then MechJson := MechJson + ',';
+            MechJson := MechJson + '{"id":"' + EscapeJsonString(GetLayerString(Lyr))
+                + '","name":"' + EscapeJsonString(LayerObj.Name)
+                + '","kind":"' + EscapeJsonString(MechKindToString(KindId)) + '"}';
+        End;
+    End;
+
+    { Split planes: every region of every internal plane, with its net. A }
+    { plane that is one net is one split plane covering the layer.        }
+    { Read as Altium's HyperLynx exporter reads them: the typed local      }
+    { assigned straight from the iterator, regions from its own group.     }
+    SplitsJson := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSplitPlaneObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Split := Iter.FirstPCBObject;
+        While Split <> Nil Do
+        Begin
+            SplitNet := '';
+            If Split.Net <> Nil Then SplitNet := Split.Net.Name;
+            Regions := '';
+            GIter := Split.GroupIterator_Create;
+            Try
+                GIter.AddFilter_ObjectSet(MkSet(eRegionObject));
+                Region := GIter.FirstPCBObject;
+                While Region <> Nil Do
+                Begin
+                    If Regions <> '' Then Regions := Regions + ',';
+                    Regions := Regions + '{' + LmRegionShape(Region) + '}';
+                    Region := GIter.NextPCBObject;
+                End;
+            Finally
+                Split.GroupIterator_Destroy(GIter);
+            End;
+            If SplitsJson <> '' Then SplitsJson := SplitsJson + ',';
+            SplitsJson := SplitsJson + '{"layer":"' + GetLayerString(Split.Layer)
+                + '","net":"' + EscapeJsonString(SplitNet)
+                + '","regions":[' + Regions + ']}';
+            Split := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Body := '"file":"' + EscapeJsonString(Board.FileName) + '"'
+        + ',"origin":[' + IntToStr(Board.XOrigin) + ',' + IntToStr(Board.YOrigin) + ']'
+        + ',"outline":[' + OutlineJson + ']'
+        + ',"layers":[' + LayersJson + ']'
+        + ',"mech_layers":[' + MechJson + ']'
+        + ',"split_planes":[' + SplitsJson + ']';
+    Result := Body;
+End;
+
+Function LmComponentsSection(Board : IPCB_Board) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    GIter : IPCB_GroupIterator;
+    Comp : IPCB_Component;
+    Child : IPCB_Primitive;
+    Body : IPCB_ComponentBody;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Region : IPCB_Region;
+    BR : TCoordRect;
+    Items, Prims, Bodies, LayerName, Entry : String;
+    Locked : Boolean;
+    Overall, Standoff : Integer;
+Begin
+    Items := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Comp := Iter.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            Locked := False;
+            Try Locked := Not Comp.Moveable; Except Locked := False; End;
+
+            { Everything the footprint draws on mechanical layers (the     }
+            { courtyard, the assembly outline) and every 3D body. Copper  }
+            { and silkscreen are read elsewhere.                           }
+            { Bodies from their own iterator, the typed local assigned   }
+            { straight from it, the way the footprint height sweep reads }
+            { them.                                                       }
+            Bodies := '';
+            GIter := Comp.GroupIterator_Create;
+            Try
+                GIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+                Body := GIter.FirstPCBObject;
+                While Body <> Nil Do
+                Begin
+                    LayerName := '';
+                    Try LayerName := GetLayerString(Body.Layer); Except LayerName := ''; End;
+                    Overall := 0;
+                    Standoff := 0;
+                    Try Overall := Body.OverallHeight; Except Overall := 0; End;
+                    Try Standoff := Body.StandoffHeight; Except Standoff := 0; End;
+                    BR := Body.BoundingRectangle;
+                    If Bodies <> '' Then Bodies := Bodies + ',';
+                    Bodies := Bodies + '{"layer":"' + EscapeJsonString(LayerName)
+                        + '","bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1)
+                        + ',' + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2)
+                        + '],"height":' + IntToStr(Overall)
+                        + ',"standoff":' + IntToStr(Standoff) + '}';
+                    Body := GIter.NextPCBObject;
+                End;
+            Finally
+                Comp.GroupIterator_Destroy(GIter);
+            End;
+
+            Prims := '';
+            GIter := Comp.GroupIterator_Create;
+            Try
+                GIter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject,
+                    eRegionObject));
+                Child := GIter.FirstPCBObject;
+                While Child <> Nil Do
+                Begin
+                    LayerName := '';
+                    Try LayerName := GetLayerString(Child.Layer); Except LayerName := ''; End;
+                    If Copy(LayerName, 1, 10) = 'Mechanical' Then
+                    Begin
+                        Entry := '';
+                        If Child.ObjectId = eTrackObject Then
+                        Begin
+                            Track := Child;
+                            Entry := '{"t":[' + IntToStr(Track.X1) + ',' + IntToStr(Track.Y1)
+                                + ',' + IntToStr(Track.X2) + ',' + IntToStr(Track.Y2)
+                                + ',' + IntToStr(Track.Width) + ']';
+                        End;
+                        If Child.ObjectId = eArcObject Then
+                        Begin
+                            Arc := Child;
+                            Entry := '{"a":[' + IntToStr(Arc.XCenter) + ',' + IntToStr(Arc.YCenter)
+                                + ',' + IntToStr(Arc.Radius) + ',' + FloatToJsonStr(Arc.StartAngle)
+                                + ',' + FloatToJsonStr(Arc.EndAngle) + ',' + IntToStr(Arc.LineWidth) + ']';
+                        End;
+                        If Child.ObjectId = eRegionObject Then
+                        Begin
+                            Region := Child;
+                            Entry := '{' + LmRegionShape(Region);
+                        End;
+                        If Entry <> '' Then
+                        Begin
+                            If Prims <> '' Then Prims := Prims + ',';
+                            Prims := Prims + Entry + ',"layer":"' + EscapeJsonString(LayerName) + '"}';
+                        End;
+                    End;
+                    Child := GIter.NextPCBObject;
+                End;
+            Finally
+                Comp.GroupIterator_Destroy(GIter);
+            End;
+
+            BR := Comp.BoundingRectangle;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{"ref":"' + EscapeJsonString(Comp.Name.Text)
+                + '","footprint":"' + EscapeJsonString(Comp.Pattern)
+                + '","comment":"' + EscapeJsonString(Comp.Comment.Text)
+                + '","x":' + IntToStr(Comp.X) + ',"y":' + IntToStr(Comp.Y)
+                + ',"rotation":' + FloatToJsonStr(Comp.Rotation)
+                + ',"layer":"' + EscapeJsonString(GetLayerString(Comp.Layer))
+                + '","locked":' + BoolToJsonStr(Locked)
+                + ',"height":' + IntToStr(Comp.Height)
+                + ',"bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1) + ','
+                + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2) + ']'
+                + ',"mech":[' + Prims + '],"bodies":[' + Bodies + ']}';
+            Comp := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Entry := '"components":[' + Items + ']';
+    Result := Entry;
+End;
+
+Function LmPadsSection(Board : IPCB_Board; Offset : Integer; Limit : Integer) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    Pad : IPCB_Pad;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    SigLayers : TStringList;
+    Lyr : TLayer;
+    Idx, Emitted, I : Integer;
+    Items, Copper, HoleStr, Mode, Body : String;
+    More, Simple : Boolean;
+Begin
+    Items := '';
+    Idx := 0;
+    Emitted := 0;
+    More := False;
+    SigLayers := TStringList.Create;
+    Try
+        { The signal layers a through-hole pad has copper on. Planes are  }
+        { left out: a plane connects through its relief or clearance      }
+        { rules, not through pad copper.                                   }
+        LayerStack := Nil;
+        Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+        If LayerStack <> Nil Then
+        Begin
+            LayerObj := LayerStack.FirstLayer;
+            While LayerObj <> Nil Do
+            Begin
+                Lyr := LayerObj.LayerID;
+                If (Lyr >= eTopLayer) And (Lyr <= eBottomLayer) Then
+                    SigLayers.Add(IntToStr(Lyr));
+                LayerObj := LayerStack.NextLayer(LayerObj);
+            End;
+        End;
+
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Pad := Iter.FirstPCBObject;
+            While Pad <> Nil Do
+            Begin
+                If Idx >= Offset Then
+                Begin
+                    If Emitted >= Limit Then
+                    Begin
+                        More := True;
+                        Break;
+                    End;
+                    { Per copper layer: the stack arrays, read for every   }
+                    { layer whatever the pad mode, as Altium's own          }
+                    { FormatPaintBrush does. Top, mid and bottom follow as  }
+                    { the fallback the client uses for a simple pad.        }
+                    Copper := '';
+                    If Pad.Layer = eMultiLayer Then
+                    Begin
+                        For I := 0 To SigLayers.Count - 1 Do
+                        Begin
+                            Lyr := StrToIntDef(SigLayers[I], 0);
+                            If Copper <> '' Then Copper := Copper + ',';
+                            { The last flag: Altium removed this layer's    }
+                            { unconnected pad, leaving only the barrel.     }
+                            Copper := Copper + '["' + GetLayerString(Lyr) + '","'
+                                + LmShapeName(Pad.StackShapeOnLayer[Lyr]) + '",'
+                                + IntToStr(Pad.XStackSizeOnLayer[Lyr]) + ','
+                                + IntToStr(Pad.YStackSizeOnLayer[Lyr]) + ','
+                                + IntToStr(Pad.StackCRPctOnLayer[Lyr]) + ','
+                                + IntToStr(Pad.XPadOffset[Lyr]) + ','
+                                + IntToStr(Pad.YPadOffset[Lyr]) + ','
+                                + BoolToJsonStr(Pad.IsPadRemoved(Lyr)) + ']';
+                        End;
+                    End
+                    Else
+                    Begin
+                        Lyr := Pad.Layer;
+                        Copper := '["' + GetLayerString(Lyr) + '","'
+                            + LmShapeName(Pad.StackShapeOnLayer[Lyr]) + '",'
+                            + IntToStr(Pad.XStackSizeOnLayer[Lyr]) + ','
+                            + IntToStr(Pad.YStackSizeOnLayer[Lyr]) + ','
+                            + IntToStr(Pad.StackCRPctOnLayer[Lyr]) + ','
+                            + IntToStr(Pad.XPadOffset[Lyr]) + ','
+                            + IntToStr(Pad.YPadOffset[Lyr]) + ']';
+                    End;
+
+                    HoleStr := 'round';
+                    If Pad.HoleType = eSquareHole Then HoleStr := 'square';
+                    If Pad.HoleType = eSlotHole Then HoleStr := 'slot';
+                    Simple := (Pad.Mode = ePadMode_Simple);
+                    Mode := IntToStr(Pad.Mode);
+
+                    If Items <> '' Then Items := Items + ',';
+                    Items := Items + '{"comp":"' + EscapeJsonString(LmOwner(Pad))
+                        + '","name":"' + EscapeJsonString(Pad.Name)
+                        + '","x":' + IntToStr(Pad.X) + ',"y":' + IntToStr(Pad.Y)
+                        + ',"rotation":' + FloatToJsonStr(Pad.Rotation)
+                        + ',"layer":"' + GetLayerString(Pad.Layer)
+                        + '","net":"' + EscapeJsonString(LmNetName(Pad))
+                        + '","mode":' + Mode + ',"simple":' + BoolToJsonStr(Simple)
+                        + ',"top":["' + LmShapeName(Pad.TopShape) + '",'
+                        + IntToStr(Pad.TopXSize) + ',' + IntToStr(Pad.TopYSize) + ']'
+                        + ',"mid":["' + LmShapeName(Pad.MidShape) + '",'
+                        + IntToStr(Pad.MidXSize) + ',' + IntToStr(Pad.MidYSize) + ']'
+                        + ',"bot":["' + LmShapeName(Pad.BotShape) + '",'
+                        + IntToStr(Pad.BotXSize) + ',' + IntToStr(Pad.BotYSize) + ']'
+                        + ',"copper":[' + Copper + ']'
+                        + ',"hole":' + IntToStr(Pad.HoleSize)
+                        + ',"hole_type":"' + HoleStr
+                        + '","hole_width":' + IntToStr(Pad.HoleWidth)
+                        + ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation)
+                        + ',"plated":' + BoolToJsonStr(Pad.Plated) + '}';
+                    Inc(Emitted);
+                End;
+                Inc(Idx);
+                Pad := Iter.NextPCBObject;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+    Finally
+        SigLayers.Free;
+    End;
+    Body := '"pads":[' + Items + '],"offset":' + IntToStr(Offset)
+        + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
+    Result := Body;
+End;
+
+{ One line to workspace/layout_trace.log, written BEFORE the step it     }
+{ names: after an access violation inside a section read, which no Try   }
+{ can catch, the last line names the object and the call that did not   }
+{ return. Twice the copper read of a board crashed Altium's scripting    }
+{ system at one address, with nothing to say which object it was on.    }
+Procedure LmTrace(Line : String);
+Var
+    F : TextFile;
+    TracePath : String;
+Begin
+    Try
+        TracePath := WorkspaceDir + 'layout_trace.log';
+        AssignFile(F, TracePath);
+        If FileExists(TracePath) Then Append(F) Else Rewrite(F);
+        Try
+            WriteLn(F, Line);
+        Finally
+            CloseFile(F);
+        End;
+    Except
+        // Tracing must never break the read it traces
+    End;
+End;
+
+Function LmCopperSection(Board : IPCB_Board; Offset : Integer; Limit : Integer;
+    Trace : Boolean) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Via : IPCB_Via;
+    Region : IPCB_Region;
+    Fill : IPCB_Fill;
+    Poly : IPCB_Polygon;
+    PourOwner : IPCB_Polygon;
+    Seg : TPolySegment;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    SigLayers : TStringList;
+    Lyr : TLayer;
+    Idx, Emitted, I : Integer;
+    Items, Entry, Common, PolyPts, Body, OwnerName, OwnerNet, Sizes : String;
+    More, Keepout, InPoly : Boolean;
+Begin
+    Items := '';
+    Idx := 0;
+    Emitted := 0;
+    More := False;
+    { Signal layers, for a via's size on each layer it spans. }
+    SigLayers := TStringList.Create;
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    If LayerStack <> Nil Then
+    Begin
+        LayerObj := LayerStack.FirstLayer;
+        While LayerObj <> Nil Do
+        Begin
+            Lyr := LayerObj.LayerID;
+            If (Lyr >= eTopLayer) And (Lyr <= eBottomLayer) Then
+                SigLayers.Add(IntToStr(Lyr));
+            LayerObj := LayerStack.NextLayer(LayerObj);
+        End;
+    End;
+    If Trace Then LmTrace('copper offset=' + IntToStr(Offset) + ' limit=' + IntToStr(Limit));
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+            eRegionObject, eFillObject, ePolyObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            If Idx >= Offset Then
+            Begin
+                If Emitted >= Limit Then
+                Begin
+                    More := True;
+                    Break;
+                End;
+                If Trace Then LmTrace(IntToStr(Idx) + ' kind=' + IntToStr(Obj.ObjectId) + ' flags');
+                Keepout := False;
+                Try Keepout := Obj.IsKeepout; Except Keepout := False; End;
+                InPoly := False;
+                Try InPoly := Obj.InPolygon; Except InPoly := False; End;
+                { Poured copper carries no net of its own: the pour that   }
+                { made it does. Name it here so the reader need not guess  }
+                { the owner from geometry, which fails on nested pours.    }
+                OwnerName := '';
+                OwnerNet := '';
+                If InPoly Then
+                Begin
+                    If Trace Then LmTrace(IntToStr(Idx) + ' owner');
+                    PourOwner := Obj.Polygon;
+                    If PourOwner <> Nil Then
+                    Begin
+                        OwnerName := PourOwner.Name;
+                        If PourOwner.Net <> Nil Then OwnerNet := PourOwner.Net.Name;
+                    End;
+                End;
+                If Trace Then LmTrace(IntToStr(Idx) + ' common');
+                Common := ',"layer":"' + GetLayerString(Obj.Layer)
+                    + '","net":"' + EscapeJsonString(LmNetName(Obj))
+                    + '","comp":"' + EscapeJsonString(LmOwner(Obj))
+                    + '","keepout":' + BoolToJsonStr(Keepout)
+                    + ',"in_polygon":' + BoolToJsonStr(InPoly)
+                    + ',"pour":"' + EscapeJsonString(OwnerName)
+                    + '","pour_net":"' + EscapeJsonString(OwnerNet) + '"}';
+                Entry := '';
+                If Obj.ObjectId = eTrackObject Then
+                Begin
+                    Track := Obj;
+                    Entry := '{"k":"track","v":[' + IntToStr(Track.X1) + ',' + IntToStr(Track.Y1)
+                        + ',' + IntToStr(Track.X2) + ',' + IntToStr(Track.Y2) + ','
+                        + IntToStr(Track.Width) + ']' + Common;
+                End;
+                If Obj.ObjectId = eArcObject Then
+                Begin
+                    Arc := Obj;
+                    Entry := '{"k":"arc","v":[' + IntToStr(Arc.XCenter) + ',' + IntToStr(Arc.YCenter)
+                        + ',' + IntToStr(Arc.Radius) + ',' + FloatToJsonStr(Arc.StartAngle)
+                        + ',' + FloatToJsonStr(Arc.EndAngle) + ',' + IntToStr(Arc.LineWidth) + ']'
+                        + Common;
+                End;
+                If Obj.ObjectId = eViaObject Then
+                Begin
+                    Via := Obj;
+                    If Trace Then LmTrace(IntToStr(Idx) + ' via sizes');
+                    { Size per spanned signal layer. Where Altium removed an  }
+                    { unconnected pad the size falls to the hole, and the    }
+                    { clearance there is measured from the barrel.            }
+                    Sizes := '';
+                    For I := 0 To SigLayers.Count - 1 Do
+                    Begin
+                        Lyr := StrToIntDef(SigLayers[I], 0);
+                        If Via.IntersectLayer(Lyr) Then
+                        Begin
+                            If Sizes <> '' Then Sizes := Sizes + ',';
+                            Sizes := Sizes + '["' + GetLayerString(Lyr) + '",'
+                                + IntToStr(Via.SizeOnLayer(Lyr)) + ']';
+                        End;
+                    End;
+                    Entry := '{"k":"via","v":[' + IntToStr(Via.X) + ',' + IntToStr(Via.Y)
+                        + ',' + IntToStr(Via.Size) + ',' + IntToStr(Via.HoleSize) + ']'
+                        + ',"low":"' + GetLayerString(Via.LowLayer)
+                        + '","high":"' + GetLayerString(Via.HighLayer)
+                        + '","sizes":[' + Sizes + ']' + Common;
+                End;
+                If Obj.ObjectId = eRegionObject Then
+                Begin
+                    Region := Obj;
+                    If Trace Then LmTrace(IntToStr(Idx) + ' region shape');
+                    Entry := '{"k":"region","kind":' + IntToStr(Region.Kind)
+                        + ',"cutout":' + BoolToJsonStr(Region.Kind = eRegionKind_BoardCutout)
+                        + ',"copper":' + BoolToJsonStr(Region.Kind = eRegionKind_Copper)
+                        + ',' + LmRegionShape(Region) + Common;
+                End;
+                If Obj.ObjectId = eFillObject Then
+                Begin
+                    Fill := Obj;
+                    Entry := '{"k":"fill","v":[' + IntToStr(Fill.X1Location) + ','
+                        + IntToStr(Fill.Y1Location) + ',' + IntToStr(Fill.X2Location) + ','
+                        + IntToStr(Fill.Y2Location) + ',' + FloatToJsonStr(Fill.Rotation) + ']'
+                        + Common;
+                End;
+                If Obj.ObjectId = ePolyObject Then
+                Begin
+                    { A pour's BOUNDARY. The copper it pours is its own   }
+                    { regions and tracks, which arrive flagged in_polygon.  }
+                    Poly := Obj;
+                    If Trace Then LmTrace(IntToStr(Idx) + ' polygon points');
+                    PolyPts := '';
+                    For I := 0 To Poly.PointCount - 1 Do
+                    Begin
+                        Seg := Poly.Segments[I];
+                        If PolyPts <> '' Then PolyPts := PolyPts + ',';
+                        If Seg.Kind = ePolySegmentLine Then
+                        Begin
+                            PolyPts := PolyPts + '[' + IntToStr(Seg.vx) + ',' + IntToStr(Seg.vy) + ']';
+                        End
+                        Else
+                        Begin
+                            PolyPts := PolyPts + '[' + IntToStr(Seg.vx) + ',' + IntToStr(Seg.vy)
+                                + ',' + IntToStr(Seg.cx) + ',' + IntToStr(Seg.cy) + ','
+                                + IntToStr(Seg.Radius) + ',' + FloatToJsonStr(Seg.Angle1) + ','
+                                + FloatToJsonStr(Seg.Angle2) + ']';
+                        End;
+                    End;
+                    Entry := '{"k":"polygon","name":"' + EscapeJsonString(Poly.Name)
+                        + '","pour_over":' + BoolToJsonStr(Poly.PourOver <> ePolygonPourOver_None)
+                        + ',"pts":[' + PolyPts + ']' + Common;
+                End;
+                If Entry <> '' Then
+                Begin
+                    If Items <> '' Then Items := Items + ',';
+                    Items := Items + Entry;
+                End;
+                Inc(Emitted);
+            End;
+            Inc(Idx);
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    SigLayers.Free;
+    Body := '"copper":[' + Items + '],"offset":' + IntToStr(Offset)
+        + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
+    Result := Body;
+End;
+
+Function LmRulesSection(Board : IPCB_Board) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    Rule : IPCB_Rule;
+    ClearRule : IPCB_ClearanceConstraint;
+    WidthRule : IPCB_MaxMinWidthConstraint;
+    HoleRule : IPCB_MaxMinHoleSizeConstraint;
+    Room : IPCB_ConfinementConstraint;
+    BR : TCoordRect;
+    Kind : Integer;
+    Items, Typed, Rooms, Body : String;
+Begin
+    Items := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Rule := Iter.FirstPCBObject;
+        While Rule <> Nil Do
+        Begin
+            Kind := -1;
+            Try Kind := Rule.RuleKind; Except Kind := -1; End;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{"name":"' + EscapeJsonString(Rule.Name)
+                + '","kind":' + IntToStr(Kind)
+                + ',"enabled":' + BoolToJsonStr(Rule.Enabled)
+                + ',"priority":' + IntToStr(Rule.Priority)
+                + ',"scope1":"' + EscapeJsonString(Rule.Scope1Expression)
+                + '","scope2":"' + EscapeJsonString(Rule.Scope2Expression)
+                + '","descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"}';
+            Rule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    { Typed values, one pass per interface, each local assigned straight }
+    { from the iterator: DelphiScript narrows there and nowhere else.    }
+    Typed := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        ClearRule := Iter.FirstPCBObject;
+        While ClearRule <> Nil Do
+        Begin
+            Kind := -1;
+            Try Kind := ClearRule.RuleKind; Except Kind := -1; End;
+            If (Kind = eRule_Clearance) Or (Kind = 24) Or (Kind = 52) Or (Kind = 63) Then
+            Begin
+                If Typed <> '' Then Typed := Typed + ',';
+                Typed := Typed + '{"name":"' + EscapeJsonString(ClearRule.Name)
+                    + '","gap":' + IntToStr(ClearRule.Gap) + '}';
+            End;
+            ClearRule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        WidthRule := Iter.FirstPCBObject;
+        While WidthRule <> Nil Do
+        Begin
+            If WidthRule.RuleKind = eRule_MaxMinWidth Then
+            Begin
+                If Typed <> '' Then Typed := Typed + ',';
+                Typed := Typed + '{"name":"' + EscapeJsonString(WidthRule.Name)
+                    + '","min":' + IntToStr(WidthRule.MinWidth(eTopLayer))
+                    + ',"max":' + IntToStr(WidthRule.MaxWidth(eTopLayer))
+                    + ',"preferred":' + IntToStr(WidthRule.FavoredWidth(eTopLayer)) + '}';
+            End;
+            WidthRule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        HoleRule := Iter.FirstPCBObject;
+        While HoleRule <> Nil Do
+        Begin
+            If HoleRule.RuleKind = eRule_MaxMinHoleSize Then
+            Begin
+                If Typed <> '' Then Typed := Typed + ',';
+                Typed := Typed + '{"name":"' + EscapeJsonString(HoleRule.Name)
+                    + '","hole_min":' + IntToStr(HoleRule.MinLimit)
+                    + ',"hole_max":' + IntToStr(HoleRule.MaxLimit) + '}';
+            End;
+            HoleRule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Rooms := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Room := Iter.FirstPCBObject;
+        While Room <> Nil Do
+        Begin
+            If Room.RuleKind = eRule_ConfinementConstraint Then
+            Begin
+                BR := Room.BoundingRect;
+                If Rooms <> '' Then Rooms := Rooms + ',';
+                Rooms := Rooms + '{"name":"' + EscapeJsonString(Room.Name)
+                    + '","scope":"' + EscapeJsonString(Room.Scope1Expression)
+                    + '","confine_in":' + BoolToJsonStr(Room.Kind = eConfineIn)
+                    + ',"bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1) + ','
+                    + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2) + ']}';
+            End;
+            Room := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Body := '"rules":[' + Items + '],"typed":[' + Typed + '],"rooms":[' + Rooms + ']';
+    Result := Body;
+End;
+
+Function LmClassesSection(Board : IPCB_Board) : String;
+Var
+    Iter, NetIter : IPCB_BoardIterator;
+    NetClassObj : IPCB_ObjectClass;
+    Net : IPCB_Net;
+    Pair : IPCB_DifferentialPair;
+    Classes, Members, Pairs, PosName, NegName, Body : String;
+Begin
+    { Members by IsMember per net: MemberName and MemberCount are not     }
+    { exposed on IPCB_ObjectClass to a script and fault as undeclared.   }
+    Classes := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eClassObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        NetClassObj := Iter.FirstPCBObject;
+        While NetClassObj <> Nil Do
+        Begin
+            If NetClassObj.MemberKind = eClassMemberKind_Net Then
+            Begin
+                Members := '';
+                NetIter := Board.BoardIterator_Create;
+                Try
+                    NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
+                    NetIter.AddFilter_LayerSet(AllLayers);
+                    NetIter.AddFilter_Method(eProcessAll);
+                    Net := NetIter.FirstPCBObject;
+                    While Net <> Nil Do
+                    Begin
+                        Try
+                            If NetClassObj.IsMember(Net) Then
+                            Begin
+                                If Members <> '' Then Members := Members + ',';
+                                Members := Members + '"' + EscapeJsonString(Net.Name) + '"';
+                            End;
+                        Except End;
+                        Net := NetIter.NextPCBObject;
+                    End;
+                Finally
+                    Board.BoardIterator_Destroy(NetIter);
+                End;
+                If Classes <> '' Then Classes := Classes + ',';
+                Classes := Classes + '{"name":"' + EscapeJsonString(NetClassObj.Name)
+                    + '","nets":[' + Members + ']}';
+            End;
+            NetClassObj := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Pairs := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eDifferentialPairObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Pair := Iter.FirstPCBObject;
+        While Pair <> Nil Do
+        Begin
+            PosName := '';
+            NegName := '';
+            Try
+                If Pair.PositiveNet <> Nil Then PosName := Pair.PositiveNet.Name;
+            Except End;
+            Try
+                If Pair.NegativeNet <> Nil Then NegName := Pair.NegativeNet.Name;
+            Except End;
+            If Pairs <> '' Then Pairs := Pairs + ',';
+            Pairs := Pairs + '{"name":"' + EscapeJsonString(Pair.Name)
+                + '","positive":"' + EscapeJsonString(PosName)
+                + '","negative":"' + EscapeJsonString(NegName) + '"}';
+            Pair := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+
+    Body := '"net_classes":[' + Classes + '],"diff_pairs":[' + Pairs + ']';
+    Result := Body;
+End;
+
+Function PCB_GetLayoutModel(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Section, Body, Response : String;
+    Offset, Limit : Integer;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := Response;
+        Exit;
+    End;
+
+    Section := LowerCase(ExtractJsonValue(Params, 'section'));
+    Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 1500);
+    If Limit <= 0 Then Limit := 1500;
+
+    Body := '';
+    If Section = 'board' Then Body := LmBoardSection(Board);
+    If Section = 'components' Then Body := LmComponentsSection(Board);
+    If Section = 'pads' Then Body := LmPadsSection(Board, Offset, Limit);
+    If Section = 'copper' Then
+        Body := LmCopperSection(Board, Offset, Limit,
+            LowerCase(ExtractJsonValue(Params, 'trace')) = 'true');
+    If Section = 'rules' Then Body := LmRulesSection(Board);
+    If Section = 'classes' Then Body := LmClassesSection(Board);
+
+    If Body = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'BAD_SECTION',
+            'section must be one of board, components, pads, copper, rules, '
+            + 'classes; got "' + Section + '"');
+        Result := Response;
+        Exit;
+    End;
+
+    Response := BuildSuccessResponse(RequestId,
+        '{"section":"' + Section + '","units":"coord","coord_per_mil":10000,' + Body + '}');
+    Result := Response;
+End;
+
+{..............................................................................}
 { HandlePCBCommand - Route PCB actions to handlers                            }
 {..............................................................................}
+
+
+Function SilkPointOnTrack(Track : IPCB_Track; X, Y : Integer) : Boolean;
+Var
+    DX, DY, Length2, CrossValue, DotValue, LengthValue : Double;
+Begin
+    DX := (Track.X2 - Track.X1) / 1.0; DY := (Track.Y2 - Track.Y1) / 1.0;
+    Length2 := DX * DX + DY * DY;
+    Result := False;
+    If Length2 = 0 Then Exit;
+    LengthValue := Sqrt(Length2);
+    CrossValue := (X - Track.X1) * DY - (Y - Track.Y1) * DX;
+    DotValue := (X - Track.X1) * DX + (Y - Track.Y1) * DY;
+    Result := (Abs(CrossValue) <= 3 * LengthValue)
+        And (DotValue >= -3 * LengthValue) And (DotValue <= Length2 + 3 * LengthValue);
+End;
+
+Function PCB_CloneSilkTrackFragment(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Track, FoundTrack, NewTrack : IPCB_Track;
+    Parent : IPCB_Component;
+    AddressText, BoardPath, ParentName : String;
+    X1, Y1, X2, Y2 : Integer;
+Begin
+    Board := GetPCBBoardAnywhere;
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB is active'); Exit; End;
+    If (BoardPath = '') Or (LowerCase(Board.FileName) <> LowerCase(BoardPath)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'WRONG_BOARD', 'Focus the exact requested PCB first'); Exit; End;
+    AddressText := ExtractJsonValue(Params, 'address');
+    FoundTrack := Nil;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
+        Iter.AddFilter_LayerSet(MkSet(eTopOverlay, eBottomOverlay));
+        Iter.AddFilter_Method(eProcessAll);
+        Track := Iter.FirstPCBObject;
+        While Track <> Nil Do
+        Begin
+            If IntToStr(Track.I_ObjectAddress) = AddressText Then Begin FoundTrack := Track; Break; End;
+            Track := Iter.NextPCBObject;
+        End;
+    Finally Board.BoardIterator_Destroy(Iter); End;
+    If FoundTrack = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Address must identify an existing overlay track'); Exit; End;
+    X1 := StrToInt(ExtractJsonValue(Params, 'x1'));
+    Y1 := StrToInt(ExtractJsonValue(Params, 'y1'));
+    X2 := StrToInt(ExtractJsonValue(Params, 'x2'));
+    Y2 := StrToInt(ExtractJsonValue(Params, 'y2'));
+    If (Not SilkPointOnTrack(FoundTrack, X1, Y1)) Or (Not SilkPointOnTrack(FoundTrack, X2, Y2))
+        Or ((X1 = X2) And (Y1 = Y2)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_SUBSEGMENT', 'The fragment must lie on the original segment'); Exit; End;
+    Parent := FoundTrack.Component; ParentName := '';
+    If Parent <> Nil Then ParentName := Parent.Name.Text;
+    PCBServer.PreProcess;
+    Try
+        NewTrack := FoundTrack.Replicate;
+        If NewTrack = Nil Then
+        Begin Result := BuildErrorResponse(RequestId, 'CLONE_FAILED', 'Replicate returned Nil'); Exit; End;
+        NewTrack.X1 := X1; NewTrack.Y1 := Y1;
+        NewTrack.X2 := X2; NewTrack.Y2 := Y2;
+        If Parent <> Nil Then Parent.AddPCBObject(NewTrack);
+        Board.AddPCBObject(NewTrack);
+        If Parent <> Nil Then PCBServer.SendMessageToRobots(Parent.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, NewTrack.I_ObjectAddress);
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, NewTrack.I_ObjectAddress);
+    Finally PCBServer.PostProcess; End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"created":true,"saved":false,"address":"' + IntToStr(NewTrack.I_ObjectAddress)
+        + '","component":"' + EscapeJsonString(ParentName) + '"}');
+End;
+
+
+Function SilkClipFirstCoordinates(Segments : String; Var X1, Y1, X2, Y2 : Integer) : Boolean;
+Var
+    I, P : Integer;
+    Token : String;
+Begin
+    Result := False;
+    P := Pos('|', Segments);
+    If P > 0 Then Segments := Copy(Segments, 1, P - 1);
+    For I := 0 To 3 Do
+    Begin
+        P := Pos(',', Segments);
+        If P = 0 Then Begin Token := Segments; Segments := ''; End
+        Else Begin Token := Copy(Segments, 1, P-1); Segments := Copy(Segments, P+1, Length(Segments)); End;
+        Case I Of
+            0: X1 := StrToInt(Token);
+            1: Y1 := StrToInt(Token);
+            2: X2 := StrToInt(Token);
+            3: Y2 := StrToInt(Token);
+        End;
+    End;
+    Result := (X1 <> X2) Or (Y1 <> Y2);
+End;
+
+Function PCB_ApplySilkClipPlan(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    ChildIter : IPCB_GroupIterator;
+    Parent : IPCB_Component;
+    OwnerName : String;
+    Track : IPCB_Track;
+    Lines, Lookup, Seen : TStringList;
+    BoardPath, Path, Line, AddressText, Segments, OrigLayer, TargetLayer : String;
+    X1, Y1, X2, Y2, I, Found, Changed, Already : Integer;
+    Original, Applied, ApplyNow : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere;
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    Path := ExtractJsonValue(Params, 'plan_path');
+    ApplyNow := ExtractJsonValue(Params, 'apply') = 'true';
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB is active'); Exit; End;
+    If (BoardPath = '') Or (LowerCase(Board.FileName) <> LowerCase(BoardPath)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'WRONG_BOARD', 'Focus the requested PCB first'); Exit; End;
+    If Not FileExists(Path) Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PLAN', 'Plan file does not exist'); Exit; End;
+    Lines := TStringList.Create; Lookup := TStringList.Create; Seen := TStringList.Create;
+    Changed := 0; Already := 0; Found := 0;
+    Try
+        Lines.LoadFromFile(Path);
+        For I := 0 To Lines.Count-1 Do
+        Begin
+            Line := Trim(Lines[I]);
+            If Line = '' Then Continue;
+            AddressText := ExtractJsonValue(Line, 'address');
+            OrigLayer := ExtractJsonValue(Line, 'layer');
+            TargetLayer := ExtractJsonValue(Line, 'assembly_layer');
+            If (AddressText = '') Or (Lookup.Values[AddressText] <> '')
+                Or ((OrigLayer <> 'TopOverlay') And (OrigLayer <> 'BottomOverlay'))
+                Or ((OrigLayer = 'TopOverlay') And (TargetLayer <> 'Mechanical11'))
+                Or ((OrigLayer = 'BottomOverlay') And (TargetLayer <> 'Mechanical12')) Then
+            Begin Result := BuildErrorResponse(RequestId, 'BAD_PLAN', 'Invalid or duplicate address / layer'); Exit; End;
+            Lookup.Values[AddressText] := Line;
+        End;
+        { Read-only validation; no primitive is changed during this walk. }
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Track := Iter.FirstPCBObject;
+            While Track <> Nil Do
+            Begin
+                AddressText := IntToStr(Track.I_ObjectAddress);
+                Line := Lookup.Values[AddressText];
+                If (Line <> '') And (Seen.IndexOf(AddressText) < 0) Then
+                Begin
+                    Seen.Add(AddressText);
+                            OrigLayer := ExtractJsonValue(Line, 'layer');
+                            TargetLayer := ExtractJsonValue(Line, 'assembly_layer');
+                            Segments := ExtractJsonValue(Line, 'segments');
+                            Original := (GetLayerString(Track.Layer) = OrigLayer)
+                                And (IntToStr(Track.X1) = ExtractJsonValue(Line, 'x1'))
+                                And (IntToStr(Track.Y1) = ExtractJsonValue(Line, 'y1'))
+                                And (IntToStr(Track.X2) = ExtractJsonValue(Line, 'x2'))
+                                And (IntToStr(Track.Y2) = ExtractJsonValue(Line, 'y2'));
+                            Applied := False;
+                            If Segments = '' Then
+                                Applied := (GetLayerString(Track.Layer) = TargetLayer)
+                                    And (IntToStr(Track.X1) = ExtractJsonValue(Line, 'x1'))
+                                    And (IntToStr(Track.Y1) = ExtractJsonValue(Line, 'y1'))
+                                    And (IntToStr(Track.X2) = ExtractJsonValue(Line, 'x2'))
+                                    And (IntToStr(Track.Y2) = ExtractJsonValue(Line, 'y2'))
+                            Else
+                            Begin
+                                If Not SilkClipFirstCoordinates(Segments, X1, Y1, X2, Y2) Then
+                                Begin Result := BuildErrorResponse(RequestId, 'BAD_PLAN', 'Zero-length fragment'); Exit; End;
+                                Applied := (GetLayerString(Track.Layer) = OrigLayer)
+                                    And (Abs(Track.X1-X1) <= 1) And (Abs(Track.Y1-Y1) <= 1)
+                                    And (Abs(Track.X2-X2) <= 1) And (Abs(Track.Y2-Y2) <= 1);
+                                If Original And ((Not SilkPointOnTrack(Track, X1, Y1)) Or (Not SilkPointOnTrack(Track, X2, Y2))) Then
+                                Begin Result := BuildErrorResponse(RequestId, 'BAD_PLAN', 'Fragment is outside the original segment'); Exit; End;
+                            End;
+                            If (IntToStr(Track.Width) <> ExtractJsonValue(Line, 'width')) Or ((Not Original) And (Not Applied)) Then
+                            Begin Result := BuildErrorResponse(RequestId, 'STALE_PLAN', 'Geometry changed for ' + AddressText); Exit; End;
+                    OwnerName := ExtractJsonValue(Line, 'component');
+                    Parent := Track.Component;
+                    If (OwnerName = '') Or (Parent = Nil) Then
+                    Begin Result := BuildErrorResponse(RequestId, 'BAD_OWNER', 'A component owner is required'); Exit; End;
+                    If Parent.Name.Text <> OwnerName Then
+                    Begin Result := BuildErrorResponse(RequestId, 'BAD_OWNER', 'Component ownership changed'); Exit; End;
+                    Found := Found + 1;
+                    If Applied Then Already := Already + 1;
+                End;
+                Track := Iter.NextPCBObject;
+            End;
+        Finally Board.BoardIterator_Destroy(Iter); End;
+        If Found <> Lookup.Count Then
+        Begin Result := BuildErrorResponse(RequestId, 'STALE_PLAN', 'Some planned addresses are missing; no changes applied'); Exit; End;
+        If ApplyNow Then
+        Begin
+            PCBServer.PreProcess;
+            Try
+                For I := 0 To Lines.Count-1 Do
+                Begin
+                    Line := Trim(Lines[I]);
+                    If Line = '' Then Continue;
+                    AddressText := ExtractJsonValue(Line, 'address');
+                    OwnerName := ExtractJsonValue(Line, 'component');
+                    Parent := Board.GetPcbComponentByRefDes(OwnerName);
+                    If Parent = Nil Then
+                    Begin Result := BuildErrorResponse(RequestId, 'BAD_OWNER', 'Component vanished after validation'); Exit; End;
+                    { A fresh, small group iterator supplies the correctly typed
+                      child interface. Close it BEFORE changing its layer/shape. }
+                    ChildIter := Parent.GroupIterator_Create;
+                    Try
+                        ChildIter.AddFilter_ObjectSet(MkSet(eTrackObject));
+                        ChildIter.AddFilter_LayerSet(AllLayers);
+                        Track := ChildIter.FirstPCBObject;
+                        While Track <> Nil Do
+                        Begin
+                            If IntToStr(Track.I_ObjectAddress) = AddressText Then Break;
+                            Track := ChildIter.NextPCBObject;
+                        End;
+                    Finally Parent.GroupIterator_Destroy(ChildIter); End;
+                    If Track = Nil Then
+                    Begin Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Child missing after validation'); Exit; End;
+                    Segments := ExtractJsonValue(Line, 'segments');
+                    TargetLayer := ExtractJsonValue(Line, 'assembly_layer');
+                    If Segments = '' Then Applied := GetLayerString(Track.Layer) = TargetLayer
+                    Else
+                    Begin
+                        SilkClipFirstCoordinates(Segments, X1, Y1, X2, Y2);
+                        Applied := (Abs(Track.X1-X1) <= 1) And (Abs(Track.Y1-Y1) <= 1)
+                            And (Abs(Track.X2-X2) <= 1) And (Abs(Track.Y2-Y2) <= 1);
+                    End;
+                    If Applied Then Continue;
+                    Track.BeginModify;
+                    Try
+                        If Segments = '' Then Track.Layer := GetLayerFromString(TargetLayer)
+                        Else Begin Track.X1 := X1; Track.Y1 := Y1; Track.X2 := X2; Track.Y2 := Y2; End;
+                    Finally Track.EndModify; End;
+                    Changed := Changed + 1;
+                End;
+            Finally PCBServer.PostProcess; End;
+        End;
+        Result := BuildSuccessResponse(RequestId, '{"validated":' + IntToStr(Found)
+            + ',"already_applied":' + IntToStr(Already) + ',"changed":' + IntToStr(Changed)
+            + ',"apply":' + BoolToJsonStr(ApplyNow) + ',"saved":false}');
+    Finally Seen.Free; Lookup.Free; Lines.Free; End;
+End;
 
 Function HandlePCBCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
@@ -32935,6 +42209,7 @@ Begin
         'copy_tracks_radial':      Result := PCB_CopyTracksRadial(Params, RequestId);
         'scale':                   Result := PCB_Scale(Params, RequestId);
         'set_text_visibility':     Result := PCB_SetTextVisibility(Params, RequestId);
+        'set_text_style':          Result := PCB_SetTextStyle(Params, RequestId);
         'lock_net_routing':        Result := PCB_LockNetRouting(Params, RequestId);
         'place_stitching_vias':    Result := PCB_PlaceStitchingVias(Params, RequestId);
         'get_fab_stats':           Result := PCB_GetFabStats(Params, RequestId);
@@ -32955,9 +42230,11 @@ Begin
         'get_internal_planes':     Result := PCB_GetInternalPlanes(Params, RequestId);
         'get_special_strings':     Result := PCB_GetSpecialStrings(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
+        'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
         'modify_layer':            Result := PCB_ModifyLayer(Params, RequestId);
+        'set_plane_net':           Result := PCB_SetPlaneNet(Params, RequestId);
         'set_mech_layer_kind':     Result := PCB_SetMechLayerKind(Params, RequestId);
         'set_mech_layers':         Result := PCB_SetMechLayers(Params, RequestId);
         'get_layer_display':       Result := PCB_GetLayerDisplay(Params, RequestId);
@@ -32967,10 +42244,10 @@ Begin
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
         'repour_polygons':         Result := PCB_RepourPolygons(Params, RequestId);
         'place_via':               Result := PCB_PlaceVia(Params, RequestId);
-        'rebind_vias':             Result := PCB_RebindVias(Params, RequestId);
-        'rebind_copper_to_pad_nets': Result := PCB_RebindCopperToPadNets(Params, RequestId);
+        'place_3d_body':           Result := PCB_Place3DBody(Params, RequestId);
         'place_track':             Result := PCB_PlaceTrack(Params, RequestId);
         'place_tracks':            Result := PCB_PlaceTracks(Params, RequestId);
+        'place_vias':              Result := PCB_PlaceVias(Params, RequestId);
         'place_arc':               Result := PCB_PlaceArc(Params, RequestId);
         'place_text':              Result := PCB_PlaceText(Params, RequestId);
         'place_fill':              Result := PCB_PlaceFill(Params, RequestId);
@@ -33017,6 +42294,8 @@ Begin
         'fillet_corners':          Result := PCB_FilletCorners(Params, RequestId);
         'import_placement':        Result := PCB_ImportPlacement(Params, RequestId);
         'teardrops':               Result := PCB_Teardrops(Params, RequestId);
+        'apply_silk_clip_plan': Result := PCB_ApplySilkClipPlan(Params, RequestId);
+        'clone_silk_track_fragment': Result := PCB_CloneSilkTrackFragment(Params, RequestId);
         'autoplace_silkscreen':    Result := PCB_AutoplaceSilkscreen(Params, RequestId);
         'tune_length':             Result := PCB_TuneLength(Params, RequestId);
         'panelize':                Result := PCB_Panelize(Params, RequestId);
@@ -33024,12 +42303,16 @@ Begin
         'audit_pad_center_connected': Result := PCB_AuditPadCenterConnected(Params, RequestId);
         'auto_size_board_outline': Result := PCB_AutoSizeBoardOutline(Params, RequestId);
         'normalize_vias':          Result := PCB_NormalizeVias(Params, RequestId);
+        'apply_via_template':      Result := PCB_ApplyViaTemplate(Params, RequestId);
         'copy_designators_to_mech': Result := PCB_CopyDesignatorsToMechLayer(Params, RequestId);
         'trim_extend_track':       Result := PCB_TrimExtendTrack(Params, RequestId);
         'cleanup_tracks':          Result := PCB_CleanupTracks(Params, RequestId);
+        'unroute':                 Result := PCB_Unroute(Params, RequestId);
         'place_thieving_pads':     Result := PCB_PlaceThievingPads(Params, RequestId);
         'move_tracks_to_layer':    Result := PCB_MoveTracksToLayer(Params, RequestId);
         'bevel_polygon_corners':   Result := PCB_BevelPolygonCorners(Params, RequestId);
+        'rebind_vias':             Result := PCB_RebindVias(Params, RequestId);
+        'rebind_copper_to_pad_nets': Result := PCB_RebindCopperToPadNets(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown PCB action: ' + Action);
     End;
@@ -33044,161 +42327,125 @@ End;
 { the project, library, or PCB modules. Python remains the public MCP layer.  }
 {..............................................................................}
 
-{..............................................................................}
-{ Property-write diagnostics                                                  }
-{                                                                              }
-{ SetSchProperty appends here every time a property name is not recognised  }
-{ or a write throws, so batch_modify can stop silently swallowing            }
-{ "set=Description=..." style mis-spellings. The bridge is single-request,   }
-{ so a module-level buffer is safe. Other handlers that call SetSchProperty }
-{ via ApplySetProperties simply ignore it.                                   }
-{..............................................................................}
-
-Var
-    _PropertyDiagStr : String;
-
-{ Buffer is a String, not a TStringList. DelphiScript drops class-method  }
-{ visibility on TStringList declared at module scope (Undeclared          }
-{ identifier: Count on `_Buf.Count`), and on TStringList returned by a    }
-{ Function, even though the equivalent declared as a Function local works.}
-{ A pipe-delimited String avoids the entire trap.                          }
-{                                                                            }
-{ Each record is "kind:propname"; records are joined with '|'.            }
-
-Procedure ResetPropertyDiag;
-Begin
-    _PropertyDiagStr := '';
-End;
-
-Procedure NotePropertyDiag(Kind : String; PropName : String);
-{ Dedup so a 50-row modify with one bad prop name records it once, not 50x. }
-Var
-    Entry : String;
-Begin
-    Entry := Kind + ':' + PropName;
-    { Bracket the buffer with '|' on both sides so a Pos check finds an      }
-    { exact record (and not e.g. "unknown:Foo" matching inside "...Foobar"). }
-    If Pos('|' + Entry + '|', '|' + _PropertyDiagStr + '|') > 0 Then Exit;
-    If _PropertyDiagStr = '' Then
-        _PropertyDiagStr := Entry
-    Else
-        _PropertyDiagStr := _PropertyDiagStr + '|' + Entry;
-End;
-
-Function AnyPropertyDiag : Boolean;
-Begin
-    Result := _PropertyDiagStr <> '';
-End;
-
-Function RenderPropertyDiagJson : String;
-Var
-    UJson, FJson, Remaining, Entry, Kind, Nm : String;
-    UCount, FCount, P : Integer;
-Begin
-    UJson := '['; UCount := 0;
-    FJson := '['; FCount := 0;
-    Remaining := _PropertyDiagStr;
-    While Length(Remaining) > 0 Do
-    Begin
-        P := Pos('|', Remaining);
-        If P = 0 Then
-        Begin
-            Entry := Remaining;
-            Remaining := '';
-        End
-        Else
-        Begin
-            Entry := Copy(Remaining, 1, P - 1);
-            Remaining := Copy(Remaining, P + 1, Length(Remaining));
-        End;
-        P := Pos(':', Entry);
-        If P = 0 Then Continue;
-        Kind := Copy(Entry, 1, P - 1);
-        Nm := Copy(Entry, P + 1, Length(Entry));
-        If Kind = 'unknown' Then
-        Begin
-            If UCount > 0 Then UJson := UJson + ',';
-            UJson := UJson + '"' + EscapeJsonString(Nm) + '"';
-            Inc(UCount);
-        End
-        Else If Kind = 'failed' Then
-        Begin
-            If FCount > 0 Then FJson := FJson + ',';
-            FJson := FJson + '"' + EscapeJsonString(Nm) + '"';
-            Inc(FCount);
-        End;
-    End;
-    UJson := UJson + ']';
-    FJson := FJson + ']';
-    Result := '{"unknown_count":' + IntToStr(UCount)
-            + ',"unknown":' + UJson
-            + ',"failed_count":' + IntToStr(FCount)
-            + ',"failed":' + FJson + '}';
-End;
-
-{ The tail every modify reply carries, so what was WRITTEN is reported      }
-{ alongside what was matched.                                               }
-{                                                                           }
-{ MEASURED: obj_modify was asked to set a sheet symbol's FileName and       }
-{ answered matched:1, saved:true three times over while writing nothing.    }
-{ That property is readable and has no case in the writer, so every attempt }
-{ was recorded here as an unknown name and then discarded, because only     }
-{ batch_modify ever rendered this buffer. Nothing in the reply distinguished }
-{ it from a real one, and an operator spent a session working around a      }
-{ rename that had never happened.                                           }
-{                                                                           }
-{ matched counts what the FILTER selected. It says nothing about whether a  }
-{ property write landed, so reporting it alone made a mis-spelled or        }
-{ unsupported name indistinguishable from success.                          }
-Function ModifyOutcomeJson : String;
-Begin
-    Result := ',"properties":' + RenderPropertyDiagJson;
-    If _PropertyDiagStr <> '' Then
-        Result := Result + ',"success":false,"reason":"one or more properties '
-            + 'were not written. properties.unknown lists names this build '
-            + 'does not write, properties.failed lists writes that threw."'
-    Else
-        Result := Result + ',"success":true';
-End;
 
 {..............................................................................}
 { Object Type Mapping                                                         }
 {..............................................................................}
 
+{..............................................................................}
+{ Where a pin actually connects.                                                }
+{                                                                              }
+{ ISch_Pin.Location IS THE BODY-SIDE ROOT, not the point a wire attaches to.   }
+{ The electrical end is PinLength away along Orientation:                      }
+{   0 = right (+x)   1 = up (+y)   2 = left (-x)   3 = down (-y)               }
+{                                                                              }
+{ MEASURED on a live sheet, with wires as the ground truth because a wire      }
+{ endpoint is where the connection physically is. Four pins at Location.X      }
+{ 3700, Orientation 2, PinLength 300: every attached wire vertex sat at        }
+{ x 3400, and not one touched 3700. A right-facing pin read Location.X 4900    }
+{ and connected at 5200, so the sign follows orientation.                      }
+{                                                                              }
+{ Shared by the obj_query property getter and by the pin dump, so the two      }
+{ cannot drift into disagreeing about the same pin. Callers kept deriving      }
+{ this by hand and getting the direction wrong, which is silent: the geometry  }
+{ looks plausible and simply does not connect.                                 }
+{..............................................................................}
+
+Function PinEndX(RootX : Integer; Orient : Integer; PinLen : Integer) : Integer;
+Begin
+    Result := RootX;
+    If Orient = 0 Then Result := RootX + PinLen
+    Else If Orient = 2 Then Result := RootX - PinLen;
+End;
+
+Function PinEndY(RootY : Integer; Orient : Integer; PinLen : Integer) : Integer;
+Begin
+    Result := RootY;
+    If Orient = 1 Then Result := RootY + PinLen
+    Else If Orient = 3 Then Result := RootY - PinLen;
+End;
+
 Function ObjectTypeFromString(TypeStr : String) : Integer;
+Var
+    N : String;
 Begin
     Result := -1;
-    If TypeStr = 'eNetLabel'      Then Result := eNetLabel
-    Else If TypeStr = 'ePort'          Then Result := ePort
-    Else If TypeStr = 'ePowerObject'   Then Result := ePowerObject
-    Else If TypeStr = 'eSchComponent'  Then Result := eSchComponent
-    Else If TypeStr = 'eWire'          Then Result := eWire
-    Else If TypeStr = 'eBus'           Then Result := eBus
-    Else If TypeStr = 'eBusEntry'      Then Result := eBusEntry
-    Else If TypeStr = 'eParameter'     Then Result := eParameter
-    Else If TypeStr = 'eParameterSet'  Then Result := eParameterSet
-    Else If TypeStr = 'ePin'           Then Result := ePin
-    Else If TypeStr = 'eLabel'         Then Result := eLabel
-    Else If TypeStr = 'eLine'          Then Result := eLine
-    Else If TypeStr = 'eRectangle'     Then Result := eRectangle
-    Else If TypeStr = 'eSheetSymbol'   Then Result := eSheetSymbol
-    Else If TypeStr = 'eSheetEntry'    Then Result := eSheetEntry
-    Else If TypeStr = 'eNoERC'         Then Result := eNoERC
-    Else If TypeStr = 'eJunction'      Then Result := eJunction
-    Else If TypeStr = 'eImage'         Then Result := eImage
-    Else If TypeStr = 'eTextString'    Then Result := eLabel
-    Else If TypeStr = 'eText'          Then Result := eLabel
-    Else If TypeStr = 'eNote'          Then Result := eNote
-    { These object ids were already used by dedicated, live bridge handlers. }
-    { Listing them here also makes obj_query/modify/delete and the spatial    }
-    { schematic query capable of inspecting those placed object kinds.       }
-    Else If TypeStr = 'eArc'           Then Result := eArc
-    Else If TypeStr = 'ePolygon'       Then Result := ePolygon
-    Else If TypeStr = 'eCompileMask'   Then Result := eCompileMask
-    Else If TypeStr = 'eHarnessConnector' Then Result := eHarnessConnector
-    Else If TypeStr = 'eCrossSheetConnector' Then Result := eCrossSheetConnector
-    Else If TypeStr = 'eProbe'         Then Result := eProbe
-    Else If TypeStr = 'eTextFrame'     Then Result := eTextFrame;
+    N := NormalizeTypeName(TypeStr);
+    If N = 'netlabel'        Then Result := eNetLabel
+    Else If N = 'port'            Then Result := ePort
+    Else If N = 'powerobject'     Then Result := ePowerObject
+    Else If N = 'powerport'       Then Result := ePowerObject
+    Else If N = 'schcomponent'    Then Result := eSchComponent
+    { A schematic caller who writes "component" means this one. The PCB
+      resolver maps the same word to eComponentObject, and obj_query
+      tries the schematic first, so the document in front decides. }
+    Else If N = 'component'       Then Result := eSchComponent
+    Else If N = 'wire'            Then Result := eWire
+    Else If N = 'bus'             Then Result := eBus
+    Else If N = 'busentry'        Then Result := eBusEntry
+    Else If N = 'parameter'       Then Result := eParameter
+    Else If N = 'parameterset'    Then Result := eParameterSet
+    Else If N = 'pin'             Then Result := ePin
+    Else If N = 'label'           Then Result := eLabel
+    Else If N = 'line'            Then Result := eLine
+    Else If N = 'rectangle'       Then Result := eRectangle
+    Else If N = 'sheetsymbol'     Then Result := eSheetSymbol
+    Else If N = 'sheetentry'      Then Result := eSheetEntry
+    Else If N = 'noerc'           Then Result := eNoERC
+    Else If N = 'junction'        Then Result := eJunction
+    Else If N = 'image'           Then Result := eImage
+    { PLACEABLE BUT PREVIOUSLY UNRESOLVABLE. Every type below can be created
+      by a sch_place_* tool, and none of them could be queried or deleted:
+      the server could put an object on a sheet that it then could not find
+      or remove. Reported 2026-09-21 by a user trying to delete a text frame,
+      where obj_delete reported 0 processed and the type simply did not
+      resolve. A guard now checks this list against every SchObjectFactory
+      call, because six types had drifted out of it rather than one. }
+    Else If N = 'textframe'       Then Result := eTextFrame
+    Else If N = 'note'            Then Result := eNote
+    Else If N = 'probe'           Then Result := eProbe
+    Else If N = 'harnessconnector' Then Result := eHarnessConnector
+    Else If N = 'crosssheetconnector' Then Result := eCrossSheetConnector
+    Else If N = 'compilemask'     Then Result := eCompileMask;
+End;
+
+{ What the refusal should have said. }
+Function SchObjectTypeNames(Dummy : Integer): String;
+Begin
+    Result := 'eNetLabel, ePort, ePowerObject, eSchComponent, eWire, eBus, '
+            + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, '
+            + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
+            + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
+            + 'eCrossSheetConnector, eCompileMask';
+End;
+
+{ The refusal itself, in one place.                                          }
+{                                                                             }
+{ "Unknown object type: Sheet" is true and leaves the caller guessing, and    }
+{ the guesses observed were Component, Sheet, Sheet Symbol and SheetSymbol    }
+{ in a row. Three of those four now resolve. The fourth does not, because a   }
+{ sheet is a DOCUMENT rather than an object on one, and saying so is more     }
+{ use than accepting it and returning nothing.                                }
+Function UnknownObjectTypeMessage(TypeStr : String) : String;
+Var
+    N : String;
+Begin
+    N := NormalizeTypeName(TypeStr);
+    Result := 'Unknown object type: ' + TypeStr + '. ';
+    If (N = 'sheet') Or (N = 'schdoc') Or (N = 'document') Then
+        Result := Result + 'A sheet is a document, not an object on one. '
+                + 'For the symbol that REFERENCES a child sheet use '
+                + 'eSheetSymbol; to list documents use proj_list_documents. '
+    Else If (N = 'net') Or (N = 'netclass') Then
+        Result := Result + 'Nets are not schematic objects. Read them with '
+                + 'proj_get_nets, or query eNetLabel for the labels. '
+    Else If (N = 'polygon') Or (N = 'poly') Or (N = 'track') Or (N = 'via') Then
+        Result := Result + 'That is a PCB type and this document is a '
+                + 'schematic. The pcb_ tools act on an open .PcbDoc. ';
+    Result := Result + 'Schematic types: ' + SchObjectTypeNames(0)
+            + '. PCB types: ' + PCBObjectTypeNames(0)
+            + '. Spelling is forgiving: case, spaces, underscores and the '
+            + 'leading "e" are all optional.';
 End;
 
 {..............................................................................}
@@ -33214,6 +42461,112 @@ End;
 { properties that return compound interfaces (ISch_Parameter) the way it can  }
 { for primitive returns.                                                      }
 {..............................................................................}
+
+{ Which schematic objects carry Text, IsHidden and Orientation.                }
+{                                                                              }
+{ Neither lives on the base ISch_GraphicalObject, and reaching for one on a    }
+{ type that lacks it raises "Undeclared identifier". That is not catchable:    }
+{ the script engine surfaces it as a modal before any Try/Except runs, so the  }
+{ polling loop stops. Issue #22, reproduced with                              }
+{ obj_query(object_type='ePort', properties='...,Orientation') on AD25.       }
+{                                                                              }
+{ A DENYLIST, deliberately. The types below are the ones there is evidence     }
+{ for: PlaceAPort.pas in the scripting reference builds a Port from Name,      }
+{ Style, IOType, Alignment and Width and never touches Text or Orientation,    }
+{ and ReplaceSchObjects.pas reads a cross-sheet connector's Orientation in     }
+{ order to map it onto Port.Style. Enumerating every type that DOES have       }
+{ these would be guesswork and would silently break queries that work today.  }
+{ IsHidden is the exception, below.                                            }
+
+Function SchObjectHasText(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := True;
+    If Obj = Nil Then Exit;
+    { None of these has Text in Altium's interface: ports and sheet entries
+      (named by Name), parameter-set directives (measured on AD 21 and
+      AD 26), pins, the containers, and wiring and graphics. }
+    If (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eParameterSet) Or (Obj.ObjectId = ePin)
+        Or (Obj.ObjectId = eSchComponent) Or (Obj.ObjectId = eSheetSymbol)
+        Or (Obj.ObjectId = eHarnessConnector) Or (Obj.ObjectId = eProbe)
+        Or (Obj.ObjectId = eWire) Or (Obj.ObjectId = eBus)
+        Or (Obj.ObjectId = eBusEntry) Or (Obj.ObjectId = eJunction)
+        Or (Obj.ObjectId = eNoERC) Or (Obj.ObjectId = eLine)
+        Or (Obj.ObjectId = eRectangle) Or (Obj.ObjectId = eImage) Then
+        Result := False;
+End;
+
+{ IsHidden belongs to pins and to the complex text types (parameters,
+  designators, sheet names, sheet file names) and to nothing else in
+  Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
+  On a net label and on a wire it raised an undeclared identifier on AD 21
+  and AD 26 alike, a modal that Try/Except cannot contain. }
+Function SchObjectHasIsHidden(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePin) Or (Obj.ObjectId = eParameter)
+        Or (Obj.ObjectId = eDesignator) Or (Obj.ObjectId = eSheetName)
+        Or (Obj.ObjectId = eSheetFileName);
+End;
+
+{ TextColor belongs to ports, sheet entries and harness entries, not to
+  ISch_GraphicalObject or ISch_Label. Reading it on a power object raises
+  an undeclared-identifier modal BEFORE Try/Except can recover (AD 21.4).
+  https://www.altium.com/documentation/altium-dxp-developer/schematic-api-design-objects-interfaces-reference }
+Function SchObjectHasTextColor(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry)
+        Or (Obj.ObjectId = eHarnessEntry);
+End;
+
+{ Preflight only the known unsupported property/type pairs. Preserve the
+  existing treatment of other names; do not guess a complete capability map. }
+Function UnsupportedSchProperty(Obj : ISch_GraphicalObject; SetStr : String) : String;
+Var
+    Remaining, Assignment, PropName : String;
+    PipePos, EqPos : Integer;
+Begin
+    Result := '';
+    Remaining := SetStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Assignment := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Assignment := Remaining;
+            Remaining := '';
+        End;
+        EqPos := Pos('=', Assignment);
+        If EqPos > 0 Then
+        Begin
+            PropName := Copy(Assignment, 1, EqPos - 1);
+            If ((PropName = 'Text') And (Not SchObjectHasText(Obj)))
+                Or ((PropName = 'IsHidden') And (Not SchObjectHasIsHidden(Obj)))
+                Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj))) Then
+            Begin
+                Result := PropName;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+Function SchObjectHasOrientation(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := True;
+    If Obj = Nil Then Exit;
+    { A Port carries its direction in Style, and a sheet entry in Side. }
+    If (Obj.ObjectId = ePort) Or (Obj.ObjectId = eSheetEntry) Then
+        Result := False;
+End;
 
 Function GetSchComponentSubText(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
@@ -33254,21 +42607,50 @@ End;
 Function GetSheetSymbolText(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     SS : ISch_SheetSymbol;
+    Got : Boolean;
 Begin
     Result := '';
     If Obj.ObjectId <> eSheetSymbol Then Exit;
     Try
         SS := Obj;
+        Got := False;
         If PropName = 'Designator' Then
         Begin
-            Try If SS.SheetName <> Nil Then Result := SS.SheetName.Text; Except End;
+            Try
+                If SS.SheetName <> Nil Then
+                Begin
+                    Result := SS.SheetName.Text;
+                    Got := True;
+                End;
+            Except End;
         End
         Else If PropName = 'Filename' Then
         Begin
-            Try If SS.SheetFileName <> Nil Then Result := SS.SheetFileName.Text; Except End;
-        End;
+            Try
+                If SS.SheetFileName <> Nil Then
+                Begin
+                    Result := SS.SheetFileName.Text;
+                    Got := True;
+                End;
+            Except End;
+        End
+        Else
+            Got := True;
+
+        { AN EMPTY STRING WAS TWO DIFFERENT ANSWERS. A sheet symbol whose
+          label is genuinely blank and a build that does not expose the
+          sub-object at all both read '', and nothing distinguished them.
+          Measured: a session read Filename off a sheet symbol, got
+          nothing back, and concluded the hierarchy was broken. It was
+          intact; the read was.
+
+          The unreadable case is recorded so the reply can say so, in the
+          same buffer the writers use. }
+        If Not Got Then
+            NotePropertyDiag('unreadable', PropName);
     Except
         RecordCastError('GetSheetSymbolText:' + PropName);
+        NotePropertyDiag('unreadable', PropName);
         Result := '';
     End;
 End;
@@ -33327,19 +42709,114 @@ Begin
     End;
 End;
 
+{ Indexed vertex access for the polyline family (eWire, eBus, eLine,          }
+{ ePolyline, ...). Recognises `Vertex<N>.X` / `Vertex<N>.Y`, `VertexLast.X` / }
+{ `VertexLast.Y` (N = VerticesCount) and a compact all-vertex dump `Vertices` }
+{ formatted `x1,y1;x2,y2` with no trailing separator. Names match case-       }
+{ insensitively. Altium's vertex array is 1-based, so GetState_Vertex(1) is   }
+{ the first vertex and matches what Location.X / Location.Y report. Values    }
+{ come back in mils through CoordToMils, exactly like Location.X, so a caller }
+{ can compare a vertex against a Location value directly. Objects with no     }
+{ vertex array, out-of-range or non-numeric indices and malformed names all   }
+{ return '' -- the same thing GetSchProperty yields for an unknown property.  }
+{ Nothing here raises.                                                        }
+Function GetSchVertexProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    U : String;
+    Axis : String;
+    IdxStr : String;
+    Ch : String;
+    Dump : String;
+    Cnt : Integer;
+    Idx : Integer;
+    I : Integer;
+    Vtx : TLocation;
+    Ok : Boolean;
+Begin
+    Result := '';
+    U := UpperCase(Trim(PropName));
+
+    { Bulk dump. VerticesCount itself stays on the caller's fast path. }
+    If U = 'VERTICES' Then
+    Begin
+        Cnt := 0;
+        Try Cnt := Obj.GetState_VerticesCount; Except End;
+        If Cnt < 1 Then Exit;
+        Dump := '';
+        For I := 1 To Cnt Do
+        Begin
+            Ok := False;
+            Try
+                Vtx := Obj.GetState_Vertex(I);
+                Ok := True;
+            Except
+                Ok := False;
+            End;
+            If Not Ok Then Exit;
+            If I > 1 Then Dump := Dump + ';';
+            Dump := Dump + IntToStr(CoordToMils(Vtx.X)) + ',' + IntToStr(CoordToMils(Vtx.Y));
+        End;
+        Result := Dump;
+        Exit;
+    End;
+
+    { 'VERTEX' + index + '.X' / '.Y'. Shortest legal form is 'VERTEX1.X' (9). }
+    If Length(U) < 9 Then Exit;
+    If Copy(U, 1, 6) <> 'VERTEX' Then Exit;
+    Axis := Copy(U, Length(U) - 1, 2);
+    If (Axis <> '.X') And (Axis <> '.Y') Then Exit;
+    { Everything between the 'VERTEX' prefix and the trailing '.X' / '.Y'. }
+    IdxStr := Copy(U, 7, Length(U) - 8);
+    If IdxStr = '' Then Exit;
+
+    Cnt := 0;
+    Try Cnt := Obj.GetState_VerticesCount; Except End;
+    If Cnt < 1 Then Exit;
+
+    If IdxStr = 'LAST' Then
+        Idx := Cnt
+    Else
+    Begin
+        { Digits only. Rejects 'Vertex.1.X', 'VertexA.X', 'Vertex 1.X', '-1'. }
+        { DelphiScript quirk (see ClassifyPassivePrefix): index a string with }
+        { a 1-char Copy rather than S[I], which is not a Char here.           }
+        For I := 1 To Length(IdxStr) Do
+        Begin
+            Ch := Copy(IdxStr, I, 1);
+            If (Ch < '0') Or (Ch > '9') Then Exit;
+        End;
+        Idx := StrToIntDef(IdxStr, 0);
+    End;
+
+    If (Idx < 1) Or (Idx > Cnt) Then Exit;
+
+    Ok := False;
+    Try
+        Vtx := Obj.GetState_Vertex(Idx);
+        Ok := True;
+    Except
+        Ok := False;
+    End;
+    If Not Ok Then Exit;
+
+    If Axis = '.X' Then
+        Result := IntToStr(CoordToMils(Vtx.X))
+    Else
+        Result := IntToStr(CoordToMils(Vtx.Y));
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
+    NoERC : ISch_NoERC;
     R : ISch_Rectangle;
     L : ISch_Line;
-    C : ISch_Component;
-    Lbl : ISch_Label;
-    Pin : ISch_Pin;
-    Port : ISch_Port;
-    NetLbl : ISch_NetLabel;
-    Power : ISch_PowerObject;
-    SheetEntry : ISch_SheetEntry;
+    Comp : ISch_Component;
+    PortObj : ISch_Port;
+    EntryObj : ISch_SheetEntry;
+    HarnessEntryObj : ISch_HarnessEntry;
     Crn : TLocation;
     Have : Boolean;
+    POrient, PLen, PCoord : Integer;
 Begin
     Result := '';
     Try
@@ -33381,47 +42858,41 @@ Begin
             End;
         End
         // String properties (late-bound across all types, primitives only)
-        Else If (PropName = 'Text') Or (PropName = 'Name') Then
+        Else If PropName = 'Text'        Then
         Begin
-            { Text is not available on the graphical base interface.  Ports
-              expose their visible caption as Name; net labels expose Text. }
-            If Obj.ObjectId = ePort Then
-            Begin Port := Obj; Result := Port.Name; End
-            Else If Obj.ObjectId = ePin Then
-            Begin Pin := Obj; Result := Pin.Name; End
-            Else If Obj.ObjectId = eNetLabel Then
-            Begin NetLbl := Obj; Result := NetLbl.Text; End
-            Else If Obj.ObjectId = ePowerObject Then
-            Begin Power := Obj; Result := Power.Text; End
-            Else If Obj.ObjectId = eSheetEntry Then
-            Begin SheetEntry := Obj; Result := SheetEntry.Name; End
-            Else Result := '';
+            If SchObjectHasText(Obj) Then
+                Result := Obj.Text
+            Else
+            Begin
+                { Say it is not on this type rather than faulting. A Port
+                  and a sheet entry both answer to Name. }
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
         End
-        Else If PropName = 'LibReference' Then
-        Begin
-            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.LibReference; End;
-        End
-        Else If PropName = 'SourceLibraryName' Then
-        Begin
-            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.SourceLibraryName; End;
-        End
-        Else If PropName = 'DesignItemId' Then
-        Begin
-            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.DesignItemId; End;
-        End
-        Else If PropName = 'ComponentDescription' Then
-        Begin
-            If Obj.ObjectId = eSchComponent Then Begin C := Obj; Result := C.ComponentDescription; End;
-        End
-        Else If PropName = 'CurrentPartID' Then
+        Else If PropName = 'Name'        Then Result := Obj.Name
+        Else If PropName = 'LibReference'       Then Result := Obj.LibReference
+        Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
+        Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
+        // A database part's link: the DbLib table and the DbLib file name it
+        // was placed from, both empty on a part from a .SchLib. Declared on
+        // ISch_Component only. Without these branches a query for them
+        // answered an empty string as if the part had no link, which is how
+        // a database-linked part read as unlinked during the DbLib live test.
+        Else If (PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName') Then
         Begin
             If Obj.ObjectId = eSchComponent Then
-            Begin C := Obj; Result := IntToStr(C.CurrentPartID); End;
-        End
-        Else If PropName = 'PartCount' Then
-        Begin
-            If Obj.ObjectId = eSchComponent Then
-            Begin C := Obj; Result := IntToStr(C.PartCount); End;
+            Begin
+                Comp := Obj;
+                If PropName = 'DatabaseTableName' Then
+                    Result := Comp.DatabaseTableName
+                Else
+                    Result := Comp.DatabaseLibraryName;
+            End
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+            End;
         End
         // Which part of a multi-part symbol owns this primitive (0 = shared
         // across all parts). Without it a caller querying a multi-part
@@ -33429,6 +42900,16 @@ Begin
         Else If PropName = 'OwnerPartId'        Then Result := IntToStr(Obj.OwnerPartId)
         Else If PropName = 'OwnerPartDisplayMode' Then Result := IntToStr(Obj.OwnerPartDisplayMode)
         Else If PropName = 'UniqueId'    Then Result := Obj.UniqueId
+        Else If PropName = 'CurrentPartID' Then
+        Begin
+            Comp := Obj;
+            Try Result := IntToStr(Comp.CurrentPartID); Except Result := ''; End;
+        End
+        Else If PropName = 'PartCount' Then
+        Begin
+            Comp := Obj;
+            Try Result := IntToStr(Comp.PartCount); Except Result := ''; End;
+        End
 
         // Sub-object string properties (compound interfaces, typed cast required).
         // Designator dispatches by ObjectId, ISch_Component carries the live designator
@@ -33457,47 +42938,67 @@ Begin
         // Integer properties (returned as string)
         Else If PropName = 'Orientation' Then
         Begin
-            { Orientation is not declared on ISch_GraphicalObject.  Accessing
-              Obj.Orientation makes DelphiScript fail at compile time even
-              when the runtime object is a port or pin.  Narrow to the actual
-              schematic interface first. }
-            If Obj.ObjectId = ePin Then
-            Begin Pin := Obj; Result := IntToStr(Pin.Orientation); End
-            Else If Obj.ObjectId = ePort Then
+            If SchObjectHasOrientation(Obj) Then
+                Result := IntToStr(Obj.Orientation)
+            Else
             Begin
-                { ISch_Port has no Orientation member in the Altium scripting
-                  interface.  Port direction is represented by port-specific
-                  style/alignment fields, so generic Orientation is empty. }
+                NotePropertyDiag('unreadable', PropName);
                 Result := '';
-            End
-            Else If Obj.ObjectId = eNetLabel Then
-            Begin NetLbl := Obj; Result := IntToStr(NetLbl.Orientation); End
-            Else If Obj.ObjectId = ePowerObject Then
-            Begin Power := Obj; Result := IntToStr(Power.Orientation); End
-            Else If Obj.ObjectId = eSchComponent Then
-            Begin C := Obj; Result := IntToStr(C.Orientation); End;
+            End;
         End
         Else If PropName = 'FontId'      Then Result := IntToStr(Obj.FontId)
         Else If PropName = 'LineWidth'   Then Result := IntToStr(Obj.LineWidth)
         Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
-        Else If PropName = 'IOType' Then
-        Begin
-            If Obj.ObjectId = ePort Then Begin Port := Obj; Result := IntToStr(Port.IOType); End
-            Else If Obj.ObjectId = eSheetEntry Then Begin SheetEntry := Obj; Result := IntToStr(SheetEntry.IOType); End
-            Else Result := '';
-        End
-        Else If PropName = 'Alignment' Then
-        Begin
-            If Obj.ObjectId = ePort Then Begin Port := Obj; Result := IntToStr(Port.Alignment); End
-            Else Result := '';
-        End
-        Else If PropName = 'Electrical'  Then Result := IntToStr(Obj.Electrical)
+        Else If PropName = 'IOType'      Then Result := IntToStr(Obj.IOType)
+        Else If PropName = 'Alignment'   Then Result := IntToStr(Obj.Alignment)
+        { NAME, NOT ORDINAL, so reading and writing use one spelling.
+          This returned the raw enum while obj_modify takes a name and
+          lib_get_pin_list reports one, so a caller that read a pin and
+          wrote it back was handing '0' to a setter it had just been shown
+          as 'input'. ElectricalOrdinal accepts both, so no writer breaks;
+          only the reader changes, and it now agrees with lib_get_pin_list.
+          Reported GH #11, 2026-09-22. }
+        Else If PropName = 'Electrical'  Then Result := PinElectricalToStr(Obj.Electrical)
         Else If PropName = 'Color'       Then Result := IntToStr(Obj.Color)
         Else If PropName = 'AreaColor'   Then Result := IntToStr(Obj.AreaColor)
-        Else If PropName = 'TextColor'   Then Result := IntToStr(Obj.TextColor)
+        Else If PropName = 'TextColor' Then
+        Begin
+            If SchObjectHasTextColor(Obj) Then
+            Begin
+                If Obj.ObjectId = ePort Then
+                Begin
+                    PortObj := Obj;
+                    Result := IntToStr(PortObj.TextColor);
+                End
+                Else If Obj.ObjectId = eSheetEntry Then
+                Begin
+                    EntryObj := Obj;
+                    Result := IntToStr(EntryObj.TextColor);
+                End
+                Else
+                Begin
+                    HarnessEntryObj := Obj;
+                    Result := IntToStr(HarnessEntryObj.TextColor);
+                End;
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         Else If PropName = 'Justification' Then Result := IntToStr(Obj.Justification)
-        Else If PropName = 'OwnerPartId' Then Result := IntToStr(Obj.OwnerPartId)
-        Else If PropName = 'OwnerPartDisplayMode' Then Result := IntToStr(Obj.OwnerPartDisplayMode)
+        { A SHEET ENTRY'S POSITION ON THE SYMBOL. Both read empty before,
+          because neither had a case here, so a caller checking whether a
+          placement took got nothing back and could not tell an unset
+          value from an unreadable one. Side is the enum ordinal and
+          DistanceFromTop is in mils, matching Location.X / Location.Y. }
+        Else If PropName = 'Side' Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then Result := IntToStr(Obj.Side);
+        End
+        Else If PropName = 'DistanceFromTop' Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+                Result := IntToStr(CoordToMils(Obj.DistanceFromTop));
+        End
 
         // Coord properties (returned in mils)
         Else If PropName = 'Width' Then
@@ -33510,6 +43011,47 @@ Begin
             Else Result := '';
         End
         Else If PropName = 'PinLength'   Then Result := IntToStr(CoordToMils(Obj.PinLength))
+
+        // ConnectionX / ConnectionY: the pin's ELECTRICAL end, i.e. the
+        // point a wire or net label must sit on to attach. Pin.Location is
+        // the BODY-side root, so callers were deriving this by hand and
+        // getting it wrong. Orientation is the direction the electrical end
+        // points away from the body: 0=right(+x) 1=up(+y) 2=left(-x)
+        // 3=down(-y). Same convention as the pin dump in Proj_GetComponentInfo.
+        Else If PropName = 'ConnectionX' Then
+        Begin
+            { A connection point is a PIN idea, and Orientation is not on
+              every type. The Try below cannot save this: an undeclared
+              identifier is a modal, not an exception. Same fault as
+              issue #22, in code written to fix a different one. }
+            If Obj.ObjectId <> ePin Then
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+                Exit;
+            End;
+            POrient := 0; PLen := 0; PCoord := 0;
+            Try POrient := Obj.Orientation; Except End;
+            Try PLen := Obj.PinLength; Except End;
+            Try PCoord := Obj.Location.X; Except End;
+            PCoord := PinEndX(PCoord, POrient, PLen);
+            Result := IntToStr(CoordToMils(PCoord));
+        End
+        Else If PropName = 'ConnectionY' Then
+        Begin
+            If Obj.ObjectId <> ePin Then
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+                Exit;
+            End;
+            POrient := 0; PLen := 0; PCoord := 0;
+            Try POrient := Obj.Orientation; Except End;
+            Try PLen := Obj.PinLength; Except End;
+            Try PCoord := Obj.Location.Y; Except End;
+            PCoord := PinEndY(PCoord, POrient, PLen);
+            Result := IntToStr(CoordToMils(PCoord));
+        End
         Else If PropName = 'XSize'       Then Result := IntToStr(CoordToMils(Obj.XSize))
         Else If PropName = 'YSize'       Then Result := IntToStr(CoordToMils(Obj.YSize))
 
@@ -33532,9 +43074,26 @@ Begin
         Else If PropName = 'Vertex.1.Y'   Then Result := IntToStr(CoordToMils(Obj.GetState_Vertex(1).Y))
         Else If PropName = 'Vertex.2.X'   Then Result := IntToStr(CoordToMils(Obj.GetState_Vertex(2).X))
         Else If PropName = 'Vertex.2.Y'   Then Result := IntToStr(CoordToMils(Obj.GetState_Vertex(2).Y))
+        // Indexed / bulk vertex access, delegated so the parsing stays out
+        // of this chain: Vertex<N>.X, Vertex<N>.Y, VertexLast.X,
+        // VertexLast.Y and `Vertices` (a compact `x1,y1;x2,y2` dump).
+        // Matched case-insensitively and placed AFTER the exact-match
+        // forms above so Vertex.1.X / Vertex.2.X and VerticesCount keep
+        // their current behaviour. GetSchVertexProperty returns '' for
+        // anything it cannot resolve, which is what an unknown PropName
+        // yields here anyway.
+        Else If (UpperCase(Copy(PropName, 1, 6)) = 'VERTEX')
+             Or (UpperCase(PropName) = 'VERTICES') Then
+            Result := GetSchVertexProperty(Obj, PropName)
 
         // Boolean properties
-        Else If PropName = 'IsHidden'    Then Result := BoolToJsonStr(Obj.IsHidden)
+        Else If PropName = 'IsHidden' Then
+        Begin
+            If SchObjectHasIsHidden(Obj) Then
+                Result := BoolToJsonStr(Obj.IsHidden)
+            Else
+                NotePropertyDiag('unreadable', PropName);
+        End
         Else If PropName = 'IsSolid'     Then Result := BoolToJsonStr(Obj.IsSolid)
         Else If PropName = 'IsMirrored'  Then Result := BoolToJsonStr(Obj.IsMirrored);
     Except
@@ -33558,13 +43117,10 @@ Var
     Crn : TLocation;
     R : ISch_Rectangle;
     L : ISch_Line;
-    C : ISch_Component;
-    Lbl : ISch_Label;
-    Pin : ISch_Pin;
-    Port : ISch_Port;
-    NetLbl : ISch_NetLabel;
-    Power : ISch_PowerObject;
-    SheetEntry : ISch_SheetEntry;
+    Comp : ISch_Component;
+    PortObj : ISch_Port;
+    EntryObj : ISch_SheetEntry;
+    HarnessEntryObj : ISch_HarnessEntry;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
       one this build writes; WroteOK says the value actually landed, read
@@ -33602,8 +43158,20 @@ Begin
         Begin
             Loc := Obj.Location;
             Loc.X := MilsToCoord(StrToIntDef(Value, 0));
+            { A COMPONENT owns child primitives (pins, designator, comment). }
+            { Assigning Location moves only the component record and leaves  }
+            { every pin at its old coordinate, silently desynchronising the  }
+            { symbol from its own pins, and it 16-bit-truncates coords.      }
+            { MoveToXY is the documented whole-component move and is already }
+            { what the placement path (Gen_PlaceComponents) uses. Any        }
+            { exception propagates to the outer handler as Result = -1       }
+            { rather than being swallowed, so a failed move is never         }
+            { reported as applied.                                           }
             If Obj.ObjectId = eSchComponent Then
-            Begin C := Obj; C.MoveToXY(Loc.X, Loc.Y); End
+            Begin
+                Comp := Obj;
+                Comp.MoveToXY(Loc.X, Loc.Y);
+            End
             Else
                 Obj.Location := Loc;
         End
@@ -33612,7 +43180,10 @@ Begin
             Loc := Obj.Location;
             Loc.Y := MilsToCoord(StrToIntDef(Value, 0));
             If Obj.ObjectId = eSchComponent Then
-            Begin C := Obj; C.MoveToXY(Loc.X, Loc.Y); End
+            Begin
+                Comp := Obj;
+                Comp.MoveToXY(Loc.X, Loc.Y);
+            End
             Else
                 Obj.Location := Loc;
         End
@@ -33673,25 +43244,15 @@ Begin
         End
 
         // String properties (late-bound across all types, primitives only)
-        Else If (PropName = 'Text') Or (PropName = 'Name') Then
+        Else If PropName = 'Text'        Then
         Begin
-            If Obj.ObjectId = ePort Then
-            Begin Port := Obj; Port.Name := Value; End
-            Else If Obj.ObjectId = ePin Then
-            Begin Pin := Obj; Pin.Name := Value; End
-            Else If Obj.ObjectId = eNetLabel Then
-            Begin NetLbl := Obj; NetLbl.Text := Value; End
-            Else If Obj.ObjectId = ePowerObject Then
-            Begin Power := Obj; Power.Text := Value; End
-            Else If Obj.ObjectId = eSheetEntry Then
-            Begin SheetEntry := Obj; SheetEntry.Name := Value; End
-            Else Matched := False;
+            If SchObjectHasText(Obj) Then
+                Obj.Text := Value
+            Else
+                Matched := False;
         End
-        Else If PropName = 'LibReference' Then
-        Begin
-            If Obj.ObjectId = eSchComponent Then Begin C := Obj; C.LibReference := Value; End
-            Else Matched := False;
-        End
+        Else If PropName = 'Name'        Then Obj.Name := Value
+        Else If PropName = 'LibReference'       Then Obj.LibReference := Value
         // SourceLibraryName is the design-cache field that records which
         // library a placed component came from. It is read in GetSchProperty
         // but had no write case, so obj_modify / batch_modify silently no-oped
@@ -33699,7 +43260,7 @@ Begin
         // canonical way to detach a part from a stale source-library binding.
         Else If PropName = 'SourceLibraryName' Then
         Begin
-            If Obj.ObjectId = eSchComponent Then Begin C := Obj; C.SourceLibraryName := Value; End
+        If Obj.ObjectId = eSchComponent Then Begin Comp := Obj; Comp.SourceLibraryName := Value; End
             Else Matched := False;
         End
         // DesignItemId is the library ITEM the placed part re-matches
@@ -33711,7 +43272,7 @@ Begin
         // produces the <Not Found> state in the Properties panel.
         Else If PropName = 'DesignItemId' Then
         Begin
-            If Obj.ObjectId = eSchComponent Then Begin C := Obj; C.DesignItemId := Value; End
+        If Obj.ObjectId = eSchComponent Then Begin Comp := Obj; Comp.DesignItemId := Value; End
             Else Matched := False;
         End
         // `Description` is the natural name (matches get_component_info /
@@ -33719,17 +43280,34 @@ Begin
         // is what ISch_Component actually exposes -- both accepted.
         Else If (PropName = 'ComponentDescription') Or (PropName = 'Description') Then
             Obj.ComponentDescription := Value
+        { UniqueId is how Altium groups multi-part sub-parts into one physical
+          component for ECO. The UniqueId property setter remints when the
+          value is already in the document; SetState_UniqueId is the SDK
+          writer (same property) and is the path to try first. }
+        Else If PropName = 'UniqueId' Then
+        Begin
+            Comp := Obj;
+            Try Comp.SetState_UniqueId(Value); Except End;
+            Try Comp.UniqueId := Value; Except End;
+        End
         Else If PropName = 'CurrentPartID' Then
         Begin
-            If Obj.ObjectId = eSchComponent Then
-            Begin C := Obj; C.CurrentPartID := StrToIntDef(Value, 1); End
-            Else Matched := False;
+            Comp := Obj;
+            Try Comp.SetState_CurrentPartID(StrToIntDef(Value, 1)); Except End;
+            Try Comp.CurrentPartID := StrToIntDef(Value, 1); Except End;
         End
         Else If PropName = 'PartCount' Then
         Begin
-            If Obj.ObjectId = eSchComponent Then
-            Begin C := Obj; C.PartCount := StrToIntDef(Value, 1); End
-            Else Matched := False;
+            { LoadComponentFromLibrary can stamp a PLACED component with a
+              lower PartCount than the SchLib symbol reports. Measured on
+              a multi-part symbol: the placed part read 4 against the
+              library's 5, and without a write path the last sub-part,
+              which was the supply unit, could not be selected at all.
+              Do NOT call SetState_PartCount: that identifier is not on
+              ISch_Component in this DelphiScript, and undeclared
+              identifiers raise a modal that bypasses Try/Except. }
+            Comp := Obj;
+            Try Comp.PartCount := StrToIntDef(Value, 1); Except End;
         End
         Else If PropName = 'OwnerPartId' Then
             Obj.OwnerPartId := StrToIntDef(Value, 0)
@@ -33763,43 +43341,115 @@ Begin
         // Integer properties
         Else If PropName = 'Orientation' Then
         Begin
-            { See GetSchProperty: Orientation is available only on typed
-              schematic interfaces, not on ISch_GraphicalObject itself. }
-            If Obj.ObjectId = ePin Then
-            Begin Pin := Obj; Pin.Orientation := StrToIntDef(Value, 0); End
-            Else If Obj.ObjectId = ePort Then
-                Matched := False
-            Else If Obj.ObjectId = eNetLabel Then
-            Begin NetLbl := Obj; NetLbl.Orientation := StrToIntDef(Value, 0); End
-            Else If Obj.ObjectId = ePowerObject Then
-            Begin Power := Obj; Power.Orientation := StrToIntDef(Value, 0); End
-            Else If Obj.ObjectId = eSchComponent Then
-            Begin C := Obj; C.Orientation := StrToIntDef(Value, 0); End
-            Else Matched := False;
+            If SchObjectHasOrientation(Obj) Then
+                Obj.Orientation := StrToIntDef(Value, 0)
+            Else
+                NotePropertyDiag('unknown', PropName);
         End
         Else If PropName = 'FontId'      Then Obj.FontId := StrToIntDef(Value, 1)
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
         Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
+        Else If PropName = 'AutoSize' Then
+        Begin
+            If Obj.ObjectId = ePort Then Begin Port := Obj; Port.AutoSize := StrToBool(Value); End
+            Else Matched := False;
+        End
         Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
         Else If PropName = 'Alignment'   Then Obj.Alignment := StrToIntDef(Value, 0)
         Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
         Else If PropName = 'Color'       Then Obj.Color := StrToIntDef(Value, 0)
         Else If PropName = 'AreaColor'   Then Obj.AreaColor := StrToIntDef(Value, 0)
-        Else If PropName = 'TextColor'   Then Obj.TextColor := StrToIntDef(Value, 0)
+        Else If PropName = 'TextColor' Then
+        Begin
+            If SchObjectHasTextColor(Obj) Then
+            Begin
+                If Obj.ObjectId = ePort Then
+                Begin
+                    PortObj := Obj;
+                    PortObj.TextColor := StrToIntDef(Value, 0);
+                End
+                Else If Obj.ObjectId = eSheetEntry Then
+                Begin
+                    EntryObj := Obj;
+                    EntryObj.TextColor := StrToIntDef(Value, 0);
+                End
+                Else
+                Begin
+                    HarnessEntryObj := Obj;
+                    HarnessEntryObj.TextColor := StrToIntDef(Value, 0);
+                End;
+            End
+            Else
+                Matched := False;
+        End
         Else If PropName = 'Justification' Then Obj.Justification := StrToIntDef(Value, 0)
 
         // Coord properties (expected in mils)
-        Else If PropName = 'Width'       Then Obj.Width := MilsToCoord(StrToIntDef(Value, 0))
+        Else If PropName = 'Width' Then
+        Begin
+            If Obj.ObjectId = ePort Then Begin Port := Obj; Port.Width := MilsToCoord(StrToIntDef(Value, 0)); End
+            Else Obj.Width := MilsToCoord(StrToIntDef(Value, 0));
+        End
         Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'XSize'       Then Obj.XSize := MilsToCoord(StrToIntDef(Value, 0))
         Else If PropName = 'YSize'       Then Obj.YSize := MilsToCoord(StrToIntDef(Value, 0))
 
         // Boolean properties
-        Else If PropName = 'IsHidden'    Then Obj.IsHidden := StrToBool(Value)
+        Else If PropName = 'IsHidden' Then
+        Begin
+            If SchObjectHasIsHidden(Obj) Then
+                Obj.IsHidden := StrToBool(Value)
+            Else
+                Matched := False;
+        End
         Else If PropName = 'IsSolid'     Then Obj.IsSolid := StrToBool(Value)
-        Else If PropName = 'IsMirrored'  Then Obj.IsMirrored := StrToBool(Value)
+        { MIRROR IS NOT A PLAIN PROPERTY WRITE.                              }
+        {                                                                    }
+        { Measured 2026-09-18 on a placed NE555: obj_modify reported         }
+        { matched=1, saved=true, failed=0, and obj_query read IsMirrored     }
+        { back as "true", while the editor kept drawing the component        }
+        { unmirrored. That held across a focus switch to the sheet, which    }
+        { forces a full redraw, so it is not a stale viewport. The plain     }
+        { assignment lands somewhere the getter reads and the renderer does  }
+        { not, which is the worst shape of failure available: the usual way  }
+        { to verify a write agrees with you.                                 }
+        {                                                                    }
+        { SetState_IsMirrored is the SDK writer for the same property, the   }
+        { same pattern UniqueId and CurrentPartID already use above.         }
+        { GUARDED BY ObjectId: it lives on ISch_Component, and calling it on }
+        { an object that lacks it is an undeclared identifier, which raises  }
+        { a modal Try/Except cannot catch and wedges the polling loop. See   }
+        { the PartCount note above for that failure in the wild.             }
+        Else If PropName = 'IsMirrored' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                { SetState_IsMirrored ONLY, never followed by the raw       }
+                { property assignment. The SDK writer applies the mirror    }
+                { AND the geometry that goes with it; assigning the bare    }
+                { flag afterwards stamps the flag back over the top and     }
+                { leaves the drawn shape and the flag disagreeing, which is }
+                { unrecoverable from script: measured 2026-09-18, the part  }
+                { then kept its old picture through GraphicallyInvalidate,  }
+                { SetState_xSizeySize, a deselect, and a full Sch:Zoom      }
+                { repaint at a new scale, and only a document reload fixed  }
+                { it. FormatCopy makes exactly this split, SetState_ for    }
+                { components and the plain property only for non-component  }
+                { primitives.                                                }
+                Comp := Obj;
+                Try Comp.SetState_IsMirrored(StrToBool(Value)); Except End;
+            End
+            Else
+            Begin
+                Try Obj.IsMirrored := StrToBool(Value); Except End;
+            End;
+        End
         Else If PropName = 'Selection'   Then Obj.Selection := StrToBool(Value)
         Else Matched := False;
+
+        { The geometry recompute and the repaint do NOT belong here. They   }
+        { must happen after the SCHM_EndModify bracket closes; see          }
+        { RefreshSchObjectRender below and its call site in the modify loop.}
 
         If Not Matched Then Result := 0
         Else If Not WroteOK Then Result := -1
@@ -33817,6 +43467,48 @@ End;
 { FilterStr format: "PropName=Value|PropName2=Value2" (AND logic)            }
 { Empty filter matches everything.                                           }
 {..............................................................................}
+
+{..............................................................................}
+{ RefreshSchObjectRender - rebuild what an edited object draws as.             }
+{                                                                              }
+{ CALL THIS AFTER SCHM_EndModify, NEVER INSIDE THE BRACKET.                    }
+{                                                                              }
+{ A component caches its own bounding geometry, and a property that changes    }
+{ how it draws leaves that cache describing the OLD shape. Invalidating asks   }
+{ Altium to paint again, not to work out what to paint, so the stale cache is  }
+{ repainted faithfully. SetState_xSizeySize is what recomputes it, and it is   }
+{ what the scripts that mirror successfully all call (FormatCopy,              }
+{ CompPlaceFromLib, CompRename2, annotated there as "recalc bounding rect").   }
+{                                                                              }
+{ MEASURED 2026-09-18, and the ordering is the whole point. With the recompute }
+{ and the invalidate issued INSIDE the Begin/EndModify bracket, the canvas     }
+{ lagged the model by exactly one change: after writing IsMirrored=True the    }
+{ Properties panel showed Mirrored ticked while the sheet drew the part        }
+{ unmirrored, and after writing False it showed unticked while the sheet drew  }
+{ it mirrored. The value was never wrong; the picture was always one edit      }
+{ behind. Neither a focus switch, nor GraphicallyInvalidate, nor a full        }
+{ Sch:Zoom Action=All repaint corrected it, because each of those repaints     }
+{ from the cache rather than rebuilding it.                                    }
+{                                                                              }
+{ Component-guarded: SetState_xSizeySize is an ISch_Component method, and      }
+{ calling it on an object without it is an undeclared identifier, which raises }
+{ a modal Try/Except cannot catch and wedges the polling loop.                 }
+{..............................................................................}
+
+Procedure RefreshSchObjectRender(Obj : ISch_GraphicalObject);
+Var
+    Comp : ISch_Component;
+Begin
+    If Obj = Nil Then Exit;
+    { SetState_xSizeySize USED TO BE CALLED HERE AND IS NOT ANY MORE.        }
+    { It was added chasing a redraw theory that measurement later killed:    }
+    { the canvas draws from primitive geometry, so a property write that     }
+    { moves nothing has nothing to redraw. Worse, it is the most likely      }
+    { cause of a component's pins relocating on their own during that        }
+    { investigation, which is a silent edit to a design. Mirroring is now    }
+    { handled properly by Gen_MirrorSchComponent, which moves the geometry.  }
+    Try Obj.GraphicallyInvalidate; Except End;
+End;
 
 Function MatchesFilter(Obj : ISch_GraphicalObject; FilterStr : String) : Boolean;
 Var
@@ -33842,11 +43534,26 @@ Begin
             Remaining := '';
         End;
 
-        // Parse "PropName=Value"
+        // Parse "PropName=Value". A condition that is not one matches
+        // nothing (see FilterProblem): skipped, it matched everything.
+        If Trim(Condition) = '' Then Continue;
         EqPos := Pos('=', Condition);
-        If EqPos = 0 Then Continue;
+        If EqPos < 2 Then
+        Begin
+            Result := False;
+            Exit;
+        End;
         PropName := Copy(Condition, 1, EqPos - 1);
         Expected := Copy(Condition, EqPos + 1, Length(Condition));
+
+        { An unreadable property is not an empty value. In particular,
+          TextColor= must never match power objects in a delete/filter. }
+        If UnsupportedSchProperty(Obj, Condition) <> '' Then
+        Begin
+            NotePropertyDiag('unreadable', PropName);
+            Result := False;
+            Exit;
+        End;
 
         // Compare
         Actual := GetSchProperty(Obj, PropName);
@@ -33901,10 +43608,42 @@ End;
 {..............................................................................}
 
 Procedure ApplySetProperties(Obj : ISch_GraphicalObject; SetStr : String);
+{ Location.X and Location.Y arriving in the SAME pipe-combined set used to be }
+{ applied as two independent SetSchProperty writes. Measured on a live        }
+{ eSchComponent: `Location.X=1200|Location.Y=7600` moved X and left Y at its  }
+{ old value. Each write re-reads Obj.Location, and the copy handed back after }
+{ the first move still carried the PREVIOUS coordinates, so writing it back   }
+{ reverted the move that had just been made. Same class of bug as the         }
+{ Location.X + Orientation interaction documented in SetSchProperty.          }
+{                                                                             }
+{ Fix: parse the whole set FIRST, coalesce both axes into ONE positional      }
+{ write, then apply every remaining property. A component gets MoveToXY so    }
+{ its child pins travel with the body (see SetSchProperty); everything else   }
+{ owns no child primitives, so a plain Location assignment is correct for it  }
+{ (a net label in particular must NOT go through MoveToXY -- it has no        }
+{ MoveToXY and is not a component).                                           }
 Var
-    Remaining, Assignment, PropName, PropValue : String;
+    Remaining, Assignment, PropName, PropValue, UnsupportedProp : String;
     PipePos, EqPos : Integer;
+    Loc : TLocation;
+    Comp : ISch_Component;
+    HasX, HasY : Boolean;
+    NewX, NewY : Integer;
 Begin
+    { Reject the whole assignment list before even the coalesced move.
+      Otherwise Location/Color can change before a later TextColor fails. }
+    UnsupportedProp := UnsupportedSchProperty(Obj, SetStr);
+    If UnsupportedProp <> '' Then
+    Begin
+        NotePropertyDiag('unknown', UnsupportedProp);
+        Exit;
+    End;
+
+    { Pass 1: collect the positional assignments without applying anything. }
+    HasX := False;
+    HasY := False;
+    NewX := 0;
+    NewY := 0;
     Remaining := SetStr;
     While Remaining <> '' Do
     Begin
@@ -33924,6 +43663,61 @@ Begin
         If EqPos = 0 Then Continue;
         PropName := Copy(Assignment, 1, EqPos - 1);
         PropValue := Copy(Assignment, EqPos + 1, Length(Assignment));
+
+        If PropName = 'Location.X' Then
+        Begin
+            HasX := True;
+            NewX := StrToIntDef(PropValue, 0);
+        End
+        Else If PropName = 'Location.Y' Then
+        Begin
+            HasY := True;
+            NewY := StrToIntDef(PropValue, 0);
+        End;
+    End;
+
+    { One positional write covering whichever axes were supplied. }
+    If HasX Or HasY Then
+    Begin
+        Try
+            Loc := Obj.Location;
+            If HasX Then Loc.X := MilsToCoord(NewX);
+            If HasY Then Loc.Y := MilsToCoord(NewY);
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                Comp.MoveToXY(Loc.X, Loc.Y);
+            End
+            Else
+                Obj.Location := Loc;
+        Except
+            NotePropertyDiag('failed', 'Location');
+        End;
+    End;
+
+    { Pass 2: every non-positional property, in the order it was given. }
+    Remaining := SetStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Assignment := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Assignment := Remaining;
+            Remaining := '';
+        End;
+
+        EqPos := Pos('=', Assignment);
+        If EqPos = 0 Then Continue;
+        PropName := Copy(Assignment, 1, EqPos - 1);
+        PropValue := Copy(Assignment, EqPos + 1, Length(Assignment));
+
+        { Already applied above as part of the coalesced positional write. }
+        If (PropName = 'Location.X') Or (PropName = 'Location.Y') Then Continue;
 
         SetSchProperty(Obj, PropName, PropValue);
     End;
@@ -34343,6 +44137,11 @@ Begin
                 SchBeginModify(Obj);
                 ApplySetProperties(Obj, SetStr);
                 SchEndModify(Obj);
+                { AFTER the bracket, not inside it: a recompute or an     }
+                { invalidate issued mid-modify is consumed by EndModify   }
+                { repainting from the pre-change cache, which leaves the  }
+                { canvas exactly one edit behind the model.                }
+                RefreshSchObjectRender(Obj);
             End;
 
             Inc(TotalMatched);
@@ -34370,10 +44169,16 @@ Var
     Doc : IDocument;
     SchDoc : ISch_Document;
     ServerDoc : IServerDocument;
-    I, TotalMatched, SheetsProcessed, SheetsSaved : Integer;
-    FilePath, JsonItems : String;
+    I, TotalMatched, SheetsProcessed, SheetsMarked : Integer;
+    FilePath, JsonItems, BadCond : String;
     IsMutating : Boolean;
 Begin
+    BadCond := FilterProblem(FilterStr);
+    If BadCond <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FILTER', BadFilterMessage(BadCond));
+        Exit;
+    End;
     Workspace := GetWorkspace;
     If Workspace = Nil Then
     Begin
@@ -34393,7 +44198,7 @@ Begin
 
     TotalMatched := 0;
     SheetsProcessed := 0;
-    SheetsSaved := 0;
+    SheetsMarked := 0;
     JsonItems := '';
     IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
 
@@ -34423,10 +44228,13 @@ Begin
         If IsMutating Then
         Begin
             Try SchDoc.GraphicallyInvalidate; Except End;
-            // SaveDocByPath does SetModified + DoFileSave, which writes
-            // directly to disk and bypasses SaveAll's non-active-doc blind spot.
-            SaveDocByPath(FilePath);
-            Inc(SheetsSaved);
+            // MARKS THE DOCUMENT, it does not write. The flush is
+            // app_save_all. This comment used to say the procedure did
+            // SetModified + DoFileSave and wrote straight to disk, which
+            // was never true and is how three tool docstrings came to
+            // promise a save that never happened.
+            MarkDocDirtyByPath(FilePath);
+            Inc(SheetsMarked);
         End;
 
         Inc(SheetsProcessed);
@@ -34437,13 +44245,17 @@ Begin
     If Mode = 'query' Then
         Result := BuildSuccessResponse(RequestId,
             '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched) +
-            ',"sheets_processed":' + IntToStr(SheetsProcessed) + '}')
+            ',"sheets_processed":' + IntToStr(SheetsProcessed)
+            + ',"properties":' + RenderPropertyDiagJson(0) + '}')
     Else
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) +
             ',"sheets_processed":' + IntToStr(SheetsProcessed) +
-            ',"sheets_saved":' + IntToStr(SheetsSaved)
-            + ModifyOutcomeJson + '}');
+            { Named for what it counts. It was "sheets_saved", and the
+              documents were only marked dirty; app_save_all is what
+              writes them. }
+            ',"sheets_marked":' + IntToStr(SheetsMarked)
+            + ModifyOutcomeJson(0) + '}');
 End;
 
 {..............................................................................}
@@ -34457,9 +44269,15 @@ Var
     SchDoc : ISch_Document;
     ServerDoc : IServerDocument;
     TotalMatched : Integer;
-    JsonItems, DocPath, SavedStr : String;
+    JsonItems, DocPath, SavedStr, BadCond : String;
     IsMutating, Saved : Boolean;
 Begin
+    BadCond := FilterProblem(FilterStr);
+    If BadCond <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FILTER', BadFilterMessage(BadCond));
+        Exit;
+    End;
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
     Begin
@@ -34477,19 +44295,23 @@ Begin
     If IsMutating Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
-        SaveDocByPath(DocPath);
+        MarkDocDirtyByPath(DocPath);
         Saved := True;
     End;
 
     If Mode = 'query' Then
+        { The diagnostic rides on a QUERY as well. A property that could
+          not be read comes back as an empty string, and without this the
+          caller cannot tell that from a value that is genuinely empty. }
         Result := BuildSuccessResponse(RequestId,
-            '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched) + '}')
+            '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched)
+            + ',"properties":' + RenderPropertyDiagJson(0) + '}')
     Else
     Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ModifyOutcomeJson + '}');
+            + ModifyOutcomeJson(0) + '}');
     End;
 End;
 
@@ -34504,9 +44326,15 @@ Var
     SchDoc : ISch_Document;
     ServerDoc : IServerDocument;
     TotalMatched : Integer;
-    JsonItems, SavedStr : String;
+    JsonItems, SavedStr, BadCond : String;
     IsMutating, Saved : Boolean;
 Begin
+    BadCond := FilterProblem(FilterStr);
+    If BadCond <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_FILTER', BadFilterMessage(BadCond));
+        Exit;
+    End;
 
     // Do NOT RunProcess Client:OpenDocument, that loads the file but
     // strips any project association, producing a "free document" in the
@@ -34530,19 +44358,23 @@ Begin
     If IsMutating Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
-        SaveDocByPath(DocPath);
+        MarkDocDirtyByPath(DocPath);
         Saved := True;
     End;
 
     If Mode = 'query' Then
+        { The diagnostic rides on a QUERY as well. A property that could
+          not be read comes back as an empty string, and without this the
+          caller cannot tell that from a value that is genuinely empty. }
         Result := BuildSuccessResponse(RequestId,
-            '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched) + '}')
+            '{"objects":[' + JsonItems + '],"count":' + IntToStr(TotalMatched)
+            + ',"properties":' + RenderPropertyDiagJson(0) + '}')
     Else
     Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ModifyOutcomeJson + '}');
+            + ModifyOutcomeJson(0) + '}');
     End;
 End;
 
@@ -34626,7 +44458,11 @@ Begin
     { reach part 1 and correcting parts 2..N meant a full rebuild.          }
     { Scan from the RIGHT: a lib-ref may legitimately contain '@'.          }
     CompName := ScopePath;
-    PartId := 1;
+    { 0 = NO SUFFIX, which keeps the plain lookup exactly as it was. A
+      written @1 used to arrive here as the same 1, so the two could not be
+      told apart and @1 was never honoured. A parsed suffix below still
+      clamps to 1, so @0 and @-1 are read as an explicit part 1. }
+    PartId := 0;
     AtPos := 0;
     For I := Length(ScopePath) DownTo 1 Do
         If ScopePath[I] = '@' Then
@@ -34669,6 +44505,9 @@ Begin
     Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 0);
 
     If PropsStr = '' Then PropsStr := 'Location.X,Location.Y';
+    { Start clean, so the reply describes THIS query. }
+    ResetPropertyDiag(0);
+
     ParseScope(Scope, ScopeType, ScopePath);
 
     { A PCB OBJECT TYPE CANNOT HONOUR A SCOPE, so say so before doing         }
@@ -34731,14 +44570,14 @@ Begin
             Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
                 'Not a PCB property: ' + BadProps + '. These primitives do '
                 + 'not use the dotted schematic spelling, so Net.Name is '
-                + 'Net here. Available: ' + KnownPCBPropertyList + '.');
+                + 'Net here. Available: ' + KnownPCBPropertyList(0) + '.');
             Exit;
         End;
         Result := ProcessActivePCBDoc(ObjTypeInt, FilterStr, PropsStr, '', 'query', RequestId, Limit);
         Exit;
     End;
 
-    Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + ObjTypeStr);
+    Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', UnknownObjectTypeMessage(ObjTypeStr));
 End;
 
 {..............................................................................}
@@ -34861,7 +44700,7 @@ Begin
     { level and the bridge handles one request at a time, but a handler     }
     { that left entries behind would otherwise fail the next caller for a   }
     { property it never sent.                                               }
-    ResetPropertyDiag;
+    ResetPropertyDiag(0);
 
     ParseScope(Scope, ScopeType, ScopePath);
     If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
@@ -34890,7 +44729,7 @@ Begin
         Exit;
     End;
 
-    Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + ObjTypeStr);
+    Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', UnknownObjectTypeMessage(ObjTypeStr));
 End;
 
 {..............................................................................}
@@ -34900,13 +44739,15 @@ End;
 
 Function Gen_CreateObject(Params : String; RequestId : String) : String;
 Var
-    ObjTypeStr, PropsStr, Container, DiagJson : String;
+    ObjTypeStr, PropsStr, Container, UnsupportedProp : String;
     ObjTypeInt : Integer;
     SchDoc : ISch_Document;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     NewObj : ISch_GraphicalObject;
 Begin
+    ResetPropertyDiag(0);
+    SchDoc := Nil;
     ObjTypeStr := ExtractJsonValue(Params, 'object_type');
     PropsStr := ExtractJsonValue(Params, 'properties');
     Container := ExtractJsonValue(Params, 'container');
@@ -34915,7 +44756,7 @@ Begin
     ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
     If ObjTypeInt = -1 Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + ObjTypeStr);
+        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', UnknownObjectTypeMessage(ObjTypeStr));
         Exit;
     End;
 
@@ -34926,6 +44767,18 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create object of type: ' + ObjTypeStr);
         Exit;
     End;
+
+    UnsupportedProp := UnsupportedSchProperty(NewObj, PropsStr);
+    If UnsupportedProp <> '' Then
+    Begin
+        SchServer.DestroySchObject(NewObj);
+        Result := BuildErrorResponse(RequestId, 'UNSUPPORTED_PROPERTY',
+            'Property ' + UnsupportedProp + ' is not supported on ' + ObjTypeStr);
+        Exit;
+    End;
+
+    // Set properties
+    ApplySetProperties(NewObj, PropsStr);
 
     // Register in container
     If Container = 'component' Then
@@ -34978,8 +44831,15 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
-    Result := BuildSuccessResponse(RequestId, '{"created":true,"object_type":"'
-        + ObjTypeStr + '","property_diagnostics":' + DiagJson + '}');
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId, '{"created":true,"object_type":"' + ObjTypeStr + '"}');
 End;
 
 {..............................................................................}
@@ -35023,7 +44883,7 @@ Begin
         Exit;
     End;
 
-    Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + ObjTypeStr);
+    Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', UnknownObjectTypeMessage(ObjTypeStr));
 End;
 
 {..............................................................................}
@@ -35175,7 +45035,7 @@ Begin
         Exit;
     End;
 
-    Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + ObjTypeStr);
+    Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', UnknownObjectTypeMessage(ObjTypeStr));
 End;
 
 {..............................................................................}
@@ -35210,7 +45070,7 @@ Begin
         Exit;
     End;
 
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board <> Nil Then
     Begin
         ResetParameters;
@@ -35237,30 +45097,51 @@ Begin
     If Action = '' Then Action := 'fit';
 
     SchDoc := SchServer.GetCurrentSchDocument;
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
+
+    { ACTION VALUES ARE NOT FREE TEXT. Altium accepts an unknown process     }
+    { parameter without complaint and falls back to its own dialog, which is }
+    { how "zoom" came to open a Zoom dialog instead of zooming (reported     }
+    { 2026-09-18). The values below are the ones actually attested: 'All' is }
+    { documented for both PCB:Zoom and Sch:Zoom (system-api.html, and five   }
+    { examples in the PCB reference), and 'Redraw' for PCB:Zoom. The old     }
+    { 'ZoomToFit' / 'ZoomToSelection' appear in no Altium documentation or   }
+    { third-party script; the only hits were this repository's own copy      }
+    { vendored into reference/, which is not corroboration.                  }
+    If (SchDoc = Nil) And (Board = Nil) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
+            'No schematic or PCB document is open to zoom.');
+        Exit;
+    End;
 
     If Action = 'fit' Then
     Begin
-        If SchDoc <> Nil Then RunProcess('Sch:ZoomToFit')
-        Else If Board <> Nil Then
-        Begin
-            ResetParameters;
-            AddStringParameter('Action', 'ZoomToFit');
-            RunProcess('PCB:Zoom');
-        End;
+        ResetParameters;
+        AddStringParameter('Action', 'All');
+        If SchDoc <> Nil Then RunProcess('Sch:Zoom')
+        Else RunProcess('PCB:Zoom');
     End
     Else If Action = 'selection' Then
     Begin
-        If SchDoc <> Nil Then RunProcess('Sch:ZoomToSelected')
-        Else If Board <> Nil Then
-        Begin
-            ResetParameters;
-            AddStringParameter('Action', 'ZoomToSelection');
-            RunProcess('PCB:Zoom');
-        End;
+        { 'Selected' is attested in third-party PCB scripts but not in the   }
+        { Altium documentation, and never for Sch:Zoom. Reported rather than }
+        { claimed: the caller is told the zoom was dispatched, not that the  }
+        { viewport moved.                                                     }
+        ResetParameters;
+        AddStringParameter('Action', 'Selected');
+        If SchDoc <> Nil Then RunProcess('Sch:Zoom')
+        Else RunProcess('PCB:Zoom');
+    End
+    Else
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'action must be "fit" or "selection", got "' + Action + '"');
+        Exit;
     End;
 
-    Result := BuildSuccessResponse(RequestId, '{"action":"' + Action + '"}');
+    Result := BuildSuccessResponse(RequestId, '{"action":"' + Action + '",'
+        + '"dispatched":true}');
 End;
 
 {..............................................................................}
@@ -35314,36 +45195,71 @@ End;
 {..............................................................................}
 { BATCH MODIFY: Multiple modify operations in a single IPC call.             }
 {                                                                            }
-{ Params: operations, '~~'-separated list of operations, each a ';'-separated }
-{   set of keyed fields (same encoding as batch_create / batch_delete, parsed }
-{   by NextBatchOp / GetBatchField):                                          }
-{     scope=<scope>;object_type=<type>;filter=<filter>;set=<assignments>      }
-{   Example, two ops joined by '~~':                                          }
-{     scope=project;object_type=eParameter;filter=Name=Engineer;set=Text=John }
-{     scope=active_doc;object_type=eSchComponent;                             }
-{       filter=Location.X=7013|Location.Y=7634;set=Designator.Text=C1027      }
-{                                                                             }
-{   '~~' never appears in Altium names, filters or property strings, so a     }
-{   filter/set that itself uses '|' survives intact. GetBatchField splits     }
-{   each field at its FIRST '=', so 'filter=Location.X=7013|...' keeps the    }
-{   whole right-hand side as the filter value.                                }
+{ Params: operations. Preferred wire format is the '~~' batch format shared  }
+{   with batch_delete / place_wires:                                         }
+{     scope=active_doc;object_type=eNetLabel;filter=Text=VBUS;set=Location.Y=6400~~... }
 {                                                                            }
-{ This processes ALL operations on the Altium side in one round-trip,        }
-{ dramatically faster than multiple individual modify_objects calls.          }
+{ LEGACY format (still accepted when the payload contains no '~~'):          }
+{   pipe-separated operations, each semicolon-separated as                   }
+{   scope;object_type;filter;set                                             }
 {                                                                            }
-{ The response reports matched objects and per-op failures so a batch that    }
-{ resolves nothing can no longer look like a success.                        }
+{ The legacy format was BROKEN for any op whose filter or set contained a    }
+{ '|', which is the documented separator INSIDE both of those fields.        }
+{ Measured on a live document: an op list of 4 eSchComponent moves followed  }
+{ by 8 eNetLabel moves reported operations_processed=4 and silently dropped  }
+{ the other 8, and a lone eNetLabel op with a two-condition filter reported  }
+{ operations_processed=0 while the identical filter matched through          }
+{ obj_query and obj_batch_delete. Cause: the top-level split on '|' tore     }
+{ each such op into fragments, and every fragment after the first had fewer  }
+{ than three ';' so it hit `Continue` and vanished without a trace. It was   }
+{ never an object-type allowlist -- eNetLabel was always accepted.           }
+{                                                                            }
+{ '~~' cannot appear in an Altium name, filter or property string (see the   }
+{ batch helper notes in Main.pas), so the new format is unambiguous.         }
+{                                                                            }
+{ Every op is now evaluated independently and reports its own matched count  }
+{ in "results", so an op that matches nothing is REPORTED rather than being  }
+{ silently counted as fine.                                                  }
 {..............................................................................}
+
+{ Split one legacy 'scope;object_type;filter;set' operation. Returns False  }
+{ when the fragment does not carry all four fields, which is how a torn      }
+{ legacy payload is detected.                                                }
+Function SplitLegacyModifyOp(OpStr : String; Var Scope : String;
+    Var ObjTypeStr : String; Var FilterStr : String; Var SetStr : String) : Boolean;
+Var
+    Rest : String;
+    SemiPos : Integer;
+Begin
+    Result := False;
+    Rest := OpStr;
+
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    Scope := Copy(Rest, 1, SemiPos - 1);
+    Rest := Copy(Rest, SemiPos + 1, Length(Rest));
+
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    ObjTypeStr := Copy(Rest, 1, SemiPos - 1);
+    Rest := Copy(Rest, SemiPos + 1, Length(Rest));
+
+    SemiPos := Pos(';', Rest);
+    If SemiPos = 0 Then Exit;
+    FilterStr := Copy(Rest, 1, SemiPos - 1);
+    SetStr := Copy(Rest, SemiPos + 1, Length(Rest));
+    Result := True;
+End;
 
 Function Gen_BatchModify(Params : String; RequestId : String) : String;
 Var
-    Operations, OpStr, Remaining, OpResp : String;
+    Operations, OpStr, Remaining, OpResult, Note : String;
     Scope, ObjTypeStr, FilterStr, SetStr : String;
-    ScopeType, ScopePath, FailCode : String;
+    ScopeType, ScopePath : String;
     ObjTypeInt, PipePos : Integer;
-    TotalMatched, OpCount, OpIndex, OpFailed : Integer;
-    Keyed, Parsed, IsPCB : Boolean;
-    FailuresJson, ResultJson : String;
+    TotalMatched, OpCount, OpSkipped, OpMatched : Integer;
+    ResultJson, ResultsJson : String;
+    UseTilde, IsPcb : Boolean;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -35360,25 +45276,25 @@ Begin
 
     TotalMatched := 0;
     OpCount := 0;
-    OpIndex := 0;
-    OpFailed := 0;
-    FailuresJson := '';
+    OpSkipped := 0;
+    ResultJson := '';
+    ResultsJson := '';
     Remaining := Operations;
+    UseTilde := Pos('~~', Operations) > 0;
 
     { Clear the property-write diagnostics buffer so this call only       }
     { surfaces issues raised by THIS batch, not anything left over.       }
-    ResetPropertyDiag;
+    ResetPropertyDiag(0);
 
     While True Do
     Begin
-        Parsed := False;
         Scope := '';
         ObjTypeStr := '';
         FilterStr := '';
         SetStr := '';
-        FailCode := '';
+        Note := '';
 
-        If Keyed Then
+        If UseTilde Then
         Begin
             OpStr := NextBatchOp(Remaining);
             If OpStr = '' Then Break;
@@ -35386,11 +45302,13 @@ Begin
             ObjTypeStr := GetBatchField(OpStr, 'object_type');
             FilterStr := GetBatchField(OpStr, 'filter');
             SetStr := GetBatchField(OpStr, 'set');
-            Parsed := True;
         End
         Else
         Begin
-            If Length(Remaining) = 0 Then Break;
+            { Legacy '|' framing. Kept so an older Python client keeps      }
+            { working, but a fragment that lost fields to a '|' inside a    }
+            { filter or set is now COUNTED and reported instead of being    }
+            { dropped in silence.                                           }
             PipePos := Pos('|', Remaining);
             If PipePos = 0 Then
             Begin
@@ -35403,90 +45321,102 @@ Begin
                 Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
             End;
             If OpStr = '' Then Continue;
-            Parsed := ParseLegacyModifyOp(OpStr, Scope, ObjTypeStr, FilterStr, SetStr);
+            If Not SplitLegacyModifyOp(OpStr, Scope, ObjTypeStr, FilterStr, SetStr) Then
+                Note := 'malformed_operation';
         End;
-
-        Inc(OpIndex);
 
         If Scope = '' Then Scope := 'active_doc';
 
-        If Not Parsed Then FailCode := 'MALFORMED_OP'
-        Else If ObjTypeStr = '' Then FailCode := 'MISSING_OBJECT_TYPE'
-        Else If SetStr = '' Then FailCode := 'MISSING_SET';
+        { Every op is evaluated on its own merits from here down. A reason  }
+        { to skip is RECORDED, never silently swallowed: silent-drop is     }
+        { what made the original bug invisible.                             }
+        OpMatched := 0;
+        ObjTypeInt := -1;
+        ScopeType := '';
+        ScopePath := '';
 
-        If FailCode = '' Then
+        If Note = '' Then
         Begin
-            ParseScope(Scope, ScopeType, ScopePath);
-            { lib_component scope: select the symbol before the op runs. }
-            If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
-                FailCode := 'LIB_COMPONENT_NOT_FOUND';
+            If ObjTypeStr = '' Then Note := 'missing_object_type'
+            Else If SetStr = '' Then Note := 'missing_set';
         End;
 
-        If FailCode = '' Then
+        IsPcb := False;
+        If Note = '' Then
         Begin
-            { Same two-step type resolution the single-shot modify_objects  }
-            { does, so a batch can carry PCB ops too instead of rejecting    }
-            { every one of them as an unknown type.                          }
-            IsPCB := False;
             ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
+            { A board type has a table of its own. obj_modify has always   }
+            { looked there as well; this batch form answered              }
+            { unknown_object_type for every board type.                   }
             If ObjTypeInt = -1 Then
             Begin
                 ObjTypeInt := ObjectTypeFromStringPCB(ObjTypeStr);
-                If ObjTypeInt <> -1 Then IsPCB := True;
+                IsPcb := (ObjTypeInt <> -1);
             End;
-            If ObjTypeInt = -1 Then FailCode := 'INVALID_TYPE';
+            If ObjTypeInt = -1 Then Note := 'unknown_object_type';
         End;
 
-        If FailCode = '' Then
+        If Note = '' Then
         Begin
-            If IsPCB Then
-                OpResp := ProcessActivePCBDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
-            Else If ScopeType = 'project' Then
-                OpResp := IterateProjectDocs(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, ScopePath, 0)
-            Else If ScopeType = 'doc' Then
-                OpResp := ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
-            Else
-                OpResp := ProcessActiveDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
-
-            { The per-op helpers return a full response envelope. A failed }
-            { one (document not loaded, no active schematic, ...) used to   }
-            { be discarded, so the batch reported success either way.       }
-            If ExtractJsonValue(OpResp, 'success') = 'true' Then
+            ParseScope(Scope, ScopeType, ScopePath);
+            { A board type edits the active board and nothing else, and the }
+            { lib_component step would move a SchLib's current symbol for   }
+            { an operation that never reads it.                             }
+            If IsPcb Then
             Begin
-                TotalMatched := TotalMatched + StrToIntDef(ExtractJsonValue(OpResp, 'matched'), 0);
-                Inc(OpCount);
+                If ScopeType <> 'active_doc' Then Note := 'scope_not_supported';
             End
             Else
             Begin
-                FailCode := ExtractJsonValue(ExtractJsonValue(OpResp, 'error'), 'code');
-                If FailCode = '' Then FailCode := 'OP_FAILED';
+                { lib_component scope: select the symbol; report if it's gone. }
+                If Not ApplyLibComponentScope(ScopeType, ScopePath) Then
+                    Note := 'lib_component_not_found';
             End;
         End;
 
-        If FailCode <> '' Then
+        If Note = '' Then
         Begin
-            Inc(OpFailed);
-            { Cap the detail list, a 500-op batch against a closed document }
-            { must not blow the response up.                                }
-            If OpFailed <= 20 Then
+            OpResult := '';
+            If IsPcb Then
+                OpResult := ProcessActivePCBDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
+            Else If ScopeType = 'project' Then
+                OpResult := IterateProjectDocs(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, ScopePath, 0)
+            Else If ScopeType = 'doc' Then
+                OpResult := ProcessDocByPath(ScopePath, ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0)
+            Else
+                OpResult := ProcessActiveDoc(ObjTypeInt, FilterStr, '', SetStr, 'modify', RequestId, 0);
+
+            OpMatched := StrToIntDef(ExtractJsonValue(OpResult, 'matched'), 0);
+            TotalMatched := TotalMatched + OpMatched;
+            If Pos('"success":false', OpResult) > 0 Then
             Begin
-                If FailuresJson <> '' Then FailuresJson := FailuresJson + ',';
-                FailuresJson := FailuresJson +
-                    '{"index":' + IntToStr(OpIndex - 1) +
-                    ',"object_type":"' + EscapeJsonString(ObjTypeStr) +
-                    '","reason":"' + EscapeJsonString(FailCode) + '"}';
+                Note := 'failed: ' + ExtractJsonValue(OpResult, 'code');
+            End
+            Else
+            Begin
+                If OpMatched = 0 Then Note := 'no_objects_matched';
             End;
-        End;
+            Inc(OpCount);
+        End
+        Else
+            Inc(OpSkipped);
+
+        { Per-op row so a zero-match or skipped op is visible to the caller. }
+        If ResultsJson <> '' Then ResultsJson := ResultsJson + ',';
+        ResultsJson := ResultsJson +
+            '{"object_type":"' + EscapeJsonString(ObjTypeStr) + '"' +
+            ',"filter":"' + EscapeJsonString(FilterStr) + '"' +
+            ',"matched":' + IntToStr(OpMatched) +
+            ',"note":"' + EscapeJsonString(Note) + '"}';
     End;
 
     { Surface unknown / failed property writes so they stop being silent. }
     ResultJson :=
         '{"operations_processed":' + IntToStr(OpCount) +
-        ',"operations_total":' + IntToStr(OpIndex) +
-        ',"operations_failed":' + IntToStr(OpFailed) +
-        ',"matched":' + IntToStr(TotalMatched) +
-        ',"failures":[' + FailuresJson + ']' +
-        ',"properties":' + RenderPropertyDiagJson + '}';
+        ',"operations_skipped":' + IntToStr(OpSkipped) +
+        ',"total_matched":' + IntToStr(TotalMatched) +
+        ',"results":[' + ResultsJson + ']' +
+        ',"properties":' + RenderPropertyDiagJson(0) + '}';
     Result := BuildSuccessResponse(RequestId, ResultJson);
 End;
 
@@ -35533,6 +45463,8 @@ Function Gen_HighlightNet(Params : String; RequestId : String) : String;
 Var
     NetName : String;
     ClearExisting : String;
+    Context : String;
+    FocusedKind : String;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
     Net : IPCB_Net;
@@ -35542,9 +45474,13 @@ Var
     Obj : ISch_GraphicalObject;
     Matched : Integer;
     TargetUpper, ObjNet : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PreferSch : Boolean;
 Begin
     NetName := ExtractJsonValue(Params, 'net_name');
     ClearExisting := ExtractJsonValue(Params, 'clear_existing');
+    Context := ExtractJsonValue(Params, 'context');
     TargetUpper := UpperCase(NetName);
 
     If NetName = '' Then
@@ -35553,8 +45489,25 @@ Begin
         Exit;
     End;
 
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     SchDoc := SchServer.GetCurrentSchDocument;
+
+    { GetPCBBoardAnywhere returns a board even when a schematic is the    }
+    { focused document, so a schematic highlight would silently paint the }
+    { PCB instead. Prefer the focused doc, or an explicit context param.  }
+    FocusedKind := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except End;
+        If Doc <> Nil Then
+            Try FocusedKind := Doc.DM_DocumentKind; Except End;
+    End;
+    PreferSch := (UpperCase(Context) = 'SCHEMATIC') Or
+        ((UpperCase(Context) <> 'PCB') And (FocusedKind = 'SCH'));
+    If PreferSch And (SchDoc <> Nil) Then
+        Board := Nil;
 
     { PCB path, use the documented IPCB_Net.IsHighlighted property set    }
     { directly on the net object. The earlier RunProcess('PCB:NetColor-    }
@@ -35603,19 +45556,31 @@ Begin
     { API. The base ISch_GraphicalObject has no NetName property          }
     { (compile-time "Undeclared identifier: NetName"; Try/Except can't    }
     { rescue it). Instead, dispatch on ObjectId:                          }
-    {   - eNetLabel / ePowerObject / ePort , match against .Text         }
+    {   - eNetLabel / ePowerObject          , match against .Text        }
+    {   - ePort                              , match against .Name        }
     {   - eSheetEntry                       , match against .Name         }
     {   - eWire                             , wires don't store a net    }
     {     name as a primitive property; the net is derived at compile     }
     {     time from the labels / ports attached to the wire segment.     }
     {     We skip them, selecting the net labels is enough to make the  }
     {     user eyeball-trace the wires.                                  }
+    {                                                                    }
+    { Do NOT wrap this in ProcessControl.PreProcess. The MCP poller     }
+    { already owns the script engine; PreProcess + a debugger break     }
+    { (or an undeclared-identifier modal on .Selection) deadlocks       }
+    { Altium. Selection-only paint is not an undoable edit. Clear via   }
+    { Sch:DeSelectAll, then set Selection=True on matches only -- never }
+    { Selection=False inside the iterator (that path raises a modal     }
+    { that bypasses Try/Except on sub-objects).                         }
     If SchDoc <> Nil Then
     Begin
         Matched := 0;
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
-        Try
-            SchIter := SchDoc.SchIterator_Create;
+        If (ClearExisting = '') Or (ClearExisting = 'true') Then
+            SchDeselectAllObjects(SchDoc);
+
+        SchIter := SchDoc.SchIterator_Create;
+        If SchIter <> Nil Then
+        Begin
             Try
                 SchIter.AddFilter_ObjectSet(MkSet(eNetLabel, ePowerObject,
                     ePort, eSheetEntry));
@@ -35623,7 +45588,10 @@ Begin
                 While Obj <> Nil Do
                 Begin
                     ObjNet := '';
-                    If Obj.ObjectId = eSheetEntry Then
+                    { A Port names itself with Name too, and reading
+                      Text on one raises an undeclared identifier that no
+                      Try/Except can contain. Issue #22. }
+                    If Not SchObjectHasText(Obj) Then
                         Try ObjNet := Obj.Name; Except End
                     Else
                         Try ObjNet := Obj.Text; Except End;
@@ -35632,16 +45600,12 @@ Begin
                     Begin
                         Try Obj.Selection := True; Except End;
                         Matched := Matched + 1;
-                    End
-                    Else If (ClearExisting = '') Or (ClearExisting = 'true') Then
-                        Try Obj.Selection := False; Except End;
+                    End;
                     Obj := SchIter.NextSchObject;
                 End;
             Finally
                 SchDoc.SchIterator_Destroy(SchIter);
             End;
-        Finally
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
         End;
         Try SchDoc.GraphicallyInvalidate; Except End;
 
@@ -35668,7 +45632,7 @@ Var
     Obj : ISch_GraphicalObject;
     Cleared : Integer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     SchDoc := SchServer.GetCurrentSchDocument;
     Cleared := 0;
 
@@ -35929,7 +45893,7 @@ Begin
         Exit;
     End;
 
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     SchDoc := SchServer.GetCurrentSchDocument;
 
     If Board <> Nil Then
@@ -35969,7 +45933,7 @@ Begin
     Mode := ExtractJsonValue(Params, 'mode');
     If Mode = '' Then Mode := '3d';
 
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No active PCB document');
@@ -36046,10 +46010,12 @@ Var
     Project : IProject;
     Violation : IViolation;
     RelObj : IDMObject;
-    I, J, VCount, MaxItems, RelCount, Emitted : Integer;
+    I, J, VCount, MaxItems, RelCount, Emitted, ErrorLevel : Integer;
+    ActiveCount, SuppressedCount, UnknownCount, NoReportCount : Integer;
+    WarningCount, ErrorCount, FatalCount : Integer;
     JsonItems, RelItems : String;
     First, FirstRel : Boolean;
-    Desc, Detail, Kind, DocName, Probe : String;
+    Desc, Detail, Kind, DocName, Probe, SuppressedText : String;
 Begin
     MaxItems := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
 
@@ -36071,13 +46037,43 @@ Begin
     JsonItems := '';
     First := True;
     Emitted := 0;
+    ActiveCount := 0;
+    SuppressedCount := 0;
+    UnknownCount := 0;
+    NoReportCount := 0;
+    WarningCount := 0;
+    ErrorCount := 0;
+    FatalCount := 0;
 
     For I := 0 To VCount - 1 Do
     Begin
-        If (MaxItems > 0) And (I >= MaxItems) Then Break;
-
         Violation := Project.DM_Violations(I);
-        If Violation = Nil Then Continue;
+        If Violation = Nil Then
+        Begin
+            Inc(UnknownCount);
+            Continue;
+        End;
+
+        ErrorLevel := -1;
+        Try ErrorLevel := Violation.DM_ErrorLevel; Except End;
+        SuppressedText := 'null';
+        Try SuppressedText := BoolToJsonStr(Violation.DM_IsSuppressed); Except End;
+
+        { Scan every violation for counts, even when details are limited.
+          Unknown metadata must never be reported as a clean ERC result. }
+        If SuppressedText = 'true' Then Inc(SuppressedCount)
+        Else If (SuppressedText = 'null') Or (ErrorLevel < 0) Or (ErrorLevel > 3) Then Inc(UnknownCount)
+        Else If ErrorLevel = 0 Then Inc(NoReportCount)
+        Else
+        Begin
+            Inc(ActiveCount);
+            Case ErrorLevel Of
+                1: Inc(WarningCount);
+                2: Inc(ErrorCount);
+                3: Inc(FatalCount);
+            End;
+        End;
+        If (MaxItems > 0) And (Emitted >= MaxItems) Then Continue;
 
         Try
             Desc := Violation.DM_LongDescriptorString;
@@ -36144,6 +46140,8 @@ Begin
         If Not First Then JsonItems := JsonItems + ',';
         First := False;
         JsonItems := JsonItems + '{"index":' + IntToStr(I) +
+            ',"error_level":' + IntToStr(ErrorLevel) +
+            ',"suppressed":' + SuppressedText +
             ',"description":"' + EscapeJsonString(Desc) +
             '","detail":"' + EscapeJsonString(Detail) +
             '","related_object_count":' + IntToStr(RelCount) +
@@ -36151,11 +46149,17 @@ Begin
         Inc(Emitted);
     End;
 
-    { violation_count is the project's TRUE total; the array stops at      }
-    { `limit` (default 100). Without the flag the two read as the same     }
-    { number and a capped list looks like a complete one.                  }
+    { violation_count includes suppressed and No Report entries.
+      Active severity counts refer to the complete compiled project. }
     Result := BuildSuccessResponse(RequestId,
         '{"violation_count":' + IntToStr(VCount) +
+        ',"active_count":' + IntToStr(ActiveCount) +
+        ',"suppressed_count":' + IntToStr(SuppressedCount) +
+        ',"no_report_count":' + IntToStr(NoReportCount) +
+        ',"unknown_count":' + IntToStr(UnknownCount) +
+        ',"warning_count":' + IntToStr(WarningCount) +
+        ',"error_count":' + IntToStr(ErrorCount) +
+        ',"fatal_count":' + IntToStr(FatalCount) +
         ',"returned":' + IntToStr(Emitted) +
         ',"limit":' + IntToStr(MaxItems) +
         ',"truncated":' + BoolToJsonStr(VCount > Emitted) +
@@ -36166,13 +46170,286 @@ End;
 { Force refresh/redraw of the current document                               }
 {..............................................................................}
 
+{..............................................................................}
+{ Gen_MirrorSchComponent - mirror a placed component horizontally.             }
+{                                                                              }
+{ WHAT ALTIUM ITSELF DOES, measured 2026-09-19 by toggling Mirrored in the     }
+{ Properties panel and reading the result back: it sets IsMirrored AND         }
+{ reflects the component's primitives. On an NE555 at Location.X 5700, pin     }
+{ RESET moved from Location.X 6200 to 5200 and its Orientation flipped 0 to 2, }
+{ while IsMirrored went False to True. Both halves, one operation.             }
+{                                                                              }
+{ WRITING THE FLAG ALONE DOES NOTHING VISIBLE, which is the defect reported    }
+{ from the field. obj_modify set IsMirrored, the value read back, Altium's own }
+{ Properties panel showed Mirrored ticked, and the part did not move. The      }
+{ canvas draws from the primitives, so there was nothing new to draw: no       }
+{ repaint call can help, and a whole afternoon of GraphicallyInvalidate,       }
+{ SetState_xSizeySize and Sch:Zoom variants confirmed it the hard way.         }
+{                                                                              }
+{ REFLECTING THE PRIMITIVES ALONE IS ALSO WRONG. It draws correctly and is     }
+{ then discarded by Update From Libraries, which re-instantiates the symbol    }
+{ from the library. The flag is instance data and survives that. Writing both  }
+{ is what Altium stores, so a part mirrored here is identical on disk to one   }
+{ mirrored by hand, which is also why this cannot double-mirror on reload:     }
+{ there is one representation, not two competing ones.                          }
+{                                                                              }
+{ Params: designator (required), doc_path (optional, defaults to the focused   }
+{ sheet), mirrored (optional "true"/"false"; omitted means toggle).            }
+{..............................................................................}
+
+Function Gen_MirrorSchComponent(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter, PIter : ISch_Iterator;
+    Comp, Found : ISch_Component;
+    Prim : ISch_GraphicalObject;
+    Designator, DocPath, StateStr : String;
+    Loc : TLocation;
+    Crn : TLocation;
+    Vtx : TLocation;
+    CompX : Integer;
+    Ori, Moved, Swap, Skipped, Kind, Cnt, I : Integer;
+    SkippedIds : String;
+    WantMirror, Explicit : Boolean;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    DocPath    := ExtractJsonValue(Params, 'doc_path');
+    StateStr   := ExtractJsonValue(Params, 'mirrored');
+
+    If Designator = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'designator is required');
+        Exit;
+    End;
+
+    If DocPath <> '' Then SchDoc := SchServer.GetSchDocumentByPath(DocPath)
+    Else SchDoc := SchServer.GetCurrentSchDocument;
+
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'No schematic document. Pass doc_path to an open .SchDoc, or '
+            + 'focus one first.');
+        Exit;
+    End;
+
+    Found := Nil;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Comp := Iter.FirstSchObject;
+        While Comp <> Nil Do
+        Begin
+            If Comp.Designator.Text = Designator Then
+            Begin
+                Found := Comp;
+                Break;
+            End;
+            Comp := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+
+    If Found = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'No component with designator "' + Designator + '" on '
+            + SchDoc.DocumentName);
+        Exit;
+    End;
+
+    Explicit := (StateStr <> '');
+    WantMirror := Not Found.IsMirrored;
+    If Explicit Then WantMirror := StrToBool(StateStr);
+
+    { An explicit request for the state it is already in must not reflect     }
+    { the geometry, or the part silently ends up mirrored the wrong way.      }
+    If Explicit And (WantMirror = Found.IsMirrored) Then
+    Begin
+        Result := BuildSuccessResponse(RequestId,
+            '{"designator":"' + EscapeJsonString(Designator) + '",'
+            + '"mirrored":' + BoolToJsonStr(WantMirror) + ','
+            + '"primitives_moved":0,"changed":false}');
+        Exit;
+    End;
+
+    CompX := Found.Location.X;
+    Moved := 0;
+    Skipped := 0;
+    SkippedIds := '';
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginModify(Found);
+
+    PIter := Found.SchIterator_Create;
+    Try
+        Prim := PIter.FirstSchObject;
+        While Prim <> Nil Do
+        Begin
+            { NOT EVERY PRIMITIVE HAS Location.                               }
+            {                                                                 }
+            { A polygon carries a vertex ARRAY instead, and asking it for     }
+            { Location raises "Undeclared identifier: Location", which is a   }
+            { modal Try/Except CANNOT catch and which halts the script engine }
+            { mid-loop. Measured 2026-09-19 on a 1N4007 placed from a real    }
+            { library: its triangle is a polygon and the bridge wedged on     }
+            { exactly that line, needing the dialog dismissed and             }
+            { StartMCPServer relaunched.                                      }
+            {                                                                 }
+            { So dispatch on ObjectId and touch nothing unrecognised. An      }
+            { unhandled type is COUNTED, not silently ignored, because a      }
+            { half-mirrored symbol that reports success is worse than one     }
+            { that says which parts it could not move.                        }
+            Kind := Prim.ObjectId;
+
+            If (Kind = ePin) Or (Kind = eParameter) Or (Kind = eLabel)
+               Or (Kind = eRectangle) Or (Kind = eRoundRectangle)
+               Or (Kind = eLine) Or (Kind = eImage) Then
+            Begin
+                { The materialized local is required, a direct write to       }
+                { Prim.Location.X does not take.                               }
+                Try
+                    Loc := Prim.Location;
+                    Loc.X := CompX + (CompX - Loc.X);
+                    Prim.Location := Loc;
+                    Moved := Moved + 1;
+                Except End;
+            End
+            Else If (Kind = ePolygon) Or (Kind = ePolyline) Or (Kind = eBezier) Then
+            Begin
+                { Vertex arrays are 1-based in Altium. Reflect every point;   }
+                { there is no Location to move.                                }
+                Cnt := 0;
+                Try Cnt := Prim.GetState_VerticesCount; Except End;
+                For I := 1 To Cnt Do
+                Begin
+                    Try
+                        Vtx := Prim.GetState_Vertex(I);
+                        Vtx.X := CompX + (CompX - Vtx.X);
+                        Prim.SetState_Vertex(I, Vtx);
+                    Except End;
+                End;
+                If Cnt > 0 Then Moved := Moved + 1
+                Else Skipped := Skipped + 1;
+            End
+            Else
+            Begin
+                { eArc and eEllipse land here deliberately. Their position     }
+                { would reflect fine, but a horizontal mirror must also swap   }
+                { the sweep (new start = 180 - old end), and that is not       }
+                { written yet. Moving one without its angles draws a wrong     }
+                { symbol, so it is left alone and reported.                    }
+                {                                                              }
+                { The ObjectId is RECORDED, not just counted. On a minimal     }
+                { symbol one unmoved graphic wrecks the part while a busier    }
+                { one still looks plausible, so "5 skipped" is not actionable  }
+                { and "kind 13 skipped" is.                                     }
+                Skipped := Skipped + 1;
+                If Pos(IntToStr(Kind), SkippedIds) = 0 Then
+                    SkippedIds := SkippedIds + IntToStr(Kind) + ' ';
+            End;
+
+            { A TWO-POINT PRIMITIVE NEEDS BOTH POINTS REFLECTED.              }
+            {                                                                 }
+            { Reflecting only Location TRANSLATES the shape instead of        }
+            { mirroring it: measured 2026-09-19, U1's body rectangle ended up }
+            { offset to one side of its own pins while the pins themselves    }
+            { were correct. A pin has a single point, which is why it looked  }
+            { right and the body did not.                                      }
+            {                                                                 }
+            { Guarded by ObjectId rather than probed with Try/Except: Corner  }
+            { does not exist on a pin, and an undeclared identifier raises a  }
+            { modal that Try/Except cannot catch and that wedges the loop.    }
+            If (Kind = eRectangle) Or (Kind = eRoundRectangle) Or (Kind = eLine) Then
+            Begin
+                Try
+                    Crn := Prim.Corner;
+                    Crn.X := CompX + (CompX - Crn.X);
+                    Prim.Corner := Crn;
+
+                    { Reflection swaps left and right, so a rectangle whose   }
+                    { Location was its lower-left now holds the lower-RIGHT.  }
+                    { Put them back in order; a line does not care which end  }
+                    { is which, and normalising it changes nothing drawn.     }
+                    Loc := Prim.Location;
+                    If Loc.X > Crn.X Then
+                    Begin
+                        Swap := Loc.X;
+                        Loc.X := Crn.X;
+                        Crn.X := Swap;
+                        Prim.Location := Loc;
+                        Prim.Corner := Crn;
+                    End;
+                Except End;
+            End;
+
+            { A horizontal mirror flips a pin that points left or right and   }
+            { leaves a vertical one pointing the same way; only its X moved.  }
+            If Kind = ePin Then
+            Begin
+                Try
+                    Ori := Prim.Orientation;
+                    If Ori = 0 Then Prim.Orientation := 2
+                    Else If Ori = 2 Then Prim.Orientation := 0;
+                Except End;
+            End;
+
+            Prim := PIter.NextSchObject;
+        End;
+    Finally
+        Found.SchIterator_Destroy(PIter);
+    End;
+
+    { DESIGNATOR AND COMMENT ARE NOT CHILDREN OF THE ITERATOR.                }
+    {                                                                         }
+    { They hang off the component as sub-objects, so the loop above never     }
+    { sees them and they stayed put while the symbol moved out from under     }
+    { them. Reported on all three library parts, 2026-09-19. Same             }
+    { materialized-local pattern as Generic.pas:8586, which already writes    }
+    { these two locations.                                                     }
+    Try
+        Loc := Found.Designator.Location;
+        Loc.X := CompX + (CompX - Loc.X);
+        Found.Designator.Location := Loc;
+    Except End;
+    Try
+        Loc := Found.Comment.Location;
+        Loc.X := CompX + (CompX - Loc.X);
+        Found.Comment.Location := Loc;
+    Except End;
+
+    { The flag last, so the instance records what the geometry now shows.     }
+    Try Found.SetState_IsMirrored(WantMirror); Except End;
+
+    SchEndModify(Found);
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+
+    Try Found.GraphicallyInvalidate; Except End;
+    Try SchDoc.GraphicallyInvalidate; Except End;
+
+    MarkDocDirtyByPath(SchDoc.DocumentName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"designator":"' + EscapeJsonString(Designator) + '",'
+        + '"mirrored":' + BoolToJsonStr(WantMirror) + ','
+        + '"primitives_moved":' + IntToStr(Moved) + ','
+        { Non-zero means the mirror is INCOMPLETE: a primitive type this  }
+        { handler does not know how to reflect was left where it was, so  }
+        { the symbol is now part-mirrored. Reported rather than hidden.   }
+        + '"primitives_skipped":' + IntToStr(Skipped) + ','
+        + '"skipped_kinds":"' + Trim(SkippedIds) + '",'
+        + '"changed":true}');
+End;
+
 Function Gen_RefreshDocument(RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
     Board : IPCB_Board;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
 
     If SchDoc <> Nil Then
     Begin
@@ -36319,6 +46596,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) +
         ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -36368,6 +46653,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) +
         ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -36426,6 +46719,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
@@ -36477,6 +46778,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -36527,6 +46836,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
@@ -36602,6 +46919,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
@@ -36624,8 +46949,8 @@ Var
     Sym : ISch_SheetSymbol;
     Entry : ISch_SheetEntry;
     SheetNameStr, EntryName, IOStr, SideStr, ThisName : String;
-    DistFromTop, EntryX, EntryY : Integer;
-    Found : Boolean;
+    DistFromTop, WantSide, GotSide, GotDist, GotX, GotY : Integer;
+    Found, Placed : Boolean;
 Begin
     SheetNameStr := ExtractJsonValue(Params, 'sheet_name');
     EntryName := ExtractJsonValue(Params, 'entry_name');
@@ -36704,61 +47029,80 @@ Begin
     Else If IOStr = 'bidirectional' Then Entry.IOType := ePortBidirectional
     Else Entry.IOType := ePortUnspecified;
 
-    If SideStr = 'right' Then Entry.Side := eRightSide
-    Else If SideStr = 'top' Then Entry.Side := eTopSide
-    Else If SideStr = 'bottom' Then Entry.Side := eBottomSide
-    Else Entry.Side := eLeftSide;
+    { Kept in a local so the same value can be re-asserted after the add
+      and compared against what the entry ended up with. }
+    If SideStr = 'right' Then WantSide := eRightSide
+    Else If SideStr = 'top' Then WantSide := eTopSide
+    Else If SideStr = 'bottom' Then WantSide := eBottomSide
+    Else WantSide := eLeftSide;
+    Entry.Side := WantSide;
 
-    { Use AddAndPositionSchObject, not AddSchObject. The plain AddSchObject       }
-    { attaches the entry to the parent sheet symbol's child container but does    }
-    { NOT compute the entry's geometric position from Side + DistanceFromTop;     }
-    { the entry ends up drawn at default 0,0 world coords, off the sheet symbol.  }
-    { AddAndPositionSchObject performs the position calc against the symbol's    }
-    { current bounds. See SDK reference, ISch_BasicContainer interface.          }
+    { AddAndPositionSchObject POSITIONS IT ITSELF, and in doing so discards
+      the Side and DistanceFromTop set above.
+
+      MEASURED on a live sheet, across 90 entries: every one ignored
+      distance_from_top and side. They stacked at a fixed 50 mil pitch in
+      PLACEMENT ORDER, restarting per symbol, at negative Y, which puts
+      them below the sheet origin instead of on the symbol body. The
+      comment that used to sit here claimed the opposite, that the call
+      computes the position from Side and DistanceFromTop against the
+      symbol's bounds. It does not.
+
+      Same shape as AddSchComponent overriding LibReference: the add is
+      what decides, so anything set before it has to be set again after.
+      Re-asserted below, then read back. }
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Sym.AddAndPositionSchObject(Entry);
-    { AddAndPositionSchObject already registers Entry in the sheet-symbol
-      container. Registering it a second time promotes/detaches it as a
-      document-level object on AD 26, leaving an ownerless entry near 0,0. }
-    { AD 26 sometimes leaves a newly added entry at Y=-50 even though the
-      container and side are correct.  Force the terminal coordinate from
-      the sheet-symbol bounds after it has joined the container. }
-    EntryX := CoordToMils(Sym.Location.X);
-    EntryY := CoordToMils(Sym.Location.Y);
-    If SideStr = 'right' Then
-        EntryX := EntryX + CoordToMils(Sym.XSize)
-    Else If SideStr = 'top' Then
-        EntryX := EntryX + DistFromTop
-    Else If SideStr = 'bottom' Then
-    Begin
-        EntryX := EntryX + DistFromTop;
-        EntryY := EntryY - CoordToMils(Sym.YSize);
-    End
-    Else
-        EntryY := EntryY - DistFromTop;
-    If SideStr = 'right' Then EntryY := EntryY - DistFromTop;
 
-    SchBeginModify(Entry);
-    { Persist owner-relative placement.  Location alone is only an in-memory
-      drawing coordinate; Altium reconstructs it from Side/DistanceFromTop
-      when the document is reopened. }
-    Entry.DistanceFromTop := MilsToCoord(DistFromTop);
-    If SideStr = 'right' Then Entry.Side := eRightSide
-    Else If SideStr = 'top' Then Entry.Side := eTopSide
-    Else If SideStr = 'bottom' Then Entry.Side := eBottomSide
-    Else Entry.Side := eLeftSide;
-    SetSchProperty(Entry, 'Location.X', IntToStr(EntryX));
-    SetSchProperty(Entry, 'Location.Y', IntToStr(EntryY));
-    SchEndModify(Entry);
+    Try Entry.Side := WantSide; Except End;
+    Try Entry.DistanceFromTop := MilsToCoord(DistFromTop); Except End;
 
+    SchRegisterObject(Sym, Entry);
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { READ BACK. placed:true and an echo of the requested side was the
+      whole reply, so a caller asking for the left edge at 300 mils was
+      told it had happened whatever the entry actually did. }
+    GotSide := -1;
+    GotDist := -1;
+    Try GotSide := Entry.Side; Except End;
+    Try GotDist := CoordToMils(Entry.DistanceFromTop); Except End;
+    GotX := 0;
+    GotY := 0;
+    Try
+        GotX := CoordToMils(Entry.Location.X);
+        GotY := CoordToMils(Entry.Location.Y);
+    Except End;
+
+    Placed := (GotSide = WantSide) And (GotDist = DistFromTop);
+
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
-        '{"placed":true,"sheet_name":"' + EscapeJsonString(SheetNameStr) + '",'
-        + '"entry_name":"' + EscapeJsonString(EntryName) + '",'
-        + '"io_type":"' + EscapeJsonString(IOStr) + '",'
-        + '"side":"' + EscapeJsonString(SideStr) + '"}');
+        JsonObj(
+            JsonBool('placed', True) + ',' +
+            JsonBool('positioned_as_asked', Placed) + ',' +
+            JsonStr('sheet_name', SheetNameStr) + ',' +
+            JsonStr('entry_name', EntryName) + ',' +
+            JsonStr('io_type', IOStr) + ',' +
+            JsonStr('requested_side', SideStr) + ',' +
+            JsonInt('requested_distance_from_top', DistFromTop) + ',' +
+            JsonInt('actual_side', GotSide) + ',' +
+            JsonInt('actual_distance_from_top', GotDist) + ',' +
+            JsonInt('x', GotX) + ',' +
+            JsonInt('y', GotY) + ',' +
+            JsonStr('note', 'x and y are read back from the placed entry. '
+                + 'If positioned_as_asked is false the entry exists but sits '
+                + 'where Altium put it; obj_modify on eSheetEntry can set '
+                + 'Location.X and Location.Y absolutely.')
+        ));
 End;
 
 {..............................................................................}
@@ -36801,6 +47145,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1)
         + ',"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -36907,12 +47259,23 @@ Var
     Reader : ILibCompInfoReader;
     Info : IComponentInfo;
     Count, I, Shown : Integer;
+    Resolved, Reason : String;
 Begin
     Result := False;
     Available := '';
     If LibPath = '' Then Exit;
+    { Same reason as the placement path: an .IntLib reaching                }
+    { CreateLibCompInfoReader is what raises the uncatchable modal. Every   }
+    { caller of this function benefits from resolving here as well, because }
+    { not all of them resolve first.                                         }
+    Resolved := ResolveSchLibForLoad(LibPath, Reason);
+    If Resolved = '' Then
+    Begin
+        Available := Reason;
+        Exit;
+    End;
     Try
-        Reader := SchServer.CreateLibCompInfoReader(LibPath);
+        Reader := SchServer.CreateLibCompInfoReader(Resolved);
     Except
         Reader := Nil;
     End;
@@ -36969,6 +47332,7 @@ End;
 Function Gen_PlaceSchComponentFromLibrary(Params : String; RequestId : String) : String;
 Var
     LibPath, LibRef, DesigStr, FootprintStr, AvailHint, SheetPath : String;
+    ResolvedLib, LibReason : String;
     X, Y, Rotation, OrientationVal : Integer;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
@@ -36979,6 +47343,22 @@ Begin
     DesigStr := ExtractJsonValue(Params, 'designator');
     FootprintStr := ExtractJsonValue(Params, 'footprint');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
+
+    { Resolve before Altium sees the path: an .IntLib raises the "Open      }
+    { Integrated Library" modal, which nothing here can catch and which     }
+    { stops the polling loop until a human dismisses it. A placed component }
+    { reports its library AS an .IntLib, so a caller copying source_library }
+    { off the sheet lands here every time.                                   }
+    If LibPath <> '' Then
+    Begin
+        ResolvedLib := ResolveSchLibForLoad(LibPath, LibReason);
+        If ResolvedLib = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'LIBRARY_NOT_LOADABLE', LibReason);
+            Exit;
+        End;
+        LibPath := ResolvedLib;
+    End;
     X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
     Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), 0);
@@ -37046,7 +47426,9 @@ Begin
     { This replaces the broken PlaceSchComponent + Comp.Location :=         }
     { Point(...) approach which 16-bit-truncates coords and pops modal      }
     { errors.                                                               }
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    { Load the symbol BEFORE opening the sheet's transaction. The retry below }
+    { can open a library DOCUMENT, and doing that between PreProcess and      }
+    { PostProcess would nest a document change inside the sheet's edit.       }
     Comp := Nil;
     Try
         Comp := SchServer.LoadComponentFromLibrary(LibRef, LibPath);
@@ -37054,14 +47436,53 @@ Begin
         Comp := Nil;
     End;
 
+    { AUTO-OPEN, THEN RETRY ONCE.                                             }
+    {                                                                         }
+    { LoadComponentFromLibrary answers from the library as the EDITOR holds   }
+    { it, not from the file, so a library sitting on disk unopened returns    }
+    { Nil here even though ResolveLibRef read the very same symbol out of it  }
+    { moments ago. That split is the whole defect: validation succeeds off    }
+    { disk, placement fails in memory, and the caller is told the symbol      }
+    { could not be placed by a library that demonstrably contains it.         }
+    {                                                                         }
+    { Installing the .IntLib does not help, and neither does opening the      }
+    { .LibPkg: a library package holds no schematic documents, so nothing is  }
+    { loaded by opening it. The source .SchLib itself has to be resident.     }
+    {                                                                         }
+    { FocusSchLib is the same WorkspaceManager:OpenObject the lib_ handlers   }
+    { already use, and it verifies it landed on the requested library rather  }
+    { than leaving a previous one current.                                    }
     If Comp = Nil Then
     Begin
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        If FocusSchLib(LibPath) <> Nil Then
+        Begin
+            Try
+                Comp := SchServer.LoadComponentFromLibrary(LibRef, LibPath);
+            Except
+                Comp := Nil;
+            End;
+        End;
+
+        { FocusSchLib focuses the library it opened. Put the sheet back,      }
+        { whether or not the retry worked, so placing a part never leaves the }
+        { user looking at a library instead of their schematic.                }
+        Try
+            SrvDoc := Client.GetDocumentByPath(SchDoc.DocumentName);
+            If SrvDoc <> Nil Then Client.ShowDocument(SrvDoc);
+        Except End;
+    End;
+
+    If Comp = Nil Then
+    Begin
         Result := BuildErrorResponse(RequestId, 'PLACE_FAILED',
             'LoadComponentFromLibrary returned nil for ' + LibRef +
-            ' from ' + LibPath);
+            ' from ' + LibPath +
+            '. The library was opened and the load retried, so the symbol is '
+            + 'unreadable rather than absent.');
         Exit;
     End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
 
     Try SchDoc.AddSchObject(Comp); Except End;
     Try Comp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
@@ -37168,6 +47589,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
         + '"param_name":"' + EscapeJsonString(ParamName) + '",'
@@ -37295,6 +47724,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
@@ -37488,6 +47925,160 @@ End;
 { already (Altium has applied component placement + orientation).           }
 {..............................................................................}
 
+{..............................................................................}
+{ Resolving a designator when several symbols carry it.                        }
+{                                                                              }
+{ A multi-part device places one ISch_Component per sub-part and every one of  }
+{ them carries the SAME designator, so "the component called U13" has no       }
+{ single answer. The handlers below used to iterate, take the first match,     }
+{ stop, and report success naming only the designator, so a caller could not   }
+{ tell which symbol had been written, or that there had been a choice at all.  }
+{                                                                              }
+{ MEASURED on a live sheet: three symbols designated U13 for a PartCount of 2, }
+{ two of them sitting on part 1.                                               }
+{                                                                              }
+{ LOCATION IS THE DISCRIMINATOR. CurrentPartID does not separate them, because }
+{ two symbols can rest on the same part, and UniqueId does not either, because }
+{ sub-parts of one physical device are supposed to share it.                   }
+{..............................................................................}
+
+Function SchComponentCount(SchDoc : ISch_Document; Designator : String) : Integer;
+Var
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+Begin
+    Result := 0;
+    If SchDoc = Nil Then Exit;
+    Iterator := SchDoc.SchIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Obj := Iterator.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Comp := Obj;
+            If Comp.Designator.Text = Designator Then Result := Result + 1;
+            Obj := Iterator.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+End;
+
+{ One symbol by designator, narrowed by location when one is given. An empty   }
+{ location returns the first match, which is the old behaviour and is correct  }
+{ once the caller has established there is only one.                           }
+Function SchComponentAt(SchDoc : ISch_Document; Designator : String;
+                        LocX : String; LocY : String) : ISch_Component;
+Var
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    CompLoc : TLocation;
+    WantX, WantY : Integer;
+    Narrow, Hit : Boolean;
+Begin
+    Result := Nil;
+    If SchDoc = Nil Then Exit;
+
+    Narrow := (LocX <> '') And (LocY <> '') And IsIntStr(LocX) And IsIntStr(LocY);
+    WantX := 0;
+    WantY := 0;
+    If Narrow Then
+    Begin
+        WantX := StrToIntDef(LocX, 0);
+        WantY := StrToIntDef(LocY, 0);
+    End;
+
+    Iterator := SchDoc.SchIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Obj := Iterator.FirstSchObject;
+        While (Obj <> Nil) And (Result = Nil) Do
+        Begin
+            Comp := Obj;
+            If Comp.Designator.Text = Designator Then
+            Begin
+                Hit := True;
+                If Narrow Then
+                Begin
+                    { Read through a materialized local. This engine does not }
+                    { accept a record field reached straight off a property.  }
+                    CompLoc := Comp.Location;
+                    Hit := (CoordToMils(CompLoc.X) = WantX)
+                       And (CoordToMils(CompLoc.Y) = WantY);
+                End;
+                If Hit Then Result := Comp;
+            End;
+            Obj := Iterator.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+End;
+
+{ Every symbol carrying the designator, as a JSON array. A refusal hands this  }
+{ back so the caller can re-issue against one of them, rather than being told  }
+{ only that the request was ambiguous.                                         }
+Function SchComponentCandidates(SchDoc : ISch_Document; Designator : String) : String;
+Var
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    CompLoc : TLocation;
+    Entry, PartId, PartCnt, Uid : String;
+    First : Boolean;
+Begin
+    Result := '[]';
+    If SchDoc = Nil Then Exit;
+    Result := '[';
+    First := True;
+    Iterator := SchDoc.SchIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Obj := Iterator.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Comp := Obj;
+            If Comp.Designator.Text = Designator Then
+            Begin
+                CompLoc := Comp.Location;
+                PartId := '0';
+                PartCnt := '0';
+                Uid := '';
+                Try PartId := IntToStr(Comp.CurrentPartID); Except End;
+                Try PartCnt := IntToStr(Comp.PartCount); Except End;
+                Try Uid := Comp.UniqueId; Except End;
+                Entry := '{"location_x":' + IntToStr(CoordToMils(CompLoc.X))
+                    + ',"location_y":' + IntToStr(CoordToMils(CompLoc.Y))
+                    + ',"current_part_id":' + PartId
+                    + ',"part_count":' + PartCnt
+                    + ',"unique_id":"' + EscapeJsonString(Uid) + '"}';
+                If Not First Then Result := Result + ',';
+                Result := Result + Entry;
+                First := False;
+            End;
+            Obj := Iterator.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+    Result := Result + ']';
+End;
+
+{ The refusal itself, so every handler words it the same way and none of them  }
+{ can drift back into choosing one silently.                                   }
+Function AmbiguousDesignator(SchDoc : ISch_Document; Designator : String;
+                             Total : Integer; RequestId : String) : String;
+Begin
+    Result := BuildErrorResponseDetailed(RequestId, 'AMBIGUOUS_DESIGNATOR',
+        'There are ' + IntToStr(Total) + ' symbols designated ' + Designator
+        + ' on this sheet, which is normal for a multi-part device. Pass '
+        + 'location_x and location_y to choose one. The candidates, with '
+        + 'their locations and current part ids, are in the details.',
+        '"candidates":' + SchComponentCandidates(SchDoc, Designator));
+End;
+
 Function Gen_GetSchComponentPins(Params : String; RequestId : String) : String;
 Var
     Designator, SheetPath : String;
@@ -37503,6 +48094,7 @@ Var
     PinOrient, PinLenMils : Integer;
     CompX, CompY : Integer;
     CompLoc : TLocation;
+    SymbolCount, OwnerPart : Integer;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
@@ -37539,16 +48131,25 @@ Begin
     Found := False;
     PinList := '';
     First := True;
+    SymbolCount := 0;
 
     Iter := SchDoc.SchIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
         Comp := Iter.FirstSchObject;
-        While (Comp <> Nil) And (Not Found) Do
+        { EVERY symbol carrying the designator. A multi-part device places  }
+        { one per sub-part and a placed instance exposes only its own       }
+        { part's pins, so stopping at the first returned a third of a dual  }
+        { device's pins as a plain answer, with nothing to say the rest     }
+        { existed. Each pin now names the symbol it came from.              }
+        While Comp <> Nil Do
         Begin
             If Comp.Designator.Text = Designator Then
             Begin
                 Found := True;
+                SymbolCount := SymbolCount + 1;
+                OwnerPart := 0;
+                Try OwnerPart := Comp.CurrentPartID; Except End;
 
                 { CORRECTION: for an ISch_Pin attached to a placed             }
                 { ISch_Component on a SchDoc, Pin.Location is ALREADY the      }
@@ -37600,7 +48201,20 @@ Begin
                             '","x_mils":' + IntToStr(PinX) +
                             ',"y_mils":' + IntToStr(PinY) +
                             ',"orientation":' + IntToStr(PinOrient) +
-                            ',"pin_length_mils":' + IntToStr(PinLenMils) + '}';
+                            ',"pin_length_mils":' + IntToStr(PinLenMils) +
+                            { x_mils and y_mils are Pin.Location, which is the
+                              BODY-SIDE ROOT. These are the point a wire has
+                              to sit on. Handed over rather than left to the
+                              caller, because deriving it by hand is where the
+                              direction gets reversed and the result is silent
+                              geometry that does not connect. }
+                            ',"connection_x_mils":'
+                                + IntToStr(PinEndX(PinX, PinOrient, PinLenMils)) +
+                            ',"connection_y_mils":'
+                                + IntToStr(PinEndY(PinY, PinOrient, PinLenMils)) +
+                            ',"owner_part_id":' + IntToStr(OwnerPart) +
+                            ',"owner_x":' + IntToStr(CompX) +
+                            ',"owner_y":' + IntToStr(CompY) + '}';
 
                         Pin := PinIter.NextSchObject;
                     End;
@@ -37622,7 +48236,8 @@ Begin
     End;
 
     Data := '{"designator":"' + EscapeJsonString(Designator) +
-        '","pins":[' + PinList + ']}';
+        '","symbols":' + IntToStr(SymbolCount) +
+        ',"pins":[' + PinList + ']}';
     Result := BuildSuccessResponse(RequestId, Data);
 End;
 
@@ -37701,6 +48316,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"name":"' + EscapeJsonString(Name) +
         '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
@@ -37886,7 +48509,7 @@ Begin
     ObjTypeInt := ObjectTypeFromString(ObjTypeStr);
     If ObjTypeInt = -1 Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + ObjTypeStr);
+        Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', UnknownObjectTypeMessage(ObjTypeStr));
         Exit;
     End;
 
@@ -37962,7 +48585,7 @@ Begin
         ObjTypeInt := ObjectTypeFromStringPCB(ObjTypeStr);
         If ObjTypeInt = -1 Then
         Begin
-            Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', 'Unknown object type: ' + ObjTypeStr);
+            Result := BuildErrorResponse(RequestId, 'INVALID_TYPE', UnknownObjectTypeMessage(ObjTypeStr));
             Exit;
         End;
 
@@ -38062,11 +48685,17 @@ End;
 Function Gen_PlaceNoERC(Params : String; RequestId : String) : String;
 Var
     X, Y : Integer;
-    SchDoc : ISch_Document;
-    NoERC : ISch_GraphicalObject;
+    SchDoc, TemplateDoc : ISch_Document;
+    NoERC, TemplateObj, Candidate : ISch_GraphicalObject;
+    Specific : ISch_NoERC;
+    Iterator : ISch_Iterator;
+    Workspace : IWorkspace;
+    TemplatePath, TemplateId, NewId : String;
 Begin
     X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
     Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+    TemplatePath := ExtractJsonValue(Params, 'template_document');
+    TemplateId := ExtractJsonValue(Params, 'template_unique_id');
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -38075,7 +48704,47 @@ Begin
         Exit;
     End;
 
-    NoERC := SchServer.SchObjectFactory(eNoERC, eCreate_Default);
+    If TemplateId <> '' Then
+    Begin
+        TemplateDoc := SchDoc;
+        If TemplatePath <> '' Then TemplateDoc := SchServer.GetSchDocumentByPath(TemplatePath);
+        If TemplateDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_LOADED', 'Open the template schematic first');
+            Exit;
+        End;
+        TemplateObj := Nil;
+        Iterator := TemplateDoc.SchIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eNoERC));
+        Candidate := Iterator.FirstSchObject;
+        While Candidate <> Nil Do
+        Begin
+            If Candidate.UniqueId = TemplateId Then TemplateObj := Candidate;
+            Candidate := Iterator.NextSchObject;
+        End;
+        TemplateDoc.SchIterator_Destroy(Iterator);
+        If TemplateObj = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'TEMPLATE_NOT_FOUND', 'No NoERC matches the template UniqueId');
+            Exit;
+        End;
+        Specific := TemplateObj;
+        If Specific.SuppressAll Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'GENERIC_TEMPLATE_REJECTED', 'Template must suppress specific violations only');
+            Exit;
+        End;
+        Workspace := GetWorkspace;
+        If Workspace = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'Cannot generate a new UniqueId');
+            Exit;
+        End;
+        NewId := Workspace.DM_GenerateUniqueID;
+        NoERC := TemplateObj.Replicate;
+        If NoERC <> Nil Then NoERC.UniqueId := NewId;
+    End
+    Else NoERC := SchServer.SchObjectFactory(eNoERC, eCreate_Default);
     If NoERC = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create No-ERC marker');
@@ -38090,8 +48759,18 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
+        '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) +
+        ',"unique_id":"' + EscapeJsonString(NoERC.UniqueId) +
+        '","template_unique_id":"' + EscapeJsonString(TemplateId) + '"}');
 End;
 
 {..............................................................................}
@@ -38130,6 +48809,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
 End;
@@ -38193,6 +48880,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount) + '}');
@@ -38210,7 +48905,7 @@ Var
     Data : String;
     SheetStyle, UnitStr : String;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     SchDoc := SchServer.GetCurrentSchDocument;
 
     If SchDoc <> Nil Then
@@ -38459,6 +49154,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"image_path":"' + EscapeJsonString(ImagePath) +
         '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) +
@@ -38473,6 +49176,7 @@ End;
 
 Function Gen_ReplaceComponent(Params : String; RequestId : String) : String;
 Var
+    AmbigTotal : Integer;
     Designator, NewLibRef, NewLibrary : String;
     SchDoc : ISch_Document;
     Iterator : ISch_Iterator;
@@ -38501,6 +49205,16 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
         Exit;
     End;
+    { A multi-part device gives every sub-part the same designator, so a
+      first-match here wrote whichever symbol the iterator reached and
+      called it success. Refuse instead, and hand back the candidates. }
+    AmbigTotal := SchComponentCount(SchDoc, Designator);
+    If AmbigTotal > 1 Then
+    Begin
+        Result := AmbiguousDesignator(SchDoc, Designator, AmbigTotal, RequestId);
+        Exit;
+    End;
+
 
     Found := False;
     Iterator := SchDoc.SchIterator_Create;
@@ -38665,6 +49379,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
         + ',"width":' + IntToStr(W) + ',"height":' + IntToStr(H)
@@ -38717,6 +49439,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
         + ',"net":"' + EscapeJsonString(NetName) + '"}');
@@ -38730,16 +49460,16 @@ End;
 
 Function Gen_SetComponentPartId(Params : String; RequestId : String) : String;
 Var
-    Designator : String;
-    PartId : Integer;
+    Designator, LocX, LocY : String;
+    PartId, PartIdAfter, Total : Integer;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
-    Found : Boolean;
-    Iterator : ISch_Iterator;
-    Obj : ISch_GraphicalObject;
+    CompLoc : TLocation;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     PartId := StrToIntDef(ExtractJsonValue(Params, 'part_id'), 0);
+    LocX := ExtractJsonValue(Params, 'location_x');
+    LocY := ExtractJsonValue(Params, 'location_y');
 
     If Designator = '' Then
     Begin
@@ -38760,7 +49490,235 @@ Begin
         Exit;
     End;
 
+    Total := SchComponentCount(SchDoc, Designator);
+    If Total = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + Designator);
+        Exit;
+    End;
+
+    { Choosing for the caller is the bug this replaces. Every sub-part of a }
+    { multi-part device carries the same designator, so picking the first   }
+    { wrote whichever the iterator happened to reach and called it success. }
+    If (Total > 1) And ((LocX = '') Or (LocY = '')) Then
+    Begin
+        Result := AmbiguousDesignator(SchDoc, Designator, Total, RequestId);
+        Exit;
+    End;
+
+    Comp := SchComponentAt(SchDoc, Designator, LocX, LocY);
+    If Comp = Nil Then
+    Begin
+        Result := BuildErrorResponseDetailed(RequestId, 'NOT_FOUND',
+            'No symbol designated ' + Designator + ' at that location.',
+            '"candidates":' + SchComponentCandidates(SchDoc, Designator));
+        Exit;
+    End;
+
+    SchServer.ProcessControl.PreProcess(SchDoc, 'Set part id');
+    Try Comp.CurrentPartID := PartId; Except End;
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Set part id');
+    SchDoc.GraphicallyInvalidate;
+
+    { Read back. A part id past PartCount is accepted by the assignment and }
+    { simply does not take, which used to be reported as a success.         }
+    PartIdAfter := -1;
+    Try PartIdAfter := Comp.CurrentPartID; Except End;
+    If PartIdAfter <> PartId Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRITE_REFUSED',
+            'Set part_id ' + IntToStr(PartId) + ' on ' + Designator
+            + ' and it reads back ' + IntToStr(PartIdAfter)
+            + '. A part id above PartCount does not take.');
+        Exit;
+    End;
+
+    CompLoc := Comp.Location;
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"designator":"' + EscapeJsonString(Designator)
+        + '","part_id":' + IntToStr(PartIdAfter)
+        + ',"location_x":' + IntToStr(CoordToMils(CompLoc.X))
+        + ',"location_y":' + IntToStr(CoordToMils(CompLoc.Y))
+        + ',"matched":' + IntToStr(Total) + '}');
+End;
+
+{..............................................................................}
+{ Gen_SetComponentUniqueId - Stamp ISch_Component.UniqueId.                     }
+{ ECO groups sub-parts of a multi-gate symbol (quad comparator, dual           }
+{ op-amp) into one physical footprint only when they share UniqueId. Four      }
+{ copies of part 1 with four UniqueIds become four TSSOP packages.             }
+{ Params: designator, unique_id                                                }
+{..............................................................................}
+
+Function Gen_SetComponentUniqueId(Params : String; RequestId : String) : String;
+Var
+    Designator, UniqueIdStr, AfterId, Details : String;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+    CompLoc : TLocation;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Written, Refused, Total : Integer;
+    First : Boolean;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    UniqueIdStr := ExtractJsonValue(Params, 'unique_id');
+
+    If Designator = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator required');
+        Exit;
+    End;
+
+    If UniqueIdStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'unique_id required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+
+    { EVERY SYMBOL WITH THIS DESIGNATOR, not the first one. That is the    }
+    { point of the property: ECO treats sub-parts as one physical package  }
+    { only when they SHARE a UniqueId, so stamping one of three and        }
+    { reporting success left the other two pointing at packages of their   }
+    { own, which is the exact condition this tool exists to repair.        }
+    { MEASURED on a live sheet: three symbols designated U13, three        }
+    { different UniqueIds, one dual device.                                }
+    AfterId := '';
+    Written := 0;
+    Refused := 0;
+    Total := 0;
+    Details := '[';
+    First := True;
+    Iterator := SchDoc.SchIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Obj := Iterator.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Comp := Obj;
+            If Comp.Designator.Text = Designator Then
+            Begin
+                Total := Total + 1;
+                SchServer.ProcessControl.PreProcess(SchDoc, 'Set UniqueId');
+                Try Comp.SetState_UniqueId(UniqueIdStr); Except End;
+                Try Comp.UniqueId := UniqueIdStr; Except End;
+                Try AfterId := Comp.UniqueId; Except AfterId := ''; End;
+                SchServer.ProcessControl.PostProcess(SchDoc, 'Set UniqueId');
+
+                If AfterId = UniqueIdStr Then
+                    Written := Written + 1
+                Else
+                    Refused := Refused + 1;
+
+                CompLoc := Comp.Location;
+                If Not First Then Details := Details + ',';
+                Details := Details
+                    + '{"location_x":' + IntToStr(CoordToMils(CompLoc.X))
+                    + ',"location_y":' + IntToStr(CoordToMils(CompLoc.Y))
+                    + ',"unique_id_after":"' + EscapeJsonString(AfterId) + '"}';
+                First := False;
+            End;
+            Obj := Iterator.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+    Details := Details + ']';
+    SchDoc.GraphicallyInvalidate;
+
+    If Total = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + Designator);
+        Exit;
+    End;
+
+    If Refused > 0 Then
+    Begin
+        Result := BuildErrorResponseDetailed(RequestId, 'WRITE_REFUSED',
+            'Stamped ' + IntToStr(Written) + ' of ' + IntToStr(Total)
+            + ' symbols designated ' + Designator + '. Altium mints '
+            + 'UniqueIds itself and kept its own on the rest, so those '
+            + 'sub-parts still belong to separate packages.',
+            '"symbols":' + Details);
+        Exit;
+    End;
+
+    { THE READ BACK WAS ALREADY HERE AND NOTHING COMPARED IT. success was
+      true whether or not AfterId matched what was asked for, so a caller
+      had to notice the discrepancy between two adjacent fields to learn
+      the write had not taken. Altium mints UniqueIds itself and this is
+      the property it is most likely to overrule, which is the whole
+      reason the read back exists. }
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"designator":"' + EscapeJsonString(Designator)
+        + '","unique_id":"' + EscapeJsonString(UniqueIdStr)
+        + '","symbols_written":' + IntToStr(Written)
+        + ',"symbols_found":' + IntToStr(Total)
+        + ',"symbols":' + Details + '}');
+End;
+
+{..............................................................................}
+{ Gen_ReplicateSchComponent - Duplicate a placed schematic component via       }
+{ ISch_Component.Replicate. Live 2026-08-21: Replicate + AddSchObject minted   }
+{ a new UniqueId (NPZTIRAT vs master UCOMP2MP). This stamps UniqueId with      }
+{ SetState_UniqueId AFTER Replicate and BEFORE AddSchObject, then again after  }
+{ register if Add reminted. Returns staged UniqueId readbacks.                 }
+{ Params: designator, part_id, x, y, new_designator                            }
+{..............................................................................}
+
+Function Gen_ReplicateSchComponent(Params : String; RequestId : String) : String;
+Var
+    AmbigTotal : Integer;
+    Designator, NewDesig, MasterId, CopyId : String;
+    IdAfterReplicate, IdAfterSetPreAdd, IdAfterAdd, Shared : String;
+    PartId, X, Y : Integer;
+    HaveXY : Boolean;
+    SchDoc : ISch_Document;
+    Comp, NewComp : ISch_Component;
+    NewObj : ISch_GraphicalObject;
+    Found : Boolean;
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    NewDesig := ExtractJsonValue(Params, 'new_designator');
+    PartId := StrToIntDef(ExtractJsonValue(Params, 'part_id'), 0);
+    HaveXY := (ExtractJsonValue(Params, 'x') <> '') And (ExtractJsonValue(Params, 'y') <> '');
+    X := StrToIntDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToIntDef(ExtractJsonValue(Params, 'y'), 0);
+
+    If Designator = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'designator required');
+        Exit;
+    End;
+
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    { A multi-part device gives every sub-part the same designator, so a
+      first-match here wrote whichever symbol the iterator reached and
+      called it success. Refuse instead, and hand back the candidates. }
+    AmbigTotal := SchComponentCount(SchDoc, Designator);
+    If AmbigTotal > 1 Then
+    Begin
+        Result := AmbiguousDesignator(SchDoc, Designator, AmbigTotal, RequestId);
+        Exit;
+    End;
+
+
     Found := False;
+    MasterId := '';
     Iterator := SchDoc.SchIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
     Obj := Iterator.FirstSchObject;
@@ -38769,15 +49727,13 @@ Begin
         Comp := Obj;
         If Comp.Designator.Text = Designator Then
         Begin
-            SchServer.ProcessControl.PreProcess(SchDoc, 'Set part id');
-            Try Comp.CurrentPartID := PartId; Except End;
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Set part id');
             Found := True;
-        End;
-        Obj := Iterator.NextSchObject;
+            Try MasterId := Comp.UniqueId; Except MasterId := ''; End;
+        End
+        Else
+            Obj := Iterator.NextSchObject;
     End;
     SchDoc.SchIterator_Destroy(Iterator);
-    SchDoc.GraphicallyInvalidate;
 
     If Not Found Then
     Begin
@@ -38785,9 +49741,77 @@ Begin
         Exit;
     End;
 
+    SchServer.ProcessControl.PreProcess(SchDoc, 'Replicate component');
+    NewObj := Nil;
+    Try NewObj := Comp.Replicate; Except NewObj := Nil; End;
+    If NewObj = Nil Then
+    Begin
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Replicate component');
+        Result := BuildErrorResponse(RequestId, 'REPLICATE_FAILED',
+            'ISch_Component.Replicate returned nil for ' + Designator);
+        Exit;
+    End;
+    NewComp := NewObj;
+    Try IdAfterReplicate := NewComp.UniqueId; Except IdAfterReplicate := ''; End;
+    If MasterId <> '' Then
+    Begin
+        Try NewComp.SetState_UniqueId(MasterId); Except End;
+        Try NewComp.UniqueId := MasterId; Except End;
+    End;
+    Try IdAfterSetPreAdd := NewComp.UniqueId; Except IdAfterSetPreAdd := ''; End;
+    If PartId >= 1 Then
+    Begin
+        Try NewComp.SetState_CurrentPartID(PartId); Except End;
+        Try NewComp.CurrentPartID := PartId; Except End;
+    End;
+    If NewDesig <> '' Then
+        Try NewComp.Designator.Text := NewDesig; Except End;
+    If HaveXY Then
+        Try NewComp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
+    { AddSchObject remints UniqueId when that id is already on the sheet
+      (live 2026-08-26: XVRAPPYA -> ASFAVKKE even after SetState_UniqueId
+      pre-add). SCHM_PrimitiveRegistration does the same. Attach via
+      RegisterSchObjectInContainer, then re-stamp UniqueId while still
+      inside this PreProcess. Do not send SCHM_PrimitiveRegistration.
+      ONE registration only: AddSchObject followed by this registered the
+      copy twice under one key, and the next move of either part raised
+      "An item with the same key has already been added". }
+    Try SchDoc.RegisterSchObjectInContainer(NewComp); Except End;
+    Try IdAfterAdd := NewComp.UniqueId; Except IdAfterAdd := ''; End;
+    If (MasterId <> '') And (IdAfterAdd <> MasterId) Then
+    Begin
+        Try NewComp.SetState_UniqueId(MasterId); Except End;
+        Try NewComp.UniqueId := MasterId; Except End;
+    End;
+    Try CopyId := NewComp.UniqueId; Except CopyId := ''; End;
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Replicate component');
+    SchDoc.GraphicallyInvalidate;
+
+    If CopyId = MasterId Then Shared := 'true' Else Shared := 'false';
+
+    { success reflects whether the copy KEPT the master's id, which is the
+      thing this handler exists to achieve. Replicate plus AddSchObject
+      mints a new one, so reporting true regardless would hide exactly
+      the failure the staged read backs were added to expose. }
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"designator":"' + EscapeJsonString(Designator)
-        + '","part_id":' + IntToStr(PartId) + '}');
+        '{"success":' + BoolToJsonStr(Shared = MasterId)
+        + ',"source_designator":"' + EscapeJsonString(Designator)
+        + '","new_designator":"' + EscapeJsonString(NewDesig)
+        + '","part_id":' + IntToStr(PartId)
+        + ',"source_unique_id":"' + EscapeJsonString(MasterId)
+        + '","copy_unique_id":"' + EscapeJsonString(CopyId)
+        + '","unique_id_after_replicate":"' + EscapeJsonString(IdAfterReplicate)
+        + '","unique_id_after_set_pre_add":"' + EscapeJsonString(IdAfterSetPreAdd)
+        + '","unique_id_after_add":"' + EscapeJsonString(IdAfterAdd)
+        + '","shared":' + Shared + '}');
 End;
 
 {..............................................................................}
@@ -38839,6 +49863,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"x":' + IntToStr(X) + ',"y":' + IntToStr(Y)
         + ',"net_name":"' + EscapeJsonString(NetName) + '"}');
@@ -38854,6 +49886,7 @@ End;
 
 Function Gen_AddDatafileLink(Params : String; RequestId : String) : String;
 Var
+    AmbigTotal : Integer;
     Designator, FilePath, KindStr, EntityName : String;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
@@ -38878,6 +49911,16 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
         Exit;
     End;
+    { A multi-part device gives every sub-part the same designator, so a
+      first-match here wrote whichever symbol the iterator reached and
+      called it success. Refuse instead, and hand back the candidates. }
+    AmbigTotal := SchComponentCount(SchDoc, Designator);
+    If AmbigTotal > 1 Then
+    Begin
+        Result := AmbiguousDesignator(SchDoc, Designator, AmbigTotal, RequestId);
+        Exit;
+    End;
+
 
     Found := False;
     Iterator := SchDoc.SchIterator_Create;
@@ -39715,6 +50758,7 @@ End;
 
 Function Gen_AttachSpicePrimitive(Params : String; RequestId : String) : String;
 Var
+    AmbigTotal : Integer;
     SchDoc : ISch_Document;
     Iter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
@@ -39741,6 +50785,16 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
         Exit;
     End;
+    { A multi-part device gives every sub-part the same designator, so a
+      first-match here wrote whichever symbol the iterator reached and
+      called it success. Refuse instead, and hand back the candidates. }
+    AmbigTotal := SchComponentCount(SchDoc, Designator);
+    If AmbigTotal > 1 Then
+    Begin
+        Result := AmbiguousDesignator(SchDoc, Designator, AmbigTotal, RequestId);
+        Exit;
+    End;
+
 
     Found := False;
     SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE primitive');
@@ -39780,6 +50834,10 @@ Begin
         Exit;
     End;
 
+    { A parameter write dirties the document too: SmartCompile skips its
+      recompile while the project looks clean, so a later netlist or ERC
+      read answers from the model as it stood before this call. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"designator":"' + EscapeJsonString(Designator) + '",'
         + '"primitive":"' + EscapeJsonString(Primitive) + '",'
@@ -39796,6 +50854,7 @@ End;
 
 Function Gen_AttachSpiceModel(Params : String; RequestId : String) : String;
 Var
+    AmbigTotal : Integer;
     SchDoc : ISch_Document;
     Iter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
@@ -39823,6 +50882,16 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
         Exit;
     End;
+    { A multi-part device gives every sub-part the same designator, so a
+      first-match here wrote whichever symbol the iterator reached and
+      called it success. Refuse instead, and hand back the candidates. }
+    AmbigTotal := SchComponentCount(SchDoc, Designator);
+    If AmbigTotal > 1 Then
+    Begin
+        Result := AmbiguousDesignator(SchDoc, Designator, AmbigTotal, RequestId);
+        Exit;
+    End;
+
 
     Found := False;
     SchServer.ProcessControl.PreProcess(SchDoc, 'Attach SPICE model');
@@ -39868,6 +50937,10 @@ Begin
         Exit;
     End;
 
+    { A parameter write dirties the document too: SmartCompile skips its
+      recompile while the project looks clean, so a later netlist or ERC
+      read answers from the model as it stood before this call. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"designator":"' + EscapeJsonString(Designator) + '",'
         + '"file_path":"' + EscapeJsonString(FilePath) + '",'
@@ -39925,9 +50998,11 @@ Var
     NewObj : ISch_GraphicalObject;
     ActiveDoc : ISch_Document;
     ContainerStr : String;
-    FailuresJson, ItemReason : String;
+    FailuresJson, ItemReason, UnsupportedProp : String;
     FirstFailure : Boolean;
 Begin
+    ResetPropertyDiag(0);
+    SchDoc := Nil;
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
     Begin
@@ -39952,6 +51027,8 @@ Begin
             If Op = '' Then Break;
             OpCount := OpCount + 1;
             ItemReason := '';
+            UnsupportedProp := '';
+            ResetPropertyDiag(0);
             Scope := GetBatchField(Op, 'scope');
             If Scope = '' Then Scope := 'active_doc';
             ObjTypeStr := GetBatchField(Op, 'object_type');
@@ -39983,48 +51060,58 @@ Begin
                 End
                 Else
                 Begin
-                    ApplySetProperties(NewObj, PropsStr);
-
-                    If ContainerStr = 'component' Then
+                    UnsupportedProp := UnsupportedSchProperty(NewObj, PropsStr);
+                    If UnsupportedProp <> '' Then
                     Begin
-                        SchLib := SchServer.GetCurrentSchDocument;
-                        If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
+                        SchServer.DestroySchObject(NewObj);
+                        Inc(Failed);
+                        ItemReason := 'UNSUPPORTED_PROPERTY';
+                    End
+                    Else
+                    Begin
+                        ApplySetProperties(NewObj, PropsStr);
+
+                        If ContainerStr = 'component' Then
                         Begin
-                            Component := SchLib.CurrentSchComponent;
-                            If Component <> Nil Then
+                            SchLib := SchServer.GetCurrentSchDocument;
+                            If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
                             Begin
-                                Component.AddSchObject(NewObj);
-                                SchRegisterObject(Component, NewObj);
-                                Inc(Created);
+                                Component := SchLib.CurrentSchComponent;
+                                If Component <> Nil Then
+                                Begin
+                                    Component.AddSchObject(NewObj);
+                                    SchRegisterObject(Component, NewObj);
+                                    Inc(Created);
+                                End
+                                Else
+                                Begin
+                                    SchServer.DestroySchObject(NewObj);
+                                    Inc(Failed);
+                                    ItemReason := 'NO_COMPONENT';
+                                End;
                             End
                             Else
                             Begin
                                 SchServer.DestroySchObject(NewObj);
                                 Inc(Failed);
-                                ItemReason := 'NO_COMPONENT';
+                                ItemReason := 'NO_SCHLIB';
                             End;
                         End
                         Else
                         Begin
-                            SchServer.DestroySchObject(NewObj);
-                            Inc(Failed);
-                            ItemReason := 'NO_SCHLIB';
-                        End;
-                    End
-                    Else
-                    Begin
-                        SchDoc := ActiveDoc;
-                        If SchDoc = Nil Then
-                        Begin
-                            SchServer.DestroySchObject(NewObj);
-                            Inc(Failed);
-                            ItemReason := 'NO_SCHEMATIC';
-                        End
-                        Else
-                        Begin
-                            SchDoc.RegisterSchObjectInContainer(NewObj);
-                            SchRegisterObject(SchDoc, NewObj);
-                            Inc(Created);
+                            SchDoc := ActiveDoc;
+                            If SchDoc = Nil Then
+                            Begin
+                                SchServer.DestroySchObject(NewObj);
+                                Inc(Failed);
+                                ItemReason := 'NO_SCHEMATIC';
+                            End
+                            Else
+                            Begin
+                                SchDoc.RegisterSchObjectInContainer(NewObj);
+                                SchRegisterObject(SchDoc, NewObj);
+                                Inc(Created);
+                            End;
                         End;
                     End;
                 End;
@@ -40037,7 +51124,11 @@ Begin
                 FailuresJson := FailuresJson +
                     '{"index":' + IntToStr(OpCount - 1) +
                     ',"object_type":"' + EscapeJsonString(ObjTypeStr) +
-                    '","reason":"' + ItemReason + '"}';
+                    '","reason":"' + ItemReason + '"';
+                If UnsupportedProp <> '' Then
+                    FailuresJson := FailuresJson + ',"property":"' +
+                        EscapeJsonString(UnsupportedProp) + '"';
+                FailuresJson := FailuresJson + '}';
             End;
         End;
     Finally
@@ -40048,6 +51139,14 @@ Begin
         End;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"created":' + IntToStr(Created) +
         ',"failed":' + IntToStr(Failed) +
@@ -40276,6 +51375,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount) + '}');
@@ -40292,6 +51399,7 @@ Var
     PlaceStr, Op, Remaining, FailedRefdes, ResponseBody : String;
     OpCount, Placed, Failed, Rotation, OrientationVal : Integer;
     LibPath, LibRef, Desig, Footprint, AvailHint : String;
+    ResolvedLib, LibReason : String;
     X, Y : Integer;
     SchDoc : ISch_Document;
     Comp : ISch_Component;
@@ -40340,6 +51448,51 @@ Begin
                     FailedRefdes := FailedRefdes + Desig + ':MISSING_LIB_REF';
                 End;
                 Continue;
+            End;
+
+            { AN ABSENT PATH IS NOT A FAILED LOAD, and conflating the two    }
+            { cost a user most of a day. LoadComponentFromLibrary with an    }
+            { empty path returns Nil, which used to be reported as           }
+            { LOAD_FAILED: an error that points at the library, when the     }
+            { library was never named. It happens whenever the caller        }
+            { spells the field wrong, because an unread key just vanishes.   }
+            { Say which of the two it was.                                    }
+            If LibPath = '' Then
+            Begin
+                Inc(Failed);
+                If Desig <> '' Then
+                Begin
+                    If FailedRefdes <> '' Then FailedRefdes := FailedRefdes + ',';
+                    FailedRefdes := FailedRefdes + Desig + ':NO_LIBRARY_PATH';
+                End;
+                If AvailHint = '' Then
+                    AvailHint := 'library_path was empty for at least one '
+                        + 'placement: the key is "library_path", and a '
+                        + 'misspelled key is dropped before it reaches here';
+                Continue;
+            End;
+
+            { RESOLVE BEFORE ALTIUM SEES THE PATH. An .IntLib handed to     }
+            { CreateLibCompInfoReader or LoadComponentFromLibrary raises the }
+            { "Open Integrated Library" modal, which nothing here can catch  }
+            { and which stops the polling loop until a human clicks it. A    }
+            { placed component reports its library AS an .IntLib, so callers }
+            { copying source_library off the sheet hit this every time.      }
+            If LibPath <> '' Then
+            Begin
+                ResolvedLib := ResolveSchLibForLoad(LibPath, LibReason);
+                If ResolvedLib = '' Then
+                Begin
+                    Inc(Failed);
+                    If Desig <> '' Then
+                    Begin
+                        If FailedRefdes <> '' Then FailedRefdes := FailedRefdes + ',';
+                        FailedRefdes := FailedRefdes + Desig + ':UNRESOLVABLE_LIBRARY';
+                    End;
+                    If AvailHint = '' Then AvailHint := LibReason;
+                    Continue;
+                End;
+                LibPath := ResolvedLib;
             End;
 
             { Pre-validate to short-circuit any internal-popup path. }
@@ -40405,6 +51558,14 @@ Begin
         ResponseBody := ResponseBody + ',"failed_refdes":"'
             + EscapeJsonString(FailedRefdes) + '"';
     ResponseBody := ResponseBody + '}';
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId, ResponseBody);
 End;
 
@@ -40501,6 +51662,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount) + '}');
@@ -40602,6 +51771,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount) + '}');
@@ -41064,6 +52241,15 @@ Begin
                 Inc(Failed);
                 ItemReason := 'MISSING_FIELDS';
             End
+            Else If SchComponentCount(SchDoc, Designator) > 1 Then
+            Begin
+                { One ITEM is refused, not the whole batch: the others are
+                  unambiguous and there is no reason to lose them. A
+                  multi-part device shares its designator across sub-parts,
+                  so attaching to the first would pick one arbitrarily. }
+                Inc(Failed);
+                ItemReason := 'AMBIGUOUS_DESIGNATOR';
+            End
             Else
             Begin
                 Found := False;
@@ -41113,6 +52299,10 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A parameter write dirties the document too: SmartCompile skips its
+      recompile while the project looks clean, so a later netlist or ERC
+      read answers from the model as it stood before this call. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"attached":' + IntToStr(Attached) +
         ',"failed":' + IntToStr(Failed) +
@@ -41230,7 +52420,7 @@ Begin
     { is undeclared on some Altium builds and Try/Except cannot catch         }
     { undeclared identifiers (see [[delphiscript_api_quirks]]), so the inline }
     { fallback would crash the script instead of just returning Nil.          }
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
 
     If Board = Nil Then
         DiagBoardNil := 1
@@ -42000,11 +53190,13 @@ Var
     Outline : IPCB_BoardOutline;
     OutlineJson, TracksJson, ArcsJson, PadsJson, ViasJson, TextsJson : String;
     RegionsJson, CompsJson : String;
+    TracksParts, ArcsParts, PadsParts, ViasParts, TextsParts : TStringList;
+    RegionsParts, CompsParts, RegionPoints : TStringList;
     NumTracks, NumArcs, NumPads, NumVias, NumTexts, NumOutline : Integer;
     NumRegions, NumComps : Integer;
     LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr : String;
     BR : TCoordRect;
-    I, K, PtCount : Integer;
+    I, K, PtCount, EL, EB, ER, ET : Integer;
     Seg : TPolySegment;
     RespJson : String;
     NameOnFlag, CommentOnFlag, IsHiddenFlag : Boolean;
@@ -42014,13 +53206,14 @@ Var
     LyrColor : Integer;
     LyrVisible, LyrFirst : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB',
             'No PCB document is active');
         Exit;
     End;
+    AppendLog(FormatLogStamp + ',0,_pcb_geometry,board,' + RequestId);
 
     { Board outline: walk Segments. Each carries a vertex (vx, vy) and -- }
     { for arc segments -- a center (cx, cy) + radius + angles. v1 keeps   }
@@ -42030,7 +53223,9 @@ Begin
     Outline := Board.BoardOutline;
     If Outline <> Nil Then
     Begin
+        AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_rebuild,' + RequestId);
         Try Outline.Invalidate; Outline.Rebuild; Outline.Validate; Except End;
+        AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_ready,' + RequestId);
         For I := 0 To Outline.PointCount - 1 Do
         Begin
             Seg := Outline.Segments[I];
@@ -42058,8 +53253,13 @@ Begin
         End;
     End;
     OutlineJson := OutlineJson + ']';
+    AppendLog(FormatLogStamp + ',0,_pcb_geometry,outline_done,' + RequestId);
 
+    { From the outline's segments: its cached rectangle went stale after a }
+    { reshape and the renders built on this bbox clipped the board.         }
     BR := Board.BoardOutline.BoundingRectangle;
+    EL := BR.X1; EB := BR.Y1; ER := BR.X2; ET := BR.Y2;
+    OutlineExtents(Board.BoardOutline, EL, EB, ER, ET);
 
     TracksJson := '['; NumTracks := 0;
     ArcsJson := '[';   NumArcs := 0;
@@ -42069,15 +53269,30 @@ Begin
     RegionsJson := '['; NumRegions := 0;
     CompsJson := '[';   NumComps := 0;
 
+    { Appending to a megabyte-scale DelphiScript String for every object is }
+    { quadratic. Collect small fragments and join each array only once.   }
+    TracksParts := TStringList.Create;
+    ArcsParts := TStringList.Create;
+    PadsParts := TStringList.Create;
+    ViasParts := TStringList.Create;
+    TextsParts := TStringList.Create;
+    RegionsParts := TStringList.Create;
+    CompsParts := TStringList.Create;
+
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, ePadObject,
         eViaObject, eTextObject, eRegionObject, eComponentObject));
     Iter.AddFilter_LayerSet(AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Try
+        Seen := 0;
         Obj := Iter.FirstPCBObject;
+        AppendLog(FormatLogStamp + ',0,_pcb_geometry,iter_first,' + RequestId);
         While Obj <> Nil Do
         Begin
+            Inc(Seen);
+            If (Seen Mod 1000) = 0 Then
+                AppendLog(FormatLogStamp + ',0,_pcb_geometry,objects=' + IntToStr(Seen) + ',' + RequestId);
             LayerName := '';
             Try LayerName := GetLayerString(Obj.Layer); Except End;
 
@@ -42086,15 +53301,15 @@ Begin
                 Track := Obj;
                 NetName := '';
                 Try If Track.Net <> Nil Then NetName := Track.Net.Name; Except End;
-                If NumTracks > 0 Then TracksJson := TracksJson + ',';
-                TracksJson := TracksJson +
+                If NumTracks > 0 Then TracksParts.Add(',');
+                TracksParts.Add(
                     '{"x1":' + IntToStr(CoordToMils(Track.X1)) +
                     ',"y1":' + IntToStr(CoordToMils(Track.Y1)) +
                     ',"x2":' + IntToStr(CoordToMils(Track.X2)) +
                     ',"y2":' + IntToStr(CoordToMils(Track.Y2)) +
                     ',"width":' + IntToStr(CoordToMils(Track.Width)) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumTracks);
             End
             Else If Obj.ObjectId = eArcObject Then
@@ -42102,8 +53317,8 @@ Begin
                 Arc := Obj;
                 NetName := '';
                 Try If Arc.Net <> Nil Then NetName := Arc.Net.Name; Except End;
-                If NumArcs > 0 Then ArcsJson := ArcsJson + ',';
-                ArcsJson := ArcsJson +
+                If NumArcs > 0 Then ArcsParts.Add(',');
+                ArcsParts.Add(
                     '{"cx":' + IntToStr(CoordToMils(Arc.XCenter)) +
                     ',"cy":' + IntToStr(CoordToMils(Arc.YCenter)) +
                     ',"r":' + IntToStr(CoordToMils(Arc.Radius)) +
@@ -42111,7 +53326,7 @@ Begin
                     ',"end":' + FloatToJsonStr(Arc.EndAngle) +
                     ',"width":' + IntToStr(CoordToMils(Arc.LineWidth)) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumArcs);
             End
             Else If Obj.ObjectId = ePadObject Then
@@ -42144,8 +53359,8 @@ Begin
                 Try
                     If Pad.Component <> Nil Then TextStr := Pad.Component.Name.Text;
                 Except End;
-                If NumPads > 0 Then PadsJson := PadsJson + ',';
-                PadsJson := PadsJson +
+                If NumPads > 0 Then PadsParts.Add(',');
+                PadsParts.Add(
                     '{"x":' + IntToStr(CoordToMils(Pad.X)) +
                     ',"y":' + IntToStr(CoordToMils(Pad.Y)) +
                     ',"x_size":' + IntToStr(CoordToMils(Pad.TopXSize)) +
@@ -42159,7 +53374,7 @@ Begin
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name":"' + EscapeJsonString(PadName) + '"' +
                     ',"comp":"' + EscapeJsonString(TextStr) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumPads);
             End
             Else If Obj.ObjectId = eViaObject Then
@@ -42167,15 +53382,15 @@ Begin
                 Via := Obj;
                 NetName := '';
                 Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
-                If NumVias > 0 Then ViasJson := ViasJson + ',';
-                ViasJson := ViasJson +
+                If NumVias > 0 Then ViasParts.Add(',');
+                ViasParts.Add(
                     '{"x":' + IntToStr(CoordToMils(Via.X)) +
                     ',"y":' + IntToStr(CoordToMils(Via.Y)) +
                     ',"size":' + IntToStr(CoordToMils(Via.Size)) +
                     ',"hole_size":' + IntToStr(CoordToMils(Via.HoleSize)) +
                     ',"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"' +
                     ',"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumVias);
             End
             Else If Obj.ObjectId = eTextObject Then
@@ -42203,8 +53418,8 @@ Begin
                     Obj := Iter.NextPCBObject;
                     Continue;
                 End;
-                If NumTexts > 0 Then TextsJson := TextsJson + ',';
-                TextsJson := TextsJson +
+                If NumTexts > 0 Then TextsParts.Add(',');
+                TextsParts.Add(
                     '{"x":' + IntToStr(CoordToMils(Text.XLocation)) +
                     ',"y":' + IntToStr(CoordToMils(Text.YLocation)) +
                     ',"text":"' + EscapeJsonString(TextStr) + '"' +
@@ -42212,7 +53427,7 @@ Begin
                     ',"width":' + IntToStr(CoordToMils(Text.Width)) +
                     ',"rotation":' + FloatToJsonStr(Text.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"hidden":false}';
+                    ',"hidden":false}');
                 Inc(NumTexts);
             End
             Else If Obj.ObjectId = eRegionObject Then
@@ -42232,19 +53447,20 @@ Begin
                 End;
                 If (Contour <> Nil) And (PtCount >= 3) Then
                 Begin
-                    If NumRegions > 0 Then RegionsJson := RegionsJson + ',';
-                    RegionsJson := RegionsJson +
-                        '{"layer":"' + EscapeJsonString(LayerName) + '"' +
-                        ',"net":"' + EscapeJsonString(NetName) + '"' +
-                        ',"pts":[';
+                    RegionPoints := TStringList.Create;
                     For K := 1 To PtCount Do
                     Begin
-                        If K > 1 Then RegionsJson := RegionsJson + ',';
-                        RegionsJson := RegionsJson + '['
+                        If K > 1 Then RegionPoints.Add(',');
+                        RegionPoints.Add('['
                             + IntToStr(CoordToMils(Contour.X[K])) + ','
-                            + IntToStr(CoordToMils(Contour.Y[K])) + ']';
+                            + IntToStr(CoordToMils(Contour.Y[K])) + ']');
                     End;
-                    RegionsJson := RegionsJson + ']}';
+                    If NumRegions > 0 Then RegionsParts.Add(',');
+                    RegionsParts.Add(
+                        '{"layer":"' + EscapeJsonString(LayerName) + '"' +
+                        ',"net":"' + EscapeJsonString(NetName) + '"' +
+                        ',"pts":[' + RegionPoints.Text + ']}');
+                    RegionPoints.Free;
                     Inc(NumRegions);
                 End;
             End
@@ -42267,15 +53483,15 @@ Begin
                 Try NameOnFlag := CompObj.NameOn; Except End;
                 CommentOnFlag := True;
                 Try CommentOnFlag := CompObj.CommentOn; Except End;
-                If NumComps > 0 Then CompsJson := CompsJson + ',';
-                CompsJson := CompsJson +
+                If NumComps > 0 Then CompsParts.Add(',');
+                CompsParts.Add(
                     '{"des":"' + EscapeJsonString(TextStr) + '"' +
                     ',"x":' + IntToStr(CoordToMils(CompObj.X)) +
                     ',"y":' + IntToStr(CoordToMils(CompObj.Y)) +
                     ',"rotation":' + FloatToJsonStr(CompObj.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name_on":' + BoolToJsonStr(NameOnFlag) +
-                    ',"comment_on":' + BoolToJsonStr(CommentOnFlag) + '}';
+                    ',"comment_on":' + BoolToJsonStr(CommentOnFlag) + '}');
                 Inc(NumComps);
             End;
             Obj := Iter.NextPCBObject;
@@ -42283,14 +53499,22 @@ Begin
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
+    AppendLog(FormatLogStamp + ',0,_pcb_geometry,iter_done,' + RequestId);
 
-    TracksJson  := TracksJson  + ']';
-    ArcsJson    := ArcsJson    + ']';
-    PadsJson    := PadsJson    + ']';
-    ViasJson    := ViasJson    + ']';
-    TextsJson   := TextsJson   + ']';
-    RegionsJson := RegionsJson + ']';
-    CompsJson   := CompsJson   + ']';
+    TracksJson  := '[' + TracksParts.Text + ']';
+    ArcsJson    := '[' + ArcsParts.Text + ']';
+    PadsJson    := '[' + PadsParts.Text + ']';
+    ViasJson    := '[' + ViasParts.Text + ']';
+    TextsJson   := '[' + TextsParts.Text + ']';
+    RegionsJson := '[' + RegionsParts.Text + ']';
+    CompsJson   := '[' + CompsParts.Text + ']';
+    TracksParts.Free;
+    ArcsParts.Free;
+    PadsParts.Free;
+    ViasParts.Free;
+    TextsParts.Free;
+    RegionsParts.Free;
+    CompsParts.Free;
 
     { Layer colours + visibility, straight from Altium so the renderer can }
     { reproduce exactly what the user sees on the bench instead of guessing }
@@ -42336,10 +53560,10 @@ Begin
         ',"texts":' + IntToStr(NumTexts) +
         ',"regions":' + IntToStr(NumRegions) +
         ',"components":' + IntToStr(NumComps) + '}' +
-        ',"bbox":{"x1":' + IntToStr(CoordToMils(BR.X1)) +
-        ',"y1":' + IntToStr(CoordToMils(BR.Y1)) +
-        ',"x2":' + IntToStr(CoordToMils(BR.X2)) +
-        ',"y2":' + IntToStr(CoordToMils(BR.Y2)) + '}' +
+        ',"bbox":{"x1":' + IntToStr(CoordToMils(EL)) +
+        ',"y1":' + IntToStr(CoordToMils(EB)) +
+        ',"x2":' + IntToStr(CoordToMils(ER)) +
+        ',"y2":' + IntToStr(CoordToMils(ET)) + '}' +
         ',"outline":' + OutlineJson +
         ',"tracks":' + TracksJson +
         ',"arcs":' + ArcsJson +
@@ -42578,6 +53802,14 @@ Begin
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
@@ -42849,6 +54081,14 @@ Begin
         SchDoc.GraphicallyInvalidate;
     End;
 
+    { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
+      the rest of Altium is concerned. SmartCompile skips its recompile
+      while the project still looks clean, so a later ERC or netlist read
+      answers from the model as it stood BEFORE this call, and a deferred
+      save has nothing to flush. Reported as NoERC markers that were in
+      the file and still listed as violations until the project was
+      reopened. }
+    If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"stubbed":' + IntToStr(Stubbed) + ',"failed":' + IntToStr(Failed) + '}');
 End;
@@ -42924,11 +54164,338 @@ Begin
         + KindStr + '"}');
 End;
 
+{..............................................................................}
+{ Gen_ExplainPin                                                              }
+{                                                                              }
+{ Answers "why is this pin on that net?" -- the question proj_get_nets can    }
+{ state a verdict on but never justify. Given a designator and pin number,    }
+{ reports the pin's ROOT (Pin.Location, body side) and its CONNECTION point   }
+{ (Location + PinLength along Orientation), then lists every schematic object }
+{ sitting on each of those two points.                                        }
+{                                                                              }
+{ Reading the result:                                                         }
+{  - objects under "at_connection" are what actually drive the pin's net.     }
+{    Two net labels with different text there is a short.                     }
+{  - objects under "at_root" are electrically INERT. A net label there is the }
+{    classic "sheet looks wired but the pin floats" bug.                      }
+{  - an empty "at_connection" with a populated "at_root" means the label      }
+{    needs to move by PinLength along the pin's orientation.                  }
+{                                                                              }
+{ Params: designator (required), pin (required, the pin NUMBER not name).     }
+{..............................................................................}
+
+Function Gen_ExplainPin(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    DocI : Integer;
+    Document : IDocument;
+    Sheet : ISch_Document;
+    CompIter, PinIter, SpatIter : ISch_Iterator;
+    CompObj, PinObj, Hit : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Pin : ISch_Pin;
+    WantDesig, WantPin, DocKind, SheetName : String;
+    FoundSheet, PinName, PinNumStr : String;
+    Loc : TLocation;
+    RX, RY, CX, CY, PinLen, PinOrient : Integer;
+    Tol, ObjId : Integer;
+    ConnJson, RootJson, Detail : String;
+    FirstC, FirstR, Found, HitOk : Boolean;
+    Pass : Integer;
+    PX, PY, HitX, HitY, EndX, EndY : Integer;
+    OtherLen, OtherOri, VtxI, VtxN : Integer;
+    ItemText : String;
+    V1, V2 : TLocation;
+Begin
+    WantDesig := ExtractJsonValue(Params, 'designator');
+    WantPin := ExtractJsonValue(Params, 'pin');
+    If (WantDesig = '') Or (WantPin = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+            'designator and pin are both required');
+        Exit;
+    End;
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project focused');
+        Exit;
+    End;
+
+    Found := False;
+    FoundSheet := '';
+    PinName := '';
+    PinNumStr := '';
+    RX := 0; RY := 0; CX := 0; CY := 0;
+    PinLen := 0; PinOrient := 0;
+    Tol := MilsToCoord(1);
+    Sheet := Nil;
+
+    For DocI := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        If Found Then Break;
+        Document := Nil;
+        Try Document := Project.DM_LogicalDocuments(DocI); Except End;
+        If Document = Nil Then Continue;
+        DocKind := '';
+        Try DocKind := Document.DM_DocumentKind; Except End;
+        If DocKind <> 'SCH' Then Continue;
+        Sheet := Nil;
+        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        If Sheet = Nil Then Continue;
+        SheetName := '';
+        Try SheetName := Document.DM_FileName; Except End;
+
+        CompIter := Sheet.SchIterator_Create;
+        If CompIter = Nil Then Continue;
+        Try
+            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            CompObj := CompIter.FirstSchObject;
+            While (CompObj <> Nil) And (Not Found) Do
+            Begin
+                Try
+                    Comp := CompObj;
+                    If Comp.Designator.Text = WantDesig Then
+                    Begin
+                        PinIter := Comp.SchIterator_Create;
+                        If PinIter <> Nil Then
+                        Begin
+                            Try
+                                PinIter.AddFilter_ObjectSet(MkSet(ePin));
+                                PinObj := PinIter.FirstSchObject;
+                                While (PinObj <> Nil) And (Not Found) Do
+                                Begin
+                                    Try
+                                        Pin := PinObj;
+                                        PinNumStr := '';
+                                        Try PinNumStr := Pin.Designator; Except End;
+                                        If PinNumStr = WantPin Then
+                                        Begin
+                                            Found := True;
+                                            FoundSheet := SheetName;
+                                            Try PinName := Pin.Name; Except End;
+                                            Loc := Pin.GetState_Location;
+                                            RX := Loc.X;
+                                            RY := Loc.Y;
+                                            Try PinLen := Pin.PinLength; Except End;
+                                            Try PinOrient := Pin.Orientation; Except End;
+                                            CX := RX;
+                                            CY := RY;
+                                            If PinOrient = 0 Then CX := RX + PinLen
+                                            Else If PinOrient = 1 Then CY := RY + PinLen
+                                            Else If PinOrient = 2 Then CX := RX - PinLen
+                                            Else If PinOrient = 3 Then CY := RY - PinLen;
+                                        End;
+                                    Except End;
+                                    If Not Found Then PinObj := PinIter.NextSchObject;
+                                End;
+                            Finally
+                                Comp.SchIterator_Destroy(PinIter);
+                            End;
+                        End;
+                    End;
+                Except End;
+                If Not Found Then CompObj := CompIter.NextSchObject;
+            End;
+        Finally
+            Sheet.SchIterator_Destroy(CompIter);
+        End;
+    End;
+
+    If Not Found Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PIN_NOT_FOUND',
+            'No pin ' + WantPin + ' on component ' + WantDesig);
+        Exit;
+    End;
+
+    ConnJson := '';
+    RootJson := '';
+    FirstC := True;
+    FirstR := True;
+
+    { Pass 0 = connection point (live), Pass 1 = root (inert). }
+    For Pass := 0 To 1 Do
+    Begin
+        If Pass = 0 Then
+        Begin
+            PX := CX;
+            PY := CY;
+        End
+        Else
+        Begin
+            PX := RX;
+            PY := RY;
+        End;
+
+        SpatIter := Sheet.SchIterator_Create;
+        If SpatIter = Nil Then Continue;
+        Try
+            SpatIter.AddFilter_ObjectSet(
+                MkSet(eNetLabel, eWire, ePowerObject, eJunction, ePin, ePort));
+            { AddFilter_Area matches BOUNDING BOXES. Net-label text extends }
+            { hundreds of mils from Location, so a 1-mil square still hits  }
+            { labels whose Location is far away. Always re-check Location   }
+            { (or pin electrical end, or wire vertices) after the filter.   }
+            SpatIter.AddFilter_Area(PX - Tol, PY - Tol, PX + Tol, PY + Tol);
+            Hit := SpatIter.FirstSchObject;
+            While Hit <> Nil Do
+            Begin
+                Try
+                    ObjId := Hit.ObjectId;
+                    ItemText := '';
+                    HitOk := False;
+                    HitX := 0;
+                    HitY := 0;
+                    If (ObjId = eNetLabel) Or (ObjId = ePowerObject) Or
+                       (ObjId = ePort) Or (ObjId = eJunction) Then
+                    Begin
+                        Loc := Hit.GetState_Location;
+                        HitX := Loc.X;
+                        HitY := Loc.Y;
+                        HitOk := CoordWithinTol(HitX, PX, Tol) And
+                                 CoordWithinTol(HitY, PY, Tol);
+                    End
+                    Else If ObjId = ePin Then
+                    Begin
+                        Loc := Hit.GetState_Location;
+                        HitX := Loc.X;
+                        HitY := Loc.Y;
+                        OtherLen := 0;
+                        OtherOri := 0;
+                        Try OtherLen := Hit.PinLength; Except End;
+                        Try OtherOri := Hit.Orientation; Except End;
+                        EndX := HitX;
+                        EndY := HitY;
+                        If OtherOri = 0 Then EndX := HitX + OtherLen
+                        Else If OtherOri = 1 Then EndY := HitY + OtherLen
+                        Else If OtherOri = 2 Then EndX := HitX - OtherLen
+                        Else If OtherOri = 3 Then EndY := HitY - OtherLen;
+                        If CoordWithinTol(EndX, PX, Tol) And
+                           CoordWithinTol(EndY, PY, Tol) Then
+                        Begin
+                            HitOk := True;
+                            HitX := EndX;
+                            HitY := EndY;
+                        End
+                        Else If CoordWithinTol(HitX, PX, Tol) And
+                                CoordWithinTol(HitY, PY, Tol) Then
+                            HitOk := True;
+                    End
+                    Else If ObjId = eWire Then
+                    Begin
+                        VtxN := 0;
+                        Try VtxN := Hit.GetState_VerticesCount; Except End;
+                        VtxI := 1;
+                        While (VtxI < VtxN) And (Not HitOk) Do
+                        Begin
+                            Try
+                                V1 := Hit.GetState_Vertex(VtxI);
+                                V2 := Hit.GetState_Vertex(VtxI + 1);
+                                If PointNearSegment(PX, PY, V1.X, V1.Y,
+                                    V2.X, V2.Y, Tol) Then
+                                Begin
+                                    HitOk := True;
+                                    HitX := PX;
+                                    HitY := PY;
+                                End;
+                            Except End;
+                            VtxI := VtxI + 1;
+                        End;
+                    End;
+
+                    If HitOk Then
+                    Begin
+                        If ObjId = eNetLabel Then
+                        Begin
+                            Try ItemText := Hit.Text; Except End;
+                            Detail := JsonStr('kind', 'net_label') + ',' +
+                                      JsonStr('text', ItemText);
+                        End
+                        Else If ObjId = ePowerObject Then
+                        Begin
+                            Try ItemText := Hit.Text; Except End;
+                            Detail := JsonStr('kind', 'power_object') + ',' +
+                                      JsonStr('text', ItemText);
+                        End
+                        Else If ObjId = ePort Then
+                        Begin
+                            Try ItemText := Hit.Name; Except End;
+                            Detail := JsonStr('kind', 'port') + ',' +
+                                      JsonStr('text', ItemText);
+                        End
+                        Else If ObjId = eWire Then
+                            Detail := JsonStr('kind', 'wire') + ',' +
+                                      JsonStr('text', '')
+                        Else If ObjId = eJunction Then
+                            Detail := JsonStr('kind', 'junction') + ',' +
+                                      JsonStr('text', '')
+                        Else If ObjId = ePin Then
+                        Begin
+                            Try ItemText := Hit.Designator; Except End;
+                            Detail := JsonStr('kind', 'pin') + ',' +
+                                      JsonStr('text', ItemText);
+                        End
+                        Else
+                            Detail := JsonStr('kind', 'other') + ',' +
+                                      JsonStr('text', '');
+                        Detail := Detail + ',' +
+                                  JsonInt('x_mils', CoordToMils(HitX)) + ',' +
+                                  JsonInt('y_mils', CoordToMils(HitY));
+
+                        If Pass = 0 Then
+                        Begin
+                            If Not FirstC Then ConnJson := ConnJson + ',';
+                            FirstC := False;
+                            ConnJson := ConnJson + JsonObj(Detail);
+                        End
+                        Else
+                        Begin
+                            If Not FirstR Then RootJson := RootJson + ',';
+                            FirstR := False;
+                            RootJson := RootJson + JsonObj(Detail);
+                        End;
+                    End;
+                Except End;
+                Hit := SpatIter.NextSchObject;
+            End;
+        Finally
+            Sheet.SchIterator_Destroy(SpatIter);
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonStr('designator', WantDesig) + ',' +
+            JsonStr('pin', WantPin) + ',' +
+            JsonStr('pin_name', PinName) + ',' +
+            JsonStr('sheet', FoundSheet) + ',' +
+            JsonInt('orientation', PinOrient) + ',' +
+            JsonInt('pin_length_mils', CoordToMils(PinLen)) + ',' +
+            JsonInt('root_x_mils', CoordToMils(RX)) + ',' +
+            JsonInt('root_y_mils', CoordToMils(RY)) + ',' +
+            JsonInt('connect_x_mils', CoordToMils(CX)) + ',' +
+            JsonInt('connect_y_mils', CoordToMils(CY)) + ',' +
+            JsonRaw('at_connection', '[' + ConnJson + ']') + ',' +
+            JsonRaw('at_root', '[' + RootJson + ']')
+        ));
+End;
+
+
 Function HandleGenericCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
         'query_objects':    Result := Gen_QueryObjects(Params, RequestId);
         'query_region':     Result := Gen_QueryRegion(Params, RequestId);
+        'explain_pin':      Result := Gen_ExplainPin(Params, RequestId);
         'modify_objects':   Result := Gen_ModifyObjects(Params, RequestId);
         'create_object':    Result := Gen_CreateObject(Params, RequestId);
         'delete_objects':   Result := Gen_DeleteObjects(Params, RequestId);
@@ -42951,6 +54518,7 @@ Begin
         'switch_view':      Result := Gen_SwitchView(Params, RequestId);
         'measure_distance': Result := Gen_MeasureDistance(Params, RequestId);
         'get_erc_violations': Result := Gen_GetErcViolations(Params, RequestId);
+        'mirror_component': Result := Gen_MirrorSchComponent(Params, RequestId);
         'refresh_document': Result := Gen_RefreshDocument(RequestId);
         'get_unconnected_pins': Result := Gen_GetUnconnectedPins(Params, RequestId);
         'place_wire':       Result := Gen_PlaceWire(Params, RequestId);
@@ -42993,6 +54561,8 @@ Begin
         'increment_designators': Result := Gen_IncrementDesignators(Params, RequestId);
         'toggle_pin_visibility': Result := Gen_TogglePinVisibility(Params, RequestId);
         'set_component_part_id':      Result := Gen_SetComponentPartId(Params, RequestId);
+        'set_component_unique_id':    Result := Gen_SetComponentUniqueId(Params, RequestId);
+        'replicate_sch_component':    Result := Gen_ReplicateSchComponent(Params, RequestId);
         'place_probe':                Result := Gen_PlaceProbe(Params, RequestId);
         'add_datafile_link':          Result := Gen_AddDatafileLink(Params, RequestId);
         'get_simulation_readiness':   Result := Gen_GetSimulationReadiness(Params, RequestId);
@@ -43487,7 +55057,7 @@ Var
     Ratio, ViolationPct : Double;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -43759,7 +55329,7 @@ Var
     Found, First : Boolean;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -43982,7 +55552,7 @@ Var
     First, ReturnFound : Boolean;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -44095,7 +55665,7 @@ Var
     First, IsInvalid : Boolean;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -44458,7 +56028,7 @@ Var
     First, HitOnLayer : Boolean;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -44765,7 +56335,7 @@ Var
     PadX, PadY : TCoord;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -45016,7 +56586,7 @@ Var
     First, Inside : Boolean;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -45098,22 +56668,132 @@ End;
 {                                                                              }
 { Response: checked, violations, clearance_mils, items where each entry has}
 { kind (pad / via), designator (refdes), distance_mils, at coords.          }
+{ Distance in mils from (Px, Py), in mils, to the board outline: every      }
+{ segment, line or arc, segment I running from vertex I to vertex I + 1.    }
+{ -1 for an outline with no segments.                                       }
+Function OutlineDistMils(Outline : IPCB_BoardOutline; Px, Py : Double) : Double;
+Var
+    I, N : Integer;
+    Ax, Ay, Bx, By, Cx, Cy, R, D : Double;
+Begin
+    Result := -1;
+    N := 0;
+    Try N := Outline.PointCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Ax := Outline.Segments[I].vx / 10000.0;
+        Ay := Outline.Segments[I].vy / 10000.0;
+        Bx := Outline.Segments[(I + 1) Mod N].vx / 10000.0;
+        By := Outline.Segments[(I + 1) Mod N].vy / 10000.0;
+        If Outline.Segments[I].Kind = ePolySegmentLine Then
+            D := SegDistMils(Px, Py, Ax, Ay, Bx, By)
+        Else
+        Begin
+            Cx := Outline.Segments[I].cx / 10000.0;
+            Cy := Outline.Segments[I].cy / 10000.0;
+            R := Sqrt((Ax - Cx) * (Ax - Cx) + (Ay - Cy) * (Ay - Cy));
+            D := ArcDistMils(Px, Py, Cx, Cy, R,
+                Outline.Segments[I].Angle1, Outline.Segments[I].Angle2);
+        End;
+        If (Result < 0) Or (D < Result) Then Result := D;
+    End;
+End;
+
+{ The outline distance of one point of a shape, given in the shape's own    }
+{ frame (Lx, Ly) about its centre (X, Y), turned by the cosine and sine C, S. }
+Function ShapePointGapMils(Outline : IPCB_BoardOutline; X, Y, C, S, Lx, Ly : Double) : Double;
+Begin
+    Result := OutlineDistMils(Outline, X + Lx * C - Ly * S, Y + Lx * S + Ly * C);
+End;
+
+{ How close a pad's or via's copper comes to the board outline, in mils,    }
+{ never below 0. A via or round pad is its centre less its radius, an        }
+{ obround pad the nearer of its two end centres less its half-width, both    }
+{ exact. Any other shape is the nearest of its corners and edge midpoints:   }
+{ exact against a straight edge and against an arc curving away from the     }
+{ pad, as a round board's edge does, and at worst a little generous where    }
+{ the outline bends in toward the pad.                                       }
+Function PadEdgeGapMils(Outline : IPCB_BoardOutline; Obj : IPCB_Primitive) : Double;
+Var
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    X, Y, Hx, Hy, Rot, C, S, Ux, Uy, R, D1, D2 : Double;
+Begin
+    X := Obj.x / 10000.0;
+    Y := Obj.y / 10000.0;
+    If Obj.ObjectId = eViaObject Then
+    Begin
+        Via := Obj;
+        Result := OutlineDistMils(Outline, X, Y) - Via.Size / 20000.0;
+    End
+    Else
+    Begin
+        Pad := Obj;
+        Hx := Pad.TopXSize / 20000.0;
+        Hy := Pad.TopYSize / 20000.0;
+        Rot := 0;
+        Try Rot := Pad.Rotation; Except Rot := 0; End;
+        C := Cos(Rot * 3.14159265358979 / 180.0);
+        S := Sin(Rot * 3.14159265358979 / 180.0);
+        If Pad.TopShape = eRounded Then
+        Begin
+            If Hx >= Hy Then
+            Begin
+                R := Hy; Ux := (Hx - Hy) * C; Uy := (Hx - Hy) * S;
+            End
+            Else
+            Begin
+                R := Hx; Ux := -(Hy - Hx) * S; Uy := (Hy - Hx) * C;
+            End;
+            D1 := OutlineDistMils(Outline, X + Ux, Y + Uy);
+            D2 := OutlineDistMils(Outline, X - Ux, Y - Uy);
+            If D2 < D1 Then D1 := D2;
+            Result := D1 - R;
+        End
+        Else
+        Begin
+            Result := ShapePointGapMils(Outline, X, Y, C, S, -Hx, -Hy);
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, Hx, -Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, Hx, Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, -Hx, Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, 0, -Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, Hx, 0);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, 0, Hy);
+            If D1 < Result Then Result := D1;
+            D1 := ShapePointGapMils(Outline, X, Y, C, S, -Hx, 0);
+            If D1 < Result Then Result := D1;
+        End;
+    End;
+    If Result < 0 Then Result := 0;
+End;
+
+{ Audit_FindPadsNearBoardEdge                                                 }
+{                                                                              }
+{ It measured with Board.PrimPrimDistance(BoardOutline, prim) inside an empty }
+{ Try, counted a pad only when that answered, and found 0 of them on a round  }
+{ board with a connector pad 0.5 mm from the edge. Measured here from the     }
+{ outline's own segments instead, and a pad that cannot be measured is        }
+{ counted rather than passed.                                                 }
+
 Function Audit_FindPadsNearBoardEdge(Params, RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Outline : IPCB_BoardOutline;
     Iter : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
-    Checked, Violations : Integer;
-    ClearanceMils : Integer;
-    Clearance : TCoord;
-    Dist : TCoord;
-    DistMils : Integer;
+    Checked, Violations, Unmeasured : Integer;
+    ClearanceMils, Gap : Double;
+    Measured : Boolean;
     KindStr, DesStr, ItemsJson, EntryJson : String;
     First : Boolean;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -45129,12 +56809,12 @@ Begin
         Exit;
     End;
 
-    ClearanceMils := StrToIntDef(ExtractJsonValue(Params, 'clearance_mils'), 25);
+    ClearanceMils := StrToFloatDef(ExtractJsonValue(Params, 'clearance_mils'), 25);
     If ClearanceMils <= 0 Then ClearanceMils := 25;
-    Clearance := MilsToCoord(ClearanceMils);
 
     Checked := 0;
     Violations := 0;
+    Unmeasured := 0;
     ItemsJson := '';
     First := True;
 
@@ -45146,34 +56826,32 @@ Begin
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
         Begin
-            Try
-                Inc(Checked);
-                Dist := -1;
-                { PrimPrimDistance returns 0 for overlap, distance otherwise. }
-                { For a pad INSIDE the outline polygon the distance to the    }
-                { outline segments is the gap to the nearest edge, which is  }
-                { exactly what we want.                                       }
-                Try Dist := Board.PrimPrimDistance(Outline, Obj); Except End;
-                If (Dist >= 0) And (Dist < Clearance) Then
-                Begin
-                    Inc(Violations);
-                    DistMils := CoordToMils(Dist);
-                    If Obj.ObjectId = eViaObject Then KindStr := 'via'
-                    Else KindStr := 'pad';
-                    DesStr := '';
-                    If Obj.InComponent Then
-                        Try DesStr := Obj.Component.Name.Text; Except End;
-                    If Not First Then ItemsJson := ItemsJson + ',';
-                    First := False;
-                    EntryJson :=
-                        JsonStr('kind', KindStr) + ',' +
-                        JsonStr('designator', DesStr) + ',' +
-                        JsonInt('distance_mils', DistMils) + ',' +
-                        JsonStr('at', '(' + IntToStr(CoordToMils(Obj.x)) + ',' +
-                                      IntToStr(CoordToMils(Obj.y)) + ')');
-                    ItemsJson := ItemsJson + JsonObj(EntryJson);
-                End;
-            Except End;
+            Inc(Checked);
+            Measured := True;
+            Gap := 0;
+            Try Gap := PadEdgeGapMils(Outline, Obj); Except Measured := False; End;
+            If Not Measured Then
+            Begin
+                Inc(Unmeasured);
+            End
+            Else If Gap < ClearanceMils Then
+            Begin
+                Inc(Violations);
+                If Obj.ObjectId = eViaObject Then KindStr := 'via'
+                Else KindStr := 'pad';
+                DesStr := '';
+                If Obj.InComponent Then
+                    Try DesStr := Obj.Component.Name.Text; Except End;
+                If Not First Then ItemsJson := ItemsJson + ',';
+                First := False;
+                EntryJson :=
+                    JsonStr('kind', KindStr) + ',' +
+                    JsonStr('designator', DesStr) + ',' +
+                    JsonRaw('distance_mils', FloatToJsonStr(Round(Gap * 100) / 100.0)) + ',' +
+                    JsonStr('at', '(' + IntToStr(CoordToMils(Obj.x)) + ',' +
+                                  IntToStr(CoordToMils(Obj.y)) + ')');
+                ItemsJson := ItemsJson + JsonObj(EntryJson);
+            End;
             Obj := Iter.NextPCBObject;
         End;
     Finally
@@ -45184,7 +56862,8 @@ Begin
         JsonObj(
             JsonInt('checked', Checked) + ',' +
             JsonInt('violations', Violations) + ',' +
-            JsonInt('clearance_mils', ClearanceMils) + ',' +
+            JsonInt('unmeasured', Unmeasured) + ',' +
+            JsonRaw('clearance_mils', FloatToJsonStr(ClearanceMils)) + ',' +
             JsonRaw('items', '[' + ItemsJson + ']')
         ));
 End;
@@ -45686,7 +57365,7 @@ Var
     First : Boolean;
     OnTop : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -45953,7 +57632,7 @@ Var
     ItemsJson, EntryJson, CompName : String;
     First, Locked : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -46023,7 +57702,7 @@ Var
     First, MirrorFlag : Boolean;
     LayerVal : TLayer;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -46624,7 +58303,7 @@ Var
     V1X, V1Y, V2X, V2Y : Double;
     L1, L2, Dot, CosTheta, ThetaDeg : Double;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -46651,18 +58330,23 @@ Begin
             For Endpoint := 1 To 2 Do
             Begin
                 Try
+                    { IN MILS, AS REALS. A coordinate difference is an     }
+                    { Integer, and kept one in a Double variable, so its   }
+                    { square overflowed 32 bits on any track longer than   }
+                    { about 4.6 mil: the angles were garbage and a negative }
+                    { sum made Sqrt return NaN, which is not JSON.          }
                     If Endpoint = 1 Then
                     Begin
                         PX := Track.X1; PY := Track.Y1;
-                        V1X := Track.X2 - PX; V1Y := Track.Y2 - PY;
+                        V1X := (Track.X2 - PX) / 10000.0; V1Y := (Track.Y2 - PY) / 10000.0;
                     End
                     Else
                     Begin
                         PX := Track.X2; PY := Track.Y2;
-                        V1X := Track.X1 - PX; V1Y := Track.Y1 - PY;
+                        V1X := (Track.X1 - PX) / 10000.0; V1Y := (Track.Y1 - PY) / 10000.0;
                     End;
                     L1 := Sqrt(V1X * V1X + V1Y * V1Y);
-                    If L1 < 1 Then Continue;
+                    If L1 < 0.01 Then Continue;
 
                     SpatIter := Board.SpatialIterator_Create;
                     Try
@@ -46675,7 +58359,9 @@ Begin
                         Begin
                             Try
                                 Other := Obj;
-                                If (Other.I_ObjectAddress <> Track.I_ObjectAddress)
+                                { Each join is seen from both of its tracks: }
+                                { reported from the lower address only.       }
+                                If (Other.I_ObjectAddress > Track.I_ObjectAddress)
                                    And (Other.Net = Track.Net) Then
                                 Begin
                                     { Find which of Other's endpoints is at (PX,PY) }
@@ -46683,14 +58369,14 @@ Begin
                                     If (Abs(Other.X1 - PX) <= Tol)
                                        And (Abs(Other.Y1 - PY) <= Tol) Then
                                     Begin
-                                        V2X := Other.X2 - PX;
-                                        V2Y := Other.Y2 - PY;
+                                        V2X := (Other.X2 - PX) / 10000.0;
+                                        V2Y := (Other.Y2 - PY) / 10000.0;
                                     End
                                     Else If (Abs(Other.X2 - PX) <= Tol)
                                             And (Abs(Other.Y2 - PY) <= Tol) Then
                                     Begin
-                                        V2X := Other.X1 - PX;
-                                        V2Y := Other.Y1 - PY;
+                                        V2X := (Other.X1 - PX) / 10000.0;
+                                        V2Y := (Other.Y1 - PY) / 10000.0;
                                     End
                                     Else
                                     Begin
@@ -46698,7 +58384,7 @@ Begin
                                         Continue;
                                     End;
                                     L2 := Sqrt(V2X * V2X + V2Y * V2Y);
-                                    If L2 < 1 Then
+                                    If L2 < 0.01 Then
                                     Begin
                                         Obj := SpatIter.NextPCBObject;
                                         Continue;
@@ -46832,7 +58518,7 @@ Var
     MinW, MaxW, TX, TY : Integer;
     Ratio : Double;
 Begin
-    Board := GetPCBBoardAnywhere;
+    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -46936,7 +58622,7 @@ Var
     First, TrackTouches, EndpointAtCenter : Boolean;
 Begin
     Board := Nil;
-    Try Board := GetPCBBoardAnywhere; Except End;
+    Try Board := GetPCBBoardAnywhere(0); Except End;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -47142,6 +58828,256 @@ End;
 
 
 { Dispatcher entry for `audit.*` commands.                                    }
+{..............................................................................}
+{ Audit_FindNetLabelConflicts                                                 }
+{                                                                              }
+{ Three related failure modes that all look fine on a printed sheet:          }
+{                                                                              }
+{  1. CONFLICT: two net labels with DIFFERENT text at the same (x, y).        }
+{     Altium merges both names into one net and one name wins. The losing     }
+{     net silently ceases to exist and everything on it is absorbed. This is  }
+{     a real short between two named nets.                                    }
+{                                                                              }
+{  2. ON_PIN_ROOT: a label sitting on a pin Location rather than on its       }
+{     electrical end. Pin.Location is the BODY-side root; the pin connects at }
+{     Location + PinLength along Orientation. A label on the root is inert,   }
+{     so the sheet reads as wired while the pin floats on an auto-net.        }
+{                                                                              }
+{  3. DUPLICATE: two labels with the SAME text at one point. Harmless         }
+{     electrically, but it is clutter and it hides class 1 underneath.        }
+{                                                                              }
+{ Orientation convention matches Generic.pas: 0=right(+x) 1=up(+y)            }
+{ 2=left(-x) 3=down(-y).                                                      }
+{..............................................................................}
+
+Function Audit_FindNetLabelConflicts(Params, RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    DocI : Integer;
+    Document : IDocument;
+    Sheet : ISch_Document;
+    Iter, SpatIter, PinIter : ISch_Iterator;
+    Obj, Hit : ISch_GraphicalObject;
+    NetLbl, OtherLbl : ISch_NetLabel;
+    Pin : ISch_Pin;
+    DocKind, SheetName, LabelText, OtherText : String;
+    PinDesig, PinNum, OwnerDesig : String;
+    Loc, PinLoc, OtherLoc : TLocation;
+    LX, LY, PX, PY, CX, CY, PinLen, PinOrient : Integer;
+    Tol : Integer;
+    Total, NConf, NRoot, NDup : Integer;
+    ConfJson, RootJson, DupJson, EntryJson : String;
+    FirstC, FirstR, FirstD : Boolean;
+    FoundConf, FoundDup, FoundRoot : Boolean;
+Begin
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project focused');
+        Exit;
+    End;
+
+    Total := 0;
+    NConf := 0;
+    NRoot := 0;
+    NDup := 0;
+    ConfJson := '';
+    RootJson := '';
+    DupJson := '';
+    FirstC := True;
+    FirstR := True;
+    FirstD := True;
+    Tol := MilsToCoord(1);
+
+    For DocI := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Document := Nil;
+        Try Document := Project.DM_LogicalDocuments(DocI); Except End;
+        If Document = Nil Then Continue;
+        DocKind := '';
+        Try DocKind := Document.DM_DocumentKind; Except End;
+        If DocKind <> 'SCH' Then Continue;
+        Sheet := Nil;
+        Try Sheet := SchServer.GetSchDocumentByPath(Document.DM_FullPath); Except End;
+        If Sheet = Nil Then Continue;
+        SheetName := '';
+        Try SheetName := Document.DM_FileName; Except End;
+
+        Iter := Sheet.SchIterator_Create;
+        If Iter = Nil Then Continue;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eNetLabel));
+            Obj := Iter.FirstSchObject;
+            While Obj <> Nil Do
+            Begin
+                Try
+                    Inc(Total);
+                    NetLbl := Obj;
+                    Loc := NetLbl.GetState_Location;
+                    LX := Loc.X;
+                    LY := Loc.Y;
+                    LabelText := '';
+                    Try LabelText := NetLbl.Text; Except End;
+
+                    FoundConf := False;
+                    FoundDup := False;
+                    OtherText := '';
+
+                    SpatIter := Sheet.SchIterator_Create;
+                    If SpatIter <> Nil Then
+                    Begin
+                        Try
+                            SpatIter.AddFilter_ObjectSet(MkSet(eNetLabel));
+                            { AddFilter_Area matches text bounding boxes, not }
+                            { Location. Adjacent 100-mil pin-pitch labels in  }
+                            { a column otherwise report as conflicts.         }
+                            SpatIter.AddFilter_Area(LX - Tol, LY - Tol, LX + Tol, LY + Tol);
+                            Hit := SpatIter.FirstSchObject;
+                            While Hit <> Nil Do
+                            Begin
+                                If Hit <> Obj Then
+                                Begin
+                                    OtherLbl := Hit;
+                                    Try
+                                        OtherLoc := OtherLbl.GetState_Location;
+                                        If CoordWithinTol(OtherLoc.X, LX, Tol) And
+                                           CoordWithinTol(OtherLoc.Y, LY, Tol) Then
+                                        Begin
+                                            If OtherLbl.Text <> LabelText Then
+                                            Begin
+                                                FoundConf := True;
+                                                If OtherText = '' Then OtherText := OtherLbl.Text;
+                                            End
+                                            Else
+                                                FoundDup := True;
+                                        End;
+                                    Except End;
+                                End;
+                                Hit := SpatIter.NextSchObject;
+                            End;
+                        Finally
+                            Sheet.SchIterator_Destroy(SpatIter);
+                        End;
+                    End;
+
+                    If FoundConf Then
+                    Begin
+                        Inc(NConf);
+                        If Not FirstC Then ConfJson := ConfJson + ',';
+                        FirstC := False;
+                        EntryJson :=
+                            JsonStr('label', LabelText) + ',' +
+                            JsonStr('conflicts_with', OtherText) + ',' +
+                            JsonStr('sheet', SheetName) + ',' +
+                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
+                            JsonInt('y_mils', CoordToMils(LY));
+                        ConfJson := ConfJson + JsonObj(EntryJson);
+                    End;
+
+                    If FoundDup Then
+                    Begin
+                        Inc(NDup);
+                        If Not FirstD Then DupJson := DupJson + ',';
+                        FirstD := False;
+                        EntryJson :=
+                            JsonStr('label', LabelText) + ',' +
+                            JsonStr('sheet', SheetName) + ',' +
+                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
+                            JsonInt('y_mils', CoordToMils(LY));
+                        DupJson := DupJson + JsonObj(EntryJson);
+                    End;
+
+                    FoundRoot := False;
+                    PinDesig := '';
+                    PinNum := '';
+                    OwnerDesig := '';
+                    CX := 0;
+                    CY := 0;
+                    PinIter := Sheet.SchIterator_Create;
+                    If PinIter <> Nil Then
+                    Begin
+                        Try
+                            PinIter.AddFilter_ObjectSet(MkSet(ePin));
+                            PinIter.AddFilter_Area(LX - Tol, LY - Tol, LX + Tol, LY + Tol);
+                            Hit := PinIter.FirstSchObject;
+                            While Hit <> Nil Do
+                            Begin
+                                Try
+                                    Pin := Hit;
+                                    PinLoc := Pin.GetState_Location;
+                                    PX := PinLoc.X;
+                                    PY := PinLoc.Y;
+                                    If (Abs(PX - LX) <= Tol) And (Abs(PY - LY) <= Tol) Then
+                                    Begin
+                                        PinLen := 0;
+                                        PinOrient := 0;
+                                        Try PinLen := Pin.PinLength; Except End;
+                                        Try PinOrient := Pin.Orientation; Except End;
+                                        CX := PX;
+                                        CY := PY;
+                                        If PinOrient = 0 Then CX := PX + PinLen
+                                        Else If PinOrient = 1 Then CY := PY + PinLen
+                                        Else If PinOrient = 2 Then CX := PX - PinLen
+                                        Else If PinOrient = 3 Then CY := PY - PinLen;
+                                        If (CX <> PX) Or (CY <> PY) Then
+                                        Begin
+                                            FoundRoot := True;
+                                            Try PinNum := Pin.Designator; Except End;
+                                            Try OwnerDesig := Pin.OwnerSchComponent.Designator.Text; Except End;
+                                        End;
+                                    End;
+                                Except End;
+                                Hit := PinIter.NextSchObject;
+                            End;
+                        Finally
+                            Sheet.SchIterator_Destroy(PinIter);
+                        End;
+                    End;
+
+                    If FoundRoot Then
+                    Begin
+                        Inc(NRoot);
+                        If Not FirstR Then RootJson := RootJson + ',';
+                        FirstR := False;
+                        PinDesig := OwnerDesig + '.' + PinNum;
+                        EntryJson :=
+                            JsonStr('label', LabelText) + ',' +
+                            JsonStr('pin', PinDesig) + ',' +
+                            JsonStr('sheet', SheetName) + ',' +
+                            JsonInt('x_mils', CoordToMils(LX)) + ',' +
+                            JsonInt('y_mils', CoordToMils(LY)) + ',' +
+                            JsonInt('connect_x_mils', CoordToMils(CX)) + ',' +
+                            JsonInt('connect_y_mils', CoordToMils(CY));
+                        RootJson := RootJson + JsonObj(EntryJson);
+                    End;
+                Except End;
+                Obj := Iter.NextSchObject;
+            End;
+        Finally
+            Sheet.SchIterator_Destroy(Iter);
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonInt('checked', Total) + ',' +
+            JsonInt('conflicts', NConf) + ',' +
+            JsonInt('on_pin_root', NRoot) + ',' +
+            JsonInt('duplicates', NDup) + ',' +
+            JsonRaw('conflicting_labels', '[' + ConfJson + ']') + ',' +
+            JsonRaw('labels_on_pin_root', '[' + RootJson + ']') + ',' +
+            JsonRaw('duplicate_labels', '[' + DupJson + ']')
+        ));
+End;
+
+
 Function HandleAuditCommand(Action : String; Params : String;
                              RequestId : String) : String;
 Begin
@@ -47193,6 +59129,8 @@ Begin
         Result := Audit_FindVisibleSupplierPN(Params, RequestId)
     Else If Action = 'find_orphan_net_labels' Then
         Result := Audit_FindOrphanNetLabels(Params, RequestId)
+    Else If Action = 'find_net_label_conflicts' Then
+        Result := Audit_FindNetLabelConflicts(Params, RequestId)
     Else If Action = 'find_orphan_power_objects' Then
         Result := Audit_FindOrphanPowerObjects(Params, RequestId)
     Else If Action = 'find_placeholder_values' Then
@@ -47310,7 +59248,7 @@ Begin
 End;
 
 
-Procedure EnsureStatusBuffers;
+Procedure EnsureStatusBuffers(Dummy : Integer);
 Begin
     If PerfNames     = Nil Then PerfNames     := TStringList.Create;
     If PerfCountStrs = Nil Then PerfCountStrs := TStringList.Create;
@@ -47334,12 +59272,15 @@ Begin
 End;
 
 
-Function FilledDot : String;
+{ Hidden from the Run Script dialog by its argument; Dummy is never
+  read. See KnownPCBPropertyList in PCBGeneric for why. }
+Function FilledDot(Dummy : Integer) : String;
 Begin
     Result := '[x]';
 End;
 
-Function HollowDot : String;
+{ Hidden from the Run Script dialog by its argument; Dummy is never read. }
+Function HollowDot(Dummy : Integer) : String;
 Begin
     Result := '[ ]';
 End;
@@ -47373,7 +59314,7 @@ End;
 { procedure now just clears the visible memo. Callers that previously       }
 { wanted "apply new filter to old entries" now just see a clean slate after }
 { toggling filter chips, which is honest and side-steps the buggy API.      }
-Procedure RebuildVisibleLog;
+Procedure RebuildVisibleLog(Dummy : Integer);
 Begin
     Try
         mmo_Log.Lines.BeginUpdate;
@@ -47390,7 +59331,7 @@ End;
 { count/total/max stringified ints. Names are case-sensitive command IDs.    }
 Function FindOrAddPerf(Command : String) : Integer;
 Begin
-    EnsureStatusBuffers;
+    EnsureStatusBuffers(0);
     Result := PerfNames.IndexOf(Command);
     If Result >= 0 Then Exit;
     PerfNames.Add(Command);
@@ -47400,7 +59341,7 @@ Begin
     Result := PerfNames.Count - 1;
 End;
 
-Procedure ResetPerfStats;
+Procedure ResetPerfStats(Dummy : Integer);
 Begin
     { DelphiScript on this build refuses to resolve .Free or .Count on  }
     { module-level TStringList from inside this Procedure - even when    }
@@ -47416,7 +59357,7 @@ Begin
     PerfMaxStrs   := TStringList.Create;
 End;
 
-Procedure EnsurePerfHeader;
+Procedure EnsurePerfHeader(Dummy : Integer);
 Begin
     Try
         If mmo_Perf.Lines.Count < 2 Then
@@ -47476,7 +59417,7 @@ Begin
     { paint between the Clear and the re-add). Replacing the single       }
     { changed row in place keeps the panel rock-stable and removes the     }
     { "UI blanks out then reappears" the user reported.                    }
-    EnsurePerfHeader;
+    EnsurePerfHeader(0);
     Line := FormatPerfLine(Idx);
     RowLineIdx := 2 + Idx;   { 2 header lines come first }
     Try
@@ -47491,11 +59432,11 @@ End;
 { Full rebuild kept for the "Reset perf" button and the tab-switch case   }
 { where the memo might have been blanked while hidden. Hot path now uses  }
 { TrackPerf's incremental update.                                          }
-Procedure RefreshPerfPanel;
+Procedure RefreshPerfPanel(Dummy : Integer);
 Var
     I : Integer;
 Begin
-    EnsureStatusBuffers;
+    EnsureStatusBuffers(0);
     If PerfNames.Count = 0 Then Exit;
     Try
         mmo_Perf.Lines.BeginUpdate;
@@ -47522,7 +59463,7 @@ Procedure AppendLogLine(Command : String; DurationMs : Cardinal; IsError : Boole
 Var
     Line, IdShort : String;
 Begin
-    EnsureStatusBuffers;
+    EnsureStatusBuffers(0);
     TrackPerf(Command, DurationMs);
 
     { "Only slow" hides fast (<100 ms) non-error calls. Done here against the }
@@ -47580,7 +59521,7 @@ Begin
     Except End;
 End;
 
-Procedure ResetInFlight;
+Procedure ResetInFlight(Dummy : Integer);
 Begin
     Try
         InFlightActive := False;
@@ -47612,7 +59553,7 @@ End;
 { MCP spawned OR a standalone `python -m eda_agent.server dashboard` run    }
 { -- both refresh the same file), button is active. Otherwise grey it out  }
 { and tell the user via caption that no dashboard is reachable.            }
-Procedure UpdateOpenWebState;
+Procedure UpdateOpenWebState(Dummy : Integer);
 Var
     HeartbeatPath : String;
     HeartbeatStamp, ThresholdStamp : Integer;
@@ -47727,7 +59668,7 @@ Begin
     Try lbl_ValReq.Caption := IntToStr(Requests); Except End;
     Try lbl_ValMs.Caption  := MsStr; Except End;
     ColorCountdown(IdleSecToShutdown);
-    UpdateOpenWebState;
+    UpdateOpenWebState(0);
 End;
 
 
@@ -47750,7 +59691,7 @@ Begin
 End;
 
 
-Procedure ApplyAlwaysOnTop;
+Procedure ApplyAlwaysOnTop(Dummy : Integer);
 Begin
     Try
         If AlwaysOnTopFlag Then StatusForm.FormStyle := fsStayOnTop
@@ -47763,21 +59704,23 @@ Procedure SetCheckCaption(Pnl : TPanel; Checked : Boolean; LabelText : String);
 Begin
     Try
         If Checked Then
-            Pnl.Caption := '  ' + FilledDot + '  ' + LabelText
+            Pnl.Caption := '  ' + FilledDot(0) + '  ' + LabelText
         Else
-            Pnl.Caption := '  ' + HollowDot + '  ' + LabelText;
+            Pnl.Caption := '  ' + HollowDot(0) + '  ' + LabelText;
     Except End;
 End;
 
 
-Procedure ShowStatusForm;
+{ Hidden from the Run Script dialog by its argument. StartMCPServer
+  calls it at startup, so the form appears without anyone choosing it. }
+Procedure ShowStatusForm(Dummy : Integer);
 Var
     NewLeft, NewTop : Integer;
     AvailL, AvailT, AvailW, AvailH : Integer;
     Margin : Integer;
 Begin
     Try
-        EnsureStatusBuffers;
+        EnsureStatusBuffers(0);
         HidePingsFlag   := True;
         OnlySlowFlag    := False;
         AlwaysOnTopFlag := True;
@@ -47792,9 +59735,9 @@ Begin
         SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
         SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  '>100ms');
         SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'pin');
-        ApplyAlwaysOnTop;
+        ApplyAlwaysOnTop(0);
 
-        ResetPerfStats;
+        ResetPerfStats(0);
 
         { Position bottom-right of the work area with margin.              }
         Margin := 24;
@@ -47826,11 +59769,11 @@ Begin
         Try lbl_Status.Caption := 'idle'; Except End;
         Try lbl_LastErr.Caption := ''; Except End;
         { Button is always enabled: dashboard can run standalone. }
-        UpdateOpenWebState;
+        UpdateOpenWebState(0);
     Except End;
 End;
 
-Procedure HideStatusForm;
+Procedure HideStatusForm(Dummy : Integer);
 Begin
     Try
         If StatusForm.Visible Then StatusForm.Hide;
@@ -47838,10 +59781,10 @@ Begin
 End;
 
 
-Procedure StatusFormClose(Sender : TObject; Var Action : TCloseAction);
-Begin
-    Try Running := False; Except End;
-End;
+{ StatusFormClose lives at the END of this unit: closing the form has to     }
+{ finalise the pump, and the pump is defined down there. DelphiScript has no }
+{ forward declarations, and a DFM handler binds by name anywhere within the  }
+{ form's own unit, so position does not affect the binding.                   }
 
 
 { Action buttons ============================================================ }
@@ -47942,7 +59885,7 @@ Begin
     Try
         HidePingsFlag := Not HidePingsFlag;
         SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
-        RebuildVisibleLog;
+        RebuildVisibleLog(0);
     Except End;
 End;
 
@@ -47951,7 +59894,7 @@ Begin
     Try
         OnlySlowFlag := Not OnlySlowFlag;
         SetCheckCaption(chk_OnlySlow, OnlySlowFlag, '>100ms');
-        RebuildVisibleLog;
+        RebuildVisibleLog(0);
     Except End;
 End;
 
@@ -47960,14 +59903,14 @@ Begin
     Try
         AlwaysOnTopFlag := Not AlwaysOnTopFlag;
         SetCheckCaption(chk_OnTop, AlwaysOnTopFlag, 'pin');
-        ApplyAlwaysOnTop;
+        ApplyAlwaysOnTop(0);
     Except End;
 End;
 
 Procedure edt_FilterChange(Sender : TObject);
 Begin
     Try FilterText := edt_Filter.Text; Except End;
-    RebuildVisibleLog;
+    RebuildVisibleLog(0);
 End;
 
 
@@ -48077,7 +60020,7 @@ End;
 Procedure tab_PerfClick(Sender : TObject);
 Begin
     Try
-        RefreshPerfPanel;
+        RefreshPerfPanel(0);
         mmo_Log.Visible := False;
         mmo_Perf.Visible := True;
         tab_Perf.Color := COLOR_BG_BASE;
@@ -48087,20 +60030,54 @@ Begin
     Except End;
 End;
 
-{=== Dispatcher.pas ===}
-{ SPDX-License-Identifier: Apache-2.0                                   }
-{ Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
-{..............................................................................}
-{ Dispatcher.pas - Polling loop and per-request dispatcher.                     }
-{ Compiles last so all Handle*Command functions are visible.                   }
-{..............................................................................}
 
-{ Dashboard counters fed to StatusForm.pas helpers each tick. }
+{ ============================================================================ }
+{ THE PUMP                                                                     }
+{                                                                              }
+{ Dispatch runs on tmr_Poll, declared in StatusForm.dfm. It lives in THIS unit }
+{ and not in Dispatcher.pas for a measured reason: Altium resolves a form's    }
+{ event handler only within the unit that owns the form, and a handler defined }
+{ elsewhere never fires and never complains. A control timer in the form's own }
+{ unit fired 17 times in the same run where the cross-unit one fired zero.     }
+{ Everything the tick touches therefore has to be reachable from here, which   }
+{ is why ProcessCommand and ProcessSingleRequest moved out of Dispatcher.pas.  }
+{                                                                              }
+{ The timer also only ticks while its form is VISIBLE: hiding the form         }
+{ suspends it (measured, one tick then nothing, on two runs) and re-showing    }
+{ resumes it. So the pump is tied to the dashboard being on screen, and        }
+{ HideStatusForm is only ever called when the session is ending.               }
+{ ============================================================================ }
+
+Const
+    { How many queued requests one tick will dispatch before yielding. The old }
+    { blocking loop handled one request per 10 ms sleep; a timer's real floor  }
+    { is coarser (~16 ms), so a burst would otherwise pay that floor once per  }
+    { request. Draining absorbs the burst instead. Bounded rather than         }
+    { "until empty" so a client that writes requests faster than they are      }
+    { served can still never starve the UI.                                     }
+    PUMP_DRAIN_MAX = 32;
+
 Var
+    { Dashboard counters, moved here with the dispatch code. }
     StatusStartTick      : Cardinal;
     StatusRequestCount   : Integer;
     StatusLastCommand    : String;
     StatusTotalAltiumMs  : Cardinal;
+
+    { Pump state. All of these were LOCALS of the old blocking StartMCPServer, }
+    { which could keep them on its stack because it never returned. A tick     }
+    { returns between polls, so they have to outlive it.                       }
+    PumpStopPath         : String;
+    PumpIdleCount        : Integer;
+    PumpLastActivityMs   : Cardinal;
+    PumpInterval         : Integer;
+    PumpInTick           : Boolean;
+    PumpFinalised        : Boolean;
+    { True when the session is ending because ALTIUM is closing, as
+      opposed to Detach, the stop file, the stop command or auto-shutdown.
+      The difference decides how much teardown is safe to attempt. }
+    PumpQuitting         : Boolean;
+
 
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
@@ -48145,19 +60122,70 @@ End;
 { migrated to the standard pattern.                                            }
 {..............................................................................}
 
-Function ProcessSingleRequest : Boolean;
+{..............................................................................}
+{ CommandIsReadOnly - whether a command leaves the design untouched.           }
+{                                                                              }
+{ Used for ONE thing: deciding whether the compiled-netlist cache survives a   }
+{ command. SmartCompile skips DM_Compile for COMPILE_CACHE_TTL_MS when the     }
+{ project reports no dirty documents, and InvalidateCompileCache existed but   }
+{ was never called from anywhere, so a write followed within that window by a  }
+{ connectivity read handed back the netlist from BEFORE the write. Whether it  }
+{ did depended on whether that particular handler happened to dirty the        }
+{ document, which is not uniform: many go through ProcessControl, which marks  }
+{ the document modified, and others assign through SetState_ and do not.       }
+{                                                                              }
+{ THE UNKNOWN CASE COUNTS AS A WRITE. Only the prefixes below are treated as   }
+{ leaving the design alone, so a command this list has never heard of, and     }
+{ every command added later, invalidates. An unnecessary invalidation costs    }
+{ one recompile; a missed one returns connectivity that predates the edit.     }
+{..............................................................................}
+
+Function ActionHasPrefix(Verb : String; Prefix : String) : Boolean;
+Begin
+    Result := Copy(Verb, 1, Length(Prefix)) = Prefix;
+End;
+
+Function CommandIsReadOnly(Command : String) : Boolean;
+Var
+    Verb : String;
+    DotPos : Integer;
+Begin
+    Verb := LowerCase(Trim(Command));
+    DotPos := Pos('.', Verb);
+    If DotPos > 0 Then Verb := Copy(Verb, DotPos + 1, Length(Verb) - DotPos);
+
+    Result := ActionHasPrefix(Verb, 'get_')
+           Or ActionHasPrefix(Verb, 'list_')
+           Or ActionHasPrefix(Verb, 'query')
+           Or ActionHasPrefix(Verb, 'read_')
+           Or ActionHasPrefix(Verb, 'find_')
+           Or ActionHasPrefix(Verb, 'count')
+           Or ActionHasPrefix(Verb, 'audit_')
+           Or ActionHasPrefix(Verb, 'check_')
+           Or ActionHasPrefix(Verb, 'calc_')
+           Or ActionHasPrefix(Verb, 'export_')
+           Or ActionHasPrefix(Verb, 'render_')
+           Or ActionHasPrefix(Verb, 'probe_')
+           Or ActionHasPrefix(Verb, 'inspect_')
+           Or ActionHasPrefix(Verb, 'diff_')
+           Or ActionHasPrefix(Verb, 'compare_')
+           Or (Verb = 'ping');
+End;
+
+Function ProcessSingleRequest(Dummy : Integer): Boolean;
 Var
     RequestPath, RequestId : String;
     RequestContent, ResponseContent : String;
     Command, Params, ProtoVer, EnvelopeError : String;
     ExceptionMsg : String;
+    FocusBefore, FocusAfter : String;
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
     DashIsError : Boolean;
     DashDetail, DashErrPayload, DashCode : String;
 Begin
     Result := False;
-    EnsureWorkspaceDir;
+    EnsureWorkspaceDir(0);
 
     If Not ScanForRequestFile(RequestPath, RequestId) Then Exit;
 
@@ -48235,6 +60263,18 @@ Begin
     { status pill drops back to idle/paused/green when we're done.       }
     SetInFlight(Command);
 
+    { WHERE THE CALLER WAS LOOKING, BEFORE THE HANDLER RAN.
+      Nearly every tool acts on the focused document, and several change
+      it as a side effect of doing their job. Nothing announced that.
+      Measured: lib_probe_footprint focused a PcbLib to read it, the
+      obj_switch_view that followed switched the LIBRARY into 3D, and the
+      session spent a long time looking for a placement bug that was not
+      there.
+      Captured here rather than per handler because there are hundreds of
+      them and this is the one place every command passes through. }
+    FocusBefore := CurrentFocusedDocPath(0);
+    ResetNextStep(0);
+
     ExceptionMsg := '';
     { Heartbeat: write progress_<id>.json so Python can distinguish "still      }
     { working" from "polling loop dead" when the 10 s default deadline runs   }
@@ -48250,6 +60290,15 @@ Begin
             ResultTag := 'EXCEPTION';
         End;
 
+        { The compiled netlist is stale the moment anything is written, and
+          this is the one place every command passes through, so it is done
+          here rather than in each of the hundreds of handlers.
+
+          On the exception path too, deliberately: a handler that threw part
+          way through may well have written something first, and that is
+          exactly when a cached netlist is worth least. }
+        If Not CommandIsReadOnly(Command) Then InvalidateCompileCache(0);
+
         If ResponseContent = '' Then
         Begin
             // Handler returned nothing, degenerate but recoverable. Synthesise
@@ -48259,6 +60308,25 @@ Begin
             ResultTag := 'EMPTY';
         End;
 
+        { Say so if the active document moved. Appended as a sibling of
+          data rather than merged into it, because data is whatever the
+          handler chose to return and this must not depend on its shape.
+          Silent when nothing moved, which is the overwhelming majority. }
+        { The follow-up this reply owes, if the handler named one. }
+        If PendingNextStep(0) <> '' Then
+            ResponseContent := AppendEnvelopeField(ResponseContent,
+                JsonStr('next_step', PendingNextStep(0)));
+
+        FocusAfter := CurrentFocusedDocPath(0);
+        If FocusAfter <> FocusBefore Then
+            ResponseContent := AppendEnvelopeField(ResponseContent,
+                '"active_document_changed":' + JsonObj(
+                    JsonStr('from', FocusBefore) + ',' +
+                    JsonStr('to', FocusAfter) + ',' +
+                    JsonStr('note', 'this command moved the focused '
+                        + 'document. Tools that act on the focused '
+                        + 'document will now act on the new one.')));
+
         WriteResponseFile(RequestId, ResponseContent);
     Finally
         EndProgress(RequestId);
@@ -48267,7 +60335,7 @@ Begin
     DurationMs := GetTickCount - StartMs;
     StatusTotalAltiumMs := StatusTotalAltiumMs + DurationMs;
 
-    AppendLog(FormatLogStamp + ',' + IntToStr(DurationMs) + ',' + Command + ',' + ResultTag
+    AppendLog(FormatLogStamp(0) + ',' + IntToStr(DurationMs) + ',' + Command + ',' + ResultTag
               + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
 
     { Surface the error message to the dashboard (inline detail row + last- }
@@ -48295,104 +60363,160 @@ Begin
     End;
     AppendLogLine(Command, DurationMs, DashIsError, RequestId, DashDetail);
 
-    ResetInFlight;
+    ResetInFlight(0);
 
     Result := True;
 End;
 
+
 {..............................................................................}
 { Clean up state left by the MCP server before exiting. Deletes any leftover   }
 { per-request IPC files and flushes the UI.                                    }
+{                                                                              }
+{ Lives here rather than in Dispatcher.pas because FinalisePump below calls it }
+{ and Dispatcher.pas compiles LAST, so a call the other way would point        }
+{ forward and DelphiScript has no forward declarations.                        }
 {..............................................................................}
 
-Procedure CleanupMCPServer;
+Procedure CleanupMCPServer(Dummy : Integer);
 Begin
-    CleanupOrphanRequests;
-    CleanupOrphanProgress;
+    CleanupOrphanRequests(0);
+    CleanupOrphanProgress(0);
     Application.ProcessMessages;
 End;
 
+
 {..............................................................................}
-{ Start MCP server, adaptive polling loop.                                  }
-{                                                                            }
-{ Uses ADAPTIVE POLLING to avoid blocking Altium:                             }
-{   - Active (just processed a request): polls fast (PollIntervalActiveMs)   }
-{   - Idle: polls slow (PollIntervalIdleMs) with extra ProcessMessages calls }
-{   - Auto-shuts down after AutoShutdownMs of inactivity                      }
-{                                                                            }
-{ All tunables come from mcp_config.json via LoadMCPConfig at startup.       }
-{ Stop methods: send application.stop_server, drop a 'stop' file in the      }
-{ workspace, or wait for auto-shutdown.                                      }
+{ End the session: stop the timer, log the session end, put the dashboard away }
+{ and clear the IPC files.                                                     }
+{                                                                              }
+{ IDEMPOTENT, and it has to be, because two different paths reach it. Closing  }
+{ the form hides it, and a hidden form's timer stops, so the close handler     }
+{ must finalise on the spot rather than leave it to a tick that is never       }
+{ coming. Every other stop (Detach, stop file, stop command, auto-shutdown,    }
+{ Altium quitting) leaves the form up, so the next tick finalises instead.     }
 {..............................................................................}
 
-Procedure StartMCPServer;
+Procedure FinalisePump(Dummy : Integer);
 Var
-    StopPath       : String;
-    IdleCount      : Integer;
-    CurrentSleep   : Integer;
-    LastActivityMs : Cardinal;
-    NowMs          : Cardinal;
-    HadRequest     : Boolean;
-    I              : Integer;
-    ActiveTickCount : Integer;
+    QuitTag : String;
 Begin
-    If Running Then Exit;
+    If PumpFinalised Then Exit;
+    PumpFinalised := True;
+    Running := False;
 
-    InitDefaultConfig;
-    EnsureWorkspaceDir;
-    LoadMCPConfig;
-    { Startup purge: nothing on disk can belong to a live exchange, because no
-      loop was running to serve it. Responses are purged here but NOT in
-      CleanupMCPServer -- on shutdown a client may still be reading one. }
-    CleanupOrphanRequests;
-    CleanupOrphanResponses;
-    CleanupOrphanProgress;
-    Running := True;
-    StopPath := WorkspaceDir + 'stop';
-    If FileExists(StopPath) Then DeleteFile(StopPath);
+    { FIRST, and unconditionally. A tick that fires after this point would }
+    { run against an engine Altium may already be unloading.                }
+    Try tmr_Poll.Enabled := False; Except End;
 
-    IdleCount := 0;
-    CurrentSleep := PollIntervalActiveMs;
-    LastActivityMs := GetTickCount;
-    ActiveTickCount := 0;
-
-    StatusStartTick := GetTickCount;
-    StatusRequestCount := 0;
-    StatusLastCommand := '';
-    StatusTotalAltiumMs := 0;
-    ShowStatusForm;
-    UpdateStatusHeader('MCP: idle');
-    UpdateStatsLine(0, 0, 0, AutoShutdownMs Div 1000);
-    AppendLog(FormatLogStamp + ',0,_session_start,version=' + SCRIPT_VERSION
-              + ',protocol=' + IntToStr(PROTOCOL_VERSION));
-
+    QuitTag := 'no';
+    If PumpQuitting Then QuitTag := 'yes';
     Try
-        While Running Do
-        Begin
-            // Shutdown detection: Altium quitting
+        AppendLog(FormatLogStamp(0) + ',0,_session_end,requests='
+                  + IntToStr(StatusRequestCount) + ',quitting=' + QuitTag);
+    Except End;
+
+    { WHEN ALTIUM IS QUITTING, STOP HERE.                                   }
+    {                                                                       }
+    { Measured 2026-09-16: with the timer pump, closing Altium while        }
+    { attached no longer hangs it. Altium ran its whole shutdown through to }
+    { "Application Finalized" and exited, and Windows logged neither a hang }
+    { nor a crash. What it DID raise was an Access Violation in             }
+    { ScriptingSystem.DLL (read of FFFFFFFFFFFFFFFF) during teardown.       }
+    {                                                                       }
+    { The two steps below are how you earn that: HideStatusForm touches a   }
+    { form Altium is in the middle of destroying, and CleanupMCPServer      }
+    { calls Application.ProcessMessages, which pumps the message loop while }
+    { the host unloads the scripting engine underneath it. Neither buys     }
+    { anything on this path. Altium destroys the form itself, and orphaned  }
+    { IPC files are purged at the next _session_start, which is exactly     }
+    { where the count in the log comes from.                                }
+    {                                                                       }
+    { On every other exit, Detach, the stop file, application.stop_server   }
+    { and auto-shutdown, the engine is alive and Altium keeps running, so   }
+    { the dashboard must actually go away and the workspace must be tidied. }
+    If PumpQuitting Then Exit;
+
+    { Detach, the stop file, application.stop_server and auto-shutdown all }
+    { land here: Altium keeps running, so the dashboard must go away and   }
+    { the workspace must be tidied.                                         }
+    {                                                                      }
+    { DO NOT CALL CleanupMCPServer HERE. Its Application.ProcessMessages   }
+    { pumps the message loop from inside this form's OWN timer handler,    }
+    { while that same form is being hidden, which re-enters the form as it }
+    { tears down. Measured 2026-09-18: pressing Detach raised "Access      }
+    { violation ... in module 'ScriptingSystem.DLL'. Read of address       }
+    { FFFFFFFFFFFFFFFF", the same signature the quit path produced before  }
+    { it stopped pumping. The old blocking loop ran this from              }
+    { StartMCPServer's exit rather than from a timer event on the form,    }
+    { which is why it only appeared once dispatch moved onto the timer.    }
+    {                                                                      }
+    { The orphan sweeps below are the part that actually matters; the      }
+    { message pump was only ever there to flush the UI, and the tick       }
+    { returning to Altium does that by itself.                             }
+    CleanupOrphanRequests(0);
+    CleanupOrphanProgress(0);
+    HideStatusForm(0);
+End;
+
+
+{..............................................................................}
+{ One poll tick. Replaces one iteration of the old `While Running Do` loop,    }
+{ with the same stop conditions in the same order.                             }
+{..............................................................................}
+
+Procedure tmr_PollTimer(Sender : TObject);
+Var
+    HadRequest : Boolean;
+    Drained    : Integer;
+    NowMs      : Cardinal;
+Begin
+    { RE-ENTRANCY GUARD. A tick is not atomic: a handler can run for seconds  }
+    { and calls Application.ProcessMessages while it works, which lets this    }
+    { same timer fire again underneath it. Unguarded, the second tick would    }
+    { pick up the NEXT request while the first is still in flight and the      }
+    { counters and the in-flight pill would interleave.                        }
+    If PumpInTick Then Exit;
+    PumpInTick := True;
+    Try
+        Try
+            If Not Running Then
+            Begin
+                FinalisePump(0);
+                Exit;
+            End;
+
+            { Altium is closing. The old loop could not get here, because the  }
+            { close was dispatched inside its own ProcessMessages and never    }
+            { came back; the probe measured a DFM timer still ticking for      }
+            { three seconds after IsQuitting flipped, which is what makes this }
+            { check reachable at all.                                          }
             Try
                 If Client.IsQuitting Then
                 Begin
-                    Running := False;
-                    Break;
+                    PumpQuitting := True;
+                    FinalisePump(0);
+                    Exit;
                 End;
             Except
-                Running := False;
-                Break;
+                { The probe itself throwing means the client is already }
+                { going away, which is the quitting case just the same. }
+                PumpQuitting := True;
+                FinalisePump(0);
+                Exit;
             End;
 
-            // Stop file
-            If FileExists(StopPath) Then
+            If FileExists(PumpStopPath) Then
             Begin
-                DeleteFile(StopPath);
-                Running := False;
-                Break;
+                DeleteFile(PumpStopPath);
+                FinalisePump(0);
+                Exit;
             End;
 
-            // Renew button: reset the real idle deadline once per click.
+            { Renew button: reset the real idle deadline once per click. }
             If RenewRequested Then
             Begin
-                LastActivityMs := GetTickCount;
+                PumpLastActivityMs := GetTickCount;
                 RenewRequested := False;
                 UpdateStatsLine(
                     (GetTickCount - StatusStartTick) Div 1000,
@@ -48401,50 +60525,64 @@ Begin
                     AutoShutdownMs Div 1000);
             End;
 
-            // Auto-shutdown after prolonged inactivity. Paused sessions
-            // never auto-shutdown so the user can step away indefinitely.
+            { Auto-shutdown after prolonged inactivity. Paused sessions   }
+            { never auto-shutdown so the user can step away indefinitely. }
             If PausedFlag Then
-                LastActivityMs := GetTickCount;
+                PumpLastActivityMs := GetTickCount;
             If AutoShutdownMs > 0 Then
             Begin
                 NowMs := GetTickCount;
-                If NowMs >= LastActivityMs Then
+                If NowMs >= PumpLastActivityMs Then
                 Begin
-                    If (NowMs - LastActivityMs) > AutoShutdownMs Then
+                    If (NowMs - PumpLastActivityMs) > AutoShutdownMs Then
                     Begin
-                        Running := False;
-                        Break;
+                        FinalisePump(0);
+                        Exit;
                     End;
                 End;
             End;
 
             If PausedFlag Then
             Begin
-                { Skip dispatch entirely while paused, but still yield and    }
-                { refresh stats so the dashboard countdown stays alive.       }
+                { Skip dispatch entirely while paused, but still refresh the }
+                { stats so the dashboard countdown stays alive.               }
                 UpdateStatsLine(
                     (GetTickCount - StatusStartTick) Div 1000,
                     StatusRequestCount,
                     StatusTotalAltiumMs,
                     AutoShutdownMs Div 1000);
-                Application.ProcessMessages;
-                Sleep(PollIntervalIdleMs);
-                Continue;
+                Exit;
             End;
 
-            HadRequest := ProcessSingleRequest;
+            { Drain rather than one-per-tick: see PUMP_DRAIN_MAX. Running is }
+            { re-tested each pass so a Detach or a close mid-burst stops it. }
+            Drained := 0;
+            HadRequest := False;
+            While (Drained < PUMP_DRAIN_MAX) And Running Do
+            Begin
+                If Not ProcessSingleRequest(0) Then Break;
+                HadRequest := True;
+                Inc(Drained);
+                { Yield between requests so a long drain cannot freeze the UI. }
+                { Safe against the timer re-entering here: the guard holds.    }
+                Application.ProcessMessages;
+            End;
 
             If HadRequest Then
             Begin
-                IdleCount := 0;
-                CurrentSleep := PollIntervalActiveMs;
-                LastActivityMs := GetTickCount;
+                PumpIdleCount := 0;
+                PumpLastActivityMs := GetTickCount;
+                If PumpInterval <> PollIntervalActiveMs Then
+                Begin
+                    PumpInterval := PollIntervalActiveMs;
+                    Try tmr_Poll.Interval := PumpInterval; Except End;
+                End;
                 UpdateStatusHeader('MCP: idle');
                 UpdateStatsLine(
                     (GetTickCount - StatusStartTick) Div 1000,
                     StatusRequestCount,
                     StatusTotalAltiumMs,
-                    (AutoShutdownMs - (GetTickCount - LastActivityMs)) Div 1000);
+                    (AutoShutdownMs - (GetTickCount - PumpLastActivityMs)) Div 1000);
                 { Perf row already updated in-place by TrackPerf (called }
                 { from AppendLogLine inside ProcessSingleRequest). Skip  }
                 { the full RefreshPerfPanel rebuild that used to flash  }
@@ -48452,59 +60590,191 @@ Begin
             End
             Else
             Begin
-                Inc(IdleCount);
-                If IdleCount > IdleThreshold Then
-                    CurrentSleep := PollIntervalIdleMs;
-                If (IdleCount Mod 10) = 0 Then
+                Inc(PumpIdleCount);
+                { Back off to the idle interval. Assigning Interval restarts }
+                { the timer, so only touch it when the value actually        }
+                { changes.                                                    }
+                If PumpIdleCount > IdleThreshold Then
+                Begin
+                    If PumpInterval <> PollIntervalIdleMs Then
+                    Begin
+                        PumpInterval := PollIntervalIdleMs;
+                        Try tmr_Poll.Interval := PumpInterval; Except End;
+                    End;
+                End;
+                If (PumpIdleCount Mod 10) = 0 Then
                     UpdateStatsLine(
                         (GetTickCount - StatusStartTick) Div 1000,
                         StatusRequestCount,
                         StatusTotalAltiumMs,
-                        (AutoShutdownMs - (GetTickCount - LastActivityMs)) Div 1000);
+                        (AutoShutdownMs - (GetTickCount - PumpLastActivityMs)) Div 1000);
             End;
-
-            If CurrentSleep >= PollIntervalIdleMs Then
-            Begin
-                For I := 1 To YieldIterations Do
-                Begin
-                    Application.ProcessMessages;
-                    Sleep(CurrentSleep Div YieldIterations);
-                    If Not Running Then Break;
-                End;
-                ActiveTickCount := 0;
-            End
-            Else
-            Begin
-                Inc(ActiveTickCount);
-                If ActiveTickCount >= YieldEveryNActive Then
-                Begin
-                    Application.ProcessMessages;
-                    ActiveTickCount := 0;
-                End;
-                Sleep(CurrentSleep);
-            End;
+        Except
+            { Altium tearing down underneath the tick. Stop quietly, exactly }
+            { as the old loop's outer Try/Except did. Treated as quitting:    }
+            { whatever threw, the engine is not in a state worth poking       }
+            { further on the way out.                                          }
+            PumpQuitting := True;
+            Try FinalisePump(0); Except End;
         End;
-    Except
-        // Altium shutting down or fatal error, exit gracefully
+    Finally
+        PumpInTick := False;
     End;
+End;
 
-    Running := False;
-    AppendLog(FormatLogStamp + ',0,_session_end,requests=' + IntToStr(StatusRequestCount));
-    HideStatusForm;
-    CleanupMCPServer;
+
+{..............................................................................}
+{ Start MCP server: arm the poll timer and RETURN.                             }
+{                                                                              }
+{ The return is the whole point. This used to block for the entire session,    }
+{ holding Altium's single-threaded scripting engine, which is what made        }
+{ closing Altium hang. Now the engine is free between ticks and Altium's       }
+{ close path never waits on a script.                                          }
+{                                                                              }
+{ Stop methods are unchanged: send application.stop_server, drop a 'stop' file }
+{ in the workspace, press Detach, close the dashboard, or wait for             }
+{ auto-shutdown. All tunables still come from mcp_config.json via              }
+{ LoadMCPConfig; PollIntervalActiveMs and PollIntervalIdleMs are now the       }
+{ timer's interval rather than a Sleep length. YieldIterations and             }
+{ YieldEveryNActive no longer apply: they existed to hand time back to Altium  }
+{ from inside a loop that never returned, and a timer yields by construction.  }
+{ They stay in the config so an existing mcp_config.json still loads.          }
+{                                                                              }
+{ Takes a Dummy argument so it stays OUT of the Run Script dialog. The entry   }
+{ the user picks is still StartMCPServer in Dispatcher.pas, which calls this;  }
+{ the dialog lists every PARAMETERLESS procedure, so without the argument the  }
+{ attach step would sprout a second, near-identical entry to choose between.   }
+{..............................................................................}
+
+Procedure StartMCPPump(Dummy : Integer);
+Begin
+    If Running Then Exit;
+
+    InitDefaultConfig(0);
+    EnsureWorkspaceDir(0);
+    LoadMCPConfig(0);
+    { Startup purge: nothing on disk can belong to a live exchange, because no
+      pump was running to serve it. Responses are purged here but NOT in
+      CleanupMCPServer(0) -- on shutdown a client may still be reading one. }
+    CleanupOrphanRequests(0);
+    CleanupOrphanResponses(0);
+    CleanupOrphanProgress(0);
+
+    Running := True;
+    PumpStopPath := WorkspaceDir + 'stop';
+    If FileExists(PumpStopPath) Then DeleteFile(PumpStopPath);
+
+    PumpIdleCount := 0;
+    PumpLastActivityMs := GetTickCount;
+    PumpInTick := False;
+    PumpFinalised := False;
+    PumpQuitting := False;
+
+    StatusStartTick := GetTickCount;
+    StatusRequestCount := 0;
+    StatusLastCommand := '';
+    StatusTotalAltiumMs := 0;
+
+    { The timer only ticks while the form is visible, so this is not just  }
+    { cosmetic: showing the dashboard is what starts the pump running.     }
+    ShowStatusForm(0);
+    UpdateStatusHeader('MCP: idle');
+    UpdateStatsLine(0, 0, 0, AutoShutdownMs Div 1000);
+    AppendLog(FormatLogStamp(0) + ',0,_session_start,version=' + SCRIPT_VERSION
+              + ',protocol=' + IntToStr(PROTOCOL_VERSION));
+
+    PumpInterval := PollIntervalActiveMs;
+    Try
+        tmr_Poll.Interval := PumpInterval;
+        tmr_Poll.Enabled := True;
+    Except End;
+End;
+
+
+{..............................................................................}
+{ Closing the dashboard ends the session.                                      }
+{                                                                              }
+{ Defined here, at the end of the unit, because it finalises the pump and      }
+{ DelphiScript has no forward declarations. A DFM handler binds by name        }
+{ anywhere inside the form's own unit, so the position costs nothing.          }
+{                                                                              }
+{ Finalises INLINE rather than just clearing Running: the form hides as it     }
+{ closes, a hidden form's timer stops, and the tick that would otherwise have  }
+{ written _session_end and cleared the IPC files would never run.              }
+{..............................................................................}
+
+Procedure StatusFormClose(Sender : TObject; Var Action : TCloseAction);
+Begin
+    Try FinalisePump(0); Except End;
+End;
+
+{=== Dispatcher.pas ===}
+{ SPDX-License-Identifier: Apache-2.0                                   }
+{ Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
+{..............................................................................}
+{ Dispatcher.pas - The attach entry point. Compiles last.                       }
+{                                                                              }
+{ The polling loop and the per-request dispatcher USED to live here, as a      }
+{ blocking `While Running Do` loop that held Altium's single-threaded          }
+{ scripting engine for the whole session. Closing Altium while it ran HUNG     }
+{ the application: the close request was dispatched inside the loop's own      }
+{ Application.ProcessMessages, Altium's close path then blocked without        }
+{ pumping the engine, and the script could never get back to its               }
+{ Client.IsQuitting check. Measured as Windows AppHangB1 events (X2.EXE        }
+{ Event 1002) with no matching "Shutdown Commenced" in DXP_Shutdown.log, so    }
+{ the hang was BEFORE Altium's shutdown sequence, and with a session in        }
+{ activity.log that never got its _session_end line.                           }
+{                                                                              }
+{ Dispatch now runs on a TTimer declared in StatusForm.dfm: the script returns }
+{ to Altium between requests, so the close path is never waiting on it. A      }
+{ form's event handler resolves ONLY within the form's own unit (measured: a   }
+{ cross-unit handler never fired once, and failed silently), so the pump and   }
+{ everything it calls had to move into StatusForm.pas along with it.           }
+{                                                                              }
+{ WHAT DID NOT CHANGE IS HOW THE USER STARTS IT. StartMCPServer is still a     }
+{ parameterless procedure in this file, so the attach step is the same         }
+{ File > Run Script... > Altium_API > Dispatcher.pas > StartMCPServer it has   }
+{ always been, and every doc, recovery hint and the project's StartProcName    }
+{ still name the same place. The real starter is StatusForm.StartMCPPump,      }
+{ which takes a Dummy argument purely to stay out of the Run Script dialog.    }
+{..............................................................................}
+
+{..............................................................................}
+{ Attach: hand off to the pump in StatusForm.pas and return.                   }
+{                                                                              }
+{ The return is the point. This used to block for the entire session; now the  }
+{ scripting engine is free between timer ticks and Altium can close without    }
+{ waiting on a script that never yields back.                                  }
+{..............................................................................}
+
+Procedure StartMCPServer;
+Begin
+    StartMCPPump(0);
 End;
 
 {..............................................................................}
-{ Stop the MCP server from outside the polling loop. Writes the 'stop' file   }
-{ so a running StartMCPServer exits on its next poll.                          }
+{ Write the 'stop' file so a running server exits on its next tick.            }
+{                                                                              }
+{ HIDDEN FROM THE RUN SCRIPT DIALOG, because it cannot be useful there.       }
+{ The scripting engine runs one script at a time, so while a request is being  }
+{ dispatched there is no way to pick this out of the dialog and run it, and    }
+{ when the pump is NOT running there is nothing to stop: the sentinel would    }
+{ just sit there, and the pump deletes a stale one at startup anyway.          }
+{                                                                              }
+{ Nothing calls it. Python stops the pump with the application.stop_server     }
+{ COMMAND, and the dashboard's Detach button sets Running := False directly,   }
+{ which is the same result by a shorter route. It is kept rather than deleted  }
+{ because the sentinel it writes is the documented out-of-band stop and a      }
+{ future caller may want it; the argument keeps it out of a list of four       }
+{ things a human is choosing between.                                          }
 {..............................................................................}
 
-Procedure StopMCPServer;
+Procedure StopMCPServer(Dummy : Integer);
 Var
     StopPath : String;
     F : TextFile;
 Begin
-    EnsureWorkspaceDir;
+    EnsureWorkspaceDir(0);
     StopPath := WorkspaceDir + 'stop';
     Try
         AssignFile(F, StopPath);

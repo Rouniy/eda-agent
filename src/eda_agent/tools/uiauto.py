@@ -41,6 +41,25 @@ _MENU_PATHS = {
     "pcb": "Tools|Update From PCB Libraries...",
 }
 
+#: Part of the title of the wizard each path opens. The click is a
+#: success only when that wizard appears: a path once reported ok while
+#: Signal Integrity's setup dialog opened instead.
+_MENU_EXPECT = {
+    "schematic": "Update From Librar",
+    "pcb": "Update From PCB Librar",
+}
+
+
+def _dialog_state(hwnd):
+    """What a dialog shows, comparable before and after a press: its
+    title and every control's class, text, enabled and visible state.
+    None once the window is gone."""
+    window = windows.capture(hwnd)
+    if window is None:
+        return None
+    return (window.title, tuple(
+        (c.class_name, c.text, c.enabled, c.visible) for c in window.controls))
+
 
 def _altium_pid():
     """(pid, None) or (None, error-dict).
@@ -50,11 +69,88 @@ def _altium_pid():
     this module needs it and each used to inline the same six lines.
     """
     from ..bridge import get_bridge
+    from ..ui import windows as _win
+
+    # THE KILL SWITCH IS CHECKED HERE because every tool in this module
+    # calls this first, so one check covers the whole surface. The
+    # primitives check again for anything reaching past the tools.
+    if not _win.automation_enabled():
+        return None, {"ok": False, "reason": (
+            f"UI automation is disabled by {_win.UI_AUTOMATION_ENV}. It is "
+            f"on by default; unset that variable, or set it to 1, to allow "
+            f"it. See docs/ui-automation.md for what it is for and what it "
+            f"can do")}
 
     status = get_bridge().get_altium_status()
+    # Before the not-running check, because an ambiguous status also has
+    # no pid, and "Altium is not running" would be false.
+    if status.get("ambiguous"):
+        return None, {"ok": False, "reason": status.get("reason"),
+                      "candidate_pids": status.get("candidate_pids", [])}
     if not status.get("running") or not status.get("pid"):
         return None, {"ok": False, "reason": "Altium is not running"}
     return int(status["pid"]), None
+
+
+def _resolve_dialog_control(pid, control_label: str, dialog_title: str):
+    """One control in one open dialog: (info, None) or (None, refusal).
+
+    Factored out of app_set_dialog_control so the tools added alongside
+    it resolve a control the SAME way rather than each carrying a copy.
+    Two copies of a lookup drift, and the failure when they do is a tool
+    that cannot find a control another tool can see.
+    """
+    if not controls.available():
+        return None, {"ok": False, "reason": (
+            "reading dialog controls needs pywin32 and comtypes")}
+
+    open_dialogs = windows.dialogs(pid)
+    if dialog_title:
+        open_dialogs = [d for d in open_dialogs
+                        if dialog_title.lower() in (d.title or "").lower()]
+    if not open_dialogs:
+        return None, {"ok": False, "reason": (
+            "no matching dialog is open. Nothing can be set on a dialog "
+            "that is not on screen")}
+    dialog = open_dialogs[0]
+
+    found = controls.find(dialog, control_label)
+    if found is None:
+        # NOT EVERY CONTROL HAS A LABEL. Altium's grids and property
+        # editors leave many unnamed, and a label was the only way to
+        # address one, so an unlabelled control was unreachable however
+        # plainly it was on screen.
+        #
+        # Two more spellings, both stable enough to act on:
+        #   "role#2"  the third control of that role, in tree order
+        #   "#7"      the eighth control, in tree order
+        # An index is worse than a name and better than nothing; it is
+        # offered only after the name has failed.
+        every = controls.describe_all(dialog)
+        spelling = str(control_label or "").strip().lower()
+        picked = None
+        if spelling.startswith("#") and spelling[1:].isdigit():
+            index = int(spelling[1:])
+            if index < len(every):
+                picked = every[index]
+        elif "#" in spelling:
+            role, _, num = spelling.partition("#")
+            if num.isdigit():
+                same = [c for c in every if c["role"] == role.strip()]
+                if int(num) < len(same):
+                    picked = same[int(num)]
+        if picked is not None:
+            return picked, None
+
+        labels = [c["label"] or c["name"] for c in every]
+        return None, {"ok": False,
+                      "reason": f"{control_label!r} is not in {dialog.title!r}",
+                      "offered": [x for x in labels if x],
+                      "note": ("unlabelled controls can be addressed as "
+                               "'#N' for the Nth control or 'role#N' for "
+                               "the Nth of that role; app_set_dialog_control "
+                               "with list_only=true numbers them in order")}
+    return found, None
 
 
 def register_uiauto_tools(mcp):
@@ -184,11 +280,13 @@ def register_uiauto_tools(mcp):
             # keystroke and the click.
             loop = asyncio.get_running_loop()
             opened = await loop.run_in_executor(
-                None, menu.click_path, pid, _MENU_PATHS[target])
+                None, lambda: menu.click_path(pid, _MENU_PATHS[target],
+                                              expect_dialog=_MENU_EXPECT[target]))
             if not opened.get("ok"):
                 return {"ok": False, "launch": "menu",
                         "reason": opened.get("reason"),
                         "offered": opened.get("offered"),
+                        "opened_instead": opened.get("opened_instead"),
                         "note": ("nothing was opened, so nothing was "
                                  "driven and no dialog is waiting")}
 
@@ -309,7 +407,8 @@ def register_uiauto_tools(mcp):
     @mcp.tool()
     async def app_click_menu(menu_path: str,
                              may_steal_focus: bool = False,
-                             list_only: bool = False) -> dict[str, Any]:
+                             list_only: bool = False,
+                             expect_dialog: str = "") -> dict[str, Any]:
         """Invoke ANY Altium menu command by path, by driving the menu.
 
         Use this when ``app_run_menu`` will not do, which is more often
@@ -348,10 +447,16 @@ def register_uiauto_tools(mcp):
             list_only: do not invoke. Reports the top-level menus
                 currently on screen, which is the way to find out what
                 this editor context offers.
+            expect_dialog: part of the title of the dialog the command
+                should open. Then ``ok`` means that dialog appeared; any
+                other dialog, or none, fails and names what did open.
 
         Returns:
-            Dict with ``ok``; on failure ``reason`` and ``offered``
-            listing what that level actually contained.
+            Dict with ``ok`` and ``opened`` (titles of dialogs that
+            appeared); on failure ``reason`` and ``offered`` listing what
+            that level actually contained. A path that leaves the menu
+            open (it ended at a submenu, or the click did not land) is a
+            failure: no command ran.
         """
         if not menu.available():
             return {"ok": False, "reason": (
@@ -385,7 +490,7 @@ def register_uiauto_tools(mcp):
                 "may_steal_focus=True if that is acceptable now.")}
 
         return await loop.run_in_executor(
-            None, menu.click_path, pid, menu_path)
+            None, lambda: menu.click_path(pid, menu_path, expect_dialog=expect_dialog))
 
     @mcp.tool()
     async def app_list_open_dialogs() -> dict[str, Any]:
@@ -514,6 +619,27 @@ def register_uiauto_tools(mcp):
                         return {"ok": False, "role": role, "reason": (
                             f"{button_caption!r} commits a change. Pass "
                             f"allow_irreversible=True if that is intended.")}
+                    # The named button first, through UI Automation: a WPF
+                    # button is an element even where it is not a window,
+                    # and Enter only reaches the default action, which on
+                    # some dialogs (Silkscreen Preparation) is not the
+                    # button asked for.
+                    from ..ui import uia
+                    if uia.available():
+                        pressed = uia.invoke(target.hwnd, button_caption)
+                        if pressed.get("ok"):
+                            shut = windows.wait_for_close(target.hwnd, timeout=5.0)
+                            # Invoked is not answered: a dismiss or advance
+                            # that leaves the dialog up did not take. No
+                            # keyboard retry, which could press twice.
+                            took = shut or role not in ("dismiss", "advance")
+                            return {"ok": took, "dialog": target.title,
+                                    "pressed": button_caption, "method": "uia",
+                                    "dialog_closed": shut,
+                                    "outcome_verified": shut,
+                                    "reason": None if took else (
+                                        f"{button_caption!r} was invoked and "
+                                        f"{target.title!r} is still open")}
                     windows.press_key(target.hwnd, key)
                     shut = windows.wait_for_close(target.hwnd, timeout=5.0)
                     return {
@@ -542,6 +668,8 @@ def register_uiauto_tools(mcp):
                     f"{button.text!r} commits a change to the design. Pass "
                     f"allow_irreversible=True if that is intended.")}
 
+            before = _dialog_state(target.hwnd)
+            before_dialogs = {d.hwnd for d in open_dialogs}
             windows.click(button)
             closed = windows.wait_for_close(target.hwnd, timeout=5.0)
 
@@ -554,29 +682,48 @@ def register_uiauto_tools(mcp):
             # Staying open is NORMAL for some presses: Validate Changes
             # leaves the change order up on purpose, and a wizard page
             # advances without closing its window. So the verdict turns
-            # on the ROLE, not on closure alone. Only a press whose
-            # whole job is to dismiss can be judged by the window going
-            # away, and only when it was the sole way out.
+            # on the ROLE and on what the dialog did. A dismiss or an
+            # advance that leaves the same window up with the same title,
+            # the same controls saying the same things, and no new dialog
+            # beside it did not take, however many buttons it had: an
+            # Aceptar on a two-button prompt was reported pressed three
+            # times while a person had to click it.
+            changed, new_dialogs = False, []
+            if not closed:
+                after = _dialog_state(target.hwnd)
+                closed = after is None
+                new_dialogs = [d.title for d in windows.dialogs(pid)
+                               if d.hwnd not in before_dialogs]
+                changed = after != before or bool(new_dialogs)
             dismissing = role in ("dismiss", "advance")
-            only_way_out = len(target.buttons()) == 1
-            if not closed and dismissing and only_way_out:
+            if not closed and dismissing and not changed:
                 return {
                     "ok": False,
                     "dialog": target.title,
                     "pressed": button.text,
                     "role": role,
                     "dialog_closed": False,
+                    "dialog_changed": False,
                     "reason": (
-                        f"{button.text!r} was the only button on "
-                        f"{target.title!r} and the dialog is still open, so "
-                        f"the press did not take. Altium can reach a state "
-                        f"where the window pumps messages but acts on none "
-                        f"of them, and no synthetic press will clear it."),
+                        f"{target.title!r} is still open after "
+                        f"{button.text!r} and nothing on it changed, so "
+                        f"the press did not take. It was sent as a posted "
+                        f"message, and some Altium prompts have been "
+                        f"reported to ignore one while still answering "
+                        f"other input. app_invoke_element presses the same "
+                        f"caption through UI Automation instead, and is the "
+                        f"next thing to try."),
                 }
-            return {"ok": True, "dialog": target.title,
-                    "pressed": button.text, "role": role,
-                    "dialog_closed": closed,
-                    "outcome_verified": bool(closed) or not dismissing}
+            out = {"ok": True, "dialog": target.title,
+                   "pressed": button.text, "role": role,
+                   "dialog_closed": closed,
+                   "outcome_verified": bool(closed) or (
+                       role == "advance" and changed)}
+            if not closed:
+                out["dialog_changed"] = changed
+                if new_dialogs:
+                    out["new_dialogs"] = new_dialogs
+            return out
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, press)
@@ -643,7 +790,8 @@ def register_uiauto_tools(mcp):
                                  dry_run: bool = False,
                                  may_steal_focus: bool = True,
                                  wait_first: float = 30.0,
-                                 budget: float = 300.0) -> dict[str, Any]:
+                                 budget: float = 300.0,
+                                 expect_dialog: str = "") -> dict[str, Any]:
         """Invoke a menu command AND answer the dialogs it raises.
 
         The composite, and usually the one to reach for. Firing a menu
@@ -674,6 +822,9 @@ def register_uiauto_tools(mcp):
             may_steal_focus: opening a menu needs real input.
             wait_first: seconds to wait for the first dialog.
             budget: seconds before giving up.
+            expect_dialog: part of the title of the dialog the command
+                should open. When a different dialog (or none) appears,
+                the reply fails at the menu stage and nothing is driven.
 
         Returns:
             ``ok``, the ``menu`` result, and the full ``dialogs`` record.
@@ -691,8 +842,10 @@ def register_uiauto_tools(mcp):
                 "may_steal_focus=True if that is acceptable now.")}
 
         loop = asyncio.get_running_loop()
+        # With expect_dialog, a different dialog is a failure here and
+        # nothing is driven: the driver answers whatever is in front.
         clicked = await loop.run_in_executor(
-            None, menu.click_path, pid, menu_path)
+            None, lambda: menu.click_path(pid, menu_path, expect_dialog=expect_dialog))
         if not clicked.get("ok"):
             return {"ok": False, "stage": "menu", "menu": clicked}
 
@@ -706,3 +859,727 @@ def register_uiauto_tools(mcp):
         ok = bool(driven.get("ok", True)) and not driven.get(
             "stopped_for_a_human")
         return {"ok": ok, "menu": clicked, "dialogs": driven}
+
+    @mcp.tool()
+    async def app_list_panels(offered_too: bool = False) -> dict[str, Any]:
+        """Altium's dockable panels that are currently on screen.
+
+        PANELS ARE NOT DIALOGS and were unreachable until now. A dialog
+        is a top-level window; a docked panel is a child of the main
+        frame, so ``app_list_open_dialogs`` never saw one. Projects,
+        Navigator, PCB, Properties and Messages all live here.
+
+        Args:
+            offered_too: also read what View > Panels lists, which is
+                what COULD be opened rather than what is open. That
+                needs a real menu click and steals focus, so it is off
+                by default.
+
+        Returns:
+            ``{"ok": true, "panels": [{name, rect, holder_class}],
+            "count": N}``, plus ``offered`` when asked for.
+        """
+        from ..ui import panels
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not panels.available():
+            return {"ok": False, "reason": "UI automation is unavailable here"}
+
+        open_now = panels.list_open(pid)
+        out: dict[str, Any] = {
+            "ok": True,
+            "count": len(open_now),
+            "panels": [{"name": p["name"], "rect": p["rect"],
+                        "holder_class": p["holder_class"]} for p in open_now],
+        }
+        if offered_too:
+            out["offered"] = panels.offered(pid)
+        return out
+
+    @mcp.tool()
+    async def app_open_panel(name: str, settle: float = 1.2) -> dict[str, Any]:
+        """Open a dockable panel by name, and confirm it appeared.
+
+        Goes through View > Panels, because Altium exposes no scripted
+        way to show a panel and ``application.execute_menu`` reports
+        success while invoking nothing. So this STEALS FOCUS, like every
+        menu click. Reading a panel afterwards does not.
+
+        A panel that is already open is reported as such and NOT clicked.
+        Those menu entries are toggles, so clicking one you already have
+        would close it, and asking for a panel is not a request to lose
+        it.
+
+        Args:
+            name: the panel's name as View > Panels spells it, e.g.
+                "Projects", "Messages", "PCB", "Properties".
+            settle: how long to allow for it to appear.
+
+        Returns:
+            ``{"ok": true, "name": ..., "opened": bool, "rect": ...}``.
+            ``opened`` is false when it was already there.
+        """
+        from ..ui import panels
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        return panels.open_panel(pid, name, settle=settle)
+
+    @mcp.tool()
+    async def app_read_panel(name: str) -> dict[str, Any]:
+        """Read what is inside an open panel.
+
+        Takes no focus and moves nothing, so it is safe while a user is
+        working. The panel must already be open: use ``app_open_panel``
+        first, or ``app_list_panels`` to see what is there.
+
+        Reads the WHOLE panel. It is not fast: Altium materialises its
+        accessible tree lazily, so the first touch of a node costs about
+        116 ms and 162 rows is roughly thirty seconds. Slow and complete
+        beats fast and partial.
+
+        Returns:
+            ``{"ok": true, "name": ..., "row_total": N,
+            "grids": [{control, hwnd, row_count, rows}]}``. Grids are
+            reported separately because a panel holds more than one and
+            they mean different things.
+        """
+        from ..ui import panels
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        return panels.read_panel(pid, name)
+
+    @mcp.tool()
+    async def app_set_dropdown(
+        control_label: str,
+        option: str,
+        dialog_title: str = "",
+        list_only: bool = False,
+    ) -> dict[str, Any]:
+        """Choose an option in a combo box or drop list, and verify it.
+
+        THESE WERE READABLE AND UNSETTABLE. combobox and droplist have
+        been reported by ``app_list_open_dialogs`` from the start, so a
+        caller could see a combo and its current value with no way to
+        change it, which is the same shape as a property that reads and
+        will not write.
+
+        Three routes are tried, cheapest first: the option's own default
+        action, an accessible selection, then a real click on it. The
+        value is READ BACK afterwards, so a route that runs and changes
+        nothing is reported rather than believed.
+
+        Args:
+            control_label: the combo's label.
+            option: the option to choose, matched by name.
+            dialog_title: which dialog, when several are open.
+            list_only: report the options and change nothing.
+
+        Returns:
+            ``{"ok": true, "value": ..., "how": ..., "was": ...}``, or
+            ``ok: false`` with ``offered`` listing what is there.
+        """
+        from ..ui import controls
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        target, problem = _resolve_dialog_control(pid, control_label, dialog_title)
+        if problem is not None:
+            return problem
+        if list_only:
+            return {"ok": True, "control": control_label,
+                    "options": [c["name"] for c in
+                                controls.list_choices(target["hwnd"])]}
+        return controls.select_item(target["hwnd"], option)
+
+    @mcp.tool()
+    async def app_expand_tree_node(
+        control_label: str,
+        node_name: str,
+        expand: bool = True,
+        dialog_title: str = "",
+    ) -> dict[str, Any]:
+        """Open or close a node in a tree, and verify the state changed.
+
+        Trees were readable and could not be OPENED, so anything nested
+        inside one did not exist as far as a caller was concerned.
+
+        Args:
+            control_label: the tree's label.
+            node_name: the node to open, matched by name.
+            expand: True to open, False to close.
+            dialog_title: which dialog, when several are open.
+
+        Returns:
+            ``{"ok": true, "node": ..., "expanded": bool,
+            "changed": bool}``. ``changed`` is false when it was already
+            in that state, which is a success rather than a no-op to
+            worry about.
+        """
+        from ..ui import controls
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        target, problem = _resolve_dialog_control(pid, control_label, dialog_title)
+        if problem is not None:
+            return problem
+        return controls.expand(target["hwnd"], node_name, want=expand)
+
+    @mcp.tool()
+    async def app_set_grid_cell(
+        control_label: str,
+        row: str,
+        column: str,
+        text: str,
+        dialog_title: str = "",
+        list_only: bool = False,
+    ) -> dict[str, Any]:
+        """Type into one cell of a grid, and read it back.
+
+        ALTIUM'S RULE AND PROPERTY EDITORS TAKE THEIR INPUT THIS WAY.
+        Selecting a row was possible before; changing anything in it was
+        not.
+
+        A grid cell is not an edit control until it is being edited, so
+        the cell is activated first and the text goes to whatever editor
+        the grid puts there. The value is then read back off the CELL,
+        because the editor disappears when the edit commits.
+
+        Args:
+            control_label: the grid's label.
+            row: the row, matched by name.
+            column: the column name, or a numeric index. These grids
+                leave many cells unnamed, and an index is then the only
+                handle there is.
+            text: what to type.
+            dialog_title: which dialog, when several are open.
+            list_only: report the row's cells and change nothing. Worth
+                doing first, since it shows which columns have names.
+
+        Returns:
+            ``{"ok": true, "row": ..., "column": ..., "value": ...}``,
+            or ``ok: false`` when the cell reads back differently, which
+            happens on read-only columns and on ones that validate and
+            revert.
+        """
+        from ..ui import controls
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        target, problem = _resolve_dialog_control(pid, control_label, dialog_title)
+        if problem is not None:
+            return problem
+        if list_only:
+            return controls.list_cells(target["hwnd"], row)
+        return controls.set_cell(target["hwnd"], row, column, text)
+
+    @mcp.tool()
+    async def app_send_keys(sequence: str) -> dict[str, Any]:
+        """Send a key sequence to whatever currently has focus.
+
+        THE THINGS THAT TAKE NEITHER A CONTROL NOR A MENU: a canvas
+        shortcut, a grid that commits on Enter, a dialog answered with
+        Escape, a chord like Ctrl+Shift+D. Every other tool here
+        addresses a control; this addresses the keyboard.
+
+        Space separated, each item a key or a '+' chord:
+
+            "escape"              one key
+            "ctrl+s"              a chord
+            "tab tab enter"       three in order
+
+        Modifiers: ctrl, alt, shift. Keys: enter, escape, tab, space,
+        backspace, delete, the arrows, home, end, pageup, pagedown and
+        F1 to F12. An unknown name is refused and the known ones listed,
+        rather than sent as nothing.
+
+        THIS GOES WHEREVER FOCUS IS. Establish focus first, with
+        app_click_menu or app_open_panel, and check the result
+        afterwards: a keystroke has no read-back, so the reply says what
+        was sent and never that it worked.
+        """
+        from ..ui import windows as win
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not win.available():
+            return {"ok": False, "reason": "UI automation is unavailable here"}
+        # Aimed at Altium's frame, so every key is checked against it and
+        # a stray keystroke cannot reach another application.
+        target = menu.frame(pid)
+        try:
+            return win.send_keys(
+                sequence, target=target.hwnd if target else None)
+        except win.ForegroundLost as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    async def app_type_text(text: str) -> dict[str, Any]:
+        """Type literal text into whatever has focus.
+
+        For a field that HAS a handle, app_set_dialog_control is better:
+        it addresses the control by name and reads the value back. This
+        is for the places with no handle to address, where typing is the
+        only route in.
+
+        Carries punctuation and case, since it sends characters rather
+        than virtual keys. No read-back, for the same reason as
+        app_send_keys.
+        """
+        from ..ui import windows as win
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not win.available():
+            return {"ok": False, "reason": "UI automation is unavailable here"}
+        target = menu.frame(pid)
+        try:
+            return win.type_text(text, target=target.hwnd if target else None)
+        except win.ForegroundLost as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    async def app_context_menu(x: int, y: int,
+                               item: str = "") -> dict[str, Any]:
+        """Right click at a point: read the context menu, or pick from it.
+
+        CONTEXT MENUS WERE ENTIRELY UNREACHABLE, and Altium puts a great
+        deal in them that no top-level menu duplicates: what you can do
+        to a component, a net, a polygon, a row in a panel. Driving the
+        menu bar while ignoring these leaves most of the editor shut.
+
+        With no ``item`` this OPENS the menu, reads what it offers and
+        CLOSES it again, invoking nothing. Leaving a popup dropped
+        blocks the next operation and looks to a user like a hang.
+
+        Args:
+            x, y: screen coordinates to right click. Panel and control
+                rectangles from app_list_panels and
+                app_set_dialog_control(list_only=true) give you these.
+            item: the entry to choose. Nested entries take a '|' path,
+                matched by name at each level like the menu bar.
+
+        Returns:
+            Reading: ``{"ok": true, "items": [...], "count": N}``.
+            Choosing: ``{"ok": true, "item": ...}``, or ``ok: false``
+            with ``offered`` listing what was actually there.
+        """
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if item:
+            return menu.context_click(pid, x, y, item)
+        return menu.context_menu(pid, x, y)
+
+    @mcp.tool()
+    async def app_toolbar(name: str = "") -> dict[str, Any]:
+        """List toolbar buttons, or press one by name.
+
+        Toolbars are the other half of the bar framework the menus use
+        and were not addressed at all. Many carry a command with no menu
+        equivalent, or reach in one click what the menu takes three to.
+
+        With no ``name`` this lists every button it can see with its
+        rectangle. With one, it presses that button and reports whether
+        a menu dropped as a result, since many toolbar buttons open one
+        rather than acting.
+        """
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if name:
+            return menu.click_toolbar(pid, name)
+        return menu.toolbars(pid)
+
+    @mcp.tool()
+    async def app_dialog_tab(name: str = "",
+                             dialog_title: str = "") -> dict[str, Any]:
+        """List a dialog's tab pages, or switch to one.
+
+        PROPERTY DIALOGS HIDE MOST OF THEMSELVES BEHIND TABS. Nothing
+        could switch one, so app_set_dialog_control only ever saw the
+        front page and reported it as the whole dialog: a control on any
+        other page read as a control the dialog does not have.
+
+        With no ``name`` this lists the pages and which is selected.
+        """
+        from ..ui import controls as ctl
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        open_dialogs = windows.dialogs(pid)
+        if dialog_title:
+            open_dialogs = [d for d in open_dialogs
+                            if dialog_title.lower() in (d.title or "").lower()]
+        if not open_dialogs:
+            return {"ok": False, "reason": "no matching dialog is open"}
+        dialog = open_dialogs[0]
+        if not name:
+            tabs = ctl.list_tabs(dialog)
+            return {"ok": True, "dialog": dialog.title,
+                    "tabs": [{"name": t["name"], "selected": t["selected"]}
+                             for t in tabs]}
+        return ctl.select_tab(dialog, name)
+
+    @mcp.tool()
+    async def app_scroll_control(control_label: str, lines: int = 3,
+                                 dialog_title: str = "") -> dict[str, Any]:
+        """Scroll a list, grid or tree so more of it comes into view.
+
+        A LONG LIST HIDES ITS OWN CONTENTS. A virtualised DevExpress
+        grid exposes roughly what is on screen, so a row further down
+        did not exist as far as a caller was concerned, and the reply
+        gave no hint that anything was missing.
+
+        Positive scrolls down, negative up. The reply reports whether
+        the rows actually changed: ``moved: false`` at the end of a list
+        is a real answer rather than a failure.
+        """
+        from ..ui import controls as ctl
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        target, problem = _resolve_dialog_control(pid, control_label,
+                                                  dialog_title)
+        if problem is not None:
+            return problem
+        return ctl.scroll(target["hwnd"], lines)
+
+    @mcp.tool()
+    async def app_activate_row(control_label: str, row: str,
+                               double: bool = False,
+                               dialog_title: str = "") -> dict[str, Any]:
+        """Invoke a row, rather than merely selecting it.
+
+        ``app_set_dialog_control(select_row=...)`` highlights a row.
+        This ACTS on it, which in a panel is the difference between
+        pointing at a document and opening it.
+
+        A click has no read-back, so the reply reports what was done and
+        not what it caused.
+        """
+        from ..ui import controls as ctl
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        target, problem = _resolve_dialog_control(pid, control_label,
+                                                  dialog_title)
+        if problem is not None:
+            return problem
+        return ctl.activate_row(target["hwnd"], row, double=double)
+
+    @mcp.tool()
+    async def app_screenshot(path: str = "",
+                             dialog_title: str = "") -> dict[str, Any]:
+        """Capture Altium, or one dialog, to a PNG.
+
+        THE AGENT COULD NOT SEE THE UI. ui/ocr.py has been able to
+        capture and read a window since it was written and none of it
+        was exposed, so every judgement about what was on screen came
+        from an accessible tree that omits anything drawn rather than
+        placed. A picture settles what a tree cannot: which page is in
+        front, whether a control is greyed, what a rendered dialog
+        actually says.
+
+        Args:
+            path: where to write the PNG. Defaults to the workspace
+                directory, so the file is somewhere findable.
+            dialog_title: capture that dialog rather than the main
+                window.
+
+        Returns:
+            ``{"ok": true, "path": ..., "hwnd": ...}``. Read the file to
+            look at it.
+        """
+        import os
+        import time as _time
+
+        from ..ui import ocr
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not ocr.available():
+            return {"ok": False, "reason": (
+                "screen capture needs pywin32 and Pillow")}
+
+        target = None
+        if dialog_title:
+            for dialog in windows.dialogs(pid):
+                if dialog_title.lower() in (dialog.title or "").lower():
+                    target = dialog.hwnd
+                    break
+            if target is None:
+                return {"ok": False,
+                        "reason": f"no dialog matching {dialog_title!r}"}
+        else:
+            frame = menu.frame(pid)
+            if frame is None:
+                return {"ok": False, "reason": "no Altium main window"}
+            target = frame.hwnd
+
+        if not path:
+            from ..config import get_config
+            path = os.path.join(str(get_config().workspace_dir),
+                                f"altium_{int(_time.time())}.png")
+        if not ocr.capture_png(target, path):
+            return {"ok": False, "reason": "capture failed", "path": path}
+        return {"ok": True, "path": path, "hwnd": target,
+                "note": "read the file to look at it"}
+
+    @mcp.tool()
+    async def app_canvas(x: int, y: int, to_x: int = 0, to_y: int = 0,
+                         double: bool = False) -> dict[str, Any]:
+        """Click or drag on the editor canvas, at screen coordinates.
+
+        THE CANVAS HAS NO NAMED CONTROLS, so every other tool here could
+        not touch it. Placing, moving, rubber-band selecting and routing
+        are pointer gestures and there was no way to make one.
+
+        With ``to_x``/``to_y`` this DRAGS, moving in steps rather than
+        jumping, because a jump reads as a click at the destination.
+        Without them it clicks.
+
+        NO READ-BACK IS POSSIBLE. The reply says what gesture was made
+        and never what it did. Confirm with a bridge read, which can see
+        the document, rather than trusting this.
+        """
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not windows.available():
+            return {"ok": False, "reason": "UI automation is unavailable here"}
+        if not menu.bring_to_front(pid):
+            return {"ok": False, "reason": "could not focus Altium"}
+        target = menu.frame(pid)
+        hwnd = target.hwnd if target else None
+        try:
+            if to_x or to_y:
+                return windows.drag(x, y, to_x, to_y, target=hwnd)
+            return windows.click_at(x, y, double=double, target=hwnd)
+        except windows.ForegroundLost as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    async def app_wait_for_dialog(title: str = "",
+                                  timeout: float = 30.0) -> dict[str, Any]:
+        """Block until a dialog appears, and report which one.
+
+        A COMMAND THAT RAISES A DIALOG RETURNS BEFORE THE DIALOG EXISTS.
+        A caller that acted and then looked found nothing and concluded
+        none was coming; the alternative was a fixed sleep long enough
+        to be safe, which is the pattern this layer spent the day
+        removing everywhere else.
+        """
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not windows.available():
+            return {"ok": False, "reason": "UI automation is unavailable here"}
+        return windows.wait_for_dialog(pid, title, timeout)
+
+    @mcp.tool()
+    async def app_ui_snapshot() -> dict[str, Any]:
+        """Everything on screen, in one call: menus, panels, dialogs, toolbars.
+
+        ORIENTATION IS THE EXPENSIVE PART. Finding out what is available
+        took four calls and knowing which four to make, and a caller who
+        guessed wrong concluded a capability was missing. This is the UI
+        equivalent of app_context: one call that answers "what am I
+        looking at".
+
+        Reads only. Takes no focus, moves no pointer, changes nothing,
+        so it is safe while somebody is working. The menu BAR is listed
+        because reading it needs no click; menu contents are not,
+        because opening one does.
+        """
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not windows.available():
+            return {"ok": False, "reason": "UI automation is unavailable here"}
+
+        from ..ui import panels
+
+        out: dict[str, Any] = {"ok": True, "altium_pid": pid}
+        try:
+            out["menu_bar"] = sorted(menu.bar_items(pid))
+        except Exception as exc:                 # noqa: BLE001
+            out["menu_bar"] = []
+            out["menu_bar_error"] = str(exc)
+
+        open_dialogs = windows.dialogs(pid)
+        out["dialogs"] = [{"title": d.title, "class": d.class_name,
+                           "buttons": [b.text for b in d.buttons()]}
+                          for d in open_dialogs]
+        out["dialog_count"] = len(open_dialogs)
+
+        try:
+            out["panels"] = [p["name"] for p in panels.list_open(pid)]
+        except Exception as exc:                 # noqa: BLE001
+            out["panels"] = []
+            out["panel_error"] = str(exc)
+
+        try:
+            bar = menu.toolbars(pid)
+            out["toolbar_buttons"] = ([b["name"] for b in bar.get("buttons", [])]
+                                      if bar.get("ok") else [])
+        except Exception as exc:                 # noqa: BLE001
+            out["toolbar_buttons"] = []
+            out["toolbar_error"] = str(exc)
+
+        out["next_step"] = (
+            "app_click_menu walks a menu, app_open_panel opens a panel, "
+            "app_context_menu right clicks a point, app_screenshot shows "
+            "you what a tree cannot")
+        return out
+
+    @mcp.tool()
+    async def app_read_window(dialog_title: str = "",
+                              with_text: bool = True) -> dict[str, Any]:
+        """Read a window through UI Automation, which sees what MSAA cannot.
+
+        THE LAYER THAT WAS MISSING. This project read Altium three ways:
+        window text, which returns nothing for anything without a handle;
+        MSAA, which handles the VCL dialogs well and the WPF ones not at
+        all; and OCR on the pixels. UIA sits between the second and the
+        third.
+
+        It matters most for the case that forced OCR into existence.
+        Altium's newer WPF dialogs have buttons that are NOT child
+        windows, so EnumChildWindows finds nothing and MSAA has nothing
+        to press. WPF is UIA-native, so those same buttons are ordinary
+        elements here, with names, and they can be pressed properly with
+        app_invoke_element.
+
+        WHAT IT STILL WILL NOT SEE. Delphi's TLabel owns no handle and
+        publishes no accessible object, so its text exists only as
+        pixels. Use app_screenshot there; that is what OCR is for and
+        why it stays.
+
+        Returns:
+            ``{"ok": true, "count": N, "elements": [{name, type,
+            automation_id, enabled, rect}], "text": [...]}``.
+        """
+        from ..ui import uia
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not uia.available():
+            return {"ok": False, "reason": (
+                "UI Automation is unavailable here; it needs comtypes and "
+                "UIAutomationCore")}
+
+        target = None
+        if dialog_title:
+            for dialog in windows.dialogs(pid):
+                if dialog_title.lower() in (dialog.title or "").lower():
+                    target = dialog.hwnd
+                    break
+            if target is None:
+                return {"ok": False,
+                        "reason": f"no dialog matching {dialog_title!r}"}
+        else:
+            frame = menu.frame(pid)
+            if frame is None:
+                return {"ok": False, "reason": "no Altium main window"}
+            target = frame.hwnd
+
+        out = uia.describe_window(target)
+        if out.get("ok") and with_text:
+            out["text"] = uia.text_of(target)
+        return out
+
+    @mcp.tool()
+    async def app_invoke_element(name: str, dialog_title: str = "",
+                                 text: str = "",
+                                 expand: str = "") -> dict[str, Any]:
+        """Press, set or expand an element through UI Automation patterns.
+
+        PATTERNS ARE NOT A SIMULATED CLICK. MSAA offers little beyond a
+        default action, which is why the rest of this layer falls back to
+        moving a real mouse. UIA exposes what a control actually
+        implements: Invoke to press, Value to set text, ExpandCollapse to
+        open a node. Those are supported operations, so they move no
+        pointer, take no focus, and cannot land on whatever happens to be
+        under the cursor.
+
+        That makes this the right tool for a WPF dialog, and for anything
+        you want done while the user keeps working.
+
+        A CLIENT THAT DOES NOT LIST THIS TOOL can still reach it through
+        the dispatcher: ``tool_invoke(name="app_invoke_element",
+        arguments={"name": "OK", "dialog_title": "Silkscreen"})``.
+
+        Args:
+            name: the element's name or automation id. A Button of that
+                name is preferred over a label carrying the same text.
+            dialog_title: which dialog. Empty uses the frontmost open
+                dialog, or the main window when no dialog is open.
+            text: set this value instead of pressing.
+            expand: "true" or "false" to open or close a node instead.
+
+        Returns:
+            ``ok`` with what was done and, for a press in a dialog,
+            ``dialog_closed``; or a refusal naming which pattern the
+            element lacks and its rectangle, so a real click remains
+            possible as a fallback.
+        """
+        from ..ui import uia
+
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not uia.available():
+            return {"ok": False, "reason": "UI Automation is unavailable here"}
+
+        target = None
+        in_dialog = False
+        open_dialogs = windows.dialogs(pid)
+        if dialog_title:
+            for dialog in open_dialogs:
+                if dialog_title.lower() in (dialog.title or "").lower():
+                    target = dialog.hwnd
+                    break
+            if target is None:
+                return {"ok": False,
+                        "reason": f"no dialog matching {dialog_title!r}",
+                        "open": [d.title for d in open_dialogs]}
+            in_dialog = True
+        elif open_dialogs:
+            # A WPF dialog is a window of its own, so searching the main
+            # window for its OK found nothing. The frontmost dialog is
+            # the one a press is meant for.
+            target = open_dialogs[0].hwnd
+            in_dialog = True
+        else:
+            frame = menu.frame(pid)
+            if frame is None:
+                return {"ok": False, "reason": "no Altium main window"}
+            target = frame.hwnd
+
+        if text:
+            return uia.set_value(target, name, text)
+        if expand:
+            return uia.expand(target, name,
+                              want=str(expand).strip().lower()
+                              in ("1", "true", "yes"))
+        done = uia.invoke(target, name)
+        if done.get("ok") and in_dialog:
+            # Reported, not required: Next or Apply leave a dialog open.
+            done["dialog_closed"] = windows.wait_for_close(target, timeout=3.0)
+        return done

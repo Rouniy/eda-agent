@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 from ..bridge import get_bridge
+from .pcb import _mils
 
 
 _NC_PIN_NAME = re.compile(
@@ -447,6 +448,49 @@ def register_audit_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "audit.find_orphan_net_labels", {})
+
+    @mcp.tool()
+    async def audit_find_net_label_conflicts() -> dict[str, Any]:
+        """Find net labels that silently merge, short, or do nothing.
+
+        Three failure modes that all look correct on a printed sheet:
+
+        1. ``conflicting_labels`` -- two labels with DIFFERENT text at
+           the same Location (x, y), not merely overlapping text boxes.
+           Altium merges both names into one net and one name wins; the
+           losing net ceases to exist and everything on it is absorbed.
+           This is a real short between two named nets, and the usual
+           symptom is "net X has zero pins" while some unrelated pin
+           turns up on net Y. Adjacent labels on a 100-mil pin pitch
+           are not conflicts.
+
+        2. ``labels_on_pin_root`` -- a label sitting on a pin's
+           ``Location`` instead of its electrical end. ``Location`` is
+           the BODY-side root; a pin connects at
+           ``Location + PinLength`` along ``Orientation``
+           (0=right, 1=up, 2=left, 3=down). A label on the root is
+           inert, so the sheet reads as fully wired while the pin
+           floats on an auto-generated net. Each item reports the
+           label's coordinates AND the ``connect_x_mils`` /
+           ``connect_y_mils`` the label should move to.
+
+        3. ``duplicate_labels`` -- same text twice at one point.
+           Harmless electrically, but it is clutter and it hides
+           class 1 underneath.
+
+        Complements ``audit_find_orphan_net_labels``, which only asks
+        whether a wire sits under the label and therefore reports
+        genuinely-connected labels (those on a pin end, with no wire)
+        as orphans.
+
+        Returns:
+            Dict with ``{checked, conflicts, on_pin_root, duplicates,
+            conflicting_labels[], labels_on_pin_root[],
+            duplicate_labels[]}``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "audit.find_net_label_conflicts", {})
 
     @mcp.tool()
     async def audit_find_visible_supplier_pn() -> dict[str, Any]:
@@ -964,7 +1008,7 @@ def register_audit_tools(mcp):
 
     @mcp.tool()
     async def audit_find_pads_near_board_edge(
-        clearance_mils: int = 25,
+        clearance_mils: float = 25,
     ) -> dict[str, Any]:
         """Find PCB pads / vias closer than ``clearance_mils`` to the
         board outline (depaneling damage hazard).
@@ -976,8 +1020,10 @@ def register_audit_tools(mcp):
         boards going to depaneling rather than rounded-corner
         manufacture.
 
-        Uses ``Board.PrimPrimDistance(BoardOutline, prim)`` so non-
-        rectangular outlines are handled correctly.
+        The gap is measured from the outline's own segments, lines and
+        arcs, to the pad's copper: a via or round pad by its radius, a
+        rectangle by its nearest corner or edge midpoint, at whatever
+        rotation. Round and other curved outlines are covered.
 
         Args:
             clearance_mils: Minimum gap to flag as a violation
@@ -987,6 +1033,8 @@ def register_audit_tools(mcp):
             Dict with:
               - ``checked``: total pads + vias inspected
               - ``violations``: how many are within the clearance
+              - ``unmeasured``: pads that could not be measured, which
+                are therefore neither passed nor flagged
               - ``clearance_mils``: echo of the threshold used
               - ``items``: per-violation `{kind, designator,
                 distance_mils, at}` where ``at`` is "(x,y)" mils.
@@ -994,7 +1042,7 @@ def register_audit_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "audit.find_pads_near_board_edge",
-            {"clearance_mils": str(round(clearance_mils))},
+            {"clearance_mils": _mils(clearance_mils)},
         )
 
     @mcp.tool()

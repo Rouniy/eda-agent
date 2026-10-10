@@ -37,7 +37,8 @@ pytestmark = pytest.mark.kicad_libs
 
 #: kicad-cli reports these while still exiting 0.
 _FAILURE_MARKERS = ("unable to load", "error loading", "failed to load",
-                    "parse error", "expecting")
+                    "parse error", "expecting", "не удалось загрузить",
+                    "ошибка загрузки", "ошибка разбора")
 
 
 @pytest.fixture(scope="module")
@@ -67,9 +68,15 @@ def _assert_kicad_loaded(output: str, what: str) -> None:
     for marker in _FAILURE_MARKERS:
         assert marker not in lowered, (
             f"KiCad refused the {what} this converter wrote:\n{output}")
-    assert "plotting" in lowered, (
+    assert "plotting" in lowered or "черчение" in lowered, (
         f"KiCad plotted nothing from the {what}; it may have been "
         f"rejected silently:\n{output}")
+
+
+def _not_updated(output: str) -> bool:
+    lowered = output.lower()
+    return "not updated" in lowered or "не была обновлена" in lowered \
+        or "не были обновлены" in lowered
 
 
 @pytest.fixture(scope="module")
@@ -349,7 +356,7 @@ def test_kicad_considers_our_files_already_current(kicad_cli, source_symbol,
 
     lib = tmp_path / "gen.kicad_sym"
     lib.write_text(symbol_to_kicad_sym(source_symbol), encoding="utf-8")
-    assert "not updated" in _run(kicad_cli, ["sym", "upgrade", str(lib)]), (
+    assert _not_updated(_run(kicad_cli, ["sym", "upgrade", str(lib)])), (
         "KiCad rewrote our symbol library, so it was not in current form")
 
     src = _footprint_dir() / "Package_DIP.pretty" / "DIP-16_W7.62mm.kicad_mod"
@@ -361,7 +368,7 @@ def test_kicad_considers_our_files_already_current(kicad_cli, source_symbol,
         footprint_to_kicad_mod(read_kicad_footprint(
             src.read_text(encoding="utf-8", errors="replace"))),
         encoding="utf-8")
-    assert "not updated" in _run(kicad_cli, ["fp", "upgrade", str(pretty)]), (
+    assert _not_updated(_run(kicad_cli, ["fp", "upgrade", str(pretty)])), (
         "KiCad rewrote our footprint, so it was not in current form")
 
 
@@ -390,11 +397,11 @@ def test_the_whole_generated_corpus_is_already_current(generated_corpus):
 
     sym_out = _run(cli, ["sym", "upgrade",
                          str(generated_corpus["symbol_lib"])])
-    assert "not updated" in sym_out, (
+    assert _not_updated(sym_out), (
         f"KiCad rewrote {generated_corpus['symbols']} generated symbols, so "
         f"they were not in current form:\n{sym_out}")
 
     fp_out = _run(cli, ["fp", "upgrade", str(generated_corpus["pretty"])])
-    assert "not updated" in fp_out, (
+    assert _not_updated(fp_out), (
         f"KiCad rewrote {generated_corpus['footprints']} generated "
         f"footprints, so they were not in current form:\n{fp_out}")
