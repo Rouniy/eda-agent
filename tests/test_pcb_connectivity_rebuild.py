@@ -115,7 +115,7 @@ def test_place_tracks_registers_each_track_individually():
 
 def test_place_tracks_joins_the_net_primitive_list():
     src = _handler(PCB_PAS, "PCB_PlaceTracks")
-    assert "FoundNet.AddPCBObject(Track)" in src
+    assert "BindPrimitiveToNet(FoundNet, Track)" in src
 
 
 def test_place_tracks_rebuilds_after_postprocess_not_inside_it():

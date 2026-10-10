@@ -31306,12 +31306,13 @@ Var
     ExistingIter : IPCB_BoardIterator;
     ExistingKeys : TStringList;
     TracksStr, TrackStr, Remaining, Field : String;
-    PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
+    PipePos, CommaPos, Placed, Failed, SkippedExisting, NetMissing, FieldIdx : Integer;
     TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
     TWidth : Double;               { a 0.1 mm rule is 3.937 mil, not an integer }
-    LayerStr, NetStr, BadLayers : String;
+    LayerStr, NetStr, BadLayers, ExistingNetStr, TrackKey, P1, P2 : String;
     FoundNet : IPCB_Net;
     TrackLayer : TLayer;
+    ConnRebuilt : Boolean;
     { 7 named locals instead of `Array[0..6] Of String` - fixed-size       }
     { string arrays as function locals corrupt the function return slot   }
     { in DelphiScript, see [[delphiscript_fixed_string_array_bug]].       }
@@ -31333,6 +31334,8 @@ Begin
 
     Placed := 0;
     Failed := 0;
+    SkippedExisting := 0;
+    NetMissing := 0;
     BadLayers := '';
     Remaining := TracksStr;
 
@@ -31353,10 +31356,10 @@ Begin
         Try
             If ExistingTrack.Net <> Nil Then ExistingNetStr := ExistingTrack.Net.Name;
         Except End;
-        P1 := IntToStr(CoordToMils(ExistingTrack.x1)) + ',' + IntToStr(CoordToMils(ExistingTrack.y1));
-        P2 := IntToStr(CoordToMils(ExistingTrack.x2)) + ',' + IntToStr(CoordToMils(ExistingTrack.y2));
+        P1 := FloatToJsonStr(CoordToMilsF(ExistingTrack.x1)) + ',' + FloatToJsonStr(CoordToMilsF(ExistingTrack.y1));
+        P2 := FloatToJsonStr(CoordToMilsF(ExistingTrack.x2)) + ',' + FloatToJsonStr(CoordToMilsF(ExistingTrack.y2));
         If P2 < P1 Then Begin TrackKey := P1; P1 := P2; P2 := TrackKey; End;
-        TrackKey := P1 + '>' + P2 + ',' + IntToStr(CoordToMils(ExistingTrack.Width))
+        TrackKey := P1 + '>' + P2 + ',' + FloatToJsonStr(CoordToMilsF(ExistingTrack.Width))
             + ',' + GetLayerString(ExistingTrack.Layer) + ',' + ExistingNetStr;
         ExistingKeys.Add(TrackKey);
         ExistingTrack := ExistingIter.NextPCBObject;
@@ -31424,10 +31427,10 @@ Begin
             NetStr := F6;
             If LayerStr = '' Then LayerStr := 'TopLayer';
 
-            P1 := IntToStr(TX1) + ',' + IntToStr(TY1);
-            P2 := IntToStr(TX2) + ',' + IntToStr(TY2);
+            P1 := FloatToJsonStr(TX1) + ',' + FloatToJsonStr(TY1);
+            P2 := FloatToJsonStr(TX2) + ',' + FloatToJsonStr(TY2);
             If P2 < P1 Then Begin TrackKey := P1; P1 := P2; P2 := TrackKey; End;
-            TrackKey := P1 + '>' + P2 + ',' + IntToStr(TWidth) + ','
+            TrackKey := P1 + '>' + P2 + ',' + FloatToJsonStr(TWidth) + ','
                 + GetLayerString(GetLayerFromString(LayerStr)) + ',' + NetStr;
             If ExistingKeys.IndexOf(TrackKey) >= 0 Then
             Begin
@@ -31468,14 +31471,11 @@ Begin
             If NetStr <> '' Then
             Begin
                 FoundNet := FindNetByName(Board, NetStr);
-                BindPrimitiveToNet(FoundNet, Track);
+                If FoundNet = Nil Then Inc(NetMissing);
             End;
 
             Board.AddPCBObject(Track);
-            { Match the proven PCB_TuneLength ordering: board first, then net. }
-            If FoundNet <> Nil Then
-                Try FoundNet.AddPCBObject(Track); Except End;
-
+            If FoundNet <> Nil Then BindPrimitiveToNet(FoundNet, Track);
             { Register EACH track with the board's robots. This used to be a  }
             { single end-of-batch broadcast carrying c_NoEventData -- i.e. a  }
             { registration naming no object -- on the theory that one         }
@@ -31507,17 +31507,12 @@ Begin
           + '"skipped_existing":' + IntToStr(SkippedExisting) + ','
           + '"failed":' + IntToStr(Failed) + ','
           + '"nets_not_found":' + IntToStr(NetMissing) + ','
+          + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
           + '"connectivity_rebuilt":' + BoolToJsonStr(ConnRebuilt) + '}');
     Finally
         ExistingKeys.Free;
     End;
 
-    MarkDocDirtyByPath(Board.FileName);
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"placed":' + IntToStr(Placed) + ','
-        + '"failed":' + IntToStr(Failed) + ','
-        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
 End;
 
 {..............................................................................}
