@@ -379,7 +379,7 @@ Begin
     End;
 End;
 
-{ HexNibble / ByteToHex4 / EscapeJsonString MUST be defined before the JSON  }
+{ HexNibble / CodeUnitToHex4 / EscapeJsonString MUST precede the JSON code.  }
 { prop builders below, which call EscapeJsonString. DelphiScript resolves     }
 { identifiers top-down within a unit and has no Forward declarations, so a    }
 { callee defined later in the file is "Undeclared identifier" at the caller.  }
@@ -389,9 +389,14 @@ Begin
     Else Result := Chr(Ord('A') + (N - 10));
 End;
 
-Function ByteToHex4(B : Integer) : String;
+Function CodeUnitToHex4(B : Integer) : String;
 Begin
-    Result := '00' + HexNibble((B Shr 4) And $F) + HexNibble(B And $F);
+    { Preserve all 16 bits of an Altium UTF-16 code unit. Truncating to a    }
+    { byte changed Cyrillic letters and the numero sign into control codes. }
+    Result := HexNibble((B Shr 12) And $F)
+              + HexNibble((B Shr 8) And $F)
+              + HexNibble((B Shr 4) And $F)
+              + HexNibble(B And $F);
 End;
 
 Function EscapeJsonString(S : String) : String;
@@ -413,7 +418,7 @@ Begin
         Exit;
     End;
 
-    // Fast path: scan once for any byte that needs the slow per-char loop.
+    // Fast path: scan once for any code unit needing the per-char loop.
     // The vast majority of escaped strings are pure ASCII (designators,
     // file paths, layer names) and stay on the fast path.
     NeedsCharLoop := False;
@@ -438,17 +443,16 @@ Begin
         Exit;
     End;
 
-    // Slow path: char-by-char with \u00XX for any non-ASCII byte. Non-ASCII
-    // input is treated as Latin-1 / CP1252 (Pascal's native single-byte
-    // encoding); the escape produces valid JSON consumable as UTF-8 by any
-    // reader. This is the single mechanism that lets us drop the Latin-1
-    // read kludge on the Python side, output is always pure ASCII.
+    // Altium exposes Unicode text. Escape each non-ASCII UTF-16 code unit
+    // as \uXXXX, preserving all four hex digits. Surrogate pairs retain
+    // their two units so a JSON reader can reconstruct non-BMP characters.
+    // ASCII controls, quotes and backslashes keep their existing escaping.
     For I := 1 To Length(Tmp) Do
     Begin
         Ch := Copy(Tmp, I, 1);
         O := Ord(Ch[1]);
         If O >= 128 Then
-            Result := Result + '\u' + ByteToHex4(O)
+            Result := Result + '\u' + CodeUnitToHex4(O)
         Else If O = Ord('\') Then Result := Result + '\\'
         Else If O = Ord('"') Then Result := Result + '\"'
         Else If O = 13 Then Result := Result + '\r'
@@ -456,7 +460,7 @@ Begin
         Else If O = 9 Then Result := Result + '\t'
         Else If O = 8 Then Result := Result + '\b'
         Else If O = 12 Then Result := Result + '\f'
-        Else If O < 32 Then Result := Result + '\u' + ByteToHex4(O)
+        Else If O < 32 Then Result := Result + '\u' + CodeUnitToHex4(O)
         Else Result := Result + Ch;
     End;
 End;

@@ -193,7 +193,7 @@ def register_generic_tools(mcp):
             object_type: Altium object type constant.
                 Schematic: "eNetLabel", "ePort", "ePowerObject", "eSchComponent",
                 "eWire", "eBus", "eBusEntry", "eParameter", "ePin",
-                "eLabel", "eLine", "eRectangle", "eSheetSymbol", "eSheetEntry", "eNoERC", "eJunction"
+                "eLabel", "eLine", "ePolyline", "eRectangle", "eSheetSymbol", "eSheetEntry", "eNoERC", "eJunction"
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
                 "eConnectionObject" (the ratsnest: one line per unrouted
@@ -210,6 +210,9 @@ def register_generic_tools(mcp):
                 PinLength is a common source of wrong conclusions about
                 what is wired.
                 "Designator.Text,Comment.Text,LibReference" for components
+                "VerticesCount,Vertices,LineWidth" for graphic polylines.
+                Vertices is a semicolon-separated list of x,y pairs in mils;
+                the template's ePolyline objects are distinct from eLine.
 
                 PCB PRIMITIVES DO NOT. They are a separate, flat set,
                 and mixing the two is the single commonest mistake here:
