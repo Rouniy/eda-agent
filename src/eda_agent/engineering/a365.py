@@ -1,4 +1,4 @@
-"""Altium 365 design data through the Nexar GraphQL API (read-only).
+"""Altium 365 design data through the Nexar GraphQL API.
 
 Vendor facts used (support.nexar.com, Appendix A of the manual):
   * endpoint https://api.nexar.com/graphql (Hot Chocolate GraphQL server, introspection enabled);
@@ -15,8 +15,8 @@ Vendor facts used (support.nexar.com, Appendix A of the manual):
 Field names used by built-in queries that are not shown in the vendor examples are
 checked against the live schema by `doctor()` (CLI: altium-ai a365-doctor) before use.
 
-Write operations are deliberately not implemented: raw queries containing `mutation`
-or `subscription` are rejected.
+Raw queries containing `mutation` or `subscription` are rejected. Supported
+write operations use dedicated methods and explicit confirmation in the tool layer.
 """
 from __future__ import annotations
 
