@@ -36,6 +36,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+from ..atomicfile import replace_with_retry
 from .config import A365Policy
 from .errors import AuthenticationFailed, NotFound, PermissionDenied, ValidationFailed
 
@@ -157,7 +158,7 @@ class TokenStore:
         tmp.write_bytes(data)
         if sys.platform != "win32":
             os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)
+        replace_with_retry(tmp, self.path)
 
     def load(self) -> dict | None:
         if not self.path.exists():
