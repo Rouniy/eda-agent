@@ -526,18 +526,29 @@ Begin
         Result := GetPCBBoardAnywhere(0);
         Exit;
     End;
+
+    { Resolve against documents that are ALREADY loaded. Never            }
+    { Client.OpenDocument here. It loads the file but drops the project   }
+    { association, leaving a "free document" -- and when the path does    }
+    { not resolve at all it can register the document under a corrupted   }
+    { name instead of failing. Application.pas's App_SetActiveDocument    }
+    { avoids OpenDocument for exactly this reason; this function did not.  }
+    {                                                                    }
+    { Measured 2026-10-13: focus_board called with a path the JSON layer  }
+    { had mangled left the board DETACHED from its project and renamed    }
+    { M2S090T-1FG484?????????V1.0.PcbDoc, with the focused project        }
+    { becoming "Free Documents" -- so every project-scope tool afterwards }
+    { ran against the wrong project. The file on disk was untouched and   }
+    { nothing was dirty, but the session had to be reopened to recover.   }
+    {                                                                    }
+    { A path that is not loaded now returns Nil so the caller can say so, }
+    { rather than silently operating on whichever board was lying around. }
     ServerDoc := Nil;
-    Try ServerDoc := Client.OpenDocument('PCB', Path); Except End;
-    If ServerDoc = Nil Then
-    Begin
-        { Path didn't resolve to a loadable PcbDoc; fall back rather than    }
-        { silently returning Nil and erroring the whole call.                }
-        Result := GetPCBBoardAnywhere(0);
-        Exit;
-    End;
+    Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then Exit;
+
     Try Client.ShowDocument(ServerDoc); Except End;
-    Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-    If Result = Nil Then Result := GetPCBBoardAnywhere(0);
+    Try Result := PCBServer.GetCurrentPCBBoard; Except Result := Nil; End;
 End;
 
 {..............................................................................}
@@ -624,8 +635,9 @@ Begin
         Exit;
     End;
 
-    { Exactly one board open. Opening it is safe because there is no other }
-    { one it could have meant.                                             }
+    { Exactly one board open, so there is no other one it could have      }
+    { meant. ResolvePCBBoard only resolves documents already loaded, so   }
+    { this reaches that board without OpenDocument's free-document trap.  }
     Result := ResolvePCBBoard(OnePath);
     If Result = Nil Then
         Why := 'The only open board, ' + OnePath + ', could not be opened.';
@@ -1041,18 +1053,19 @@ End;
 Function ReadFileContent(FilePath : String) : String;
 Var
     SL : TStringList;
+    Stream : THandleStream;
     Content : String;
     Attempt : Integer;
+    Handle : Integer;
     Ok : Boolean;
 Begin
-    { Read via TStringList.LoadFromFile, NOT TextFile Reset/ReadLn. The RTL    }
-    { Reset raises a low-level EInOutError on a sharing violation (I/O error   }
-    { 32) which the Altium script engine intercepts with a modal BEFORE the    }
-    { surrounding Try/Except can swallow it, stalling the polling loop.        }
-    { LoadFromFile opens through a TFileStream and raises an ordinary VCL      }
-    { EFOpenError that Try/Except catches cleanly -- no engine modal. The      }
-    { lock is transient (Defender scanning the freshly renamed request file,   }
-    { or a collision with Python's atomic replace), so retry briefly.          }
+    { Do not call LoadFromFile here. A sharing violation from its internal     }
+    { TFileStream surfaced as a modal EFOpenError in Altium Designer 26.10.1.5 }
+    { before the surrounding Try/Except could recover, stalling the polling    }
+    { loop. FileOpen reports a sharing violation as -1 without raising. Once   }
+    { the handle exists, LoadFromStream cannot race the file open. The lock is }
+    { transient (usually a scanner touching the atomically-renamed request),   }
+    { so retry briefly.                                                        }
     { NOTE: stash the content in a LOCAL string and assign Result from it as }
     { the LAST statement. Assigning Result directly from SL.Text (an object  }
     { property) and then Exit-ing triggers the DelphiScript return-clobber    }
@@ -1067,17 +1080,27 @@ Begin
     Begin
         Inc(Attempt);
         Ok := False;
-        SL := TStringList.Create;
-        Try
+        Handle := FileOpen(FilePath, fmOpenRead Or fmShareDenyNone);
+        If Handle <> -1 Then
+        Begin
+            SL := TStringList.Create;
             Try
-                SL.LoadFromFile(FilePath);
-                Content := SL.Text;
-                Ok := True;
-            Except
-                Ok := False;
+                Stream := THandleStream.Create(Handle);
+                Try
+                    Try
+                        SL.LoadFromStream(Stream);
+                        Content := SL.Text;
+                        Ok := True;
+                    Except
+                        Ok := False;
+                    End;
+                Finally
+                    Stream.Free;
+                End;
+            Finally
+                FileClose(Handle);
+                SL.Free;
             End;
-        Finally
-            SL.Free;
         End;
         If Ok Then Break;
         Sleep(15);
@@ -2238,7 +2261,7 @@ Begin
     End;
 End;
 
-{ HexNibble / ByteToHex4 / EscapeJsonString MUST be defined before the JSON  }
+{ HexNibble / CodeUnitToHex4 / EscapeJsonString MUST precede the JSON code.  }
 { prop builders below, which call EscapeJsonString. DelphiScript resolves     }
 { identifiers top-down within a unit and has no Forward declarations, so a    }
 { callee defined later in the file is "Undeclared identifier" at the caller.  }
@@ -2248,9 +2271,14 @@ Begin
     Else Result := Chr(Ord('A') + (N - 10));
 End;
 
-Function ByteToHex4(B : Integer) : String;
+Function CodeUnitToHex4(B : Integer) : String;
 Begin
-    Result := '00' + HexNibble((B Shr 4) And $F) + HexNibble(B And $F);
+    { Preserve all 16 bits of an Altium UTF-16 code unit. Truncating to a    }
+    { byte changed Cyrillic letters and the numero sign into control codes. }
+    Result := HexNibble((B Shr 12) And $F)
+              + HexNibble((B Shr 8) And $F)
+              + HexNibble((B Shr 4) And $F)
+              + HexNibble(B And $F);
 End;
 
 Function EscapeJsonString(S : String) : String;
@@ -2272,7 +2300,7 @@ Begin
         Exit;
     End;
 
-    // Fast path: scan once for any byte that needs the slow per-char loop.
+    // Fast path: scan once for any code unit needing the per-char loop.
     // The vast majority of escaped strings are pure ASCII (designators,
     // file paths, layer names) and stay on the fast path.
     NeedsCharLoop := False;
@@ -2297,17 +2325,16 @@ Begin
         Exit;
     End;
 
-    // Slow path: char-by-char with \u00XX for any non-ASCII byte. Non-ASCII
-    // input is treated as Latin-1 / CP1252 (Pascal's native single-byte
-    // encoding); the escape produces valid JSON consumable as UTF-8 by any
-    // reader. This is the single mechanism that lets us drop the Latin-1
-    // read kludge on the Python side, output is always pure ASCII.
+    // Altium exposes Unicode text. Escape each non-ASCII UTF-16 code unit
+    // as \uXXXX, preserving all four hex digits. Surrogate pairs retain
+    // their two units so a JSON reader can reconstruct non-BMP characters.
+    // ASCII controls, quotes and backslashes keep their existing escaping.
     For I := 1 To Length(Tmp) Do
     Begin
         Ch := Copy(Tmp, I, 1);
         O := Ord(Ch[1]);
         If O >= 128 Then
-            Result := Result + '\u' + ByteToHex4(O)
+            Result := Result + '\u' + CodeUnitToHex4(O)
         Else If O = Ord('\') Then Result := Result + '\\'
         Else If O = Ord('"') Then Result := Result + '\"'
         Else If O = 13 Then Result := Result + '\r'
@@ -2315,7 +2342,7 @@ Begin
         Else If O = 9 Then Result := Result + '\t'
         Else If O = 8 Then Result := Result + '\b'
         Else If O = 12 Then Result := Result + '\f'
-        Else If O < 32 Then Result := Result + '\u' + ByteToHex4(O)
+        Else If O < 32 Then Result := Result + '\u' + CodeUnitToHex4(O)
         Else Result := Result + Ch;
     End;
 End;
@@ -35768,13 +35795,24 @@ End;
 { PCB_FocusBoard - make a specific board the focused/current one, so the      }
 { GetPCBBoardAnywhere-based tools (get_components, delete, plan_placement,    }
 { render, ...) all operate on it. Essential when several PcbDocs are open.    }
-{ Params: board_path (the .PcbDoc to focus).                                  }
+{ Params: board_path (the .PcbDoc to focus; empty = whichever board is        }
+{ reachable).                                                                 }
+{                                                                              }
+{ ResolvePCBBoard only calls ShowDocument on its PATH branch. With an empty   }
+{ board_path, or a path that fails to load, it falls through to               }
+{ GetPCBBoardAnywhere -- a focus-INDEPENDENT lookup that restores the         }
+{ previous view. This tool used to report focused=true on those paths         }
+{ anyway, so a caller that focused a board by name and a caller that          }
+{ focused nothing got the same answer.                                        }
+{ Focus the resolved board here, on every path, and say whether it worked.    }
 {..............................................................................}
 
 Function PCB_FocusBoard(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
+    ServerDoc : IServerDocument;
     BoardPathStr : String;
+    Focused : Boolean;
 Begin
     BoardPathStr := ExtractJsonValue(Params, 'board_path');
     Board := ResolvePCBBoard(BoardPathStr);
@@ -35784,6 +35822,29 @@ Begin
             'Could not resolve a PCB board for the given path');
         Exit;
     End;
+
+    { Do the focusing HERE rather than trusting ResolvePCBBoard to have   }
+    { done it: its no-path and load-failed branches go through            }
+    { GetPCBBoardAnywhere, which resolves without focusing and puts the   }
+    { previous view back. A caller that asked for a board by name and     }
+    { got focused:true was reading a claim the engine never honoured.     }
+    Focused := False;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Board.FileName); Except ServerDoc := Nil; End;
+    If ServerDoc <> Nil Then
+    Begin
+        Try Client.ShowDocument(ServerDoc); Focused := True; Except Focused := False; End;
+    End;
+
+    If Not Focused Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FOCUS_FAILED',
+            'Found the board but could not make it the current document. ' +
+            'It is resolved and readable, but tools that act on the focused ' +
+            'document will still act on whatever is focused now.');
+        Exit;
+    End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"focused":true,"board":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
@@ -42417,6 +42478,7 @@ Begin
     Else If N = 'pin'             Then Result := ePin
     Else If N = 'label'           Then Result := eLabel
     Else If N = 'line'            Then Result := eLine
+    Else If N = 'polyline'        Then Result := ePolyline
     Else If N = 'rectangle'       Then Result := eRectangle
     Else If N = 'sheetsymbol'     Then Result := eSheetSymbol
     Else If N = 'sheetentry'      Then Result := eSheetEntry
@@ -42442,7 +42504,7 @@ End;
 Function SchObjectTypeNames(Dummy : Integer): String;
 Begin
     Result := 'eNetLabel, ePort, ePowerObject, eSchComponent, eWire, eBus, '
-            + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, '
+            + 'eBusEntry, eParameter, eParameterSet, ePin, eLabel, eLine, ePolyline, '
             + 'eRectangle, eSheetSymbol, eSheetEntry, eNoERC, eJunction, '
             + 'eImage, eTextFrame, eNote, eProbe, eHarnessConnector, '
             + 'eCrossSheetConnector, eCompileMask';
