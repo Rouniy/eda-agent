@@ -55,6 +55,21 @@ NOT_TOOLS: dict[str, str] = {
     "part_count": "a parameter of lib_create_symbol",
     "pcb_only": "a reply field of the schematic/PCB comparison",
     "sch_only": "a reply field of the schematic/PCB comparison",
+    # Names from the PLT companion runtime (PLT-hw tools/eda-agent/shared_server.py),
+    # which registers its own restricted tool set rather than this package's.
+    "proj_get_erc_messages": "a tool of the PLT shared selected-project server",
+    "pcb_move_components_checked": "the PLT edit runtime's placement write tool "
+        "(registered by PLT's shared_server.py, not by a backend)",
+    "pcb_place_copper_checked": "the PLT edit runtime's copper write tool "
+        "(PROPOSAL-2026-10-09; registered by PLT's shared_server.py, not by a backend)",
+    "pcb_setup_board_checked": "the PLT edit runtime's board-setup write tool (stackup, classes, "
+        "rooms, rules; PROPOSAL-2026-10-09-setup; registered by PLT's shared_server.py)",
+    "proj_set_component_params_checked": "the PLT param-edit runtime's one write tool "
+                                         "(PROPOSAL-2026-09-28), registered only there",
+    # Fields of the proposed (unbuilt) library-read grant in LIBRARY-READS-DESIGN.md.
+    "lib_grant_token": "a parameter of the proposed library-read grant",
+    "lib_modified": "a reply field of the proposed library reads",
+    "lib_path": "a parameter of the proposed library reads",
     # The namespace PREFIXES, which the readme names when explaining
     # that a tool's prefix tells you which document it acts on. They
     # end in an underscore precisely because they are not whole names.

@@ -11,7 +11,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0", help="Listen address (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=14700, help="TCP port (default: 14700)")
+    parser.add_argument("--port", type=int, default=14701, help="TCP port (default: 14701)")
     parser.add_argument(
         "--allowed-host",
         action="append",

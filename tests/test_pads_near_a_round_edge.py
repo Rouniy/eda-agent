@@ -166,7 +166,7 @@ def test_vias_round_and_obround_pads_on_a_straight_edge(tmp_path):
 
 
 def test_the_audit_no_longer_trusts_prim_prim_distance():
-    body = _routine(_code("Audit.pas"), "Audit_FindPadsNearBoardEdge")
+    body = _routine(_code("Audit.pas"), "Audit_FindPadsNearBoardEdgeForBoard")
     assert "PrimPrimDistance" not in body
     assert "PadEdgeGapMils(Outline, Obj)" in body
     assert "Inc(Unmeasured)" in body and "'unmeasured'" in body

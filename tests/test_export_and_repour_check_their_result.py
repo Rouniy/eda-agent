@@ -61,7 +61,7 @@ def test_repour_goes_through_the_api_and_counts_what_it_rebuilt():
 
 
 def test_polygon_rows_carry_the_poured_copper_beside_the_outline():
-    body = _routine("PCB.pas", "PCB_GetPolygons")
+    body = _routine("PCB.pas", "PCB_GetPolygonsForBoard")
     assert "PolygonCopper(Polygon, CopperSqMils, CopperExact)" in body
     assert '"copper_area_mm2":' in body and '"copper_pieces":' in body
     assert '"copper_area_exact":' in body, "an area whose holes could not be read says so"

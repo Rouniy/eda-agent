@@ -32,6 +32,7 @@ PAS_FILES = [
     "PCB.pas",
     "Generic.pas",
     "Audit.pas",
+    "SelectedProject.pas",
     "StatusForm.pas",
     "Dispatcher.pas",
 ]
@@ -275,6 +276,20 @@ RULE_PCB_SUBTYPE_ON_BASE = LineRule(
     description="Subtype-only PCB property on a base IPCB_Primitive var; narrow to a typed local (Track/Arc/Pad/...) via ObjectId.",
 )
 
+# IPCB_Arc has no Width member: its stroke width is LineWidth. Reading Arc.Width
+# raises a MODAL "Undeclared identifier: Width" before any Try/Except runs, which
+# stops the polling loop until a human dismisses it (upstream 2d1630b, found on a
+# live board 2026-09-14; caught again in PLT's new track read 2026-10-02 before
+# deployment). Width is deliberately absent from the subtype rule above because
+# schematic objects have it, so this needs its own rule, keyed on the Arc local.
+RULE_ARC_WIDTH = LineRule(
+    name="pcb-arc-width",
+    pattern=re.compile(r"\bArc\.Width\b"),
+    severity="error",
+    memory="delphiscript_interface_narrowing.md",
+    description="IPCB_Arc has no Width; use Arc.LineWidth (Arc.Width raises a modal that stops the loop).",
+)
+
 # IPCB_Rule.Priority is a read-only function, not a property.
 RULE_RULE_PRIORITY_WRITE = LineRule(
     name="rule-priority-readonly-write",
@@ -480,6 +495,7 @@ LINE_RULES = [
     RULE_PCB_SUBTYPE_ON_BASE,
     RULE_FOOTPRINT_NAME_WRITE,
     RULE_RULE_PRIORITY_WRITE,
+    RULE_ARC_WIDTH,
     RULE_PROBE_TEXT_WRITE,
     RULE_KNOWN_WRONG_E_IDENT,
     RULE_KNOWN_WRONG_METHOD,
@@ -975,6 +991,37 @@ def lint_file(path: str) -> list[Finding]:
     return findings
 
 
+# ONE deliberate forward call. VERIFIED WORKING 2026-09-24, so this is a
+# recorded result rather than an open experiment. Keyed (calling file,
+# called routine).
+#
+# tmr_MCPTimer is the DFM-bound OnTimer handler for tmr_MCP, and two
+# DelphiScript scope rules pin it to StatusForm.pas: a DFM control
+# identifier is in scope only in the .pas paired with the .dfm, and a DFM
+# event handler binds only to a procedure in that same file (failing
+# SILENTLY otherwise). The work it dispatches, MCPTimerTick, needs every
+# Handle*Command and so cannot move earlier. Handler must be in
+# StatusForm.pas, callee must be in Dispatcher.pas, StatusForm.pas comes
+# first. That is a genuine cycle: no ordering satisfies both.
+#
+# THE ANSWER, measured on 2026-09-24 against script 2026.09.24.2 in the
+# deployed runtime (StatusForm.pas document 11, Dispatcher.pas document 14):
+# the script started clean and logged _tick_first 67 ms later. So FORWARD
+# CROSS-UNIT CALLS RESOLVE in the Altium script project, and "a callee must
+# come earlier than its caller" does NOT apply across PrjScr documents.
+#
+# It still applies, absolutely, to build.py's concatenated Altium_MCP.pas,
+# which is one file with no forward declarations. That is the only thing
+# this entry now suppresses, and it is why the rule stays an error for every
+# other call: the monolith is a supported build target.
+#
+# Do NOT add to this list to silence an ordinary forward call. Move the
+# callee instead - every other case in this codebase can be.
+CROSS_FILE_ORDER_EXEMPT = {
+    ("StatusForm.pas", "mcptimertick"),
+}
+
+
 def _scan_call_order_across_files(targets: list) -> list:
     """Calls that precede their definition IN THE CONCATENATION.
 
@@ -989,9 +1036,26 @@ def _scan_call_order_across_files(targets: list) -> list:
     forward declarations and an unresolved identifier is only discovered
     when the line runs.
 
-    Altium compiles the concatenation, so that is what this checks. Line
-    numbers are reported against the ORIGINAL file, since that is where
-    the fix goes.
+    PAS_FILES IS ALSO THE DEPLOYED ORDER, which makes this rule matter
+    more than its wording suggests. The shared runtime does not ship this
+    repo's Altium_API.PrjScr; PLT-hw's create_shared_runtime.py GENERATES
+    one with an explicit dependency order and ReorderDocumentsOnCompile=0,
+    and that order is PAS_FILES with StatusForm.dfm and SelfTest.pas
+    slotted in. So a finding here flags a forward call in the concatenated
+    monolith AND in the project Altium actually compiles.
+
+    Keep the two lists in step. If create_shared_runtime.py's `order` is
+    ever changed, change PAS_FILES to match, or this rule silently starts
+    validating an arrangement nobody runs. On 2026-09-24 a wrong
+    conclusion was published from exactly that confusion - the checkout's
+    PrjScr was read as authoritative when it is IDE-only.
+
+    Whether a forward cross-unit call actually fails in the script project
+    is not itself established; it is established for the monolith, which
+    has no forward declarations. See CROSS_FILE_ORDER_EXEMPT.
+
+    Line numbers are reported against the ORIGINAL file, since that is
+    where the fix goes.
     """
     order = []
     for path in targets:
@@ -1024,6 +1088,8 @@ def _scan_call_order_across_files(targets: list) -> list:
         for m in call_re.finditer(line):
             key = m.group(1).lower()
             if key == header_key or key in _DELPHI_BUILTINS:
+                continue
+            if (rel, key) in CROSS_FILE_ORDER_EXEMPT:
                 continue
             if pos < def_at[key]:
                 where = order[def_at[key]][0]

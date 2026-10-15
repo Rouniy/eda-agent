@@ -130,10 +130,12 @@ def test_mutating_pcb_handlers_call_the_shared_rebuild():
     for path, name in (
         (PCB_PAS, "PCB_PlaceTracks"),
         (PCB_PAS, "PCB_DeleteObject"),
-        (PCB_PAS, "PCB_GetUnroutedNets"),
+        (PCB_PAS, "PCB_GetUnroutedNetsForBoard"),
         (GENERIC_PAS, "Gen_BatchDelete"),
     ):
         assert "RebuildPCBConnectivity" in _handler(path, name), name
+    assert "PCB_GetUnroutedNetsForBoard(Board, Params, RequestId, True)" in _handler(
+        PCB_PAS, "PCB_GetUnroutedNets")
 
 
 def test_rebuild_helper_does_more_than_redraw():

@@ -472,6 +472,30 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_get_object_classes() -> dict[str, Any]:
+        """Get every object class on the active PCB, with resolved membership.
+
+        Answers what pcb_get_net_classes cannot: whether a differential-pair or
+        component class exists and what is actually in it. Membership is probed
+        with IPCB_ObjectClass.IsMember against nets, components and differential
+        pairs, because MemberCount/MemberName[] are not exposed in DelphiScript.
+
+        The declared MemberKind is reported only as "is_net_class": the
+        component and differential-pair kind constants are undeclared in this
+        DelphiScript host, and referencing one is a compile-time failure. Class
+        membership is therefore reported from what probing actually returned,
+        not from the declared kind.
+
+        Returns:
+            Dictionary with "object_classes" (each with name, super_class,
+            is_net_class, per-kind counts and member name arrays), "count",
+            and "member_names_truncated" when a class exceeded the name cap.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("pcb.get_object_classes", {})
+        return result
+
+    @mcp.tool()
     async def pcb_create_net_class(
         name: str,
         nets: str,
@@ -5407,6 +5431,45 @@ def register_pcb_tools(mcp):
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("pcb.get_vias", {})
+        return result
+
+    @mcp.tool()
+    async def pcb_get_tracks(
+        net: str = "",
+        layer: str = "",
+        offset: int = 0,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Get routed copper tracks and arcs on the active PCB board, one page at a time.
+
+        Copper layers only; primitives inside components, polygons and
+        dimensions are left out (they are not routing). Arcs are included
+        because corners routed with arcs are part of the path. Coordinates
+        and widths are RAW Altium units (TCoord, 10000 per mil) so a
+        0.15 mm gap keeps full precision; the response says so.
+
+        Args:
+            net: Only primitives on this exact net (optional).
+            layer: Only this copper layer: TopLayer, MidLayerN or BottomLayer
+                (optional; default all copper).
+            offset: First matching primitive to return (default 0).
+            limit: Rows per page, 1..2000 (default 500).
+
+        Returns:
+            Dict with ``tracks`` (each: kind "track" with x1/y1/x2/y2, or
+            kind "arc" with xc/yc/radius/start_angle/end_angle; plus net,
+            layer, width and teardrop), ``count`` (rows in this page),
+            ``total`` (matching primitives), ``offset``, ``limit``,
+            ``units`` ("coord") and ``coord_per_mil`` (10000).
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"offset": str(max(0, int(offset))),
+                                  "limit": str(min(2000, max(1, int(limit))))}
+        if net:
+            params["net"] = net
+        if layer:
+            params["layer"] = layer
+        result = await bridge.send_command_async("pcb.get_tracks", params)
         return result
 
     @mcp.tool()
