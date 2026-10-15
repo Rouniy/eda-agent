@@ -5,7 +5,11 @@
 Three parallel surfaces reference the .pas files in scripts/altium/:
 
   - scripts/altium/build.py FILES list: defines what gets concatenated
-    into Altium_MCP.pas, the deployed bundle.
+    into Altium_MCP.pas. NOT the deployed artifact -- this docstring
+    used to say "the deployed bundle" and that is wrong. Deployment is
+    `eda-agent install-scripts`, which copies the .pas/.dfm/.PrjScr set,
+    and Altium compiles the documents Altium_API.PrjScr lists.
+    Altium_MCP.pas is gitignored and is not one of them.
 
   - scripts/altium/Altium_API.PrjScr [DocumentN] sections: defines
     which files are openable in Altium's scripting IDE for debugging.

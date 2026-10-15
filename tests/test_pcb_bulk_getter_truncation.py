@@ -150,7 +150,7 @@ def test_filter_matching_nothing_is_honest_about_it(sim):
 
 def _handler_source(name: str) -> str:
     text = PCB_PAS.read_text(encoding="utf-8", errors="replace")
-    start = text.index(f"Function {name}(Params : String")
+    start = text.index(f"Function {name}(")
     end = text.index("\nFunction ", start + 1)
     return text[start:end]
 
@@ -179,8 +179,8 @@ def test_pas_pad_handler_counts_matches_outside_the_window():
 
 
 def test_pas_clearance_violations_still_reports_the_true_total():
-    # The neighbouring 200-cap: its counter is incremented outside the
-    # guard, so violation_count stays the real total. Guard that.
-    src = _handler_source("PCB_GetClearanceViolations")
-    assert "If Count < 200 Then" in src
+    # Paging emits a bounded window while counting every matching violation.
+    src = _handler_source("PCB_GetClearanceViolationsForBoard")
+    assert "(Count >= Offset) And (Emitted < Limit)" in src
+    assert src.index("Inc(Count)") > src.index("If (Count >= Offset)")
     assert '"violation_count"' in src

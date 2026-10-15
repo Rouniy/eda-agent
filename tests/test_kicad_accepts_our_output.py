@@ -59,6 +59,7 @@ def kicad_cli():
 
 def _run(cli: Path, args: list[str]) -> str:
     proc = subprocess.run([str(cli), *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
                           timeout=180)
     return f"{proc.stdout}\n{proc.stderr}"
 

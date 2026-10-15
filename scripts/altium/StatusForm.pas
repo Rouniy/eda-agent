@@ -23,6 +23,10 @@
 
 Var
     HidePingsFlag    : Boolean;
+    { What the grant checkbox last showed, so an end of grant the operator   }
+    { did not click (a batch applied, a project switch) is logged once.      }
+    ParamGrantShown  : Boolean;
+    PlaceGrantShown  : Boolean;
     OnlySlowFlag     : Boolean;
     AlwaysOnTopFlag  : Boolean;
 
@@ -65,6 +69,14 @@ Var
     LastPingMs       : Cardinal;
     OpenWebEnabled   : Boolean;
 
+    { P2 prerequisite probe (see eda-agent docs/DESIGN-event-driven-dispatch.md }
+    { section 2). Counts tmr_Probe firings so the operator can read the rate    }
+    { off the caption. Module-level because the handler carries no state of     }
+    { its own between ticks - which is exactly the migration the redesign       }
+    { needs, so this doubles as a rehearsal of section 4.                       }
+    ProbeTickCount   : Integer;
+    ProbeStartMs     : Cardinal;
+
 
 { Static UI constants. Modern dark palette intended for the StatusForm.   }
 { DelphiScript color literals are BGR-ordered Cardinals (8 hex digits      }
@@ -85,6 +97,92 @@ Const
     MAX_LOG_LINES       = 2000;
     SPINNER_FRAMES      = 4;
 
+    { P2 probe. 1 s is slow enough to read off a taskbar caption and fast    }
+    { enough to make starvation obvious; the cap bounds a probe the operator }
+    { walks away from, so a forgotten timer cannot outlive the session.      }
+    PROBE_INTERVAL_MS   = 1000;
+    PROBE_MAX_TICKS     = 120;
+
+
+{ THE Ctrl+Z WARNING IS GONE BECAUSE THE BUG IS FIXED, not because it was      }
+{ tidied away. Verified live on 2026-09-24 against 2026.09.24.2: with the      }
+{ bridge attached a press undoes AT THAT MOMENT, and detaching produces no     }
+{ burst at all - both halves of the acceptance criterion recorded on           }
+{ 2026-09-23 before any code was written. Timer dispatch no longer holds the   }
+{ main thread, so keyboard-to-command dispatch is never deferred.              }
+{                                                                              }
+{ Leaving the warning up would have been worse than useless: an operator who   }
+{ learns the caption lies about one thing stops trusting it about the others.  }
+{                                                                              }
+{ IF THE BLOCKING LOOP IS EVER RESTORED, PUT THIS BACK. The caption is where   }
+{ it belongs - readable in the taskbar while the form is MINIMIZED, which is   }
+{ exactly when the constraint is easiest to forget, and a label inside the     }
+{ form is not. Kept as a function rather than deleted so restoring it is one   }
+{ line, and so every call site stays wired.                                    }
+Function KeyboardWarningSuffix(Dummy : Integer) : String;
+Begin
+    Result := '';
+End;
+
+Procedure RefreshSelectedLabel(Dummy : Integer);
+Var
+    P : IProject;
+Begin
+    If Not SELECTED_PROJECT_READ_ONLY Then Exit;
+    P := CurrentSelectedProject(0);
+    If P = Nil Then
+    Begin
+        lbl_SelectedProject.Caption := 'READ ONLY - no project selected';
+        lbl_SelectedProject.Hint := 'Choose a project, then click Use this project.';
+        StatusForm.Caption := 'No project selected - EDA (READ ONLY)' + KeyboardWarningSuffix(0);
+    End
+    Else
+    Begin
+        lbl_SelectedProject.Caption := 'Selected: ' + ExtractFileName(SelectedPath)
+            + #13#10 + 'READ ONLY - hover here for the full path';
+        lbl_SelectedProject.Hint := SelectedPath;
+        StatusForm.Caption := ExtractFileName(SelectedPath) + ' - EDA (READ ONLY)'
+            + KeyboardWarningSuffix(0);
+    End;
+End;
+
+Procedure RefreshProjectChoices(Sender : TObject);
+Var
+    W : IWorkspace;
+    P : IProject;
+    I : Integer;
+    Path, Draft : String;
+Begin
+    If Not SELECTED_PROJECT_READ_ONLY Then Exit;
+    If SelectedBusy Or InFlightActive Then Exit;
+    Draft := cmb_Project.Text;
+    cmb_Project.Items.Clear;
+    W := GetWorkspace;
+    If W <> Nil Then
+        For I := 0 To W.DM_ProjectCount - 1 Do
+        Begin
+            P := W.DM_Projects(I);
+            If P <> Nil Then
+            Begin
+                Path := P.DM_ProjectFullPath;
+                If LooksAbsolutePath(Path) And
+                   (LowerCase(ExtractFileExt(Path)) = '.prjpcb') And FileExists(Path) Then
+                    cmb_Project.Items.Add(Path);
+            End;
+        End;
+    cmb_Project.ItemIndex := cmb_Project.Items.IndexOf(Draft);
+    RefreshSelectedLabel(0);
+End;
+
+Procedure UseProjectClick(Sender : TObject);
+Begin
+    If Not SELECTED_PROJECT_READ_ONLY Then Exit;
+    If SelectedBusy Or InFlightActive Then Exit;
+    If cmb_Project.ItemIndex < 0 Then Exit;
+    If Not UseSelectedProject(cmb_Project.Text) Then
+        lbl_LastErr.Caption := 'Selected project is unavailable; refresh the list.';
+    RefreshSelectedLabel(0);
+End;
 
 Function PadLeft(S : String; Width : Integer) : String;
 Begin
@@ -361,6 +459,11 @@ Begin
         InFlightCommand := Command;
         InFlightStartMs := GetTickCount;
         InFlightActive := True;
+        If SELECTED_PROJECT_READ_ONLY Then
+        Begin
+            cmb_Project.Enabled := False;
+            btn_UseProject.Enabled := False;
+        End;
         SpinnerFrame := 0;
         Try tmr_Spinner.Enabled := True; Except End;
         Try
@@ -377,6 +480,11 @@ Begin
     Try
         InFlightActive := False;
         InFlightCommand := '';
+        If SELECTED_PROJECT_READ_ONLY Then
+        Begin
+            cmb_Project.Enabled := True;
+            btn_UseProject.Enabled := True;
+        End;
         Try tmr_Spinner.Enabled := False; Except End;
         Try
             lbl_Spinner.Caption := '';
@@ -490,6 +598,88 @@ Begin
 End;
 
 
+{ The operator's parameter-edit grant, shown where it is given. Amber and   }
+{ filled while granted, and the window title says so, so a granted session  }
+{ is never mistaken for a read-only one. A selection change clears the      }
+{ grant natively; this repaints it on the next stats tick.                  }
+Procedure RefreshParamGrantCheck(Dummy : Integer);
+Var
+    Granted : Boolean;
+Begin
+    If Not (SELECTED_PROJECT_READ_ONLY And SELECTED_PARAM_EDITS) Then Exit;
+    Granted := ParamEditGrantActive(0);
+    Try
+        If ParamGrantShown And (Not Granted) Then
+            mmo_Log.Lines.Insert(0, 'Parameter edit grant ended (a batch was applied, '
+                + 'or the selection changed). Tick again for the next batch.');
+        ParamGrantShown := Granted;
+        If Granted Then
+        Begin
+            chk_AllowParams.Caption := '  ' + FilledDot(0)
+                + '  Parameter edits GRANTED for ONE batch - click to revoke';
+            chk_AllowParams.Color := $00303848;
+            If SelectedPath <> '' Then
+            Begin
+                StatusForm.Caption := ExtractFileName(SelectedPath)
+                    + ' - EDA (PARAMETER EDITS GRANTED)' + KeyboardWarningSuffix(0);
+                lbl_SelectedProject.Caption := 'Selected: ' + ExtractFileName(SelectedPath)
+                    + #13#10 + 'PARAMETER EDITS GRANTED for one batch (never saves)';
+            End;
+        End
+        Else
+        Begin
+            chk_AllowParams.Caption := '  ' + HollowDot(0)
+                + '  Allow parameter edits (existing parameters)';
+            chk_AllowParams.Color := $00202126;
+        End;
+        chk_AllowParams.Hint := 'Grant for ONE proj_set_component_params_checked batch: one sheet, '
+            + 'existing parameters only (never Designator / Footprint), compare-and-set, never saves. '
+            + 'Ends after a batch is applied, and on a project switch, Detach or session end. '
+            + 'You review the sheet and save it.';
+    Except End;
+End;
+
+{ The operator's placement-edit grant, painted like the parameter grant. }
+Procedure RefreshPlaceGrantCheck(Dummy : Integer);
+Var
+    Granted : Boolean;
+Begin
+    If Not (SELECTED_PROJECT_READ_ONLY And SELECTED_PLACE_EDITS) Then Exit;
+    Granted := PlaceEditGrantActive(0);
+    Try
+        If PlaceGrantShown And (Not Granted) Then
+            mmo_Log.Lines.Insert(0, 'Placement edit grant ended (a batch was applied, '
+                + 'or the selection changed). Tick again for the next batch.');
+        PlaceGrantShown := Granted;
+        If Granted Then
+        Begin
+            chk_AllowPlace.Caption := '  ' + FilledDot(0)
+                + '  Placement edits GRANTED for ONE batch - click to revoke';
+            chk_AllowPlace.Color := $00303848;
+            If SelectedPath <> '' Then
+            Begin
+                StatusForm.Caption := ExtractFileName(SelectedPath)
+                    + ' - EDA (PLACEMENT EDITS GRANTED)' + KeyboardWarningSuffix(0);
+                lbl_SelectedProject.Caption := 'Selected: ' + ExtractFileName(SelectedPath)
+                    + #13#10 + 'PLACEMENT EDITS GRANTED for one batch (never saves)';
+            End;
+        End
+        Else
+        Begin
+            chk_AllowPlace.Caption := '  ' + HollowDot(0)
+                + '  Allow board edits (move parts; plan copper; stackup, classes, rooms, rules)';
+            chk_AllowPlace.Color := $00202126;
+        End;
+        chk_AllowPlace.Hint := 'Grant for ONE batch of pcb_move_components_checked (unlocked top-side '
+            + 'parts without routing), pcb_place_copper_checked (vias and tracks from a checked plan, '
+            + 'clear of other nets'' copper) or pcb_setup_board_checked (stackup, net and pair classes, '
+            + 'rooms and design rules from a spec, each read back): the selected project''s PcbDoc, '
+            + 'compare-and-set, never saves. '
+            + 'Ends after a batch is applied, and on a project switch, Detach or session end. '
+            + 'You review the board and save it.';
+    Except End;
+End;
+
 Procedure UpdateStatsLine(UptimeSec, Requests : Integer; AltiumMs : Cardinal;
                           IdleSecToShutdown : Integer);
 Var
@@ -516,6 +706,9 @@ Begin
         MsStr := IntToStr(AltiumMs) + 'ms';
 
     Try lbl_ValUp.Caption  := UpStr; Except End;
+    If SELECTED_PROJECT_READ_ONLY Then RefreshSelectedLabel(0);
+    RefreshParamGrantCheck(0);
+    RefreshPlaceGrantCheck(0);
     Try lbl_ValReq.Caption := IntToStr(Requests); Except End;
     Try lbl_ValMs.Caption  := MsStr; Except End;
     ColorCountdown(IdleSecToShutdown);
@@ -539,6 +732,46 @@ Begin
         lbl_Status.Caption := InFlightCommand + '  ('
             + IntToStr(Tenths Div 10) + '.' + IntToStr(Tenths Mod 10) + ' s)';
     Except End;
+End;
+
+
+{ P2 probe tick. This handler is the whole experiment: if it runs at all      }
+{ after StartTimerProbe has RETURNED, then a TTimer on this form survives the }
+{ end of a script call, and the event-driven redesign is buildable. If it     }
+{ never fires, the redesign is dead and the honest fallback is the blocking   }
+{ loop plus the caption warning (DESIGN-event-driven-dispatch.md section 2).  }
+{                                                                             }
+{ Two readouts on purpose. The memo is the detailed record; the CAPTION is    }
+{ the one that matters, because it stays readable in the taskbar while the    }
+{ form is MINIMIZED - the same reason the Ctrl+Z warning lives there.         }
+{                                                                             }
+{ Reporting the ELAPSED seconds next to the count is what makes this a rate   }
+{ measurement rather than a yes/no: 30 ticks in 30 s means the interval is    }
+{ honoured, while 30 ticks in 300 s would say the timer fires but is being    }
+{ starved, which is a different finding with a different fix.                 }
+Procedure tmr_ProbeTimer(Sender : TObject);
+Var
+    ElapsedSec : Cardinal;
+Begin
+    ProbeTickCount := ProbeTickCount + 1;
+    ElapsedSec := (GetTickCount - ProbeStartMs) Div 1000;
+    Try
+        mmo_Log.Lines.Insert(0, 'probe tick ' + IntToStr(ProbeTickCount)
+            + '  at ' + IntToStr(ElapsedSec) + ' s');
+    Except End;
+    Try
+        StatusForm.Caption := 'P2 PROBE  ticks=' + IntToStr(ProbeTickCount)
+            + '  t=' + IntToStr(ElapsedSec) + 's' + KeyboardWarningSuffix(0);
+    Except End;
+
+    If ProbeTickCount >= PROBE_MAX_TICKS Then
+    Begin
+        Try tmr_Probe.Enabled := False; Except End;
+        Try
+            mmo_Log.Lines.Insert(0, 'probe auto-stopped at the '
+                + IntToStr(PROBE_MAX_TICKS) + '-tick cap');
+        Except End;
+    End;
 End;
 
 
@@ -573,6 +806,8 @@ Begin
     Try
         EnsureStatusBuffers(0);
         HidePingsFlag   := True;
+        ParamGrantShown := False;
+        PlaceGrantShown := False;
         OnlySlowFlag    := False;
         AlwaysOnTopFlag := True;
         PausedFlag      := False;
@@ -619,6 +854,49 @@ Begin
         Try pnl_StatusDot.Color := COLOR_ACCENT_GREEN; Except End;
         Try lbl_Status.Caption := 'idle'; Except End;
         Try lbl_LastErr.Caption := ''; Except End;
+        cmb_Project.Visible := SELECTED_PROJECT_READ_ONLY;
+        btn_UseProject.Visible := SELECTED_PROJECT_READ_ONLY;
+        lbl_SelectedProject.Visible := SELECTED_PROJECT_READ_ONLY;
+        lbl_Permissions.Visible := SELECTED_PROJECT_READ_ONLY;
+        chk_AllowParams.Visible := SELECTED_PROJECT_READ_ONLY And SELECTED_PARAM_EDITS;
+        chk_AllowPlace.Visible := SELECTED_PROJECT_READ_ONLY And SELECTED_PLACE_EDITS;
+        If SELECTED_PROJECT_READ_ONLY Then
+        Begin
+            If SELECTED_PLACE_EDITS Then
+                lbl_Permissions.Caption := 'Allowed: reads / compile (no CAD save)'
+                    + #13#10 + 'Parameter / placement edits only while ticked; never saves'
+            Else If SELECTED_PARAM_EDITS Then
+                lbl_Permissions.Caption := 'Allowed: reads / compile (no CAD save)'
+                    + #13#10 + 'Parameter edits only while ticked below; never saves'
+            Else
+                lbl_Permissions.Caption := 'Allowed: reads / compile (no CAD save)'
+                    + #13#10 + 'Unavailable: edits, saves, output jobs';
+            { Hint only, not Caption: the label is a fixed two-line control     }
+            { from the form resource, so a third caption line would clip and an }
+            { invisible warning is worse than none. Hints expand freely.        }
+            lbl_Permissions.Hint := 'Requires an explicitly selected project. '
+                + 'Compile may create cache/report files. Editing permissions are not implemented.'
+                + #13#10 + 'Keyboard undo works normally while this bridge is attached '
+                + '(fixed 2026-09-24 by timer dispatch; it was deferred on every '
+                + 'earlier runtime, and the presses replayed as a burst on detach).';
+            { Children have already been DPI-scaled by the native form loader.
+              Use their bounds and the scaled button/label gap, not raw pixels. }
+            If SELECTED_PLACE_EDITS Then
+                pnl_Header.Height := chk_AllowPlace.Top + chk_AllowPlace.Height
+                    + (lbl_Permissions.Top - lbl_SelectedProject.Top - lbl_SelectedProject.Height)
+            Else If SELECTED_PARAM_EDITS Then
+                pnl_Header.Height := chk_AllowParams.Top + chk_AllowParams.Height
+                    + (lbl_Permissions.Top - lbl_SelectedProject.Top - lbl_SelectedProject.Height)
+            Else
+                pnl_Header.Height := lbl_Permissions.Top + lbl_Permissions.Height
+                    + (lbl_Permissions.Top - lbl_SelectedProject.Top - lbl_SelectedProject.Height);
+            StatusForm.Caption := 'EDA Agent - selected project (READ ONLY)'
+                + KeyboardWarningSuffix(0);
+            RefreshProjectChoices(Nil);
+            RefreshParamGrantCheck(0);
+            RefreshPlaceGrantCheck(0);
+        End;
+        { Non-shared mode retains the DFM's naturally scaled header height. }
         { Button is always enabled: dashboard can run standalone. }
         UpdateOpenWebState(0);
     Except End;
@@ -639,6 +917,57 @@ End;
 
 
 { Action buttons ============================================================ }
+
+{ The only way the parameter-edit grant is given or taken: an operator click. }
+{ Refused while a request is in flight, so it never changes under a write.    }
+Procedure chk_AllowParamsClick(Sender : TObject);
+Begin
+    If Not (SELECTED_PROJECT_READ_ONLY And SELECTED_PARAM_EDITS) Then Exit;
+    If SelectedBusy Or InFlightActive Then Exit;
+    If Not ToggleParamEditGrant(0) Then
+    Begin
+        Try lbl_LastErr.Caption := 'Select a project first (Use this project).'; Except End;
+        RefreshParamGrantCheck(0);
+        Exit;
+    End;
+    Try
+        If ParamEditGrantActive(0) Then
+            mmo_Log.Lines.Insert(0, 'Parameter edits GRANTED by the operator, generation '
+                + IntToStr(SelectedGeneration))
+        Else
+            mmo_Log.Lines.Insert(0, 'Parameter edits revoked by the operator, generation '
+                + IntToStr(SelectedGeneration));
+        ParamGrantShown := ParamEditGrantActive(0);
+    Except End;
+    RefreshSelectedLabel(0);
+    RefreshParamGrantCheck(0);
+    RefreshPlaceGrantCheck(0);
+End;
+
+{ The only way the placement-edit grant is given or taken: an operator click. }
+Procedure chk_AllowPlaceClick(Sender : TObject);
+Begin
+    If Not (SELECTED_PROJECT_READ_ONLY And SELECTED_PLACE_EDITS) Then Exit;
+    If SelectedBusy Or InFlightActive Then Exit;
+    If Not TogglePlaceEditGrant(0) Then
+    Begin
+        Try lbl_LastErr.Caption := 'Select a project first (Use this project).'; Except End;
+        RefreshPlaceGrantCheck(0);
+        Exit;
+    End;
+    Try
+        If PlaceEditGrantActive(0) Then
+            mmo_Log.Lines.Insert(0, 'Placement edits GRANTED by the operator, generation '
+                + IntToStr(SelectedGeneration))
+        Else
+            mmo_Log.Lines.Insert(0, 'Placement edits revoked by the operator, generation '
+                + IntToStr(SelectedGeneration));
+        PlaceGrantShown := PlaceEditGrantActive(0);
+    Except End;
+    RefreshSelectedLabel(0);
+    RefreshParamGrantCheck(0);
+    RefreshPlaceGrantCheck(0);
+End;
 
 Procedure btn_DetachClick(Sender : TObject);
 Begin
@@ -935,6 +1264,11 @@ Var
     Category, Action : String;
     DotPos : Integer;
 Begin
+    If SELECTED_PROJECT_READ_ONLY Then
+    Begin
+        Result := ProcessSelectedCommand(Command, Params, RequestId);
+        Exit;
+    End;
     DotPos := Pos('.', Command);
     If DotPos > 0 Then
     Begin
@@ -1504,6 +1838,7 @@ Begin
     InitDefaultConfig(0);
     EnsureWorkspaceDir(0);
     LoadMCPConfig(0);
+    If SELECTED_PROJECT_READ_ONLY Then InitSelectedProject(0);
     { Startup purge: nothing on disk can belong to a live exchange, because no
       pump was running to serve it. Responses are purged here but NOT in
       CleanupMCPServer(0) -- on shutdown a client may still be reading one. }

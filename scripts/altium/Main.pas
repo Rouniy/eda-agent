@@ -13,7 +13,13 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.13.5';
+    SCRIPT_VERSION = '2026.10.14.5';
+
+    { Explicit opt-in for the selection-scoped dispatcher. The raw project
+      retains the legacy mode; generated shared runtimes set these flags. }
+    SELECTED_PROJECT_READ_ONLY = False;
+    SELECTED_PARAM_EDITS = False;
+    SELECTED_PLACE_EDITS = False;
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -60,6 +66,8 @@ Const
 Var
     WorkspaceDir : String;
     Running : Boolean;
+    SelectedCompileReady : Boolean;
+    SelectedCompileProject : IProject;
 
     { Polling tunables, defaults below, overridden by mcp_config.json at      }
     { startup via LoadMCPConfig. Single source of truth: the config file.     }
@@ -78,6 +86,14 @@ Var
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
     SaveAttempts : Integer;
     LastCompiledProject : IProject;
+    { How the last SmartCompile call for the current request was satisfied:
+      'delegated' (shared dispatcher already compiled this selection),
+      'cache' (TTL window, no dirty docs), 'compiled' (DM_Compile ran and
+      returned without a script exception), or '' before any call. Read by
+      the BOM/net handlers for their extraction report. This deliberately
+      records call completion, not Altium's own compile verdict - ECO/ECC
+      messages remain the authority on compile health. }
+    LastCompileAction : String;
 
     { Silent cast-failure counter, incremented every time a defensive       }
     { Try/Except in an iteration helper swallows an interface cast that      }
@@ -292,6 +308,16 @@ End;
 Procedure SmartCompile(Project : IProject);
 Begin
     If Project = Nil Then Exit;
+    { Shared dispatcher already compiled and revalidated this exact selection.
+      Do not compile again inside a delegated handler after its lifetime check. }
+    If (SELECTED_PROJECT_READ_ONLY) And (SelectedCompileReady) Then
+    Begin
+        If Project = SelectedCompileProject Then
+        Begin
+            LastCompileAction := 'delegated';
+            Exit;
+        End;
+    End;
     // Honour the TTL window only when nothing in the project has changed
     // since the last compile. An external UI edit invalidates the cache
     // immediately, so the next MCP call after the user clicked "Add part"
@@ -299,8 +325,13 @@ Begin
     If (Project = LastCompiledProject) And (LastCompileTick > 0) And
        ((GetTickCount - LastCompileTick) < COMPILE_CACHE_TTL_MS) And
        (Not ProjectHasDirtyDocs(Project)) Then
+    Begin
+        LastCompileAction := 'cache';
         Exit;
+    End;
+    LastCompileAction := '';
     Project.DM_Compile;
+    LastCompileAction := 'compiled';
     LastCompiledProject := Project;
     LastCompileTick := GetTickCount;
 End;
@@ -1834,6 +1865,27 @@ Begin
 
     V := ExtractJsonValue(Content, 'auto_shutdown_ms');
     If V <> '' Then Begin Try N := StrToInt(V); If N >= 0 Then AutoShutdownMs := N; Except End; End;
+
+    { Operator idle-timeout pin. The wheel's Python client rewrites            }
+    { mcp_config.json with its own defaults at connect time and repeatedly     }
+    { won the race against the client-side re-pin (twice on 2026-09-10, both   }
+    { times reverting the operator's 60-minute setting so the next bridge      }
+    { start read 10 minutes). This sidecar file is written once at runtime     }
+    { creation, is never touched by the wheel, and takes precedence over the   }
+    { racy JSON value - a stray default can no longer shorten a session.       }
+    Try
+        If FileExists(WorkspaceDir + 'idle-timeout-ms.txt') Then
+        Begin
+            V := Trim(ReadFileContent(WorkspaceDir + 'idle-timeout-ms.txt'));
+            If V <> '' Then
+            Begin
+                Try
+                    N := StrToInt(V);
+                    If N >= 60000 Then AutoShutdownMs := N;
+                Except End;
+            End;
+        End;
+    Except End;
 
     V := ExtractJsonValue(Content, 'yield_iterations');
     If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then YieldIterations := N; Except End; End;

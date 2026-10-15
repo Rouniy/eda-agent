@@ -1,0 +1,344 @@
+# Current integration state / agent handoff
+
+## Local integration check, 2026-10-14
+
+The fork merge is under test in `D:\ai\eda-agent-large-integration` on
+`integrate-large-altium-forks`. It is uncommitted and has not been pushed.
+The historical deployed-runtime notes below describe the fork's earlier
+environment, not this local Altium 26.9.1 test session.
+
+On 2026-10-14 after updating Altium to 26.10.1.5, the local TCP 14701 MCP
+server, dashboard and supervisor were switched from `D:\ai\eda-agent` to this
+test worktree. A network MCP session listed 565 tools and `app_ping` confirmed
+both the loaded and bundled script versions as `2026.10.14.5`. The supervisor
+ping succeeded. This is a startup/transport check on the updated Altium, not
+native qualification of every imported command.
+
+The combined script keeps the current branch's `StatusForm` timer pump and
+its shutdown teardown. The fork's older dispatcher timer was removed because
+it would restore previously fixed hang and access violation paths. Native
+compilation and PCB reads succeeded in Altium 26.9.1. MCP detach, dashboard
+close, Detach button, and stop-file paths stopped the script; `X2.EXE` remained
+responsive, and no new Application Error event was found. Selected-project
+mode is present but disabled by the source default
+(`SELECTED_PROJECT_READ_ONLY = False`). In a separate local test copy with
+this flag enabled, the operator selected a project, read its documents,
+tracks, vias, and unrouted nets, and saw a write command refused. Altium 26
+returns different interface wrappers for the same project on later UI ticks;
+the original pointer-identity check dropped valid read-only selections. The
+read-only path now verifies that the selected project remains open at its
+path, while the optional edit modes keep the stricter identity check and
+remain unqualified. A direct Altium quit with the script attached was also
+tested: the main `X2.EXE` process exited, and the Windows Application log
+showed no new crash or hang event. That quit did not record `_session_end` in
+the activity log, so graceful logging on host exit remains unverified.
+
+
+Updated 2026-09-09. This is the current-state entry point; dated session logs are
+historical evidence, not pending-work truth. See [TODO](../TODO.md) and the
+[read/write delivery gates](PROJECT-SELECTION-AND-WRITES.md#delivery-plan-and-release-gates-2026-09-09).
+
+Published checkpoint: [eda-agent d5b62a0](https://github.com/4pplet/eda-agent/commit/d5b62a03b20d1c2c6dfa416b4990d7c74fe11ad9)
+and [PLT-hw 3b7cc66](https://github.com/4pplet/PLT-hw/commit/3b7cc66f4bd55cffe53a26141abdc85a52e65160).
+Both were pushed to `origin/main`; their remote hashes and clean worktrees were
+verified before this documentation-only receipt. These are matching source/helper
+baselines; no installed package/runtime redeployment accompanied publication.
+
+## What is running
+
+- Fork: `4pplet/eda-agent`, based on `1b60105cbe0c4bd557007b87bc04dda2fd4ef9a1`.
+  This publication checkpoint contains the local integration changes; use its
+  actual Git revision, not the old base alone, to reproduce them.
+- Altium 23.3.1; shared scripts `2026.10.02.1`; 35 bounded read tools (since 2026-10-02:
+  `pcb_get_tracks`, copper tracks and arcs in exact coordinates, paged; the violations read
+  paged). Natively qualified on the PLT HS and 22p boards.
+  Runtime: `%LOCALAPPDATA%\PLT\eda-agent\shared\selected-readonly-tracks-20261002`
+  (previous, kept for rollback: `selected-readonly-drc2-20260924`, scripts `2026.09.24.4`).
+  For using the bridge, the one page to read first is PLT-hw
+  `tools/eda-agent/BRIDGE.md` (commands, rules, blind spots; test-enforced against the
+  runtime pointer). Upstream review of 2026-10-02: PLT-hw
+  `tools/eda-agent/UPSTREAM-REVIEW-2026-10-02.md`.
+- **Source is ahead of the deployed runtime (2026-10-03):** scripts `2026.10.03.1` add the
+  first write, checked `LCSC Part #` / `Instruction` edits, approved by the operator and
+  gated off by default (`SELECTED_PARAM_EDITS = False`). Not provisioned, not deployed;
+  native qualification T1-T17 is open:
+  [PROPOSAL-2026-09-28](PROPOSAL-2026-09-28-metadata-write-increment.md) section 7. The
+  running runtime above is unaffected.
+  **Runtime paths are written with the environment variable on purpose.** An
+  absolute path here names one machine's private storage, which
+  `test_no_client_design_data.py` refuses. Use the variable in committed docs;
+  expand it when pasting a command.
+- Historical: scripts `2026.09.08.2` with eight read tools ran from
+  `selected-readonly-permissions-20260909`, manifest SHA-256
+  `e3dd10e76af730af55700e8e8c9f563c0a24d63ddcf2d382a5c243abff39bd88`
+  (23 files). Superseded; kept because the hash identifies that checkpoint.
+- The older `shared/selected-readonly-v1` runtime and named `.1` profiles remain
+  untouched fallbacks. **Committing source does not update the wheel or
+  loaded/deployed scripts**; that separation is the standing trap here.
+- **Wheel reinstalled from source 2026-09-24, fixing a real defect.** Its
+  bundled `eda_agent/scripts/` had drifted to 14 files while
+  `pyproject.toml`'s force-include list names 15: `SelectedProject.pas` was
+  never shipped, yet the bundled `Altium_API.PrjScr` referenced it. So
+  `eda-agent install-scripts` produced a script project that **could not
+  compile**: it pointed at a file the wheel did not contain.
+  - The packaging config was correct all along; the wheel simply predated the
+    line that added the file. `pip install --no-deps --force-reinstall .`
+    fixed it permanently. Python sources were byte-identical before and
+    after, so only data files changed.
+  - **PLT's deployed runtimes were never affected**: `create_shared_runtime.py`
+    copies from the repo checkout and generates its own PrjScr, so it never
+    reads the wheel's bundled scripts. This broke the `install-scripts` path
+    only.
+  - `tests/test_regression.py::TestInstallScriptsIncludesDfm` is what catches
+    this, and it was already failing, invisible inside the 276 failures that
+    a missing `pytest-asyncio` was producing at the time.
+- Generic Python wrappers/provisioning currently live in companion
+  [PLT-hw tooling](https://github.com/4pplet/PLT-hw/tree/main/tools/eda-agent).
+  Moving them into this package is pending. Until then both checkouts are needed.
+  Use the [shared runbook](https://github.com/4pplet/PLT-hw/blob/main/tools/eda-agent/SHARED-PROJECTS.md),
+  not the historical named-profile patch recipe or a generic reinstall.
+
+Important: the raw source defaults `SELECTED_PROJECT_READ_ONLY = False` for
+upstream compatibility. The reviewed shared generator enables it and installs
+matching restricted clients. Running arbitrary source scripts/upstream tools is
+**not** equivalent to our read-only runtime. No shared persistent client config
+has been enabled; checks use a single short-lived STDIO diagnostic client.
+
+## Latest observed evidence
+
+- Operator confirmed the short project close/reopen and Detach/quit/restart
+  checks completed on 2026-09-09. This is operator-reported evidence; exact cycle
+  count/session logs were not supplied. It does not close dirty-state, duplicate
+  names, native guard bypass, helper-stop or in-flight tests, or fix direct quit
+  with the bridge running.
+
+- Missing Start report resolved: user was viewing the Projects panel, not
+  File > Run Script. `Dispatcher.pas > StartMCPServer` works; no startup fix needed.
+- Candidate live session `20260909084536379-17129109`, Altium PID 3612:
+  ping/project discovery passed; 22p generation 2 changed to cyber80 generation 3.
+  A test bound to 22p correctly stopped at preflight before content dispatch.
+- User selected the 22p disposable copy again, generation 4. All eight tool
+  checks passed: 9 documents, dirty count 0, 172 BOM components, 559 pin/net rows,
+  C101 metadata. Every scoped response retained the selected path/session/token.
+  No CAD edit/save command sent; BOM/net reads use allowed non-forced compilation.
+  This is a copy under `projects/plt-22p/design-copy`, not necessarily latest CAD.
+- 2026-09-09 continuation (different agent): the same-snapshot export
+  comparison is automated in companion PLT-hw `compare_native_export.py`
+  (c00957e, ten synthetic tests, suite green in the installed venv). Real run
+  with hash-verified snapshot identity (design-copy files == PLT-hw `05d18ab`):
+  bridge generation-4 BOM/net dumps versus the 09-08 Protel2 bundle export gave
+  172/172 designators, 550/550 shared pins with identical nets, 0 mismatches
+  and 9 additional-only single-pin entries (spare pads, TVS NCs, floating U205
+  EN, freed PC15, and D302-3 - extra evidence for the open D302 numbering
+  dispute). The 15:48 sheet-scoped v1 export carries only 542 of the 550;
+  prefer the full-project Protel2 export as comparison input.
+- Re-run: 89 companion Python tests, 13 native-selection source checks,
+  10 shutdown source checks and 8 standalone-probe source checks pass.
+  Full Pascal lint in canonical source order: 12 files, zero errors/warnings.
+  Source tests do not execute Altium's VM. Counts/schema are not export parity,
+  electrical acceptance or full extraction completeness.
+
+- Native dirty-state read test PASSED (2026-09-09, session
+  20260909103901779-23934625, working 22p project, generation 2): with two
+  operator-confirmed unsaved documents (22p-adapter.PcbDoc,
+  3_22p-adapter_mcu.SchDoc), `proj_get_compile_freshness` reported
+  dirty_doc_count=2 and named both files, `proj_list_documents` still served,
+  and `proj_get_bom` was refused with `DIRTY_PROJECT - Save intended edits
+  manually before compiled reads`. First native confirmation of the dirty-target
+  guard: inspection reads work, compiled reads refuse. The full row is now closed
+  (2026-09-09, session 20260909113532577): an operator save that did NOT
+  reach disk was correctly still refused (file mtimes proved the bridge
+  right); after a real Save All, dirty_doc_count returned 0 and BOM/net
+  reads succeeded (172/559, byte-identical schematic content to the
+  pre-edit baseline). Dirty state also survives a bridge restart - it is
+  live Altium state, not bridge cache - and unsaved documents of the other
+  open, unselected project (cyber80) never appeared in any response:
+  dirty reporting is selection-scoped. Drafts (new unsaved documents in the
+  selected project) remain an open matrix row.
+
+- Usability batch (2026-09-09 afternoon, companion PLT-hw, client-side only,
+  no deployment needed): shared idle timeout is config-pinned to 60 minutes
+  (operator decision; EDA_AGENT_AUTO_SHUTDOWN_MS overrides; seeded for new
+  runtimes, re-pinned after every wheel connect, current runtime updated) -
+  the 10-minute default forced two mid-CAD restarts. New `bridge_read.py`
+  CLI: one-command status/bom/nets/parameters(+blank-report)/documents/
+  freshness bound to the live selection, runtime root from the reviewed
+  ACTIVE-RUNTIME.txt pointer, DIRTY_PROJECT errors enriched with dirty
+  document names; both paths live-verified (2026-09-09 15:11 session: status and the
+  full 172-component parameters+blank-report in seconds on the 60-min
+  clock). New `check_install.py` drift doctor: 13/13 on the
+  current installation. Stop-first at wind-down matters more with the longer
+  timeout, not less.
+- Batch candidate 2026.09.09.2 QUALIFIED and active (2026-09-09): runtime
+  `shared/selected-readonly-batch-20260909`, prepared with the guarded
+  cross-version manage_shared_runtime prepare (update-receipt records the
+  09.09.1 baseline). Ninth tool proj_get_component_info_batch: full
+  172-designator pull matched all, byte-equivalent to the single-call loop,
+  not_found honest for unknown designators; eight existing reads regression-
+  passed with extraction validation active. Rollback: the 09.09.1 extraction
+  runtime, itself falling back to the 09.08.2 permissions runtime.
+- Extraction candidate 2026.09.09.1 QUALIFIED and active (2026-09-09):
+  new runtime `shared/selected-readonly-extraction-20260909` (23 files
+  hashed, integrity check passed offline, eight-tool schema intact) is now
+  the operating shared runtime; `selected-readonly-permissions-20260909`
+  remains untouched as rollback. Live qualification on the working 22p
+  project: version agreement, all reads, extraction block
+  physical/zero-skips/delegated with strict client validation enforcing,
+  draft refusal naming the offending document, and immediate recovery after
+  a deliberate discard. The cross-version guard in manage_shared_runtime
+  correctly refused to inspect the old-family runtime (documented
+  limitation); create_shared_runtime provisioned the new family directly.
+
+- Foreign-tab invariance, post-crash recovery and drafts recovery PASSED
+  (2026-09-09, session 20260909120705744, post-crash relaunch): with a tab of
+  a NON-selected project focused, selection stayed 22p generation 2 and all
+  eight reads served only selected-project data with the correct binding on
+  every response; the tool surface exposes no active-tab query at all. Same
+  probe confirmed clean recovery after the 11:50 crash and after the
+  identityless draft ceased to exist (dirty 0, BOM 172, nets 559). Drafts row
+  closed: fail-closed INCOMPLETE_DOCUMENTS while a draft exists (see TODO
+  diagnosability note), clean reads once it is gone; the deliberate
+  discard-without-crash variant can be repeated cheaply any session.
+  Remaining live matrix work: repeat helper-stop, close/reopen selection
+  clearing, duplicate names, dirty-unrelated-document case.
+
+- New shutdown-family crash data point (2026-09-09): X2.EXE 23.3.1.30
+  crashed at 11:50:51 with exception 0xc0000374 (heap corruption, faulting
+  module ntdll.dll, WER report 541a7215-1b4d-43ec-add6-e7eb165d7dc6) - 1.2 s
+  AFTER the bridge loop ended cleanly by idle-timeout at 11:50:49.794
+  (_session_end, requests=51). Not the known quit-while-running case: the loop
+  had exited first. Either a spontaneous crash right after loop teardown or an
+  operator close racing it. Strengthens "do not depend on inactivity timeout
+  to quit"; relevant to the P0 lifetime investigation. An unsaved draft sheet
+  (part of the drafts matrix test) was open at crash time; saved documents
+  (11:37 Save All) were unaffected. Two unrelated LiveKernelEvent reports
+  (10:33, 11:21) the same morning are system-level, not X2.
+
+- Wind-down evidence 2026-09-09 evening (positive, plus one anomaly):
+  deliberate stop at 16:05:47 (`_session_end reason=stop-requested`; fresh
+  session 9 s later served reads), first live helper-stop data point toward
+  the "repeat helper-stop" matrix row. After the 16:16:36 idle-timeout exit,
+  Altium was closed with NO crash in the event log (contrast 11:50:51:
+  the idle-timeout-then-crash signature did not repeat). Anomaly: that final
+  session timed out after exactly 600.0 s despite the 60-minute pin
+  (mcp_config.json held 3600000, mtime 15:11:47), while the 15:11 session
+  had survived 53 min idle, the pin held once and not the other time.
+  Logged with hypotheses in TODO.md (config re-read race vs restart-time
+  read); investigate on a non-CAD day alongside the deferred crash work.
+
+- P0 Ctrl+Z source-level analysis (2026-09-15, host-side only, no Altium
+  run): excluded our own interception paths (no KeyPreview/TMessageFilter/
+  WM_KEYDOWN handler in scripts/altium/*.pas; the status form never calls
+  SetFocus/Activate, it only Shows; loop cleanup does not pump UI events),
+  so the detach burst is not our final pump and pure focus-steal cannot
+  explain it. Two Altium-side mechanisms remain (accelerator deferral
+  while a script owns the message loop, or VCL-only message draining with
+  an editor-key backlog); the one-step bench discriminator and remaining
+  fix candidates are recorded in the TODO P0 item. No code change; no new
+  native evidence yet.
+
+## Continuation ownership (2026-09-09)
+
+The agent that built this integration has stopped (out of credits) and will not
+continue. The plan and evidence here remain the handoff. Stefan's decision:
+resume gate work later, **on a day without CAD work**: Gate 0 lifecycle tests
+involve repeated Altium quit/restart cycles and the known direct-quit crash,
+and must never share a session with real design edits. Read-only use continues
+under the operating contract in the shared runbook meanwhile.
+
+- 2026-09-10 END-OF-DAY ROLL-UP (continuation agent): five runtime
+  versions in one day, three natively qualified. ACTIVE =
+  `selected-readonly-pcbreads3-20260910` (2026.09.10.5, twenty-five
+  tools): the nine .2 PCB reads + six tranche-3 reads (rules, net
+  classes, trace lengths, component pads, selected objects, board stats)
+  + `proj_get_erc_messages` (first native ERC pull: 197 violations in 6
+  classes, triaged in PLT-hw reviews/2026-09-10-erc-triage.md - 191
+  noise, 6 for operator eyes). ACTIVE since
+  the afternoon deploy = `selected-readonly-audits-20260910` (2026.09.10.6,
+  thirty-one tools): six layout audits qualified live, one client
+  validator bug fixed via surgical runtime patch, and the audit data
+  caught a shorting hazard in the PLT-hw floorplan DOCS (U205 PowerPAD
+  vias belong on the L4 island, not L2 GND - CAD was right, docs fixed). The pads
+  read caught U301 90 deg off the recommended orientation on first use
+  (operator fixed; re-verified pin-1-SW). Idle-timeout race ROOT-CAUSED
+  and fixed three ways (bridge_read finally re-pin, shared_server atexit,
+  and the wheel-proof workspace/idle-timeout-ms.txt sidecar preferred by
+  scripts .4+). Ratsnest interference report resolved: full-restart A/B
+  exonerated the loop; native Altium preference/N-mode class issue.
+  Working rule kept: compiled reads only at operator save points during
+  active board editing. Phase 2 kickoff (approval-gated Validation +
+  Release OutJobs) and library-read grant design are the next non-CAD
+  blocks; the systematic schematic checker
+  (PLT-hw tools/eda-agent/schematic_sanity.py) baselined clean after the
+  R229/R230 false-floating postmortem.
+- 2026-09-10 (continuation agent, earlier detail): **PCB-read tranches implemented during the
+  22p layout phase** (operator request: placement/diff-pair validation
+  without the OutJob loop, then copper-policy reads in the same
+  Altium-closed window). Nine selection-scoped read-only PCB tools
+  (placements, board outline, layer stackup, differential pairs with routed
+  length/skew, diff-pair rules, vias, polygons, unrouted-net ratsnest
+  counts, and a new per-layer primitive-count reader for the
+  internal-GND-no-copper check) as SCRIPT_VERSION 2026.09.10.2; the
+  focused-board/`GetPCBBoardAnywhere` targeting was replaced with
+  `ResolveSelectedBoard` (selected project's own PcbDoc, already open,
+  fail-closed) and PCB reads carry pcb_doc/pcb_modified live-state honesty.
+  Candidate runtime `selected-readonly-pcb-20260910` created and
+  integrity-checked at .2 (the undeployed .1 build was replaced in place);
+  deployment + native qualification (incl. placements vs same-snapshot ODB)
+  pending at the next Altium start. Companion suite 141 pass; fork
+  failed-set diff vs baseline empty. Details in TODO.md
+  and PLT-hw `tools/eda-agent/SHARED-PROJECTS.md`.
+- 2026-09-09 (continuation agent): offline BOM/review silent-empty defect
+  fixed at source (93f5f4a) and the installed wheel rebuilt from that commit
+  during a no-Altium window: old wheel preserved as
+  wheels/eda_agent-0.5.0-py3-none-any.whl.pre-fix-20260909.bak
+  (SHA-256 84fb7109...), current build (b7bd379, guard scoped to
+  the .PrjPcb branch after a full failed-set baseline diff came back clean)
+  SHA-256 1c15b063... installed, pip check clean, installed CLI verified on
+  the real project, shared client eight-tool list-only schema check passes. pytest was added to the runtime venv as dev
+  tooling (runtime lock unchanged per pip check). Targeted suites around the
+  changed files: identical 15 pre-existing failures on clean tree, +7 new
+  passing regressions; full-suite baseline comparison recorded separately.
+
+## Remaining work, in order
+
+The long-horizon sequencing - importing the remaining upstream surface
+through the scoped model, phase by phase up the risk ladder with a
+never-import list - is planned in [PARITY-ROADMAP.md](PARITY-ROADMAP.md)
+(agreed with Stefan 2026-09-10). The numbered items below are the near-term
+qualification order within that plan.
+
+This is qualification order, not a strictly sequential implementation queue.
+Packaging, documentation and permissions design may proceed alongside native
+read/lifecycle testing. Reliable target/baseline reads, approval enforcement,
+failure recovery and separate-save safeguards must pass before enabling writes.
+
+1. Finish candidate visual/selection lifecycle tests (draft, tabs, close/reopen,
+   duplicate names, dirty documents), native guard tests and repeated no-save
+   Detach/helper-stop/quit/restart. Side-by-side manual rollback still needs testing.
+2. Expose extraction omissions/compile results and automate exact same-snapshot
+   native export comparison. Do not rely on the broken offline BOM extractor.
+3. Consolidate packaging and qualify clean installation; improve concise
+   diagnostic errors and define cancellation/deadline/unknown-outcome recovery.
+4. Implement operator-only capability grants and exact-batch approval with
+   native/Python enforcement, baseline checks and audit/recovery records.
+5. Qualify existing manufacturer/approved-MPN/datasheet parameter updates on
+   copies first. Save separately; test undo, failures and save/reopen persistence.
+6. Values and footprint assignments next; annotation/variants separately. PCB
+   ECO application, library/geometry and connectivity edits are separate scopes.
+
+## Non-negotiable operating limits
+
+Default to scoped reads. Selection is not CAD-write authority. Keep one Altium
+instance/client, exact absolute project and fresh token; never follow focused tabs.
+No forced recompile, Save All or automatic retries after uncertain writes.
+The named kernel client guard coordinates updated cooperating clients only.
+
+**Detach before closing the script project or quitting Altium.** Direct quit with
+the loop running remains a known failure, not a fixed issue. Pause is not Detach.
+The idle timeout tracks bridge traffic, including keepalive pings, not general
+Altium activity; it is pinned to 60 minutes via mcp_config.json, but the
+2026-09-09 16:16 anomaly (a 600 s timeout despite the pin, see TODO.md) means
+the pin cannot yet be relied on: treat the effective timeout as possibly ten
+minutes until the anomaly is resolved. Never replace loaded scripts or auto-dismiss/save/kill
+Altium to complete tests. No write permissions were enabled by this publication.

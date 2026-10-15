@@ -962,6 +962,29 @@ End;
 { Params: project_path, component, net_name, limit                            }
 {..............................................................................}
 
+{ Extraction report shared by the compiled BOM/net handlers. Reports HOW the
+  result was produced so a caller can reject uncertain reads instead of
+  trusting a silently partial one: which document enumeration was used
+  (physical is the flattened post-compile set; logical is the degenerate
+  fallback), how many nil documents/components/pins were skipped (all zero on
+  a healthy read), whether the row limit stopped enumeration early, and how
+  the compile requirement was satisfied (see LastCompileAction). }
+Function ExtractionJSON(DocCount : Integer; UsePhysical : Boolean;
+    SkippedDocs, SkippedComps, SkippedPins : Integer; LimitHit : Boolean) : String;
+Var
+    Mode : String;
+Begin
+    If UsePhysical Then Mode := 'physical'
+    Else Mode := 'logical';
+    Result := '{"enumeration_mode":"' + Mode + '"'
+        + ',"doc_count":' + IntToStr(DocCount)
+        + ',"skipped_nil_docs":' + IntToStr(SkippedDocs)
+        + ',"skipped_nil_components":' + IntToStr(SkippedComps)
+        + ',"skipped_nil_pins":' + IntToStr(SkippedPins)
+        + ',"limit_hit":' + BoolToJsonStr(LimitHit)
+        + ',"compile_action":"' + EscapeJsonString(LastCompileAction) + '"}';
+End;
+
 Function Proj_GetNets(Params : String; RequestId : String) : String;
 Var
     ProjectPath, FilterComp, FilterNet : String;
@@ -972,6 +995,7 @@ Var
     Part : IComponent;
     Pin : IPin;
     I, J, K, M, PartCount, Count, Limit, DocCount : Integer;
+    SkippedDocs, SkippedComps, SkippedPins : Integer;
     UsePhysical : Boolean;
     Data, CompDesig, NetName : String;
     First : Boolean;
@@ -1007,19 +1031,22 @@ Begin
     Data := '[';
     First := True;
     Count := 0;
+    SkippedDocs := 0;
+    SkippedComps := 0;
+    SkippedPins := 0;
 
     GetCompiledDocs(Project, DocCount, UsePhysical);
     For I := 0 To DocCount - 1 Do
     Begin
         If Count >= Limit Then Break;
         Doc := GetCompiledDoc(Project, I, UsePhysical);
-        If Doc = Nil Then Continue;
+        If Doc = Nil Then Begin Inc(SkippedDocs); Continue; End;
 
         For J := 0 To Doc.DM_ComponentCount - 1 Do
         Begin
             If Count >= Limit Then Break;
             Comp := Doc.DM_Components(J);
-            If Comp = Nil Then Continue;
+            If Comp = Nil Then Begin Inc(SkippedComps); Continue; End;
 
             CompDesig := Comp.DM_PhysicalDesignator;
             If (FilterComp <> '') And (CompDesig <> FilterComp) Then Continue;
@@ -1089,6 +1116,7 @@ Var
     Comp : IComponent;
     Pin : IPin;
     I, J, K, Count, Limit, DocCount : Integer;
+    SkippedDocs, SkippedComps, SkippedPins : Integer;
     UsePhysical : Boolean;
     Data, CompDesig, CompComment, CompFP, CompLib, PinList : String;
     First, FirstPin : Boolean;
@@ -1109,18 +1137,21 @@ Begin
     First := True;
     Count := 0;
 
+    SkippedDocs := 0;
+    SkippedComps := 0;
+    SkippedPins := 0;
     GetCompiledDocs(Project, DocCount, UsePhysical);
     For I := 0 To DocCount - 1 Do
     Begin
         If Count >= Limit Then Break;
         Doc := GetCompiledDoc(Project, I, UsePhysical);
-        If Doc = Nil Then Continue;
+        If Doc = Nil Then Begin Inc(SkippedDocs); Continue; End;
 
         For J := 0 To Doc.DM_ComponentCount - 1 Do
         Begin
             If Count >= Limit Then Break;
             Comp := Doc.DM_Components(J);
-            If Comp = Nil Then Continue;
+            If Comp = Nil Then Begin Inc(SkippedComps); Continue; End;
 
             CompDesig := Comp.DM_PhysicalDesignator;
             CompComment := Comp.DM_Comment;
@@ -1133,7 +1164,7 @@ Begin
             For K := 0 To Comp.DM_PinCount - 1 Do
             Begin
                 Pin := Comp.DM_Pins(K);
-                If Pin = Nil Then Continue;
+                If Pin = Nil Then Begin Inc(SkippedPins); Continue; End;
                 If Not FirstPin Then PinList := PinList + ',';
                 FirstPin := False;
                 PinList := PinList + '{"pin":"' + EscapeJsonString(Pin.DM_PinNumber) +

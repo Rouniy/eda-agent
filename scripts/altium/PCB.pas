@@ -291,22 +291,15 @@ End;
 { PCB_GetNetClasses - Get all net classes with their member nets              }
 {..............................................................................}
 
-Function PCB_GetNetClasses(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetNetClassesForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     ObjClass : IPCB_ObjectClass;
     JsonItems : String;
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     Count := 0;
@@ -337,6 +330,280 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"net_classes":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetNetClasses(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetNetClassesForBoard(Board, RequestId);
+End;
+
+{..............................................................................}
+{ PCB_GetObjectClasses - EVERY class kind, with resolved membership            }
+{..............................................................................}
+
+{ Why this exists alongside PCB_GetNetClasses: that one reports net classes    }
+{ only, and reports no members. A caller asking "does the MIPI differential-   }
+{ pair class exist, and does it hold the five pairs?" could not be answered at }
+{ all, and had to be inferred indirectly from the design rules.                }
+{                                                                              }
+{ Two DelphiScript constraints shape this, both verified against this file:    }
+{                                                                              }
+{ 1. MemberCount / MemberName[] are not exposed on IPCB_ObjectClass (see the   }
+{    note on PCB_GetNetClassesForBoard). But IsMember(Obj) IS available and is }
+{    already used by PCB_AddTestpointsForNetClass, so membership is resolved   }
+{    by probing candidate objects rather than by asking the class.             }
+{ 2. Only eClassMemberKind_Net is referenced anywhere in this script.          }
+{    eClassMemberKind_Component and eClassMemberKind_DifferentialPair are NOT, }
+{    and an undeclared constant is a COMPILE-TIME failure in DelphiScript that }
+{    would take the whole dispatcher down. So the declared kind is never used  }
+{    to decide what to probe: every class is probed against all three object   }
+{    sets (eNetObject / eComponentObject / eDifferentialPairObject, all three  }
+{    proven in this file) and reports what actually came back. Real membership }
+{    is the ground truth, and this is robust to the enum as well as cheaper to }
+{    reason about.                                                             }
+{ NOTE ON STRUCTURE - why this is two passes and an index walk rather than   }
+{ the obvious nested loop. Nothing in this script nests one BoardIterator    }
+{ inside another, and the one proven membership routine                      }
+{ (PCB_AddTestpointsForNetClass) deliberately DESTROYS its class iterator    }
+{ before creating the net iterator it probes with, holding only the class    }
+{ reference across the boundary. That reference stays valid; the iterator is }
+{ what must not overlap. This follows that pattern exactly: count the        }
+{ classes, then for each index re-find that one class, destroy the class     }
+{ iterator, and only then probe. Classes number in the tens, so the repeated }
+{ class walk is free, and no two board iterators are ever live at once.      }
+Function PCB_GetObjectClassesForBoard(Board : IPCB_Board; RequestId : String) : String;
+Const
+    MaxMembersPerKind = 400;
+Var
+    ObjClass : IPCB_ObjectClass;
+    JsonItems, Nets, Comps, Pairs, ItemName : String;
+    NetCount, CompCount, PairCount, ClassCount, Idx, Emitted : Integer;
+    NetErr, CompErr, PairErr : Integer;
+    IsNetClass, IsSuper, Truncated, AnyProbeErrors : Boolean;
+
+    { EVERY nested routine here takes Brd explicitly. DelphiScript nested      }
+    { routines CANNOT read the enclosing routine's parameters or locals - the  }
+    { compiler stops with "Can't access top level variable" (seen 2026-09-23   }
+    { on exactly this function). The two other nested routines in this repo    }
+    { comply only by accident, using nothing but their own parameters.         }
+
+    { Count classes on the board. One iterator, created and destroyed here. }
+    Function CountClasses(Brd : IPCB_Board) : Integer;
+    Var
+        Iter : IPCB_BoardIterator;
+        Cls : IPCB_ObjectClass;
+        N : Integer;
+    Begin
+        N := 0;
+        Iter := Brd.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eClassObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Cls := Iter.FirstPCBObject;
+            While Cls <> Nil Do
+            Begin
+                Inc(N);
+                Cls := Iter.NextPCBObject;
+            End;
+        Finally
+            Brd.BoardIterator_Destroy(Iter);
+        End;
+        Result := N;
+    End;
+
+    { Return the Nth class (0-based), iterator destroyed before returning. }
+    Function ClassAt(Brd : IPCB_Board; Wanted : Integer) : IPCB_ObjectClass;
+    Var
+        Iter : IPCB_BoardIterator;
+        Cls, Hit : IPCB_ObjectClass;
+        N : Integer;
+    Begin
+        Hit := Nil;
+        N := 0;
+        Iter := Brd.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eClassObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Cls := Iter.FirstPCBObject;
+            While Cls <> Nil Do
+            Begin
+                If N = Wanted Then
+                Begin
+                    Hit := Cls;
+                    Break;
+                End;
+                Inc(N);
+                Cls := Iter.NextPCBObject;
+            End;
+        Finally
+            Brd.BoardIterator_Destroy(Iter);
+        End;
+        Result := Hit;
+    End;
+
+    { Probe one object set. TSet is the proven parameter type here (see       }
+    { CollectSelectedPCBPrims); TObjectSet is not declared in this host.      }
+    { ProbeErrors matters more than it looks. IsMember is only PROVEN against   }
+    { a net (PCB_AddTestpointsForNetClass); whether this host accepts a         }
+    { component or a differential pair is untested. If it raises, the Except    }
+    { below would otherwise turn "cannot probe this kind" into "found nothing", }
+    { which reads as an empty class and is a silently wrong answer. Counting    }
+    { the raises keeps the two distinguishable at the caller.                   }
+    Function CollectMembers(Brd : IPCB_Board; Cls : IPCB_ObjectClass;
+                            ObjSet : TSet; IsComponent : Boolean;
+                            MaxMembers : Integer; Var HitCount : Integer;
+                            Var ProbeErrors : Integer) : String;
+    Var
+        Iter : IPCB_BoardIterator;
+        Item : IPCB_Primitive;
+        Comp : IPCB_Component;
+        Acc, Nm : String;
+        IsFirst, Hit : Boolean;
+    Begin
+        Acc := '';
+        IsFirst := True;
+        HitCount := 0;
+        ProbeErrors := 0;
+        If Cls = Nil Then
+        Begin
+            Result := '';
+            Exit;
+        End;
+        Iter := Brd.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(ObjSet);
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Item := Iter.FirstPCBObject;
+            While Item <> Nil Do
+            Begin
+                Hit := False;
+                Try
+                    Hit := Cls.IsMember(Item);
+                Except
+                    Inc(ProbeErrors);
+                End;
+                Try
+                    If Hit Then
+                    Begin
+                        Inc(HitCount);
+                        If HitCount <= MaxMembers Then
+                        Begin
+                            Nm := '';
+                            { Components carry the designator on Name.Text;     }
+                            { nets and differential pairs expose Name directly. }
+                            If IsComponent Then
+                            Begin
+                                Comp := Item;
+                                Try Nm := Comp.Name.Text; Except Nm := ''; End;
+                            End
+                            Else
+                                Try Nm := Item.Name; Except Nm := ''; End;
+                            If Not IsFirst Then Acc := Acc + ',';
+                            IsFirst := False;
+                            Acc := Acc + '"' + EscapeJsonString(Nm) + '"';
+                        End;
+                    End;
+                Except End;
+                Item := Iter.NextPCBObject;
+            End;
+        Finally
+            Brd.BoardIterator_Destroy(Iter);
+        End;
+        Result := Acc;
+    End;
+
+Begin
+    JsonItems := '';
+    Truncated := False;
+    AnyProbeErrors := False;
+    ClassCount := 0;
+    Emitted := 0;
+    Try ClassCount := CountClasses(Board); Except ClassCount := 0; End;
+
+    For Idx := 0 To ClassCount - 1 Do
+    Begin
+        ObjClass := Nil;
+        Try ObjClass := ClassAt(Board, Idx); Except End;
+        If ObjClass <> Nil Then
+        Begin
+            NetCount := 0;
+            CompCount := 0;
+            PairCount := 0;
+            ItemName := '';
+            IsNetClass := False;
+            IsSuper := False;
+
+            Try ItemName := ObjClass.Name; Except End;
+            Try IsSuper := ObjClass.SuperClass; Except End;
+            Try IsNetClass := (ObjClass.MemberKind = eClassMemberKind_Net); Except End;
+
+            NetErr := 0;
+            CompErr := 0;
+            PairErr := 0;
+            Nets := CollectMembers(Board, ObjClass, MkSet(eNetObject), False,
+                                   MaxMembersPerKind, NetCount, NetErr);
+            Comps := CollectMembers(Board, ObjClass, MkSet(eComponentObject), True,
+                                    MaxMembersPerKind, CompCount, CompErr);
+            Pairs := CollectMembers(Board, ObjClass, MkSet(eDifferentialPairObject),
+                                    False, MaxMembersPerKind, PairCount, PairErr);
+            If (NetErr > 0) Or (CompErr > 0) Or (PairErr > 0) Then
+                AnyProbeErrors := True;
+
+            If (NetCount > MaxMembersPerKind) Or (CompCount > MaxMembersPerKind)
+               Or (PairCount > MaxMembersPerKind) Then Truncated := True;
+
+            If JsonItems <> '' Then JsonItems := JsonItems + ',';
+            JsonItems := JsonItems
+                + '{"name":"' + EscapeJsonString(ItemName) + '"'
+                + ',"super_class":' + BoolToJsonStr(IsSuper)
+                + ',"is_net_class":' + BoolToJsonStr(IsNetClass)
+                + ',"net_count":' + IntToStr(NetCount)
+                + ',"component_count":' + IntToStr(CompCount)
+                + ',"diff_pair_count":' + IntToStr(PairCount)
+                + ',"probe_errors":{"nets":' + IntToStr(NetErr)
+                + ',"components":' + IntToStr(CompErr)
+                + ',"diff_pairs":' + IntToStr(PairErr) + '}'
+                + ',"nets":[' + Nets + ']'
+                + ',"components":[' + Comps + ']'
+                + ',"diff_pairs":[' + Pairs + ']'
+                + '}';
+            Inc(Emitted);
+        End;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"object_classes":[' + JsonItems + '],"count":' + IntToStr(Emitted)
+        + ',"classes_seen":' + IntToStr(ClassCount)
+        + ',"any_probe_errors":' + BoolToJsonStr(AnyProbeErrors)
+        + ',"member_names_truncated":' + BoolToJsonStr(Truncated)
+        + ',"max_members_per_kind":' + IntToStr(MaxMembersPerKind)
+        + ',"membership_source":"probed via IsMember; the declared MemberKind is'
+        + ' reported as is_net_class only, because the other kind constants are'
+        + ' undeclared in DelphiScript"}');
+End;
+
+Function PCB_GetObjectClasses(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetObjectClassesForBoard(Board, RequestId);
 End;
 
 {..............................................................................}
@@ -438,22 +705,15 @@ End;
 { PCB_GetDesignRules - Get all design rules                                   }
 {..............................................................................}
 
-Function PCB_GetDesignRules(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetDesignRulesForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr : String;
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     Count := 0;
@@ -491,6 +751,19 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetDesignRules(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetDesignRulesForBoard(Board, RequestId);
 End;
 
 {..............................................................................}
@@ -1240,7 +1513,8 @@ Var
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
     JsonItems, ReportPath, AllowStr : String;
-    First, ReportPresent, AllowModal : Boolean;
+    First, ReportPresent, AllowModal, ReportFresh : Boolean;
+    ReportBefore, ReportAfter : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -1271,9 +1545,37 @@ Begin
         Exit;
     End;
 
+    { TIMESTAMP THE REPORT BEFORE THE RUN. This is what separates a board    }
+    { that passed from a dialog that was cancelled, and those used to be     }
+    { byte-identical: both produced violation_count 0 with an empty list.    }
+    { Merely checking the report EXISTS does not do it - a stale .DRC from   }
+    { any earlier run satisfies that, so a cancelled check on a              }
+    { previously-checked board still reported good news.                     }
+    {                                                                         }
+    { FileAge returns a DOS date-time stamp, or -1 when the file is absent.  }
+    { Those stamps are chronologically ordered, so a plain > comparison      }
+    { answers "did Altium rewrite this report just now". Absent-then-present }
+    { counts as fresh because -1 is below every real stamp.                  }
+    {                                                                         }
+    { LIMIT, stated rather than papered over: DOS stamps have TWO-SECOND     }
+    { granularity. A run finishing inside the same two-second tick as the    }
+    { previous report would read as unchanged and be reported UNCONFIRMED -  }
+    { the safe direction, since it understates confidence rather than        }
+    { overstating it. It cannot produce a false "confirmed".                  }
+    ReportPath := '';
+    Try ReportPath := ChangeFileExt(Board.FileName, '.DRC'); Except End;
+    ReportBefore := -1;
+    If ReportPath <> '' Then
+        Try ReportBefore := FileAge(ReportPath); Except ReportBefore := -1; End;
+
     ResetParameters;
     AddStringParameter('InspectViolation', 'False');
     RunProcess('PCB:DesignRuleCheck');
+
+    ReportAfter := -1;
+    If ReportPath <> '' Then
+        Try ReportAfter := FileAge(ReportPath); Except ReportAfter := -1; End;
+    ReportFresh := (ReportAfter >= 0) And (ReportAfter > ReportBefore);
 
     // Count violations by iterating
     ViolationCount := 0;
@@ -1305,45 +1607,58 @@ Begin
     { list, byte-identical to a board that genuinely passes. A caller was    }
     { told the good news either way, which is the worst shape this bug takes.}
     {                                                                         }
-    { There is no verified silent form of the process. The only corroboration }
-    { available in-process is the .DRC report Altium writes beside the board  }
-    { when the check actually runs, so its presence is reported and a zero is }
-    { explicitly qualified rather than left to speak for itself. Nothing is   }
-    { deleted to force the issue: that would mean removing a file from the    }
-    { user's project folder to answer a question.                             }
-    ReportPath := '';
+    { There is no verified silent form of the process, so the run cannot be  }
+    { made non-blocking. What CAN be fixed is the honesty of the answer, and }
+    { that is done above by timestamping the .DRC report across the call.    }
+    {                                                                         }
+    { This used to check only that the report EXISTED, which is not the same }
+    { question: a stale .DRC from any earlier run satisfies it, so cancelling }
+    { the dialog on a previously-checked board still reported drc_confirmed. }
+    { Freshness is the real signal and existence is kept only as context.    }
+    {                                                                         }
+    { Nothing is deleted to force the issue: that would mean removing a file }
+    { from the user's project folder to answer a question.                    }
     ReportPresent := False;
-    Try ReportPath := ChangeFileExt(Board.FileName, '.DRC'); Except End;
     If ReportPath <> '' Then
         Try ReportPresent := FileExists(ReportPath); Except End;
 
-    If (ViolationCount = 0) And (Not ReportPresent) Then
+    { drc_confirmed is now FRESHNESS, not existence. Only a report Altium     }
+    { rewrote during this call proves the check ran, so a zero is trustworthy }
+    { exactly when ReportFresh is true and never otherwise.                   }
+    If Not ReportFresh Then
         Result := BuildSuccessResponse(RequestId,
-            '{"violation_count":0,"violations":[],"drc_confirmed":false'
-            + ',"drc_triggered":true'
-            + ',"report_present":false'
-            + ',"report_path":"' + EscapeJsonString(ReportPath) + '"'
-            + ',"reason":"no violations were found AND no .DRC report exists, '
-            + 'so this zero does NOT mean the board is clean. The Design Rule '
-            + 'Checker is a dialog on this build: if it was cancelled the '
-            + 'check never ran. Confirm the dialog was answered, or drive it '
-            + 'with app_run_ui_command."}')
+            '{"violation_count":' + IntToStr(ViolationCount) + ','
+            + '"violations":[' + JsonItems + '],'
+            + '"drc_triggered":true,'
+            + '"drc_confirmed":false,'
+            + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
+            + '"report_path":"' + EscapeJsonString(ReportPath) + '",'
+            + '"reason":"THE CHECK IS NOT CONFIRMED TO HAVE RUN. The .DRC '
+            + 'report was not rewritten during this call, which is what a '
+            + 'CANCELLED Design Rule Checker dialog looks like. Any count '
+            + 'here - including 0 - describes violations left on the board by '
+            + 'some EARLIER run, so a 0 does NOT mean the board is clean. '
+            + 'Re-run and answer the dialog. (A run finishing within the same '
+            + 'two-second file-stamp tick as the previous report also lands '
+            + 'here; re-running settles it.)"}')
     Else
         Result := BuildSuccessResponse(RequestId,
             '{"violation_count":' + IntToStr(ViolationCount) + ','
+            + '"violations":[' + JsonItems + '],'
             + '"drc_triggered":true,'
-            + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
+            + '"drc_confirmed":true,'
             + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
-            + '"violations":[' + JsonItems + ']}');
+            + '"report_path":"' + EscapeJsonString(ReportPath) + '"}');
 End;
 
 {..............................................................................}
 { PCB_GetComponents - Get all components with position, rotation, layer       }
 {..............................................................................}
 
-Function PCB_GetComponents(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile: the caller resolves     }
+{ and owns the Board reference; this function only iterates and reports.      }
+Function PCB_GetComponentsForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     GrpIter : IPCB_GroupIterator;
     Comp : IPCB_Component;
@@ -1354,13 +1669,6 @@ Var
     First, HasPlacementBBox : Boolean;
     Count, HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     Count := 0;
@@ -1461,6 +1769,19 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"components":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetComponents(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetComponentsForBoard(Board, RequestId);
 End;
 
 {..............................................................................}
@@ -3902,9 +4223,9 @@ End;
 { PCB_GetTraceLengths - Sum track segment lengths per net                     }
 {..............................................................................}
 
-Function PCB_GetTraceLengths(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetTraceLengthsForBoard(Board : IPCB_Board; Params : String; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Track : IPCB_Track;
     Arc : IPCB_Arc;
@@ -3921,13 +4242,6 @@ Var
     I, FoundIdx : Integer;
     SegLen, DX, DY, ArcAngle, RadiusMils, Accum : Double;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     FilterNet := ExtractJsonValue(Params, 'net');
 
     NetNames := TStringList.Create;
@@ -4749,18 +5063,12 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_GetLayerStackup - Get full layer stack info                             }
+{ PCB_GetTraceLengths - legacy wrapper for the board-scoped reader           }
 {..............................................................................}
 
-Function PCB_GetLayerStackup(Params : String; RequestId : String) : String;
+Function PCB_GetTraceLengths(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    LayerStack : IPCB_LayerStack_V7;
-    LayerObj : IPCB_LayerObject_V7;
-    JsonItems, LayerName, DielectricType : String;
-    First : Boolean;
-    Count : Integer;
-    CopperThickMils, DielectricHeightMils, DielectricConst : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -4768,7 +5076,23 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+    Result := PCB_GetTraceLengthsForBoard(Board, Params, RequestId);
+End;
 
+{..............................................................................}
+{ PCB_GetLayerStackup - Get full layer stack info                             }
+{..............................................................................}
+
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetLayerStackupForBoard(Board : IPCB_Board; RequestId : String) : String;
+Var
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    JsonItems, LayerName, DielectricType : String;
+    First : Boolean;
+    Count : Integer;
+    CopperThickMils, DielectricHeightMils, DielectricConst : Double;
+Begin
     LayerStack := Board.LayerStack_V7;
     If LayerStack = Nil Then
     Begin
@@ -4822,6 +5146,19 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"layers":[' + JsonItems + '],"layer_count":' + IntToStr(Count) + ','
         + '"board_name":"' + EscapeJsonString(ExtractFileName(Board.FileName)) + '"}');
+End;
+
+Function PCB_GetLayerStackup(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetLayerStackupForBoard(Board, RequestId);
 End;
 
 {..............................................................................}
@@ -5332,9 +5669,12 @@ End;
 { PCB_GetBoardOutline - Get board outline vertices                            }
 {..............................................................................}
 
-Function PCB_GetBoardOutline(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile. Deliberately does NOT   }
+{ Invalidate/Rebuild/Validate the outline (that mutates document state); it   }
+{ reads the segments as they are. The upstream wrapper below keeps the        }
+{ rebuild for its original callers.                                           }
+Function PCB_GetBoardOutlineForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Outline : IPCB_BoardOutline;
     Seg : TPolySegment;
     BR : TCoordRect;
@@ -5342,13 +5682,6 @@ Var
     First : Boolean;
     I, EL, EB, ER, ET : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     Outline := Board.BoardOutline;
     If Outline = Nil Then
     Begin
@@ -5408,17 +5741,10 @@ Begin
         + ',"top":' + IntToStr(CoordToMils(ET)) + '}}');
 End;
 
-{..............................................................................}
-{ PCB_GetSelectedObjects - Get properties of currently selected PCB objects   }
-{..............................................................................}
-
-Function PCB_GetSelectedObjects(Params : String; RequestId : String) : String;
+Function PCB_GetBoardOutline(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Obj : IPCB_Primitive;
-    PropsStr, JsonItems, ObjTypeStr, NetName, LayerName : String;
-    First : Boolean;
-    I, Count : Integer;
+    Outline : IPCB_BoardOutline;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -5426,7 +5752,33 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+    { Original behavior for upstream callers: refresh the outline before      }
+    { reading. The shared profile calls the ForBoard core directly instead.   }
+    Outline := Board.BoardOutline;
+    If Outline <> Nil Then
+    Begin
+        Try
+            Outline.Invalidate;
+            Outline.Rebuild;
+            Outline.Validate;
+        Except
+        End;
+    End;
+    Result := PCB_GetBoardOutlineForBoard(Board, RequestId);
+End;
 
+{..............................................................................}
+{ PCB_GetSelectedObjects - Get properties of currently selected PCB objects   }
+{..............................................................................}
+
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetSelectedObjectsForBoard(Board : IPCB_Board; Params : String; RequestId : String) : String;
+Var
+    Obj : IPCB_Primitive;
+    PropsStr, JsonItems, ObjTypeStr, NetName, LayerName : String;
+    First : Boolean;
+    I, Count : Integer;
+Begin
     PropsStr := ExtractJsonValue(Params, 'properties');
     If PropsStr = '' Then PropsStr := 'ObjectId,X,Y,Layer,Net';
 
@@ -5448,6 +5800,19 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"objects":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetSelectedObjects(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetSelectedObjectsForBoard(Board, Params, RequestId);
 End;
 
 {..............................................................................}
@@ -7373,9 +7738,9 @@ End;
 { Params: designator=<ref>                                                   }
 {..............................................................................}
 
-Function PCB_GetComponentPads(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetComponentPadsForBoard(Board : IPCB_Board; Params : String; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Comp : IPCB_Component;
     GrpIter : IPCB_GroupIterator;
     Pad : IPCB_Pad;
@@ -7383,13 +7748,6 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     DesStr := ExtractJsonValue(Params, 'designator');
     If DesStr = '' Then
     Begin
@@ -7441,6 +7799,19 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
         + '"pads":[' + JsonItems + '],"pad_count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetComponentPads(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetComponentPadsForBoard(Board, Params, RequestId);
 End;
 
 {..............................................................................}
@@ -7740,17 +8111,20 @@ End;
 { response says so via drc_triggered / note.                                 }
 {..............................................................................}
 
-Function PCB_GetClearanceViolations(Params : String; RequestId : String) : String;
+{ Split ForBoard/wrapper so the shared selected-project dispatcher can call    }
+{ this against the board it has already resolved and revalidated, rather than  }
+{ letting GetPCBBoardAnywhere wander. Same shape as the trace-lengths and      }
+{ room-rules reads.                                                            }
+Function PCB_GetClearanceViolationsForBoard(Board : IPCB_Board; Params : String;
+                                            RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
     FilterNet, ViolDesc, ViolName : String;
     JsonItems : String;
     First : Boolean;
-    Count, Emitted : Integer;
+    Count, Emitted, Offset, Limit : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -7759,6 +8133,16 @@ Begin
 
     Emitted := 0;
     FilterNet := ExtractJsonValue(Params, 'net');
+    { Paging added 2026-10-02 (PLT): the list used to stop at 200 rows with no
+      way to read the rest. offset / limit select a page; the defaults (0, 200)
+      give exactly the old response, so existing callers see no change.
+      violation_count stays the TOTAL number of matching violations. }
+    Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
+    If Offset < 0 Then Offset := 0;
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 200);
+    If Limit < 1 Then Limit := 1;
+    If Limit > 1000 Then Limit := 1000;
+    Emitted := 0;
 
     { No DRC trigger here -- see the header. Iterating eViolationObject is   }
     { a pure board read: it opens no dialog and cannot block the loop.       }
@@ -7780,7 +8164,7 @@ Begin
         // Filter by net if specified (check if net name appears in description)
         If (FilterNet = '') Or (Pos(FilterNet, ViolDesc) > 0) Or (Pos(FilterNet, ViolName) > 0) Then
         Begin
-            If Count < 200 Then
+            If (Count >= Offset) And (Emitted < Limit) Then
             Begin
                 If Not First Then JsonItems := JsonItems + ',';
                 First := False;
@@ -7795,10 +8179,25 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"violation_count":' + IntToStr(Count) + ','
+        + '"offset":' + IntToStr(Offset) + ','
+        + '"limit":' + IntToStr(Limit) + ','
         + '"drc_triggered":false,'
         + '"note":"Existing violations only -- no DRC was run. 0 does not mean '
         + 'the board passes if DRC has never been run on it.",'
         + '"violations":[' + JsonItems + ']}');
+End;
+
+Function PCB_GetClearanceViolations(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetClearanceViolationsForBoard(Board, Params, RequestId);
 End;
 
 {..............................................................................}
@@ -7880,22 +8279,15 @@ End;
 { Returns design rules (not pair objects) of kind eRule_DifferentialPairsRouting }
 {..............................................................................}
 
-Function PCB_GetDiffPairRules(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetDiffPairRulesForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems : String;
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     Count := 0;
@@ -7928,18 +8320,9 @@ Begin
         '{"diff_pair_rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
 End;
 
-{..............................................................................}
-{ PCB_GetVias - Get all vias on the board with position, size, net, layers   }
-{..............................................................................}
-
-Function PCB_GetVias(Params : String; RequestId : String) : String;
+Function PCB_GetDiffPairRules(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Iterator : IPCB_BoardIterator;
-    Via : IPCB_Via;
-    JsonItems, NetName : String;
-    First : Boolean;
-    Count : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -7947,7 +8330,22 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+    Result := PCB_GetDiffPairRulesForBoard(Board, RequestId);
+End;
 
+{..............................................................................}
+{ PCB_GetVias - Get all vias on the board with position, size, net, layers   }
+{..............................................................................}
+
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetViasForBoard(Board : IPCB_Board; RequestId : String) : String;
+Var
+    Iterator : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    JsonItems, NetName : String;
+    First : Boolean;
+    Count : Integer;
+Begin
     JsonItems := '';
     First := True;
     Count := 0;
@@ -7984,6 +8382,234 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"vias":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetVias(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetViasForBoard(Board, RequestId);
+End;
+
+{..............................................................................}
+{ PCB_GetTracksForBoard - routed copper geometry: tracks and arcs, read-only  }
+{                                                                            }
+{ Added 2026-10-02 (PLT) for layout checks the rule engine does not summarise }
+{ (neck-down lengths, coupled gap, per-leg layer sequence). One row per       }
+{ primitive: kind, net, layer, geometry and width.                           }
+{                                                                            }
+{ UNITS: raw TCoord integers (1/10000 mil), NOT CoordToMils, which rounds to }
+{ whole mils (0.025 mm) and would make a 0.15 mm pair gap unverifiable. The  }
+{ response says so ("units":"coord", "coord_per_mil":10000).                 }
+{                                                                            }
+{ Copper only (TopLayer, MidLayerN, BottomLayer). Primitives that belong to   }
+{ a component, a polygon (hatched pours are made of tracks) or a dimension   }
+{ are skipped: they are not routing.                                         }
+{                                                                            }
+{ Tracks AND arcs: corners routed with arcs are part of the path, and a read }
+{ without them shows every rounded bend as a gap (the HS board's CH5 / CH6    }
+{ bends are arcs in the ordered gerbers). Teardrops flagged per row.         }
+{ Params: net (exact, empty = all), layer (GetLayerString name, empty = all  }
+{ copper), offset (default 0), limit (default 500, clamped 1..2000).         }
+{ Paged because every read builds its JSON by concatenation and returns it   }
+{ through a response file inside the client's 60 s timeout; "total" is the   }
+{ number of matching primitives, "count" the rows in this page.              }
+{..............................................................................}
+Function PCB_IsCopperLayerName(LayerStr : String) : Boolean;
+Begin
+    Result := (LayerStr = 'TopLayer') Or (LayerStr = 'BottomLayer')
+        Or (Copy(LayerStr, 1, 8) = 'MidLayer');
+End;
+
+Function PCB_GetTracksForBoard(Board : IPCB_Board; Params : String; RequestId : String) : String;
+Var
+    Iterator : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    FilterNet, FilterLayer, NetName, LayerStr, Row, JsonItems, TearStr : String;
+    Offset, Limit, Total, Emitted : Integer;
+    First : Boolean;
+Begin
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    FilterNet := ExtractJsonValue(Params, 'net');
+    FilterLayer := ExtractJsonValue(Params, 'layer');
+    Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
+    If Offset < 0 Then Offset := 0;
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 500);
+    If Limit < 1 Then Limit := 1;
+    If Limit > 2000 Then Limit := 2000;
+
+    JsonItems := '';
+    First := True;
+    Total := 0;
+    Emitted := 0;
+
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+
+    Prim := Iterator.FirstPCBObject;
+    While Prim <> Nil Do
+    Begin
+        LayerStr := GetLayerString(Prim.Layer);
+        If PCB_IsCopperLayerName(LayerStr)
+            And (Not Prim.InComponent) And (Not Prim.InPolygon) And (Not Prim.InDimension)
+            And ((FilterLayer = '') Or (LayerStr = FilterLayer)) Then
+        Begin
+            NetName := '';
+            Try If Prim.Net <> Nil Then NetName := Prim.Net.Name; Except NetName := ''; End;
+            If (FilterNet = '') Or (NetName = FilterNet) Then
+            Begin
+                If (Total >= Offset) And (Emitted < Limit) Then
+                Begin
+                    Row := '';
+                    { Teardrops are copper made of tracks / arcs; flagged, not
+                      dropped, so the read stays complete and width checks can
+                      ignore them (the audits skip them the same way). }
+                    TearStr := 'false';
+                    Try If Prim.TearDrop Then TearStr := 'true'; Except TearStr := 'false'; End;
+                    If Prim.ObjectId = eTrackObject Then
+                    Begin
+                        Track := Prim;
+                        Row := '{"kind":"track",'
+                            + '"net":"' + EscapeJsonString(NetName) + '",'
+                            + '"layer":"' + EscapeJsonString(LayerStr) + '",'
+                            + '"x1":' + IntToStr(Track.X1) + ','
+                            + '"y1":' + IntToStr(Track.Y1) + ','
+                            + '"x2":' + IntToStr(Track.X2) + ','
+                            + '"y2":' + IntToStr(Track.Y2) + ','
+                            + '"width":' + IntToStr(Track.Width) + ','
+                            + '"teardrop":' + TearStr + '}';
+                    End
+                    Else If Prim.ObjectId = eArcObject Then
+                    Begin
+                        Arc := Prim;
+                        Row := '{"kind":"arc",'
+                            + '"net":"' + EscapeJsonString(NetName) + '",'
+                            + '"layer":"' + EscapeJsonString(LayerStr) + '",'
+                            + '"xc":' + IntToStr(Arc.XCenter) + ','
+                            + '"yc":' + IntToStr(Arc.YCenter) + ','
+                            + '"radius":' + IntToStr(Arc.Radius) + ','
+                            + '"start_angle":' + FloatToJsonStr(Arc.StartAngle) + ','
+                            + '"end_angle":' + FloatToJsonStr(Arc.EndAngle) + ','
+                            + '"width":' + IntToStr(Arc.LineWidth) + ','
+                            + '"teardrop":' + TearStr + '}';
+                    End;
+                    If Row <> '' Then
+                    Begin
+                        If Not First Then JsonItems := JsonItems + ',';
+                        First := False;
+                        JsonItems := JsonItems + Row;
+                        Inc(Emitted);
+                    End;
+                End;
+                Inc(Total);
+            End;
+        End;
+        Prim := Iterator.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iterator);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"units":"coord","coord_per_mil":10000,'
+        + '"total":' + IntToStr(Total) + ','
+        + '"offset":' + IntToStr(Offset) + ','
+        + '"limit":' + IntToStr(Limit) + ','
+        + '"count":' + IntToStr(Emitted) + ','
+        + '"tracks":[' + JsonItems + ']}');
+End;
+
+Function PCB_GetTracks(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetTracksForBoard(Board, Params, RequestId);
+End;
+
+Function PCB_GetLayerPrimitiveCountsForBoard(Board : IPCB_Board; RequestId : String) : String;
+Var
+    Iterator : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Keys, Counts : TStringList;
+    LayerStr, TypeStr, JsonItems, Key : String;
+    I, FoundIdx, Total : Integer;
+    First : Boolean;
+Begin
+    Keys := TStringList.Create;
+    Counts := TStringList.Create;
+    Try
+        Total := 0;
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+            ePadObject, eFillObject, ePolyObject, eRegionObject, eTextObject,
+            eComponentObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Obj := Iterator.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            Try LayerStr := GetLayerString(Obj.Layer); Except LayerStr := 'Unknown'; End;
+            If Obj.ObjectId = eTrackObject Then TypeStr := 'track'
+            Else If Obj.ObjectId = eArcObject Then TypeStr := 'arc'
+            Else If Obj.ObjectId = eViaObject Then TypeStr := 'via'
+            Else If Obj.ObjectId = ePadObject Then TypeStr := 'pad'
+            Else If Obj.ObjectId = eFillObject Then TypeStr := 'fill'
+            Else If Obj.ObjectId = ePolyObject Then TypeStr := 'polygon'
+            Else If Obj.ObjectId = eRegionObject Then TypeStr := 'region'
+            Else If Obj.ObjectId = eTextObject Then TypeStr := 'text'
+            Else If Obj.ObjectId = eComponentObject Then TypeStr := 'component'
+            Else TypeStr := 'other';
+            Key := LayerStr + '|' + TypeStr;
+            FoundIdx := Keys.IndexOf(Key);
+            If FoundIdx >= 0 Then
+                Counts[FoundIdx] := IntToStr(StrToIntDef(Counts[FoundIdx], 0) + 1)
+            Else
+            Begin
+                Keys.Add(Key);
+                Counts.Add('1');
+            End;
+            Inc(Total);
+            Obj := Iterator.NextPCBObject;
+        End;
+        Board.BoardIterator_Destroy(Iterator);
+        JsonItems := '';
+        First := True;
+        For I := 0 To Keys.Count - 1 Do
+        Begin
+            If Not First Then JsonItems := JsonItems + ',';
+            First := False;
+            JsonItems := JsonItems + '{"layer":"'
+                + EscapeJsonString(Copy(Keys[I], 1, Pos('|', Keys[I]) - 1))
+                + '","object_type":"'
+                + EscapeJsonString(Copy(Keys[I], Pos('|', Keys[I]) + 1, Length(Keys[I])))
+                + '","count":' + Counts[I] + '}';
+        End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"buckets":[' + JsonItems + '],"bucket_count":' + IntToStr(Keys.Count)
+            + ',"primitive_total":' + IntToStr(Total) + '}');
+    Finally
+        Counts.Free;
+        Keys.Free;
+    End;
 End;
 
 { Distance in mils from (Px, Py) to the segment A-B, every input in mils.   }
@@ -8625,14 +9251,14 @@ Begin
     Names.Free;
 End;
 
-Function PCB_GetUnroutedNets(Params : String; RequestId : String) : String;
+Function PCB_GetUnroutedNetsForBoard(Board : IPCB_Board; Params, RequestId : String;
+                                      AllowRebuild : Boolean) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
     JsonItems, NetName, CountStr, RebuildStr : String;
     FinalResp : String;
-    First, DidRebuild : Boolean;
+    First, DidRebuild, Reanalyze : Boolean;
     Count, I, FoundIdx, NewCount : Integer;
     { Heap-allocated parallel lists. Function-local `Array[0..N] Of T`     }
     { where T is any type (String, Integer, ...) silently corrupts this    }
@@ -8640,21 +9266,16 @@ Var
     { array-of-int trigger it, the originally-documented narrower theory   }
     { was wrong. See [[delphiscript_fixed_string_array_bug]].              }
     NetNames, NetCounts : TStringList;
-    Reanalyze : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-    Reanalyze := LowerCase(ExtractJsonValue(Params, 'reanalyze')) = 'true';
-    If Reanalyze Then ReanalyzeConnectedNets(Board);
-
-    RebuildStr := ExtractJsonValue(Params, 'rebuild');
+    Reanalyze := False;
     DidRebuild := False;
-    If RebuildStr <> 'false' Then DidRebuild := RebuildPCBConnectivity(Board);
-
+    If AllowRebuild Then
+    Begin
+        Reanalyze := LowerCase(ExtractJsonValue(Params, 'reanalyze')) = 'true';
+        If Reanalyze Then ReanalyzeConnectedNets(Board);
+        RebuildStr := ExtractJsonValue(Params, 'rebuild');
+        If RebuildStr <> 'false' Then DidRebuild := RebuildPCBConnectivity(Board);
+    End;
     NetNames := TStringList.Create;
     NetCounts := TStringList.Create;
     Try
@@ -8717,6 +9338,19 @@ Begin
     End;
 End;
 
+Function PCB_GetUnroutedNets(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetUnroutedNetsForBoard(Board, Params, RequestId, True);
+End;
+
 {..............................................................................}
 { PolygonAreaSqMils - Compute a polygon's outline area in SQUARE MILS via the  }
 { shoelace formula over its line vertices. Altium's IPCB_Polygon.AreaSize is   }
@@ -8762,9 +9396,9 @@ End;
 { PCB_GetPolygons - Get all polygon pours with layer, net, hatching, etc.    }
 {..............................................................................}
 
-Function PCB_GetPolygons(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetPolygonsForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Polygon : IPCB_Polygon;
     JsonItems, NetName, LayerStr, HatchStr : String;
@@ -8775,13 +9409,6 @@ Var
     CopperExact : Boolean;
     BR : TCoordRect;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     Count := 0;
@@ -8854,6 +9481,19 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"polygons":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetPolygons(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetPolygonsForBoard(Board, RequestId);
 End;
 
 {..............................................................................}
@@ -9084,9 +9724,12 @@ End;
 { Returns design rules of kind eRule_ConfinementConstraint, not physical rooms }
 {..............................................................................}
 
-Function PCB_GetRoomRules(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile, split out 2026-09-23 so }
+{ the shared dropdown path can read rooms too (it previously could not, which }
+{ is why a design rule scoped to a room could not be verified against the     }
+{ room's existence). Same split as PCB_GetNetClassesForBoard and friends.     }
+Function PCB_GetRoomRulesForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     Room : IPCB_ConfinementConstraint;
@@ -9095,13 +9738,6 @@ Var
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     Count := 0;
@@ -9150,6 +9786,19 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"room_rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetRoomRules(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetRoomRulesForBoard(Board, RequestId);
 End;
 
 {..............................................................................}
@@ -9270,9 +9919,11 @@ End;
 { PCB_GetBoardStatistics - Comprehensive board statistics                    }
 {..............................................................................}
 
-Function PCB_GetBoardStatistics(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile. Deliberately does NOT   }
+{ Invalidate/Rebuild/Validate the outline (that mutates document state); the  }
+{ upstream wrapper below keeps the rebuild for its original callers.          }
+Function PCB_GetBoardStatisticsForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
     TrkObj : IPCB_Track;
@@ -9286,13 +9937,6 @@ Var
     TotalTraceLen, DX, DY : Double;
     BoardWidth, BoardHeight, BoardArea : Double;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     TrackCount := 0;
     ViaCount := 0;
     PadCount := 0;
@@ -9332,7 +9976,7 @@ Begin
     End;
     Board.BoardIterator_Destroy(Iterator);
 
-    // Board dimensions from outline
+    // Board dimensions from outline (read as-is; no rebuild in the core)
     BoardWidth := 0;
     BoardHeight := 0;
     BoardArea := 0;
@@ -9340,9 +9984,6 @@ Begin
         Outline := Board.BoardOutline;
         If Outline <> Nil Then
         Begin
-            Outline.Invalidate;
-            Outline.Rebuild;
-            Outline.Validate;
             BR := Outline.BoundingRectangle;
             BoardWidth := CoordToMils(BR.Right) - CoordToMils(BR.Left);
             BoardHeight := CoordToMils(BR.Top) - CoordToMils(BR.Bottom);
@@ -9380,6 +10021,30 @@ Begin
         + '"board_area_sq_mils":' + FloatToJsonStr(BoardArea) + ','
         + '"layer_count":' + IntToStr(LayerCount) + ','
         + '"board_name":"' + EscapeJsonString(ExtractFileName(Board.FileName)) + '"}');
+End;
+
+Function PCB_GetBoardStatistics(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Outline : IPCB_BoardOutline;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    { Original behavior for upstream callers: refresh the outline first. }
+    Try
+        Outline := Board.BoardOutline;
+        If Outline <> Nil Then
+        Begin
+            Outline.Invalidate;
+            Outline.Rebuild;
+            Outline.Validate;
+        End;
+    Except End;
+    Result := PCB_GetBoardStatisticsForBoard(Board, RequestId);
 End;
 
 {..............................................................................}
@@ -11717,7 +12382,8 @@ End;
 { false means one half is still ratsnest-only).                              }
 {                                                                              }
 { Uses the PCB API IPCB_DifferentialPair interface.                           }
-Function PCB_GetDifferentialPairs(Params : String; RequestId : String) : String;
+{ Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function PCB_GetDifferentialPairsForBoard(Board : IPCB_Board; RequestId : String) : String;
 
     Function NetLengthMils(Net : IPCB_Net) : Double;
     Var
@@ -11768,7 +12434,6 @@ Function PCB_GetDifferentialPairs(Params : String; RequestId : String) : String;
     End;
 
 Var
-    Board : IPCB_Board;
     Iter : IPCB_BoardIterator;
     Pair : IPCB_DifferentialPair;
     PosLen, NegLen, Skew : Double;
@@ -11777,14 +12442,6 @@ Var
     First, BothRouted : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_BOARD',
-            'No PCB document focused');
-        Exit;
-    End;
-
     Items := '';
     First := True;
     Count := 0;
@@ -11837,6 +12494,20 @@ Begin
             JsonInt('count', Count) + ',' +
             JsonRaw('pairs', '[' + Items + ']')
         ));
+End;
+
+Function PCB_GetDifferentialPairs(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_BOARD',
+            'No PCB document focused');
+        Exit;
+    End;
+    Result := PCB_GetDifferentialPairsForBoard(Board, RequestId);
 End;
 
 
@@ -17303,6 +17974,7 @@ Begin
         'bind_pad_nets':           Result := PCB_BindPadNets(Params, RequestId);
         'delete_nets':             Result := PCB_DeleteNets(Params, RequestId);
         'get_net_classes':         Result := PCB_GetNetClasses(Params, RequestId);
+        'get_object_classes':      Result := PCB_GetObjectClasses(Params, RequestId);
         'create_net_class':        Result := PCB_CreateNetClass(Params, RequestId);
         'get_design_rules':        Result := PCB_GetDesignRules(Params, RequestId);
         'get_rule_properties':     Result := PCB_GetRuleProperties(Params, RequestId);
@@ -17372,6 +18044,7 @@ Begin
         'snap_to_grid':            Result := PCB_SnapToGrid(Params, RequestId);
         'get_diff_pair_rules':     Result := PCB_GetDiffPairRules(Params, RequestId);
         'get_vias':                Result := PCB_GetVias(Params, RequestId);
+        'get_tracks':              Result := PCB_GetTracks(Params, RequestId);
         'delete_object':           Result := PCB_DeleteObject(Params, RequestId);
         'get_pad_properties':      Result := PCB_GetPadProperties(Params, RequestId);
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);

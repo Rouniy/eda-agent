@@ -25,10 +25,30 @@ from eda_agent.config import get_config
 SCRIPTS = ROOT / "scripts"
 PYTHON = Path(sys.executable).with_name("python.exe")
 MCP_HOST = "192.168.0.33"
-MCP_PORT = 14700
+MCP_PORT = 14701
 DASHBOARD_PORT = 8766
 POLL_SECONDS = 30
 MCP_FAILURE_LIMIT = 3
+MAX_SCRIPT_LAUNCHES_PER_PROCESS = 3
+
+
+class ScriptLaunchBudget:
+    """Bound URI launch attempts until Altium or the bridge recovers."""
+
+    def __init__(self) -> None:
+        self.altium_pid: int | None = None
+        self.attempts = 0
+
+    def observe(self, altium_pid: int | None, *, ping_ok: bool = False) -> None:
+        if altium_pid != self.altium_pid or ping_ok:
+            self.altium_pid = altium_pid
+            self.attempts = 0
+
+    def allow_launch(self) -> bool:
+        return self.altium_pid is not None and self.attempts < MAX_SCRIPT_LAUNCHES_PER_PROCESS
+
+    def record_launch(self) -> None:
+        self.attempts += 1
 
 
 def listener(port: int) -> int | None:
@@ -128,6 +148,7 @@ def main() -> None:
         last_blocking_dialog = ""
         last_script_launch = 0.0
         last_mcp_restart = 0.0
+        script_launch_budget = ScriptLaunchBudget()
         while True:
             try:
                 mcp_pid = listener(MCP_PORT)
@@ -165,8 +186,12 @@ def main() -> None:
                         workspace / "altium-dashboard.log",
                     )
 
-                if bridge.is_altium_running() and not active_altium_command(workspace):
+                altium_status = bridge.get_altium_status()
+                altium_pid = altium_status.get("pid")
+                script_launch_budget.observe(altium_pid)
+                if altium_pid is not None and not active_altium_command(workspace):
                     if bridge.ping():
+                        script_launch_budget.observe(altium_pid, ping_ok=True)
                         failed_pings = 0
                         last_blocking_dialog = ""
                     else:
@@ -179,6 +204,7 @@ def main() -> None:
                         last_blocking_dialog = dialog_summary
                         if (failed_pings >= 2
                                 and time.monotonic() - last_script_launch > 120
+                                and script_launch_budget.allow_launch()
                                 and not dialog
                                 and not pending_script_launcher()):
                             subprocess.run(
@@ -195,8 +221,14 @@ def main() -> None:
                                 check=False,
                             )
                             last_script_launch = time.monotonic()
-                            logging.info("requested Altium script restart")
-                elif not bridge.is_altium_running():
+                            script_launch_budget.record_launch()
+                            logging.info("requested Altium script restart (%s/%s for pid %s)",
+                                         script_launch_budget.attempts,
+                                         MAX_SCRIPT_LAUNCHES_PER_PROCESS, altium_pid)
+                            if not script_launch_budget.allow_launch():
+                                logging.error("Altium script restart attempts exhausted for pid %s; "
+                                              "waiting for recovery or a new Altium process", altium_pid)
+                elif altium_pid is None:
                     failed_pings = 0
             except Exception:
                 logging.exception("supervisor check failed")

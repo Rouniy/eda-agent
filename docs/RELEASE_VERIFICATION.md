@@ -1,4 +1,4 @@
-# Release verification: 2026.10.13.5
+# Release verification: 2026.10.14.5
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -41,7 +41,7 @@ works elsewhere cannot be an undeclared identifier:
 | 23, via template | `CopyTo` on a via's template link | yes, `Library.pas`, on footprints only | highest, and it can stop the loop |
 | 23, via mode | `Mode` on a via | yes, on pads, `PCB.pas` | medium |
 | 23, via size | `Size`, `HoleSize` on a via | yes, `PCB_PlaceVia` | low |
-| 23, Routing Via rule | `PreferedWidth`, `PreferedHoleWidth`, `MinHoleWidth`, `MaxHoleWidth` | no, nowhere | high, and it can stop the loop |
+| 23, Routing Via rule | `PreferedWidth`, `PreferedHoleWidth`, `MinHoleWidth`, `MaxHoleWidth` | yes, `PCB.pas` and `SelectedProject.pas` | high, and it can stop the loop |
 | 25, DbLib connection | `ConnectionString`, `LoginPrompt`, `Connected` on an ADO connection | no, nowhere | highest, and it can stop the loop |
 | 25, DbLib query | `Connection` on an ADO query | no, nowhere | highest, and it can stop the loop |
 | 25, DbLib record key | `ParamByName`, `Value` on an ADO parameter | no, nowhere | high, and it can stop the loop |
@@ -230,7 +230,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.13.5`, `version_match` =
+Expect `altium_script_version` = `2026.10.14.5`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
