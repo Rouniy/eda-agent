@@ -20,6 +20,13 @@ This selection API remains unqualified until a native selection mechanism
 passes read-back. Python MCP on TCP 14701 runs from `main`; the relay on TCP
 14700 remains available.
 
+Network MCP verification after restart listed 573 tools and reported matching
+loaded/bundled version `2026.10.16.3`. `pcb_3d_capture` wrote an 800x559 PNG
+of the editor canvas; the floating toolbar and Altium's collision overlays are
+visible in it, so this is not a clean raster comparison export. `app_detach`
+left TCP 14701 listening and the board file's SHA-256 and modification time
+unchanged. Starting `StartMCPServer` again and calling `app_attach` succeeded.
+
 ## Local Python MCP follow-up, 2026-10-16
 
 The Python Streamable HTTP process on TCP 14701 was restarted from this
