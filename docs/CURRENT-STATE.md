@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## PCB layer visibility, 2026-10-16
+
+`pcb_set_layer_visibility` now uses Altium's `Pcb:DocumentPreferences`
+process and a PCB redraw, following Altium's published `pcblayer.pas` example.
+The old `Board.LayerIsDisplayed` assignment changed API readback but left the
+editor canvas unchanged. Source build/lint passed with zero errors or warnings.
+On the open `modem-stm32-2trx-lr2021.PcbDoc` in Altium 26.10.1.5, loaded
+script `2026.10.16.12` hid `TOP-L01` and changed 501,209 of 744,000 pixels
+in a fixed board screenshot crop; restoring it succeeded and the document
+remained `modified=false`. The HTTP MCP on TCP 14701 was restarted separately.
+The broad green overlay remained while `TOP-L01` was hidden, so it is not
+caused solely by that layer. Other layers still need one-at-a-time visual
+identification with the owner.
+
 ## Coordinator 3-D/2-D API follow-up, 2026-10-16
 
 `pcb_3d_capture` now defaults to `D:\shared\xo-altium\compare\` and routes

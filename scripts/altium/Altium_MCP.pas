@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.16.11';
+    SCRIPT_VERSION = '2026.10.16.12';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -31209,7 +31209,7 @@ End;
 Function PCB_SetLayerVisibility(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    LayerStr, VisibleStr : String;
+    LayerStr, VisibleStr, ProcessKey, LayerKey, ProcessValue : String;
     LayerID : TLayer;
     Visible : Boolean;
 Begin
@@ -31238,10 +31238,34 @@ Begin
     End;
     Visible := (LowerCase(VisibleStr) = 'true') Or (VisibleStr = '1');
 
-    Board.LayerIsDisplayed[LayerID] := Visible;
+    { Altium's editor uses the DocumentPreferences process to apply layer    }
+    { visibility. Writing LayerIsDisplayed alone changes API readback but did }
+    { not change a single canvas pixel on AD 26.10.1, even after Redraw and    }
+    { ViewManager_FullUpdate. Match the process parameter names in Altium's    }
+    { published PCBLayer script.                                          }
+    LayerKey := GetLayerString(LayerID);
+    ProcessKey := LayerKey;
+    If LayerKey = 'TopLayer' Then ProcessKey := 'TopSignal';
+    If LayerKey = 'BottomLayer' Then ProcessKey := 'BottomSignal';
+    If Pos('MidLayer', LayerKey) = 1 Then
+        ProcessKey := 'Mid' + Copy(LayerKey, 9, Length(LayerKey));
+    If Pos('InternalPlane', LayerKey) = 1 Then
+        ProcessKey := 'Plane' + Copy(LayerKey, 14, Length(LayerKey));
+    If LayerKey = 'KeepOutLayer' Then ProcessKey := 'KeepOut';
+    If Visible Then ProcessValue := 'True' Else ProcessValue := 'False';
+    ResetParameters;
+    AddStringParameter(ProcessKey, ProcessValue);
+    RunProcess('Pcb:DocumentPreferences');
+    ResetParameters;
+    AddStringParameter('Action', 'Redraw');
+    RunProcess('PCB:Zoom');
 
-    // Refresh the view
-    // Board.ViewManager_FullUpdate;  // removed, expensive on large boards; Altium auto-refreshes on user interaction
+    If Board.LayerIsDisplayed[LayerID] <> Visible Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'VISIBILITY_NOT_APPLIED',
+            'The requested layer visibility did not pass API readback');
+        Exit;
+    End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"layer":"' + EscapeJsonString(GetLayerString(LayerID)) + '",'
@@ -46232,19 +46256,15 @@ Begin
         Exit;
     End;
 
-    { Detect the wire format. The keyed '~~' encoding always starts with a  }
-    { 'scope=' field (the Python helper defaults it to active_doc), and a   }
-    { legacy payload starts with the scope VALUE instead, so the prefix     }
-    { test is unambiguous. A multi-op keyed payload also carries '~~'.      }
-    Keyed := (Copy(Operations, 1, 6) = 'scope=') Or (Pos('~~', Operations) > 0);
-
     TotalMatched := 0;
     OpCount := 0;
     OpSkipped := 0;
     ResultJson := '';
     ResultsJson := '';
     Remaining := Operations;
-    UseTilde := Pos('~~', Operations) > 0;
+    { A single keyed operation has no '~~' separator. }
+    UseTilde := (Copy(Operations, 1, 6) = 'scope=') Or
+        (Pos('~~', Operations) > 0);
 
     { Clear the property-write diagnostics buffer so this call only       }
     { surfaces issues raised by THIS batch, not anything left over.       }

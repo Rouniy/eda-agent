@@ -6146,7 +6146,7 @@ End;
 Function PCB_SetLayerVisibility(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    LayerStr, VisibleStr : String;
+    LayerStr, VisibleStr, ProcessKey, LayerKey, ProcessValue : String;
     LayerID : TLayer;
     Visible : Boolean;
 Begin
@@ -6175,10 +6175,34 @@ Begin
     End;
     Visible := (LowerCase(VisibleStr) = 'true') Or (VisibleStr = '1');
 
-    Board.LayerIsDisplayed[LayerID] := Visible;
+    { Altium's editor uses the DocumentPreferences process to apply layer    }
+    { visibility. Writing LayerIsDisplayed alone changes API readback but did }
+    { not change a single canvas pixel on AD 26.10.1, even after Redraw and    }
+    { ViewManager_FullUpdate. Match the process parameter names in Altium's    }
+    { published PCBLayer script.                                          }
+    LayerKey := GetLayerString(LayerID);
+    ProcessKey := LayerKey;
+    If LayerKey = 'TopLayer' Then ProcessKey := 'TopSignal';
+    If LayerKey = 'BottomLayer' Then ProcessKey := 'BottomSignal';
+    If Pos('MidLayer', LayerKey) = 1 Then
+        ProcessKey := 'Mid' + Copy(LayerKey, 9, Length(LayerKey));
+    If Pos('InternalPlane', LayerKey) = 1 Then
+        ProcessKey := 'Plane' + Copy(LayerKey, 14, Length(LayerKey));
+    If LayerKey = 'KeepOutLayer' Then ProcessKey := 'KeepOut';
+    If Visible Then ProcessValue := 'True' Else ProcessValue := 'False';
+    ResetParameters;
+    AddStringParameter(ProcessKey, ProcessValue);
+    RunProcess('Pcb:DocumentPreferences');
+    ResetParameters;
+    AddStringParameter('Action', 'Redraw');
+    RunProcess('PCB:Zoom');
 
-    // Refresh the view
-    // Board.ViewManager_FullUpdate;  // removed, expensive on large boards; Altium auto-refreshes on user interaction
+    If Board.LayerIsDisplayed[LayerID] <> Visible Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'VISIBILITY_NOT_APPLIED',
+            'The requested layer visibility did not pass API readback');
+        Exit;
+    End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"layer":"' + EscapeJsonString(GetLayerString(LayerID)) + '",'
