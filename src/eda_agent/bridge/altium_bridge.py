@@ -461,11 +461,10 @@ class AltiumBridge:
         self._detach_hint_shown = True
         data = dict(data)
         data["_hint_detach"] = (
-            "This MCP server has been holding Altium's scripting engine for "
-            "over 10 minutes. When your Altium work is done, call "
-            "detach_from_altium so Altium's own UI commands become responsive "
-            "again. The user will have to re-launch StartMCPServer in Altium "
-            "to run more MCP tools afterwards."
+            "The bridge has been attached for over 10 minutes. Its timer pump "
+            "returns control to Altium between requests. When finished, call "
+            "app_detach to stop the pump. StartMCPServer must be relaunched "
+            "in Altium before a later app_attach."
         )
         return data
 

@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Main branch handoff, 2026-10-16
+
+The owner authorized discarding changes to the disposable Altium test project
+and restarting components needed for native acceptance. The source changes were
+committed to `main`. A follow-up fix removed `SaveAllDirty` from the native
+`application.stop_server` dispatch: detach now stops the pump without saving
+documents. The 10-minute detach hint now describes the timer pump accurately.
+The combined script rebuilt with zero lint errors or warnings; 76 relevant
+Python tests passed. The loaded Altium script must still be checked separately
+before claiming this native change is active.
+
 ## Local Python MCP follow-up, 2026-10-16
 
 The Python Streamable HTTP process on TCP 14701 was restarted from this
@@ -24,10 +35,10 @@ Source-only candidate `2026.10.16.1` adds `pcb.select_component`, focused
 board path validation and immediate selected-flag read-back. The staged Python
 wrapper requires that exact native version and verifies selection in a second
 request. Source build/lint and 64 focused tests passed. It is **not loaded in
-Altium**. The open PCB tab still has a dirty `*`; do not save/discard it or
-replace the loaded scripts as part of a test. The companion shared deployment
-runbook is absent from this workspace, so native deployment/acceptance awaits
-a reviewed path and a resolved Altium session.
+Altium** at that checkpoint. The open PCB tab had a dirty `*`; the owner later
+authorized discarding test changes and restarting components. The companion
+shared deployment runbook is absent from this workspace; native acceptance
+must record the actually loaded version and board state.
 
 ## Local integration check, 2026-10-14
 

@@ -10,8 +10,8 @@
   `app_get_active_document` said `modified=false`; the cause of the star is
   uncertain because the owner was active. The live Python wrapper is disabled.
   Source-only candidate `2026.10.16.1` introduces `pcb.select_component` and
-  two-stage read-back. Deploy only after resolving the open dirty tab and the
-  missing shared runbook. Reproduce on a disposable board, verify actual
+  two-stage read-back. The owner later authorized discarding disposable test
+  edits and restarting components. Reproduce on a disposable board, verify actual
   selection and dirty state, then qualify before enabling the tool again.
 - Design and qualify a bridge lifecycle that releases the scripting engine
   between calls while allowing `app_attach` to restart it without manual
