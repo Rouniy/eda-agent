@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## 3-D view controls, 2026-10-16
+
+Native script `2026.10.16.11` is loaded in Altium 26.10.1.5. The new
+`pcb_3d_center` shows the focused PcbDoc in 3-D and uses the verified
+`PCB:Zoom Action=Board` process to center and fit it without resetting the
+view angle. `pcb_3d_set_view` shows 3-D, resets to top, applies 30-degree
+keyboard rotation steps, fits the board, then applies 0.25/0.5/1/2/4 zoom
+relative to the fit. Its pointer anchor is the actual editor canvas center,
+which on this host is on the second monitor. `pcb_3d_capture` and `pcb_select`
+also request 3-D before operating. A live call set 30/30/1, centered, and
+captured `D:\shared\xo-altium\board-3d-center-final.png`; the board was
+visually centered and `modified=false`. The camera angles and zoom are
+requested shortcut controls, since no absolute camera readback is available.
+PCB component selection still fails native selection readback and remains open.
+
 ## Main branch handoff, 2026-10-16
 
 Follow-up: Python MCP now includes `pcb_render_2d` for exact mil-coordinate

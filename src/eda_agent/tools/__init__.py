@@ -22,6 +22,7 @@ from .application import (
 )
 from .guidance import register_guidance_tools
 from .uiauto import register_uiauto_tools
+from .pcb3d import register_pcb3d_tools
 from .project import register_project_tools
 from .library import register_library_tools
 from .generic import register_generic_tools
@@ -190,6 +191,7 @@ def register_all_tools(mcp):
     # has no API at all, so they do not belong on any other
     # backend and are registered with the Altium suite alone.
     register_uiauto_tools(mcp)
+    register_pcb3d_tools(mcp)
     register_application_tools(mcp)
     register_project_tools(mcp)
     register_library_tools(mcp)

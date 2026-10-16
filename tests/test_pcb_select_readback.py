@@ -28,6 +28,9 @@ class _Bridge:
             return {"script_version": self.version}
         if command == "application.get_active_document":
             return {"document_kind": "PCB", "file_path": r"C:\board.PcbDoc"}
+        if command == "generic.switch_view":
+            assert params == {"mode": "3d"}
+            return {"success": True, "mode": "3d"}
         if command == "pcb.select_component":
             return {"selected": True}
         if command == "generic.query_objects":
@@ -58,4 +61,5 @@ def test_match_is_not_success_when_second_read_is_unselected(monkeypatch):
 
     assert result["success"] is False
     assert result["selected"] is False
+    assert bridge.commands.index("generic.switch_view") < bridge.commands.index("pcb.select_component")
     assert bridge.commands.index("generic.query_objects") > bridge.commands.index("pcb.select_component")

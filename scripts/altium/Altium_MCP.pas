@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.16.3';
+    SCRIPT_VERSION = '2026.10.16.11';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -46074,6 +46074,18 @@ Begin
         If SchDoc <> Nil Then RunProcess('Sch:Zoom')
         Else RunProcess('PCB:Zoom');
     End
+    Else If Action = 'board' Then
+    Begin
+        If Board = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCB',
+                'A PcbDoc is required to fit the board');
+            Exit;
+        End;
+        ResetParameters;
+        AddStringParameter('Action', 'Board');
+        RunProcess('PCB:Zoom');
+    End
     Else If Action = 'selection' Then
     Begin
         { 'Selected' is attested in third-party PCB scripts but not in the   }
@@ -46088,7 +46100,7 @@ Begin
     Else
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
-            'action must be "fit" or "selection", got "' + Action + '"');
+            'action must be "fit", "board" or "selection", got "' + Action + '"');
         Exit;
     End;
 

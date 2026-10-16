@@ -23,6 +23,9 @@
   image scale. `pcb_render_2d` now writes a deterministic selected-layer PNG
   from live geometry for a requested rectangle; compare its pixels only with
   a renderer using matching geometry, palette, fonts and rasterizer settings.
+  Keyboard-based `pcb_3d_set_view` now supports 30-degree angle steps and
+  discrete zoom relative to Fit Board; `pcb_3d_center` preserves the current
+  angle on the tested editor. These controls have no camera readback.
 - Validate `pcb_3d_capture` against multiple windows and view modes; current
   capture is a current-canvas PNG with `view_mode_verified: false` and Altium's
   floating canvas toolbar may be visible.

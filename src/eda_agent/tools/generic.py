@@ -690,9 +690,9 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def pcb_select(designator: str) -> dict[str, Any]:
-        """Select a component by exact designator on the focused PcbDoc.
+        """Show the focused PcbDoc in 3-D and select a component by designator.
 
-        Requires native script 2026.10.16.3. The response is checked
+        Requires native script 2026.10.16.3 or newer. The response is checked
         with a separate object query; a match count alone is not proof that
         selection took effect. Does not save the board.
         """
@@ -700,9 +700,12 @@ def register_generic_tools(mcp):
             return {"success": False, "error": "Invalid PCB designator"}
         bridge = get_bridge()
         ping = await bridge.send_command_async("application.ping")
-        if ping.get("script_version") != "2026.10.16.3":
+        version = str(ping.get("script_version", ""))
+        parts = version.split(".")
+        if (len(parts) != 4 or parts[:3] != ["2026", "10", "16"] or
+                not parts[3].isdigit() or int(parts[3]) < 3):
             return {"success": False, "error":
-                    "PCB selection requires native script 2026.10.16.3; "
+                    "PCB selection requires native script 2026.10.16.3 or newer; "
                     f"loaded version is {ping.get('script_version', 'unknown')}"}
         active = await bridge.send_command_async("application.get_active_document")
         if str(active.get("document_kind", "")).lower() not in {"pcb", "pcbdoc"}:
@@ -710,6 +713,7 @@ def register_generic_tools(mcp):
         board_path = str(active.get("file_path", ""))
         if not board_path:
             return {"success": False, "error": "Focused PCB path is unavailable"}
+        await bridge.send_command_async("generic.switch_view", {"mode": "3d"})
         result = await bridge.send_command_async("pcb.select_component", {
             "designator": designator, "board_path": board_path,
         })
@@ -747,7 +751,8 @@ def register_generic_tools(mcp):
         """Control the viewport zoom level.
 
         Args:
-            action: "fit" (zoom to show all), "selection" (zoom to selected objects)
+            action: "fit" (all objects), "board" (center and fit the PCB),
+                or "selection" (selected objects)
 
         Returns:
             Dictionary confirming the zoom action

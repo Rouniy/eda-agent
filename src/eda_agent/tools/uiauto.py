@@ -1098,7 +1098,8 @@ def register_uiauto_tools(mcp):
 
         Modifiers: ctrl, alt, shift. Keys: enter, escape, tab, space,
         backspace, delete, the arrows, home, end, pageup, pagedown and
-        F1 to F12. An unknown name is refused and the known ones listed,
+        F1 to F12, letters A-Z, digits 0-9 and numpad keys num0-num9.
+        An unknown name is refused and the known ones listed,
         rather than sent as nothing.
 
         THIS GOES WHEREVER FOCUS IS. Establish focus first, with
@@ -1339,70 +1340,6 @@ def register_uiauto_tools(mcp):
             return {"ok": False, "reason": "capture failed", "path": path}
         return {"ok": True, "path": path, "hwnd": target,
                 "note": "read the file to look at it"}
-
-    @mcp.tool()
-    async def pcb_3d_capture(output_path: str, width_px: int = 0,
-                             height_px: int = 0) -> dict[str, Any]:
-        """Capture the visible PCB editor canvas without side panels.
-
-        This captures the current view, including its current 3-D camera when
-        the editor is in 3-D mode. The camera is not moved. Altium does not
-        expose the view mode through this Win32 capture path, so callers must
-        confirm that the board is in 3-D mode before using the result as 3-D.
-        """
-        from pathlib import Path
-        import win32gui
-        import win32process
-
-        from ..bridge.windows_ui import WindowsUiInspector
-
-        pid, problem = _altium_pid()
-        if problem is not None:
-            return problem
-        if width_px < 0 or height_px < 0 or width_px > 8192 or height_px > 8192:
-            return {"success": False, "error": "width_px and height_px must be 0..8192"}
-        path = Path(output_path).expanduser().resolve()
-        if path.suffix.lower() != ".png":
-            return {"success": False, "error": "output_path must end in .png"}
-
-        canvases = []
-        def find_window(hwnd, unused):
-            _, owner = win32process.GetWindowThreadProcessId(hwnd)
-            if owner != pid or not win32gui.IsWindowVisible(hwnd):
-                return
-            if win32gui.GetClassName(hwnd) != "TDocumentForm":
-                return
-            pcb_tabs = []
-            window_canvases = []
-            def find_canvas(child, unused_child):
-                if not win32gui.IsWindowVisible(child):
-                    return
-                tab_title = win32gui.GetWindowText(child).removesuffix(" *")
-                if (win32gui.GetClassName(child) == "TdxTabSheet" and
-                        tab_title.lower().endswith(".pcbdoc")):
-                    pcb_tabs.append(child)
-                if win32gui.GetClassName(child) == "View_Graphical":
-                    window_canvases.append(child)
-            win32gui.EnumChildWindows(hwnd, find_canvas, None)
-            if pcb_tabs:
-                canvases.extend(window_canvases)
-        win32gui.EnumWindows(find_window, None)
-        if len(canvases) != 1:
-            return {"success": False, "error":
-                    f"expected one visible PCB canvas, found {len(canvases)}"}
-
-        capture = WindowsUiInspector(pid).capture_window(canvases[0], path)
-        if width_px or height_px:
-            from PIL import Image
-            with Image.open(path) as current:
-                target_width = width_px or round(current.width * height_px / current.height)
-                target_height = height_px or round(current.height * width_px / current.width)
-                resized = current.resize((target_width, target_height), Image.Resampling.LANCZOS)
-                resized.save(path, format="PNG")
-            capture["width"] = target_width
-            capture["height"] = target_height
-        capture["view_mode_verified"] = False
-        return capture
 
     @mcp.tool()
     async def app_canvas(x: int, y: int, to_x: int = 0, to_y: int = 0,

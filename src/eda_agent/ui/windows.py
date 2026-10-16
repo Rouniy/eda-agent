@@ -799,6 +799,9 @@ _KEYS = {
     "f6": 0x75, "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79,
     "f11": 0x7A, "f12": 0x7B,
 }
+_KEYS.update({chr(code).lower(): code for code in range(0x41, 0x5B)})
+_KEYS.update({chr(code): code for code in range(0x30, 0x3A)})
+_KEYS.update({f"num{n}": 0x60 + n for n in range(10)})
 
 #: Modifier virtual-key codes, held down around a key in a chord.
 _MODIFIERS = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10}
@@ -995,7 +998,7 @@ def drag(x1: int, y1: int, x2: int, y2: int, steps: int = 12, target=None,
     _gate("synthesised input")
     user32 = ctypes.windll.user32
     point = wintypes.POINT()
-    user32.GetCursorPos(byref(point))
+    user32.GetCursorPos(ctypes.byref(point))
     origin = (point.x, point.y)
 
     ax, ay = _to_absolute(int(x1), int(y1))
@@ -1048,7 +1051,7 @@ def click_at(x: int, y: int, double: bool = False, target=None) -> dict:
     _gate("synthesised input")
     user32 = ctypes.windll.user32
     point = wintypes.POINT()
-    user32.GetCursorPos(byref(point))
+    user32.GetCursorPos(ctypes.byref(point))
     origin = (point.x, point.y)
 
     ax, ay = _to_absolute(int(x), int(y))
