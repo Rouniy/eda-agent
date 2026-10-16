@@ -26,6 +26,8 @@ draws labelled bounding-box bodies with pin stubs, not the symbol art).
 from __future__ import annotations
 
 from pathlib import Path
+import math
+import tempfile
 from typing import Any, Optional
 
 from ..bridge import get_bridge
@@ -257,6 +259,88 @@ def register_render_tools(mcp):
             "bbox": geometry.get("bbox") or {},
             "bytes": len(svg),
         }
+
+    @mcp.tool()
+    async def pcb_render_2d(
+        layers: list[str],
+        rect_mils: list[float],
+        width_px: int,
+        output_path: str,
+    ) -> dict[str, Any]:
+        """Rasterize selected PCB layers in an exact board-coordinate rectangle.
+
+        The image is generated from Altium's live geometry through the local
+        SVG renderer. It is a geometry rendering, not Altium's editor pixels;
+        colors, fonts, fills, and antialiasing may differ from the editor.
+        ``rect_mils`` is [left, bottom, right, top] in mils. ``Outline`` and
+        ``MultiLayer`` may be included explicitly; no extra layers are added.
+        The PNG height follows the rectangle aspect ratio.
+        """
+        if (not isinstance(layers, list) or not layers or
+                any(not isinstance(layer, str) or not layer for layer in layers)):
+            return {"ok": False, "reason": "layers must be a nonempty list of names"}
+        if not isinstance(rect_mils, list) or len(rect_mils) != 4:
+            return {"ok": False, "reason": "rect_mils must contain four coordinates"}
+        try:
+            x1, y1, x2, y2 = (float(v) for v in rect_mils)
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "rect_mils must contain numbers"}
+        if not all(math.isfinite(v) for v in (x1, y1, x2, y2)) or x2 <= x1 or y2 <= y1:
+            return {"ok": False, "reason": "rect_mils must be finite [left, bottom, right, top]"}
+        if not isinstance(width_px, int) or not 1 <= width_px <= 8192:
+            return {"ok": False, "reason": "width_px must be 1..8192"}
+        height_px = round(width_px * (y2 - y1) / (x2 - x1))
+        if not 1 <= height_px <= 8192:
+            return {"ok": False, "reason": "resulting height must be 1..8192 pixels"}
+        target = Path(output_path).expanduser().resolve()
+        if target.suffix.lower() != ".png":
+            return {"ok": False, "reason": "output_path must end in .png"}
+
+        geometry = await get_bridge().send_command_async(
+            "generic.get_pcb_geometry", {}, timeout=120.0)
+        if not isinstance(geometry, dict):
+            return {"ok": False, "reason": "no PCB geometry returned"}
+        available = set(geometry.get("layers") or {})
+        for kind in ("regions", "tracks", "arcs", "pads", "texts"):
+            available.update(item.get("layer") for item in geometry.get(kind) or [])
+        available.update(("Outline", "MultiLayer"))
+        unknown = sorted(set(layers) - available)
+        if unknown:
+            return {"ok": False, "reason": f"unknown PCB layers: {', '.join(unknown)}",
+                    "available_layers": sorted(str(x) for x in available if x)}
+
+        # The renderer normally honors Altium's layer visibility and adds
+        # an outline, labels, and drills. Here the caller's list is exact.
+        selected = set(layers)
+        region = dict(geometry)
+        region["bbox"] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+        region["outline"] = geometry.get("outline") if "Outline" in selected else []
+        region["components"] = []
+        region["vias"] = geometry.get("vias") if "MultiLayer" in selected else []
+        region["layers"] = {
+            name: {**meta, "visible": name in selected}
+            for name, meta in (geometry.get("layers") or {}).items()
+            if isinstance(meta, dict)
+        }
+        svg = render_pcb_svg(region, PcbRenderOptions(
+            margin_mils=0, layers=layers, flip_y=True,
+            show_drills="MultiLayer" in selected,
+            show_designators=False, interactive_legend=False,
+        ))
+        svg = svg.replace("<svg ", f'<svg width="{width_px}" height="{height_px}" ', 1)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="pcb_render_") as tmp:
+            svg_path = Path(tmp) / "region.svg"
+            svg_path.write_text(svg, encoding="utf-8")
+            result = rasterize_svg(str(svg_path), str(target),
+                                   width=width_px, height=height_px, timeout=120.0)
+        if not result.get("ok"):
+            return {"ok": False, "reason": result.get("reason", "rasterization failed")}
+        return {"ok": True, "output_path": str(target), "width_px": width_px,
+                "height_px": height_px, "rect_mils": [x1, y1, x2, y2],
+                "layers": layers,
+                "scale_px_per_mm": width_px / ((x2 - x1) * 0.0254),
+                "source": "Altium geometry; local SVG renderer"}
 
     @mcp.tool()
     async def design_visual_review(

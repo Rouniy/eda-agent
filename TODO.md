@@ -19,7 +19,9 @@
   `StartMCPServer`. Current detach stops the worker, not the HTTP transport.
 - Find and natively qualify an absolute 3-D camera API before promising
   get/set, arbitrary-angle rotate, orientation-preserving fit, or repeatable
-  image scale. Add deterministic 2-D layer/region rendering separately.
+  image scale. `pcb_render_2d` now writes a deterministic selected-layer PNG
+  from live geometry for a requested rectangle; compare its pixels only with
+  a renderer using matching geometry, palette, fonts and rasterizer settings.
 - Validate `pcb_3d_capture` against multiple windows and view modes; current
   capture is a current-canvas PNG with `view_mode_verified: false` and Altium's
   floating canvas toolbar may be visible.

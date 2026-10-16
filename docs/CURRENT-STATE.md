@@ -2,6 +2,16 @@
 
 ## Main branch handoff, 2026-10-16
 
+Follow-up: Python MCP now includes `pcb_render_2d` for exact mil-coordinate
+rectangles and explicit layer lists. On the disposable working board it wrote
+an 800x2160 PNG of the full region and a 500x500 `TopOverlay`-only crop;
+both were inspected, and the cropped image contained only the requested
+silkscreen layer. The network MCP was restarted from `main` and listed 574
+tools including `pcb_render_2d`; `app_ping` matched loaded and bundled native
+script `2026.10.16.3`. The local raster derives from Altium geometry and
+does not claim pixel identity with Altium's editor. The 3-D camera and PCB
+native selection limitations below remain open.
+
 The owner authorized discarding changes to the disposable Altium test project
 and restarting components needed for native acceptance. The source changes were
 committed to `main`. A follow-up fix removed `SaveAllDirty` from the native
