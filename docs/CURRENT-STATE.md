@@ -12,6 +12,11 @@ script `2026.10.16.3`. The local raster derives from Altium geometry and
 does not claim pixel identity with Altium's editor. The 3-D camera and PCB
 native selection limitations below remain open.
 
+`app_attach` now starts the local bundled `StartMCPServer` worker if it was
+stopped by `app_detach`. A live network detach/attach/ping sequence succeeded:
+the attach response reported `worker_launch_requested=true`, a second attach
+reported false, and the focused test PcbDoc remained `modified=false`.
+
 The owner authorized discarding changes to the disposable Altium test project
 and restarting components needed for native acceptance. The source changes were
 committed to `main`. A follow-up fix removed `SaveAllDirty` from the native

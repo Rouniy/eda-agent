@@ -3,7 +3,9 @@
 """Application-level tools for Altium Designer MCP Server."""
 
 import os
+import asyncio
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -12,6 +14,7 @@ from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
 from ..bridge import get_bridge, AltiumNotRunningError
 from ..cli import get_bundled_scripts_path
+from ..config import get_config
 from .datasheet_hints import DATASHEET_RULES
 from ..atomicfile import replace_with_retry
 
@@ -399,10 +402,10 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def app_attach() -> dict[str, Any]:
-        """Connect to a running Altium Designer instance.
+        """Connect to Altium, starting the bundled script worker if stopped.
 
-        This verifies Altium is running and the polling script is responding.
-        The Altium_API.PrjScr script must be running (StartMCPServer) in Altium.
+        Altium must already be running. When the DelphiScript worker was stopped
+        by app_detach, the local URI launcher starts StartMCPServer again.
 
         Returns:
             Dictionary with attachment status
@@ -410,13 +413,48 @@ def register_application_tools(mcp):
         bridge = get_bridge()
         try:
             bridge.attach()
-            script_loaded = bridge.ping()
+            script_loaded = await asyncio.to_thread(bridge.ping)
+            relaunched = False
+            launch_error = None
+            if not script_loaded and sys.platform == "win32":
+                launcher = Path(__file__).resolve().parents[3] / "scripts" / "start-altium-bridge.ps1"
+                if any(get_config().workspace_dir.glob("progress_*.json")):
+                    launch_error = "Altium is still processing a command"
+                elif await asyncio.to_thread(bridge._dialog_probe):
+                    launch_error = "Altium has a modal dialog"
+                elif not launcher.is_file():
+                    launch_error = "local StartMCPServer launcher is unavailable"
+                else:
+                    try:
+                        proc = await asyncio.to_thread(
+                            subprocess.run,
+                            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                             "-File", str(launcher)],
+                            capture_output=True, text=True, timeout=15, check=False,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                        )
+                        if proc.returncode != 0:
+                            launch_error = (proc.stderr or proc.stdout or
+                                            f"launcher exited {proc.returncode}")[:300]
+                        else:
+                            relaunched = True
+                            for _ in range(12):
+                                await asyncio.sleep(1)
+                                if await asyncio.to_thread(bridge.ping):
+                                    script_loaded = True
+                                    break
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        launch_error = str(exc)
+            if not script_loaded:
+                bridge.detach()
             return {
-                "attached": True,
+                "attached": script_loaded,
                 "script_loaded": script_loaded,
+                "worker_launch_requested": relaunched,
+                "launch_error": launch_error,
                 "message": "Connected to Altium Designer, script is responding"
                 if script_loaded
-                else "Altium is running but script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
+                else "Altium is running but StartMCPServer did not respond.",
                 "_system_reminder": _SESSION_REMINDER,
             }
         except AltiumNotRunningError as e:
@@ -437,8 +475,8 @@ def register_application_tools(mcp):
         checkpoints, after a routing pass, before running DRC, or before
         closing, to persist everything.
 
-        Detach also triggers save_all automatically, so you don't need this
-        as the very last step.
+        Detach does not save documents; call this explicitly when a save is
+        wanted.
 
         CHECK ``still_dirty``, DO NOT ASSUME. Altium refuses to save while
         a command is active in the editor and asks a human whether to
@@ -754,9 +792,8 @@ def register_application_tools(mcp):
         and stops the Python keep-alive. It does not save documents. The MCP
         transport remains available for tools that do not need DelphiScript.
 
-        After detach, the Altium script has fully stopped. To run script-backed
-        tools later the operator must re-launch StartMCPServer in Altium, then
-        call app_attach. app_attach alone cannot restart the stopped script.
+        After detach, app_attach launches StartMCPServer again when the local
+        launcher is available.
 
         Returns:
             Dictionary confirming detachment
@@ -770,7 +807,7 @@ def register_application_tools(mcp):
         return {
             "attached": False,
             "mcp_listening": True,
-            "message": "Released the Altium scripting engine; MCP transport remains available. Re-launch StartMCPServer in Altium before app_attach.",
+            "message": "Released the Altium scripting engine; MCP transport remains available. Call app_attach to restart the script worker.",
         }
 
     @mcp.tool()

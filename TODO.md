@@ -15,8 +15,9 @@
   `Selected=false`. Find another native selection mechanism and qualify it
   before enabling this tool for 3-D zoom workflows.
 - Design and qualify a bridge lifecycle that releases the scripting engine
-  between calls while allowing `app_attach` to restart it without manual
-  `StartMCPServer`. Current detach stops the worker, not the HTTP transport.
+  between calls. `app_detach` stops the worker while retaining HTTP, and
+  `app_attach` now restarts it through the local URI launcher; a live
+  detach/attach/ping sequence passed. Per-call or idle release remains open.
 - Find and natively qualify an absolute 3-D camera API before promising
   get/set, arbitrary-angle rotate, orientation-preserving fit, or repeatable
   image scale. `pcb_render_2d` now writes a deterministic selected-layer PNG
