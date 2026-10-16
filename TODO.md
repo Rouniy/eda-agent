@@ -9,10 +9,11 @@
   match but read-back returned `Selected=false`. The tab showed `*` while
   `app_get_active_document` said `modified=false`; the cause of the star is
   uncertain because the owner was active. The live Python wrapper is disabled.
-  Source-only candidate `2026.10.16.1` introduces `pcb.select_component` and
-  two-stage read-back. The owner later authorized discarding disposable test
-  edits and restarting components. Reproduce on a disposable board, verify actual
-  selection and dirty state, then qualify before enabling the tool again.
+  Candidate `2026.10.16.3` introduces `pcb.select_component` and two-stage
+  read-back. After the owner authorized discarding disposable test edits, native
+  tests on FD4, C126 and C128 returned `SELECTION_FAILED`; separate reads showed
+  `Selected=false`. Find another native selection mechanism and qualify it
+  before enabling this tool for 3-D zoom workflows.
 - Design and qualify a bridge lifecycle that releases the scripting engine
   between calls while allowing `app_attach` to restart it without manual
   `StartMCPServer`. Current detach stops the worker, not the HTTP transport.

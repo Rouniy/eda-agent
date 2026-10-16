@@ -51,7 +51,7 @@ def test_old_loaded_script_cannot_claim_selection(monkeypatch):
 def test_match_is_not_success_when_second_read_is_unselected(monkeypatch):
     mcp = _Mcp()
     generic.register_generic_tools(mcp)
-    bridge = _Bridge("2026.10.16.1", selected=False)
+    bridge = _Bridge("2026.10.16.3", selected=False)
     monkeypatch.setattr(generic, "get_bridge", lambda: bridge)
 
     result = asyncio.run(mcp.tools["pcb_select"]("FD4"))

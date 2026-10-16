@@ -8,8 +8,17 @@ committed to `main`. A follow-up fix removed `SaveAllDirty` from the native
 `application.stop_server` dispatch: detach now stops the pump without saving
 documents. The 10-minute detach hint now describes the timer pump accurately.
 The combined script rebuilt with zero lint errors or warnings; 76 relevant
-Python tests passed. The loaded Altium script must still be checked separately
-before claiming this native change is active.
+Python tests passed. Native reload and acceptance are recorded below.
+
+Native follow-up: `application.reload_document` with `discard_changes=true`
+reopened the disposable `vd-tx-imod-QPA2237.PcbDoc` from disk. The script was
+relaunched from `main`; `application.ping` confirmed `2026.10.16.3` on Altium
+`26.10.1.5`. `pcb.select_component` reached the requested board but returned
+`SELECTION_FAILED` for FD4, C126 and C128. Separate `generic.query_objects`
+reads confirmed `Selected=false`; the document API reported `modified=false`.
+This selection API remains unqualified until a native selection mechanism
+passes read-back. Python MCP on TCP 14701 runs from `main`; the relay on TCP
+14700 remains available.
 
 ## Local Python MCP follow-up, 2026-10-16
 

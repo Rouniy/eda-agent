@@ -5781,6 +5781,7 @@ Var
     Doc : IDocument;
     Board : IPCB_Board;
     Comp : IPCB_Component;
+    Iter : IPCB_BoardIterator;
     Designator, ExpectedPath, ActualPath, Why : String;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
@@ -5814,11 +5815,6 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
         Exit;
     End;
-    If Board.IsLibrary Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'A PcbLib is focused, not a PcbDoc');
-        Exit;
-    End;
     ActualPath := Board.FileName;
     If UpperCase(ActualPath) <> UpperCase(ExpectedPath) Then
     Begin
@@ -5826,15 +5822,29 @@ Begin
             'Focused PCB path changed before selection');
         Exit;
     End;
-    Comp := Board.GetPcbComponentByRefDes(Designator);
+    Comp := Nil;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_LayerSet(MkSet(eTopLayer, eBottomLayer));
+        Iter.AddFilter_Method(eProcessAll);
+        Comp := Iter.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            If UpperCase(Comp.Name.Text) = UpperCase(Designator) Then Break;
+            Comp := Iter.NextPCBObject;
+        End;
+        If Comp <> Nil Then Comp.Selected := True;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
     If Comp = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
             'PCB component not found: ' + Designator);
         Exit;
     End;
-    Comp.Selected := True;
-    Board.GraphicallyInvalidate;
+    Board.ViewManager_FullUpdate;
     If Not Comp.Selected Then
     Begin
         Result := BuildErrorResponse(RequestId, 'SELECTION_FAILED',

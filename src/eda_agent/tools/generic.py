@@ -692,7 +692,7 @@ def register_generic_tools(mcp):
     async def pcb_select(designator: str) -> dict[str, Any]:
         """Select a component by exact designator on the focused PcbDoc.
 
-        Requires native script 2026.10.16.1. The response is checked
+        Requires native script 2026.10.16.3. The response is checked
         with a separate object query; a match count alone is not proof that
         selection took effect. Does not save the board.
         """
@@ -700,9 +700,9 @@ def register_generic_tools(mcp):
             return {"success": False, "error": "Invalid PCB designator"}
         bridge = get_bridge()
         ping = await bridge.send_command_async("application.ping")
-        if ping.get("script_version") != "2026.10.16.1":
+        if ping.get("script_version") != "2026.10.16.3":
             return {"success": False, "error":
-                    "PCB selection requires native script 2026.10.16.1; "
+                    "PCB selection requires native script 2026.10.16.3; "
                     f"loaded version is {ping.get('script_version', 'unknown')}"}
         active = await bridge.send_command_async("application.get_active_document")
         if str(active.get("document_kind", "")).lower() not in {"pcb", "pcbdoc"}:
