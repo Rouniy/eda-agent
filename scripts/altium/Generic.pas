@@ -2979,19 +2979,15 @@ Begin
         Exit;
     End;
 
-    { Detect the wire format. The keyed '~~' encoding always starts with a  }
-    { 'scope=' field (the Python helper defaults it to active_doc), and a   }
-    { legacy payload starts with the scope VALUE instead, so the prefix     }
-    { test is unambiguous. A multi-op keyed payload also carries '~~'.      }
-    Keyed := (Copy(Operations, 1, 6) = 'scope=') Or (Pos('~~', Operations) > 0);
-
     TotalMatched := 0;
     OpCount := 0;
     OpSkipped := 0;
     ResultJson := '';
     ResultsJson := '';
     Remaining := Operations;
-    UseTilde := Pos('~~', Operations) > 0;
+    { A single keyed operation has no '~~' separator. }
+    UseTilde := (Copy(Operations, 1, 6) = 'scope=') Or
+        (Pos('~~', Operations) > 0);
 
     { Clear the property-write diagnostics buffer so this call only       }
     { surfaces issues raised by THIS batch, not anything left over.       }
