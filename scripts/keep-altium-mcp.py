@@ -6,6 +6,7 @@ import logging
 import msvcrt
 import os
 import asyncio
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -24,7 +25,9 @@ from eda_agent.config import get_config
 
 SCRIPTS = ROOT / "scripts"
 PYTHON = Path(sys.executable).with_name("python.exe")
-MCP_HOST = "192.168.0.33"
+# Probe over loopback: the machine's LAN address can change while the
+# server is healthy and still listening on all interfaces.
+MCP_HOST = "127.0.0.1"
 MCP_PORT = 14701
 DASHBOARD_PORT = 8766
 POLL_SECONDS = 30
@@ -107,7 +110,11 @@ def our_mcp_process(pid: int) -> bool:
 def start(args: list[str], log_path: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
-    env["EDA_AGENT_DASHBOARD_ALLOWED_HOSTS"] = "192.168.0.33,192.168.2.43"
+    lan_hosts = {"127.0.0.1"}
+    for addresses in psutil.net_if_addrs().values():
+        lan_hosts.update(address.address for address in addresses
+                         if address.family == socket.AF_INET)
+    env["EDA_AGENT_DASHBOARD_ALLOWED_HOSTS"] = ",".join(sorted(lan_hosts))
     with log_path.open("ab") as output:
         proc = subprocess.Popen(
             [str(PYTHON), *args],
