@@ -7,12 +7,14 @@ process and a PCB redraw, following Altium's published `pcblayer.pas` example.
 The old `Board.LayerIsDisplayed` assignment changed API readback but left the
 editor canvas unchanged. Source build/lint passed with zero errors or warnings.
 On the open `modem-stm32-2trx-lr2021.PcbDoc` in Altium 26.10.1.5, loaded
-script `2026.10.16.12` hid `TOP-L01` and changed 501,209 of 744,000 pixels
-in a fixed board screenshot crop; restoring it succeeded and the document
-remained `modified=false`. The HTTP MCP on TCP 14701 was restarted separately.
-The broad green overlay remained while `TOP-L01` was hidden, so it is not
-caused solely by that layer. Other layers still need one-at-a-time visual
-identification with the owner.
+script `2026.10.16.12` hid `TOP-L01` and reported its visibility changed; the
+document remained `modified=false`. The HTTP MCP on TCP 14701 was restarted
+separately. A screenshot changed substantially, but the owner later said they
+were independently hiding other layers at the same time. That visual evidence
+cannot isolate this command's effect, and one-layer visual acceptance remains
+open. The board was reloaded from its clean saved state to restore visibility;
+this also reset the owner's unsaved view choices. The active PCB then changed
+to `vd-tx-imod-QPA2237.PcbDoc`, so no further toggles were attempted.
 
 ## Coordinator 3-D/2-D API follow-up, 2026-10-16
 
