@@ -42,6 +42,7 @@ from .parts import register_parts_tools
 from .live import register_live_tools
 from .engineering import register_engineering_tools
 from .profile import register_profile_tools
+from .resource_catalog import register_resource_catalog_tools
 
 # Recognised backends. "altium" is the default and stays the full historical
 # suite; "kicad" exposes only the KiCad-native tools; "easyeda" drives
@@ -191,6 +192,7 @@ def register_all_tools(mcp):
     # has no API at all, so they do not belong on any other
     # backend and are registered with the Altium suite alone.
     register_uiauto_tools(mcp)
+    register_resource_catalog_tools(mcp)
     register_pcb3d_tools(mcp)
     register_application_tools(mcp)
     register_project_tools(mcp)

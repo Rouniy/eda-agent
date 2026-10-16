@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Installed RCS catalog follow-up, 2026-10-17
+
+- `app_dump_menu_tree` and `app_read_resource_file` expose factory menu
+  definitions without focus. To claim live menu completeness, add a read-only
+  GUI manager query for user customisations, extension entries and dynamic
+  menus. `app_list_panel_catalog` currently returns only statically discoverable
+  panel launchers; default dock and editor filters remain unknown.
+
 ## External 3-D comparison request, 2026-10-16
 
 - Qualify multi-designator and net selection after native PCB selection passes

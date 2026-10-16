@@ -1,5 +1,21 @@
 # Current integration state / agent handoff
 
+## Read-only installed resource catalog, 2026-10-17
+
+Python MCP adds `app_dump_menu_tree`, `app_list_panel_catalog`, and
+`app_read_resource_file`. They parse the running Altium installation's
+`System/*.rcs` text without focusing or clicking the UI. The menu tool resolves
+static Tree/TreeCopy/Link entries to PL processes, parameters and shortcuts.
+The panel catalog reports only launchers discoverable in factory RCS files;
+Altium's `View|Panels` list is generated dynamically, so this is not a complete
+live catalog, and RCS does not establish the default dock or editor filter.
+User customisations and loaded extensions are not reflected in the static
+menu output. The Python MCP on TCP 14701 was restarted from this worktree;
+network discovery listed 579 tools including all three additions. Live calls
+returned 572 factory PCB menu entries and 22 static panel launchers. Thirty-three
+focused parser/toolset tests passed. The loaded native DelphiScript was not
+replaced.
+
 ## PCB layer visibility, 2026-10-16
 
 `pcb_set_layer_visibility` now uses Altium's `Pcb:DocumentPreferences`
