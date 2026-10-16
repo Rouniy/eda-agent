@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+## Coordinator 3-D/2-D API follow-up, 2026-10-16
+
+`pcb_3d_capture` now defaults to `D:\shared\xo-altium\compare\` and routes
+relative output paths there; it returns the absolute PNG path and pixel size.
+`pcb_3d_set_view` accepts integer angles and zoom factors in 0.25..4, reports
+the nearest 30-degree/2x step applied, and skips a repeated request in the
+same MCP process. Its cached view is invalidated by `pcb_3d_center`; external
+mouse camera movements cannot be detected because camera readback is absent.
+`pcb_render_2d` accepts spaced Altium layer names, defaults to the whole-board
+bbox, and reports `rect_mils` and `mils_per_pixel`. Live tests used the focused
+disposable board and wrote only to `D:\shared\xo-altium\compare\`.
+`pcb_select` accepts `designators` or `net_name` and returns a read-only
+`target_bbox_mils` while clearly reporting `selected=false`; native component
+and net selection remain unqualified. The documented `SetState_Selected(True)`
+method was tried on FD4 and failed readback exactly like the property setter,
+so the experiment was reverted. The board remained `modified=false`.
+
 ## 3-D view controls, 2026-10-16
 
 Native script `2026.10.16.11` is loaded in Altium 26.10.1.5. The new

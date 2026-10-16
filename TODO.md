@@ -2,6 +2,11 @@
 
 ## External 3-D comparison request, 2026-10-16
 
+- Qualify multi-designator and net selection after native PCB selection passes
+  readback. `pcb_select` now accepts both selectors and returns read-only
+  target bounding boxes, but truthfully reports `selected=false`. The
+  documented `SetState_Selected(True)` setter also failed live FD4 readback.
+
 - Replace the modal PCB `generic.zoom_to_xy` implementation with a natively
   validated silent coordinate-centering mechanism; the Python MCP wrapper
   currently refuses PCB calls to prevent a modal dialog.

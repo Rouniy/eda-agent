@@ -689,13 +689,70 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_select(designator: str) -> dict[str, Any]:
-        """Show the focused PcbDoc in 3-D and select a component by designator.
+    async def pcb_select(designator: str = "", designators: Optional[list[str]] = None,
+                         net_name: str = "") -> dict[str, Any]:
+        """Show the focused PcbDoc in 3-D and select PCB targets.
 
         Requires native script 2026.10.16.3 or newer. The response is checked
         with a separate object query; a match count alone is not proof that
-        selection took effect. Does not save the board.
+        selection took effect. A designator list and net name also return a
+        read-only target bounding box when native selection fails. Does not
+        save the board.
         """
+        if designators is not None or net_name:
+            if designator or (designators is not None and net_name):
+                return {"success": False, "error": "provide one selector only"}
+            bridge = get_bridge()
+            active = await bridge.send_command_async("application.get_active_document")
+            if str(active.get("document_kind", "")).lower() not in {"pcb", "pcbdoc"}:
+                return {"success": False, "error": "Focus a PcbDoc before PCB selection"}
+            await bridge.send_command_async("generic.switch_view", {"mode": "3d"})
+            if designators is not None:
+                if (not isinstance(designators, list) or not designators or
+                        any(not isinstance(name, str) or
+                            not re.fullmatch(r"[A-Za-z0-9_.-]+", name)
+                            for name in designators)):
+                    return {"success": False, "error": "Invalid designators list"}
+                components = await bridge.send_command_async("pcb.get_components")
+                by_name = {item.get("designator", "").casefold(): item
+                           for item in components.get("components", [])}
+                found = [by_name[name.casefold()] for name in designators
+                         if name.casefold() in by_name]
+                if len(found) != len(designators):
+                    return {"success": False, "error": "Some designators were not found",
+                            "found": [item.get("designator") for item in found]}
+                boxes = [item["bbox"] for item in found]
+                bbox = {"x1": min(box["x1"] for box in boxes),
+                        "y1": min(box["y1"] for box in boxes),
+                        "x2": max(box["x2"] for box in boxes),
+                        "y2": max(box["y2"] for box in boxes)}
+                return {"success": False, "selected": False,
+                        "error": "Multi-component native selection is not qualified on this Altium build",
+                        "designators": designators, "target_bbox_mils": bbox}
+            if not isinstance(net_name, str) or not net_name.strip():
+                return {"success": False, "error": "Invalid net_name"}
+            geometry = await bridge.send_command_async(
+                "generic.get_pcb_geometry", {}, timeout=120.0)
+            points = []
+            for kind in ("tracks", "pads", "vias", "regions", "arcs"):
+                for item in geometry.get(kind, []):
+                    if str(item.get("net", "")).casefold() != net_name.casefold():
+                        continue
+                    if all(key in item for key in ("x1", "y1", "x2", "y2")):
+                        points.extend(((item["x1"], item["y1"]),
+                                       (item["x2"], item["y2"])))
+                    elif all(key in item for key in ("x", "y")):
+                        points.append((item["x"], item["y"]))
+            if not points:
+                return {"success": False, "error": "Net not found in rendered geometry",
+                        "net_name": net_name}
+            return {"success": False, "selected": False,
+                    "error": "Native PCB net selection is not qualified on this Altium build",
+                    "net_name": net_name,
+                    "target_bbox_mils": {"x1": min(x for x, _ in points),
+                                         "y1": min(y for _, y in points),
+                                         "x2": max(x for x, _ in points),
+                                         "y2": max(y for _, y in points)}}
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", designator):
             return {"success": False, "error": "Invalid PCB designator"}
         bridge = get_bridge()
@@ -769,7 +826,7 @@ def register_generic_tools(mcp):
         active = await get_bridge().send_command_async(
             "application.get_active_document")
         if str(active.get("document_kind", "")).lower() in {"pcb", "pcbdoc"}:
-            return {"success": False, "error": "PCB coordinate zoom is unavailable: the current Altium process opens a modal dialog. Use obj_select with eComponentObject and obj_zoom selection for a component."}
+            return {"success": False, "error": "PCB coordinate zoom is unavailable: the current Altium process opens a modal dialog. Use pcb_3d_center to fit the board; component coordinate centering remains unsupported."}
         return await get_bridge().send_command_async(
             "generic.zoom_to_xy", {"x": str(x), "y": str(y)})
 
