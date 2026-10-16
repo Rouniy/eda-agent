@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Runtime menu catalog, 2026-10-17
+
+- Find and natively qualify a read-only enumeration of the merged menu tree
+  and View|Panels entries before adding `include_runtime` or claiming a
+  complete live panel catalog. The documented GUI manager only supports
+  lookup by known launcher/panel ID, and the Windows accessibility tree
+  exposes dynamic submenu entries after the menu is opened.
+
 ## Installed RCS catalog follow-up, 2026-10-17
 
 - `app_dump_menu_tree` and `app_read_resource_file` expose factory menu

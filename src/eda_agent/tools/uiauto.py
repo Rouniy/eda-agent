@@ -876,7 +876,7 @@ def register_uiauto_tools(mcp):
                 by default.
 
         Returns:
-            ``{"ok": true, "panels": [{name, rect, holder_class}],
+            ``{"ok": true, "panels": [{name, rect, button_hwnd, content}],
             "count": N}``, plus ``offered`` when asked for.
         """
         from ..ui import panels
@@ -892,7 +892,8 @@ def register_uiauto_tools(mcp):
             "ok": True,
             "count": len(open_now),
             "panels": [{"name": p["name"], "rect": p["rect"],
-                        "holder_class": p["holder_class"]} for p in open_now],
+                        "button_hwnd": p["button_hwnd"],
+                        "content": p["content"]} for p in open_now],
         }
         if offered_too:
             out["offered"] = panels.offered(pid)

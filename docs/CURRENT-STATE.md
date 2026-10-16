@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Focus-free menu follow-up, 2026-10-17
+
+`app_list_panels` no longer raises `KeyError: holder_class`: it returns the
+actual `button_hwnd` and `content` fields from `ui.panels.list_open`. The
+network MCP was restarted and a live no-focus call returned `ok=true` with
+the open Messages panel. The installed RCS parser remains a static catalog.
+Altium's documented `IGUIManager` exposes lookup of a known process launcher
+and panel, but no documented enumeration of the merged runtime menu tree.
+The existing accessibility reader sees submenu items only after opening that
+submenu, which requires clicks and focus. A complete, focus-free
+`include_runtime` or View|Panels catalog remains unqualified.
+
 ## Read-only installed resource catalog, 2026-10-17
 
 Python MCP adds `app_dump_menu_tree`, `app_list_panel_catalog`, and
