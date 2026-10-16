@@ -105,6 +105,7 @@ def capture_png(hwnd: int, path: str) -> bool:
     import win32gui
     import win32ui
     from PIL import Image
+    from pathlib import Path
 
     left, top, right, bottom = win32gui.GetWindowRect(hwnd)
     width, height = right - left, bottom - top
@@ -132,6 +133,7 @@ def capture_png(hwnd: int, path: str) -> bool:
         # Upscaling helps the recogniser on small UI type, which is
         # usually 8 or 9 point and sits near its resolution limit.
         image = image.resize((width * 2, height * 2), Image.LANCZOS)
+        Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
         image.save(path)
         return True
     finally:

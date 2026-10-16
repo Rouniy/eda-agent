@@ -1,5 +1,34 @@
 # Current integration state / agent handoff
 
+## Local Python MCP follow-up, 2026-10-16
+
+The Python Streamable HTTP process on TCP 14701 was restarted from this
+worktree after Python-only changes. The loaded DelphiScript remains
+`2026.10.14.5`, with no native script replacement. `app_ping` reported Altium
+`26.10.1.5`. `app_screenshot` now creates parent directories;
+`pcb_3d_capture` captures the current visible `View_Graphical` PCB canvas,
+and `pcb_select` supplies an exact PCB component-designator wrapper. On the
+owner's board, `pcb_select("FD4")` reported one match but read-back returned
+`Selected=false`; the PCB tab showed a dirty `*` while the active-document
+API reported `modified=false`. The owner was active, so the dirty marker's
+cause is unproven. The live wrapper has been disabled pending native repair. No
+save or discard was performed. `obj_zoom_to_xy` refuses a PCB request before the
+known modal `PCB:Jump` call; silent coordinate centering is still open.
+`app_detach` now reports correctly that the Python MCP transport stays up but
+the DelphiScript worker stops and needs an operator relaunch. Focused Python
+tests: 22 passed. Live checks: 567 tools listed, ping, nested screenshot,
+canvas capture and zero dialogs after the guarded zoom call. See
+`D:\shared\xo-altium\reply.md` for the external retest handoff.
+
+Source-only candidate `2026.10.16.1` adds `pcb.select_component`, focused
+board path validation and immediate selected-flag read-back. The staged Python
+wrapper requires that exact native version and verifies selection in a second
+request. Source build/lint and 64 focused tests passed. It is **not loaded in
+Altium**. The open PCB tab still has a dirty `*`; do not save/discard it or
+replace the loaded scripts as part of a test. The companion shared deployment
+runbook is absent from this workspace, so native deployment/acceptance awaits
+a reviewed path and a resolved Altium session.
+
 ## Local integration check, 2026-10-14
 
 The fork merge is under test in `D:\ai\eda-agent-large-integration` on

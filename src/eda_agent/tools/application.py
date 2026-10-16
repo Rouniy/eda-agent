@@ -741,7 +741,7 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def app_detach() -> dict[str, Any]:
-        """Stop the Altium MCP polling loop. CALL THIS WHEN YOU'RE FINISHED.
+        """Release Altium's scripting engine by stopping its polling loop.
 
         While the eda-agent MCP server is connected, a keep-alive thread pings
         Altium every 30 s, which keeps Altium's scripting engine held by the
@@ -750,15 +750,13 @@ def register_application_tools(mcp):
         loop is released.
 
         Call this tool once you've finished your Altium work for the session.
-        It flushes every dirty document via save_all, then sends
-        application.stop_server so the DelphiScript loop exits cleanly
-        within ~500 ms and stops the Python keep-alive. Altium becomes
-        immediately fully responsive.
+        It sends application.stop_server so the DelphiScript loop exits cleanly
+        and stops the Python keep-alive. It does not save documents. The MCP
+        transport remains available for tools that do not need DelphiScript.
 
-        NOTE: After detach, the Altium script has fully stopped. To run more
-        MCP tools later in the same Altium session the user must re-launch
-        StartMCPServer via File -> Run Script. Don't detach until you're
-        confident you're done.
+        After detach, the Altium script has fully stopped. To run script-backed
+        tools later the operator must re-launch StartMCPServer in Altium, then
+        call app_attach. app_attach alone cannot restart the stopped script.
 
         Returns:
             Dictionary confirming detachment
@@ -771,7 +769,8 @@ def register_application_tools(mcp):
         bridge.detach()
         return {
             "attached": False,
-            "message": "Detached from Altium Designer and stopped MCP server",
+            "mcp_listening": True,
+            "message": "Released the Altium scripting engine; MCP transport remains available. Re-launch StartMCPServer in Altium before app_attach.",
         }
 
     @mcp.tool()

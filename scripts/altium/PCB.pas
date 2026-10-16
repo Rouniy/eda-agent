@@ -5771,6 +5771,81 @@ End;
 { PCB_GetSelectedObjects - Get properties of currently selected PCB objects   }
 {..............................................................................}
 
+{ Select one component on the PCB that is focused at dispatch time. This is  }
+{ UI state, so do not enter PCBServer.PreProcess or mark the document dirty.  }
+{ The generic modify path did both and reported a match even when a later    }
+{ query found Selected=False. Return the property's read-back value here.    }
+Function PCB_SelectComponent(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    Board : IPCB_Board;
+    Comp : IPCB_Component;
+    Designator, ExpectedPath, ActualPath, Why : String;
+Begin
+    Designator := ExtractJsonValue(Params, 'designator');
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If (Designator = '') Or (ExpectedPath = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'designator and board_path are required');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace is open');
+        Exit;
+    End;
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'A PcbDoc must be focused');
+        Exit;
+    End;
+    If UpperCase(Doc.DM_DocumentKind) <> 'PCB' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'A PcbDoc must be focused');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If Board.IsLibrary Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'A PcbLib is focused, not a PcbDoc');
+        Exit;
+    End;
+    ActualPath := Board.FileName;
+    If UpperCase(ActualPath) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Focused PCB path changed before selection');
+        Exit;
+    End;
+    Comp := Board.GetPcbComponentByRefDes(Designator);
+    If Comp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'PCB component not found: ' + Designator);
+        Exit;
+    End;
+    Comp.Selected := True;
+    Board.GraphicallyInvalidate;
+    If Not Comp.Selected Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SELECTION_FAILED',
+            'Component matched but Selected did not read back as true');
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"selected":true,"designator":"' + EscapeJsonString(Designator)
+        + '","board_path":"' + EscapeJsonString(ActualPath) + '"}');
+End;
+
 { Core body shared with the selection-scoped profile (see PCB_GetComponents). }
 Function PCB_GetSelectedObjectsForBoard(Board : IPCB_Board; Params : String; RequestId : String) : String;
 Var
@@ -18023,6 +18098,7 @@ Begin
         'set_layer_color':         Result := PCB_SetLayerColor(Params, RequestId);
         'get_board_outline':       Result := PCB_GetBoardOutline(Params, RequestId);
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
+        'select_component':        Result := PCB_SelectComponent(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
         'repour_polygons':         Result := PCB_RepourPolygons(Params, RequestId);
         'place_via':               Result := PCB_PlaceVia(Params, RequestId);

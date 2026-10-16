@@ -1,5 +1,28 @@
 # Fork integration TODO
 
+## External 3-D comparison request, 2026-10-16
+
+- Replace the modal PCB `generic.zoom_to_xy` implementation with a natively
+  validated silent coordinate-centering mechanism; the Python MCP wrapper
+  currently refuses PCB calls to prevent a modal dialog.
+- Repair PCB selection: on the owner's board `pcb_select("FD4")` reported one
+  match but read-back returned `Selected=false`. The tab showed `*` while
+  `app_get_active_document` said `modified=false`; the cause of the star is
+  uncertain because the owner was active. The live Python wrapper is disabled.
+  Source-only candidate `2026.10.16.1` introduces `pcb.select_component` and
+  two-stage read-back. Deploy only after resolving the open dirty tab and the
+  missing shared runbook. Reproduce on a disposable board, verify actual
+  selection and dirty state, then qualify before enabling the tool again.
+- Design and qualify a bridge lifecycle that releases the scripting engine
+  between calls while allowing `app_attach` to restart it without manual
+  `StartMCPServer`. Current detach stops the worker, not the HTTP transport.
+- Find and natively qualify an absolute 3-D camera API before promising
+  get/set, arbitrary-angle rotate, orientation-preserving fit, or repeatable
+  image scale. Add deterministic 2-D layer/region rendering separately.
+- Validate `pcb_3d_capture` against multiple windows and view modes; current
+  capture is a current-canvas PNG with `view_mode_verified: false` and Altium's
+  floating canvas toolbar may be visible.
+
 ## Local integration follow-up, 2026-10-14
 
 - Qualify project close/reopen invalidation and the optional edit modes before

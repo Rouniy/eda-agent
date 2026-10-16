@@ -689,6 +689,49 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_select(designator: str) -> dict[str, Any]:
+        """Select a component by exact designator on the focused PcbDoc.
+
+        Requires native script 2026.10.16.1. The response is checked
+        with a separate object query; a match count alone is not proof that
+        selection took effect. Does not save the board.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", designator):
+            return {"success": False, "error": "Invalid PCB designator"}
+        bridge = get_bridge()
+        ping = await bridge.send_command_async("application.ping")
+        if ping.get("script_version") != "2026.10.16.1":
+            return {"success": False, "error":
+                    "PCB selection requires native script 2026.10.16.1; "
+                    f"loaded version is {ping.get('script_version', 'unknown')}"}
+        active = await bridge.send_command_async("application.get_active_document")
+        if str(active.get("document_kind", "")).lower() not in {"pcb", "pcbdoc"}:
+            return {"success": False, "error": "Focus a PcbDoc before PCB selection"}
+        board_path = str(active.get("file_path", ""))
+        if not board_path:
+            return {"success": False, "error": "Focused PCB path is unavailable"}
+        result = await bridge.send_command_async("pcb.select_component", {
+            "designator": designator, "board_path": board_path,
+        })
+        if result.get("selected") is not True:
+            return {"success": False, "error": "Native selection did not confirm read-back",
+                    "native_result": result}
+        readback = await bridge.send_command_async("generic.query_objects", {
+            "scope": "active_doc", "object_type": "eComponentObject",
+            "filter": f"Designator={designator}",
+            "properties": "Designator,Selected", "limit": "2",
+        })
+        after = await bridge.send_command_async("application.get_active_document")
+        objects = readback.get("objects", [])
+        verified = (str(after.get("file_path", "")).casefold() == board_path.casefold()
+                    and len(objects) == 1
+                    and str(objects[0].get("Selected", "")).lower() == "true")
+        return {"success": verified, "selected": verified,
+                "designator": designator, "board_path": board_path,
+                "readback": objects,
+                **({} if verified else {"error": "Selection did not persist to a second read"})}
+
+    @mcp.tool()
     async def obj_deselect_all() -> dict[str, Any]:
         """Clear all object selection on the active document.
 
@@ -718,6 +761,10 @@ def register_generic_tools(mcp):
     @mcp.tool()
     async def obj_zoom_to_xy(x: int, y: int) -> dict[str, Any]:
         """Center the active schematic or PCB view at X,Y in mils."""
+        active = await get_bridge().send_command_async(
+            "application.get_active_document")
+        if str(active.get("document_kind", "")).lower() in {"pcb", "pcbdoc"}:
+            return {"success": False, "error": "PCB coordinate zoom is unavailable: the current Altium process opens a modal dialog. Use obj_select with eComponentObject and obj_zoom selection for a component."}
         return await get_bridge().send_command_async(
             "generic.zoom_to_xy", {"x": str(x), "y": str(y)})
 
