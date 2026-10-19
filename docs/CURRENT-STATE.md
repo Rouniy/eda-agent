@@ -1,5 +1,32 @@
 # Current integration state / agent handoff
 
+## US-Plus-CPM PCB statistics crash and recovery, 2026-10-20
+
+At 00:30:08 the last completed native command was `project.get_board_info`
+for `D:\AI\ALTIUM\testprojects\boards-corpus\antmicro\ultrascale-plus-processing-module\PCB\PCB.PcbDoc`.
+The next reported call was `pcb_get_board_statistics`; Altium raised a
+`TShowException` access violation in `ScriptingSystem.DLL` (read of -1), with
+no native response or completed activity entry. The crash dialog was captured
+at `D:\AI\ALTIUM\testprojects\_screens\US-Plus-CPM-statistics-crash-20261020.png`
+and closed with WM_CLOSE, without invoking `Send and Close` (which offers to
+send a report). The worker was stopped and relaunched; `app_ping` again reports
+26.10.1.5 and script 2026.10.19.1. The only corpus project open was US-Plus-CPM;
+it was closed with `save=false`, and the original nine projects remained.
+`tl-hub` PCB focus was restored. No document was reported modified before
+corpus closure.
+
+An isolated read pass on that board succeeded for `proj_get_board_info`,
+`pcb_get_layer_stackup` (6 layers), `pcb_get_nets` (415),
+`pcb_get_board_outline` (29 points), `pcb_get_components` (274), and
+`pcb_get_tracks` (11,262 routed primitives, limit 1). These are single-call
+observations, not a blanket guarantee for other tools. No second
+`pcb_get_board_statistics` call was made; the precise failing native statement
+is unisolated. The stats handler combines an all-object iterator, raw track
+casts/coordinates, outline rebuild, and V7 stack traversal. The separately
+successful outline and stackup reads narrow the suspect area but do not
+identify it. Avoid `pcb_get_board_statistics` on US-Plus-CPM until an
+instrumented native test on a disposable copy identifies and fixes the fault.
+
 ## ERC deployment and project restoration, 2026-10-20
 
 After the X-Office coordinator's `ready for restart`, the bridge detached

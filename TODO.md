@@ -1,5 +1,17 @@
 # Fork integration TODO
 
+## US-Plus-CPM statistics crash, 2026-10-20
+
+- Instrument `PCB_GetBoardStatisticsForBoard` in a disposable runtime to
+  locate the native access violation seen after `pcb_get_board_statistics`
+  on antmicro US-Plus-CPM `PCB.PcbDoc`. Avoid that tool on the board until
+  native acceptance passes. Other isolated reads that succeeded are logged
+  in CURRENT-STATE.md; do not infer all `pcb_*` tools are safe.
+- Remove the outline invalidate/rebuild/validate cycle from the statistics
+  *read* once its effect on result freshness is measured. Altium documents
+  that it refreshes outline and internal plane state; the current wrapper
+  performs it even though the core function is read-only.
+
 ## ERC and DRC follow-up, 2026-10-19
 
 - [x] Deploy native script `2026.10.19.1` after a coordinated bridge stop
