@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.16.12';
+    SCRIPT_VERSION = '2026.10.19.1';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -46413,7 +46413,9 @@ Function Gen_RunERC(Params : String; RequestId : String) : String;
 Var
     Workspace : IWorkspace;
     Project : IProject;
+    ProjectPath : String;
 Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
     Workspace := GetWorkspace;
     If Workspace = Nil Then
     Begin
@@ -46421,22 +46423,29 @@ Begin
         Exit;
     End;
 
-    Project := Workspace.DM_FocusedProject;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'Project is not open: ' + ProjectPath);
+        Exit;
+    End;
+    If Project.DM_ProjectFullPath = 'Free Documents' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'The focused document belongs to Free Documents; pass project_path');
         Exit;
     End;
 
-    // Compile the project first (required before ERC)
+    // DM_Compile populates this project's ERC violations. Sch:ERC has no
+    // verified outcome and can return without changing that list.
     SmartCompile(Project);
-
-    // Run ERC via RunProcess
-    ResetParameters;
-    RunProcess('Sch:ERC');
-
     Result := BuildSuccessResponse(RequestId,
-        '{"success":true,"message":"ERC completed on project"}');
+        '{"success":true,"project_path":"' +
+        EscapeJsonString(Project.DM_ProjectFullPath) + '",'
+        + '"violation_count":' + IntToStr(Project.DM_ViolationCount) + ','
+        + '"compile_action":"' + EscapeJsonString(LastCompileAction) + '"}');
 End;
 
 {..............................................................................}
@@ -46992,6 +47001,7 @@ Function Gen_GetErcViolations(Params : String; RequestId : String) : String;
 Var
     Workspace : IWorkspace;
     Project : IProject;
+    ProjectPath : String;
     Violation : IViolation;
     RelObj : IDMObject;
     I, J, VCount, MaxItems, RelCount, Emitted, ErrorLevel : Integer;
@@ -47002,6 +47012,7 @@ Var
     Desc, Detail, Kind, DocName, Probe, SuppressedText : String;
 Begin
     MaxItems := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -47010,10 +47021,18 @@ Begin
         Exit;
     End;
 
-    Project := Workspace.DM_FocusedProject;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No focused project');
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'Project is not open: ' + ProjectPath);
+        Exit;
+    End;
+    If Project.DM_ProjectFullPath = 'Free Documents' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+            'The focused document belongs to Free Documents; pass project_path');
         Exit;
     End;
 
@@ -47136,7 +47155,8 @@ Begin
     { violation_count includes suppressed and No Report entries.
       Active severity counts refer to the complete compiled project. }
     Result := BuildSuccessResponse(RequestId,
-        '{"violation_count":' + IntToStr(VCount) +
+        '{"project_path":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '",'
+        + '"violation_count":' + IntToStr(VCount) +
         ',"active_count":' + IntToStr(ActiveCount) +
         ',"suppressed_count":' + IntToStr(SuppressedCount) +
         ',"no_report_count":' + IntToStr(NoReportCount) +

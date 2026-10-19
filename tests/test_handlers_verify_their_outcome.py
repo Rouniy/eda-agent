@@ -177,6 +177,21 @@ def test_a_zero_drc_cannot_masquerade_as_a_clean_board():
         "actually ran")
 
 
+def test_erc_targets_one_project_and_reports_its_compile_result():
+    """An active sheet can belong to a different project than DM_FocusedProject."""
+    src = _src("Generic.pas")
+    for func in ("Gen_RunERC", "Gen_GetErcViolations"):
+        body = _body(src, func)
+        assert "ExtractJsonValue(Params, 'project_path')" in body
+        assert "FindProjectByPath(Workspace, ProjectPath)" in body
+        assert "Free Documents" in body
+        assert "Project.DM_ProjectFullPath" in body
+    run = _body(src, "Gen_RunERC")
+    assert "SmartCompile(Project)" in run
+    assert "Project.DM_ViolationCount" in run
+    assert "RunProcess('Sch:ERC')" not in run
+
+
 # ---------------------------------------------------------------
 # Geometry.
 # ---------------------------------------------------------------

@@ -1,5 +1,30 @@
 # Current integration state / agent handoff
 
+## ERC targeting and DRC investigation, 2026-10-19
+
+On the live 26.10.1.5 Altium instance, activating the tl-tx-booster-cbp
+schematic did not consistently focus its project: `proj_get_focused` returned
+either a different project or `Free Documents`. The old `proj_run_erc` and
+`proj_get_erc_violations` both used `DM_FocusedProject`, explaining the empty
+or wrong-project results despite target ERC messages. Source now accepts an
+explicit `project_path`, compiles that project, returns its path/count/action,
+and refuses Free Documents. The Python tools require native script
+`2026.10.19.1` before using this behavior. The installed native script remains
+`2026.10.16.12`. Native verification and deployment require a coordinated
+Altium restart, following AGENTS.md.
+
+The target PCB screenshot saved at
+`D:\AI\ALTIUM\testprojects\_screens\tl-tx-booster-drc-state-20261019.png`
+showed `Idle state - ready for command`, with no Place Line operation active.
+`PCB:DesignRuleCheck` is the static Tools menu process; Place Line uses the
+distinct `PCB:ManualRoute` process. A live menu click did not open a DRC dialog
+before another operator changed focus, so the transient Place Line report is
+unexplained. Altium's documented batch flow is Tools > Design Rule Check,
+Design Rule Checker dialog, Run Design Rule Check button. The native DRC
+tool's report confirmation assumes a `.DRC` file beside the board, while
+Altium documents configurable HTML/TXT/XML output paths; that confirmation
+is not reliable for every configured report format.
+
 ## Focus-free menu follow-up, 2026-10-17
 
 `app_list_panels` no longer raises `KeyError: holder_class`: it returns the

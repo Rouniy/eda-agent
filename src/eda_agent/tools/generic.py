@@ -43,6 +43,24 @@ PLACEMENT_KEYS = frozenset({
     "footprint",
 })
 
+_ERC_PROJECT_PATH_SCRIPT_VERSION = "2026.10.19.1"
+
+
+async def _erc_script_ready(bridge) -> dict[str, Any] | None:
+    """Avoid silently running a project_path request on an older script."""
+    ping = await bridge.send_command_async("application.ping")
+    loaded = ping.get("script_version") if isinstance(ping, dict) else None
+    if (isinstance(loaded, str)
+            and re.fullmatch(r"\d{4}\.\d{1,2}\.\d{1,2}\.\d+", loaded)
+            and tuple(map(int, loaded.split("."))) >= (2026, 10, 19, 1)):
+        return None
+    return {
+        "ok": False,
+        "error": "ERC project targeting requires the updated Altium script",
+        "required_script_version": _ERC_PROJECT_PATH_SCRIPT_VERSION,
+        "loaded_script_version": loaded,
+    }
+
 
 def unknown_placement_keys(
     placements: list[dict[str, Any]],
@@ -1062,18 +1080,26 @@ def register_generic_tools(mcp):
             return {"success": True, "process": process_name}
 
     @mcp.tool()
-    async def proj_run_erc() -> dict[str, Any]:
-        """Run Electrical Rules Check on the focused project.
+    async def proj_run_erc(project_path: str = "") -> dict[str, Any]:
+        """Compile and check ERC violations for an exact open project.
 
-        Compiles the project first (required), then runs ERC.
+        Compiles the project, which populates its ERC violations.
         Call ``proj_get_erc_violations()`` afterwards to retrieve the
         structured list of violations.
 
+        Args:
+            project_path: Full path to the open .PrjPcb. If omitted, the
+                focused project is used; Free Documents is refused.
+
         Returns:
-            Dictionary confirming ERC execution
+            Project path, compile action and violation count.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("generic.run_erc", {})
+        not_ready = await _erc_script_ready(bridge)
+        if not_ready is not None:
+            return not_ready
+        params = {"project_path": project_path} if project_path else {}
+        result = await bridge.send_command_async("generic.run_erc", params)
         return result
 
     @mcp.tool()
@@ -1181,7 +1207,9 @@ def register_generic_tools(mcp):
         )
 
     @mcp.tool()
-    async def proj_get_erc_violations(limit: int = 100) -> dict[str, Any]:
+    async def proj_get_erc_violations(
+        limit: int = 100, project_path: str = "",
+    ) -> dict[str, Any]:
         """Return the ERC violation list produced by the last
         ``proj_run_erc()`` invocation.
 
@@ -1221,6 +1249,8 @@ def register_generic_tools(mcp):
         Args:
             limit: Maximum violations to return (default 100). 0 or
                 negative returns every violation.
+            project_path: Full path to the open .PrjPcb. If omitted, the
+                focused project is used; Free Documents is refused.
 
         Returns:
             Dictionary with violation_count (true total), returned, limit,
@@ -1229,8 +1259,14 @@ def register_generic_tools(mcp):
             cross_probe).
         """
         bridge = get_bridge()
+        not_ready = await _erc_script_ready(bridge)
+        if not_ready is not None:
+            return not_ready
+        params = {"limit": str(int(limit))}
+        if project_path:
+            params["project_path"] = project_path
         return await bridge.send_command_async(
-            "generic.get_erc_violations", {"limit": str(int(limit))})
+            "generic.get_erc_violations", params)
 
     @mcp.tool()
     async def obj_highlight_net(
