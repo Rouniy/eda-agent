@@ -1,5 +1,31 @@
 # Current integration state / agent handoff
 
+## ERC deployment and project restoration, 2026-10-20
+
+After the X-Office coordinator's `ready for restart`, the bridge detached
+without saving (`_session_end` at 00:05:14), and Altium was closed normally.
+Altium 26.10.1.5 was restarted with script `2026.10.19.1`; the HTTP MCP on
+port 14701 was restarted separately to load the Python ERC argument schema.
+`app_ping` reports matching loaded/bundled versions. `proj_run_erc` with the
+explicit `tl-tx-booster-cbp.PrjPcb` path returned 12 violations and
+`proj_get_erc_violations` returned 12 (5 requested); `proj_get_messages`
+also returned 12. The focused document remained `tl-hub` PCB, demonstrating
+the exact-path ERC calls did not follow focus. Nine projects are open:
+the seven requested design projects and both Altium_API script projects.
+The 13 previously loaded design documents were restored; no document reported
+modified. `Free Documents` is empty. Both TCP 14700 and 14701 listen on
+`0.0.0.0`. The pre-restart project/document snapshot is at
+`D:\AI\ALTIUM\testprojects\_screens\altium-restart-snapshot-20261020.json`.
+The combined native source SHA-256 is
+`3D04C48C9FC2CC20AE96902FF11B8F6AFF132DE09F9A6CE775E52038E8E1E21E`.
+
+The first URI launch created an extra Altium process because startup update
+prompts were open. The prompts were declined/closed, that extra process exited,
+and a single Altium process remained. An autonomous supervisor briefly started
+the correct native script; a subsequent bridge-restart attempt stopped it.
+`app_attach` then started the stable final session. No CAD save or discard
+was requested.
+
 ## ERC targeting and DRC investigation, 2026-10-19
 
 On the live 26.10.1.5 Altium instance, activating the tl-tx-booster-cbp
@@ -9,9 +35,8 @@ either a different project or `Free Documents`. The old `proj_run_erc` and
 or wrong-project results despite target ERC messages. Source now accepts an
 explicit `project_path`, compiles that project, returns its path/count/action,
 and refuses Free Documents. The Python tools require native script
-`2026.10.19.1` before using this behavior. The installed native script remains
-`2026.10.16.12`. Native verification and deployment require a coordinated
-Altium restart, following AGENTS.md.
+`2026.10.19.1` before using this behavior. The 2026-10-20 deployment and
+native verification are recorded above.
 
 The target PCB screenshot saved at
 `D:\AI\ALTIUM\testprojects\_screens\tl-tx-booster-drc-state-20261019.png`

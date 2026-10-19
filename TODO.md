@@ -2,9 +2,9 @@
 
 ## ERC and DRC follow-up, 2026-10-19
 
-- Deploy native script `2026.10.19.1` only after a coordinated bridge stop
-  and Altium close. Run ERC for the exact tl-tx-booster-cbp `project_path`
-  and compare count/details with `proj_get_messages`.
+- [x] Deploy native script `2026.10.19.1` after a coordinated bridge stop
+  and Altium close. Exact-path ERC for tl-tx-booster-cbp returned 12
+  violations, matching `proj_get_messages` on 2026-10-20.
 - Reproduce the transient Place Line report from `pcb_run_drc` on a stable
   focused board. Qualify DRC completion against the configured report format
   and output path; the current `.DRC`-beside-board timestamp check cannot
