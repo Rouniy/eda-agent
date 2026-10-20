@@ -1660,13 +1660,11 @@ End;
 Function PCB_GetComponentsForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
     Iterator : IPCB_BoardIterator;
-    GrpIter : IPCB_GroupIterator;
     Comp : IPCB_Component;
-    Prim : IPCB_Primitive;
-    BBox, PrimBBox, PlacementBBox : TCoordRect;
+    BBox : TCoordRect;
     JsonItems, Designator, Footprint, LayerStr : String;
     CommentStr, SrcDesignator, SrcUniqueId, UniqueIdStr : String;
-    First, HasPlacementBBox : Boolean;
+    First : Boolean;
     Count, HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Integer;
 Begin
     JsonItems := '';
@@ -1693,42 +1691,12 @@ Begin
         Try UniqueIdStr := Comp.UniqueId; Except UniqueIdStr := ''; End;
         Try HeightMils := CoordToMils(Comp.Height); Except HeightMils := 0; End;
 
-        { Component.BoundingRectangle includes designator/comment text. That
-          makes a 0201 package look hundreds of mils wide and causes false
-          overlap/utilization failures in the auto-placer. Build a separate
-          physical placement box from non-text footprint primitives. }
-        HasPlacementBBox := False;
-        GrpIter := Comp.GroupIterator_Create;
-        Try
-            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
-                eArcObject, eFillObject, eRegionObject));
-            Prim := GrpIter.FirstPCBObject;
-            While Prim <> Nil Do
-            Begin
-                Try
-                    PrimBBox := Prim.BoundingRectangle;
-                    If Not HasPlacementBBox Then
-                    Begin
-                        PlacementBBox := PrimBBox;
-                        HasPlacementBBox := True;
-                    End
-                    Else
-                    Begin
-                        If PrimBBox.X1 < PlacementBBox.X1 Then PlacementBBox.X1 := PrimBBox.X1;
-                        If PrimBBox.Y1 < PlacementBBox.Y1 Then PlacementBBox.Y1 := PrimBBox.Y1;
-                        If PrimBBox.X2 > PlacementBBox.X2 Then PlacementBBox.X2 := PrimBBox.X2;
-                        If PrimBBox.Y2 > PlacementBBox.Y2 Then PlacementBBox.Y2 := PrimBBox.Y2;
-                    End;
-                Except End;
-                Prim := GrpIter.NextPCBObject;
-            End;
-        Finally
-            Comp.GroupIterator_Destroy(GrpIter);
-        End;
+        { Do not walk footprint children here. Some imported footprints make
+          GroupIterator crash ScriptingSystem outright. The component's own
+          box can include name/comment text, so flag it as a fallback. }
 
-        { Bounding rectangle for collision/placement planning. Returns the    }
-        { current axis-aligned bounding box in mils, accounting for the      }
-        { component's current rotation and side. Width / Height are derived. }
+        { Visual component box; it may include name/comment text. The fallback
+          flag tells placement clients not to treat it as a precise courtyard. }
         BBoxX1 := 0; BBoxY1 := 0; BBoxX2 := 0; BBoxY2 := 0;
         BBoxW := 0; BBoxH := 0;
         Try
@@ -1740,7 +1708,6 @@ Begin
             BBoxW := BBoxX2 - BBoxX1;
             BBoxH := BBoxY2 - BBoxY1;
         Except End;
-        If Not HasPlacementBBox Then PlacementBBox := BBox;
 
         JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Designator) + '",'
             + '"comment":"' + EscapeJsonString(CommentStr) + '",'
@@ -1756,12 +1723,13 @@ Begin
             + '"bbox":{"x1":' + IntToStr(BBoxX1) + ',"y1":' + IntToStr(BBoxY1)
             + ',"x2":' + IntToStr(BBoxX2) + ',"y2":' + IntToStr(BBoxY2)
             + ',"width":' + IntToStr(BBoxW) + ',"height":' + IntToStr(BBoxH) + '},'
-            + '"placement_bbox":{"x1":' + IntToStr(CoordToMils(PlacementBBox.X1))
-            + ',"y1":' + IntToStr(CoordToMils(PlacementBBox.Y1))
-            + ',"x2":' + IntToStr(CoordToMils(PlacementBBox.X2))
-            + ',"y2":' + IntToStr(CoordToMils(PlacementBBox.Y2))
-            + ',"width":' + IntToStr(CoordToMils(PlacementBBox.X2 - PlacementBBox.X1))
-            + ',"height":' + IntToStr(CoordToMils(PlacementBBox.Y2 - PlacementBBox.Y1)) + '}}';
+            + '"placement_bbox":{"x1":' + IntToStr(BBoxX1)
+            + ',"y1":' + IntToStr(BBoxY1)
+            + ',"x2":' + IntToStr(BBoxX2)
+            + ',"y2":' + IntToStr(BBoxY2)
+            + ',"width":' + IntToStr(BBoxW)
+            + ',"height":' + IntToStr(BBoxH) + '},'
+            + '"placement_bbox_fallback":true}';
         Inc(Count);
         Comp := Iterator.NextPCBObject;
     End;

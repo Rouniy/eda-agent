@@ -1838,6 +1838,22 @@ def register_pcb_tools(mcp):
                 "raw": comp_resp,
             }
 
+        approximate = [
+            str(c.get("designator", "")) for c in raw_comps
+            if c.get("placement_bbox_fallback")
+        ]
+        if approximate:
+            return {
+                "error": "PHYSICAL_BBOX_UNAVAILABLE",
+                "reason": (
+                    "The bridge returned component boxes that may include "
+                    "designator or comment text. Placement planning requires "
+                    "physical footprint bounds."
+                ),
+                "affected_count": len(approximate),
+                "affected_designators": approximate[:20],
+            }
+
         # Resolve placement region from the board outline if not given.
         region_used: dict[str, float]
         if region and all(k in region for k in ("x1", "y1", "x2", "y2")):
@@ -1879,9 +1895,8 @@ def register_pcb_tools(mcp):
             if not ref:
                 continue
             all_designators.append(ref)
-            # Altium's ordinary BoundingRectangle includes designator/comment
-            # text and grossly inflates small packages. Prefer the physical
-            # non-text primitive box returned by current scripts.
+            # The fallback flag above prevents visual text bounds from being
+            # treated as physical footprint bounds by the solver.
             bbox = c.get("placement_bbox") or c.get("bbox") or {}
             try:
                 w = max(1.0, float(bbox.get("width", 0)))

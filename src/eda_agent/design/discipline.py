@@ -651,8 +651,9 @@ Apply these rules whenever calling `pcb_move_components`.
 1. **Plan the whole cluster before moving anything.** Call
    `pcb_get_components` once and read the full layout state: each
    component's current (x, y, rotation, layer, footprint) and its
-   `placement_bbox` (physical non-text bounding rectangle in mils; ordinary
-   `bbox` also contains designator/comment text). Sketch the target
+   `placement_bbox` and its `placement_bbox_fallback` flag. When the flag is
+   true, the box can contain designator/comment text and must not be treated
+   as a physical footprint courtyard. Sketch the target
    positions on paper or in text BEFORE issuing any move. A move tool
    call is for *applying* a placement decision, not for *exploring*
    one.

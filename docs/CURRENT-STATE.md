@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+## RaToPUS component-read crash and recovery, 2026-10-20
+
+`pcb_get_components` on the corpus RaToPUS-Control PCB raised a modal
+`ScriptingSystem.DLL` access violation after the bridge's `pcb.get_board_outline`
+read succeeded. The component reader walked every footprint's child primitives
+with a nested group iterator to calculate `placement_bbox`. Native script
+version `2026.10.20.4` removes that walk. The response retains `placement_bbox`
+for schema compatibility, but it now equals the component's visual `bbox` and
+sets `placement_bbox_fallback=true` because text may be included. The Python
+placement planner rejects this flagged geometry instead of using it for moves.
+On the same RaToPUS-Control PcbDoc, the patched native read returned 134
+components without a dialog; the project was then closed with `save=false`.
+Altium was left with the owner's nine projects and 13 loaded documents, none
+reported modified, focused on `tl-hub` PCB. `app_ping` matched loaded and bundled
+script version `2026.10.20.4`. The earlier `pcb_get_board_statistics` crash
+remains a separate unresolved native issue.
+
 ## US-Plus-CPM PCB statistics crash and recovery, 2026-10-20
 
 At 00:30:08 the last completed native command was `project.get_board_info`
