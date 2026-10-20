@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## Stabilizer Pounder track-read crash and recovery, 2026-10-20
+
+At 16:30 the X-Office operator reported `pcb_get_tracks {"limit":1}` crashing
+on `sinara\pounder\pcb\Stabilizer_Pounder.PcbDoc`, an ordinary PCB rather
+than a panel. The modal was `TShowException` with a `ScriptingSystem.DLL`
+read access violation at `00000001CE4EF32B`. It was dismissed with Escape,
+without sending a report. The script did not answer afterward, so Altium was
+closed normally and relaunched. `StartMCPServer` was launched, and the corpus
+project was closed with `proj_close(save=false)`, discarding its loaded PCB,
+schematic and project state. Final checks: the owner's nine projects plus Free
+Documents, no modal, `app_ping` successful with script `2026.10.20.4` and
+Altium `26.10.1.5`. This ordinary-board failure disproves a panel-only
+trigger. The operator is skipping `pcb_get_tracks` on the remaining corpus
+boards; the exact failing native operation remains unknown.
+
 ## Fastino panel track-read crash and recovery, 2026-10-20
 
 The X-Office operator reported a `pcb_get_tracks {"limit":1}` crash at 16:10
