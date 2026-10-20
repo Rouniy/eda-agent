@@ -6,7 +6,9 @@ import logging
 import msvcrt
 import os
 import asyncio
+import json
 import socket
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -30,7 +32,7 @@ PYTHON = Path(sys.executable).with_name("python.exe")
 MCP_HOST = "127.0.0.1"
 MCP_PORT = 14701
 DASHBOARD_PORT = 8766
-POLL_SECONDS = 30
+POLL_SECONDS = 60
 MCP_FAILURE_LIMIT = 3
 MAX_SCRIPT_LAUNCHES_PER_PROCESS = 3
 
@@ -100,6 +102,14 @@ def mcp_healthy() -> bool:
         return False
 
 
+def write_status(workspace: Path, status: dict) -> None:
+    """Publish the last completed check for operators without using Altium."""
+    destination = workspace / "altium-mcp-supervisor-status.json"
+    temporary = destination.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(destination)
+
+
 def our_mcp_process(pid: int) -> bool:
     try:
         return any("serve-altium-http.py" in arg for arg in psutil.Process(pid).cmdline())
@@ -157,36 +167,52 @@ def main() -> None:
         last_mcp_restart = 0.0
         script_launch_budget = ScriptLaunchBudget()
         while True:
+            status = {
+                "checked_at_utc": datetime.now(timezone.utc).isoformat(),
+                "check_interval_seconds": POLL_SECONDS,
+                "mcp_port": MCP_PORT,
+                "mcp_listening": False,
+                "mcp_protocol_ok": False,
+                "altium_running": False,
+                "altium_pid": None,
+                "altium_command_active": False,
+                "script_responsive": None,
+                "bridge_usable": None,
+                "dialog": None,
+            }
             try:
                 mcp_pid = listener(MCP_PORT)
+                status["mcp_listening"] = mcp_pid is not None
                 if not mcp_pid:
                     start(
                         [str(SCRIPTS / "serve-altium-http.py")],
                         workspace / "altium-http.log",
                     )
                     failed_mcp_checks = 0
-                elif mcp_healthy():
-                    failed_mcp_checks = 0
                 else:
-                    failed_mcp_checks += 1
-                    if (
-                        failed_mcp_checks >= MCP_FAILURE_LIMIT
-                        and not active_altium_command(workspace)
-                        and our_mcp_process(mcp_pid)
-                        and time.monotonic() - last_mcp_restart > 120
-                    ):
-                        psutil.Process(mcp_pid).terminate()
-                        try:
-                            psutil.Process(mcp_pid).wait(timeout=5)
-                        except psutil.TimeoutExpired:
-                            psutil.Process(mcp_pid).kill()
-                        start(
-                            [str(SCRIPTS / "serve-altium-http.py")],
-                            workspace / "altium-http.log",
-                        )
-                        logging.warning("restarted unresponsive MCP pid=%s", mcp_pid)
+                    status["mcp_protocol_ok"] = mcp_healthy()
+                    if status["mcp_protocol_ok"]:
                         failed_mcp_checks = 0
-                        last_mcp_restart = time.monotonic()
+                    else:
+                        failed_mcp_checks += 1
+                        if (
+                            failed_mcp_checks >= MCP_FAILURE_LIMIT
+                            and not active_altium_command(workspace)
+                            and our_mcp_process(mcp_pid)
+                            and time.monotonic() - last_mcp_restart > 120
+                        ):
+                            psutil.Process(mcp_pid).terminate()
+                            try:
+                                psutil.Process(mcp_pid).wait(timeout=5)
+                            except psutil.TimeoutExpired:
+                                psutil.Process(mcp_pid).kill()
+                            start(
+                                [str(SCRIPTS / "serve-altium-http.py")],
+                                workspace / "altium-http.log",
+                            )
+                            logging.warning("restarted unresponsive MCP pid=%s", mcp_pid)
+                            failed_mcp_checks = 0
+                            last_mcp_restart = time.monotonic()
                 if not listener(DASHBOARD_PORT):
                     start(
                         ["-m", "eda_agent", "dashboard", "--host", "0.0.0.0", "--port", "8766"],
@@ -195,24 +221,40 @@ def main() -> None:
 
                 altium_status = bridge.get_altium_status()
                 altium_pid = altium_status.get("pid")
+                status["altium_running"] = altium_pid is not None
+                status["altium_pid"] = altium_pid
+                status["altium_command_active"] = active_altium_command(workspace)
                 script_launch_budget.observe(altium_pid)
-                if altium_pid is not None and not active_altium_command(workspace):
+                dialog = bridge._dialog_probe() if altium_pid is not None else None
+                if dialog and dialog.get("dialog_count"):
+                    status["dialog"] = dialog
+                    dialog_summary = dialog.get("summary", "")
+                    if dialog_summary != last_blocking_dialog:
+                        logging.error("Altium is blocked by a dialog: %s; details=%s",
+                                      dialog_summary, dialog.get("dialogs", []))
+                    last_blocking_dialog = dialog_summary
+                elif altium_pid is not None and not status["altium_command_active"]:
                     if bridge.ping():
+                        status["script_responsive"] = True
                         script_launch_budget.observe(altium_pid, ping_ok=True)
                         failed_pings = 0
                         last_blocking_dialog = ""
                     else:
+                        status["script_responsive"] = False
                         failed_pings += 1
                         logging.warning("Altium script ping failed (%s)", failed_pings)
                         dialog = bridge._dialog_probe()
-                        dialog_summary = dialog.get("summary", "") if dialog else ""
-                        if dialog_summary and dialog_summary != last_blocking_dialog:
-                            logging.error("Altium is blocked by a dialog: %s", dialog_summary)
-                        last_blocking_dialog = dialog_summary
+                        if dialog and dialog.get("dialog_count"):
+                            status["dialog"] = dialog
+                            dialog_summary = dialog.get("summary", "")
+                            if dialog_summary != last_blocking_dialog:
+                                logging.error("Altium is blocked by a dialog: %s; details=%s",
+                                              dialog_summary, dialog.get("dialogs", []))
+                            last_blocking_dialog = dialog_summary
                         if (failed_pings >= 2
                                 and time.monotonic() - last_script_launch > 120
                                 and script_launch_budget.allow_launch()
-                                and not dialog
+                                and not status["dialog"]
                                 and not pending_script_launcher()):
                             subprocess.run(
                                 [
@@ -239,6 +281,15 @@ def main() -> None:
                     failed_pings = 0
             except Exception:
                 logging.exception("supervisor check failed")
+                status["check_error"] = "supervisor check failed; see altium-mcp-supervisor.log"
+            if not status["mcp_protocol_ok"] or not status["altium_running"] or status["dialog"]:
+                status["bridge_usable"] = False
+            elif status["script_responsive"] is not None:
+                status["bridge_usable"] = status["script_responsive"]
+            try:
+                write_status(workspace, status)
+            except Exception:
+                logging.exception("could not publish supervisor status")
             time.sleep(POLL_SECONDS)
 
 

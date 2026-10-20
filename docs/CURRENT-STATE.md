@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+## One-minute bridge and crash monitor, 2026-10-20
+
+The existing `scripts/keep-altium-mcp.py` supervisor now checks every 60 seconds
+and publishes its last result atomically to
+`C:\Users\Alex\EDA Agent\workspace\altium-mcp-supervisor-status.json`.
+It records MCP listener/protocol health, Altium PID, whether a native command is
+active, script responsiveness when it is safe to ping, overall bridge usability,
+and the full open-dialog diagnostic. It logs a newly observed dialog once and
+never dismisses it. The supervisor was restarted with the final code at 15:25
+local time as PID 46400; its first status reported the MCP protocol healthy but
+the bridge unusable because Altium is blocked by an `Error` dialog:
+`ScriptingSystem.DLL` read access violation at `00000001CDCDF32B`.
+The last completed native activity before the crash was `pcb.get_design_rules`
+at 15:19:38 on the OHWR VME ADC 250k 16b 36ch board; a native progress marker
+from that second remains, so the exact failing command is not yet identified.
+The dialog and active Altium session were left untouched.
+
 ## RaToPUS component-read crash and recovery, 2026-10-20
 
 `pcb_get_components` on the corpus RaToPUS-Control PCB raised a modal
