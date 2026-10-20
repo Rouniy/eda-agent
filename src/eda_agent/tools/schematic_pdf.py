@@ -11,6 +11,7 @@ import uuid
 
 DEFAULT_EXPORT_ROOT = Path(r"D:\AI\ALTIUM\testprojects\_screens")
 TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "schematic-pdf.OutJob"
+COLOR_PAGE_OPTION = "|PrintKind=0|"
 
 
 def export_root() -> Path:
@@ -66,6 +67,11 @@ def stage_schematic_project(project_path: str, output_path: str) -> tuple[Path, 
             raise ValueError(f"external SchDoc path is not supported: {relative}")
         validated_sheets.append((record, relative, original))
 
+    job = TEMPLATE.read_text(encoding="utf-8")
+    page_options = [line for line in job.splitlines() if line.startswith("PageOptions")]
+    if len(page_options) != 1 or COLOR_PAGE_OPTION not in page_options[0]:
+        raise ValueError("schematic PDF OutJob must explicitly use Color (PrintKind=0)")
+
     stage = root / "_pdf_stage" / uuid.uuid4().hex
     stage.mkdir(parents=True)
     first_sheet: Path | None = None
@@ -83,7 +89,6 @@ def stage_schematic_project(project_path: str, output_path: str) -> tuple[Path, 
 
     temporary_pdf = stage / "output" / target.name
     temporary_pdf.parent.mkdir()
-    job = TEMPLATE.read_text(encoding="utf-8")
     job = job.replace("__OUTPUT_PATH__", str(temporary_pdf))
     job = job.replace("__OUTPUT_DIR__", str(temporary_pdf.parent))
     job = job.replace("__OUTPUT_NAME__", target.name)

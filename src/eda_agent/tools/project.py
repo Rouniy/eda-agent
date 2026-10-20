@@ -1133,6 +1133,7 @@ def register_project_tools(mcp):
             outcome = {"success": True,
                        "project_path": str(Path(project_path).resolve()),
                        "output_path": str(target),
+                       "color_set": "Color",
                        "page_count": len(reader.pages),
                        "source_schdoc_count": sheet_count,
                        "page_order": page_order,

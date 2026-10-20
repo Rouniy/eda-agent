@@ -11,7 +11,10 @@ SchDoc members into a temporary project below
 there, publishes with `PublishToPDF` / `DisableDialog`, verifies the expected
 PDF and its pages, closes the staged project without saving, removes the stage,
 and atomically places the result at `output_path` under `_screens`. It returns
-the page order from PDF sheet bookmarks. External SchDoc references outside the
+the page order from PDF sheet bookmarks. The staged OutJob explicitly sets
+`PageOptions1` `PrintKind=0` (Color), and staging fails if that option is absent
+or changed. This setting belongs to the OutJob, independently of the printer's
+last preset. External SchDoc references outside the
 source project directory are rejected until staging them is qualified.
 
 Native pilot on the open antmicro Apalis Smart Vision Baseboard project yielded
@@ -24,6 +27,8 @@ was removed, and the original `Power-Supply.SchDoc` was restored as the active
 document. The HTTP MCP was restarted to load the Python tool; Altium itself was
 not restarted. This qualifies one project and does not claim that every corpus
 project's hierarchy or print settings are compatible.
+All nine pilot PDF pages contain non-gray RGB graphics commands, confirming
+that the Color setting was applied in this live export.
 
 ## Stabilizer Pounder track-read crash and recovery, 2026-10-20
 

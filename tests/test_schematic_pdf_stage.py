@@ -36,6 +36,8 @@ def test_stages_only_schdocs_under_export_root(tmp_path, monkeypatch):
     job = (staged.parent / "Documentation.OutJob").read_text(encoding="utf-8")
     assert str(temporary_pdf) in job
     assert "[Project Physical Documents]" in job
+    assert "|PrintKind=0|" in next(
+        line for line in job.splitlines() if line.startswith("PageOptions1="))
     parsed = ConfigParser(interpolation=None)
     parsed.read(staged, encoding="utf-8")
     assert parsed["Document1"]["DocumentPath"] == "SCH\\Top.SchDoc"
@@ -48,3 +50,18 @@ def test_rejects_output_outside_export_root(tmp_path, monkeypatch):
     monkeypatch.setenv("EDA_AGENT_SCHEMATIC_PDF_ROOT", str(tmp_path / "screens"))
     with pytest.raises(ValueError):
         checked_output_path(str(tmp_path / "elsewhere.pdf"))
+
+
+def test_rejects_a_noncolor_outjob_before_staging(tmp_path, monkeypatch):
+    source = tmp_path / "source" / "Sample.PrjPcb"
+    source.parent.mkdir()
+    (source.parent / "Top.SchDoc").write_bytes(b"schematic")
+    source.write_text("[Document1]\nDocumentPath=Top.SchDoc\n", encoding="utf-8")
+    root = tmp_path / "screens"
+    monkeypatch.setenv("EDA_AGENT_SCHEMATIC_PDF_ROOT", str(root))
+    mono = tmp_path / "mono.OutJob"
+    mono.write_text("PageOptions1=Record=PageOptions|PrintKind=1|\n", encoding="utf-8")
+    monkeypatch.setattr("eda_agent.tools.schematic_pdf.TEMPLATE", mono)
+    with pytest.raises(ValueError, match="Color"):
+        stage_schematic_project(str(source), str(root / "result.pdf"))
+    assert not (root / "_pdf_stage").exists()
