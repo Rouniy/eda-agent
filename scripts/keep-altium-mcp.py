@@ -63,10 +63,23 @@ def listener(port: int) -> int | None:
     return None
 
 
-def active_altium_command(workspace: Path) -> bool:
+def active_altium_command(workspace: Path, altium_pid: int | None) -> bool:
     # DelphiScript removes its progress marker when the command returns.
     # Do not interrupt a long-running command just because its ping timed out.
-    return any(workspace.glob("progress_*.json"))
+    # A crashed VM can leave a marker behind; it cannot belong to a new X2.
+    if altium_pid is None:
+        return False
+    try:
+        altium_started = psutil.Process(altium_pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    for marker in workspace.glob("progress_*.json"):
+        try:
+            if marker.stat().st_mtime >= altium_started:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
 
 
 def pending_script_launcher() -> bool:
@@ -181,6 +194,8 @@ def main() -> None:
                 "dialog": None,
             }
             try:
+                altium_status = bridge.get_altium_status()
+                altium_pid = altium_status.get("pid")
                 mcp_pid = listener(MCP_PORT)
                 status["mcp_listening"] = mcp_pid is not None
                 if not mcp_pid:
@@ -197,7 +212,7 @@ def main() -> None:
                         failed_mcp_checks += 1
                         if (
                             failed_mcp_checks >= MCP_FAILURE_LIMIT
-                            and not active_altium_command(workspace)
+                            and not active_altium_command(workspace, altium_pid)
                             and our_mcp_process(mcp_pid)
                             and time.monotonic() - last_mcp_restart > 120
                         ):
@@ -219,11 +234,9 @@ def main() -> None:
                         workspace / "altium-dashboard.log",
                     )
 
-                altium_status = bridge.get_altium_status()
-                altium_pid = altium_status.get("pid")
                 status["altium_running"] = altium_pid is not None
                 status["altium_pid"] = altium_pid
-                status["altium_command_active"] = active_altium_command(workspace)
+                status["altium_command_active"] = active_altium_command(workspace, altium_pid)
                 script_launch_budget.observe(altium_pid)
                 dialog = bridge._dialog_probe() if altium_pid is not None else None
                 if dialog and dialog.get("dialog_count"):

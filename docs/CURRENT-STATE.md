@@ -1,5 +1,32 @@
 # Current integration state / agent handoff
 
+## Fastino panel track-read crash and recovery, 2026-10-20
+
+The X-Office operator reported a `pcb_get_tracks {"limit":1}` crash at 16:10
+on the second Fastino PCB, `Panel\Panel_Fastino.PcbDoc`. The first Fastino PCB
+had read successfully; panel outline, components (zero), nets (zero), layer
+stackup, design rules, and used layers completed before the failing tracks
+call. Altium showed `TShowException`, `ScriptingSystem.DLL` read access
+violation at `00000001CF49F32B`. Escape dismissed the error without sending a
+report, but `app_ping` stayed unresponsive. Altium was closed normally. Its
+Unsaved Changes dialog named `Fastino.PCBDOC`; `Don’t Save` was invoked via UI
+Automation, and Altium exited. After relaunch, a progress marker from the old
+process prevented the keepalive from restarting the script. That stale marker
+was removed and `StartMCPServer` launched once. The Fastino project then closed
+with `proj_close(save=false)`, discarding the two PCB documents, its loaded
+schematic, and project state. Final `proj_list_open` shows the owner's nine
+projects plus Free Documents, `app_ping` matches script `2026.10.20.4`, and no
+dialog is open.
+
+The monitor now ignores progress markers older than the current Altium process
+start, preventing this stale-marker recovery failure. Three monitor tests pass;
+the restarted monitor reports MCP, script, and bridge healthy. The matching
+`...F32B` suffix across crashes is consistent with the same faulting native
+ScriptingSystem instruction after DLL relocation, but it does not identify a
+single DelphiScript helper. All four failing handlers use native PCB object
+iteration or primitive access; `pcb_get_tracks` does not read the layer stack
+or board outline. The exact failing operation on the panel remains unknown.
+
 ## One-minute bridge and crash monitor, 2026-10-20
 
 The existing `scripts/keep-altium-mcp.py` supervisor now checks every 60 seconds

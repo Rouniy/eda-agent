@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 
@@ -41,3 +42,19 @@ def test_status_is_published_atomically(tmp_path):
     assert json.loads((tmp_path / "altium-mcp-supervisor-status.json").read_text()) == status
     assert not (tmp_path / "altium-mcp-supervisor-status.json.tmp").exists()
     assert monitor.POLL_SECONDS == 60
+
+
+def test_progress_marker_from_previous_altium_process_is_ignored(tmp_path, monkeypatch):
+    monitor = _load_monitor()
+    marker = tmp_path / "progress_previous.json"
+    marker.write_text("{}")
+    os.utime(marker, (100, 100))
+
+    class Process:
+        def create_time(self):
+            return 200
+
+    monkeypatch.setattr(monitor.psutil, "Process", lambda pid: Process())
+    assert not monitor.active_altium_command(tmp_path, 42)
+    os.utime(marker, (300, 300))
+    assert monitor.active_altium_command(tmp_path, 42)
