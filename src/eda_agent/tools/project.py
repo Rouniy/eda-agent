@@ -8,6 +8,7 @@ from ..bridge import get_bridge
 from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
+from .schematic_pdf import checked_output_path, remove_stage, stage_schematic_project
 
 # Pads fetched per round-trip when verifying an ECO. pcb_get_pad_properties
 # windows its output, so a dense board needs paging -- reading only the
@@ -1046,7 +1047,7 @@ def register_project_tools(mcp):
 
     @mcp.tool()
     async def proj_export_pdf(output_path: str) -> dict[str, Any]:
-        """Export the active document to PDF.
+        """Legacy direct-print entry point; use proj_export_schematic_pdf.
 
         Args:
             output_path: Full path for the output PDF file
@@ -1054,11 +1055,122 @@ def register_project_tools(mcp):
         Returns:
             Dictionary confirming export
         """
+        return {
+            "success": False,
+            "error": {
+                "code": "PREVIEW_NOT_SILENT",
+                "message": "Direct print opens Preview SCH on this Altium build. "
+                           "Use proj_export_schematic_pdf(project_path, output_path).",
+            },
+        }
+
+    @mcp.tool()
+    async def proj_export_schematic_pdf(project_path: str, output_path: str) -> dict[str, Any]:
+        """Silently publish all physical schematic sheets as one PDF.
+
+        Both the disposable project and its OutJob are created under
+        D:\\AI\\ALTIUM\\testprojects\\_screens. Original project files and
+        SchDocs are only read. The PDF's sheet bookmarks report page order.
+        The project must not be edited concurrently during the export.
+        """
+        from pathlib import Path
+        import os
+        from pypdf import PdfReader
+
+        try:
+            target = checked_output_path(output_path)
+            staged_project, first_sheet, temporary_pdf, sheet_count = (
+                stage_schematic_project(project_path, output_path))
+        except (OSError, ValueError) as exc:
+            return {"success": False, "error": {"code": "STAGING_FAILED", "message": str(exc)}}
+
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "project.export_pdf", {"output_path": output_path}
-        )
-        return result
+        original_active = None
+        try:
+            original_active = await bridge.send_command_async("application.get_active_document")
+        except Exception:
+            pass
+        opened = False
+        outcome: dict[str, Any] = {"success": False}
+        try:
+            opened_reply = await bridge.send_command_async(
+                "project.open", {"project_path": str(staged_project)})
+            if not isinstance(opened_reply, dict) or not opened_reply.get("success"):
+                raise RuntimeError(f"could not open staged project: {opened_reply}")
+            opened = True
+            open_sheet = await bridge.send_command_async(
+                "application.open_document", {"file_path": str(first_sheet)})
+            if not isinstance(open_sheet, dict) or not open_sheet.get("success"):
+                raise RuntimeError(f"could not open staged SchDoc: {open_sheet}")
+            focus = await bridge.send_command_async(
+                "application.set_active_document", {"file_path": str(first_sheet)})
+            if not isinstance(focus, dict) or not focus.get("success"):
+                raise RuntimeError(f"could not focus staged SchDoc: {focus}")
+            run = await bridge.send_command_async(
+                "project.run_outjob",
+                {"outjob_path": str(staged_project.parent / "Documentation.OutJob"),
+                 "container_name": "Schematic PDF"},
+                timeout=120.0,
+            )
+            if not isinstance(run, dict) or not run.get("process_issued"):
+                raise RuntimeError(f"PDF container did not run: {run}")
+            if not temporary_pdf.is_file() or temporary_pdf.stat().st_size < 100:
+                raise RuntimeError("Altium did not write the expected PDF")
+            reader = PdfReader(temporary_pdf)
+            if not reader.pages:
+                raise RuntimeError("Altium wrote a PDF with no pages")
+            page_order = []
+
+            def collect_bookmarks(entries):
+                for item in entries:
+                    if isinstance(item, list):
+                        collect_bookmarks(item)
+                    elif hasattr(item, "title") and ".schdoc" in item.title.lower():
+                        page_order.append({"page": reader.get_destination_page_number(item) + 1,
+                                           "sheet": item.title})
+
+            collect_bookmarks(reader.outline)
+            outcome = {"success": True,
+                       "project_path": str(Path(project_path).resolve()),
+                       "output_path": str(target),
+                       "page_count": len(reader.pages),
+                       "source_schdoc_count": sheet_count,
+                       "page_order": page_order,
+                       "order_note": "page_order is read from Altium's PDF sheet bookmarks"}
+        except Exception as exc:
+            outcome = {"success": False,
+                       "error": {"code": "SCHEMATIC_PDF_EXPORT_FAILED", "message": str(exc)},
+                       "staging_project": str(staged_project)}
+
+        closed = not opened
+        if opened:
+            try:
+                close_result = await proj_close(str(staged_project), save=False)
+                closed = bool(close_result.get("closed")) and not close_result.get("closed_instead")
+            except Exception as exc:
+                close_result = {"error": str(exc)}
+            if not closed:
+                outcome = {"success": False,
+                           "error": {"code": "STAGING_CLOSE_FAILED",
+                                     "message": "PDF staging project remained open"},
+                           "close_result": close_result,
+                           "staging_project": str(staged_project)}
+        if closed:
+            if outcome.get("success"):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(temporary_pdf, target)
+                outcome["size_bytes"] = target.stat().st_size
+            remove_stage(staged_project)
+        if isinstance(original_active, dict) and original_active.get("file_path"):
+            try:
+                await bridge.send_command_async(
+                    "application.set_active_document",
+                    {"file_path": original_active["file_path"]})
+            except Exception:
+                outcome["focus_restored"] = False
+            else:
+                outcome["focus_restored"] = True
+        return outcome
 
     @mcp.tool()
     async def proj_cross_probe(
@@ -1307,34 +1419,18 @@ def register_project_tools(mcp):
         width: int = 1920,
         height: int = 1080,
     ) -> dict[str, Any]:
-        """Export the active schematic / PCB document, silent (no dialog).
+        """Legacy image export. PDF callers use proj_export_schematic_pdf.
 
-        Only ``format="pdf"`` is currently supported as a silent path.
-        Raster formats (png/jpg/bmp) require a hand-configured OutJob with
-        a Schematic Print -> Multimedia (Image) container; the Pascal side
-        rejects them with ``IMAGE_FORMAT_UNSUPPORTED`` and points the
-        caller at ``proj_run_outjob`` instead.
-
-        The PDF path uses Altium's
-        ``WorkspaceManager:Print`` server process with ``FileName=`` - the
-        same machinery as ``proj_export_pdf``. No OutJob is loaded. The print
-        runs against ``Client.CurrentView`` (the focused document), so
-        ensure the schematic or PCB you want exported is the active tab
-        before calling.
-
-        The Pascal side deletes any pre-existing file at ``output_path``
-        before running so the post-run FileExists probe is a true
-        existence check. Python verifies again here and downgrades a
-        Pascal "success" to ``EXPORT_FILE_MISSING`` if no file landed.
+        Direct PDF printing opens Preview SCH on this Altium build, so this
+        handler refuses ``format="pdf"`` without invoking Altium. Raster
+        formats still use the native handler and may return
+        ``IMAGE_FORMAT_UNSUPPORTED``.
 
         Args:
-            output_path: Full path for the output file. The directory must
-                already exist. The extension should be ``.pdf``.
-            format: Output format. Only ``"pdf"`` is silent today
-                (default). ``"png"``, ``"jpg"``, ``"bmp"`` return an
-                explicit ``IMAGE_FORMAT_UNSUPPORTED`` error.
-            width: Kept for API compatibility. Unused by the PDF path.
-            height: Kept for API compatibility. Unused by the PDF path.
+            output_path: Full path for the output file.
+            format: Output format; PDF returns PREVIEW_NOT_SILENT.
+            width: Kept for API compatibility.
+            height: Kept for API compatibility.
 
         Returns:
             Dictionary confirming the export with the resolved path,
@@ -1342,6 +1438,16 @@ def register_project_tools(mcp):
             ``file_exists`` based on a Python-side existence check.
         """
         import os
+
+        if format.lower().lstrip(".") == "pdf":
+            return {
+                "success": False,
+                "error": {
+                    "code": "PREVIEW_NOT_SILENT",
+                    "message": "Direct print opens Preview SCH on this Altium build. "
+                               "Use proj_export_schematic_pdf(project_path, output_path).",
+                },
+            }
 
         bridge = get_bridge()
         result = await bridge.send_command_async(

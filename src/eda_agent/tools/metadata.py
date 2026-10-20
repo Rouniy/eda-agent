@@ -219,7 +219,8 @@ INTERACTION_OVERRIDES = {
     # client timeout. pcb_get_clearance_violations reads stored
     # violations instead and stays readonly.
     "pcb_run_drc": MODAL,
-    "proj_export_pdf": MODAL,         # Preview PCB / print preview
+    "proj_export_pdf": READONLY,      # fails fast; direct print opens Preview
+    "proj_export_schematic_pdf": SILENT,  # disposable project and PDF under _screens
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and
     # that one is a WPF dialog whose buttons expose no window handles, so

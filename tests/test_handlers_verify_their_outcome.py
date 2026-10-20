@@ -271,11 +271,14 @@ def test_batch_failures_say_which_item_and_why():
 
 def test_the_measured_modal_tools_are_declared_modal():
     """Published as silent, each one blocks the bridge on a dialog."""
-    from eda_agent.tools.metadata import INTERACTION_OVERRIDES, MODAL
-    for name in ("pcb_run_drc", "proj_export_pdf", "proj_run_output",
+    from eda_agent.tools.metadata import INTERACTION_OVERRIDES, MODAL, READONLY
+    for name in ("pcb_run_drc", "proj_run_output",
                  "lib_reload_library", "proj_remove_document", "proj_close"):
         assert INTERACTION_OVERRIDES.get(name) == MODAL, (
             f"{name} was measured raising a modal that blocks the bridge")
+    # Direct PDF printing used to show Preview SCH. The public handler now
+    # refuses that route before calling Altium.
+    assert INTERACTION_OVERRIDES["proj_export_pdf"] == READONLY
 
 
 def test_the_press_tool_can_answer_a_handleless_dialog():

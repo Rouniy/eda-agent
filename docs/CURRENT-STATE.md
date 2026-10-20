@@ -1,5 +1,30 @@
 # Current integration state / agent handoff
 
+## Silent schematic PDF export, 2026-10-20
+
+Direct `proj_export_pdf` and `proj_export_image(format="pdf")` ran
+`WorkspaceManager:Print`, which opened Preview SCH and wrote no file. Both
+Python wrappers now return `PREVIEW_NOT_SILENT` without invoking that process.
+New `proj_export_schematic_pdf(project_path, output_path)` copies only logical
+SchDoc members into a temporary project below
+`D:\AI\ALTIUM\testprojects\_screens\_pdf_stage`, adds a tested PDF OutJob
+there, publishes with `PublishToPDF` / `DisableDialog`, verifies the expected
+PDF and its pages, closes the staged project without saving, removes the stage,
+and atomically places the result at `output_path` under `_screens`. It returns
+the page order from PDF sheet bookmarks. External SchDoc references outside the
+source project directory are rejected until staging them is qualified.
+
+Native pilot on the open antmicro Apalis Smart Vision Baseboard project yielded
+`apalis-native-schematics.pdf` (2,265,636 bytes), nine pages for nine SchDocs in
+the source project's document order, with no modal. A prior run with the full
+project copy and one with only the nine schematic documents had identical
+extracted page text. The original project file retained its 2026-10-19 mtime,
+no Project Outputs folder appeared in the source project, the staged project
+was removed, and the original `Power-Supply.SchDoc` was restored as the active
+document. The HTTP MCP was restarted to load the Python tool; Altium itself was
+not restarted. This qualifies one project and does not claim that every corpus
+project's hierarchy or print settings are compatible.
+
 ## Stabilizer Pounder track-read crash and recovery, 2026-10-20
 
 At 16:30 the X-Office operator reported `pcb_get_tracks {"limit":1}` crashing

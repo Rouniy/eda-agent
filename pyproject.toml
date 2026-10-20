@@ -30,6 +30,7 @@ dependencies = [
     "mcp>=1.0.0,<2",
     "pydantic>=2.0,<3",
     "psutil>=5.9.0,<8",
+    "pypdf>=5.0,<7",
     "pywin32>=306; sys_platform == 'win32'",
     # MSAA and UI Automation, the two accessible layers the UI driving
     # rests on: ui/controls.py reads oleacc through it and ui/uia.py
@@ -106,6 +107,7 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
+"src/eda_agent/templates/schematic-pdf.OutJob" = "eda_agent/templates/schematic-pdf.OutJob"
 "scripts/altium/Main.pas" = "eda_agent/scripts/Main.pas"
 "scripts/altium/Utils.pas" = "eda_agent/scripts/Utils.pas"
 "scripts/altium/Application.pas" = "eda_agent/scripts/Application.pas"
