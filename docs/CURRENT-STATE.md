@@ -14,8 +14,15 @@ the bridge unusable because Altium is blocked by an `Error` dialog:
 `ScriptingSystem.DLL` read access violation at `00000001CDCDF32B`.
 The last completed native activity before the crash was `pcb.get_design_rules`
 at 15:19:38 on the OHWR VME ADC 250k 16b 36ch board; a native progress marker
-from that second remains, so the exact failing command is not yet identified.
-The dialog and active Altium session were left untouched.
+from that second remains. The X-Office operator identified the failing next
+tool as `pcb_get_fab_stats` on `ADC_CARD.PCBDOC`. At their request, the error
+dialog was dismissed with Escape without sending a report. The script remained
+unresponsive and a script-only restart timed out. Altium was closed normally
+and relaunched; its session restored the owner's nine projects plus the VME ADC
+project. `proj_close(save=false)` then closed VME ADC, discarding its PCB,
+schematic, and project changes. Final `proj_list_open` shows exactly the nine
+owner projects plus Free Documents; `app_ping` reports script 2026.10.20.4 and
+Altium 26.10.1.5, with no modal dialogs.
 
 ## RaToPUS component-read crash and recovery, 2026-10-20
 
