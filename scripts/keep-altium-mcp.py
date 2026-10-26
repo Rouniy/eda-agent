@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from eda_agent.bridge.altium_bridge import get_bridge
+from eda_agent.bridge.windows_ui import WindowsUiInspector
 from eda_agent.config import get_config
 
 
@@ -32,7 +33,7 @@ PYTHON = Path(sys.executable).with_name("python.exe")
 MCP_HOST = "127.0.0.1"
 MCP_PORT = 14701
 DASHBOARD_PORT = 8766
-POLL_SECONDS = 60
+POLL_SECONDS = 20
 MCP_FAILURE_LIMIT = 3
 MAX_SCRIPT_LAUNCHES_PER_PROCESS = 3
 
@@ -63,11 +64,43 @@ def listener(port: int) -> int | None:
     return None
 
 
-def active_altium_command(workspace: Path, altium_pid: int | None) -> bool:
+def script_ui_state(altium_pid: int | None) -> tuple[bool | None, bool | None, bool | None]:
+    """Return script form presence/enabled state and editor readiness."""
+    if altium_pid is None or sys.platform != "win32":
+        return None, None, None
+    try:
+        windows = WindowsUiInspector(altium_pid).list_windows()
+    except Exception:
+        return None, None, None
+    forms = [window for window in windows if window["title"] == "EDA Agent MCP"]
+    return (
+        bool(forms),
+        forms[0]["enabled"] if len(forms) == 1 else None,
+        any(window["class_name"] == "TDocumentForm" and window["enabled"]
+            for window in windows),
+    )
+
+
+def safe_script_launch_target(candidate_count: int, form_present: bool | None,
+                              editor_ready: bool | None) -> bool:
+    """The URI handler cannot target a particular X2 among several."""
+    return candidate_count == 1 and form_present is False and editor_ready is True
+
+
+def safe_stall_stop_target(candidate_count: int, form_present: bool | None,
+                           form_enabled: bool | None,
+                           editor_ready: bool | None) -> bool:
+    """Stop only a disabled script form in the sole ready X2 editor."""
+    return (candidate_count == 1 and form_present is True
+            and form_enabled is False and editor_ready is True)
+
+
+def active_altium_command(workspace: Path, altium_pid: int | None,
+                          *, form_present: bool | None = None) -> bool:
     # DelphiScript removes its progress marker when the command returns.
     # Do not interrupt a long-running command just because its ping timed out.
     # A crashed VM can leave a marker behind; it cannot belong to a new X2.
-    if altium_pid is None:
+    if altium_pid is None or form_present is False:
         return False
     try:
         altium_started = psutil.Process(altium_pid).create_time()
@@ -177,6 +210,7 @@ def main() -> None:
         failed_mcp_checks = 0
         last_blocking_dialog = ""
         last_script_launch = 0.0
+        last_script_stop = 0.0
         last_mcp_restart = 0.0
         script_launch_budget = ScriptLaunchBudget()
         while True:
@@ -188,7 +222,11 @@ def main() -> None:
                 "mcp_protocol_ok": False,
                 "altium_running": False,
                 "altium_pid": None,
+                "altium_candidate_count": 0,
                 "altium_command_active": False,
+                "script_form_present": None,
+                "script_form_enabled": None,
+                "editor_ready": None,
                 "script_responsive": None,
                 "bridge_usable": None,
                 "dialog": None,
@@ -196,6 +234,11 @@ def main() -> None:
             try:
                 altium_status = bridge.get_altium_status()
                 altium_pid = altium_status.get("pid")
+                status["altium_candidate_count"] = altium_status.get("candidate_count", 0)
+                form_present, form_enabled, editor_ready = script_ui_state(altium_pid)
+                status["script_form_present"] = form_present
+                status["script_form_enabled"] = form_enabled
+                status["editor_ready"] = editor_ready
                 mcp_pid = listener(MCP_PORT)
                 status["mcp_listening"] = mcp_pid is not None
                 if not mcp_pid:
@@ -212,7 +255,8 @@ def main() -> None:
                         failed_mcp_checks += 1
                         if (
                             failed_mcp_checks >= MCP_FAILURE_LIMIT
-                            and not active_altium_command(workspace, altium_pid)
+                            and not active_altium_command(
+                                workspace, altium_pid, form_present=form_present)
                             and our_mcp_process(mcp_pid)
                             and time.monotonic() - last_mcp_restart > 120
                         ):
@@ -236,7 +280,8 @@ def main() -> None:
 
                 status["altium_running"] = altium_pid is not None
                 status["altium_pid"] = altium_pid
-                status["altium_command_active"] = active_altium_command(workspace, altium_pid)
+                status["altium_command_active"] = active_altium_command(
+                    workspace, altium_pid, form_present=form_present)
                 script_launch_budget.observe(altium_pid)
                 dialog = bridge._dialog_probe() if altium_pid is not None else None
                 if dialog and dialog.get("dialog_count"):
@@ -265,8 +310,28 @@ def main() -> None:
                                               dialog_summary, dialog.get("dialogs", []))
                             last_blocking_dialog = dialog_summary
                         if (failed_pings >= 2
+                                and time.monotonic() - last_script_stop > 120
+                                and script_launch_budget.allow_launch()
+                                and safe_stall_stop_target(
+                                    status["altium_candidate_count"],
+                                    form_present, form_enabled, editor_ready)
+                                and not status["dialog"]):
+                            inspector = WindowsUiInspector(altium_pid)
+                            stop_result = inspector.send_hotkey(
+                                inspector.main_window_handle(), "ctrl+f3")
+                            last_script_stop = time.monotonic()
+                            time.sleep(1)
+                            form_present, form_enabled, editor_ready = script_ui_state(altium_pid)
+                            status["script_form_present"] = form_present
+                            status["script_form_enabled"] = form_enabled
+                            logging.warning("stopped unresponsive disabled script form in pid=%s: %s",
+                                            altium_pid, stop_result)
+                        if (failed_pings >= 2
                                 and time.monotonic() - last_script_launch > 120
                                 and script_launch_budget.allow_launch()
+                                and safe_script_launch_target(
+                                    status["altium_candidate_count"],
+                                    form_present, editor_ready)
                                 and not status["dialog"]
                                 and not pending_script_launcher()):
                             subprocess.run(
@@ -295,7 +360,8 @@ def main() -> None:
             except Exception:
                 logging.exception("supervisor check failed")
                 status["check_error"] = "supervisor check failed; see altium-mcp-supervisor.log"
-            if not status["mcp_protocol_ok"] or not status["altium_running"] or status["dialog"]:
+            if (not status["mcp_protocol_ok"] or not status["altium_running"]
+                    or status["editor_ready"] is not True or status["dialog"]):
                 status["bridge_usable"] = False
             elif status["script_responsive"] is not None:
                 status["bridge_usable"] = status["script_responsive"]

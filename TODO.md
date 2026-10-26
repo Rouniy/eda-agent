@@ -1,5 +1,16 @@
 # Fork integration TODO
 
+## Overnight corpus bridge, 2026-10-21
+
+- Capture the native Script IDE diagnostic or Windows crash event at the
+  moment `StatusFormClose` follows `project.run_outjob`. The 00:05 activity
+  log shows `_session_end` after a successful print, but no visible error
+  dialog or script diagnostic remained when inspected. Do not attribute the
+  script exit to the Python PDF concurrency without further evidence.
+- Qualify repeated color PDF exports over the full corpus after the
+  same-server serialization change. If more than one MCP process will run PDF
+  exports concurrently, add a cross-process Altium UI transaction lock.
+
 ## US-Plus-CPM statistics crash, 2026-10-20
 
 - Instrument `PCB_GetBoardStatisticsForBoard` in a disposable runtime to

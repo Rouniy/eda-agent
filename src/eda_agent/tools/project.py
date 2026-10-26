@@ -138,6 +138,7 @@ async def _verify_pad_nets(bridge) -> dict[str, Any]:
 
 def register_project_tools(mcp):
     """Register project tools with the MCP server."""
+    pdf_export_lock = asyncio.Lock()
 
     @mcp.tool()
     async def proj_create(
@@ -1073,6 +1074,12 @@ def register_project_tools(mcp):
         SchDocs are only read. The PDF's sheet bookmarks report page order.
         The project must not be edited concurrently during the export.
         """
+        # Opening a stage, changing focus, publishing, and closing are one
+        # Altium UI transaction. Concurrent callers must not interleave them.
+        async with pdf_export_lock:
+            return await _export_schematic_pdf(project_path, output_path)
+
+    async def _export_schematic_pdf(project_path: str, output_path: str) -> dict[str, Any]:
         from pathlib import Path
         import os
         from pypdf import PdfReader

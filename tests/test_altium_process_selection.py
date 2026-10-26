@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +96,17 @@ def test_an_orphan_loses_to_the_only_windowed_instance(world):
     sel = AltiumProcessManager().select_altium_process()
     assert sel.process.pid == OTHER
     assert sel.selected_by == "only_windowed"
+
+
+def test_untitled_application_shell_does_not_count_as_editor(monkeypatch):
+    from eda_agent.ui import windows
+
+    monkeypatch.setattr(windows, "available", lambda: True)
+    monkeypatch.setattr(windows, "enumerate_windows", lambda **_: [
+        SimpleNamespace(pid=ORPHAN, title=""),
+        SimpleNamespace(pid=OTHER, title="Board.PrjPcb - Altium Designer"),
+    ])
+    assert AltiumProcessManager._window_owner_pids() == {OTHER}
 
 
 def test_two_indistinguishable_instances_are_refused_not_guessed(world):

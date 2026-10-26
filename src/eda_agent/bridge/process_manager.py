@@ -298,9 +298,9 @@ class AltiumProcessManager:
         """Pids owning a top-level window, or None if windows cannot be read.
 
         With ``title_prefix``: windows whose caption starts with it,
-        hidden ones included. Without: VISIBLE windows only, which is
-        what separates a live instance from the windowless orphan a
-        crashed session leaves behind.
+        hidden ones included. Without: visible, titled windows only.
+        A crashed X2 can retain a visible but untitled TApplication
+        window after its editor has disappeared.
         """
         try:
             from ..ui import windows
@@ -314,7 +314,7 @@ class AltiumProcessManager:
         except Exception:                        # noqa: BLE001
             return None
         if title_prefix is None:
-            return {w.pid for w in found}
+            return {w.pid for w in found if (w.title or "").strip()}
         return {w.pid for w in found
                 if (w.title or "").startswith(title_prefix)}
 

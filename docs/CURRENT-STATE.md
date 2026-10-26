@@ -1,5 +1,103 @@
 # Current integration state / agent handoff
 
+## Radxa C200 session exit and recovery, 2026-10-21 03:43
+
+Altium exited during the native 3-D pass on `radxa_c200_v1.11.PcbDoc` after
+`generic.switch_view(mode=3d)` returned successfully. No matching Windows
+Application Error event was found in the checked window, so whether this was
+a crash or another exit path is unknown. Altium was relaunched, the bundled
+script started in the single live instance, and the session-restored LimeSDR
+PDF stage plus the Fastino and RaToPUS free PCB documents were closed without
+saving. Final `app_ping` returned `2026.10.20.4`; only the owner's nine projects
+and empty Free Documents remained, with no dialog and watchdog usable. The
+corpus runner should skip the Radxa C200 native 3-D render pending diagnosis.
+
+## Antenna_base PDF modal and script recovery, 2026-10-21 02:44
+
+During a staged color schematic PDF export of Antenna_base, Altium displayed
+an `Error` modal whose OCR text included `Index was outside the bounds of the
+array`. The bridge activity stopped after successfully focusing
+`01_powersupply.SchDoc`, before `project.run_outjob` returned. The modal was
+gone by inspection, but the script remained unresponsive with its MCP form
+disabled. `Ctrl+F3` stopped that script, and the bundled `StartMCPServer` was
+relaunched in the same X2 process. The Antenna_base stage project was closed
+with `save=false`; no corpus project remained. Final `app_ping` reported script
+`2026.10.20.4`, and the watchdog reported `bridge_usable=true`. The native
+array-index error is not fixed; the corpus runner should record this PDF as a
+failure or skip it rather than repeatedly printing the same stage.
+
+The corpus operator correlated the same `STAGING_CLOSE_FAILED` and native
+array-index modal with LimeSDR USB, Mini, and Micro PDF exports, and reported
+one 300-second PDF handler timeout on gpa-zynq-module. This is a repeated
+native PDF path failure, not a single Antenna_base file. The monitor now
+recognises a disabled MCP script form after the modal has cleared. After two
+failed pings and only when there is one ready X2, no dialog, and no active
+native progress marker, it sends `Ctrl+F3` and relaunches the script. Attempts
+are bounded, including a separate cooldown for stop attempts. This recovery
+path has unit checks; a real recurrence remains to qualify it. The 3-D corpus
+pass was active and healthy after monitor deployment, so its current board
+was left open for the operator to close normally.
+
+## Radxa 3-D crash and recovery, 2026-10-21 02:32
+
+The visible X2.EXE process crashed at 02:32:33 while the corpus pass viewed
+`radxa_cm3s_io_board_V1510.PcbDoc` in 3-D. The last completed native call was
+`generic.switch_view(mode=3d)`; this does not establish which later operation
+faulted. Windows Application Error 1000 again named `coreclr.dll` 8.0.1525,
+exception `0xc0000005`, now at offset `0x26b0d6`. Altium was relaunched,
+restoring the owner's projects. The bundled `StartMCPServer` was launched in
+the single live instance. A restored LimeSDR PDF stage project and two corpus
+free PCB documents were closed without saving. Final `app_ping` returned script
+`2026.10.20.4`; open projects were the owner's nine plus empty Free Documents,
+no corpus document remained, and the watchdog reported `bridge_usable=true`.
+
+## Corpus crash and bridge recovery, 2026-10-21 01:12
+
+The visible X2.EXE process crashed at 01:12:29 while the corpus pass was
+running. Windows Application Error 1000 named `coreclr.dll` 8.0.1525.16413,
+exception `0xc0000005`, offset `0x11caf5`; the last completed bridge activity
+was `application.get_active_document` on a newae corpus PCB. No script error
+dialog remained. A previous, editorless X2 process had survived. It made the
+monitor think Altium was running, and the URI script launcher initially
+attached to that stale process. The script was detached there and the stale
+process exited after a normal WM_CLOSE. A fresh Altium session restored the
+owner projects. `StartMCPServer` was selected in its bundled script project
+through File > Run Script. `Stabilizer_Pounder.PrjPCB` and two detached corpus
+PcbDocs were closed without saving. Final inventory: the owner's nine projects
+plus Free Documents (empty), no corpus project; `app_ping` script
+`2026.10.20.4`, Altium `26.10.1.5`; visible editor maximized. The 20-second
+monitor reports `bridge_usable=true`.
+
+The monitor now refuses URI script launches when more than one X2 process is
+present, because the URI handler does not target a PID. It also treats an
+editorless status form as unusable instead of reporting a healthy bridge.
+This prevents a false recovery, but a repeated native crash with a surviving
+X2 process still needs an operator to close the stale process and start the
+script in the correct instance. The `coreclr.dll` crash cause is unproven.
+
+## Overnight PDF bridge recovery, 2026-10-21
+
+The corpus pass reported repeated `app_ping` timeouts and two
+`STAGING_CLOSE_FAILED` PDF exports. At 00:05 the activity log recorded a
+successful `project.run_outjob` followed immediately by `_session_end`; no
+error dialog was visible during inspection. The exact native cause of the
+script form closing remains unproven. The HTTP PDF wrapper could interleave
+two exports: both temporary projects were open during a later mmWave Radar
+print, and focus changes could interfere with closing the named stage.
+`proj_export_schematic_pdf` now serializes its entire open, focus, print,
+close, and cleanup sequence within one MCP server process. This does not
+protect against an independent second server process using Altium at the
+same time.
+
+The existing watchdog now checks every 20 seconds, distinguishes the live
+editor from a windowless old X2 process, and can relaunch `StartMCPServer`
+when the script form has exited while the editor remains ready. It still
+holds off while a native command is active and will not blindly relaunch
+when the form is present or a modal is open. Recovery attempts are bounded
+per Altium process. See `altium-mcp-supervisor-status.json` in the bridge
+workspace for its current state. The wider corpus pass is still the native
+acceptance test for this repair.
+
 ## Silent schematic PDF export, 2026-10-20
 
 Direct `proj_export_pdf` and `proj_export_image(format="pdf")` ran
