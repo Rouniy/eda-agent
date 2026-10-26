@@ -711,6 +711,13 @@ def main() -> int:
     perf_p.add_argument("--json", action="store_true", dest="json_out")
     perf_p.add_argument("--limit", type=int, default=15)
 
+    fab_p = subparsers.add_parser(
+        "fab-inspect", help="Inspect exported Gerber and drill files offline.",
+    )
+    fab_p.add_argument("directory")
+    fab_p.add_argument("--board-name", default="board")
+    fab_p.add_argument("--json", action="store_true", dest="json_out")
+
     subparsers.add_parser("a365-login", help="Authorize Nexar and store the token for Altium 365 read tools")
     subparsers.add_parser("a365-logout", help="Remove the stored Nexar token")
 
@@ -1058,6 +1065,10 @@ def main() -> int:
         return _run_netlist(args)
     if args.command == "perf":
         return cli.cmd_perf(as_json=args.json_out, limit=args.limit)
+    if args.command == "fab-inspect":
+        return cli.cmd_fab_inspect(
+            args.directory, as_json=args.json_out, board_name=args.board_name,
+        )
     if args.command in ("health", "doctor"):
         from .diag.checks import format_report, overall_exit_code
         if args.command == "health":

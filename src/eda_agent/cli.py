@@ -534,3 +534,23 @@ def cmd_perf(*, as_json: bool, limit: int = 15) -> int:
         if not report["calls"]:
             print(f"No calls logged yet in {workspace}.", file=sys.stderr)
     return 0
+
+
+def cmd_fab_inspect(directory: str, *, as_json: bool, board_name: str) -> int:
+    """Inspect exported Gerber and drill files without accessing Altium."""
+    import json as _json
+
+    from .fileio.gerber_check import summarise_package
+
+    result = summarise_package(directory, board_name=board_name)
+    if as_json:
+        print(_json.dumps(result, indent=2))
+    elif not result.get("ok"):
+        print(f"Cannot inspect fab package: {result.get('reason')}", file=sys.stderr)
+    else:
+        print(f"Fab package: {result['directory']}")
+        print(f"  Copper layers: {result['copper_layers']}")
+        print(f"  Drill hits:    {result['drills']['hits']}")
+        print(f"  Outline:       {result['outline_mm']}")
+        print(f"  Files:         {len(result['files'])}")
+    return 0 if result.get("ok") else 1
