@@ -1,5 +1,26 @@
 # Fork integration audit — 2026-10-26
 
+## Recheck of MOREmbedded/main at b48f970
+
+The direct fork was fetched again from `https://github.com/MOREmbedded/eda-agent.git`
+on 2026-10-26. Its `main` still points to `b48f970`. The target is
+`Rouniy/eda-agent/main`; its last pushed integration was `08ec57a` when this
+section was written. The counts of divergent Git commits are not feature
+counts because several changes were ported with edited patches.
+
+| State | Features from the direct fork | Evidence |
+| --- | --- | --- |
+| In pushed `main` | Replacement-part evidence, ten calculators and optional pcb-toolkit check, vendor stackups/fab data, profile document templates, library file/STEP inspection and footprint comparison, fractional layer thickness, circuit-loop/sheet-fit/smart-DRC analysis, Windows path normalization, keepalive through outages, restoring a hidden Altium frame | Integration commits `2368405` through `9ff5d3a`, plus the wrapper fixes in `08ec57a` |
+| In the integration branch, awaiting promotion | Withdraw timed-out requests (sync and async), batch PCB DRC with a per-request report, direct Altium 365 API, standard schematic symbols and library save tracking, schematic templates alongside the existing DesignPlan engine | `9206588`, `66f961b`, `d8ecbe7`, `4db22e3`, `c515e1a`; focused tests and Pascal lint pass; native execution still pending |
+| Already present before this recheck | Advisory two-pad rotation, offline fab package inspection, CLI script-folder discovery, performance report, DelphiScript routine checks | Earlier audit below |
+| Next source candidates | Decimal-mil geometry chain; true arcs, keepouts and polygon settings; STEP/3D model editing; integrated libraries; ERC and project membership; session document isolation; update flow | Require conflict resolution, tests and in some cases disposable-board native acceptance |
+| Held for rewrite or evidence | `be21eb3` bottom-side placement can flip a similarly named component on another open board after a failed placement; `74d745d` forces one net-label colour; upstream removal of the main DesignPlan layout engine | Do not copy those patches literally; preserve exact-board targeting and both layout paths |
+
+The branch and pushed `main` remain distinct until the next promotion. The
+running Altium worker is older than the current source and is hung; the owner
+instructed us to finish source integration before terminating it. No native
+acceptance claim is made for the newly ported Pascal routines.
+
 ## Scope and snapshots
 
 The target is `Rouniy/eda-agent` `main`, locally at `cb21952` before this integration. Its remote `origin/main` was `3f3aecc` (24 local commits behind). Upstream `salitronic/eda-agent` `main` was `74d745d`; the two histories had 216 local-only and 85 upstream-only commits. The direct fork of `Rouniy/eda-agent`, `MOREmbedded/eda-agent`, was at `7062521`; its history had 52 commits absent from local main and local main had 163 commits absent from it. These are Git snapshots, not permanent fork counts.
