@@ -977,6 +977,32 @@ class AltiumBridge:
                            "after %s (last command %s)", command, last)
         return shown
 
+    def _withdraw_or_warn(self, request: CommandRequest,
+                          exc: AltiumTimeoutError) -> None:
+        """Withdraw a timed-out request if Altium has not read it yet."""
+        request_path = self._request_path(request.id)
+        withdrawn = False
+        try:
+            if request_path.exists():
+                request_path.unlink()
+                withdrawn = True
+        except OSError:
+            pass
+        details = exc.details if isinstance(exc.details, dict) else {}
+        details["request_withdrawn"] = withdrawn
+        exc.details = details
+        note = (
+            " The request was withdrawn before Altium read it, so it will not run later."
+            if withdrawn else
+            " Altium had already read the request, so it may still finish: "
+            "read the design back before repeating a change."
+        )
+        exc.message = f"{exc.message}{note}"
+        exc.args = (exc.message,)
+        _trace_log(self.config.workspace_dir,
+                   f"WITHDRAW id={request.id[:8]} cmd={request.command} "
+                   f"withdrawn={withdrawn}")
+
     def _execute_command(self, command: str, params: dict[str, Any],
                          timeout: float,
                          max_extensions: Optional[int] = None) -> Any:
@@ -991,6 +1017,9 @@ class AltiumBridge:
         response_path = self._response_path(request.id)
         try:
             response = self._poll_response(request.id, timeout, max_extensions)
+        except AltiumTimeoutError as exc:
+            self._withdraw_or_warn(request, exc)
+            raise
         finally:
             # Always sweep our own response file on the way out,_poll_response
             # already deletes it on success, but a timeout or a late-arriving
@@ -1168,6 +1197,9 @@ class AltiumBridge:
         try:
             response = await self._poll_response_async(
                 request.id, timeout, max_extensions)
+        except AltiumTimeoutError as exc:
+            self._withdraw_or_warn(request, exc)
+            raise
         finally:
             try:
                 response_path.unlink(missing_ok=True)
