@@ -144,26 +144,20 @@ ACTIVE_TOOLSET = os.environ.get("EDA_AGENT_TOOLSET", DEFAULT_TOOLSET)
 #: a paragraph naming tools that are not there. A preamble that names a
 #: missing tool is read first and trusted most, which is the worst place
 #: for a dead end.
+#: Use either the plan layout engine or an explicit hand template. Both
+#: paths preview before editing Altium and keep the low-level place/wire
+#: commands for small repairs.
 _ENGINE_ALTIUM = (
-    "DO NOT DRAW A SCHEMATIC BY HAND. Placing parts one at a time\n"
-    "with sch_place_components and joining them with sch_place_wires\n"
-    "gives a netlist-correct sheet that reads like nothing a person\n"
-    "would draw, and it is the most common way this server is misused.\n"
-    "A schematic comes from a DesignPlan: build the plan, then\n"
-    "design_execute_plan places AND routes the whole sheet in one\n"
-    "call, through a layout engine measured against hand-drawn boards.\n"
-    "design_layout_schematic returns that same layout as data and\n"
-    "design_preview_plan renders it, both without touching the EDA.\n"
-    "One engine sits behind all three.\n"
-    "\n"
-    "CHANGING an existing sheet goes the same way. Re-running\n"
-    "design_execute_plan on a project it drew before moves only what\n"
-    "the plan changed and leaves every other component alone, so an\n"
-    "edit is a plan edit. For a sheet it did not draw,\n"
-    "design_plan_from_sheet reads a plan back off the schematic and\n"
-    "design_hints_from_sheet reads the current positions to pass as\n"
-    "placement_hints. The sch_ and obj_ tools are for the few glyphs a\n"
-    "plan cannot express, and for repairs too small to re-lay-out.\n"
+    "DO NOT DRAW A SCHEMATIC ONE PART OR WIRE AT A TIME.\n"
+    "For a DesignPlan, design_preview_plan renders the layout and\n"
+    "design_execute_plan places and routes the sheet. It can update a\n"
+    "project it drew before without moving unrelated parts.\n"
+    "For an engineer-specified block, read pin names with\n"
+    "lib_get_pin_list, preview its coordinates and expected nets with\n"
+    "sch_preview_template, then draw it with sch_draw_template.\n"
+    "The template path checks pin ends and wiring before editing.\n"
+    "Use sch_place_components, sch_place_wires and obj_ tools for\n"
+    "small repairs to an existing sheet.\n"
     "\n"
 )
 

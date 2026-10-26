@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.26.5';
+    SCRIPT_VERSION = '2026.10.26.6';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -2819,6 +2819,23 @@ Begin
     Else Result := ePowerBar;  { sensible default for a supply rail }
 End;
 
+{ The style names the place_power_port handlers accept, exactly as sent. }
+Function PowerPortStyleNames(Dummy : Integer) : String;
+Begin
+    Result := 'circle, arrow, bar, wave, gnd_power, gnd_signal, gnd_earth';
+End;
+
+Function IsGroundPortStyle(S : String) : Boolean;
+Begin
+    Result := (S = 'gnd_power') Or (S = 'gnd_signal') Or (S = 'gnd_earth');
+End;
+
+Function IsPowerPortStyle(S : String) : Boolean;
+Begin
+    Result := (S = 'circle') Or (S = 'arrow') Or (S = 'bar') Or (S = 'wave') Or
+              IsGroundPortStyle(S);
+End;
+
 Function StrToBool(S : String) : Boolean;
 Begin
     Result := (LowerCase(S) = 'true') Or (S = '1');
@@ -4813,6 +4830,20 @@ Begin
         Exit;
     End;
     If DocName = '' Then DocName := ExtractFileName(FilePath);
+
+    { A DOCUMENT ALREADY OPEN AT THIS PATH IS REFUSED. Creating a blank over }
+    { it raised "object accessed after being destroyed" in ADVPCB and halted }
+    { the script (a PcbLib, 2026-10-20). The caller wants the open one.      }
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except ServerDoc := Nil; End;
+    If ServerDoc <> Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'ALREADY_OPEN',
+            'A document is already open at ' + FilePath +
+            '. Focus it with app_set_active_document instead of creating it again,' +
+            ' or close it first.');
+        Exit;
+    End;
 
     { Client.OpenNewDocument creates a blank in-memory IServerDocument of the
       given kind. Pass False for ReuseExisting so we don't accidentally grab
@@ -46488,13 +46519,52 @@ End;
 
 Function Gen_Zoom(Params : String; RequestId : String) : String;
 Var
-    Action : String;
+    Action, FocusedKind, ZoomProcess : String;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    Workspace : IWorkspace;
+    Doc : IDocument;
 Begin
     Action := ExtractJsonValue(Params, 'action');
     If Action = '' Then Action := 'fit';
 
+    { The focused tab decides which editor zooms. Probing SchServer and the  }
+    { board first missed a focused PcbLib ("no schematic or PCB document")   }
+    { and sent Sch:Zoom whenever any schematic was current, even with a     }
+    { footprint in front. Sch:Zoom serves SchDoc and SchLib, PCB:Zoom serves  }
+    { PcbDoc and PcbLib.                                                      }
+    FocusedKind := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Nil;
+        Try Doc := Workspace.DM_FocusedDocument; Except End;
+        If Doc <> Nil Then
+            Try FocusedKind := UpperCase(Doc.DM_DocumentKind); Except End;
+    End;
+
+    ZoomProcess := '';
+    If (FocusedKind = 'SCH') Or (FocusedKind = 'SCHLIB') Then ZoomProcess := 'Sch:Zoom'
+    Else If (FocusedKind = 'PCB') Or (FocusedKind = 'PCBLIB') Then ZoomProcess := 'PCB:Zoom';
+
+    If ZoomProcess <> '' Then
+    Begin
+        If (Action <> 'fit') And (Action <> 'selection') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+                'action must be "fit" or "selection", got "' + Action + '"');
+            Exit;
+        End;
+        ResetParameters;
+        If Action = 'fit' Then AddStringParameter('Action', 'All')
+        Else AddStringParameter('Action', 'Selected');
+        RunProcess(ZoomProcess);
+        Result := BuildSuccessResponse(RequestId, '{"action":"' + Action + '",'
+            + '"document_kind":"' + FocusedKind + '","dispatched":true}');
+        Exit;
+    End;
+
+    { No focused design document (a project or text tab): the old probe. }
     SchDoc := SchServer.GetCurrentSchDocument;
     Board := GetPCBBoardAnywhere(0);
 
@@ -49784,6 +49854,15 @@ Begin
         Exit;
     End;
 
+    { An unknown style used to fall through to a circle and report success. }
+    If StyleStr = '' Then StyleStr := 'circle';
+    If Not IsPowerPortStyle(StyleStr) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_STYLE',
+            'Unknown power port style "' + StyleStr + '". Use one of: ' + PowerPortStyleNames(0));
+        Exit;
+    End;
+
     SchDoc := Nil;
     If SheetPath <> '' Then
     Begin
@@ -49829,13 +49908,12 @@ Begin
     Else If StyleStr = 'gnd_earth' Then PowerObj.Style := ePowerGndEarth
     Else PowerObj.Style := ePowerCircle;
 
-    { Default orientation: VCC-style points UP, GND-style points DOWN.   }
+    { Default orientation: supply styles (circle, arrow, bar, wave) point  }
+    { UP, ground styles point DOWN.                                        }
     { Override via the 'orientation' param (0=right, 1=up, 2=left, 3=down). }
     If OrientationVal < 0 Then
     Begin
-        If (StyleStr = 'gnd_power') Or (StyleStr = 'gnd_signal') Or
-           (StyleStr = 'gnd_earth') Or (StyleStr = 'bar') Or
-           (StyleStr = 'wave') Then
+        If IsGroundPortStyle(StyleStr) Then
             OrientationVal := 3
         Else
             OrientationVal := 1;
@@ -53364,8 +53442,9 @@ Begin
             Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
             StyleStr := GetBatchField(Op, 'style');
             OrientationVal := StrToIntDef(GetBatchField(Op, 'orientation'), -1);
+            If StyleStr = '' Then StyleStr := 'circle';
 
-            If Text = '' Then
+            If (Text = '') Or (Not IsPowerPortStyle(StyleStr)) Then
             Begin
                 Inc(Failed);
                 Continue;
@@ -53395,9 +53474,7 @@ Begin
 
             If OrientationVal < 0 Then
             Begin
-                If (StyleStr = 'gnd_power') Or (StyleStr = 'gnd_signal') Or
-                   (StyleStr = 'gnd_earth') Or (StyleStr = 'bar') Or
-                   (StyleStr = 'wave') Then
+                If IsGroundPortStyle(StyleStr) Then
                     OrientationVal := 3
                 Else
                     OrientationVal := 1;
@@ -65161,6 +65238,32 @@ Begin
 End;
 
 
+{ A themed TPanel left on ParentBackground paints its parent's colour and
+  ignores its own Color. Started through -RScriptingSystem:RunScript, every
+  panel here drew in the base colour: no blue Open Dashboard, no red
+  Detach, no status dot. Each panel owns its background from here on. }
+Procedure OwnPanelColours(Pnl : TPanel);
+Begin
+    Try Pnl.ParentBackground := False; Except End;
+End;
+
+Procedure OwnAllPanelColours(Dummy : Integer);
+Begin
+    OwnPanelColours(pnl_Header);    OwnPanelColours(pnl_StatusDot);
+    OwnPanelColours(pnl_KPIs);      OwnPanelColours(pnl_K1);
+    OwnPanelColours(pnl_K2);        OwnPanelColours(pnl_K3);
+    OwnPanelColours(pnl_K4);        OwnPanelColours(pnl_ErrBar);
+    OwnPanelColours(pnl_Primary);   OwnPanelColours(btn_OpenWeb);
+    OwnPanelColours(pnl_Controls);  OwnPanelColours(btn_Pause);
+    OwnPanelColours(btn_Renew);     OwnPanelColours(btn_ClearLog);
+    OwnPanelColours(btn_Detach);    OwnPanelColours(chk_HidePings);
+    OwnPanelColours(chk_OnlySlow);  OwnPanelColours(chk_OnTop);
+    OwnPanelColours(pnl_TabBar);    OwnPanelColours(tab_Log);
+    OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
+    OwnPanelColours(btn_CopyCmd);
+End;
+
+
 { Hidden from the Run Script dialog by its argument. StartMCPServer
   calls it at startup, so the form appears without anyone choosing it. }
 Procedure ShowStatusForm(Dummy : Integer);
@@ -65184,6 +65287,7 @@ Begin
         LastPingMs      := 0;
         OpenWebEnabled  := False;
 
+        OwnAllPanelColours(0);
         SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
         SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  '>100ms');
         SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'pin');

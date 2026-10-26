@@ -143,18 +143,16 @@ async def _refuse_manual_sheet_layout(
         "error": (
             f"refused: this places {n_placements} components onto a sheet "
             f"that has {existing}, which is a schematic being drawn by "
-            f"hand. Positions chosen this way read like nothing a person "
-            f"would draw, however correct the netlist is. Build a "
-            f"DesignPlan and call design_execute_plan: it places AND "
-            f"routes the whole sheet through the layout engine. Use "
-            f"design_layout_schematic or design_preview_plan to see the "
-            f"result first, neither of which writes to the sheet. If you "
-            f"really do mean to place "
-            f"these coordinates yourself, pass allow_manual_layout=true."
+            f"hand, part by part. Draw a sheet from a template instead: "
+            f"plan every part, wire, port and label on the grid, check it "
+            f"with sch_preview_template and draw it with "
+            f"sch_draw_template, which works out the pin ends and refuses "
+            f"a short before wiring. To place these parts on their own "
+            f"anyway, pass allow_manual_layout=true."
         ),
         "refused": True,
         "placed": 0,
-        "use_instead": "design_execute_plan",
+        "use_instead": "sch_draw_template",
         "existing_components": existing,
     }
 
@@ -823,7 +821,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def obj_zoom(action: str = "fit") -> dict[str, Any]:
-        """Control the viewport zoom level.
+        """Control the viewport zoom level of the focused document.
+
+        Works on a schematic, a schematic library, a board and a footprint
+        library; the focused tab decides which editor zooms.
 
         Args:
             action: "fit" (all objects), "board" (center and fit the PCB),
@@ -1962,19 +1963,22 @@ def register_generic_tools(mcp):
                 "gnd_power", power ground symbol
                 "gnd_signal", signal ground symbol
                 "gnd_earth", earth ground symbol
+                Any other name is refused rather than drawn as a circle.
             orientation: which way the glyph points from the connection
                 point: 0=right, 1=up, 2=left, 3=down. Leave at -1 to let
-                the bridge decide by style, which sends the ground
-                glyphs down and everything else up.
-
-                PASS IT EXPLICITLY FOR A RAIL DRAWN WITH style="bar".
-                The style-based default groups "bar" and "wave" with the
-                grounds, so a VCC bar comes out pointing DOWN and reads
-                as a ground symbol. orientation=1 is what you want there.
+                the bridge decide by style: the three ground glyphs point
+                down, the supply glyphs (circle, arrow, bar, wave) point up.
 
         Returns:
             Dictionary confirming placement
         """
+        style = (style or "circle").strip().lower()
+        if style not in POWER_PORT_STYLES:
+            return {
+                "success": False,
+                "error": f"Unknown power port style {style!r}. Use one of: "
+                         + ", ".join(POWER_PORT_STYLES),
+            }
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.place_power_port",
@@ -3066,7 +3070,9 @@ def register_generic_tools(mcp):
         nothing a person would draw. design_execute_plan routes the whole
         sheet from a DesignPlan through the layout engine, deciding
         wire-versus-label per net and keeping wires off other nets' pins.
-        Use THIS tool for a few segments on a sheet that already exists.
+        A planned block can also use sch_preview_template and
+        sch_draw_template. Use THIS tool for a few segments on a sheet
+        that already exists.
 
         PREFER THIS over placing wires one segment at a time (there is no
         singular variant). Wiring up a netlist is inherently N pairs of
@@ -3119,7 +3125,9 @@ def register_generic_tools(mcp):
         and design_preview_plan show you the result first without touching
         the EDA. Use THIS tool to add parts to a sheet that already exists,
         or when the positions came from that engine. To place coordinates
-        yourself anyway, pass ``allow_manual_layout=True``.
+        yourself anyway, pass ``allow_manual_layout=True``. For an
+        explicit hand template, use sch_preview_template followed by
+        sch_draw_template.
 
         This is the only path for library placement (there is no singular
         variant). Laying out a 50-part BOM is inherently a bulk operation;
@@ -3293,6 +3301,10 @@ def register_generic_tools(mcp):
     # Schematic power ports, net labels, and free text are placed via the
     # dedicated handlers place_power_port / place_net_label / place_note.
 
+
+#: Power port styles the bridge draws (Utils.pas IsPowerPortStyle).
+POWER_PORT_STYLES = ("circle", "arrow", "bar", "wave",
+                     "gnd_power", "gnd_signal", "gnd_earth")
 
 #: Sheet sizes generic.set_sheet_size can set (the OrCAD set it cannot).
 _SHEET_STYLES_SETTABLE = frozenset({

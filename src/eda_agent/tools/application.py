@@ -1006,6 +1006,11 @@ def register_application_tools(mcp):
         saved is an error (a missing folder is named), not a success with
         ``saved: false``.
 
+        A path that is already OPEN is refused (``ALREADY_OPEN``): creating
+        over an open document crashed Altium's PCB editor. Focus it with
+        app_set_active_document instead. A file that exists on disk but is
+        not open is replaced by the blank document.
+
         Returns:
             Dictionary with kind, file_path, saved, focused,
             added_to_project.
