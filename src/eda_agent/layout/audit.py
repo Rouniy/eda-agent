@@ -17,7 +17,9 @@ mils, so a gate can name a number and the harness can read it back:
 * ``corner_audit``: track junctions that bend sharper than 45 degrees;
 * ``return_via_audit``: signal vias with no ground or plane via near;
 * ``plane_region_audit``: pour and plane copper that has broken into
-  islands.
+  islands;
+* ``rotation_audit``: two-pad parts that would connect shorter at another
+  right-angle rotation (advisory).
 
 Nothing here measures distance or connectivity in a second way. Clearance
 is ``drc.run_drc``, connectivity is ``drc.connectivity`` and shapes are
@@ -718,6 +720,13 @@ def plane_region_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
 
 # ---------------------------------------------------------------------------
 
+def _rotation_audit(board: LayoutBoard, limit: int = LIMIT) -> dict:
+    """Two-pad parts that would connect shorter at another right
+    angle; advisory, see layout/rotation_audit."""
+    from eda_agent.layout.rotation_audit import rotation_audit
+    return rotation_audit(board, limit=limit)
+
+
 #: Every check ``run_audits`` knows, by the name a gate uses for it.
 CHECKS: dict[str, Callable[..., dict]] = {
     "placement_audit": placement_audit,
@@ -726,6 +735,7 @@ CHECKS: dict[str, Callable[..., dict]] = {
     "corner_audit": corner_audit,
     "return_via_audit": return_via_audit,
     "plane_region_audit": plane_region_audit,
+    "rotation_audit": _rotation_audit,
 }
 
 

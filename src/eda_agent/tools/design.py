@@ -471,6 +471,8 @@ def register_design_tools(mcp) -> None:
         - ``return_via_audit``: signal vias with no ground or plane via
           within ``max_distance_mils``.
         - ``plane_region_audit``: pour and plane copper broken into islands.
+        - ``rotation_audit``: two-pad parts whose airline would
+          be shorter at another right angle. Advisory.
 
         Log the result as ``data`` on the stage_result
         (``design_session_log``); ``design_next_action`` checks the numbers

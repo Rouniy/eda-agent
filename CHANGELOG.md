@@ -16,6 +16,16 @@ maturity classification for every tool.
 
 ### Added
 
+- `rotation_audit`, an advisory check in `pcb_layout_audit`: each
+  two-pad part on either side is tried at 0/90/180/270 degrees about its
+  origin, scored by net airline (minimum spanning tree) for routable
+  nets and by distance to the nearest return pad for plane nets, and
+  reported when another rotation beats the current one by 25 mils.
+  The idea comes from coffeenmusic/altium-mcp's `check_orientation`,
+  reimplemented on the LayoutBoard model. The bottom-side rotation sign
+  was measured on four flipped parts in Altium 26.11.1.5. Scoring remains
+  a geometric advisory and is covered by synthetic-board tests.
+
 #### Owner profiles
 
 A per-workspace house style, so one machine can work for several
