@@ -123,6 +123,23 @@ Begin
     End;
 End;
 
+{ An explicit owner_part_id puts a primitive on that part of a multi-part }
+{ symbol, the way Lib_AddPins already does; empty keeps SetOwnerPart.      }
+{ Without it every body primitive landed on whichever part was current,  }
+{ so part 2 of a dual op-amp could not get its own triangle.              }
+Procedure SetOwnerPartFrom(Obj : ISch_GraphicalObject; Component : ISch_Component;
+    OwnerStr : String);
+Begin
+    If Obj = Nil Then Exit;
+    If (OwnerStr <> '') And IsIntStr(OwnerStr) And (StrToIntDef(OwnerStr, 0) > 0) Then
+    Begin
+        Try Obj.OwnerPartId := StrToIntDef(OwnerStr, 1); Except End;
+        Try Obj.OwnerPartDisplayMode := 0; Except End;
+    End
+    Else
+        SetOwnerPart(Obj, Component);
+End;
+
 { Resolve the target component for a Lib_Add* primitive helper.             }
 {                                                                              }
 { SchLib.CurrentSchComponent in DelphiScript reflects the editor's selected }
@@ -188,6 +205,7 @@ Begin
     Try FullPath := SchLib.DocumentName; Except End;
     If FullPath <> '' Then
     Begin
+        NoteDocEdited(FullPath);
         ServerDoc := Client.GetDocumentByPath(FullPath);
         If ServerDoc <> Nil Then
             Try ServerDoc.SetModified(True); Except End
@@ -225,28 +243,12 @@ End;
 { document, so newly-added pads/tracks vanished after close/reopen.          }
 Procedure MarkPcbLibDirty(PcbLib : IPCB_Library);
 Var
-    Workspace : IWorkspace;
-    Doc : IDocument;
     FullPath : String;
-    ServerDoc : IServerDocument;
 Begin
     If PcbLib = Nil Then Exit;
-    Workspace := GetWorkspace;
-    If Workspace <> Nil Then
-    Begin
-        Doc := Workspace.DM_FocusedDocument;
-        If Doc <> Nil Then
-        Begin
-            FullPath := '';
-            Try FullPath := Doc.DM_FullPath; Except End;
-            If FullPath <> '' Then
-            Begin
-                ServerDoc := Client.GetDocumentByPath(FullPath);
-                If ServerDoc <> Nil Then
-                    Try ServerDoc.SetModified(True); Except End;
-            End;
-        End;
-    End;
+    FullPath := '';
+    Try FullPath := PcbLib.Board.FileName; Except End;
+    If FullPath <> '' Then MarkDocDirtyByPath(FullPath);
     Try PcbLib.Board.ViewManager_FullUpdate; Except End;
     Try Application.ProcessMessages; Except End;
 End;
@@ -1256,7 +1258,7 @@ Begin
             Except End;
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
-        SetOwnerPart(Rect, Component);
+        SetOwnerPartFrom(Rect, Component, ExtractJsonValue(Params, 'owner_part_id'));
         Component.AddSchObject(Rect);
         SchRegisterObject(Component, Rect);
         SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
@@ -1358,6 +1360,7 @@ Begin
 
         PcbLib.RegisterComponent(Footprint);
         PcbLib.CurrentComponent := Footprint;
+        MarkDocDirtyByPath(PcbLib.Board.FileName);
 
         Result := BuildSuccessResponse(RequestId, '{"success":true,"name":"' + EscapeJsonString(Name) + '"}');
     End
@@ -2171,6 +2174,7 @@ Begin
     Finally
         PCBServer.PostProcess;
     End;
+    MarkDocDirtyByPath(Board.FileName);
 
     RespJson :=
         '{"success":true' +
@@ -3143,10 +3147,7 @@ Begin
 
     { Flag the server doc dirty so application.save_all flushes it. The write
       is deferred: nothing reaches disk until the caller explicitly saves. }
-    Try
-        SrvDoc := Client.GetDocumentByPath(LibPath);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    MarkDocDirtyByPath(LibPath);
 
     RespJson :=
         '{"success":true' +
@@ -3331,10 +3332,7 @@ Begin
     End;
 
     Try Board.ViewManager_FullUpdate; Except End;
-    Try
-        SrvDoc := Client.GetDocumentByPath(LibPath);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    MarkDocDirtyByPath(LibPath);
 
     RespJson :=
         '{"success":true' +
@@ -3669,10 +3667,7 @@ Begin
     End;
 
     Try Board.ViewManager_FullUpdate; Except End;
-    Try
-        SrvDoc := Client.GetDocumentByPath(LibPath);
-        If SrvDoc <> Nil Then SrvDoc.SetModified(True);
-    Except End;
+    MarkDocDirtyByPath(LibPath);
 
     RespJson :=
         '{"success":true' +
@@ -5254,6 +5249,22 @@ Begin
                     Continue;
                 End;
 
+                // Special case: Comment is the component's comment label,
+                // not a parameter. "=Partnumber" makes it show that value.
+                If ParamName = 'Comment' Then
+                Begin
+                    If Component.Comment <> Nil Then
+                    Begin
+                        SchBeginModify(Component.Comment);
+                        Component.Comment.Text := ParamValue;
+                        SchEndModify(Component.Comment);
+                        Inc(Updated);
+                    End
+                    Else
+                        Inc(Failed);
+                    Continue;
+                End;
+
                 // Find existing parameter
                 FoundParam := Nil;
                 ParamIterator := Component.SchIterator_Create;
@@ -5284,6 +5295,9 @@ Begin
                     Begin
                         NewParam.Name := ParamName;
                         NewParam.Text := ParamValue;
+                        { Hidden, as a library parameter normally is. Created
+                          visible it sat on the symbol origin, over the pins. }
+                        NewParam.IsHidden := True;
                         SetOwnerPart(NewParam, Component);
                         Component.AddSchObject(NewParam);
                         SchRegisterObject(Component, NewParam);
@@ -5633,7 +5647,7 @@ End;
 
 Function Lib_AddSymbolPolygon(Params : String; RequestId : String) : String;
 Var
-    VerticesStr, Token : String;
+    VerticesStr, Token, FillStr, OwnerStr : String;
     SchLib : ISch_Lib;
     Component : ISch_Component;
     Polygon : ISch_Polygon;
@@ -5646,6 +5660,8 @@ Var
     XValues, YValues : TStringList;
 Begin
     VerticesStr := ExtractJsonValue(Params, 'vertices');
+    FillStr := ExtractJsonValue(Params, 'fill_color');
+    OwnerStr := ExtractJsonValue(Params, 'owner_part_id');
 
     If VerticesStr = '' Then
     Begin
@@ -5708,6 +5724,17 @@ Begin
             Polygon.VerticesCount := XValues.Count;
             Polygon.IsSolid := True;
             Polygon.LineWidth := eSmall;
+            { A fill colour makes it a BODY (an amplifier triangle, in     }
+            { Altium's block yellow) rather than a glyph in the line        }
+            { colour, which is what a diode triangle wants. -1 is no fill:  }
+            { an outline only.                                              }
+            If (FillStr <> '') And IsIntStr(FillStr) Then
+            Begin
+                If StrToIntDef(FillStr, -1) >= 0 Then
+                    Try Polygon.AreaColor := StrToIntDef(FillStr, 0); Except End
+                Else
+                    Polygon.IsSolid := False;
+            End;
 
             For I := 1 To XValues.Count Do
                 Polygon.Vertex[I] := Point(
@@ -5715,7 +5742,7 @@ Begin
                     MilsToCoord(StrToIntDef(YValues[I-1], 0)));
 
             SchServer.ProcessControl.PreProcess(SchLib, '');
-            SetOwnerPart(Polygon, Component);
+            SetOwnerPartFrom(Polygon, Component, OwnerStr);
             Component.AddSchObject(Polygon);
             SchRegisterObject(Component, Polygon);
             SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
@@ -5874,7 +5901,10 @@ Begin
                 ',"orientation":' + IntToStr(Pin.Orientation) +
                 ',"length":' + IntToStr(CoordToMils(Pin.PinLength)) +
                 ',"hidden":' + BoolToJsonStr(Pin.IsHidden) +
-                ',"owner_part_id":' + IntToStr(Pin.OwnerPartId) + '}';
+                ',"owner_part_id":' + IntToStr(Pin.OwnerPartId) +
+                { 0 is the normal display; 1 and up are alternate modes, which  }
+                { repeat a part's pins at other places and read as duplicates.  }
+                ',"display_mode":' + IntToStr(Pin.OwnerPartDisplayMode) + '}';
             Inc(PinCount);
 
             Pin := PinIterator.NextSchObject;
@@ -5910,6 +5940,29 @@ End;
 { deferred-save pattern.                                                       }
 {..............................................................................}
 
+{ Pins on every part of a library symbol, the count lib_get_component_details }
+{ reports as pin_count.                                                        }
+Function CountComponentPins(Comp : ISch_Component) : Integer;
+Var
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+Begin
+    Result := 0;
+    If Comp = Nil Then Exit;
+    Iter := Comp.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePin));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Inc(Result);
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(Iter);
+    End;
+End;
+
 Function Lib_CopyComponent(Params : String; RequestId : String) : String;
 Var
     SourceLibPath, DestLibPath, FocusedPath, SourceName, NewName : String;
@@ -5917,8 +5970,9 @@ Var
     Workspace : IWorkspace;
     Doc : IDocument;
     SourceLib, DestLib : ISch_Lib;
-    SourceComp, NewComp, Existing, Verify : ISch_Component;
+    SourceComp, NewComp, Existing, Verify, Shown : ISch_Component;
     Overwrite, SameLib, Overwrote : Boolean;
+    SourcePins, CopyPins : Integer;
 Begin
     SourceLibPath := ExtractJsonValue(Params, 'source_library');
     DestLibPath := ExtractJsonValue(Params, 'dest_library');
@@ -5974,6 +6028,19 @@ Begin
         Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
             'Source component not found in ' + SourceLibPath + ': ' + SourceName);
         Exit;
+    End;
+
+    { A SYMBOL NOBODY HAS SHOWN MAY NOT BE LOADED YET. MEASURED: the first of
+      several copies sent right after the library opened came out with its
+      parameters but no pins, no graphics and no Value, and still reported
+      verified. Every later copy of the same source was whole. When the
+      source reads no pins, show it, which loads it, and look it up again. }
+    SourcePins := CountComponentPins(SourceComp);
+    If SourcePins = 0 Then
+    Begin
+        Shown := SelectLibComponentPart(SourceName, 0);
+        If Shown <> Nil Then SourceComp := Shown;
+        SourcePins := CountComponentPins(SourceComp);
     End;
 
     SameLib := (DestLibPath = '') Or (UpperCase(DestLibPath) = UpperCase(SourceLibPath));
@@ -6088,6 +6155,27 @@ Begin
         Exit;
     End;
 
+    { A NAME THAT RESOLVES IS NOT A WHOLE COPY. Compare what arrived with
+      what was copied, so an empty symbol is reported instead of verified. }
+    CopyPins := CountComponentPins(Verify);
+    If CopyPins <> SourcePins Then
+    Begin
+        Result := BuildSuccessResponse(RequestId,
+            JsonObj(
+                JsonBool('success', False) + ',' +
+                JsonStr('source_library', SourceLibPath) + ',' +
+                JsonStr('dest_library', DestLibPath) + ',' +
+                JsonStr('source', SourceName) + ',' +
+                JsonStr('new_name', NewName) + ',' +
+                JsonInt('source_pins', SourcePins) + ',' +
+                JsonInt('copy_pins', CopyPins) + ',' +
+                JsonStr('reason', 'the copy exists under new_name but does not '
+                    + 'hold the source''s pins, so it is incomplete. Copy again '
+                    + 'with overwrite=true, which replaces it.')
+            ));
+        Exit;
+    End;
+
     { Stash the response in a local before assigning to Result -- the         }
     { DelphiScript last-String-arg clobber bug only bites here when the       }
     { JSON build calls a String helper, but the pattern is cheap insurance.   }
@@ -6099,6 +6187,7 @@ Begin
         ',"new_name":"' + EscapeJsonString(NewName) + '"' +
         ',"same_library":' + BoolToJsonStr(SameLib) +
         ',"overwrote":' + BoolToJsonStr(Overwrote) +
+        ',"pins":' + IntToStr(CopyPins) +
         ',"verified":true}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
@@ -6465,7 +6554,7 @@ Begin
             Line.Corner := Loc;
             Line.LineWidth := Width;
 
-            SetOwnerPart(Line, Component);
+            SetOwnerPartFrom(Line, Component, GetBatchField(Op, 'owner_part_id'));
             Component.AddSchObject(Line);
             SchRegisterObject(Component, Line);
             Inc(Added);
@@ -6515,12 +6604,14 @@ Var
     SchLib : ISch_Lib;
     LibReader : ILibCompInfoReader;
     CompInfo : IComponentInfo;
-    PinIter, ParamIter : ISch_Iterator;
+    PinIter, ParamIter, BodyIter : ISch_Iterator;
     Component : ISch_Component;
     Pin : ISch_Pin;
     Param : ISch_Parameter;
     DesigLabel : ISch_Label;
+    BodyObj : ISch_GraphicalObject;
     Limit, Count, MismatchCount, PinCount, NumComps, I : Integer;
+    RectCount, PolyCount : Integer;
     DesigFontId, DesigColor : Integer;
     DesigJson, CommentJson, PinList, StyleList, ElecStr, ResultsJson, Entry, CompName : String;
     PinLabelHidden : Boolean;
@@ -6707,6 +6798,27 @@ Begin
                     End;
                     Entry := Entry + ',"pin_count":' + IntToStr(PinCount) +
                         ',"pins":[' + PinList + ']';
+
+                    { What the body is drawn with, so a caller can tell an    }
+                    { amplifier drawn as a box from one drawn as a triangle.   }
+                    RectCount := 0;
+                    PolyCount := 0;
+                    BodyIter := Component.SchIterator_Create;
+                    BodyIter.AddFilter_ObjectSet(MkSet(eRectangle, ePolygon));
+                    Try
+                        BodyObj := BodyIter.FirstSchObject;
+                        While BodyObj <> Nil Do
+                        Begin
+                            If BodyObj.ObjectId = eRectangle Then Inc(RectCount)
+                            Else Inc(PolyCount);
+                            BodyObj := BodyIter.NextSchObject;
+                        End;
+                    Finally
+                        Component.SchIterator_Destroy(BodyIter);
+                    End;
+                    Entry := Entry + ',"body":{"rectangles":' + IntToStr(RectCount)
+                        + ',"polygons":' + IntToStr(PolyCount) + '}'
+                        + ',"description":"' + EscapeJsonString(Component.ComponentDescription) + '"';
                 End;
 
                 If WithParameters Then
@@ -7079,8 +7191,53 @@ End;
 { truncated, ops array each with target, modified, already_compliant,         }
 { missing_target, failed.                                                     }
 
+{ Move a label and/or set its text. X and Y are in mils, in the symbol's own  }
+{ frame, the same frame lib_add_symbol_text and lib_add_pins place in. An     }
+{ empty string leaves that field alone. Returns 1 if anything changed, 0 if   }
+{ it already matched, -1 if the write raised.                                 }
+{                                                                              }
+{ The text is what makes Comment show a parameter: "=Partnumber" displays the }
+{ part's Partnumber value.                                                     }
+Function ApplyLabelPlacement(Lbl : ISch_Label; XStr, YStr, TextStr : String;
+    OnlyMismatched : Boolean) : Integer;
+Var
+    Loc : TLocation;
+    WantX, WantY : TCoord;
+    Changed : Boolean;
+Begin
+    Result := 0;
+    If Lbl = Nil Then Exit;
+    If (XStr = '') And (YStr = '') And (TextStr = '') Then Exit;
+    Try
+        Loc := Lbl.Location;
+        WantX := Loc.X;
+        WantY := Loc.Y;
+        If XStr <> '' Then WantX := MilsToCoord(StrToIntDef(XStr, 0));
+        If YStr <> '' Then WantY := MilsToCoord(StrToIntDef(YStr, 0));
+        Changed := (WantX <> Loc.X) Or (WantY <> Loc.Y)
+            Or ((TextStr <> '') And (Lbl.Text <> TextStr));
+        If OnlyMismatched And (Not Changed) Then Exit;
+        SchBeginModify(Lbl);
+        { Location is a by-value record: read, mutate, write back. }
+        Loc.X := WantX;
+        Loc.Y := WantY;
+        Lbl.Location := Loc;
+        { A designator or comment left on auto-position is put back where
+          Altium wants it, so the move read back in memory and never reached
+          the saved file. Same as the component move in Generic.pas. }
+        If (XStr <> '') Or (YStr <> '') Then
+            Try Lbl.Autoposition := False; Except End;
+        If TextStr <> '' Then Lbl.Text := TextStr;
+        SchEndModify(Lbl);
+        Result := 1;
+    Except
+        Result := -1;
+    End;
+End;
+
 Function ApplyOpToComponent(Component : ISch_Component; Target : String;
     FontIdStr, ColorStr, IsHiddenStr, OrientationStr, JustificationStr : String;
+    XStr, YStr, TextStr : String;
     OnlyMismatched : Boolean) : Integer;
 { Returns 0=already_compliant, 1=modified, 2=missing_target, 3=failed.        }
 Var
@@ -7088,7 +7245,7 @@ Var
     NewFontId, NewColor, NewOrientation, NewJustification : Integer;
     NewIsHidden, Found : Boolean;
     Lbl : ISch_Label;
-    AR : Integer;
+    AR, PR : Integer;
 Begin
     HasFontId := FontIdStr <> '';
     NewFontId := StrToIntDef(FontIdStr, 0);
@@ -7107,13 +7264,16 @@ Begin
         Result := 2;
         Exit;
     End;
-    AR := ApplyLabelFormat(Lbl, HasFontId, NewFontId,
-        HasColor, NewColor, HasIsHidden, NewIsHidden,
-        HasOrientation, NewOrientation, HasJustification, NewJustification,
-        OnlyMismatched);
-    If AR = 1 Then Result := 1
-    Else If AR = 0 Then Result := 0
-    Else Result := 3;
+    AR := 0;
+    If HasFontId Or HasColor Or HasIsHidden Or HasOrientation Or HasJustification Then
+        AR := ApplyLabelFormat(Lbl, HasFontId, NewFontId,
+            HasColor, NewColor, HasIsHidden, NewIsHidden,
+            HasOrientation, NewOrientation, HasJustification, NewJustification,
+            OnlyMismatched);
+    PR := ApplyLabelPlacement(Lbl, XStr, YStr, TextStr, OnlyMismatched);
+    If (AR = -1) Or (PR = -1) Then Result := 3
+    Else If (AR = 1) Or (PR = 1) Then Result := 1
+    Else Result := 0;
 End;
 
 Function Lib_SetLabelFormats(Params : String; RequestId : String) : String;
@@ -7134,7 +7294,7 @@ Var
     { arrays silently corrupt Result, so we use TStringList per the project's }
     { existing pattern. Counter fields hold IntToStr(N).                       }
     OpTargets, OpFontIds, OpColors, OpIsHidden,
-        OpOrientation, OpJustification : TStringList;
+        OpOrientation, OpJustification, OpXs, OpYs, OpTexts : TStringList;
     OpModified, OpAlready, OpMissing, OpFailed : TStringList;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -7198,6 +7358,9 @@ Begin
     OpIsHidden := TStringList.Create;
     OpOrientation := TStringList.Create;
     OpJustification := TStringList.Create;
+    OpXs := TStringList.Create;
+    OpYs := TStringList.Create;
+    OpTexts := TStringList.Create;
     OpModified := TStringList.Create;
     OpAlready := TStringList.Create;
     OpMissing := TStringList.Create;
@@ -7217,6 +7380,9 @@ Begin
             OpIsHidden.Add(GetBatchField(OpStr, 'is_hidden'));
             OpOrientation.Add(GetBatchField(OpStr, 'orientation'));
             OpJustification.Add(GetBatchField(OpStr, 'justification'));
+            OpXs.Add(GetBatchField(OpStr, 'x'));
+            OpYs.Add(GetBatchField(OpStr, 'y'));
+            OpTexts.Add(GetBatchField(OpStr, 'text'));
             OpModified.Add('0');
             OpAlready.Add('0');
             OpMissing.Add('0');
@@ -7249,7 +7415,8 @@ Begin
                 Begin
                     OpResult := ApplyOpToComponent(Component, OpTargets[J],
                         OpFontIds[J], OpColors[J], OpIsHidden[J],
-                        OpOrientation[J], OpJustification[J], OnlyMismatched);
+                        OpOrientation[J], OpJustification[J],
+                        OpXs[J], OpYs[J], OpTexts[J], OnlyMismatched);
                     If OpResult = 0 Then
                         OpAlready[J] := IntToStr(StrToIntDef(OpAlready[J], 0) + 1)
                     Else If OpResult = 1 Then
@@ -7288,7 +7455,8 @@ Begin
                         Begin
                             OpResult := ApplyOpToComponent(Component, OpTargets[J],
                                 OpFontIds[J], OpColors[J], OpIsHidden[J],
-                                OpOrientation[J], OpJustification[J], OnlyMismatched);
+                                OpOrientation[J], OpJustification[J],
+                                OpXs[J], OpYs[J], OpTexts[J], OnlyMismatched);
                             If OpResult = 0 Then
                                 OpAlready[J] := IntToStr(StrToIntDef(OpAlready[J], 0) + 1)
                             Else If OpResult = 1 Then
@@ -7344,6 +7512,9 @@ Begin
         OpIsHidden.Free;
         OpOrientation.Free;
         OpJustification.Free;
+        OpXs.Free;
+        OpYs.Free;
+        OpTexts.Free;
         OpModified.Free;
         OpAlready.Free;
         OpMissing.Free;
@@ -7574,6 +7745,7 @@ Begin
             { No SaveDoc here -- libraries should be reviewed by hand    }
             { before saving since this rewrites height data project-wide.}
         Except End;
+        MarkDocDirtyByPath(CurLib.Board.FileName);
     End;
 
     Result := BuildSuccessResponse(RequestId,
@@ -7694,6 +7866,7 @@ Begin
 
     If SavedCurrent <> Nil Then CurLib.CurrentComponent := SavedCurrent;
     Try CurLib.Board.ViewManager_FullUpdate; Except End;
+    If OldH <> NewH Then MarkDocDirtyByPath(CurLib.Board.FileName);
 
     Note := '';
     If NewH = 0 Then
@@ -8689,8 +8862,7 @@ Begin
             End;
             SchServer.ProcessControl.PostProcess(SchDoc, 'Replace footprint model');
             Try SchDoc.GraphicallyInvalidate; Except End;
-            ServerDoc := Client.GetDocumentByPath(LibPath);
-            If ServerDoc <> Nil Then Try ServerDoc.SetModified(True); Except End;
+            MarkDocDirtyByPath(LibPath);
             Result := BuildSuccessResponse(RequestId, '{"success":true,"component":"'
                 + EscapeJsonString(CompName) + '","new_model_name":"'
                 + EscapeJsonString(NewName) + '","replaced_all":true,"scope":"SchDoc"}');
@@ -8731,8 +8903,7 @@ Begin
         SchEndModify(Target);
         SchServer.ProcessControl.PostProcess(SchDoc, 'Set model name');
         Try SchDoc.GraphicallyInvalidate; Except End;
-        ServerDoc := Client.GetDocumentByPath(LibPath);
-        If ServerDoc <> Nil Then Try ServerDoc.SetModified(True); Except End;
+        MarkDocDirtyByPath(LibPath);
         RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
             + ',"component":"' + EscapeJsonString(CompName) + '"'
             + ',"new_model_name":"' + EscapeJsonString(NewName) + '","scope":"SchDoc"}';
@@ -9132,8 +9303,7 @@ Begin
         End;
         SchServer.ProcessControl.PostProcess(SchDoc, 'Set model source');
         Try SchDoc.GraphicallyInvalidate; Except End;
-        ServerDoc := Client.GetDocumentByPath(LibPath);
-        If ServerDoc <> Nil Then Try ServerDoc.SetModified(True); Except End;
+        MarkDocDirtyByPath(LibPath);
         RespJson := '{"success":true,"component":"' + EscapeJsonString(CompName) + '"'
             + ',"source_library":"' + EscapeJsonString(SourceLib) + '"'
             + ',"models_updated":' + IntToStr(Updated) + ',"scope":"SchDoc"}';
@@ -9454,15 +9624,8 @@ Begin
     End;
 
     { Dirty both docs BY PATH (MarkLibDirty only dirties the focused doc). }
-    Try
-        ServerDoc := Client.GetDocumentByPath(DestPath);
-        If ServerDoc <> Nil Then ServerDoc.SetModified(True);
-    Except End;
-    If DeleteFromSource Then
-        Try
-            ServerDoc := Client.GetDocumentByPath(SourcePath);
-            If ServerDoc <> Nil Then ServerDoc.SetModified(True);
-        Except End;
+    MarkDocDirtyByPath(DestPath);
+    If DeleteFromSource Then MarkDocDirtyByPath(SourcePath);
 
     RespJson := '{"success":true'
         + ',"source_library":"' + EscapeJsonString(SourcePath) + '"'

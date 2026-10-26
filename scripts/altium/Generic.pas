@@ -290,6 +290,61 @@ Begin
     End;
 End;
 
+{ IsHidden and position of a placed component's Designator or Comment label. }
+{ Field is 'IsHidden', 'Location.X' or 'Location.Y'; positions are in mils.   }
+{ Returns '' for anything that is not a component.                           }
+Function GetSchComponentLabelProp(Obj : ISch_GraphicalObject; Which, Field : String) : String;
+Var
+    C : ISch_Component;
+    Lbl : ISch_GraphicalObject;
+Begin
+    Result := '';
+    If Obj.ObjectId <> eSchComponent Then Exit;
+    Try
+        C := Obj;
+        If Which = 'Designator' Then Lbl := C.Designator Else Lbl := C.Comment;
+        If Lbl = Nil Then Exit;
+        If Field = 'IsHidden' Then Result := BoolToJsonStr(Lbl.IsHidden)
+        Else If Field = 'Location.X' Then Result := IntToStr(CoordToMils(Lbl.Location.X))
+        Else If Field = 'Location.Y' Then Result := IntToStr(CoordToMils(Lbl.Location.Y));
+    Except
+        RecordCastError('GetSchComponentLabelProp:' + Which + '.' + Field);
+        Result := '';
+    End;
+End;
+
+{ The write side. Moving a label turns its auto-position off, or Altium puts }
+{ it back; the same reason lib_set_label_formats does it in a library.       }
+Function SetSchComponentLabelProp(Obj : ISch_GraphicalObject; Which, Field, Value : String) : Boolean;
+Var
+    C : ISch_Component;
+    Lbl : ISch_GraphicalObject;
+    Loc : TLocation;
+Begin
+    Result := False;
+    If Obj.ObjectId <> eSchComponent Then Exit;
+    Try
+        C := Obj;
+        If Which = 'Designator' Then Lbl := C.Designator Else Lbl := C.Comment;
+        If Lbl = Nil Then Exit;
+        SchBeginModify(Lbl);
+        If Field = 'IsHidden' Then
+            Lbl.IsHidden := (UpperCase(Value) = 'TRUE') Or (Value = '1')
+        Else
+        Begin
+            Loc := Lbl.Location;
+            If Field = 'Location.X' Then Loc.X := MilsToCoord(StrToIntDef(Value, 0))
+            Else Loc.Y := MilsToCoord(StrToIntDef(Value, 0));
+            Lbl.Location := Loc;
+            Try Lbl.Autoposition := False; Except End;
+        End;
+        SchEndModify(Lbl);
+        Result := True;
+    Except
+        RecordCastError('SetSchComponentLabelProp:' + Which + '.' + Field);
+    End;
+End;
+
 { Read the Designator and SheetFileName text labels carried by a sheet symbol. }
 { ISch_SheetSymbol exposes them as compound sub-objects (ISch_SheetName,        }
 { ISch_SheetFileName), so the Obj.SheetName / Obj.SheetFileName access has to  }
@@ -629,6 +684,12 @@ Begin
             Result := GetSheetSymbolText(Obj, 'Filename')
         Else If PropName = 'Comment'         Then Result := GetSchComponentSubText(Obj, 'Comment')
         Else If PropName = 'Comment.Text'    Then Result := GetSchComponentSubText(Obj, 'Comment')
+        Else If (PropName = 'Designator.IsHidden') Or (PropName = 'Designator.Location.X')
+             Or (PropName = 'Designator.Location.Y') Then
+            Result := GetSchComponentLabelProp(Obj, 'Designator', Copy(PropName, 12, 99))
+        Else If (PropName = 'Comment.IsHidden') Or (PropName = 'Comment.Location.X')
+             Or (PropName = 'Comment.Location.Y') Then
+            Result := GetSchComponentLabelProp(Obj, 'Comment', Copy(PropName, 9, 99))
 
         // Integer properties (returned as string)
         Else If PropName = 'Orientation' Then
@@ -1036,6 +1097,14 @@ Begin
             WroteOK := SetSheetSymbolText(Obj, 'Filename', Value)
         Else If (PropName = 'Comment') Or (PropName = 'Comment.Text') Then
             SetSchComponentSubText(Obj, 'Comment', Value)
+        { A placed part's designator must be visible on the schematic even
+          when the library template hid it; these were unknown names. }
+        Else If (PropName = 'Designator.IsHidden') Or (PropName = 'Designator.Location.X')
+             Or (PropName = 'Designator.Location.Y') Then
+            WroteOK := SetSchComponentLabelProp(Obj, 'Designator', Copy(PropName, 12, 99), Value)
+        Else If (PropName = 'Comment.IsHidden') Or (PropName = 'Comment.Location.X')
+             Or (PropName = 'Comment.Location.Y') Then
+            WroteOK := SetSchComponentLabelProp(Obj, 'Comment', Copy(PropName, 9, 99), Value)
 
         // Integer properties
         Else If PropName = 'Orientation' Then
@@ -1638,7 +1707,7 @@ Var
     Sym : ISch_SheetSymbol;
     SchLib : ISch_Lib;
     LibComp : ISch_Component;
-    Removed : Boolean;
+    Removed, ParamsOfSymbol : Boolean;
     ObjJson : String;
     First : Boolean;
     MaxIter : Integer;
@@ -1805,7 +1874,27 @@ Begin
     If Mode = 'modify' Then
         SchServer.ProcessControl.PreProcess(SchDoc, '');
 
-    Iterator := SchDoc.SchIterator_Create;
+    { A SYMBOL'S PARAMETERS ARE OWNED BY THE SYMBOL. The library's own
+      iterator does not reach them, so a parameter query or modify in a
+      lib_component scope matched nothing while the parameters sat there.
+      Walk the scoped symbol instead, as DeleteParametersAnyOwner does. }
+    ParamsOfSymbol := False;
+    LibComp := Nil;
+    If ObjTypeInt = eParameter Then
+    Begin
+        Try ParamsOfSymbol := (SchDoc.ObjectId = eSchLib); Except End;
+        If ParamsOfSymbol Then
+        Begin
+            LibComp := LastCreatedLibComponent;
+            If LibComp = Nil Then
+                Try LibComp := SchDoc.CurrentSchComponent; Except End;
+            If LibComp = Nil Then ParamsOfSymbol := False;
+        End;
+    End;
+    If ParamsOfSymbol Then
+        Iterator := LibComp.SchIterator_Create
+    Else
+        Iterator := SchDoc.SchIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
 
     Obj := Iterator.FirstSchObject;
@@ -1849,7 +1938,10 @@ Begin
         Obj := Iterator.NextSchObject;
     End;
 
-    SchDoc.SchIterator_Destroy(Iterator);
+    If ParamsOfSymbol Then
+        LibComp.SchIterator_Destroy(Iterator)
+    Else
+        SchDoc.SchIterator_Destroy(Iterator);
 
     If Mode = 'modify' Then
         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
