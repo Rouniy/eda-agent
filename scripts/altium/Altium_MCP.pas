@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.20.4';
+    SCRIPT_VERSION = '2026.10.26.1';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -7841,17 +7841,21 @@ Begin
         Exit;
     End;
 
-    { Open/focus the OutJob document }
+    { Open and ACTIVATE the OutJob document. Focus alone leaves it open }
+    { without making it the active document; measured on AD25: the      }
+    { container then runs cleanly and writes 0 files. ShowDocument is   }
+    { what app_set_active_document does, and what the output batch      }
+    { follows.                                                          }
+    OutJobDoc := Nil;
     Try
         If Not Client.IsDocumentOpen(OutJobPath) Then
-        Begin
-            OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath);
-            If OutJobDoc <> Nil Then OutJobDoc.Focus;
-        End
+            OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath)
         Else
-        Begin
             OutJobDoc := Client.GetDocumentByPath(OutJobPath);
-            If OutJobDoc <> Nil Then OutJobDoc.Focus;
+        If OutJobDoc <> Nil Then
+        Begin
+            Try Client.ShowDocument(OutJobDoc); Except End;
+            Try OutJobDoc.Focus; Except End;
         End;
     Except
     End;
