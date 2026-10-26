@@ -188,11 +188,18 @@ again.
 
 ## Altium 365
 
-Set `EDA_AGENT_NEXAR_CLIENT_ID` and optionally
-`EDA_AGENT_NEXAR_CLIENT_SECRET`. To restrict workspace queries, set
-`EDA_AGENT_A365_WORKSPACES` to comma-separated workspace URLs. Run
-`eda-agent a365-login` interactively once; the token is stored for the
-current Windows user using DPAPI. `eda-agent a365-logout` removes it.
+For the Nexar route, set `EDA_AGENT_NEXAR_CLIENT_ID` and optionally
+`EDA_AGENT_NEXAR_CLIENT_SECRET`. Run `eda-agent a365-login` interactively
+once; its token is stored for the current Windows user using DPAPI, and
+`eda-agent a365-logout` removes it.
+
+For a direct workspace route, set `EDA_AGENT_A365_DOMAIN` to the workspace
+host and `EDA_AGENT_A365_TOKEN` to a token created under Admin > Developer
+in that workspace. This route uses the workspace GraphQL and Files APIs;
+its token does not use Nexar OAuth refresh. To restrict either route's
+workspace queries, set `EDA_AGENT_A365_WORKSPACES` to comma-separated URLs.
+`eng_a365_schema` lists fields from the connected API. The direct route is
+covered by request-construction tests, not by a live account check.
 The MCP tools expose workspace, project and library reads plus read-only
 GraphQL queries. `eng_a365_workspace_infos` adds each workspace's id and
 description; `eng_a365_library_components_params` lists library components

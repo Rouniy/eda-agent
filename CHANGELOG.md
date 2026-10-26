@@ -16,6 +16,10 @@ maturity classification for every tool.
 
 ### Added
 
+- Optional direct Altium 365 workspace API route alongside Nexar, with
+  workspace token authentication and live schema introspection. Request
+  construction is tested; live workspace acceptance remains pending.
+
 - Optional cross-check against a locally installed `pcb-toolkit` executable
   gives a second numerical result for supported calculators. The built-in
   calculation remains available without that executable.
