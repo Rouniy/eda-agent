@@ -22,6 +22,12 @@ instead of copying the fork's string list. Loaded and bundled script versions
 now match at `2026.10.26.12`; no native acceptance claim is made for this new
 Pascal change.
 
+The next source change ports the fork's circular board outline with decimal
+mil centre and radius. It is adapted to this repository's rectangle-only
+`pcb_set_board_shape`; polygon outlines remain a separate candidate. Python
+parameter tests and Pascal lint pass, but the circle has not been written to
+a disposable board in Altium yet.
+
 ## Scope and snapshots
 
 The target is `Rouniy/eda-agent` `main`, locally at `cb21952` before this integration. Its remote `origin/main` was `3f3aecc` (24 local commits behind). Upstream `salitronic/eda-agent` `main` was `74d745d`; the two histories had 216 local-only and 85 upstream-only commits. The direct fork of `Rouniy/eda-agent`, `MOREmbedded/eda-agent`, was at `7062521`; its history had 52 commits absent from local main and local main had 163 commits absent from it. These are Git snapshots, not permanent fork counts.

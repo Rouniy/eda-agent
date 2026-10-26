@@ -4577,28 +4577,47 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_set_board_shape(
-        x1: float,
-        y1: float,
-        x2: float,
-        y2: float,
+        x1: float = 0,
+        y1: float = 0,
+        x2: float = 0,
+        y2: float = 0,
+        shape: str = "rectangle",
+        center_x: float = 0,
+        center_y: float = 0,
+        radius: float = 0,
     ) -> dict[str, Any]:
-        """Define the physical PCB board outline as a rectangle.
+        """Define a rectangular or circular physical PCB board outline.
 
         Overwrites the current board shape. Use this right after creating a
         new PCB document to establish the board size before placing parts.
-        Coordinates are in mils; (x1,y1) and (x2,y2) are opposite corners in
-        any order.
+        Coordinates are in mils. Rectangle corners may be in any order;
+        circles use ``center_x``, ``center_y`` and ``radius``.
 
         Args:
             x1: First corner X in mils
             y1: First corner Y in mils
             x2: Opposite corner X in mils
             y2: Opposite corner Y in mils
+            shape: ``rectangle`` (default) or ``circle``
+            center_x: Circle centre X in mils
+            center_y: Circle centre Y in mils
+            radius: Circle radius in mils
 
         Returns:
-            Dictionary confirming the new outline rectangle
+            Dictionary confirming the new outline
         """
         bridge = get_bridge()
+        kind = str(shape or "rectangle").strip().lower()
+        if kind == "circle":
+            if radius <= 0:
+                return {"success": False, "error": "a circle needs a positive radius"}
+            return await bridge.send_command_async(
+                "pcb.set_board_shape",
+                {"shape": "circle", "cx": _mils(center_x),
+                 "cy": _mils(center_y), "radius": _mils(radius)},
+            )
+        if kind != "rectangle":
+            return {"success": False, "error": f"unknown board shape: {shape!r}"}
         result = await bridge.send_command_async(
             "pcb.set_board_shape",
             {"x1": _mils(x1), "y1": _mils(y1),

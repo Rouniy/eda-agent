@@ -72,6 +72,22 @@ async def test_stitching_vias_preserves_fractional_mils(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_circular_board_shape_preserves_fractional_mils(monkeypatch):
+    bridge = RecBridge()
+    tools = _pcb(monkeypatch, bridge)
+    await tools["pcb_set_board_shape"](
+        shape="circle", center_x=10.25, center_y=-20.5, radius=492.126,
+    )
+    assert bridge.calls[-1] == (
+        "pcb.set_board_shape",
+        {"shape": "circle", "cx": "10.25", "cy": "-20.5", "radius": "492.126"},
+    )
+    before = len(bridge.calls)
+    assert (await tools["pcb_set_board_shape"](shape="circle", radius=0))["success"] is False
+    assert len(bridge.calls) == before
+
+
+@pytest.mark.asyncio
 async def test_import_placement_packs_records(monkeypatch):
     b = RecBridge()
     tools = _pcb(monkeypatch, b)

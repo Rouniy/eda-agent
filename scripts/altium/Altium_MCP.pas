@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.26.12';
+    SCRIPT_VERSION = '2026.10.26.13';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -35803,21 +35803,71 @@ Begin
 End;
 
 {..............................................................................}
-{ PCB_SetBoardShape - Define the board outline as a rectangle                 }
-{ Params: x1,y1,x2,y2 in mils (opposite corners, any order)                   }
+{ PCB_SetBoardShape - Define a rectangular or circular board outline          }
+{ Params: x1,y1,x2,y2 or shape=circle,cx,cy,radius in mils                    }
 {..............................................................................}
 
 Function PCB_SetBoardShape(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     X1, Y1, X2, Y2, TmpF : Double;
-    Cx1, Cy1, Cx2, Cy2 : TCoord;
+    Cx1, Cy1, Cx2, Cy2, Ccx, Ccy, Cr : TCoord;
     Seg : TPolySegment;
+    ShapeStr : String;
+    K : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    ShapeStr := LowerCase(ExtractJsonValue(Params, 'shape'));
+    If ShapeStr = 'circle' Then
+    Begin
+        Ccx := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'cx'), 0));
+        Ccy := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'cy'), 0));
+        Cr := MilsToCoordF(StrToFloatDef(ExtractJsonValue(Params, 'radius'), 0));
+        If Cr <= 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'radius must be positive');
+            Exit;
+        End;
+        PCBServer.PreProcess;
+        Try
+            Board.BoardOutline.PointCount := 4;
+            For K := 0 To 3 Do
+            Begin
+                Seg := TPolySegment;
+                Seg.Kind := ePolySegmentArc;
+                Seg.cx := Ccx;
+                Seg.cy := Ccy;
+                Seg.Radius := Cr;
+                If K = 0 Then Begin Seg.vx := Ccx - Cr; Seg.vy := Ccy; Seg.Angle1 := 180; Seg.Angle2 := 270; End;
+                If K = 1 Then Begin Seg.vx := Ccx; Seg.vy := Ccy - Cr; Seg.Angle1 := 270; Seg.Angle2 := 360; End;
+                If K = 2 Then Begin Seg.vx := Ccx + Cr; Seg.vy := Ccy; Seg.Angle1 := 0; Seg.Angle2 := 90; End;
+                If K = 3 Then Begin Seg.vx := Ccx; Seg.vy := Ccy + Cr; Seg.Angle1 := 90; Seg.Angle2 := 180; End;
+                Board.BoardOutline.Segments[K] := Seg;
+            End;
+            ClosePolySegments(Board.BoardOutline, 4);
+            Board.BoardOutline.Invalidate;
+            Board.BoardOutline.Rebuild;
+            Board.BoardOutline.Validate;
+            RefreshBoardOutline(Board);
+        Finally
+            PCBServer.PostProcess;
+        End;
+        MarkDocDirtyByPath(Board.FileName);
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"shape":"circle","cx":' + FloatToJsonStr(CoordToMilsF(Ccx))
+            + ',"cy":' + FloatToJsonStr(CoordToMilsF(Ccy))
+            + ',"radius":' + FloatToJsonStr(CoordToMilsF(Cr)) + '}');
+        Exit;
+    End;
+    If (ShapeStr <> '') And (ShapeStr <> 'rectangle') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'unknown board shape: ' + ShapeStr);
         Exit;
     End;
 
