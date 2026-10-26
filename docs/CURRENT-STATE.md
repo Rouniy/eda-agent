@@ -5,18 +5,19 @@
 `Rouniy/eda-agent/main` is the source of truth. The source script is now
 `2026.10.26.16`; it adds fractional-mil PCB stitching vias, circular board
 outlines, decimal-mil board geometry reads and arc placement, polygon
-pour settings, and named board regions with decimal-mil placement, then regenerates `Altium_MCP.pas`. Focused Python tests and
-Pascal lint pass. The remaining fork candidates are listed in
+pour settings, and named board regions with decimal-mil placement, then
+regenerates `Altium_MCP.pas`. Focused Python tests and Pascal lint pass.
+The remaining fork candidates are listed in
 `docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`.
 
 The previously hung X2 (`PID 23836`) was terminated at the owner's request.
 Altium was restarted twice, and the bridge was subsequently reloaded from
-`main`; `app_ping` confirms loaded and bundled script `2026.10.26.15`,
+`main`; `app_ping` confirms loaded and bundled script `2026.10.26.16`,
 `version_match=true`, and Altium `26.11.1.5`. TCP 14701
 answers MCP and the existing Codex message relay listens on TCP 14700;
 its loopback health check reports `ready`. Native acceptance of the new
-stitching-via Pascal change and the newer geometry and polygon changes is
-still pending. Altium has updated to `26.11.1.5`. The separate
+stitching-via Pascal change and the newer geometry, polygon and region
+changes is still pending. Altium has updated to `26.11.1.5`. The separate
 `eda-agent-large-integration` worktree is used for conflict resolution,
 not as a second runtime.
 

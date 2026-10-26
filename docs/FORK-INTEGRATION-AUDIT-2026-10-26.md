@@ -52,6 +52,8 @@ vertices for region placement, while Pascal read them with `StrToIntDef` and
 rounded them to whole mils. Both rectangular and polygonal region paths now
 keep decimal mils, including the rectangular reply. Python packs polygon
 vertices with 15 significant digits instead of the default six.
+The bridge was reloaded from `main`; `app_ping` confirmed loaded and bundled
+`.16`, `version_match=true`, and Altium `26.11.1.5`.
 
 ## Scope and snapshots
 
