@@ -136,6 +136,9 @@ companies without re-stating their conventions on every call. See
 
 ### Fixed
 
+- `pcb_modify_layer` accepts fractional copper and dielectric thicknesses
+  through the MCP schema, preserving decimal mil values sent to Altium.
+
 - Reading an owner profile no longer raises. It is read during server
   startup and on the pad-authoring path, where a malformed JSON file
   took the whole MCP server down and broke `lib_add_footprint_pad`, and
