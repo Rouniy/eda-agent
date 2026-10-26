@@ -20,7 +20,7 @@ The GitHub fork listing of `salitronic/eda-agent` contained 60 direct forks. The
 | `yniantongtian-oss` | Cross-platform checkout and manifest integrity check | 848 tracked paths, one manifest, zero errors |
 | `yniantongtian-oss` | Require the exact Windows sheet path before using an active-document size response | 33 sheet-plan tests |
 
-The local branch's source script version is `2026.10.26.2`. The installed and loaded Altium runtime remains `2026.10.16.1`; source integration alone does not deploy or activate it.
+The `main` source script version is `2026.10.26.2`. At 20:49 +02:00 on 2026-10-26, the Altium worker was restarted directly from the `main` checkout; `app_ping` confirmed the loaded and bundled versions both report `2026.10.26.2`. See `docs/CURRENT-STATE.md` for the live handoff.
 
 ## Reviewed but held for separate work
 
@@ -30,4 +30,4 @@ The remaining upstream changes and active fork branches are not represented as f
 
 ## Release boundary
 
-The shared operating runbook referenced by `AGENTS.md` was unavailable at its documented GitHub URL during this audit. No Altium script replacement or native deployment was performed. The selected-project runtime needs coordinated shutdown, a side-by-side build and installation, and native acceptance against a disposable project before this source version can be considered live. The tests above are source/helper checks, not electrical or manufacturing sign-off.
+The shared operating runbook referenced by `AGENTS.md` was unavailable at its documented GitHub URL during this audit. The owner subsequently authorized replacing the worker directly from `main`; the previous worker was detached without saving documents, and the new one passed startup/version checks. The new features still need native acceptance against disposable projects. The tests above are source/helper checks, not electrical or manufacturing sign-off.
