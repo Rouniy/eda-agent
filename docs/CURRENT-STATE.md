@@ -11,7 +11,7 @@ Pascal lint pass. The remaining fork candidates are listed in
 
 The previously hung X2 (`PID 23836`) was terminated at the owner's request.
 Altium was restarted twice, and the bridge was subsequently reloaded from
-`main`; `app_ping` confirms loaded and bundled script `2026.10.26.14`,
+`main`; `app_ping` confirms loaded and bundled script `2026.10.26.15`,
 `version_match=true`, and Altium `26.11.1.5`. TCP 14701
 answers MCP and the existing Codex message relay listens on TCP 14700;
 its loopback health check reports `ready`. Native acceptance of the new

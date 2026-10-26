@@ -44,7 +44,8 @@ The `.15` source also ports region names from the fork. The generic property
 layer reads and writes `Name` on a board region; both rectangular and
 polygonal region placement accept a name and echo the stored value. Focused
 tests and Pascal lint pass; native region placement remains to be checked on
-a disposable board.
+a disposable board. The bridge restart reported the loaded `.15` script
+running on Altium `26.11.1.5`.
 
 ## Scope and snapshots
 
