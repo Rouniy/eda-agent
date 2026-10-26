@@ -436,8 +436,10 @@ def register_uiauto_tools(mcp):
         PATH BY NAME. ``"Design|Rules..."``, ``"Tools|Update From
         Libraries..."``. Accelerator markers and a trailing ellipsis are
         ignored, so ``"Design|Rules"`` works too. Nested submenus work
-        by adding levels. Names are used rather than positions because
-        entries move with context and separators are invisible.
+        by adding levels. English captions are matched against installed
+        Altium translations when the interface uses another language.
+        Names are used rather than positions because entries move with
+        context and separators are invisible.
 
         IT NEEDS THE FOREGROUND. Altium has no Win32 menu and its
         DevExpress bars expose no working accessible action, so the only
@@ -504,8 +506,11 @@ def register_uiauto_tools(mcp):
                 "and briefly moving the pointer. Pass "
                 "may_steal_focus=True if that is acceptable now.")}
 
-        return await loop.run_in_executor(
+        out = await loop.run_in_executor(
             None, lambda: menu.click_path(pid, menu_path, expect_dialog=expect_dialog))
+        if isinstance(out, dict) and menu.ui_language():
+            out["ui_language"] = menu.ui_language()
+        return out
 
     @mcp.tool()
     async def app_list_open_dialogs() -> dict[str, Any]:
