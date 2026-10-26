@@ -4149,6 +4149,8 @@ def register_pcb_tools(mcp):
             x1, y1, x2, y2: Opposite rectangle corners in mils.
             layer: Optional exact PCB layer; empty searches all layers.
             properties: Flat PCB property names accepted by ``obj_query``.
+                ``Owner`` is an alias for the owning component designator
+                (``Component``); it is empty for a free primitive.
             filter: Optional property=value filters joined with ``|``.
             limit: Maximum returned primitives (1..10000).
 
@@ -4156,19 +4158,36 @@ def register_pcb_tools(mcp):
             Dict with objects, count, normalized bounds, layer, board path and
             an explicit truncation flag.
         """
+        requested_properties = [name.strip() for name in properties.split(",")]
+        wire_properties = ",".join(
+            "Component" if name == "Owner" else name
+            for name in requested_properties
+        )
+        wire_filter = "|".join(
+            "Component=" + clause.split("=", 1)[1]
+            if clause.startswith("Owner=") else clause
+            for clause in filter.split("|")
+        )
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        result = await bridge.send_command_async(
             "pcb.query_region",
             {
                 "object_type": object_type,
                 "x1": str(x1), "y1": str(y1),
                 "x2": str(x2), "y2": str(y2),
                 "layer": layer,
-                "properties": properties,
-                "filter": filter,
+                "properties": wire_properties,
+                "filter": wire_filter,
                 "limit": str(limit),
             },
         )
+        if "Owner" in requested_properties and isinstance(result, dict):
+            for obj in result.get("objects", []):
+                if isinstance(obj, dict):
+                    obj["Owner"] = obj.get("Component", "")
+                    if "Component" not in requested_properties:
+                        obj.pop("Component", None)
+        return result
 
     @mcp.tool()
     async def pcb_get_used_layers() -> dict[str, Any]:
