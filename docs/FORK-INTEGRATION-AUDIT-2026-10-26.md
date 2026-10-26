@@ -15,9 +15,11 @@ counts because several changes were ported with edited patches.
 | Next source candidates | Remaining decimal-mil geometry handlers; true arcs and polygon settings; STEP/3D model editing; integrated libraries; multi-part schematic template support; ERC and project membership; session document isolation; update flow | Require conflict resolution, tests and in some cases disposable-board native acceptance |
 | Held for rewrite or evidence | `be21eb3` bottom-side placement can flip a similarly named component on another open board after a failed placement; `bf9e08c` per-via tenting writes a pad cache that faulted the current repo's AD 26.10 session; `74d745d` forces one net-label colour; upstream removal of the main DesignPlan layout engine | Do not copy those patches literally; preserve exact-board targeting and both layout paths; qualify the via cache on the installed Altium build before exposing the write |
 
-The running Altium worker is older than the current source and is hung; the owner
-instructed us to finish source integration before terminating it. No native
-acceptance claim is made for the newly ported Pascal routines.
+The hung Altium worker was terminated and restarted at the owner's later
+request. The current source also accepts fractional mils end to end for
+`pcb_place_stitching_vias`, adapted to this repository's direct grid loop
+instead of copying the fork's string list. The source is newer than the loaded
+worker; no native acceptance claim is made for this new Pascal change.
 
 ## Scope and snapshots
 

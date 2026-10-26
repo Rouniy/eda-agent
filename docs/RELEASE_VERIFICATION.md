@@ -1,4 +1,4 @@
-# Release verification: 2026.10.26.11
+# Release verification: 2026.10.26.12
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -231,7 +231,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.26.11`, `version_match` =
+Expect `altium_script_version` = `2026.10.26.12`, `version_match` =
 `true`, and `mcp_server_version` = `0.6.1`.
 
 Those are two different versions and they fail differently.
@@ -1807,7 +1807,7 @@ the layer stack.**
    no polling restart. Restore focus and close the disposable board
    without saving.
 
-**Live result, 2026-10-19, Altium 26.11.1.5, script 2026.10.19.1.**
+**Live result, 2026-10-19, Altium 26.11.1.5, script from that day's build.**
 Run on a copy of the 2-layer test board, with two inner layers added
 for steps 6 and 7. Every step passed:
 

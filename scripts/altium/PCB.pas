@@ -3694,8 +3694,8 @@ Var
     NetName : String;
     X1, Y1, X2, Y2 : TCoord;
     Spacing, ViaSize, ViaHole, Clearance : TCoord;
-    X1Mils, Y1Mils, X2Mils, Y2Mils : Integer;
-    SpacingMils, ViaSizeMils, ViaHoleMils, ClearanceMils : Integer;
+    X1Mils, Y1Mils, X2Mils, Y2Mils : Double;
+    SpacingMils, ViaSizeMils, ViaHoleMils, ClearanceMils : Double;
     PX, PY : TCoord;
     Placed, Skipped : Integer;
     DryRun, HasHit : Boolean;
@@ -3725,14 +3725,14 @@ Begin
         Exit;
     End;
 
-    X1Mils := StrToIntDef(ExtractJsonValue(Params, 'x1_mils'), 0);
-    Y1Mils := StrToIntDef(ExtractJsonValue(Params, 'y1_mils'), 0);
-    X2Mils := StrToIntDef(ExtractJsonValue(Params, 'x2_mils'), 0);
-    Y2Mils := StrToIntDef(ExtractJsonValue(Params, 'y2_mils'), 0);
-    SpacingMils := StrToIntDef(ExtractJsonValue(Params, 'spacing_mils'), 50);
-    ViaSizeMils := StrToIntDef(ExtractJsonValue(Params, 'via_size_mils'), 30);
-    ViaHoleMils := StrToIntDef(ExtractJsonValue(Params, 'via_hole_mils'), 14);
-    ClearanceMils := StrToIntDef(ExtractJsonValue(Params, 'clearance_mils'), 10);
+    X1Mils := StrToFloatDef(ExtractJsonValue(Params, 'x1_mils'), 0);
+    Y1Mils := StrToFloatDef(ExtractJsonValue(Params, 'y1_mils'), 0);
+    X2Mils := StrToFloatDef(ExtractJsonValue(Params, 'x2_mils'), 0);
+    Y2Mils := StrToFloatDef(ExtractJsonValue(Params, 'y2_mils'), 0);
+    SpacingMils := StrToFloatDef(ExtractJsonValue(Params, 'spacing_mils'), 50);
+    ViaSizeMils := StrToFloatDef(ExtractJsonValue(Params, 'via_size_mils'), 30);
+    ViaHoleMils := StrToFloatDef(ExtractJsonValue(Params, 'via_hole_mils'), 14);
+    ClearanceMils := StrToFloatDef(ExtractJsonValue(Params, 'clearance_mils'), 10);
     DryStr := LowerCase(ExtractJsonValue(Params, 'dry_run'));
     DryRun := (DryStr = 'true') Or (DryStr = '1');
 
@@ -3746,12 +3746,12 @@ Begin
     If ViaSizeMils <= 0 Then ViaSizeMils := 30;
     If ViaHoleMils <= 0 Then ViaHoleMils := 14;
 
-    X1 := MilsToCoord(X1Mils);  Y1 := MilsToCoord(Y1Mils);
-    X2 := MilsToCoord(X2Mils);  Y2 := MilsToCoord(Y2Mils);
-    Spacing := MilsToCoord(SpacingMils);
-    ViaSize := MilsToCoord(ViaSizeMils);
-    ViaHole := MilsToCoord(ViaHoleMils);
-    Clearance := MilsToCoord(ClearanceMils);
+    X1 := MilsToCoordF(X1Mils);  Y1 := MilsToCoordF(Y1Mils);
+    X2 := MilsToCoordF(X2Mils);  Y2 := MilsToCoordF(Y2Mils);
+    Spacing := MilsToCoordF(SpacingMils);
+    ViaSize := MilsToCoordF(ViaSizeMils);
+    ViaHole := MilsToCoordF(ViaHoleMils);
+    Clearance := MilsToCoordF(ClearanceMils);
 
     Placed := 0;
     Skipped := 0;
@@ -3839,8 +3839,8 @@ Begin
             JsonBool('dry_run', DryRun) + ',' +
             JsonInt('placed', Placed) + ',' +
             JsonInt('skipped', Skipped) + ',' +
-            JsonInt('spacing_mils', SpacingMils) + ',' +
-            JsonInt('clearance_mils', ClearanceMils)
+            JsonFloat('spacing_mils', SpacingMils) + ',' +
+            JsonFloat('clearance_mils', ClearanceMils)
         ));
 End;
 

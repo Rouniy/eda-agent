@@ -49,6 +49,29 @@ def _project(monkeypatch, bridge):
 
 
 @pytest.mark.asyncio
+async def test_stitching_vias_preserves_fractional_mils(monkeypatch):
+    bridge = RecBridge()
+    tools = _pcb(monkeypatch, bridge)
+    await tools["pcb_place_stitching_vias"](
+        "GND", 10.25, 20.5, 30.75, 40.125,
+        spacing_mils=2.5, via_size_mils=1.75,
+        via_hole_mils=0.625, clearance_mils=0.375,
+    )
+    command, params = bridge.calls[-1]
+    assert command == "pcb.place_stitching_vias"
+    assert {key: params[key] for key in (
+        "x1_mils", "y1_mils", "x2_mils", "y2_mils",
+        "spacing_mils", "via_size_mils", "via_hole_mils", "clearance_mils",
+    )} == {
+        "x1_mils": "10.25", "y1_mils": "20.5",
+        "x2_mils": "30.75", "y2_mils": "40.125",
+        "spacing_mils": "2.5", "via_size_mils": "1.75",
+        "via_hole_mils": "0.625", "clearance_mils": "0.375",
+    }
+    assert params["dry_run"] == "true"
+
+
+@pytest.mark.asyncio
 async def test_import_placement_packs_records(monkeypatch):
     b = RecBridge()
     tools = _pcb(monkeypatch, b)

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.26.7';
+    SCRIPT_VERSION = '2026.10.26.12';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -24245,6 +24245,29 @@ Begin
         Begin
             Result := BoolToJsonStr(Obj.IsKeepout);
         End
+        { What a keepout keeps out: the Keepout Restrictions in the       }
+        { Properties panel. Copper alone is a wall polygons stop at while }
+        { tracks, vias and pads may still cross it.                       }
+        { Only asked of the four objects that have them: asked of a via,  }
+        { the property raised 'Undeclared identifier' as a modal.          }
+        Else If (PropName = 'IsKeepoutForCopper') Or (PropName = 'IsKeepoutForTrack') Or
+                (PropName = 'IsKeepoutForVia') Or (PropName = 'IsKeepoutForSMDPad') Or
+                (PropName = 'IsKeepoutForTHPad') Then
+        Begin
+            If (Oid = eTrackObject) Or (Oid = eArcObject) Or (Oid = eFillObject) Or
+               (Oid = eRegionObject) Then
+            Begin
+                If PropName = 'IsKeepoutForCopper' Then Result := BoolToJsonStr(Obj.IsKeepoutForCopper);
+                If PropName = 'IsKeepoutForTrack' Then Result := BoolToJsonStr(Obj.IsKeepoutForTrack);
+                If PropName = 'IsKeepoutForVia' Then Result := BoolToJsonStr(Obj.IsKeepoutForVia);
+                If PropName = 'IsKeepoutForSMDPad' Then Result := BoolToJsonStr(Obj.IsKeepoutForSMDPad);
+                If PropName = 'IsKeepoutForTHPad' Then Result := BoolToJsonStr(Obj.IsKeepoutForTHPad);
+            End;
+        End
+        Else If PropName = 'TearDrop' Then
+        Begin
+            Result := BoolToJsonStr(Obj.TearDrop);
+        End
         Else If PropName = 'Locked' Then
         Begin
             Result := BoolToJsonStr(Not Obj.Moveable);
@@ -24793,6 +24816,25 @@ Begin
             End
             Else Matched := False;
         End
+        { A keepout and what it keeps out, on the four objects Altium makes   }
+        { keepouts of. IsKeepout turns a placed track, arc, fill or region    }
+        { into one; the five restrictions follow the Properties panel.       }
+        Else If (PropName = 'IsKeepout') Or (PropName = 'IsKeepoutForCopper') Or
+                (PropName = 'IsKeepoutForTrack') Or (PropName = 'IsKeepoutForVia') Or
+                (PropName = 'IsKeepoutForSMDPad') Or (PropName = 'IsKeepoutForTHPad') Then
+        Begin
+            If (Oid = eTrackObject) Or (Oid = eArcObject) Or (Oid = eFillObject) Or
+               (Oid = eRegionObject) Then
+            Begin
+                If PropName = 'IsKeepout' Then Obj.IsKeepout := StrToBool(Value);
+                If PropName = 'IsKeepoutForCopper' Then Obj.IsKeepoutForCopper := StrToBool(Value);
+                If PropName = 'IsKeepoutForTrack' Then Obj.IsKeepoutForTrack := StrToBool(Value);
+                If PropName = 'IsKeepoutForVia' Then Obj.IsKeepoutForVia := StrToBool(Value);
+                If PropName = 'IsKeepoutForSMDPad' Then Obj.IsKeepoutForSMDPad := StrToBool(Value);
+                If PropName = 'IsKeepoutForTHPad' Then Obj.IsKeepoutForTHPad := StrToBool(Value);
+            End
+            Else Matched := False;
+        End
         Else If PropName = 'RemoveDead' Then
         Begin
             If Oid = ePolyObject Then
@@ -24906,6 +24948,10 @@ Begin
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'InComponent') Or (PropName = 'Component') Or
         (PropName = 'InPolygon') Or (PropName = 'IsKeepout') Or
+        (PropName = 'IsKeepoutForCopper') Or (PropName = 'IsKeepoutForTrack') Or
+        (PropName = 'IsKeepoutForVia') Or (PropName = 'IsKeepoutForSMDPad') Or
+        (PropName = 'IsKeepoutForTHPad') Or
+        (PropName = 'TearDrop') Or
         (PropName = 'Locked') Or (PropName = 'Layer1') Or
         (PropName = 'Layer2') Or (PropName = 'IsRedundant') Or
         (PropName = 'Mode') Or (PropName = 'Height') Or
@@ -24958,7 +25004,9 @@ Begin
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
         + 'StandoffHeight, OverallHeight, InComponent, Component, '
-        + 'InPolygon, IsKeepout, Locked, Layer1, Layer2, IsRedundant, Mode, '
+        + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
+        + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
+        + 'TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '
         + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts';
 End;
 
@@ -26440,6 +26488,8 @@ End;
 { iterator-returned locals per the ModifyWidthRules.pas reference pattern):    }
 {   - Clearance (kind 0) + ComponentClearance (kind 24)                        }
 {     + HoleToHoleClearance (kind 52):  gap_mils                                }
+{   - MinimumSolderMaskSliver (53), SilkToSolderMaskClearance (54),            }
+{     SilkToSilkClearance (55):  gap_mils, through each one's SetState_ pair   }
 {   - MaxMinWidth (kind 2):  min_width_mils / max_width_mils / favored_width_mils}
 {   - MaxMinHoleSize (kind 42):  min_hole_size_mils / max_hole_size_mils       }
 {                                                                               }
@@ -26465,6 +26515,9 @@ Var
     RuleWidthIter : IPCB_MaxMinWidthConstraint;
     RuleHoleIter : IPCB_MaxMinHoleSizeConstraint;
     RuleViaIter : IPCB_RoutingViaStyleRule;
+    RuleSliverIter : IPCB_MinimumSolderMaskSliverRule;
+    RuleSilkMaskIter : IPCB_SilkToSolderMaskClearanceRule;
+    RuleSilkSilkIter : IPCB_SilkToSilkClearanceRule;
     RuleName, V, GapStr, MinWStr, MaxWStr, FavWStr, MinHStr, MaxHStr : String;
     VMinS, VMaxS, VPrefS, VMinH, VMaxH, VPrefH, ViaReport, ViaDesc, ViaProblem : String;
     NMinS, NMaxS, NPrefS, NMinH, NMaxH, NPrefH : TCoord;
@@ -26583,8 +26636,10 @@ Begin
       interface" from a single measurement. So the write below is checked
       by reading the value back rather than assumed. }
     GapKindSupported := (Kind = eRule_Clearance) Or (Kind = 24)
-        Or (Kind = 52) Or (Kind = 63);
-    If ((GapStr <> '') Or (GapMMStr <> '')) And GapKindSupported Then
+        Or (Kind = 52) Or (Kind = 63)
+        Or (Kind = 53) Or (Kind = 54) Or (Kind = 55);
+    If ((GapStr <> '') Or (GapMMStr <> '')) And ((Kind = eRule_Clearance)
+        Or (Kind = 24) Or (Kind = 52) Or (Kind = 63)) Then
     Begin
         Iter := Board.BoardIterator_Create;
         Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
@@ -26625,6 +26680,75 @@ Begin
         Finally
             Board.BoardIterator_Destroy(Iter);
         End;
+    End;
+
+    { 53 MinimumSolderMaskSliver, 54 SilkToSolderMaskClearance and 55
+      SilkToSilkClearance carry no Gap: each has its own GetState_/SetState_
+      pair, named in Altium.SDK.Interfaces.dll. The ordinals follow 52 in
+      the ReturnViaCheck TRuleKind order. Same typed iterator local and
+      the same read-back as the clearance kinds above. }
+    If ((GapStr <> '') Or (GapMMStr <> '')) And
+       ((Kind = 53) Or (Kind = 54) Or (Kind = 55)) Then
+    Begin
+        If GapMMStr <> '' Then
+            GapWanted := MMToCoord(StrToFloatDef(GapMMStr, 0))
+        Else GapWanted := MilsToCoord(StrToIntDef(GapStr, 0));
+        Iter := Board.BoardIterator_Create;
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Found := False;
+        Try
+            If Kind = 53 Then
+            Begin
+                RuleSliverIter := Iter.FirstPCBObject;
+                While (RuleSliverIter <> Nil) And (Not Found) Do
+                Begin
+                    If (RuleSliverIter.RuleKind = 53) And (RuleSliverIter.Name = RuleName) Then
+                    Begin
+                        Try GapBefore := RuleSliverIter.GetState_MinSolderMaskSliver; Except End;
+                        Try RuleSliverIter.SetState_MinSolderMaskSliver(GapWanted); Except End;
+                        Try GapAfter := RuleSliverIter.GetState_MinSolderMaskSliver; Except End;
+                        Found := True;
+                    End;
+                    If Not Found Then RuleSliverIter := Iter.NextPCBObject;
+                End;
+            End
+            Else If Kind = 54 Then
+            Begin
+                RuleSilkMaskIter := Iter.FirstPCBObject;
+                While (RuleSilkMaskIter <> Nil) And (Not Found) Do
+                Begin
+                    If (RuleSilkMaskIter.RuleKind = 54) And (RuleSilkMaskIter.Name = RuleName) Then
+                    Begin
+                        Try GapBefore := RuleSilkMaskIter.GetState_SilkToMaskGap; Except End;
+                        Try RuleSilkMaskIter.SetState_SilkToMaskGap(GapWanted); Except End;
+                        Try GapAfter := RuleSilkMaskIter.GetState_SilkToMaskGap; Except End;
+                        Found := True;
+                    End;
+                    If Not Found Then RuleSilkMaskIter := Iter.NextPCBObject;
+                End;
+            End
+            Else
+            Begin
+                RuleSilkSilkIter := Iter.FirstPCBObject;
+                While (RuleSilkSilkIter <> Nil) And (Not Found) Do
+                Begin
+                    If (RuleSilkSilkIter.RuleKind = 55) And (RuleSilkSilkIter.Name = RuleName) Then
+                    Begin
+                        Try GapBefore := RuleSilkSilkIter.GetState_SilkToSilkClearance; Except End;
+                        Try RuleSilkSilkIter.SetState_SilkToSilkClearance(GapWanted); Except End;
+                        Try GapAfter := RuleSilkSilkIter.GetState_SilkToSilkClearance; Except End;
+                        Found := True;
+                    End;
+                    If Not Found Then RuleSilkSilkIter := Iter.NextPCBObject;
+                End;
+            End;
+        Finally
+            Board.BoardIterator_Destroy(Iter);
+        End;
+        GapVerified := Found And (GapAfter = GapWanted);
+        If GapVerified Then Inc(UpdatedCount);
     End;
 
     If (Kind = eRule_MaxMinWidth) And
@@ -26820,7 +26944,9 @@ Begin
                 + IntToStr(Kind) + '. It was SKIPPED, not attempted, and the '
                 + 'rule is unchanged. Gap is dispatched for kinds 0 '
                 + '(Clearance), 24 (ComponentClearance), 52 '
-                + '(HoleToHoleClearance) and 63 (BoardOutlineClearance). '
+                + '(HoleToHoleClearance), 53 (MinimumSolderMaskSliver), 54 '
+                + '(SilkToSolderMaskClearance), 55 (SilkToSilkClearance) and 63 '
+                + '(BoardOutlineClearance). '
                 + 'Everything else needs PCB > Rules and Constraints Editor. '
                 + 'Report the kind number if it should be here."'
         Else If Not GapVerified Then
@@ -29038,8 +29164,8 @@ Var
     NetName : String;
     X1, Y1, X2, Y2 : TCoord;
     Spacing, ViaSize, ViaHole, Clearance : TCoord;
-    X1Mils, Y1Mils, X2Mils, Y2Mils : Integer;
-    SpacingMils, ViaSizeMils, ViaHoleMils, ClearanceMils : Integer;
+    X1Mils, Y1Mils, X2Mils, Y2Mils : Double;
+    SpacingMils, ViaSizeMils, ViaHoleMils, ClearanceMils : Double;
     PX, PY : TCoord;
     Placed, Skipped : Integer;
     DryRun, HasHit : Boolean;
@@ -29069,14 +29195,14 @@ Begin
         Exit;
     End;
 
-    X1Mils := StrToIntDef(ExtractJsonValue(Params, 'x1_mils'), 0);
-    Y1Mils := StrToIntDef(ExtractJsonValue(Params, 'y1_mils'), 0);
-    X2Mils := StrToIntDef(ExtractJsonValue(Params, 'x2_mils'), 0);
-    Y2Mils := StrToIntDef(ExtractJsonValue(Params, 'y2_mils'), 0);
-    SpacingMils := StrToIntDef(ExtractJsonValue(Params, 'spacing_mils'), 50);
-    ViaSizeMils := StrToIntDef(ExtractJsonValue(Params, 'via_size_mils'), 30);
-    ViaHoleMils := StrToIntDef(ExtractJsonValue(Params, 'via_hole_mils'), 14);
-    ClearanceMils := StrToIntDef(ExtractJsonValue(Params, 'clearance_mils'), 10);
+    X1Mils := StrToFloatDef(ExtractJsonValue(Params, 'x1_mils'), 0);
+    Y1Mils := StrToFloatDef(ExtractJsonValue(Params, 'y1_mils'), 0);
+    X2Mils := StrToFloatDef(ExtractJsonValue(Params, 'x2_mils'), 0);
+    Y2Mils := StrToFloatDef(ExtractJsonValue(Params, 'y2_mils'), 0);
+    SpacingMils := StrToFloatDef(ExtractJsonValue(Params, 'spacing_mils'), 50);
+    ViaSizeMils := StrToFloatDef(ExtractJsonValue(Params, 'via_size_mils'), 30);
+    ViaHoleMils := StrToFloatDef(ExtractJsonValue(Params, 'via_hole_mils'), 14);
+    ClearanceMils := StrToFloatDef(ExtractJsonValue(Params, 'clearance_mils'), 10);
     DryStr := LowerCase(ExtractJsonValue(Params, 'dry_run'));
     DryRun := (DryStr = 'true') Or (DryStr = '1');
 
@@ -29090,12 +29216,12 @@ Begin
     If ViaSizeMils <= 0 Then ViaSizeMils := 30;
     If ViaHoleMils <= 0 Then ViaHoleMils := 14;
 
-    X1 := MilsToCoord(X1Mils);  Y1 := MilsToCoord(Y1Mils);
-    X2 := MilsToCoord(X2Mils);  Y2 := MilsToCoord(Y2Mils);
-    Spacing := MilsToCoord(SpacingMils);
-    ViaSize := MilsToCoord(ViaSizeMils);
-    ViaHole := MilsToCoord(ViaHoleMils);
-    Clearance := MilsToCoord(ClearanceMils);
+    X1 := MilsToCoordF(X1Mils);  Y1 := MilsToCoordF(Y1Mils);
+    X2 := MilsToCoordF(X2Mils);  Y2 := MilsToCoordF(Y2Mils);
+    Spacing := MilsToCoordF(SpacingMils);
+    ViaSize := MilsToCoordF(ViaSizeMils);
+    ViaHole := MilsToCoordF(ViaHoleMils);
+    Clearance := MilsToCoordF(ClearanceMils);
 
     Placed := 0;
     Skipped := 0;
@@ -29183,8 +29309,8 @@ Begin
             JsonBool('dry_run', DryRun) + ',' +
             JsonInt('placed', Placed) + ',' +
             JsonInt('skipped', Skipped) + ',' +
-            JsonInt('spacing_mils', SpacingMils) + ',' +
-            JsonInt('clearance_mils', ClearanceMils)
+            JsonFloat('spacing_mils', SpacingMils) + ',' +
+            JsonFloat('clearance_mils', ClearanceMils)
         ));
 End;
 
@@ -35684,7 +35810,7 @@ End;
 Function PCB_SetBoardShape(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    X1, Y1, X2, Y2, TmpI : Integer;
+    X1, Y1, X2, Y2, TmpF : Double;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     Seg : TPolySegment;
 Begin
@@ -35695,16 +35821,16 @@ Begin
         Exit;
     End;
 
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
 
-    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
-    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+    If X1 > X2 Then Begin TmpF := X1; X1 := X2; X2 := TmpF; End;
+    If Y1 > Y2 Then Begin TmpF := Y1; Y1 := Y2; Y2 := TmpF; End;
 
-    Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
-    Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
+    Cx1 := MilsToCoordF(X1);  Cy1 := MilsToCoordF(Y1);
+    Cx2 := MilsToCoordF(X2);  Cy2 := MilsToCoordF(Y2);
 
     PCBServer.PreProcess;
     Try
@@ -35721,6 +35847,7 @@ Begin
         Seg.vx := Cx2;  Seg.vy := Cy1;  Board.BoardOutline.Segments[1] := Seg;
         Seg.vx := Cx2;  Seg.vy := Cy2;  Board.BoardOutline.Segments[2] := Seg;
         Seg.vx := Cx1;  Seg.vy := Cy2;  Board.BoardOutline.Segments[3] := Seg;
+        ClosePolySegments(Board.BoardOutline, 4);
 
         Board.BoardOutline.Invalidate;
         Board.BoardOutline.Rebuild;
@@ -35735,8 +35862,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,'
-        + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
-        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
+        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
+        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}');
 End;
 
 {..............................................................................}
@@ -35748,7 +35875,7 @@ Function PCB_PlacePolygonRect(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Polygon : IPCB_Polygon;
-    X1, Y1, X2, Y2, TmpI : Integer;
+    X1, Y1, X2, Y2, TmpF : Double;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     NetStr, LayerStr, PourOverStr : String;
     FoundNet : IPCB_Net;
@@ -35762,18 +35889,18 @@ Begin
         Exit;
     End;
 
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     NetStr := ExtractJsonValue(Params, 'net');
     LayerStr := ExtractJsonValue(Params, 'layer');
     PourOverStr := ExtractJsonValue(Params, 'pour_over');
 
-    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
-    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
-    Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
-    Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
+    If X1 > X2 Then Begin TmpF := X1; X1 := X2; X2 := TmpF; End;
+    If Y1 > Y2 Then Begin TmpF := Y1; Y1 := Y2; Y2 := TmpF; End;
+    Cx1 := MilsToCoordF(X1);  Cy1 := MilsToCoordF(Y1);
+    Cx2 := MilsToCoordF(X2);  Cy2 := MilsToCoordF(Y2);
 
     { The layer is resolved BEFORE anything is created. "Internal Plane 1"    }
     { used to reach GetLayerFromString, miss the canonical table, and come     }
@@ -35816,6 +35943,7 @@ Begin
         Seg.vx := Cx2;  Seg.vy := Cy1;  Polygon.Segments[1] := Seg;
         Seg.vx := Cx2;  Seg.vy := Cy2;  Polygon.Segments[2] := Seg;
         Seg.vx := Cx1;  Seg.vy := Cy2;  Polygon.Segments[3] := Seg;
+        ClosePolySegments(Polygon, 4);
 
         { Assign net if specified. }
         If NetStr <> '' Then
@@ -35844,8 +35972,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
-        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
+        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
+        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
@@ -47401,16 +47529,23 @@ End;
 
 {..............................................................................}
 { Zoom to specific X,Y coordinates (in mils for SCH, mils for PCB)          }
+{ PCB: the view is fitted to a square of +-radius mils (default 200) round   }
+{ x,y through GraphicalView_ZoomOnRect (Altium's ConvertPicture.PAS does    }
+{ the same). PCB:Jump JumpToLocation10 jumped to location MARKER 10 and,    }
+{ with none set, raised a modal "Location Marker 10 has not been set" that  }
+{ stopped the polling loop; X and Y were never its parameters.              }
 {..............................................................................}
 
 Function Gen_ZoomToXY(Params : String; RequestId : String) : String;
 Var
-    XStr, YStr : String;
+    XStr, YStr, RadStr : String;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    Cx, Cy, Rad : TCoord;
 Begin
     XStr := ExtractJsonValue(Params, 'x');
     YStr := ExtractJsonValue(Params, 'y');
+    RadStr := ExtractJsonValue(Params, 'radius');
 
     If (XStr = '') Or (YStr = '') Then
     Begin
@@ -47423,11 +47558,11 @@ Begin
 
     If Board <> Nil Then
     Begin
-        ResetParameters;
-        AddStringParameter('Object', 'JumpToLocation10');
-        AddStringParameter('X', XStr);
-        AddStringParameter('Y', YStr);
-        RunProcess('PCB:Jump');
+        Cx := MilsToCoordF(StrToFloatDef(XStr, 0));
+        Cy := MilsToCoordF(StrToFloatDef(YStr, 0));
+        Rad := MilsToCoordF(StrToFloatDef(RadStr, 200));
+        If Rad <= 0 Then Rad := MilsToCoordF(200);
+        Board.GraphicalView_ZoomOnRect(Cx - Rad, Cy - Rad, Cx + Rad, Cy + Rad);
 
         Result := BuildSuccessResponse(RequestId,
             '{"success":true,"x":' + XStr + ',"y":' + YStr + ',"context":"pcb"}');

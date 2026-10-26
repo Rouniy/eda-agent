@@ -1,21 +1,20 @@
 # Current integration state / agent handoff
 
-## Source integration and paused runtime, 2026-10-26
+## Source integration and runtime, 2026-10-26
 
-`Rouniy/eda-agent/main` is clean and pushed at `9282aa7`. The bundled
-`scripts/altium/Main.pas` says `2026.10.26.11`. This is a source version;
-the running Altium worker and MCP server have not been restarted with it.
-The additional transfers from `MOREmbedded/eda-agent` and their remaining
-candidates are in `docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`.
+`Rouniy/eda-agent/main` is the source of truth. The source script is now
+`2026.10.26.12`; this build adds fractional-mil support to PCB stitching
+vias and regenerates `Altium_MCP.pas`. The focused Python test and Pascal lint
+pass. The remaining fork candidates are listed in
+`docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`.
 
-Read-only process inspection found one X2 (`PID 23836`, `Responding=False`)
-and a Python listener on TCP 14701 (`PID 25572`). TCP 14700 has no listener.
-The owner instructed us to leave the hung Altium in place until source
-integration is complete, then terminate and restart it from the main
-directory. No native acceptance or runtime version match is claimed for the
-new source. The main worktree is the source of truth; the separate
-`eda-agent-large-integration` worktree tracks the same commits for conflict
-resolution, not a second runtime.
+The previously hung X2 (`PID 23836`) was terminated at the owner's request.
+Altium restarted and `app_ping` confirmed loaded and bundled script
+`2026.10.26.11`, `version_match=true`, and Altium `26.10.1.5` before this
+source change. TCP 14701 is listening; TCP 14700 is not. Version `.12` still
+needs a worker restart and native acceptance. The separate
+`eda-agent-large-integration` worktree is used for conflict resolution,
+not as a second runtime.
 
 ## Single-main MCP deployment, 2026-10-26 20:49 +02:00
 
