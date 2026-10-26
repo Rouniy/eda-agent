@@ -6448,6 +6448,7 @@ def register_pcb_tools(mcp):
         y2: int,
         layer: str = "TopLayer",
         net: str = "",
+        name: str = "",
     ) -> dict[str, Any]:
         """Place a solid copper region on a rectangular area.
 
@@ -6461,6 +6462,7 @@ def register_pcb_tools(mcp):
             x1, y1, x2, y2: Opposite corners in mils (any order)
             layer: Copper or mech layer (default "TopLayer")
             net: Optional net assignment
+            name: Optional region name for later lookup with ``Name=...``
 
         Returns:
             Dictionary confirming the region placement
@@ -6475,6 +6477,7 @@ def register_pcb_tools(mcp):
                 "y2": str(y2),
                 "layer": layer,
                 "net": net,
+                "name": name,
             },
         )
         return result
@@ -6484,6 +6487,7 @@ def register_pcb_tools(mcp):
         vertices: list[dict[str, float]],
         layer: str = "TopLayer",
         net: str = "",
+        name: str = "",
     ) -> dict[str, Any]:
         """Place a copper region from three or more polygon vertices.
 
@@ -6491,6 +6495,7 @@ def register_pcb_tools(mcp):
             vertices: Ordered ``{"x": ..., "y": ...}`` points in mils.
             layer: Target layer.
             net: Optional net assignment.
+            name: Optional region name for later lookup with ``Name=...``.
         """
         if len(vertices) < 3:
             return {"success": False, "reason": "at least 3 vertices required"}
@@ -6503,7 +6508,7 @@ def register_pcb_tools(mcp):
             return {"success": False, "reason": f"invalid vertex: {exc}"}
         return await get_bridge().send_command_async(
             "pcb.place_region_poly",
-            {"pts": pts, "layer": layer, "net": net},
+            {"pts": pts, "layer": layer, "net": net, "name": name},
         )
 
     @mcp.tool()

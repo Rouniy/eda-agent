@@ -40,6 +40,12 @@ placement have not yet been accepted on a disposable Altium board. The bridge
 was reloaded from `main`; `app_ping` confirmed loaded and bundled `.14`,
 `version_match=true`, and Altium `26.11.1.5`.
 
+The `.15` source also ports region names from the fork. The generic property
+layer reads and writes `Name` on a board region; both rectangular and
+polygonal region placement accept a name and echo the stored value. Focused
+tests and Pascal lint pass; native region placement remains to be checked on
+a disposable board.
+
 ## Scope and snapshots
 
 The target is `Rouniy/eda-agent` `main`, locally at `cb21952` before this integration. Its remote `origin/main` was `3f3aecc` (24 local commits behind). Upstream `salitronic/eda-agent` `main` was `74d745d`; the two histories had 216 local-only and 85 upstream-only commits. The direct fork of `Rouniy/eda-agent`, `MOREmbedded/eda-agent`, was at `7062521`; its history had 52 commits absent from local main and local main had 163 commits absent from it. These are Git snapshots, not permanent fork counts.

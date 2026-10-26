@@ -106,6 +106,21 @@ async def test_place_arc_sends_fractional_geometry(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_placed_regions_forward_name(monkeypatch):
+    bridge = RecBridge()
+    tools = _pcb(monkeypatch, bridge)
+    await tools["pcb_place_region"](0, 0, 100, 100, name="heat_spreader")
+    assert bridge.calls[-1][0] == "pcb.place_region"
+    assert bridge.calls[-1][1]["name"] == "heat_spreader"
+    await tools["pcb_place_region_poly"](
+        [{"x": 0, "y": 0}, {"x": 100, "y": 0}, {"x": 0, "y": 100}],
+        name="thermal_cutout",
+    )
+    assert bridge.calls[-1][0] == "pcb.place_region_poly"
+    assert bridge.calls[-1][1]["name"] == "thermal_cutout"
+
+
+@pytest.mark.asyncio
 async def test_import_placement_packs_records(monkeypatch):
     b = RecBridge()
     tools = _pcb(monkeypatch, b)

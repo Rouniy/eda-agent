@@ -10745,7 +10745,7 @@ Var
     Contour : IPCB_Contour;
     X1, Y1, X2, Y2, TmpI : Integer;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
-    LayerStr, NetStr : String;
+    LayerStr, NetStr, NameStr : String;
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
 Begin
@@ -10762,6 +10762,7 @@ Begin
     Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     NetStr := ExtractJsonValue(Params, 'net');
+    NameStr := ExtractJsonValue(Params, 'name');
 
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
@@ -10799,6 +10800,7 @@ Begin
         Contour.X[3] := Cx2;  Contour.Y[3] := Cy2;
         Contour.X[4] := Cx1;  Contour.Y[4] := Cy2;
         Region.SetOutlineContour(Contour);
+        If NameStr <> '' Then Region.Name := NameStr;
 
         If NetStr <> '' Then
         Begin
@@ -10820,7 +10822,8 @@ Begin
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
-        + '"net":"' + EscapeJsonString(NetStr) + '"}');
+        + '"net":"' + EscapeJsonString(NetStr) + '",'
+        + '"name":"' + EscapeJsonString(Region.Name) + '"}');
 End;
 
 {..............................................................................}
@@ -10950,7 +10953,7 @@ Var
     Board : IPCB_Board;
     Region : IPCB_Region;
     Contour : IPCB_Contour;
-    PtsStr, Remaining, Token, XStr, YStr, LayerStr, NetStr : String;
+    PtsStr, Remaining, Token, XStr, YStr, LayerStr, NetStr, NameStr : String;
     SemiPos, ColonPos, PtCount, K : Integer;
     FoundNet : IPCB_Net;
 Begin
@@ -10963,6 +10966,7 @@ Begin
     PtsStr := ExtractJsonValue(Params, 'pts');
     LayerStr := ExtractJsonValue(Params, 'layer');
     NetStr := ExtractJsonValue(Params, 'net');
+    NameStr := ExtractJsonValue(Params, 'name');
     If PtsStr = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pts is required');
@@ -11020,6 +11024,7 @@ Begin
             K := K + 1;
         End;
         Region.SetOutlineContour(Contour);
+        If NameStr <> '' Then Region.Name := NameStr;
         If NetStr <> '' Then
         Begin
             Try FoundNet := FindNetByName(Board, NetStr); Except FoundNet := Nil; End;
@@ -11034,7 +11039,8 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"vertex_count":' + IntToStr(PtCount)
-        + ',"layer":"' + EscapeJsonString(LayerStr) + '"}');
+        + ',"layer":"' + EscapeJsonString(LayerStr) + '",'
+        + '"name":"' + EscapeJsonString(Region.Name) + '"}');
 End;
 
 {..............................................................................}

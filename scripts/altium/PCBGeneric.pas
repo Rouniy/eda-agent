@@ -397,6 +397,7 @@ Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Name.Text; End;
             If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
             If Oid = ePolyObject Then Begin Poly := Obj; Result := Poly.Name; End;
+            If Oid = eRegionObject Then Begin Rgn := Obj; Result := Rgn.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
@@ -789,6 +790,11 @@ Begin
         Else If (PropName = 'Name') And (Oid = ePolyObject) Then
         Begin
             If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
+        End
+        Else If (PropName = 'Name') And (Oid = eRegionObject) Then
+        Begin
+            Rgn := Obj;
+            Rgn.Name := Value;
         End
 
         { Polygon pour options. All three are declared on IPCB_Polygon with

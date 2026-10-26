@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.26.14';
+    SCRIPT_VERSION = '2026.10.26.15';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -24464,6 +24464,7 @@ Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Name.Text; End;
             If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
             If Oid = ePolyObject Then Begin Poly := Obj; Result := Poly.Name; End;
+            If Oid = eRegionObject Then Begin Rgn := Obj; Result := Rgn.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
@@ -24856,6 +24857,11 @@ Begin
         Else If (PropName = 'Name') And (Oid = ePolyObject) Then
         Begin
             If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
+        End
+        Else If (PropName = 'Name') And (Oid = eRegionObject) Then
+        Begin
+            Rgn := Obj;
+            Rgn.Name := Value;
         End
 
         { Polygon pour options. All three are declared on IPCB_Polygon with
@@ -36318,7 +36324,7 @@ Var
     Contour : IPCB_Contour;
     X1, Y1, X2, Y2, TmpI : Integer;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
-    LayerStr, NetStr : String;
+    LayerStr, NetStr, NameStr : String;
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
 Begin
@@ -36335,6 +36341,7 @@ Begin
     Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     NetStr := ExtractJsonValue(Params, 'net');
+    NameStr := ExtractJsonValue(Params, 'name');
 
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
@@ -36372,6 +36379,7 @@ Begin
         Contour.X[3] := Cx2;  Contour.Y[3] := Cy2;
         Contour.X[4] := Cx1;  Contour.Y[4] := Cy2;
         Region.SetOutlineContour(Contour);
+        If NameStr <> '' Then Region.Name := NameStr;
 
         If NetStr <> '' Then
         Begin
@@ -36393,7 +36401,8 @@ Begin
         + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
         + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
-        + '"net":"' + EscapeJsonString(NetStr) + '"}');
+        + '"net":"' + EscapeJsonString(NetStr) + '",'
+        + '"name":"' + EscapeJsonString(Region.Name) + '"}');
 End;
 
 {..............................................................................}
@@ -36523,7 +36532,7 @@ Var
     Board : IPCB_Board;
     Region : IPCB_Region;
     Contour : IPCB_Contour;
-    PtsStr, Remaining, Token, XStr, YStr, LayerStr, NetStr : String;
+    PtsStr, Remaining, Token, XStr, YStr, LayerStr, NetStr, NameStr : String;
     SemiPos, ColonPos, PtCount, K : Integer;
     FoundNet : IPCB_Net;
 Begin
@@ -36536,6 +36545,7 @@ Begin
     PtsStr := ExtractJsonValue(Params, 'pts');
     LayerStr := ExtractJsonValue(Params, 'layer');
     NetStr := ExtractJsonValue(Params, 'net');
+    NameStr := ExtractJsonValue(Params, 'name');
     If PtsStr = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pts is required');
@@ -36593,6 +36603,7 @@ Begin
             K := K + 1;
         End;
         Region.SetOutlineContour(Contour);
+        If NameStr <> '' Then Region.Name := NameStr;
         If NetStr <> '' Then
         Begin
             Try FoundNet := FindNetByName(Board, NetStr); Except FoundNet := Nil; End;
@@ -36607,7 +36618,8 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"vertex_count":' + IntToStr(PtCount)
-        + ',"layer":"' + EscapeJsonString(LayerStr) + '"}');
+        + ',"layer":"' + EscapeJsonString(LayerStr) + '",'
+        + '"name":"' + EscapeJsonString(Region.Name) + '"}');
 End;
 
 {..............................................................................}
