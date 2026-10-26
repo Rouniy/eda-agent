@@ -36,7 +36,9 @@ arc placement, plus the fork's polygon pour settings and polygon Name in the
 generic property layer. Polygon lengths use decimal mils, island area uses
 square mils, invalid values are refused, and settings take effect on the next
 pour. Focused tests and Pascal lint pass. Native polygon writes and arc
-placement have not yet been accepted on a disposable Altium board.
+placement have not yet been accepted on a disposable Altium board. The bridge
+was reloaded from `main`; `app_ping` confirmed loaded and bundled `.14`,
+`version_match=true`, and Altium `26.11.1.5`.
 
 ## Scope and snapshots
 
