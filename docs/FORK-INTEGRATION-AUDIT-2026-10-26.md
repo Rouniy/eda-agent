@@ -18,8 +18,9 @@ counts because several changes were ported with edited patches.
 The hung Altium worker was terminated and restarted at the owner's later
 request. The current source also accepts fractional mils end to end for
 `pcb_place_stitching_vias`, adapted to this repository's direct grid loop
-instead of copying the fork's string list. The source is newer than the loaded
-worker; no native acceptance claim is made for this new Pascal change.
+instead of copying the fork's string list. Loaded and bundled script versions
+now match at `2026.10.26.12`; no native acceptance claim is made for this new
+Pascal change.
 
 ## Scope and snapshots
 

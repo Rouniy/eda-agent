@@ -9,10 +9,12 @@ pass. The remaining fork candidates are listed in
 `docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`.
 
 The previously hung X2 (`PID 23836`) was terminated at the owner's request.
-Altium restarted and `app_ping` confirmed loaded and bundled script
-`2026.10.26.11`, `version_match=true`, and Altium `26.10.1.5` before this
-source change. TCP 14701 is listening; TCP 14700 is not. Version `.12` still
-needs a worker restart and native acceptance. The separate
+Altium was restarted twice; `app_ping` now confirms loaded and bundled script
+`2026.10.26.12`, `version_match=true`, and Altium `26.10.1.5`. TCP 14701
+answers MCP and the existing Codex message relay listens on TCP 14700;
+its loopback health check reports `ready`. Native acceptance of the new
+stitching-via Pascal change is still pending. Altium offers platform update
+`26.11.1.5`; its Updates page is open. The separate
 `eda-agent-large-integration` worktree is used for conflict resolution,
 not as a second runtime.
 
