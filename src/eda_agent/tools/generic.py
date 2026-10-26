@@ -840,14 +840,15 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
-    async def obj_zoom_to_xy(x: int, y: int) -> dict[str, Any]:
-        """Center the active schematic or PCB view at X,Y in mils."""
-        active = await get_bridge().send_command_async(
-            "application.get_active_document")
-        if str(active.get("document_kind", "")).lower() in {"pcb", "pcbdoc"}:
-            return {"success": False, "error": "PCB coordinate zoom is unavailable: the current Altium process opens a modal dialog. Use pcb_3d_center to fit the board; component coordinate centering remains unsupported."}
+    async def obj_zoom_to_xy(x: int, y: int, radius: int = 200) -> dict[str, Any]:
+        """Center the active schematic or PCB view at X,Y in mils.
+
+        On a PCB, fit a square around the point with the given radius
+        (default 200 mils). On a schematic, use its native zoom command.
+        """
         return await get_bridge().send_command_async(
-            "generic.zoom_to_xy", {"x": str(x), "y": str(y)})
+            "generic.zoom_to_xy", {"x": str(x), "y": str(y),
+                                   "radius": str(radius)})
 
     @mcp.tool()
     async def obj_measure_distance(
