@@ -16,6 +16,10 @@ maturity classification for every tool.
 
 ### Added
 
+- Library file helpers can inspect PcbLib and LibPkg data, extract STEP
+  references, compare and preview footprints, and make explicit backups
+  before library edits.
+
 - Offline vendor stackup templates, laminate data, and fab capability checks
   are exposed through CLI and MCP. Native layer changes remain explicit
   editor operations and require version-matched Altium acceptance.
