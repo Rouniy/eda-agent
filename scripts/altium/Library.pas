@@ -3452,8 +3452,14 @@ Begin
 
     DoneKeys := '';
     Edits := TStringList.Create;
+    If Not LoadTextFile(Edits, EditsPath) Then
+    Begin
+        Edits.Free;
+        Result := BuildErrorResponse(RequestId, 'READ_FAILED',
+            'Could not read the edit file ' + EditsPath);
+        Exit;
+    End;
     Try
-        Edits.LoadFromFile(EditsPath);
 
         PCBServer.PreProcess;
         Try
@@ -12267,13 +12273,7 @@ Begin
     Response := '';
     Lines := TStringList.Create;
     Try
-        Loaded := False;
-        Try
-            Lines.LoadFromFile(LibPath);
-            Loaded := True;
-        Except
-            Loaded := False;
-        End;
+        Loaded := LoadTextFile(Lines, LibPath);
 
         If Not Loaded Then
             Response := BuildErrorResponse(RequestId, 'READ_FAILED', 'Could not read ' + LibPath)
@@ -12406,13 +12406,7 @@ Begin
     UnknownJson := '';
     Lines := TStringList.Create;
     Try
-        Loaded := False;
-        Try
-            Lines.LoadFromFile(LibPath);
-            Loaded := True;
-        Except
-            Loaded := False;
-        End;
+        Loaded := LoadTextFile(Lines, LibPath);
         If Not Loaded Then ErrCode := 'READ_FAILED';
 
         If ErrCode = '' Then
@@ -12846,13 +12840,7 @@ Begin
     Cols := TStringList.Create;
     Vals := TStringList.Create;
     Try
-        Loaded := False;
-        Try
-            Lines.LoadFromFile(LibPath);
-            Loaded := True;
-        Except
-            Loaded := False;
-        End;
+        Loaded := LoadTextFile(Lines, LibPath);
         If Not Loaded Then
         Begin
             ErrCode := 'READ_FAILED';
@@ -13185,8 +13173,8 @@ Begin
     Lines := TStringList.Create;
     Try
         Try
-            Lines.LoadFromFile(LibPath);
-            TableList := DbLibTableNames(Lines);
+            If LoadTextFile(Lines, LibPath) Then
+                TableList := DbLibTableNames(Lines);
         Except
             TableList := '';
         End;

@@ -17920,7 +17920,12 @@ Begin
     Lines := TStringList.Create; Lookup := TStringList.Create; Seen := TStringList.Create;
     Changed := 0; Already := 0; Found := 0;
     Try
-        Lines.LoadFromFile(Path);
+        If Not LoadTextFile(Lines, Path) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'READ_FAILED',
+                'Could not read plan file ' + Path);
+            Exit;
+        End;
         For I := 0 To Lines.Count-1 Do
         Begin
             Line := Trim(Lines[I]);
