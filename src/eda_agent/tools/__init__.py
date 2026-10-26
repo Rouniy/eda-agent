@@ -340,6 +340,8 @@ __all__ = [
     "register_application_tools",
     "register_guidance_tools",
     "register_uiauto_tools",
+    "register_pcb3d_tools",
+    "register_resource_catalog_tools",
     "register_meta_tools",
     "register_parts_tools",
     "register_live_tools",
