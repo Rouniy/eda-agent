@@ -2088,6 +2088,96 @@ def register_design_tools(mcp) -> None:
                 "loops": results}
 
     @mcp.tool()
+    async def design_export_spice_deck(
+        plan_json: Union[str, dict],
+        dialect: str = "ngspice",
+        analyses: Optional[dict] = None,
+        models: Optional[dict[str, dict]] = None,
+        supplies: Optional[dict[str, float]] = None,
+        pin_names: Optional[dict[str, dict[str, str]]] = None,
+        path: str = "",
+        allow_partial: bool = False,
+    ) -> dict[str, Any]:
+        """Write a plan's circuit as a SPICE deck for ngspice or LTspice.
+
+        The same netlist design_simulate_loops runs: R, C and L from their
+        values, everything else from the manufacturer's model (``models``,
+        as there), rails as DC sources. ``dialect`` "ltspice" writes a
+        .net LTspice opens and runs as it is; "ngspice" writes a .cir. A
+        plan read off a live sheet comes from design_plan_from_sheet.
+
+        A part without its model is never approximated: the deck is not
+        written and ``gaps`` names what is missing. ``allow_partial``
+        writes it anyway with every gap listed in comments at the top, so
+        the file cannot pass for the whole circuit.
+
+        Args:
+            plan_json: a DesignPlan (object or JSON).
+            dialect: "ngspice" or "ltspice".
+            analyses: {"op": true}, {"tran": {"step", "stop"}},
+                {"ac": {"points", "start", "stop"}} (decade) or {"dc":
+                {"source", "start", "stop", "step"}}; default .op.
+            models / supplies / pin_names: as design_simulate_loops.
+            path: file to write; default <workspace>/sim/<title>.cir|.net.
+            allow_partial: write a deck that is missing parts.
+        """
+        import re as _re
+
+        from ..config import get_config
+        from ..sim.deck import deck_from_plan
+        from ..sim.dialects import deck_gaps, write_deck
+
+        payload = plan_json
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "error": f"invalid JSON: {exc}"}
+        try:
+            plan = DesignPlan.model_validate(payload)
+        except ValidationError as exc:
+            return {"ok": False, "errors": [
+                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                for e in exc.errors()]}
+        deck = deck_from_plan(plan, models or {}, supplies, pin_names,
+                              title=plan.summary or "")
+        gaps = deck_gaps(deck)
+        out: dict[str, Any] = {
+            "ok": False, "dialect": dialect, "complete": not gaps,
+            "gaps": gaps, "rails": deck.get("rails"),
+            "missing_models": deck.get("missing_models")}
+        if gaps and not allow_partial:
+            out["reason"] = ("the deck is missing parts, so it was not "
+                             "written; give their models, or allow_partial "
+                             "to write it with the gaps listed")
+            return out
+        try:
+            text = write_deck(deck["netlist"], dialect, analyses,
+                              gaps if gaps else None)
+        except ValueError as exc:
+            out["reason"] = str(exc)
+            return out
+        ext = ".net" if dialect.lower() == "ltspice" else ".cir"
+        if path:
+            target = Path(path)
+        else:
+            stem = _re.sub(r"[^A-Za-z0-9._-]+", "_",
+                           plan.summary or "design").strip("._")[:60] or "design"
+            target = get_config().workspace_dir / "sim" / f"{stem}{ext}"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            out["reason"] = f"could not write {target}: {exc}"
+            return out
+        out.update(ok=True, path=str(target), deck=text)
+        if dialect.lower() == "ltspice":
+            out["note"] = ("open it in LTspice (File > Open, then Run); "
+                           "eda-agent itself simulates with ngspice")
+        return out
+
+
+    @mcp.tool()
     async def pcb_smart_drc(
         board_json_path: str = "",
         expect_file: str = "",
