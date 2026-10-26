@@ -9,7 +9,7 @@ MCP server on stdio -- this is what MCP-compatible clients call.
 Other subcommands:
   - scripts-path      : print the path to the bundled DelphiScript sources
   - install-scripts   : copy bundled scripts to a user-chosen directory
-                        (default: %USERPROFILE%\EDA Agent\scripts\)
+                        (default: Altium's registered project folder)
 """
 from __future__ import annotations
 
@@ -59,12 +59,71 @@ def get_bundled_scripts_path() -> Path:
 # User-profile paths
 # --------------------------------------------------------------------------
 
-def get_default_scripts_dest() -> Path:
-    """Default destination for `install-scripts`: %USERPROFILE%\\EDA Agent\\scripts\\."""
+_GLOBAL_PROJECTS_KEY = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+
+
+def _read_global_projects() -> list[str]:
+    """Read registered Altium script projects from the current user's registry."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Altium")
+    except (ImportError, OSError):
+        return []
+    found: list[str] = []
+    with root:
+        index = 0
+        while True:
+            try:
+                install = winreg.EnumKey(root, index)
+            except OSError:
+                break
+            index += 1
+            try:
+                key = winreg.OpenKey(root, install + "\\" + _GLOBAL_PROJECTS_KEY)
+            except OSError:
+                continue
+            with key:
+                item = 0
+                while True:
+                    try:
+                        _, value, _ = winreg.EnumValue(key, item)
+                    except OSError:
+                        break
+                    item += 1
+                    if isinstance(value, str) and value.strip():
+                        found.append(value.strip())
+    return found
+
+
+def get_registered_scripts_dirs() -> list[Path]:
+    """Return distinct folders containing the registered Altium_API.PrjScr."""
+    folders: list[Path] = []
+    seen: set[str] = set()
+    for value in _read_global_projects():
+        path = Path(value)
+        if path.name.lower() != "altium_api.prjscr":
+            continue
+        key = os.path.normcase(str(path.parent))
+        if key not in seen:
+            seen.add(key)
+            folders.append(path.parent)
+    return folders
+
+
+def get_fallback_scripts_dest() -> Path:
+    """Conventional script folder when Altium has no unique registration."""
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         return Path(userprofile) / "EDA Agent" / "scripts"
     return Path.home() / "EDA Agent" / "scripts"
+
+
+def get_default_scripts_dest() -> Path:
+    """Use Altium's registered folder when it identifies exactly one."""
+    registered = get_registered_scripts_dirs()
+    return registered[0] if len(registered) == 1 else get_fallback_scripts_dest()
 
 
 # --------------------------------------------------------------------------
@@ -148,8 +207,9 @@ def cmd_eco_execute(*, confirm: bool, validate_only: bool,
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     """Copy the bundled script project to a user-chosen directory.
 
-    Default destination: %USERPROFILE%\\EDA Agent\\scripts\\
-    Override with --dest PATH.
+    Default destination: Altium's registered script project folder when
+    unique, otherwise %USERPROFILE%\\EDA Agent\\scripts\\. Override with
+    --dest PATH.
 
     After the copy, the user opens `Altium_API.PrjScr` in Altium
     (File > Open, or via the Scripts panel) and runs `StartMCPServer`
@@ -213,11 +273,10 @@ def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
         shutil.copy2(child, dst / child.name)
         copied += 1
 
-    # Publish the workspace path for DelphiScript to pick up, even before
-    # the MCP server has ever run. Workspace lives alongside scripts: if
-    # scripts are at <dest>\, workspace is at <dest's parent>\workspace\.
-    from .config import write_workspace_pointer
-    workspace_dir = dst.parent / "workspace"
+    # The worker and server must use the same workspace even when Altium's
+    # registered script folder is outside the conventional install path.
+    from .config import _default_workspace_dir, write_workspace_pointer
+    workspace_dir = _default_workspace_dir()
     workspace_dir.mkdir(parents=True, exist_ok=True)
     write_workspace_pointer(workspace_dir)
 
