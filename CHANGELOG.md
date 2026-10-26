@@ -16,6 +16,10 @@ maturity classification for every tool.
 
 ### Added
 
+- Offline vendor stackup templates, laminate data, and fab capability checks
+  are exposed through CLI and MCP. Native layer changes remain explicit
+  editor operations and require version-matched Altium acceptance.
+
 - Ten offline engineering calculators are available through CLI and MCP:
   conductor spacing, fusing current, via parasitics, spiral inductance,
   reactance, resonance, wavelength, PDN target impedance, padstack geometry,
