@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Optional, Union
 
 from pydantic import ValidationError
@@ -519,8 +519,7 @@ def _sheet_size(
     if not isinstance(info, dict):
         return ""
     answered = str(info.get("file_path", "") or "")
-    if sheet_document and (
-            Path(answered).name.lower() != Path(sheet_document).name.lower()):
+    if sheet_document and PureWindowsPath(answered) != PureWindowsPath(sheet_document):
         out["notes"].append(
             f"sheet size not read: the document info came back for "
             f"{answered!r}, not the sheet asked for; the plan carries the "
