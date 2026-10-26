@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+## Single-main MCP deployment, 2026-10-26 20:49 +02:00
+
+The local `main` now contains the selected fork integrations, the PCB
+`pcb_query_region` Owner alias repair, and the previously uncommitted bridge
+recovery/PDF serialization fixes. The Python HTTP MCP supervisor, server, and
+dashboard were restarted from `D:\ai\eda-agent`. After `app_detach` stopped the
+old worker without saving documents, `StartMCPServer` was launched directly
+from this checkout's `scripts/altium/Altium_API.PrjScr`; no script copy was
+installed. `app_ping` over TCP 14701 reported 580 tools, loaded and bundled
+script `2026.10.26.2`, `version_match=true`, Altium `26.10.1.5`.
+
+The previous `eda-agent-large-integration` supervisor and its HTTP/dashboard
+children were stopped. TCP 14700 remains without a listener. This live check
+establishes startup and version agreement, not native acceptance of every new
+tool. The fork audit and its deferred features are in
+`docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`.
+
 ## Radxa C200 session exit and recovery, 2026-10-21 03:43
 
 Altium exited during the native 3-D pass on `radxa_c200_v1.11.PcbDoc` after
