@@ -6442,10 +6442,10 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_region(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         layer: str = "TopLayer",
         net: str = "",
         name: str = "",
@@ -6501,7 +6501,7 @@ def register_pcb_tools(mcp):
             return {"success": False, "reason": "at least 3 vertices required"}
         try:
             pts = ";".join(
-                f"{float(point['x']):g}:{float(point['y']):g}"
+                f"{float(point['x']):.15g}:{float(point['y']):.15g}"
                 for point in vertices
             )
         except (KeyError, TypeError, ValueError) as exc:

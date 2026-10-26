@@ -3,9 +3,9 @@
 ## Source integration and runtime, 2026-10-26
 
 `Rouniy/eda-agent/main` is the source of truth. The source script is now
-`2026.10.26.15`; it adds fractional-mil PCB stitching vias, circular board
+`2026.10.26.16`; it adds fractional-mil PCB stitching vias, circular board
 outlines, decimal-mil board geometry reads and arc placement, polygon
-pour settings, and named board regions, then regenerates `Altium_MCP.pas`. Focused Python tests and
+pour settings, and named board regions with decimal-mil placement, then regenerates `Altium_MCP.pas`. Focused Python tests and
 Pascal lint pass. The remaining fork candidates are listed in
 `docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`.
 

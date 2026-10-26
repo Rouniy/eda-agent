@@ -47,6 +47,12 @@ tests and Pascal lint pass; native region placement remains to be checked on
 a disposable board. The bridge restart reported the loaded `.15` script
 running on Altium `26.11.1.5`.
 
+The `.16` follow-up fixes an integration defect: Python accepted fractional
+vertices for region placement, while Pascal read them with `StrToIntDef` and
+rounded them to whole mils. Both rectangular and polygonal region paths now
+keep decimal mils, including the rectangular reply. Python packs polygon
+vertices with 15 significant digits instead of the default six.
+
 ## Scope and snapshots
 
 The target is `Rouniy/eda-agent` `main`, locally at `cb21952` before this integration. Its remote `origin/main` was `3f3aecc` (24 local commits behind). Upstream `salitronic/eda-agent` `main` was `74d745d`; the two histories had 216 local-only and 85 upstream-only commits. The direct fork of `Rouniy/eda-agent`, `MOREmbedded/eda-agent`, was at `7062521`; its history had 52 commits absent from local main and local main had 163 commits absent from it. These are Git snapshots, not permanent fork counts.

@@ -121,6 +121,20 @@ async def test_placed_regions_forward_name(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_placed_regions_keep_fractional_mils(monkeypatch):
+    bridge = RecBridge()
+    tools = _pcb(monkeypatch, bridge)
+    await tools["pcb_place_region"](0.25, -1.5, 100.75, 200.125)
+    assert {key: bridge.calls[-1][1][key] for key in ("x1", "y1", "x2", "y2")} == {
+        "x1": "0.25", "y1": "-1.5", "x2": "100.75", "y2": "200.125",
+    }
+    await tools["pcb_place_region_poly"](
+        [{"x": 0.25, "y": 0.5}, {"x": 100.75, "y": 0}, {"x": 0, "y": 100.125}],
+    )
+    assert bridge.calls[-1][1]["pts"] == "0.25:0.5;100.75:0;0:100.125"
+
+
+@pytest.mark.asyncio
 async def test_import_placement_packs_records(monkeypatch):
     b = RecBridge()
     tools = _pcb(monkeypatch, b)

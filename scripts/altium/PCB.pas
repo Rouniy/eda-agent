@@ -10743,7 +10743,7 @@ Var
     Board : IPCB_Board;
     Region : IPCB_Region;
     Contour : IPCB_Contour;
-    X1, Y1, X2, Y2, TmpI : Integer;
+    X1, Y1, X2, Y2, TmpI : Double;
     Cx1, Cy1, Cx2, Cy2 : TCoord;
     LayerStr, NetStr, NameStr : String;
     FoundNet : IPCB_Net;
@@ -10756,18 +10756,18 @@ Begin
         Exit;
     End;
 
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     NetStr := ExtractJsonValue(Params, 'net');
     NameStr := ExtractJsonValue(Params, 'name');
 
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
-    Cx1 := MilsToCoord(X1);  Cy1 := MilsToCoord(Y1);
-    Cx2 := MilsToCoord(X2);  Cy2 := MilsToCoord(Y2);
+    Cx1 := MilsToCoordF(X1);  Cy1 := MilsToCoordF(Y1);
+    Cx2 := MilsToCoordF(X2);  Cy2 := MilsToCoordF(Y2);
 
     If LayerStr = '' Then TargetLayer := eTopLayer
     Else TargetLayer := ResolveLayerId(Board, LayerStr);
@@ -10819,8 +10819,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
-        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
+        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
+        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(TargetLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '",'
         + '"name":"' + EscapeJsonString(Region.Name) + '"}');
@@ -11019,8 +11019,8 @@ Begin
             End;
             XStr := Copy(Token, 1, ColonPos - 1);
             YStr := Copy(Token, ColonPos + 1, Length(Token));
-            Contour.X[K] := MilsToCoord(StrToIntDef(XStr, 0));
-            Contour.Y[K] := MilsToCoord(StrToIntDef(YStr, 0));
+            Contour.X[K] := MilsToCoordF(StrToFloatDef(XStr, 0));
+            Contour.Y[K] := MilsToCoordF(StrToFloatDef(YStr, 0));
             K := K + 1;
         End;
         Region.SetOutlineContour(Contour);
