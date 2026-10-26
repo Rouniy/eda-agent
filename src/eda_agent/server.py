@@ -705,6 +705,12 @@ def main() -> int:
         help="Fast offline preconditions (workspace, pointer file, scripts)",
     )
 
+    perf_p = subparsers.add_parser(
+        "perf", help="Report call timing from the workspace logs.",
+    )
+    perf_p.add_argument("--json", action="store_true", dest="json_out")
+    perf_p.add_argument("--limit", type=int, default=15)
+
     subparsers.add_parser("a365-login", help="Authorize Nexar and store the token for Altium 365 read tools")
     subparsers.add_parser("a365-logout", help="Remove the stored Nexar token")
 
@@ -1050,6 +1056,8 @@ def main() -> int:
         return _run_bom(args)
     if args.command == "netlist":
         return _run_netlist(args)
+    if args.command == "perf":
+        return cli.cmd_perf(as_json=args.json_out, limit=args.limit)
     if args.command in ("health", "doctor"):
         from .diag.checks import format_report, overall_exit_code
         if args.command == "health":

@@ -516,3 +516,21 @@ def cmd_profile_new_project(template: str, dest: str, *, force: bool) -> int:
     shutil.copytree(src, dst, dirs_exist_ok=True)
     print(f"Created project from template {template!r} at: {dst}")
     return 0
+
+
+def cmd_perf(*, as_json: bool, limit: int = 15) -> int:
+    """Report caller, Altium handler, and queue/IPC time from existing logs."""
+    import json as _json
+
+    from .config import get_config
+    from .diag.perf import format_report, report_from_workspace
+
+    workspace = get_config().workspace_dir
+    report = report_from_workspace(workspace)
+    if as_json:
+        print(_json.dumps(report, indent=2))
+    else:
+        print(format_report(report, limit=limit))
+        if not report["calls"]:
+            print(f"No calls logged yet in {workspace}.", file=sys.stderr)
+    return 0
