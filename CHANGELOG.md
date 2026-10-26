@@ -16,6 +16,11 @@ maturity classification for every tool.
 
 ### Added
 
+- `part_find_replacements` evaluates candidate parts using explicit
+  parameter directions, units, lifecycle and stock evidence. It reports
+  unreviewed attributes and missing datasheet, PCN, and pad-geometry checks;
+  a result is not an equivalence or drop-in approval.
+
 - `rotation_audit`, an advisory check in `pcb_layout_audit`: each
   two-pad part on either side is tried at 0/90/180/270 degrees about its
   origin, scored by net airline (minimum spanning tree) for routable
