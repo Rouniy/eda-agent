@@ -27,6 +27,9 @@ mil centre and radius. It is adapted to this repository's rectangle-only
 `pcb_set_board_shape`; polygon outlines remain a separate candidate. Python
 parameter tests and Pascal lint pass, but the circle has not been written to
 a disposable board in Altium yet.
+The bridge was reloaded after the `.13` build; `app_ping` confirmed the
+loaded and bundled versions agree. This verifies deployment, not circular
+outline geometry on a board.
 
 ## Scope and snapshots
 

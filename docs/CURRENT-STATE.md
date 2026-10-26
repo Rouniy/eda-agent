@@ -9,9 +9,9 @@ lint pass. The remaining fork candidates are listed in
 `docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`.
 
 The previously hung X2 (`PID 23836`) was terminated at the owner's request.
-Altium was restarted twice; `app_ping` now confirms loaded and bundled script
-`2026.10.26.12`, `version_match=true` at that time, and Altium `26.10.1.5`.
-The new source `.13` awaits reload. TCP 14701
+Altium was restarted twice, and the bridge was subsequently reloaded from
+`main`; `app_ping` confirms loaded and bundled script `2026.10.26.13`,
+`version_match=true`, and Altium `26.10.1.5`. TCP 14701
 answers MCP and the existing Codex message relay listens on TCP 14700;
 its loopback health check reports `ready`. Native acceptance of the new
 stitching-via Pascal change is still pending. Altium offers platform update
