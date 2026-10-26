@@ -16,6 +16,12 @@ maturity classification for every tool.
 
 ### Added
 
+- Ten offline engineering calculators are available through CLI and MCP:
+  conductor spacing, fusing current, via parasitics, spiral inductance,
+  reactance, resonance, wavelength, PDN target impedance, padstack geometry,
+  and wire gauge. Each result states whether it is exact, published, or an
+  estimate, and refuses physically invalid inputs.
+
 - `part_find_replacements` evaluates candidate parts using explicit
   parameter directions, units, lifecycle and stock evidence. It reports
   unreviewed attributes and missing datasheet, PCN, and pad-geometry checks;
