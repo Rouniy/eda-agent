@@ -246,6 +246,11 @@ def register_generic_tools(mcp):
                 TopXSize, TopYSize, Rotation, Name, Text, Pattern,
                 Designator, Comment, SourceDesignator, Kind,
                 RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea,
+                Grid, TrackSize, MinTrack, ArcApproximation,
+                NeckWidthThreshold (decimal mils), IslandAreaThreshold
+                (square mils), PolyHatchStyle and PourOver (ordinals),
+                UseOctagons, PourIndex and Poured (read only). These
+                polygon settings affect the next pour; they do not repour.
                 StandoffHeight, OverallHeight, InComponent, Component,
                 InPolygon, IsKeepout, Locked, Layer1, Layer2,
                 IsRedundant, Mode, Height, StrokeWidth, IsDesignator,

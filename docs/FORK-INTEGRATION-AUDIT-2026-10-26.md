@@ -12,7 +12,7 @@ counts because several changes were ported with edited patches.
 | Integrated before this recheck | Replacement-part evidence, ten calculators and optional pcb-toolkit check, vendor stackups/fab data, profile document templates, library file/STEP inspection and footprint comparison, fractional layer thickness, circuit-loop/sheet-fit/smart-DRC analysis, Windows path normalization, keepalive through outages, restoring a hidden Altium frame | Integration commits `2368405` through `9ff5d3a`, plus wrapper fixes in `08ec57a` |
 | Integrated during this recheck | Withdraw timed-out requests, batch PCB DRC, direct Altium 365 API, standard schematic symbols and library save tracking, schematic templates alongside DesignPlan, duplicate footprint guard, installed menu and dialog translations, localized dashboard, PCB coordinate zoom, mask-sliver and silk rule gaps, offline SPICE deck export for ngspice and LTspice, generic PCB keepout restrictions, decimal-mil rectangle corners for board outlines and polygon pours | `9206588` through `541d2ce`; focused tests and Pascal lint pass; native execution still pending |
 | Already present before this recheck | Advisory two-pad rotation, bottom-side rotation scoring, offline fab package inspection, CLI script-folder discovery, performance report, DelphiScript routine checks | Earlier audit below; `2cabd7b` needs no second copy |
-| Next source candidates | Remaining decimal-mil geometry handlers; true arcs and polygon settings; STEP/3D model editing; integrated libraries; multi-part schematic template support; ERC and project membership; session document isolation; update flow | Require conflict resolution, tests and in some cases disposable-board native acceptance |
+| Next source candidates | Remaining decimal-mil geometry handlers; STEP/3D model editing; integrated libraries; multi-part schematic template support; ERC and project membership; session document isolation; update flow | Require conflict resolution, tests and in some cases disposable-board native acceptance |
 | Held for rewrite or evidence | `be21eb3` bottom-side placement can flip a similarly named component on another open board after a failed placement; `bf9e08c` per-via tenting writes a pad cache that faulted the current repo's AD 26.10 session; `74d745d` forces one net-label colour; upstream removal of the main DesignPlan layout engine | Do not copy those patches literally; preserve exact-board targeting and both layout paths; qualify the via cache on the installed Altium build before exposing the write |
 
 The hung Altium worker was terminated and restarted at the owner's later
@@ -30,6 +30,13 @@ a disposable board in Altium yet.
 The bridge was reloaded after the `.13` build; `app_ping` confirmed the
 loaded and bundled versions agree. This verifies deployment, not circular
 outline geometry on a board.
+
+The `.14` source ports decimal mils for board outline and routing reads and
+arc placement, plus the fork's polygon pour settings and polygon Name in the
+generic property layer. Polygon lengths use decimal mils, island area uses
+square mils, invalid values are refused, and settings take effect on the next
+pour. Focused tests and Pascal lint pass. Native polygon writes and arc
+placement have not yet been accepted on a disposable Altium board.
 
 ## Scope and snapshots
 

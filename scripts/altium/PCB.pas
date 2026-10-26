@@ -4480,11 +4480,11 @@ Begin
                     Track := Obj;
                     If Not FirstTrack Then TracksJson := TracksJson + ',';
                     FirstTrack := False;
-                    TracksJson := TracksJson + '{"x1":' + IntToStr(CoordToMils(Track.X1))
-                        + ',"y1":' + IntToStr(CoordToMils(Track.Y1))
-                        + ',"x2":' + IntToStr(CoordToMils(Track.X2))
-                        + ',"y2":' + IntToStr(CoordToMils(Track.Y2))
-                        + ',"width":' + IntToStr(CoordToMils(Track.Width))
+                    TracksJson := TracksJson + '{"x1":' + FloatToJsonStr(CoordToMilsF(Track.X1))
+                        + ',"y1":' + FloatToJsonStr(CoordToMilsF(Track.Y1))
+                        + ',"x2":' + FloatToJsonStr(CoordToMilsF(Track.X2))
+                        + ',"y2":' + FloatToJsonStr(CoordToMilsF(Track.Y2))
+                        + ',"width":' + FloatToJsonStr(CoordToMilsF(Track.Width))
                         + ',"layer":"' + EscapeJsonString(GetLayerString(Track.Layer)) + '"}';
                     Inc(TrackCount);
                 End
@@ -4493,10 +4493,10 @@ Begin
                     Via := Obj;
                     If Not FirstVia Then ViasJson := ViasJson + ',';
                     FirstVia := False;
-                    ViasJson := ViasJson + '{"x":' + IntToStr(CoordToMils(Via.X))
-                        + ',"y":' + IntToStr(CoordToMils(Via.Y))
-                        + ',"size":' + IntToStr(CoordToMils(Via.Size))
-                        + ',"hole_size":' + IntToStr(CoordToMils(Via.HoleSize)) + '}';
+                    ViasJson := ViasJson + '{"x":' + FloatToJsonStr(CoordToMilsF(Via.X))
+                        + ',"y":' + FloatToJsonStr(CoordToMilsF(Via.Y))
+                        + ',"size":' + FloatToJsonStr(CoordToMilsF(Via.Size))
+                        + ',"hole_size":' + FloatToJsonStr(CoordToMilsF(Via.HoleSize)) + '}';
                     Inc(ViaCount);
                 End
                 Else If Obj.ObjectId = eArcObject Then
@@ -4504,12 +4504,12 @@ Begin
                     Arc := Obj;
                     If Not FirstArc Then ArcsJson := ArcsJson + ',';
                     FirstArc := False;
-                    ArcsJson := ArcsJson + '{"x":' + IntToStr(CoordToMils(Arc.XCenter))
-                        + ',"y":' + IntToStr(CoordToMils(Arc.YCenter))
-                        + ',"radius":' + IntToStr(CoordToMils(Arc.Radius))
+                    ArcsJson := ArcsJson + '{"x":' + FloatToJsonStr(CoordToMilsF(Arc.XCenter))
+                        + ',"y":' + FloatToJsonStr(CoordToMilsF(Arc.YCenter))
+                        + ',"radius":' + FloatToJsonStr(CoordToMilsF(Arc.Radius))
                         + ',"start_angle":' + FloatToJsonStr(Arc.StartAngle)
                         + ',"end_angle":' + FloatToJsonStr(Arc.EndAngle)
-                        + ',"width":' + IntToStr(CoordToMils(Arc.LineWidth))
+                        + ',"width":' + FloatToJsonStr(CoordToMilsF(Arc.LineWidth))
                         + ',"layer":"' + EscapeJsonString(GetLayerString(Arc.Layer)) + '"}';
                     Inc(ArcCount);
                 End
@@ -4518,10 +4518,10 @@ Begin
                     Fill := Obj;
                     If Not FirstFill Then FillsJson := FillsJson + ',';
                     FirstFill := False;
-                    FillsJson := FillsJson + '{"x1":' + IntToStr(CoordToMils(Fill.X1Location))
-                        + ',"y1":' + IntToStr(CoordToMils(Fill.Y1Location))
-                        + ',"x2":' + IntToStr(CoordToMils(Fill.X2Location))
-                        + ',"y2":' + IntToStr(CoordToMils(Fill.Y2Location))
+                    FillsJson := FillsJson + '{"x1":' + FloatToJsonStr(CoordToMilsF(Fill.X1Location))
+                        + ',"y1":' + FloatToJsonStr(CoordToMilsF(Fill.Y1Location))
+                        + ',"x2":' + FloatToJsonStr(CoordToMilsF(Fill.X2Location))
+                        + ',"y2":' + FloatToJsonStr(CoordToMilsF(Fill.Y2Location))
                         + ',"rotation":' + FloatToJsonStr(Fill.Rotation)
                         + ',"layer":"' + EscapeJsonString(GetLayerString(Fill.Layer)) + '"}';
                     Inc(FillCount);
@@ -5832,14 +5832,14 @@ Begin
 
         JsonItems := JsonItems + '{"index":' + IntToStr(I) + ','
             + '"kind":"' + SegKind + '",'
-            + '"x":' + IntToStr(CoordToMils(Outline.Segments[I].vx)) + ','
-            + '"y":' + IntToStr(CoordToMils(Outline.Segments[I].vy));
+            + '"x":' + FloatToJsonStr(CoordToMilsF(Outline.Segments[I].vx)) + ','
+            + '"y":' + FloatToJsonStr(CoordToMilsF(Outline.Segments[I].vy));
 
         If Outline.Segments[I].Kind <> ePolySegmentLine Then
         Begin
             JsonItems := JsonItems + ','
-                + '"cx":' + IntToStr(CoordToMils(Outline.Segments[I].cx)) + ','
-                + '"cy":' + IntToStr(CoordToMils(Outline.Segments[I].cy)) + ','
+                + '"cx":' + FloatToJsonStr(CoordToMilsF(Outline.Segments[I].cx)) + ','
+                + '"cy":' + FloatToJsonStr(CoordToMilsF(Outline.Segments[I].cy)) + ','
                 + '"angle1":' + FloatToJsonStr(Outline.Segments[I].Angle1) + ','
                 + '"angle2":' + FloatToJsonStr(Outline.Segments[I].Angle2);
         End;
@@ -5850,10 +5850,10 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"point_count":' + IntToStr(Outline.PointCount) + ','
         + '"vertices":[' + JsonItems + '],'
-        + '"bounding_rect":{"left":' + IntToStr(CoordToMils(EL))
-        + ',"bottom":' + IntToStr(CoordToMils(EB))
-        + ',"right":' + IntToStr(CoordToMils(ER))
-        + ',"top":' + IntToStr(CoordToMils(ET)) + '}}');
+        + '"bounding_rect":{"left":' + FloatToJsonStr(CoordToMilsF(EL))
+        + ',"bottom":' + FloatToJsonStr(CoordToMilsF(EB))
+        + ',"right":' + FloatToJsonStr(CoordToMilsF(ER))
+        + ',"top":' + FloatToJsonStr(CoordToMilsF(ET)) + '}}');
 End;
 
 Function PCB_GetBoardOutline(Params : String; RequestId : String) : String;
@@ -7346,8 +7346,7 @@ Var
     Board : IPCB_Board;
     Arc : IPCB_Arc;
     XCStr, YCStr, RadStr, SAStr, EAStr, WidthStr, LayerStr : String;
-    ArcXC, ArcYC, ArcRad, ArcWidth : Integer;
-    ArcSA, ArcEA : Double;
+    ArcXC, ArcYC, ArcRad, ArcWidth, ArcSA, ArcEA : Double;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -7371,12 +7370,12 @@ Begin
         Exit;
     End;
 
-    ArcXC := StrToIntDef(XCStr, 0);
-    ArcYC := StrToIntDef(YCStr, 0);
-    ArcRad := StrToIntDef(RadStr, 100);
+    ArcXC := StrToFloatDef(XCStr, 0);
+    ArcYC := StrToFloatDef(YCStr, 0);
+    ArcRad := StrToFloatDef(RadStr, 100);
     ArcSA := StrToFloatDef(SAStr, 0);
     ArcEA := StrToFloatDef(EAStr, 360);
-    ArcWidth := StrToIntDef(WidthStr, 10);
+    ArcWidth := StrToFloatDef(WidthStr, 10);
 
     If LayerStr = '' Then TargetLayer := eTopLayer
     Else TargetLayer := ResolveLayerId(Board, LayerStr);
@@ -7397,12 +7396,12 @@ Begin
             Exit;
         End;
 
-        Arc.XCenter := MilsToCoord(ArcXC);
-        Arc.YCenter := MilsToCoord(ArcYC);
-        Arc.Radius := MilsToCoord(ArcRad);
+        Arc.XCenter := MilsToCoordF(ArcXC);
+        Arc.YCenter := MilsToCoordF(ArcYC);
+        Arc.Radius := MilsToCoordF(ArcRad);
         Arc.StartAngle := ArcSA;
         Arc.EndAngle := ArcEA;
-        Arc.LineWidth := MilsToCoord(ArcWidth);
+        Arc.LineWidth := MilsToCoordF(ArcWidth);
 
         Arc.Layer := TargetLayer;
 
@@ -7418,12 +7417,12 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x_center":' + IntToStr(ArcXC) + ','
-        + '"y_center":' + IntToStr(ArcYC) + ','
-        + '"radius":' + IntToStr(ArcRad) + ','
+        + '"x_center":' + FloatToJsonStr(ArcXC) + ','
+        + '"y_center":' + FloatToJsonStr(ArcYC) + ','
+        + '"radius":' + FloatToJsonStr(ArcRad) + ','
         + '"start_angle":' + FloatToJsonStr(ArcSA) + ','
         + '"end_angle":' + FloatToJsonStr(ArcEA) + ','
-        + '"width":' + IntToStr(ArcWidth) + ','
+        + '"width":' + FloatToJsonStr(ArcWidth) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(Arc.Layer)) + '"}');
 End;
 

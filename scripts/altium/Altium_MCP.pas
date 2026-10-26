@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.26.13';
+    SCRIPT_VERSION = '2026.10.26.14';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -24178,6 +24178,75 @@ Begin
     Result := IntToStr(M);
 End;
 
+{ Polygon pour settings use decimal mils; area uses square mils. }
+Function PCBGetPoly(Obj : IPCB_Primitive; PropName : String) : String;
+Var
+    Poly : IPCB_Polygon;
+    Area : Double;
+Begin
+    Result := '';
+    Poly := Obj;
+    If PropName = 'Grid' Then Result := FloatToJsonStr(CoordToMilsF(Poly.Grid))
+    Else If PropName = 'TrackSize' Then Result := FloatToJsonStr(CoordToMilsF(Poly.TrackSize))
+    Else If PropName = 'MinTrack' Then Result := FloatToJsonStr(CoordToMilsF(Poly.MinTrack))
+    Else If PropName = 'ArcApproximation' Then Result := FloatToJsonStr(CoordToMilsF(Poly.ArcApproximation))
+    Else If PropName = 'NeckWidthThreshold' Then Result := FloatToJsonStr(CoordToMilsF(Poly.NeckWidthThreshold))
+    Else If PropName = 'IslandAreaThreshold' Then
+    Begin
+        Area := Poly.IslandAreaThreshold;
+        Result := FloatToJsonStr(Area / 100000000.0);
+    End
+    Else If PropName = 'PolyHatchStyle' Then Result := IntToStr(Poly.PolyHatchStyle)
+    Else If PropName = 'PourOver' Then Result := IntToStr(Poly.PourOver)
+    Else If PropName = 'UseOctagons' Then Result := BoolToJsonStr(Poly.UseOctagons)
+    Else If PropName = 'PourIndex' Then Result := IntToStr(Poly.PourIndex)
+    Else If PropName = 'Poured' Then Result := BoolToJsonStr(Poly.Poured);
+End;
+
+{ Validate each value before writing any polygon property. }
+Function PCBSetPoly(Obj : IPCB_Primitive; PropName : String; Value : String) : Boolean;
+Var
+    Poly : IPCB_Polygon;
+    F : Double;
+Begin
+    Result := False;
+    Poly := Obj;
+    If PropName = 'Name' Then
+    Begin
+        If Trim(Value) = '' Then Exit;
+        Poly.Name := Value;
+        Result := True;
+        Exit;
+    End;
+    If PropName = 'UseOctagons' Then
+    Begin
+        If LowerCase(Value) = 'true' Then Poly.UseOctagons := True
+        Else If LowerCase(Value) = 'false' Then Poly.UseOctagons := False
+        Else Exit;
+        Result := True;
+        Exit;
+    End;
+    If Not IsFloatStr(Value) Then Exit;
+    F := StrToFloatDef(Value, -1);
+    If F < 0 Then Exit;
+    If (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Then
+    Begin
+        If Round(F) <> F Then Exit;
+        If (PropName = 'PolyHatchStyle') And (Round(F) > 5) Then Exit;
+        If (PropName = 'PourOver') And (Round(F) > 2) Then Exit;
+    End;
+    If PropName = 'Grid' Then Poly.Grid := MilsToCoordF(F)
+    Else If PropName = 'TrackSize' Then Poly.TrackSize := MilsToCoordF(F)
+    Else If PropName = 'MinTrack' Then Poly.MinTrack := MilsToCoordF(F)
+    Else If PropName = 'ArcApproximation' Then Poly.ArcApproximation := MilsToCoordF(F)
+    Else If PropName = 'NeckWidthThreshold' Then Poly.NeckWidthThreshold := MilsToCoordF(F)
+    Else If PropName = 'IslandAreaThreshold' Then Poly.IslandAreaThreshold := F * 100000000.0
+    Else If PropName = 'PolyHatchStyle' Then Poly.PolyHatchStyle := Round(F)
+    Else If PropName = 'PourOver' Then Poly.PourOver := Round(F)
+    Else Exit;
+    Result := True;
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -24394,6 +24463,7 @@ Begin
             { so a Name=1 filter matched no pad at all.                        }
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Name.Text; End;
             If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
+            If Oid = ePolyObject Then Begin Poly := Obj; Result := Poly.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
@@ -24450,6 +24520,15 @@ Begin
         Begin
             If Oid = ePolyObject Then
             Begin Poly := Obj; Result := BoolToJsonStr(Poly.RemoveIslandsByArea); End;
+        End
+        Else If (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+                (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+                (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
+                (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+                (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
+                (PropName = 'Poured') Then
+        Begin
+            If Oid = ePolyObject Then Result := PCBGetPoly(Obj, PropName);
         End
         Else If PropName = 'StandoffHeight' Then
         Begin
@@ -24545,7 +24624,9 @@ Begin
         (PropName = 'TopXSize') Or (PropName = 'TopYSize') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'Height') Or (PropName = 'StrokeWidth') Or
-        (PropName = 'Size');
+        (PropName = 'Size') Or (PropName = 'Grid') Or
+        (PropName = 'TrackSize') Or (PropName = 'MinTrack') Or
+        (PropName = 'ArcApproximation') Or (PropName = 'NeckWidthThreshold');
 End;
 
 { A text's height or stroke width, inside the modify bracket Altium wants: }
@@ -24772,6 +24853,11 @@ Begin
             End;
         End
 
+        Else If (PropName = 'Name') And (Oid = ePolyObject) Then
+        Begin
+            If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
+        End
+
         { Polygon pour options. All three are declared on IPCB_Polygon with
           both a Read and a Write accessor, so they are settable; they were
           simply absent here. Setting one does NOT repour: the flags decide
@@ -24852,6 +24938,15 @@ Begin
             If Oid = ePolyObject Then
             Begin Poly := Obj; Poly.RemoveIslandsByArea := StrToBool(Value); End
             Else Matched := False;
+        End
+        Else If (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+                (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+                (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
+                (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+                (PropName = 'UseOctagons') Then
+        Begin
+            If Oid <> ePolyObject Then Matched := False
+            Else If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
         End
         Else Matched := False;
 
@@ -24945,6 +25040,12 @@ Begin
         (PropName = 'Kind') Or (PropName = 'RegionKind') Or
         (PropName = 'RemoveDead') Or (PropName = 'RemoveNarrowNecks') Or
         (PropName = 'RemoveIslandsByArea') Or
+        (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+        (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+        (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
+        (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+        (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
+        (PropName = 'Poured') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'InComponent') Or (PropName = 'Component') Or
         (PropName = 'InPolygon') Or (PropName = 'IsKeepout') Or
@@ -25003,6 +25104,8 @@ Begin
           tells a caller a property does not exist when it does, which is
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
+        + 'Grid, TrackSize, MinTrack, ArcApproximation, NeckWidthThreshold, '
+        + 'IslandAreaThreshold, PolyHatchStyle, PourOver, UseOctagons, PourIndex, Poured, '
         + 'StandoffHeight, OverallHeight, InComponent, Component, '
         + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
         + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
@@ -29950,11 +30053,11 @@ Begin
                     Track := Obj;
                     If Not FirstTrack Then TracksJson := TracksJson + ',';
                     FirstTrack := False;
-                    TracksJson := TracksJson + '{"x1":' + IntToStr(CoordToMils(Track.X1))
-                        + ',"y1":' + IntToStr(CoordToMils(Track.Y1))
-                        + ',"x2":' + IntToStr(CoordToMils(Track.X2))
-                        + ',"y2":' + IntToStr(CoordToMils(Track.Y2))
-                        + ',"width":' + IntToStr(CoordToMils(Track.Width))
+                    TracksJson := TracksJson + '{"x1":' + FloatToJsonStr(CoordToMilsF(Track.X1))
+                        + ',"y1":' + FloatToJsonStr(CoordToMilsF(Track.Y1))
+                        + ',"x2":' + FloatToJsonStr(CoordToMilsF(Track.X2))
+                        + ',"y2":' + FloatToJsonStr(CoordToMilsF(Track.Y2))
+                        + ',"width":' + FloatToJsonStr(CoordToMilsF(Track.Width))
                         + ',"layer":"' + EscapeJsonString(GetLayerString(Track.Layer)) + '"}';
                     Inc(TrackCount);
                 End
@@ -29963,10 +30066,10 @@ Begin
                     Via := Obj;
                     If Not FirstVia Then ViasJson := ViasJson + ',';
                     FirstVia := False;
-                    ViasJson := ViasJson + '{"x":' + IntToStr(CoordToMils(Via.X))
-                        + ',"y":' + IntToStr(CoordToMils(Via.Y))
-                        + ',"size":' + IntToStr(CoordToMils(Via.Size))
-                        + ',"hole_size":' + IntToStr(CoordToMils(Via.HoleSize)) + '}';
+                    ViasJson := ViasJson + '{"x":' + FloatToJsonStr(CoordToMilsF(Via.X))
+                        + ',"y":' + FloatToJsonStr(CoordToMilsF(Via.Y))
+                        + ',"size":' + FloatToJsonStr(CoordToMilsF(Via.Size))
+                        + ',"hole_size":' + FloatToJsonStr(CoordToMilsF(Via.HoleSize)) + '}';
                     Inc(ViaCount);
                 End
                 Else If Obj.ObjectId = eArcObject Then
@@ -29974,12 +30077,12 @@ Begin
                     Arc := Obj;
                     If Not FirstArc Then ArcsJson := ArcsJson + ',';
                     FirstArc := False;
-                    ArcsJson := ArcsJson + '{"x":' + IntToStr(CoordToMils(Arc.XCenter))
-                        + ',"y":' + IntToStr(CoordToMils(Arc.YCenter))
-                        + ',"radius":' + IntToStr(CoordToMils(Arc.Radius))
+                    ArcsJson := ArcsJson + '{"x":' + FloatToJsonStr(CoordToMilsF(Arc.XCenter))
+                        + ',"y":' + FloatToJsonStr(CoordToMilsF(Arc.YCenter))
+                        + ',"radius":' + FloatToJsonStr(CoordToMilsF(Arc.Radius))
                         + ',"start_angle":' + FloatToJsonStr(Arc.StartAngle)
                         + ',"end_angle":' + FloatToJsonStr(Arc.EndAngle)
-                        + ',"width":' + IntToStr(CoordToMils(Arc.LineWidth))
+                        + ',"width":' + FloatToJsonStr(CoordToMilsF(Arc.LineWidth))
                         + ',"layer":"' + EscapeJsonString(GetLayerString(Arc.Layer)) + '"}';
                     Inc(ArcCount);
                 End
@@ -29988,10 +30091,10 @@ Begin
                     Fill := Obj;
                     If Not FirstFill Then FillsJson := FillsJson + ',';
                     FirstFill := False;
-                    FillsJson := FillsJson + '{"x1":' + IntToStr(CoordToMils(Fill.X1Location))
-                        + ',"y1":' + IntToStr(CoordToMils(Fill.Y1Location))
-                        + ',"x2":' + IntToStr(CoordToMils(Fill.X2Location))
-                        + ',"y2":' + IntToStr(CoordToMils(Fill.Y2Location))
+                    FillsJson := FillsJson + '{"x1":' + FloatToJsonStr(CoordToMilsF(Fill.X1Location))
+                        + ',"y1":' + FloatToJsonStr(CoordToMilsF(Fill.Y1Location))
+                        + ',"x2":' + FloatToJsonStr(CoordToMilsF(Fill.X2Location))
+                        + ',"y2":' + FloatToJsonStr(CoordToMilsF(Fill.Y2Location))
                         + ',"rotation":' + FloatToJsonStr(Fill.Rotation)
                         + ',"layer":"' + EscapeJsonString(GetLayerString(Fill.Layer)) + '"}';
                     Inc(FillCount);
@@ -31302,14 +31405,14 @@ Begin
 
         JsonItems := JsonItems + '{"index":' + IntToStr(I) + ','
             + '"kind":"' + SegKind + '",'
-            + '"x":' + IntToStr(CoordToMils(Outline.Segments[I].vx)) + ','
-            + '"y":' + IntToStr(CoordToMils(Outline.Segments[I].vy));
+            + '"x":' + FloatToJsonStr(CoordToMilsF(Outline.Segments[I].vx)) + ','
+            + '"y":' + FloatToJsonStr(CoordToMilsF(Outline.Segments[I].vy));
 
         If Outline.Segments[I].Kind <> ePolySegmentLine Then
         Begin
             JsonItems := JsonItems + ','
-                + '"cx":' + IntToStr(CoordToMils(Outline.Segments[I].cx)) + ','
-                + '"cy":' + IntToStr(CoordToMils(Outline.Segments[I].cy)) + ','
+                + '"cx":' + FloatToJsonStr(CoordToMilsF(Outline.Segments[I].cx)) + ','
+                + '"cy":' + FloatToJsonStr(CoordToMilsF(Outline.Segments[I].cy)) + ','
                 + '"angle1":' + FloatToJsonStr(Outline.Segments[I].Angle1) + ','
                 + '"angle2":' + FloatToJsonStr(Outline.Segments[I].Angle2);
         End;
@@ -31320,10 +31423,10 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"point_count":' + IntToStr(Outline.PointCount) + ','
         + '"vertices":[' + JsonItems + '],'
-        + '"bounding_rect":{"left":' + IntToStr(CoordToMils(EL))
-        + ',"bottom":' + IntToStr(CoordToMils(EB))
-        + ',"right":' + IntToStr(CoordToMils(ER))
-        + ',"top":' + IntToStr(CoordToMils(ET)) + '}}');
+        + '"bounding_rect":{"left":' + FloatToJsonStr(CoordToMilsF(EL))
+        + ',"bottom":' + FloatToJsonStr(CoordToMilsF(EB))
+        + ',"right":' + FloatToJsonStr(CoordToMilsF(ER))
+        + ',"top":' + FloatToJsonStr(CoordToMilsF(ET)) + '}}');
 End;
 
 Function PCB_GetBoardOutline(Params : String; RequestId : String) : String;
@@ -32816,8 +32919,7 @@ Var
     Board : IPCB_Board;
     Arc : IPCB_Arc;
     XCStr, YCStr, RadStr, SAStr, EAStr, WidthStr, LayerStr : String;
-    ArcXC, ArcYC, ArcRad, ArcWidth : Integer;
-    ArcSA, ArcEA : Double;
+    ArcXC, ArcYC, ArcRad, ArcWidth, ArcSA, ArcEA : Double;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -32841,12 +32943,12 @@ Begin
         Exit;
     End;
 
-    ArcXC := StrToIntDef(XCStr, 0);
-    ArcYC := StrToIntDef(YCStr, 0);
-    ArcRad := StrToIntDef(RadStr, 100);
+    ArcXC := StrToFloatDef(XCStr, 0);
+    ArcYC := StrToFloatDef(YCStr, 0);
+    ArcRad := StrToFloatDef(RadStr, 100);
     ArcSA := StrToFloatDef(SAStr, 0);
     ArcEA := StrToFloatDef(EAStr, 360);
-    ArcWidth := StrToIntDef(WidthStr, 10);
+    ArcWidth := StrToFloatDef(WidthStr, 10);
 
     If LayerStr = '' Then TargetLayer := eTopLayer
     Else TargetLayer := ResolveLayerId(Board, LayerStr);
@@ -32867,12 +32969,12 @@ Begin
             Exit;
         End;
 
-        Arc.XCenter := MilsToCoord(ArcXC);
-        Arc.YCenter := MilsToCoord(ArcYC);
-        Arc.Radius := MilsToCoord(ArcRad);
+        Arc.XCenter := MilsToCoordF(ArcXC);
+        Arc.YCenter := MilsToCoordF(ArcYC);
+        Arc.Radius := MilsToCoordF(ArcRad);
         Arc.StartAngle := ArcSA;
         Arc.EndAngle := ArcEA;
-        Arc.LineWidth := MilsToCoord(ArcWidth);
+        Arc.LineWidth := MilsToCoordF(ArcWidth);
 
         Arc.Layer := TargetLayer;
 
@@ -32888,12 +32990,12 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
-        + '"x_center":' + IntToStr(ArcXC) + ','
-        + '"y_center":' + IntToStr(ArcYC) + ','
-        + '"radius":' + IntToStr(ArcRad) + ','
+        + '"x_center":' + FloatToJsonStr(ArcXC) + ','
+        + '"y_center":' + FloatToJsonStr(ArcYC) + ','
+        + '"radius":' + FloatToJsonStr(ArcRad) + ','
         + '"start_angle":' + FloatToJsonStr(ArcSA) + ','
         + '"end_angle":' + FloatToJsonStr(ArcEA) + ','
-        + '"width":' + IntToStr(ArcWidth) + ','
+        + '"width":' + FloatToJsonStr(ArcWidth) + ','
         + '"layer":"' + EscapeJsonString(GetLayerString(Arc.Layer)) + '"}');
 End;
 

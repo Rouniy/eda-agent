@@ -4988,12 +4988,12 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_arc(
-        x_center: int,
-        y_center: int,
-        radius: int,
+        x_center: float,
+        y_center: float,
+        radius: float,
         start_angle: float = 0,
         end_angle: float = 360,
-        width: int = 10,
+        width: float = 10,
         layer: str = "TopLayer",
     ) -> dict[str, Any]:
         """Place an arc on the active PCB.

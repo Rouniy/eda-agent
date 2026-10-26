@@ -111,6 +111,75 @@ Begin
     Result := IntToStr(M);
 End;
 
+{ Polygon pour settings use decimal mils; area uses square mils. }
+Function PCBGetPoly(Obj : IPCB_Primitive; PropName : String) : String;
+Var
+    Poly : IPCB_Polygon;
+    Area : Double;
+Begin
+    Result := '';
+    Poly := Obj;
+    If PropName = 'Grid' Then Result := FloatToJsonStr(CoordToMilsF(Poly.Grid))
+    Else If PropName = 'TrackSize' Then Result := FloatToJsonStr(CoordToMilsF(Poly.TrackSize))
+    Else If PropName = 'MinTrack' Then Result := FloatToJsonStr(CoordToMilsF(Poly.MinTrack))
+    Else If PropName = 'ArcApproximation' Then Result := FloatToJsonStr(CoordToMilsF(Poly.ArcApproximation))
+    Else If PropName = 'NeckWidthThreshold' Then Result := FloatToJsonStr(CoordToMilsF(Poly.NeckWidthThreshold))
+    Else If PropName = 'IslandAreaThreshold' Then
+    Begin
+        Area := Poly.IslandAreaThreshold;
+        Result := FloatToJsonStr(Area / 100000000.0);
+    End
+    Else If PropName = 'PolyHatchStyle' Then Result := IntToStr(Poly.PolyHatchStyle)
+    Else If PropName = 'PourOver' Then Result := IntToStr(Poly.PourOver)
+    Else If PropName = 'UseOctagons' Then Result := BoolToJsonStr(Poly.UseOctagons)
+    Else If PropName = 'PourIndex' Then Result := IntToStr(Poly.PourIndex)
+    Else If PropName = 'Poured' Then Result := BoolToJsonStr(Poly.Poured);
+End;
+
+{ Validate each value before writing any polygon property. }
+Function PCBSetPoly(Obj : IPCB_Primitive; PropName : String; Value : String) : Boolean;
+Var
+    Poly : IPCB_Polygon;
+    F : Double;
+Begin
+    Result := False;
+    Poly := Obj;
+    If PropName = 'Name' Then
+    Begin
+        If Trim(Value) = '' Then Exit;
+        Poly.Name := Value;
+        Result := True;
+        Exit;
+    End;
+    If PropName = 'UseOctagons' Then
+    Begin
+        If LowerCase(Value) = 'true' Then Poly.UseOctagons := True
+        Else If LowerCase(Value) = 'false' Then Poly.UseOctagons := False
+        Else Exit;
+        Result := True;
+        Exit;
+    End;
+    If Not IsFloatStr(Value) Then Exit;
+    F := StrToFloatDef(Value, -1);
+    If F < 0 Then Exit;
+    If (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Then
+    Begin
+        If Round(F) <> F Then Exit;
+        If (PropName = 'PolyHatchStyle') And (Round(F) > 5) Then Exit;
+        If (PropName = 'PourOver') And (Round(F) > 2) Then Exit;
+    End;
+    If PropName = 'Grid' Then Poly.Grid := MilsToCoordF(F)
+    Else If PropName = 'TrackSize' Then Poly.TrackSize := MilsToCoordF(F)
+    Else If PropName = 'MinTrack' Then Poly.MinTrack := MilsToCoordF(F)
+    Else If PropName = 'ArcApproximation' Then Poly.ArcApproximation := MilsToCoordF(F)
+    Else If PropName = 'NeckWidthThreshold' Then Poly.NeckWidthThreshold := MilsToCoordF(F)
+    Else If PropName = 'IslandAreaThreshold' Then Poly.IslandAreaThreshold := F * 100000000.0
+    Else If PropName = 'PolyHatchStyle' Then Poly.PolyHatchStyle := Round(F)
+    Else If PropName = 'PourOver' Then Poly.PourOver := Round(F)
+    Else Exit;
+    Result := True;
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -327,6 +396,7 @@ Begin
             { so a Name=1 filter matched no pad at all.                        }
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Name.Text; End;
             If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
+            If Oid = ePolyObject Then Begin Poly := Obj; Result := Poly.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
@@ -383,6 +453,15 @@ Begin
         Begin
             If Oid = ePolyObject Then
             Begin Poly := Obj; Result := BoolToJsonStr(Poly.RemoveIslandsByArea); End;
+        End
+        Else If (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+                (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+                (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
+                (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+                (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
+                (PropName = 'Poured') Then
+        Begin
+            If Oid = ePolyObject Then Result := PCBGetPoly(Obj, PropName);
         End
         Else If PropName = 'StandoffHeight' Then
         Begin
@@ -478,7 +557,9 @@ Begin
         (PropName = 'TopXSize') Or (PropName = 'TopYSize') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'Height') Or (PropName = 'StrokeWidth') Or
-        (PropName = 'Size');
+        (PropName = 'Size') Or (PropName = 'Grid') Or
+        (PropName = 'TrackSize') Or (PropName = 'MinTrack') Or
+        (PropName = 'ArcApproximation') Or (PropName = 'NeckWidthThreshold');
 End;
 
 { A text's height or stroke width, inside the modify bracket Altium wants: }
@@ -705,6 +786,11 @@ Begin
             End;
         End
 
+        Else If (PropName = 'Name') And (Oid = ePolyObject) Then
+        Begin
+            If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
+        End
+
         { Polygon pour options. All three are declared on IPCB_Polygon with
           both a Read and a Write accessor, so they are settable; they were
           simply absent here. Setting one does NOT repour: the flags decide
@@ -785,6 +871,15 @@ Begin
             If Oid = ePolyObject Then
             Begin Poly := Obj; Poly.RemoveIslandsByArea := StrToBool(Value); End
             Else Matched := False;
+        End
+        Else If (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+                (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+                (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
+                (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+                (PropName = 'UseOctagons') Then
+        Begin
+            If Oid <> ePolyObject Then Matched := False
+            Else If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
         End
         Else Matched := False;
 
@@ -878,6 +973,12 @@ Begin
         (PropName = 'Kind') Or (PropName = 'RegionKind') Or
         (PropName = 'RemoveDead') Or (PropName = 'RemoveNarrowNecks') Or
         (PropName = 'RemoveIslandsByArea') Or
+        (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+        (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+        (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
+        (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+        (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
+        (PropName = 'Poured') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'InComponent') Or (PropName = 'Component') Or
         (PropName = 'InPolygon') Or (PropName = 'IsKeepout') Or
@@ -936,6 +1037,8 @@ Begin
           tells a caller a property does not exist when it does, which is
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
+        + 'Grid, TrackSize, MinTrack, ArcApproximation, NeckWidthThreshold, '
+        + 'IslandAreaThreshold, PolyHatchStyle, PourOver, UseOctagons, PourIndex, Poured, '
         + 'StandoffHeight, OverallHeight, InComponent, Component, '
         + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
         + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '

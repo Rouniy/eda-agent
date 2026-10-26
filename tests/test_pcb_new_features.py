@@ -88,6 +88,24 @@ async def test_circular_board_shape_preserves_fractional_mils(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_place_arc_sends_fractional_geometry(monkeypatch):
+    bridge = RecBridge()
+    tools = _pcb(monkeypatch, bridge)
+    await tools["pcb_place_arc"](
+        x_center=-1000.5, y_center=500.25, radius=48.2842,
+        width=0.3937,
+    )
+    command, params = bridge.calls[-1]
+    assert command == "pcb.place_arc"
+    assert {key: params[key] for key in (
+        "x_center", "y_center", "radius", "width",
+    )} == {
+        "x_center": "-1000.5", "y_center": "500.25",
+        "radius": "48.2842", "width": "0.3937",
+    }
+
+
+@pytest.mark.asyncio
 async def test_import_placement_packs_records(monkeypatch):
     b = RecBridge()
     tools = _pcb(monkeypatch, b)
