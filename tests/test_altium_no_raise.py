@@ -40,6 +40,11 @@ class _PermissiveBridge:
         # as a contract breach.
         return {"running": False, "attached": False}
 
+    def ping(self):
+        # Keep app_attach on its normal success path; the fallback would
+        # launch a real local script, which this isolated test must not do.
+        return True
+
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(name)

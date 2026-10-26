@@ -85,7 +85,10 @@ def register_pcb3d_tools(mcp):
         """
         from ..bridge import get_bridge
 
-        active = await _show_focused_pcb_3d()
+        try:
+            active = await _show_focused_pcb_3d()
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
         result = await get_bridge().send_command_async(
             "generic.zoom", {"action": "board"})
         pid, _ = _altium_pid()
@@ -125,7 +128,10 @@ def register_pcb3d_tools(mcp):
         pid, problem = _altium_pid()
         if problem is not None:
             return problem
-        active = await _show_focused_pcb_3d()
+        try:
+            active = await _show_focused_pcb_3d()
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
         cache_key = (pid, str(active.get("file_path", "")).casefold())
         requested = (yaw_deg, pitch_deg, float(zoom_factor))
         common = {"success": True, "board_path": active.get("file_path"),
@@ -192,7 +198,10 @@ def register_pcb3d_tools(mcp):
             return problem
         if width_px < 0 or height_px < 0 or width_px > 8192 or height_px > 8192:
             return {"success": False, "error": "width_px and height_px must be 0..8192"}
-        active = await _show_focused_pcb_3d()
+        try:
+            active = await _show_focused_pcb_3d()
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
         board_path = str(active.get("file_path", ""))
         view = _LAST_VIEW.get((pid, board_path.casefold()))
         if not output_path:

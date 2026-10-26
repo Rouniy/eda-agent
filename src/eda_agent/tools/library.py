@@ -21,6 +21,21 @@ from ..atomicfile import replace_with_retry
 from .. import profile as _profile_module
 
 
+def _pad_geometry_problem(reply: Any) -> str:
+    """Explain a failed footprint read while accepting a valid empty pad list."""
+    if not isinstance(reply, dict):
+        return f"the read returned {type(reply).__name__}, not a footprint"
+    if reply.get("success") is False or (
+            reply.get("error") and not isinstance(reply.get("pads"), list)):
+        err = reply.get("error")
+        if isinstance(err, dict):
+            err = err.get("message") or err.get("code")
+        return f"the read was refused: {err or 'no reason given'}"
+    if not isinstance(reply.get("pads"), list):
+        return "the read carried no pad list"
+    return ""
+
+
 def _encode_layer_ops(layers) -> "str | dict":
     """Layer dicts to the batch string, or a refusal dict.
 
