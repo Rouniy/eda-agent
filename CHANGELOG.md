@@ -16,6 +16,10 @@ maturity classification for every tool.
 
 ### Added
 
+- Optional cross-check against a locally installed `pcb-toolkit` executable
+  gives a second numerical result for supported calculators. The built-in
+  calculation remains available without that executable.
+
 - Library file helpers can inspect PcbLib and LibPkg data, extract STEP
   references, compare and preview footprints, and make explicit backups
   before library edits.
