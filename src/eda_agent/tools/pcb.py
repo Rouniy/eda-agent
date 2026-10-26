@@ -762,17 +762,16 @@ def register_pcb_tools(mcp):
         Altium's MODAL "Design Rule Checker" setup dialog: on a
         241-component board that wedged the whole bridge for 30+ min
         until the client timed out. A "get" tool must not do that, so
-        the trigger is gone. ``pcb_run_drc(allow_modal=True)`` is now
-        the only way to force a fresh run.
+        the trigger is gone. ``pcb_run_drc()`` runs a fresh batch check;
+        ``allow_modal=True`` opens the interactive dialog instead.
 
         CAVEAT -- ``violation_count: 0`` means "no violations are
         stored on this board", NOT "the board passes". If DRC has
         never been run in this Altium session, there is nothing to
         read and the answer is 0 either way. The response carries
         ``drc_triggered: false`` and a ``note`` saying so. To get
-        fresh data, run DRC from Altium's UI (Tools > Design Rule
-        Check) or call ``pcb_run_drc(allow_modal=True)`` and be ready
-        to click the dialog.
+        fresh data, call ``pcb_run_drc()`` and verify that its report was
+        written.
 
         Filter is substring-matched against the violation's Description
         and Name, so it catches both "Net USB_DP and Net GND" clearance
@@ -797,80 +796,21 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_run_drc(allow_modal: bool = False) -> dict[str, Any]:
-        """Run Design Rule Check (DRC) on the active PCB. MODAL --
-        BLOCKS THE BRIDGE. Opt in with ``allow_modal=True``.
+        """Run the active PCB's batch DRC and report its saved result.
 
-        DANGER: Altium has no non-interactive DRC trigger exposed to
-        DelphiScript. ``PCB:DesignRuleCheck`` raises the MODAL "Design
-        Rule Checker [mil]" setup dialog and the worker sits behind it
-        until a HUMAN clicks Cancel/OK. Nothing else on the bridge
-        runs meanwhile: one observed call left the loop dead for 30+
-        min, the client timed out at 1800 s, and every in-flight job
-        was stranded. No parameter suppresses the dialog, so this tool
-        refuses to fire unless the caller passes ``allow_modal=True``,
-        which is a promise that a human is at the keyboard.
+        By default this calls Altium's board batch DRC API without opening
+        the Design Rule Checker dialog. It writes a per-request report in
+        the bridge workspace and confirms the run only when that report
+        appears. The returned violations contain locations and primitives.
+        Check board statistics first: a large unrouted board can take a
+        long time to check.
 
-        PREFER ``pcb_get_clearance_violations`` -- it reads the
-        violations already stored on the board, runs no DRC, and
-        cannot block.
-
-        PATHOLOGICAL CASE: a full DRC on a placed-but-unrouted board
-        (many components, zero tracks, everything unrouted) checks
-        every pad pair against every rule and is enormously slow for
-        an answer that is already known -- "nothing is routed yet".
-        Check ``pcb_get_board_statistics`` / ``pcb_get_unrouted_nets``
-        first; if track count is 0, do not run DRC.
-
-        With ``allow_modal=True`` it executes the DRC and returns up
-        to 100 violations with full location data, so the agent can
-        jump straight to the offending spot instead of guessing from
-        the description.
-
-        Per-violation shape:
-          - ``name``, ``description``, ``rule``: text from Altium
-          - ``x_mils`` / ``y_mils`` / ``layer``: violation's bbox
-            centre (the "go here" hint)
-          - ``primitive1`` / ``primitive2``: objects with
-            ``{detail, type, net, layer, x_mils, y_mils}``. ``type``
-            is the object kind (Track / Pad / Via / Region / Comp);
-            ``net`` is the net name. Two primitives are involved in
-            most rule kinds (Clearance, Short Circuit); a single-
-            primitive violation (e.g. AcuteAngle) leaves
-            ``primitive2`` with empty fields.
-
-        Use ``primitive1.net`` and ``primitive2.net`` to spot the
-        nets in conflict; use ``x_mils`` / ``y_mils`` to drive
-        ``proj_cross_probe`` or the dashboard's Drawing tab to the site.
-
-        Args:
-            allow_modal: Must be True to actually run DRC, and it
-                means "I accept that the bridge blocks on a modal
-                dialog until a human clicks it". Default False
-                refuses without touching Altium.
-
-        Returns:
-            Dict with ``violation_count`` (full count even if > 100),
-            ``drc_triggered``, and ``violations`` array (first 100).
-            With ``allow_modal=False``: ``{ok: False, reason: ...}``
-            and no bridge call at all.
+        With ``allow_modal=True``, use the interactive Design Rule Checker
+        instead. That dialog blocks the bridge until someone answers it.
         """
-        if not allow_modal:
-            return {
-                "ok": False,
-                "reason": (
-                    "pcb_run_drc opens Altium's MODAL Design Rule Checker "
-                    "dialog and blocks the whole bridge until a human "
-                    "closes it (observed: 30+ min dead loop, client "
-                    "timeout). Refusing by default. Use "
-                    "pcb_get_clearance_violations to read the violations "
-                    "already on the board, or pass allow_modal=True if a "
-                    "human is at the keyboard to dismiss the dialog."),
-                "drc_triggered": False,
-            }
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.run_drc", {"allow_modal": "true"})
-        return result
+        return await bridge.send_command_async(
+            "pcb.run_drc", {"allow_modal": "true" if allow_modal else "false"})
 
     @mcp.tool()
     async def pcb_get_components() -> dict[str, Any]:

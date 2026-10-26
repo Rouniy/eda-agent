@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.26.3';
+    SCRIPT_VERSION = '2026.10.26.4';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -26573,6 +26573,49 @@ Begin
     Result := Result + '}';
 End;
 
+{ The violations the last check left on the board: '"violation_count":N,  }
+{ "violations":[...]', the first 100 in full.                              }
+Function DrcViolationsJson(Board : IPCB_Board) : String;
+Var
+    Iterator : IPCB_BoardIterator;
+    Violation : IPCB_Violation;
+    ViolationCount : Integer;
+    JsonItems : String;
+Begin
+    ViolationCount := 0;
+    JsonItems := '';
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(eViolationObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Violation := Iterator.FirstPCBObject;
+    While Violation <> Nil Do
+    Begin
+        Inc(ViolationCount);
+        If ViolationCount <= 100 Then
+        Begin
+            If JsonItems <> '' Then JsonItems := JsonItems + ',';
+            JsonItems := JsonItems + BuildViolationJson(Violation);
+        End;
+        Violation := Iterator.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iterator);
+    Result := '"violation_count":' + IntToStr(ViolationCount)
+        + ',"violations":[' + JsonItems + ']';
+End;
+
+{ Why a batch check is not confirmed, as a ',"reason":...' field, or '' . }
+Function DrcBatchReason(ReportPresent : Boolean) : String;
+Begin
+    Result := '';
+    If ReportPresent Then Exit;
+    Result := ',"reason":"The batch check wrote no report, so it is not '
+        + 'confirmed to have run, and the violations listed are whatever an '
+        + 'earlier check left on the board. pcb_get_clearance_violations reads '
+        + 'those; allow_modal=true runs the check through the Design Rule '
+        + 'Checker dialog instead, which needs a person to press Run."';
+End;
+
 Function PCB_RunDRC(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -26580,7 +26623,7 @@ Var
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
     JsonItems, ReportPath, AllowStr : String;
-    First, ReportPresent, AllowModal, ReportFresh : Boolean;
+    First, ReportPresent, AllowModal, ReportFresh, BatchOk : Boolean;
     ReportBefore, ReportAfter : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -26596,19 +26639,37 @@ Begin
     { single-threaded polling loop until a human clicks it. Observed: one   }
     { call left the loop dead for 30+ min, the client timed out at 1800 s,  }
     { and a scripting-engine access violation sat hidden behind the dialog. }
-    { No documented parameter suppresses that dialog, so the trigger is     }
-    { OPT-IN: the caller must pass allow_modal=true and accept the block.   }
-    { Everything else reads the violations already stored on the board --   }
-    { see PCB_GetClearanceViolations, which never triggers a run.           }
+    { The modal route is opt-in. The default uses the board's batch DRC API }
+    { and writes a report under the bridge workspace.                       }
     AllowStr := LowerCase(ExtractJsonValue(Params, 'allow_modal'));
     AllowModal := (AllowStr = 'true') Or (AllowStr = '1');
     If Not AllowModal Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MODAL_BLOCKED',
-            'PCB:DesignRuleCheck opens the modal Design Rule Checker dialog and '
-            + 'blocks the bridge until a human closes it. Pass allow_modal=true '
-            + 'to accept that block, or call pcb.get_clearance_violations to read '
-            + 'the violations left on the board by the last DRC run.');
+        { Per-request path avoids mistaking an older report for this run. }
+        ReportPath := WorkspaceDir + 'drc_batch_' + RequestId + '.html';
+        If FileExists(ReportPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'DRC_REPORT_EXISTS',
+                'The per-request DRC report path already exists');
+            Exit;
+        End;
+        BatchOk := False;
+        Try
+            BatchOk := Board.RunBatchDesignRuleCheck(ReportPath, 0, False, False);
+        Except
+            BatchOk := False;
+        End;
+        ReportPresent := False;
+        Try ReportPresent := FileExists(ReportPath); Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{' + DrcViolationsJson(Board) + ','
+            + '"mode":"batch",'
+            + '"drc_triggered":true,'
+            + '"drc_confirmed":' + BoolToJsonStr(ReportPresent) + ','
+            + '"batch_returned":' + BoolToJsonStr(BatchOk) + ','
+            + '"report_present":' + BoolToJsonStr(ReportPresent) + ','
+            + '"report_path":"' + EscapeJsonString(ReportPath) + '"'
+            + DrcBatchReason(ReportPresent) + '}');
         Exit;
     End;
 

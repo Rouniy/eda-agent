@@ -272,13 +272,55 @@ def test_batch_failures_say_which_item_and_why():
 def test_the_measured_modal_tools_are_declared_modal():
     """Published as silent, each one blocks the bridge on a dialog."""
     from eda_agent.tools.metadata import INTERACTION_OVERRIDES, MODAL, READONLY
-    for name in ("pcb_run_drc", "proj_run_output",
+    for name in ("proj_run_output",
                  "lib_reload_library", "proj_remove_document", "proj_close"):
         assert INTERACTION_OVERRIDES.get(name) == MODAL, (
             f"{name} was measured raising a modal that blocks the bridge")
     # Direct PDF printing used to show Preview SCH. The public handler now
     # refuses that route before calling Altium.
     assert INTERACTION_OVERRIDES["proj_export_pdf"] == READONLY
+
+
+def test_drc_defaults_to_batch_and_keeps_dialog_opt_in():
+    from eda_agent.tools.metadata import INTERACTION_OVERRIDES, SILENT
+    text = _decommented(_src("PCB.pas"))
+    body = _body(text, "PCB_RunDRC")
+    batch = body[body.index("If Not AllowModal Then"):]
+    assert "Board.RunBatchDesignRuleCheck(" in batch
+    assert batch.index("Board.RunBatchDesignRuleCheck(") < batch.index(
+        "RunProcess('PCB:DesignRuleCheck')")
+    assert INTERACTION_OVERRIDES["pcb_run_drc"] == SILENT
+
+
+def test_drc_tool_passes_modal_choice_to_bridge(monkeypatch):
+    import asyncio
+    from eda_agent.tools import pcb as pcb_tools
+
+    sent = []
+
+    class Bridge:
+        async def send_command_async(self, command, params=None, **kwargs):
+            sent.append((command, params))
+            return {"drc_confirmed": False}
+
+    class Mcp:
+        tools = {}
+
+        def tool(self, *args, **kwargs):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return register
+
+    monkeypatch.setattr(pcb_tools, "get_bridge", lambda: Bridge())
+    mcp = Mcp()
+    pcb_tools.register_pcb_tools(mcp)
+    asyncio.run(mcp.tools["pcb_run_drc"]())
+    asyncio.run(mcp.tools["pcb_run_drc"](allow_modal=True))
+    assert sent == [
+        ("pcb.run_drc", {"allow_modal": "false"}),
+        ("pcb.run_drc", {"allow_modal": "true"}),
+    ]
 
 
 def test_the_press_tool_can_answer_a_handleless_dialog():

@@ -234,13 +234,9 @@ INTERACTION_OVERRIDES = {
     # published as silent, so anything filtering for "keeps the session
     # responsive" was handed a tool that blocks the bridge until a human
     # answers a dialog. The dialog seen is named beside each one.
-    # Design Rule Checker (TDesignRuleCheckForm). Altium exposes no
-    # non-interactive DRC trigger, so the tool's only functional path is
-    # the modal one: it refuses unless called with allow_modal=True.
-    # Measured behind the dialog: a 30-minute dead loop to an 1800 s
-    # client timeout. pcb_get_clearance_violations reads stored
-    # violations instead and stays readonly.
-    "pcb_run_drc": MODAL,
+    # Batch DRC runs without a dialog by default. allow_modal=True still
+    # opens the Design Rule Checker and can block the bridge.
+    "pcb_run_drc": SILENT,
     "proj_export_pdf": READONLY,      # fails fast; direct print opens Preview
     "proj_export_schematic_pdf": SILENT,  # disposable project and PDF under _screens
     "proj_run_output": MODAL,         # Altium's exporter dialogs
