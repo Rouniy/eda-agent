@@ -56,9 +56,9 @@
   target bounding boxes, but truthfully reports `selected=false`. The
   documented `SetState_Selected(True)` setter also failed live FD4 readback.
 
-- Replace the modal PCB `generic.zoom_to_xy` implementation with a natively
-  validated silent coordinate-centering mechanism; the Python MCP wrapper
-  currently refuses PCB calls to prevent a modal dialog.
+- Natively validate the new PCB `generic.zoom_to_xy` rectangle zoom on a
+  disposable board after the hung Altium is restarted. Source tests and
+  Pascal lint pass; the old modal `PCB:Jump` call is gone from main.
 - Repair PCB selection: on the owner's board `pcb_select("FD4")` reported one
   match but read-back returned `Selected=false`. The tab showed `*` while
   `app_get_active_document` said `modified=false`; the cause of the star is

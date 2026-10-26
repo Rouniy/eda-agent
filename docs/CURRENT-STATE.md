@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+## Source integration and paused runtime, 2026-10-26
+
+`Rouniy/eda-agent/main` is clean and pushed at `9282aa7`. The bundled
+`scripts/altium/Main.pas` says `2026.10.26.11`. This is a source version;
+the running Altium worker and MCP server have not been restarted with it.
+The additional transfers from `MOREmbedded/eda-agent` and their remaining
+candidates are in `docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`.
+
+Read-only process inspection found one X2 (`PID 23836`, `Responding=False`)
+and a Python listener on TCP 14701 (`PID 25572`). TCP 14700 has no listener.
+The owner instructed us to leave the hung Altium in place until source
+integration is complete, then terminate and restart it from the main
+directory. No native acceptance or runtime version match is claimed for the
+new source. The main worktree is the source of truth; the separate
+`eda-agent-large-integration` worktree tracks the same commits for conflict
+resolution, not a second runtime.
+
 ## Single-main MCP deployment, 2026-10-26 20:49 +02:00
 
 The local `main` now contains the selected fork integrations, the PCB
