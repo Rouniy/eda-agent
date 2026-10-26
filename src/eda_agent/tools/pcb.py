@@ -6952,7 +6952,9 @@ def register_pcb_tools(mcp):
         by the rule's underlying RuleKind:
 
         - Clearance (kind 0), ComponentClearance (kind 24),
-          HoleToHoleClearance (kind 52) and BoardOutlineClearance
+          HoleToHoleClearance (kind 52), MinimumSolderMaskSliver
+          (kind 53), SilkToSolderMaskClearance (kind 54),
+          SilkToSilkClearance (kind 55), and BoardOutlineClearance
           (kind 63): ``gap_mils``, or ``gap_mm`` when the value is
           metric. An integer mil field cannot express 0.2mm; it lands
           on 8 mils, which is 0.2032mm. Pass one or the other.
@@ -6994,8 +6996,9 @@ def register_pcb_tools(mcp):
             enabled: Whether DRC enforces the rule.
             scope1 / scope2: Rule scope query expressions.
             comment: Free-form comment.
-            gap_mils: Clearance gap. Applies to Clearance,
-                ComponentClearance, and HoleToHoleClearance rules.
+            gap_mils: Clearance gap, or the sliver width for a
+                MinimumSolderMaskSliver rule. Applies to every kind
+                listed above.
             min_width_mils / max_width_mils / favored_width_mils:
                 Width constraint values (applied to every layer).
             min_hole_size_mils / max_hole_size_mils: HoleSize
