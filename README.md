@@ -300,6 +300,14 @@ each other and you mostly set it once and forget it; a **profile** is
 what you want the output to look like, and is worth revisiting whenever
 you change who you are working for.
 
+## PCBA phase gates
+
+`design_npi_gate`, `design_npi_record`, and `design_npi_status` track
+feasibility, prototype, EVT, DVT, and PVT evidence by programme and
+design revision. The gate lists checks to run and records the results;
+it does not run Altium tools automatically. See
+[NPI phase gates](docs/NPI_PHASE_GATES.md).
+
 ## EDA backends
 
 One tool surface, chosen at startup by `EDA_AGENT_BACKEND` (or `--backend`).
