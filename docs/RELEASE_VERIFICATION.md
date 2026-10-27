@@ -2008,3 +2008,13 @@ restored. The final values were false, true and true respectively. A
 wrong PcbDoc path was refused. The owner's file SHA256 was unchanged and
 its document remained unmodified. Three focused tests and Pascal
 lint/build passed.
+
+# Placed-component STEP export, 2026-10-27
+
+Script `.26` on Altium 26.11.1.5 exported U1 through both component
+APIs. The part export wrote 704,493 bytes and the model export wrote
+649,650 bytes to new files in `workspace/native-acceptance/step-exports`.
+Both began with `ISO-10303-21`; the tools reported distinct SHA256 hashes.
+A wrong-board request was refused. The owner PcbDoc stayed active and
+modified=false with unchanged SHA256. Two focused tests and Pascal
+lint/build passed.

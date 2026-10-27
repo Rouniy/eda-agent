@@ -2,6 +2,17 @@
 
 ## Source integration, 2026-10-27
 
+The `.26` source ports upstream's two placed-component STEP export APIs.
+`pcb_export_component_model` uses the part assembly API and
+`pcb_export_component_3d` uses the model API; both require an exact active
+PcbDoc path and a new absolute `.step`/`.stp` target. Python verifies an
+observed STEP header, size and SHA256. Two focused tests pass; Pascal
+lint/build reports zero errors/warnings. Altium 26.11.1.5 loaded `.26`.
+U1 on the owner's board exported a 704,493-byte part STEP and a
+649,650-byte model STEP under `workspace/native-acceptance/step-exports`.
+A wrong board path was refused. The board remained active, modified=false
+and its SHA256 unchanged. The exported test files remain in that directory.
+
 The `.25` source ports upstream's three PCB editor preference groups:
 display, editing and routing. These are global Altium settings, read with an
 exact active PcbDoc path. Writes use old-value preflight, default dry-run and

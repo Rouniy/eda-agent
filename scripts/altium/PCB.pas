@@ -19923,6 +19923,61 @@ Begin
         + JsonBool('applies', Applies)));
 End;
 
+Function PCB_ExportComponentStep(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Comp : IPCB_Component;
+    ExpectedPath, Why, Desig, OutPath, Mode : String;
+    Saved : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Desig := Trim(ExtractJsonValue(Params, 'designator'));
+    OutPath := ExtractJsonValue(Params, 'out_path');
+    Mode := LowerCase(ExtractJsonValue(Params, 'mode'));
+    If (ExpectedPath = '') Or (Desig = '') Or (OutPath = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path, designator and out_path are required');
+        Exit;
+    End;
+    If (Mode <> 'part') And (Mode <> 'model') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'mode is part or model');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Comp := FindPCBComponentByDesignator(Board, Desig);
+    If Comp = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No component ' + Desig + ' on the selected board');
+        Exit;
+    End;
+    Saved := False;
+    If Mode = 'part' Then
+    Begin
+        Try Saved := Comp.SaveModelToFileAsPart(OutPath); Except Saved := False; End;
+    End
+    Else
+    Begin
+        Try Saved := Comp.SaveModelToFile(OutPath); Except Saved := False; End;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonStr('designator', Desig) + ','
+        + JsonStr('out_path', OutPath) + ','
+        + JsonStr('mode', Mode) + ','
+        + JsonBool('saved', Saved)));
+End;
+
 Function PcbOptionKind(Name : String) : String;
 Begin
     Result := '';
@@ -20252,6 +20307,7 @@ Begin
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
         'get_impedance_profiles':   Result := PCB_GetImpedanceProfiles(Params, RequestId);
         'editor_options':        Result := PCB_EditorOptions(Params, RequestId);
+        'export_component_step': Result := PCB_ExportComponentStep(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);

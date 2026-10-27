@@ -7,6 +7,7 @@ component placement, trace lengths, layer stackup, board outline, etc.
 """
 
 import json
+import hashlib
 import math
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -506,6 +507,47 @@ async def _pcb_editor_options(board_path: str, names: dict[str, str],
                     "native_reply": reply}
     reply["options"] = {key: after[native] for key, native in names.items()}
     return reply
+
+
+async def _pcb_export_component_step(board_path: str, designator: str,
+                                     out_path: str, mode: str) -> dict[str, Any]:
+    """Export one placed model and verify the exact new STEP file on disk."""
+    if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+        return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+    target = Path(out_path)
+    if not target.is_absolute() or target.suffix.casefold() not in (".step", ".stp"):
+        return {"ok": False, "reason": "out_path must be an absolute .step or .stp path"}
+    if not designator.strip():
+        return {"ok": False, "reason": "designator is required"}
+    if target.exists():
+        return {"ok": False, "reason": "out_path already exists; choose a new filename"}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    reply = await get_bridge().send_command_async(
+        "pcb.export_component_step",
+        {"board_path": board_path, "designator": designator.strip(),
+         "out_path": str(target), "mode": mode}, timeout=120.0,
+    )
+    identity = (isinstance(reply, dict)
+                and isinstance(reply.get("board_path"), str)
+                and reply["board_path"].casefold() == board_path.casefold()
+                and reply.get("designator", "").casefold() == designator.strip().casefold()
+                and isinstance(reply.get("out_path"), str)
+                and reply["out_path"].casefold() == str(target).casefold()
+                and reply.get("mode") == mode)
+    if not identity:
+        return {"ok": False, "reason": "export answer does not identify the requested target",
+                "native_reply": reply}
+    if not target.is_file() or target.stat().st_size < 30:
+        return {"ok": False, "reason": "Altium did not write a STEP file",
+                "native_reply": reply}
+    with target.open("rb") as stream:
+        header = stream.read(256).lstrip()
+    if not header.startswith(b"ISO-10303-21"):
+        return {"ok": False, "reason": "output is not a STEP file",
+                "native_reply": reply}
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    return {**reply, "written": True, "bytes": target.stat().st_size,
+            "sha256": digest}
 
 
 def register_pcb_tools(mcp):
@@ -7692,6 +7734,22 @@ def register_pcb_tools(mcp):
                     "native_reply": result}
         result["save_required"] = bool(result.get("changed"))
         return result
+
+    @mcp.tool()
+    async def pcb_export_component_model(
+        board_path: str, designator: str, out_path: str,
+    ) -> dict[str, Any]:
+        """Export one placed part as a dialog-free STEP assembly file."""
+        return await _pcb_export_component_step(
+            board_path, designator, out_path, "part")
+
+    @mcp.tool()
+    async def pcb_export_component_3d(
+        board_path: str, designator: str, out_path: str,
+    ) -> dict[str, Any]:
+        """Export one placed part's model through Altium's model API."""
+        return await _pcb_export_component_step(
+            board_path, designator, out_path, "model")
 
     @mcp.tool()
     async def pcb_view_options(
