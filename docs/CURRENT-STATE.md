@@ -7,9 +7,11 @@ The current source candidate is script `.93`. It reconciles upstream
 contracts and earlier fork ports. The previous exact merge point was
 `40814badc695813157fd8c50d24feafc5a553fcd`; see the dated upstream
 sync ledger for the feature list and focused checks. Pascal lint/build and
-87 focused tests passed. The loaded Altium script may still be `.92` until
-the main script project is reloaded; source compilation is not proof of a
-native command result. `MOREmbedded/main` remains `032fb4b`.
+87 focused tests passed. Altium 26.11.1.5 then loaded `.93` from the main
+script project: `application.ping` returned `.93` and `cast_errors=0`, and
+`application.get_unit_stamps` returned all ten modules. Native execution of
+the newly merged feature commands remains unverified. `MOREmbedded/main`
+remains `032fb4b`.
 
 ## Refreshed handoff, 2026-10-27
 

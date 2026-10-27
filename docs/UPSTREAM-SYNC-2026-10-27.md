@@ -16,8 +16,9 @@ source IDs, paste-disabled guard, fractional placement, and selected
 project controls. A conflicting duplicate footprint-selection handler was
 removed: the retained handler filters its iterator by supported primitive
 kinds and supports body identifiers. The old duplicated Python wrapper was
-also removed. Script source is `.93`; native loading and write acceptance of
-these newly merged commands are still pending.
+also removed. Script `.93` loaded in Altium 26.11.1.5 with zero cast
+errors; ping and ten unit stamps returned. Native read/write acceptance of
+the newly merged commands is still pending.
 
 Pascal lint/build scanned 12 units with zero errors or warnings. Focused
 upstream tests passed 19/19 for decimal mils, filtered walks and via masks;

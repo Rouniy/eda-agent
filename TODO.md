@@ -7,8 +7,10 @@
   The merge contains decimal-mil, filtered-walk, via-mask, via-delete,
   deferred-pour and 3D-body identifier improvements. Focused source tests
   and Pascal lint/build pass; see the dated sync ledger.
-- [ ] Load script `.93` in Altium and run native reads and guarded writes
-  against disposable designs for the newly merged paths. Verify persisted
+- [x] Load script `.93` in Altium: ping and all ten unit stamps returned on
+  Altium 26.11.1.5 with zero cast errors.
+- [ ] Run native reads and guarded writes against disposable designs for
+  the newly merged paths. Verify persisted
   geometry after exact save/reopen, especially decimal schematic placement,
   via mask state, deferred pours and footprint body selection.
 - [ ] Reconcile legacy `test_added_altium_tools.py` cases that still call
