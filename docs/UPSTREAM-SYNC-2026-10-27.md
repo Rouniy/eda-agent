@@ -25,6 +25,10 @@ four current-tip behavior tests and 64 adjacent fork tests also passed.
 The broad older `test_added_altium_tools.py` contains assertions for the
 unscoped upstream API (for example calls without our required `board_path`),
 so it is not a valid whole-file gate for this fork until reconciled.
+After the merge, `eda-agent fork-status --verify-fork-branches --json`
+compared all 62 direct/child fork default tips and all 117 branch tips
+with live remote refs; every cached tip matched. This is branch freshness,
+not proof that all divergent behavior has already been ported.
 
 ## Later upstream tip in this session
 
