@@ -15690,23 +15690,69 @@ Begin
 End;
 
 { Point the current footprint model's datafile links at another PcbLib.  }
-{ UseComponentLibrary off, so Altium takes the footprint from that file   }
-{ rather than from the part's own integrated library; both members as    }
-{ CompSourceLibReLinker.pas writes them.                                  }
+{ UseComponentLibrary off, so Altium takes the footprint from that file.  }
+{ An explicit Any or * clears every PCBLIB model's pinned Location.       }
+{ A model with no datafile link receives one before readback.             }
 Function SetPlacedFootprintLibrary(Comp : ISch_Component; LibName : String) : Boolean;
 Var
     Impl : ISch_Implementation;
+    ImplIter : ISch_Iterator;
     Link : ISch_ModelDatafileLink;
     J, LinkCount : Integer;
-    Back : String;
+    Back, ModelType : String;
 Begin
     Result := False;
+    If Comp = Nil Then Exit;
+    If (LibName = '*') Or SameText(LibName, 'Any') Then
+    Begin
+        ImplIter := Comp.SchIterator_Create;
+        If ImplIter = Nil Then Exit;
+        Result := True;
+        Try
+            ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+            Impl := ImplIter.FirstSchObject;
+            While Impl <> Nil Do
+            Begin
+                ModelType := '';
+                Try ModelType := Impl.ModelType; Except End;
+                If UpperCase(ModelType) = 'PCBLIB' Then
+                Begin
+                    SchBeginModify(Impl);
+                    Try Impl.UseComponentLibrary := False; Except Result := False; End;
+                    LinkCount := 0;
+                    Try LinkCount := Impl.DatafileLinkCount; Except Result := False; End;
+                    For J := 0 To LinkCount - 1 Do
+                    Begin
+                        Link := Nil;
+                        Try Link := Impl.DatafileLink[J]; Except Result := False; End;
+                        If Link <> Nil Then
+                        Begin
+                            Try Link.Location := ''; Except Result := False; End;
+                            Back := '#unread';
+                            Try Back := Link.Location; Except Result := False; End;
+                            If Back <> '' Then Result := False;
+                        End;
+                    End;
+                    SchEndModify(Impl);
+                End;
+                Impl := ImplIter.NextSchObject;
+            End;
+        Finally
+            Comp.SchIterator_Destroy(ImplIter);
+        End;
+        Exit;
+    End;
     Impl := CurrentFootprintImpl(Comp);
     If Impl = Nil Then Exit;
     SchBeginModify(Impl);
     Try Impl.UseComponentLibrary := False; Except End;
     LinkCount := 0;
     Try LinkCount := Impl.DatafileLinkCount; Except LinkCount := 0; End;
+    If LinkCount = 0 Then
+    Begin
+        Try Impl.AddDataFileLink(Impl.ModelName, LibName, 'PCBLib'); Except End;
+        Try LinkCount := Impl.DatafileLinkCount; Except LinkCount := 0; End;
+    End;
     For J := 0 To LinkCount - 1 Do
     Begin
         Link := Nil;

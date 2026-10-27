@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Placed footprint library links, 2026-10-27
+
+Source `.103` adapts `wizd/edev`'s explicit `Any`/`*` action in the existing
+`sch_relink_components` path: it clears pinned datafile Locations on every
+PCBLIB model of the named placed component. Assigning a PcbLib to a model
+with no datafile link now adds that link before readback. The existing
+Altium 26.11 finding that a full path in Location wedges the editor is
+respected: the relinker writes the PcbLib file name. Native save/reopen and
+ECO verification are pending on a disposable schematic. Eighteen related
+tests passed, and Pascal lint/build found zero errors or warnings.
+
 ## Multipart graphic ownership, 2026-10-27
 
 Source `.102` exposes optional `owner_part_id` on the public

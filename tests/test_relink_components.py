@@ -73,6 +73,23 @@ def test_a_part_with_no_footprint_model_gets_one():
     assert "Comp.AddSchImplementation" in load(_GENERIC)["AddPlacedFootprintModel"]
 
 
+def test_footprint_library_can_be_unpinned_or_linked_when_missing():
+    body = load(_GENERIC)["SetPlacedFootprintLibrary"]
+    assert "SameText(LibName, 'Any')" in body
+    assert "LibName = '*'" in body
+    assert "If UpperCase(ModelType) = 'PCBLIB' Then" in body
+    assert "Link.Location := '';" in body
+    assert "Impl.AddDataFileLink(Impl.ModelName, LibName, 'PCBLib')" in body
+
+
+def test_relink_forwards_explicit_any_to_native(monkeypatch):
+    bridge = _Bridge()
+    out = _call(monkeypatch, bridge, designators=["U1"],
+                footprint_library="Any")
+    assert out["success"]
+    assert dict(bridge.sent)["generic.relink_components"]["footprint_library"] == "Any"
+
+
 def test_the_command_is_routed():
     assert "'relink_components': Result := Gen_RelinkComponents(Params, " \
         "RequestId);" in _GENERIC.read_text(encoding="utf-8")

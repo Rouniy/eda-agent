@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Placed footprint library links
+
+`wizd/edev` provides an explicit `Any` or `*` action to clear stale
+PCBLIB datafile Locations and creates a link when a footprint model lacks
+one. Source `.103` adapts both behaviors to the existing guarded
+`sch_relink_components` path. The relinker retains its file-name-only
+Location because a full PcbLib path wedged Altium 26.11 in earlier native
+testing. Native persistence and ECO acceptance remain pending.
+Eighteen related tests and Pascal lint/build passed.
+
 ## Multipart graphic ownership follow-up
 
 After restoring line ownership, an interface review found that

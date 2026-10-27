@@ -3051,7 +3051,9 @@ def register_generic_tools(mcp):
             dblib_table: DbLib table.
             dblib_key: the row's key, which becomes the Design Item ID.
             footprint: footprint name for the current footprint model.
-            footprint_library: .PcbLib the footprint model points at.
+            footprint_library: .PcbLib the footprint model points at;
+                ``Any`` or ``*`` clears pinned PcbLib locations from every
+                footprint model on the placed component.
             sheet_path: open .SchDoc; empty = the focused sheet.
             all_sheets: every open schematic of the focused project.
             dry_run: report what would change, write nothing.

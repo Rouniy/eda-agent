@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Placed footprint library links, 2026-10-27
+
+- [x] Adapt `wizd/edev`'s `Any`/`*` unpinning and absent-datafile-link
+  creation to `sch_relink_components`, retaining the proven PcbLib basename
+  format required by Altium 26.11. Source `.103` and focused tests pass.
+- [ ] On a disposable placed multi-model part, verify unpin and new-link
+  persistence after save/reopen and confirm ECO resolves the named PcbLib.
+
 ## Multipart graphic ownership, 2026-10-27
 
 - [x] Expose explicit `owner_part_id` for rectangle and arc creation;
