@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.13';
+    SCRIPT_VERSION = '2026.10.27.14';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -35482,6 +35482,107 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_GetFabBoardFacts - one exact-board snapshot for fab package checks.    }
+{ No outline rebuild and no capped object window.                          }
+{..............................................................................}
+Function PCB_GetFabBoardFacts(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    Outline : IPCB_BoardOutline;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Rect : TCoordRect;
+    ExpectedPath, Why : String;
+    CopperCount, PadHoles, ViaHoles : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path is required');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Focused PCB path differs from board_path');
+        Exit;
+    End;
+    Stack := Board.LayerStack_V7;
+    If Stack = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_STACKUP', 'Board has no layer stack');
+        Exit;
+    End;
+    CopperCount := 0;
+    LayerObj := Stack.FirstLayer;
+    While LayerObj <> Nil Do
+    Begin
+        If (LayerObj.LayerID = eTopLayer) Or (LayerObj.LayerID = eBottomLayer)
+           Or ((LayerObj.LayerID >= eMidLayer1) And (LayerObj.LayerID <= eMidLayer30))
+           Or ((LayerObj.LayerID >= eInternalPlane1) And (LayerObj.LayerID <= eInternalPlane16)) Then
+            Inc(CopperCount);
+        LayerObj := Stack.NextLayer(LayerObj);
+    End;
+    If CopperCount = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COPPER', 'No copper layers in stack');
+        Exit;
+    End;
+    Outline := Board.BoardOutline;
+    If (Outline = Nil) Or (Outline.PointCount < 2) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_OUTLINE', 'Board has no usable outline');
+        Exit;
+    End;
+    Rect := Outline.BoundingRectangle;
+    If (Rect.Right <= Rect.Left) Or (Rect.Top <= Rect.Bottom) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_OUTLINE', 'Board outline has no size');
+        Exit;
+    End;
+    PadHoles := 0;
+    ViaHoles := 0;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(ePadObject, eViaObject));
+    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Obj := Iter.FirstPCBObject;
+    While Obj <> Nil Do
+    Begin
+        If Obj.ObjectId = ePadObject Then
+        Begin
+            Pad := Obj;
+            If Pad.HoleSize > 0 Then Inc(PadHoles);
+        End
+        Else If Obj.ObjectId = eViaObject Then
+        Begin
+            Via := Obj;
+            If Via.HoleSize > 0 Then Inc(ViaHoles);
+        End;
+        Obj := Iter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iter);
+    Result := BuildSuccessResponse(RequestId,
+        '{"board_path":"' + EscapeJsonString(Board.FileName) + '",'
+        + '"copper_layers":' + IntToStr(CopperCount) + ','
+        + '"outline_mm":{"width":' + FloatToJsonStr(CoordToMM(Rect.Right - Rect.Left))
+        + ',"height":' + FloatToJsonStr(CoordToMM(Rect.Top - Rect.Bottom)) + '},'
+        + '"pad_holes":' + IntToStr(PadHoles) + ','
+        + '"via_holes":' + IntToStr(ViaHoles) + ','
+        + '"hole_count":' + IntToStr(PadHoles + ViaHoles) + '}');
+End;
+
+{..............................................................................}
 { PCB_GetPadProperties - Get detailed pad info filtered by net or component  }
 { Params: net (optional), designator (optional), offset, limit               }
 {                                                                            }
@@ -44809,6 +44910,7 @@ Begin
         'get_tracks':              Result := PCB_GetTracks(Params, RequestId);
         'delete_object':           Result := PCB_DeleteObject(Params, RequestId);
         'get_pad_properties':      Result := PCB_GetPadProperties(Params, RequestId);
+        'get_fab_board_facts':     Result := PCB_GetFabBoardFacts(Params, RequestId);
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
         'rebuild_connectivity':    Result := PCB_RebuildConnectivity(Params, RequestId);

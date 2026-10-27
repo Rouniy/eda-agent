@@ -2,6 +2,22 @@
 
 ## Source integration, 2026-10-27
 
+The `.14` source integrates MOREmbedded's fab-output comparison as an
+exact-board check. `pcb_get_fab_board_facts` reads the focused PcbDoc path,
+copper layer count, outline size and all drilled pads/vias in one native
+snapshot, without a 5000-pad response window. `pcb_check_fab_output`
+parses Gerber/Excellon with the optional gerbonara extra and refuses an
+automatic pass if the board identity or any required comparison is missing.
+23 focused parser/tool tests pass; Pascal lint/build has zero errors and
+warnings. Altium 26.11.1.5 loaded/bundled `.14` with zero cast errors.
+On disposable `workspace/native-acceptance/FabFacts-20261027.PcbDoc`, native
+readback reported the exact path, 2 copper layers, 152.4 by 101.6 mm and
+zero holes. A different board path was refused. The disposable document was
+closed with changes discarded; its file does not exist; the owner's PCB is
+active and unmodified. A full generated fab package comparison and a large
+board with more than 5000 drilled pads still need native acceptance. MCP
+14701 and TCP 14700 listen.
+
 The `.13` source adds the missing read-only generic `AutoSize` getter for
 ports and preflights writes on other object types. The earlier `.12` native
 check used the isolated `workspace/native-acceptance/PlacementStyle-20261027.SchDoc`

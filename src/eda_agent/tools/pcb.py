@@ -8,11 +8,13 @@ component placement, trace lengths, layer stackup, board outline, etc.
 
 import json
 import math
+from pathlib import Path
 from typing import Any, Optional, Union
 
 from pydantic import ValidationError
 
 from ..bridge import get_bridge
+from ..bridge.exceptions import AltiumError
 from ..placement import (
     BoardRegion,
     PlaceComp,
@@ -28,6 +30,25 @@ from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
+
+
+def _fab_board_facts(reply: dict[str, Any], expected_path: str) -> dict[str, Any]:
+    """Accept only a complete, internally consistent exact-board snapshot."""
+    if not isinstance(reply, dict) or reply.get("board_path", "").casefold() != expected_path.casefold():
+        raise ValueError("native fab facts did not identify the requested board")
+    for key in ("copper_layers", "pad_holes", "via_holes", "hole_count"):
+        if type(reply.get(key)) is not int or reply[key] < 0:
+            raise ValueError(f"native fab facts lack a valid {key}")
+    if reply["copper_layers"] == 0 or reply["hole_count"] != reply["pad_holes"] + reply["via_holes"]:
+        raise ValueError("native fab layer or hole totals are inconsistent")
+    outline = reply.get("outline_mm")
+    if not isinstance(outline, dict):
+        raise ValueError("native fab facts lack an outline")
+    for axis in ("width", "height"):
+        value = outline.get(axis)
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"native fab outline has no valid {axis}")
+    return {key: reply[key] for key in ("copper_layers", "outline_mm", "hole_count")}
 
 
 def _offset_pair_polyline(
@@ -7159,3 +7180,64 @@ def register_pcb_tools(mcp):
                 "layer": layer,
             },
         )
+
+    @mcp.tool()
+    async def pcb_get_fab_board_facts(board_path: str) -> dict[str, Any]:
+        """Read one uncapped fab comparison snapshot from the exact PcbDoc."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.get_fab_board_facts", {"board_path": board_path}, timeout=120.0,
+        )
+        try:
+            _fab_board_facts(reply, board_path)
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_check_fab_output(
+        directory: str,
+        board_path: str,
+        min_drill_mm: float = 0.0,
+        min_feature_mm: float = 0.0,
+        board_name: str = "board",
+    ) -> dict[str, Any]:
+        """Compare Gerber/Excellon output with one focused, exact PCB.
+
+        Requires the absolute path of the focused PcbDoc. Native facts are
+        captured in one uncapped pass; incomplete reads cannot pass. The
+        optional gerbonara extra is required to parse the exported package.
+        Thresholds are millimetres; zero skips each respective threshold.
+        """
+        from ..fileio.gerber_check import compare_with_board, summarise_package
+
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not math.isfinite(min_drill_mm) or not math.isfinite(min_feature_mm) or min_drill_mm < 0 or min_feature_mm < 0:
+            return {"ok": False, "reason": "fab limits must be finite and non-negative millimetres"}
+        summary = summarise_package(directory, board_name=board_name)
+        if not summary.get("ok"):
+            return {"ok": False, "reason": summary.get("reason"),
+                    "files": summary.get("files", [])}
+        try:
+            facts_reply = await get_bridge().send_command_async(
+                "pcb.get_fab_board_facts", {"board_path": board_path}, timeout=120.0,
+            )
+            board = _fab_board_facts(facts_reply, board_path)
+        except (AltiumError, ValueError, TypeError, KeyError, OSError) as exc:
+            return {"ok": False, "reason": f"board facts unavailable: {exc}"}
+        if min_drill_mm:
+            board["min_drill_mm"] = min_drill_mm
+        if min_feature_mm:
+            board["min_feature_mm"] = min_feature_mm
+        result = compare_with_board(summary, board)
+        required = {"copper_layers", "outline", "hole_count"}
+        missing = sorted(required - set(result.get("checks_run", [])))
+        if missing:
+            result["ok"] = False
+            result["passed"] = False
+            result["reason"] = "required fab comparisons did not run: " + ", ".join(missing)
+        result["board_path"] = board_path
+        result["board_facts"] = facts_reply
+        return result

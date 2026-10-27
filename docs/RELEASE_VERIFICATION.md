@@ -1,4 +1,14 @@
-# Release verification: 2026.10.27.13
+# Release verification: 2026.10.27.14
+
+The `.14` fab-output port uses one exact PcbDoc native snapshot for all
+board facts, with an uncapped hole count. The comparison refuses a pass
+unless copper layers, outline and drill hits were all compared. 23 focused
+tests pass and Pascal lint/build reports zero errors/warnings. The bundled
+and loaded scripts match at `.14` in Altium 26.11.1.5. A disposable blank
+PcbDoc returned its exact path, 2 copper layers, 152.4 by 101.6 mm and
+zero holes; a mismatched path was refused. The disposable was discarded
+and the original PCB is active and unmodified. End-to-end comparison on a
+real exported package and a board beyond 5000 drilled pads remain open.
 
 The `.13` port AutoSize getter follows a native `.12` finding: direct
 placement reported false, while generic ePort query returned an empty

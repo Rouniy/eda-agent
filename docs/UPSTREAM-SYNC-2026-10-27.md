@@ -62,6 +62,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | `mooreaa` `dc36b7e`–`fc22136` (multipart placement and tidy) | Place an explicit sub-part, verify its sheet state and report issues; link the library, hide inherited model parameters and adopt the sheet designator font | 65 related tests, Pascal lint/build and loaded `.11` runtime; native multipart-sheet acceptance pending |
 | `mooreaa` `dc36b7e`–`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests, Pascal lint/build and loaded `.12` runtime; native disposable-sheet acceptance pending |
 | `mooreaa` through `fc22136` (port AutoSize getter) | Return the native port AutoSize flag through generic queries, with a port-only type guard | Native `.12` query exposed the omission; loaded `.13` ePort query read back false, font 1 and width 400 on an isolated sheet |
+| MOREmbedded through `032fb4b` (`pcb_check_fab_output`) | Rework fab comparison around one exact-board, uncapped native snapshot and require all three core comparisons | 23 focused tests, Pascal lint/build, loaded `.14`; disposable PCB facts and wrong-path refusal passed; full export comparison pending |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
@@ -71,11 +72,12 @@ After the impedance-profile port, the endpoint reported 623 tools and
 loaded/bundled `2026.10.27.2`. The profile reader itself has not yet been
 run against a disposable board.
 
-The fork's `pcb_check_fab_output` remains to be rewritten: its board reads
-do not verify an exact board identity across calls, and its pad count stops
-at 5000 without a completeness check. The NPI DFM criterion is therefore
-manual until an exact-board, complete comparison exists; it cannot claim an
-automatic pass from the current partial reads.
+The fork's `pcb_check_fab_output` was rewritten in `.14`: a single native
+exact-board snapshot counts all drilled pads and vias, checks copper layers
+and outline size, and the Python comparison refuses missing checks. The
+native snapshot and wrong-path refusal passed on a disposable board. A real
+exported package and a board with more than 5000 drilled pads have not yet
+been checked end to end, so NPI DFM remains pending that acceptance.
 
 ## Next integration blocks
 
@@ -86,7 +88,7 @@ automatic pass from the current partial reads.
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews and natively qualify the restored footprint reader and model association | Verify against a disposable PcbLib and an isolated output directory |
-| MOREmbedded `pcb_check_fab_output` | Compare exported fab package with one exact board | Eliminate the 5000-pad cap and reject incomplete/mismatched reads |
+| MOREmbedded `pcb_check_fab_output` | Native acceptance on an exported package and a >5000-drilled-pad board | Confirm Gerber/Excellon comparison from the same design revision |
 | `mooreaa` `dc36b7e` through `fc22136` | Remaining relink paths and native acceptance of placement/parameter ports | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This

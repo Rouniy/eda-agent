@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Fab-output acceptance, 2026-10-27
+
+- Run `pcb_check_fab_output` on a disposable PcbDoc and its freshly exported
+  Gerber/Excellon package from the same saved revision. Confirm copper,
+  outline and drill-hit checks all ran.
+- Exercise the native uncapped hole counter on a disposable board with over
+  5000 drilled pads and verify the count against an independent export.
+
 ## Overnight corpus bridge, 2026-10-21
 
 - Capture the native Script IDE diagnostic or Windows crash event at the
