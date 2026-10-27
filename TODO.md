@@ -105,8 +105,12 @@
   QA board returned zero nets; after `pcb_focus_board` selected a temporary
   copy of Altium's Spirit Level board, the exact-path read returned 126
   nets. Both boards closed without saving and the extra copy was removed.
-- [ ] Check project colour planning from an exact selected project and board
-  without saving.
+- [x] Check project colour planning from an exact copied project and board
+  without saving. On the Mini PC SODIMM example, `pcb_net_display` returned
+  a dry-run plan for GND, VDD, VPP, VREFCA and VTT, with five project BGR
+  colours and no missing colour. The board and project closed without a
+  dirty document or a save. Temporary-directory cleanup was rejected by
+  automatic approval review, so the isolated 9.9 MB copy remains in Temp.
 
 ## Fractional schematic placements, 2026-10-27
 

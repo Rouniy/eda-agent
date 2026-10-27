@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Exact-project PCB net-colour plan, 2026-10-28
+
+The installed Mini PC SODIMM example project and board were copied to
+`C:\Users\Alex\AppData\Local\Temp\eda-netcolor-qa-0c37065137df4fc5a5a80d63db2c3f87`.
+Native script `.114` read 229 board nets. With exact copied PrjPcb and
+PcbDoc paths, `pcb_net_display(from_project=True, dry_run=True)` planned
+the project BGR colours for GND (16777070), VDD (48640), VPP (16740095),
+VREFCA (7274350) and VTT (7237375). All five matched existing board
+colours; no project colour was missing. No document became dirty. The
+board and project closed without saving. Automatic approval review
+rejected recursive removal of the isolated copy, so it remains in Temp.
+
 ## Optional battery research lab from a fork, 2026-10-28
 
 The self-contained `research/battery-ai-comsol-lab` package and its
