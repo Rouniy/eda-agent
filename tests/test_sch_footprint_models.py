@@ -23,6 +23,16 @@ def _body(name: str) -> str:
     return _routine(_source(), name)
 
 
+def test_footprint_model_choice_and_rename_mirror_the_footprint_parameter():
+    body = _body("SetPlacedFootprintName")
+    assert body.count("SetCompParamText(Comp, 'Footprint', NewName)") == 2
+    assert body.count("GetCompParamText(Comp, 'Footprint') = NewName") == 2
+    assert body.index("If Choice <> 0 Then") < body.index(
+        "SetCompParamText(Comp, 'Footprint', NewName)")
+    assert body.rindex("SetCompParamText(Comp, 'Footprint', NewName)") > body.index(
+        "Result := (After = NewName)")
+
+
 def test_the_chooser_clears_then_sets_then_reads_every_flag_back():
     body = _body("ChooseFootprintModel")
     # Collected during the walk, written only after it.

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.103';
+    SCRIPT_VERSION = '2026.10.27.104';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -75705,6 +75705,11 @@ Begin
     If Choice <> 0 Then
     Begin
         Result := (Choice = 1);
+        If Result Then
+        Begin
+            SetCompParamText(Comp, 'Footprint', NewName);
+            Result := GetCompParamText(Comp, 'Footprint') = NewName;
+        End;
         Exit;
     End;
     Target := Nil;
@@ -75751,6 +75756,11 @@ Begin
     SchEndModify(Target);
     Try After := Target.ModelName; Except End;
     Result := (After = NewName);
+    If Result Then
+    Begin
+        SetCompParamText(Comp, 'Footprint', NewName);
+        Result := GetCompParamText(Comp, 'Footprint') = NewName;
+    End;
 End;
 
 {..............................................................................}

@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Placed footprint name mirror, 2026-10-27
+
+Source `.104` adapts the `wizd/edev` model-name mirror: choosing an
+existing PCBLIB model or renaming the current one also writes the placed
+component's `Footprint` parameter. The helper reads the parameter back
+before claiming success, so the Properties panel and model cannot silently
+diverge. Native save/reopen and ECO acceptance remain pending. Altium
+26.11.1.5 currently has 16 open projects and 181 listed documents; the
+running script is `.96`, so this source has not been loaded into that
+shared session.
+
 ## Placed footprint library links, 2026-10-27
 
 Source `.103` adapts `wizd/edev`'s explicit `Any`/`*` action in the existing

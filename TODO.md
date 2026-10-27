@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Placed footprint name mirror, 2026-10-27
+
+- [x] Adapt `wizd/edev`'s `Footprint` parameter mirror when choosing or
+  renaming a placed PCBLIB model; require parameter readback for success.
+  Source `.104`.
+- [ ] After a controlled Altium reload, verify the model and `Footprint`
+  parameter agree after both paths and persist after save/reopen.
+
 ## Placed footprint library links, 2026-10-27
 
 - [x] Adapt `wizd/edev`'s `Any`/`*` unpinning and absent-datafile-link

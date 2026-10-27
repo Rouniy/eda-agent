@@ -10838,6 +10838,11 @@ Begin
     If Choice <> 0 Then
     Begin
         Result := (Choice = 1);
+        If Result Then
+        Begin
+            SetCompParamText(Comp, 'Footprint', NewName);
+            Result := GetCompParamText(Comp, 'Footprint') = NewName;
+        End;
         Exit;
     End;
     Target := Nil;
@@ -10884,6 +10889,11 @@ Begin
     SchEndModify(Target);
     Try After := Target.ModelName; Except End;
     Result := (After = NewName);
+    If Result Then
+    Begin
+        SetCompParamText(Comp, 'Footprint', NewName);
+        Result := GetCompParamText(Comp, 'Footprint') = NewName;
+    End;
 End;
 
 {..............................................................................}

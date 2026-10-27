@@ -1,5 +1,14 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Placed footprint name mirror
+
+`wizd/edev` mirrors the selected PCBLIB ModelName onto the placed part's
+`Footprint` parameter. Source `.104` adds this to our existing guarded
+`SetPlacedFootprintName` helper for both choosing an existing model and
+renaming one, with parameter readback before success. Native persistence
+and ECO checks remain pending while the shared Altium session stays on
+compiled script `.96` with 16 projects open.
+
 ## Placed footprint library links
 
 `wizd/edev` provides an explicit `Any` or `*` action to clear stale
