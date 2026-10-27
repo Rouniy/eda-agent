@@ -2066,3 +2066,14 @@ second write renamed it `EDA_AGENT_TEST_110` and changed the target to
 these also persisted after exact save/reopen. Removal then persisted
 with profile count zero. The owner's PcbDoc SHA256 stayed unchanged.
 Twenty related tests and Pascal lint/build passed.
+
+# Impedance profile layer, 2026-10-27
+
+Script `.34` on Altium 26.11.1.5 created a profile's Top Layer record on
+an isolated PcbDoc. Enabled, width lock and gap lock were true, with
+4 mil width and 6 mil gap. Exact save/reopen preserved them and Altium
+normalized the unspecified minimum width from 0 to 4 mil. A second edit
+set width bounds 3.5/4.5 mil, gap bounds 5/7 mil, 8 mil plane clearance,
+and solder-mask use and thicknesses 0.4/0.5 mil. These persisted after
+another exact save/reopen. A wrong-board write was refused. Six related
+tests and Pascal lint/build passed; the owner's PcbDoc SHA256 was unchanged.

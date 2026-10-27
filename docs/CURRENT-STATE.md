@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+## Latest native integration, 2026-10-27
+
+`Rouniy/eda-agent/main` is the integration branch. Script `.34` on Altium
+26.11.1.5 added exact-board impedance-profile layer reads and edits, with
+profile and layer state tokens before writes. On an isolated PcbDoc copy,
+Top Layer's enabled flag, width/gap locks, 4/6 mil width/gap, lower and
+upper limits, plane clearance and solder-mask settings survived exact save,
+close and reopen. Altium automatically changed an unspecified minimum
+width from 0 to 4 mil after the first save; the tool reports the refreshed
+value. Six related tests and Pascal lint/build pass. The generated bundle
+SHA256 is `C6DC4FEA224DB2E62219900A7593D91E066101084D39EC8086DB10BF4D1DF74D`.
+The owner PcbDoc was restored active with its SHA256 unchanged at
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+The sibling `PLT-hw/tools/eda-agent/SHARED-PROJECTS.md` runbook referenced
+by `AGENTS.md` is absent in this checkout; this native write followed the
+user's explicit authorization and used an isolated document copy.
+
 ## Source integration, 2026-10-27
 
 The `.26` source ports upstream's two placed-component STEP export APIs.

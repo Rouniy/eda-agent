@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.33';
+    SCRIPT_VERSION = '2026.10.27.34';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47548,6 +47548,180 @@ Begin
         + JsonRaw('after', AfterJson)));
 End;
 
+Function PCB_ImpTraceState(T : IPCB_TraceImpedance) : String;
+Begin
+    If T = Nil Then Begin Result := 'null'; Exit; End;
+    Result := JsonObj(JsonBool('enabled', T.IsEnabled) + ','
+        + JsonBool('width_locked', T.IsTraceWidthLocked) + ','
+        + JsonBool('gap_locked', T.IsTraceGapLocked) + ','
+        + JsonFloat('width_mils', CoordToMilsF(T.TraceWidth)) + ','
+        + JsonFloat('min_width_mils', CoordToMilsF(T.TraceMinWidth)) + ','
+        + JsonFloat('max_width_mils', CoordToMilsF(T.TraceMaxWidth)) + ','
+        + JsonFloat('gap_mils', CoordToMilsF(T.DiffPairGap)) + ','
+        + JsonFloat('min_gap_mils', CoordToMilsF(T.GetState_DiffPairMinGap)) + ','
+        + JsonFloat('max_gap_mils', CoordToMilsF(T.GetState_DiffPairMaxGap)) + ','
+        + JsonFloat('clearance_to_plane_mils', CoordToMilsF(T.ClearanceToPlane)) + ','
+        + JsonBool('use_solder_mask', T.UseSolderMask) + ','
+        + JsonFloat('mask_between_mils', CoordToMilsF(T.SolderMaskThicknessBetweenTraces)) + ','
+        + JsonFloat('mask_on_top_mils', CoordToMilsF(T.SolderMaskThicknessOnTopOfTraces)) + ','
+        + JsonFloat('calculated_ohms', T.CalculatedImpedance));
+End;
+
+Function PCB_ImpLayerHasUpdates(Params : String) : Boolean;
+Begin
+    Result := (ExtractJsonValue(Params, 'enabled') <> '') Or
+        (ExtractJsonValue(Params, 'width_locked') <> '') Or
+        (ExtractJsonValue(Params, 'gap_locked') <> '') Or
+        (ExtractJsonValue(Params, 'width_mils') <> '') Or
+        (ExtractJsonValue(Params, 'min_width_mils') <> '') Or
+        (ExtractJsonValue(Params, 'max_width_mils') <> '') Or
+        (ExtractJsonValue(Params, 'gap_mils') <> '') Or
+        (ExtractJsonValue(Params, 'min_gap_mils') <> '') Or
+        (ExtractJsonValue(Params, 'max_gap_mils') <> '') Or
+        (ExtractJsonValue(Params, 'clearance_to_plane_mils') <> '') Or
+        (ExtractJsonValue(Params, 'use_solder_mask') <> '') Or
+        (ExtractJsonValue(Params, 'mask_between_mils') <> '') Or
+        (ExtractJsonValue(Params, 'mask_on_top_mils') <> '');
+End;
+
+Function PCB_ImpLayerValid(Params : String) : Boolean;
+Var
+    B, N : String;
+    I : Integer;
+Begin
+    Result := False;
+    For I := 0 To 3 Do
+    Begin
+        Case I Of
+            0: B := LowerCase(ExtractJsonValue(Params, 'enabled'));
+            1: B := LowerCase(ExtractJsonValue(Params, 'width_locked'));
+            2: B := LowerCase(ExtractJsonValue(Params, 'gap_locked'));
+            3: B := LowerCase(ExtractJsonValue(Params, 'use_solder_mask'));
+        End;
+        If (B <> '') And (B <> 'true') And (B <> 'false') Then Exit;
+    End;
+    For I := 0 To 8 Do
+    Begin
+        Case I Of
+            0: N := ExtractJsonValue(Params, 'width_mils');
+            1: N := ExtractJsonValue(Params, 'min_width_mils');
+            2: N := ExtractJsonValue(Params, 'max_width_mils');
+            3: N := ExtractJsonValue(Params, 'gap_mils');
+            4: N := ExtractJsonValue(Params, 'min_gap_mils');
+            5: N := ExtractJsonValue(Params, 'max_gap_mils');
+            6: N := ExtractJsonValue(Params, 'clearance_to_plane_mils');
+            7: N := ExtractJsonValue(Params, 'mask_between_mils');
+            8: N := ExtractJsonValue(Params, 'mask_on_top_mils');
+        End;
+        If (N <> '') And ((Not IsFloatStr(N)) Or (StrToFloatDef(N, -1) < 0)) Then Exit;
+    End;
+    Result := True;
+End;
+
+Function PCB_ImpedanceProfileLayer(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_MasterLayerStack2;
+    P : IPCB_ImpedanceProfile;
+    T : IPCB_TraceImpedance;
+    Want : IPCB_LayerObject_V7;
+    Sub : IPCB_LayerStack;
+    ExpectedPath, Why, ProfName, LayerName, ProfileToken : String;
+    BeforeToken, AfterToken, V : String;
+    WantId : TLayer;
+    Added, Writing : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    ProfName := Trim(ExtractJsonValue(Params, 'profile'));
+    LayerName := Trim(ExtractJsonValue(Params, 'layer'));
+    If (ExpectedPath = '') Or (ProfName = '') Or (LayerName = '') Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path, profile and layer required'); Exit; End;
+    Writing := PCB_ImpLayerHasUpdates(Params);
+    If Writing And (Not PCB_ImpLayerValid(Params)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'invalid per-layer impedance value'); Exit; End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    Stack := Board.MasterLayerStack;
+    If Stack = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_STACK', 'No master layer stack'); Exit; End;
+    P := PCB_FindImpedanceProfile(Stack, ProfName);
+    If P = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROFILE', ProfName); Exit; End;
+    WantId := ResolveLayerId(Board, LayerName);
+    Want := Nil;
+    If WantId <> eNoLayer Then Want := Board.LayerStack_V7.LayerObject(WantId);
+    If Want = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_LAYER', LayerName); Exit; End;
+    If Pos('|' + Want.Name + '|', PCB_StackClassNames(Stack, eLayerClass_Electrical)) = 0 Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_COPPER', LayerName); Exit; End;
+    Sub := Stack.GetState_Substacks(0);
+    T := Nil;
+    Try T := P.GetTraceImpedanceForLayer(Sub, WantId); Except T := Nil; End;
+    ProfileToken := PCB_ImpedanceProfileState(P);
+    BeforeToken := PCB_ImpTraceState(T);
+    Added := False;
+    If Writing Then
+    Begin
+        If StrToIntDef(ExtractJsonValue(Params, 'expect_count'), -1) <> Stack.GetImpedanceProfileCount Then
+        Begin Result := BuildErrorResponse(RequestId, 'STALE_PROFILES', 'profile count changed'); Exit; End;
+        If (ExtractJsonValue(Params, 'expect_profile_token') <> ProfileToken)
+           Or (ExtractJsonValue(Params, 'expect_state_token') <> BeforeToken) Then
+        Begin Result := BuildErrorResponse(RequestId, 'STALE_PROFILE_LAYER', 'profile or layer state changed'); Exit; End;
+        PCBServer.PreProcess;
+        Try
+            If T = Nil Then
+            Begin
+                T := P.CreateTraceImpedance(Sub, WantId);
+                Added := True;
+            End;
+            If T = Nil Then
+            Begin Result := BuildErrorResponse(RequestId, 'NOT_ADDED', 'could not add layer to profile'); Exit; End;
+            V := LowerCase(ExtractJsonValue(Params, 'enabled'));
+            If V <> '' Then T.IsEnabled := (V = 'true');
+            V := LowerCase(ExtractJsonValue(Params, 'width_locked'));
+            If V <> '' Then T.IsTraceWidthLocked := (V = 'true');
+            V := LowerCase(ExtractJsonValue(Params, 'gap_locked'));
+            If V <> '' Then T.IsTraceGapLocked := (V = 'true');
+            V := LowerCase(ExtractJsonValue(Params, 'use_solder_mask'));
+            If V <> '' Then T.UseSolderMask := (V = 'true');
+            V := ExtractJsonValue(Params, 'width_mils');
+            If V <> '' Then T.TraceWidth := MilsToCoordF(StrToFloatDef(V, 0));
+            V := ExtractJsonValue(Params, 'min_width_mils');
+            If V <> '' Then T.TraceMinWidth := MilsToCoordF(StrToFloatDef(V, 0));
+            V := ExtractJsonValue(Params, 'max_width_mils');
+            If V <> '' Then T.TraceMaxWidth := MilsToCoordF(StrToFloatDef(V, 0));
+            V := ExtractJsonValue(Params, 'gap_mils');
+            If V <> '' Then T.DiffPairGap := MilsToCoordF(StrToFloatDef(V, 0));
+            V := ExtractJsonValue(Params, 'min_gap_mils');
+            If V <> '' Then T.SetState_DiffPairMinGap(MilsToCoordF(StrToFloatDef(V, 0)));
+            V := ExtractJsonValue(Params, 'max_gap_mils');
+            If V <> '' Then T.SetState_DiffPairMaxGap(MilsToCoordF(StrToFloatDef(V, 0)));
+            V := ExtractJsonValue(Params, 'clearance_to_plane_mils');
+            If V <> '' Then T.ClearanceToPlane := MilsToCoordF(StrToFloatDef(V, 0));
+            V := ExtractJsonValue(Params, 'mask_between_mils');
+            If V <> '' Then T.SolderMaskThicknessBetweenTraces := MilsToCoordF(StrToFloatDef(V, 0));
+            V := ExtractJsonValue(Params, 'mask_on_top_mils');
+            If V <> '' Then T.SolderMaskThicknessOnTopOfTraces := MilsToCoordF(StrToFloatDef(V, 0));
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, c_NoEventData);
+        Finally
+            PCBServer.PostProcess;
+        End;
+    End;
+    AfterToken := PCB_ImpTraceState(T);
+    If Writing And ((BeforeToken <> AfterToken) Or Added) Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonStr('profile', P.Name) + ','
+        + JsonStr('layer', Want.Name) + ','
+        + JsonInt('profile_count', Stack.GetImpedanceProfileCount) + ','
+        + JsonStr('profile_token', ProfileToken) + ','
+        + JsonStr('state_token', AfterToken) + ','
+        + JsonBool('layer_added', Added) + ','
+        + JsonBool('changed', (BeforeToken <> AfterToken) Or Added) + ','
+        + JsonRaw('before', BeforeToken) + ','
+        + JsonRaw('after', AfterToken)));
+End;
+
 Function PCB_ViaStructureJson(Via : IPCB_Via) : String;
 Var
     VS : IPCB_ViaStructure;
@@ -47979,6 +48153,7 @@ Begin
         'physical_stack':       Result := PCB_PhysicalStack(Params, RequestId);
         'set_dielectric':       Result := PCB_SetDielectric(Params, RequestId);
         'impedance_profile':    Result := PCB_ImpedanceProfile(Params, RequestId);
+        'impedance_profile_layer': Result := PCB_ImpedanceProfileLayer(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);

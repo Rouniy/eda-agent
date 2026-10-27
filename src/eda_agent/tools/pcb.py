@@ -4572,6 +4572,109 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_impedance_profile_layer(
+        board_path: str,
+        profile: str,
+        layer: str,
+        enabled: Optional[bool] = None,
+        width_locked: Optional[bool] = None,
+        gap_locked: Optional[bool] = None,
+        width_mils: Optional[float] = None,
+        min_width_mils: Optional[float] = None,
+        max_width_mils: Optional[float] = None,
+        gap_mils: Optional[float] = None,
+        min_gap_mils: Optional[float] = None,
+        max_gap_mils: Optional[float] = None,
+        clearance_to_plane_mils: Optional[float] = None,
+        use_solder_mask: Optional[bool] = None,
+        mask_between_mils: Optional[float] = None,
+        mask_on_top_mils: Optional[float] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Read or plan/set one impedance profile's copper-layer settings.
+
+        An absent profile-layer entry is reported as ``after=null`` and is
+        created by a write. Save the exact PcbDoc separately.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not profile.strip() or not layer.strip():
+            return {"ok": False, "reason": "profile and layer required"}
+        updates = {"enabled": enabled, "width_locked": width_locked,
+                   "gap_locked": gap_locked, "width_mils": width_mils,
+                   "min_width_mils": min_width_mils,
+                   "max_width_mils": max_width_mils, "gap_mils": gap_mils,
+                   "min_gap_mils": min_gap_mils, "max_gap_mils": max_gap_mils,
+                   "clearance_to_plane_mils": clearance_to_plane_mils,
+                   "use_solder_mask": use_solder_mask,
+                   "mask_between_mils": mask_between_mils,
+                   "mask_on_top_mils": mask_on_top_mils}
+        updates = {key: value for key, value in updates.items() if value is not None}
+        bool_fields = {"enabled", "width_locked", "gap_locked", "use_solder_mask"}
+        for key, value in updates.items():
+            if key in bool_fields:
+                if type(value) is not bool:
+                    return {"ok": False, "reason": f"{key} must be boolean"}
+            elif type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                return {"ok": False, "reason": f"{key} must be nonnegative and finite"}
+        base = {"board_path": board_path, "profile": profile.strip(), "layer": layer.strip()}
+        bridge = get_bridge()
+
+        def checked(reply: Any) -> dict[str, Any]:
+            if (not isinstance(reply, dict)
+                    or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                    or str(reply.get("profile", "")).casefold() != profile.strip().casefold()
+                    or str(reply.get("layer", "")).casefold() != layer.strip().casefold()
+                    or type(reply.get("profile_count")) is not int
+                    or not isinstance(reply.get("profile_token"), str)
+                    or not isinstance(reply.get("state_token"), str)
+                    or reply.get("after") is not None and not isinstance(reply.get("after"), dict)):
+                raise ValueError("incomplete or wrong-board profile-layer reply")
+            return reply
+
+        first = await bridge.send_command_async("pcb.impedance_profile_layer", base,
+                                                timeout=120.0)
+        try:
+            old_reply = checked(first)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": first}
+        if not updates:
+            return old_reply
+        if dry_run:
+            return {"ok": True, "dry_run": True, **base,
+                    "before": old_reply["after"], "would_set": updates,
+                    "layer_would_be_added": old_reply["after"] is None}
+        params = {**base, "expect_count": str(old_reply["profile_count"]),
+                  "expect_profile_token": old_reply["profile_token"],
+                  "expect_state_token": old_reply["state_token"]}
+        for key, value in updates.items():
+            params[key] = ("true" if value else "false") if key in bool_fields else str(value)
+        reply = await bridge.send_command_async("pcb.impedance_profile_layer", params,
+                                                timeout=120.0)
+        try:
+            changed = checked(reply)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        reread = await bridge.send_command_async("pcb.impedance_profile_layer", base,
+                                                 timeout=120.0)
+        try:
+            confirmed = checked(reread)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reread}
+        state = confirmed["after"]
+        if state is None:
+            return {"ok": False, "reason": "profile layer absent after write"}
+        for key, value in updates.items():
+            actual = state.get(key)
+            matched = (actual is value if key in bool_fields else
+                       type(actual) in (int, float) and math.isclose(actual, value, abs_tol=0.01))
+            if not matched:
+                return {"ok": False, "reason": f"{key} did not read back",
+                        "after": state, "native_reply": reply}
+        changed["save_required"] = bool(changed.get("changed"))
+        return changed
+
+    @mcp.tool()
     async def pcb_pours_at(
         x: float,
         y: float,
