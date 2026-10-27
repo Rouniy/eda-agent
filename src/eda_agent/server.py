@@ -786,6 +786,21 @@ def main() -> int:
         help="Seconds before giving up on a wedged dialog sequence (default 300).",
     )
 
+    # sdk-coverage -- the generic property layer against Altium's own
+    # declarations. Needs reference/altium_sdk.json, which
+    # scripts/altium_sdk_reflect.ps1 produces from the local install.
+    sdk_p = subparsers.add_parser(
+        "sdk-coverage",
+        help="Report how much of Altium's SDK the property chains reach.",
+    )
+    sdk_p.add_argument("--json", action="store_true", dest="json_out",
+                       help="Emit machine-readable JSON instead of the table.")
+    sdk_p.add_argument("--detail", type=int, default=0, metavar="N",
+                       help="List N missing property names per object type.")
+    sdk_p.add_argument("--sdk-json", default=None, metavar="PATH",
+                       help="Read a reflected SDK from PATH instead of "
+                            "reference/altium_sdk.json.")
+
     # profile-* -- per-workspace owner profile (naming/rules/fab/footprint
     # conventions, document units & grid, project templates). See profile.py
     # and docs/PROFILES.md. Flat hyphenated verbs, same style as
@@ -1181,6 +1196,10 @@ def main() -> int:
             budget=args.budget,
         )
 
+    if args.command == "sdk-coverage":
+        return cli.cmd_sdk_coverage(as_json=args.json_out,
+                                    detail=args.detail,
+                                    sdk_json=args.sdk_json)
     if args.command == "profile-init":
         return cli.cmd_profile_init(args.name, here=args.here)
     if args.command == "profile-list":
