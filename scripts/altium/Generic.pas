@@ -215,6 +215,29 @@ End;
 
 { Preflight only the known unsupported property/type pairs. Preserve the
   existing treatment of other names; do not guess a complete capability map. }
+{ FontId is not present on every schematic object. A sheet-entry read of it
+  raises a modal before Try/Except can recover and stops the bridge. Keep an
+  allowlist of interfaces known to expose this property. }
+Function SchObjectHasFontId(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eLabel) Or (Obj.ObjectId = eNetLabel)
+        Or (Obj.ObjectId = ePowerObject) Or (Obj.ObjectId = eCrossSheetConnector)
+        Or (Obj.ObjectId = eParameter) Or (Obj.ObjectId = eDesignator)
+        Or (Obj.ObjectId = eSheetName) Or (Obj.ObjectId = eSheetFileName)
+        Or (Obj.ObjectId = ePort) Or (Obj.ObjectId = eTextFrame)
+        Or (Obj.ObjectId = eNote);
+End;
+
+{ Sheet and harness entries expose their label font as TextFontID. }
+Function SchObjectHasTextFontId(Obj : ISch_GraphicalObject) : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Result := (Obj.ObjectId = eSheetEntry) Or (Obj.ObjectId = eHarnessEntry);
+End;
+
 Function UnsupportedSchProperty(Obj : ISch_GraphicalObject; SetStr : String) : String;
 Var
     Remaining, Assignment, PropName : String;
@@ -241,7 +264,9 @@ Begin
             PropName := Copy(Assignment, 1, EqPos - 1);
             If ((PropName = 'Text') And (Not SchObjectHasText(Obj)))
                 Or ((PropName = 'IsHidden') And (Not SchObjectHasIsHidden(Obj)))
-                Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj))) Then
+                Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj)))
+                Or ((PropName = 'FontId') And (Not SchObjectHasFontId(Obj)))
+                Or ((PropName = 'TextFontId') And (Not SchObjectHasTextFontId(Obj))) Then
             Begin
                 Result := PropName;
                 Exit;
@@ -702,7 +727,34 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'FontId'      Then Result := IntToStr(Obj.FontId)
+        Else If PropName = 'FontId' Then
+        Begin
+            If SchObjectHasFontId(Obj) Then
+                Result := IntToStr(Obj.FontId)
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
+        Else If PropName = 'TextFontId' Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                Result := IntToStr(EntryObj.TextFontID);
+            End
+            Else If Obj.ObjectId = eHarnessEntry Then
+            Begin
+                HarnessEntryObj := Obj;
+                Result := IntToStr(HarnessEntryObj.TextFontID);
+            End
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
         Else If PropName = 'LineWidth'   Then Result := IntToStr(Obj.LineWidth)
         Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
         Else If PropName = 'IOType'      Then Result := IntToStr(Obj.IOType)
@@ -1114,7 +1166,28 @@ Begin
             Else
                 NotePropertyDiag('unknown', PropName);
         End
-        Else If PropName = 'FontId'      Then Obj.FontId := StrToIntDef(Value, 1)
+        Else If PropName = 'FontId' Then
+        Begin
+            If SchObjectHasFontId(Obj) Then
+                Obj.FontId := StrToIntDef(Value, 1)
+            Else
+                NotePropertyDiag('unknown', PropName);
+        End
+        Else If PropName = 'TextFontId' Then
+        Begin
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                EntryObj.TextFontID := StrToIntDef(Value, 1);
+            End
+            Else If Obj.ObjectId = eHarnessEntry Then
+            Begin
+                HarnessEntryObj := Obj;
+                HarnessEntryObj.TextFontID := StrToIntDef(Value, 1);
+            End
+            Else
+                NotePropertyDiag('unknown', PropName);
+        End
         Else If PropName = 'LineWidth'   Then Obj.LineWidth := StrToIntDef(Value, 1)
         Else If PropName = 'Style'       Then Obj.Style := StrToIntDef(Value, 0)
         Else If PropName = 'AutoSize' Then

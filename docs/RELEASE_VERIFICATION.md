@@ -1,4 +1,8 @@
-# Release verification: 2026.10.27.4
+# Release verification: 2026.10.27.5
+
+The `.5` generic schematic property guard has source tests and Pascal
+lint/build. Its `TextFontId` read/write path still needs native acceptance
+on a disposable sheet with a sheet or harness entry.
 
 The `.4` PCB pours/options commands have source tests and Pascal lint/build.
 They still require native reads on a disposable board; the option setter also

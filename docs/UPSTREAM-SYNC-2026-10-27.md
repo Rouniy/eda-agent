@@ -51,6 +51,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | Upstream `ed4ef59` (partial) | Verify stored Altium checksums before extracting embedded 3D model bytes; compile an integrated library only with an explicit package path and a fresh nonempty IntLib artifact | 21 focused tests, Python compile and Pascal lint; native LibPkg build still pending |
 | Upstream `5d79657` through `ce53d6e`, `ed4ef59` (footprint read) | Restore the native `library.get_footprint_primitives` handler, including body metadata, region shapes and layer names; restrict saved STEP extraction to a named footprint's live model files | 33 focused tests, Pascal lint/build, loaded `.3` runtime and no-target native dispatch; real PcbLib read still pending |
 | Upstream `ce53d6e` (PCB pours/options) | Look up polygon outlines at a board point and read/set the new-polygon name template; include board identity and require an expected file for writes | 28 related tests, Pascal lint/build, loaded `.4` runtime, and no-target native refusals; real-board acceptance pending |
+| `mooreaa` `ad8d5fa`, also in upstream by `ce53d6e` (font safety) | Guard generic `FontId` by actual schematic object type and expose `TextFontId` through typed sheet/harness entries | 21 focused tests and Pascal lint/build; native entry readback pending |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
@@ -76,7 +77,7 @@ automatic pass from the current partial reads.
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews and natively qualify the restored footprint reader and model association | Verify against a disposable PcbLib and an isolated output directory |
 | MOREmbedded `pcb_check_fab_output` | Compare exported fab package with one exact board | Eliminate the 5000-pad cap and reject incomplete/mismatched reads |
-| `mooreaa` `ad8d5fa` through `fc22136` | Port placement cleanup, selected footprint models, display modes, pin maps, port cross-reference repair and per-part pin reads | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
+| `mooreaa` `64a71c3` through `fc22136` | Port placement cleanup, selected footprint models, display modes, pin maps, port cross-reference repair and per-part pin reads | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This
 table tracks next implementation batches, not a claim that the listed source

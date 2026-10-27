@@ -76,6 +76,23 @@ def test_a_port_is_excluded(guard):
         f"reproduced against")
 
 
+def test_sheet_entry_font_uses_its_typed_interface():
+    """AD25 stops the polling loop if FontId is read on a sheet entry."""
+    code = _decommented(_source())
+    start = code.index("Function SchObjectHasFontId(")
+    body = code[start:code.index("\nEnd;", start)]
+    assert "eSheetEntry" not in body and "eHarnessEntry" not in body
+    assert "SchObjectHasTextFontId(Obj)" in code
+    assert "EntryObj.TextFontID" in code
+    assert "HarnessEntryObj.TextFontID" in code
+    for routine in ("GetSchProperty", "SetSchProperty"):
+        start = code.index(f"Function {routine}(")
+        body = code[start:code.index("\nEnd;", start)]
+        at = body.index("PropName = 'FontId'")
+        access = body.index("Obj.FontId", at)
+        assert "SchObjectHasFontId(Obj)" in body[at:access]
+
+
 def test_generic_name_property_rejects_unnamed_objects():
     code = _decommented(_source())
     for routine in ("GetSchProperty", "SetSchProperty"):
