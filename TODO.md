@@ -15,6 +15,13 @@
   via mask state, deferred pours and footprint body selection.
 - [ ] Reconcile legacy `test_added_altium_tools.py` cases that still call
   unscoped upstream API wrappers without this fork's required board path.
+- [ ] Diagnose the recurring Altium 26.11.1.5 UI hang during another
+  client's `pcb.run_drc` / `application.set_active_document` sequence.
+  It occurred with both loaded scripts `.92` and `.93`: no modal was
+  reported, the window stopped responding, and subsequent bridge calls
+  timed out while the Altium process continued using CPU. Capture the
+  offending stack or a reproducible disposable-project case before
+  attributing it to a source change.
 
 ## Refreshed after `.68`, 2026-10-27
 
