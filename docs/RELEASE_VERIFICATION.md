@@ -1,4 +1,14 @@
-# Release verification: 2026.10.27.16
+# Release verification: 2026.10.27.17
+
+The `.17` package matcher uses Altium's `IsPackageEqual` on one exact
+PcbDoc and includes components without a package hash. Eight focused
+tests pass and Pascal lint/build has zero errors/warnings. Altium loaded
+`.17` with zero cast errors. On a blank disposable board it returned zero
+groups and refused a missing component and a mismatched board path. A
+read-only live check on the active PCB examined 147 parts, found 14 groups
+with zero comparison errors; R62 separately matched the other 51 parts
+of its 52-part group. The owner's document remained unmodified. A native
+test with deliberately unhashed components is pending.
 
 The `.16` xSignal port requires an exact PcbDoc path for reads and writes
 and an expected count for create/delete. 28 focused tests pass and Pascal

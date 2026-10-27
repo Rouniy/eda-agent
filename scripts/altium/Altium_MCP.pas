@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.16';
+    SCRIPT_VERSION = '2026.10.27.17';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -35853,6 +35853,151 @@ Begin
 End;
 
 {..............................................................................}
+{ Group placed components by Altium's own package equality, including parts }
+{ without a package hash. No design is modified.                             }
+Function PCB_FindSamePackage(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Comp, RefComp, FirstComp : IPCB_Component;
+    Comps : TInterfaceList;
+    Seen : TStringList;
+    ExpectedPath, Why, Desig, Name, Pattern, Members, Groups : String;
+    I, J, Size, GroupCount, Unhashed, CompareErrors : Integer;
+    Same : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Desig := ExtractJsonValue(Params, 'designator');
+    If ExpectedPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path is required');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Comps := TInterfaceList.Create;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Comp := Iter.FirstPCBObject;
+    While Comp <> Nil Do
+    Begin
+        Comps.Add(Comp);
+        Comp := Iter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iter);
+    { Do not Free TInterfaceList containing live PCB interfaces: this faults
+      in DelphiScript. The host owns the short-lived script list. }
+    CompareErrors := 0;
+    If Desig <> '' Then
+    Begin
+        RefComp := Nil;
+        For I := 0 To Comps.Count - 1 Do
+        Begin
+            Comp := Comps.Items[I];
+            Name := '';
+            Try Name := Comp.Name.Text; Except End;
+            If UpperCase(Name) = UpperCase(Desig) Then
+            Begin
+                RefComp := Comp;
+                Break;
+            End;
+        End;
+        If RefComp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No component ' + Desig);
+            Exit;
+        End;
+        Members := '';
+        For I := 0 To Comps.Count - 1 Do
+        Begin
+            Comp := Comps.Items[I];
+            If Comp = RefComp Then Continue;
+            Same := False;
+            Try Same := RefComp.IsPackageEqual(Comp);
+            Except Inc(CompareErrors); End;
+            If Not Same Then Continue;
+            Name := '';
+            Try Name := Comp.Name.Text; Except End;
+            If Members <> '' Then Members := Members + ',';
+            Members := Members + '"' + EscapeJsonString(Name) + '"';
+        End;
+        Pattern := '';
+        Try Pattern := RefComp.Pattern; Except End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('board_path', Board.FileName) + ','
+            + JsonStr('designator', Desig) + ','
+            + JsonStr('footprint', Pattern) + ','
+            + JsonInt('parts_examined', Comps.Count) + ','
+            + JsonInt('compare_errors', CompareErrors) + ','
+            + JsonRaw('same_package', '[' + Members + ']')));
+        Exit;
+    End;
+    Seen := TStringList.Create;
+    Groups := '';
+    GroupCount := 0;
+    Unhashed := 0;
+    For I := 0 To Comps.Count - 1 Do
+    Begin
+        Comp := Comps.Items[I];
+        Name := '';
+        Try Name := Comp.PackageSpecificHash; Except End;
+        If Name = '' Then Inc(Unhashed);
+    End;
+    For I := 0 To Comps.Count - 1 Do
+    Begin
+        If Seen.IndexOf(IntToStr(I)) >= 0 Then Continue;
+        Seen.Add(IntToStr(I));
+        FirstComp := Comps.Items[I];
+        Name := '';
+        Try Name := FirstComp.Name.Text; Except End;
+        Members := '"' + EscapeJsonString(Name) + '"';
+        Size := 1;
+        For J := I + 1 To Comps.Count - 1 Do
+        Begin
+            If Seen.IndexOf(IntToStr(J)) >= 0 Then Continue;
+            Comp := Comps.Items[J];
+            Same := False;
+            Try Same := FirstComp.IsPackageEqual(Comp);
+            Except Inc(CompareErrors); End;
+            If Not Same Then Continue;
+            Seen.Add(IntToStr(J));
+            Name := '';
+            Try Name := Comp.Name.Text; Except End;
+            Members := Members + ',"' + EscapeJsonString(Name) + '"';
+            Inc(Size);
+        End;
+        If Size < 2 Then Continue;
+        Pattern := '';
+        Try Pattern := FirstComp.Pattern; Except End;
+        If Groups <> '' Then Groups := Groups + ',';
+        Groups := Groups + JsonObj(JsonStr('footprint', Pattern) + ','
+            + JsonInt('count', Size) + ','
+            + JsonRaw('designators', '[' + Members + ']'));
+        Inc(GroupCount);
+    End;
+    Seen.Free;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('parts_examined', Comps.Count) + ','
+        + JsonInt('parts_without_hash', Unhashed) + ','
+        + JsonInt('compare_errors', CompareErrors) + ','
+        + JsonInt('group_count', GroupCount) + ','
+        + JsonRaw('groups', '[' + Groups + ']')));
+End;
+
+{..............................................................................}
 { PCB_GetFabBoardFacts - one exact-board snapshot for fab package checks.    }
 { No outline rebuild and no capped object window.                          }
 {..............................................................................}
@@ -45285,6 +45430,7 @@ Begin
         'get_xsignals':           Result := PCB_GetXSignals(Params, RequestId);
         'create_xsignals':        Result := PCB_CreateXSignals(Params, RequestId);
         'delete_xsignals':        Result := PCB_DeleteXSignals(Params, RequestId);
+        'find_same_package':      Result := PCB_FindSamePackage(Params, RequestId);
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
         'rebuild_connectivity':    Result := PCB_RebuildConnectivity(Params, RequestId);

@@ -7299,6 +7299,51 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_find_same_package(
+        board_path: str,
+        designator: str = "",
+    ) -> dict[str, Any]:
+        """Find placed parts with the same native Altium package geometry.
+
+        With a designator, return other matching parts. Without one, group
+        all matching parts, including packages with no package hash. The
+        complete read names the exact PcbDoc and reports comparison errors.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        params = {"board_path": board_path}
+        if designator.strip():
+            params["designator"] = designator.strip()
+        reply = await get_bridge().send_command_async(
+            "pcb.find_same_package", params, timeout=120.0,
+        )
+        count = reply.get("parts_examined") if isinstance(reply, dict) else None
+        errors = reply.get("compare_errors") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or type(count) is not int or count < 0
+                or type(errors) is not int or errors < 0):
+            return {"ok": False, "reason": "package comparison did not identify a complete board read",
+                    "native_reply": reply}
+        if errors:
+            return {"ok": False, "reason": f"{errors} native package comparisons failed",
+                    "native_reply": reply}
+        if designator.strip():
+            matches = reply.get("same_package")
+            if not isinstance(matches, list) or len(matches) >= count:
+                return {"ok": False, "reason": "package match list is incomplete",
+                        "native_reply": reply}
+        else:
+            groups = reply.get("groups")
+            group_count = reply.get("group_count")
+            if (not isinstance(groups, list) or type(group_count) is not int
+                    or len(groups) != group_count):
+                return {"ok": False, "reason": "package groups are incomplete",
+                        "native_reply": reply}
+        return reply
+
+    @mcp.tool()
     async def pcb_check_fab_output(
         directory: str,
         board_path: str,

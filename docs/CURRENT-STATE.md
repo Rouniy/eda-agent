@@ -2,6 +2,20 @@
 
 ## Source integration, 2026-10-27
 
+The `.17` source ports upstream's `pcb_find_same_package` with an exact
+PcbDoc path and native package comparisons. It groups even parts without
+a package hash and reports comparison errors rather than silently skipping
+them. Python validates board identity and result completeness. Eight
+focused tests pass and Pascal lint/build has zero errors/warnings. Altium
+26.11.1.5 loaded/bundled `.17` with zero cast errors. The disposable
+PcbDoc returned zero groups, refused a missing component and refused a
+different board path; it was closed and its file removed. A read-only run
+on the owner's active, unmodified PCB examined 147 parts, found 14 groups
+with zero native comparison errors; querying R62 separately found 51
+matching parts, consistent with its 52-part group. The board remained
+unmodified. Package equality on a deliberately unhashed disposable part
+has not yet been accepted natively.
+
 The `.16` source ports upstream's xSignal read/create/delete family with
 explicit PcbDoc paths, native path checks, and an expected pair count for
 writes. The Python layer verifies complete readback and the count delta.

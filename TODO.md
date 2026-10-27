@@ -1,5 +1,11 @@
 # Fork integration TODO
 
+## Package equality acceptance, 2026-10-27
+
+- On a disposable populated PCB, compare two geometrically equal packages
+  whose `PackageSpecificHash` is unavailable, and confirm that
+  `pcb_find_same_package` groups them without comparison errors.
+
 ## xSignal acceptance, 2026-10-27
 
 - On a disposable populated PCB, read an initial xSignal count, create a
