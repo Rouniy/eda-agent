@@ -8,7 +8,10 @@ filter explicitly names `OwnerPart`. `sch_fix_port_crossrefs` reads these pins
 and includes them in the reviewed plan digest. Pascal lint also exposed an
 existing missing local `Pin` declaration in `SetSchProperty`; it is fixed.
 The focused CrossRef suite has 21 passing tests and Pascal lint/build passes.
-Live Altium reload and disposable-sheet acceptance are pending.
+The HTTP child was restarted through its supervisor and Altium loaded `.7`:
+`app_ping` reports loaded/bundled `.7`, `version_match=true`, on Altium
+`26.11.1.5`, with zero cast errors. TCP 14700 and 14701 listen. Only a PCB
+document is currently loaded, so native multipart-sheet acceptance is pending.
 
 The `.6` source ports `mooreaa`'s port cross-reference planner and exposes
 `sch_fix_port_crossrefs` with dry run by default. Applying a plan requires
