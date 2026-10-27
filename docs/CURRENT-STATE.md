@@ -2,6 +2,12 @@
 
 ## Source integration, 2026-10-27
 
+The `.4` source adds `pcb_pours_at` and `pcb_board_options` from upstream
+`ce53d6e`. The first reports the actual board file and accepts an expected
+file; the second requires that exact file when setting the name template and
+checks readback. Python tests and Pascal lint/build pass. Native board
+acceptance and `.4` runtime reload are pending.
+
 The `.3` source now restores the native footprint-primitives reader that was
 missing behind the registered Python tool. It includes live 3D body metadata
 and a focused-library identity check; embedded STEP extraction can filter by

@@ -4077,6 +4077,48 @@ def register_pcb_tools(mcp):
         )
 
     @mcp.tool()
+    async def pcb_pours_at(
+        x: float,
+        y: float,
+        expect_file: str = "",
+    ) -> dict[str, Any]:
+        """List pours whose outline contains a point in board-relative mils.
+
+        The reply includes ``board_file`` and reports outline inclusion,
+        including a gap where the poured copper itself is absent. Supply
+        ``expect_file`` to refuse a read from a different focused board.
+        """
+        import math
+
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return {"success": False, "error": "x and y must be finite"}
+        return await get_bridge().send_command_async(
+            "pcb.pours_at", {"x": repr(float(x)), "y": repr(float(y)),
+                             "expect_file": expect_file})
+
+    @mcp.tool()
+    async def pcb_board_options(
+        polygon_name_template: Optional[int] = None,
+        expect_file: str = "",
+    ) -> dict[str, Any]:
+        """Read board naming options, or set the new-pour name template.
+
+        A write requires the exact focused ``expect_file``. The reply
+        includes the actual board path, value readback and ``not_applied``.
+        ``automatic_split_planes`` is read only.
+        """
+        params: dict[str, Any] = {"expect_file": expect_file}
+        if polygon_name_template is not None:
+            if polygon_name_template < 0:
+                return {"success": False, "error":
+                        "polygon_name_template must be nonnegative"}
+            if not expect_file:
+                return {"success": False, "error":
+                        "expect_file is required to change board options"}
+            params["polygon_name_template"] = str(polygon_name_template)
+        return await get_bridge().send_command_async("pcb.board_options", params)
+
+    @mcp.tool()
     async def pcb_query_region(
         object_type: str,
         x1: int,

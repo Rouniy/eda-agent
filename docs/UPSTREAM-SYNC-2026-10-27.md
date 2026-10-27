@@ -24,6 +24,7 @@ Do not describe the reviewed tip as a Git merge or an exact source tree.
 | Upstream `f39f28b` (impedance profile read) | Read the board's solved impedance profiles and restore the NPI criterion's actual tool reference | Wrapper/source tests and Pascal lint |
 | Upstream `ed4ef59` (partial) | Verify stored Altium checksums before extracting embedded 3D model bytes; compile an integrated library only with an explicit package path and a fresh nonempty IntLib artifact | 21 focused tests, Python compile and Pascal lint; native LibPkg build still pending |
 | Upstream `5d79657` through `ce53d6e`, `ed4ef59` (footprint read) | Restore the native `library.get_footprint_primitives` handler, including body metadata, region shapes and layer names; restrict saved STEP extraction to a named footprint's live model files | 33 focused tests, Pascal lint/build, loaded `.3` runtime and no-target native dispatch; real PcbLib read still pending |
+| Upstream `ce53d6e` (PCB pours/options) | Look up polygon outlines at a board point and read/set the new-polygon name template; include board identity and require an expected file for writes | Focused Python tests and Pascal lint/build; native read/write acceptance pending |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
@@ -44,7 +45,7 @@ automatic pass from the current partial reads.
 | Source | Remaining block | Integration check |
 | --- | --- | --- |
 | Upstream `0a9ccd4`, `bb06837` | xSignals, net naming/display, project libraries, pin and pad properties, shared packages | Split read and write paths; verify per-document targeting and property readback |
-| Upstream `5797fc0`, `bff741b`, `ce53d6e` | Board grids/options, editor preferences, jumpers, routing preferences, pours at a point, pair impedance, STEP export | Port one tool family at a time with source tests, script build and disposable-board native checks |
+| Upstream `5797fc0`, `bff741b`, `ce53d6e` | Remaining board grids, editor preferences, jumpers, routing preferences, pair impedance and STEP export | Port one tool family at a time with source tests, script build and disposable-board native checks |
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews and natively qualify the restored footprint reader and model association | Verify against a disposable PcbLib and an isolated output directory |

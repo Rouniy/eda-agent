@@ -1,4 +1,8 @@
-# Release verification: 2026.10.27.3
+# Release verification: 2026.10.27.4
+
+The `.4` PCB pours/options commands have source tests and Pascal lint/build.
+They still require native reads on a disposable board; the option setter also
+requires write/readback verification there.
 
 The `.3` footprint-primitives handler has passed Pascal lint/build and a
 no-target native dispatch check (`footprint_name is required`) on Altium

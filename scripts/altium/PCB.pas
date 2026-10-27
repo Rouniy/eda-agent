@@ -18399,6 +18399,133 @@ Begin
     Finally Seen.Free; Lookup.Free; Lines.Free; End;
 End;
 
+{ Saved board preferences. A write requires an exact expected board path;
+  reading does not change the board. }
+Function PCB_BoardOptions(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    TemplStr, Expected, NotApplied : String;
+    TemplNum : Integer;
+    Changed : Boolean;
+Begin
+    TemplStr := ExtractJsonValue(Params, 'polygon_name_template');
+    Expected := ExtractJsonValue(Params, 'expect_file');
+    TemplNum := -1;
+    If TemplStr <> '' Then
+    Begin
+        If IsIntStr(TemplStr) Then TemplNum := StrToIntDef(TemplStr, -1);
+        If TemplNum < 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+                'polygon_name_template must be a nonnegative whole number');
+            Exit;
+        End;
+        If Expected = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'EXPECTED_BOARD_REQUIRED',
+                'expect_file is required to change board options');
+            Exit;
+        End;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    If (Expected <> '') And (UpperCase(Board.FileName) <> UpperCase(Expected)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BOARD_MISMATCH',
+            'The focused board is not expect_file');
+        Exit;
+    End;
+    NotApplied := '';
+    Changed := False;
+    If TemplStr <> '' Then
+    Begin
+        Board.PolygonNameTemplate := TemplNum;
+        If Board.PolygonNameTemplate = TemplNum Then
+        Begin
+            Changed := True;
+            MarkDocDirtyByPath(Board.FileName);
+        End
+        Else
+            NotApplied := '"polygon_name_template"';
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_file', Board.FileName) + ','
+        + JsonInt('polygon_name_template', Board.PolygonNameTemplate) + ','
+        + JsonBool('automatic_split_planes', Board.AutomaticSplitPlanes) + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonRaw('not_applied', '[' + NotApplied + ']')));
+End;
+
+{ Find every pour whose outline contains a board-relative point. }
+Function PCB_PoursAt(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Poly : IPCB_Polygon;
+    XStr, YStr, Expected, Items, NetName : String;
+    X, Y, Examined, Found : Integer;
+Begin
+    XStr := ExtractJsonValue(Params, 'x');
+    YStr := ExtractJsonValue(Params, 'y');
+    Expected := ExtractJsonValue(Params, 'expect_file');
+    If (Not IsFloatStr(XStr)) Or (Not IsFloatStr(YStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+            'x and y are required, in mils');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    If (Expected <> '') And (UpperCase(Board.FileName) <> UpperCase(Expected)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BOARD_MISMATCH',
+            'The focused board is not expect_file');
+        Exit;
+    End;
+    X := MilsToCoordF(StrToFloatDef(XStr, 0)) + Board.XOrigin;
+    Y := MilsToCoordF(StrToFloatDef(YStr, 0)) + Board.YOrigin;
+    Items := '';
+    Examined := 0;
+    Found := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Poly := Iter.FirstPCBObject;
+        While Poly <> Nil Do
+        Begin
+            Inc(Examined);
+            If Poly.PointInPolygon(X, Y) Then
+            Begin
+                Inc(Found);
+                NetName := '';
+                Try If Poly.Net <> Nil Then NetName := Poly.Net.Name; Except End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonStr('name', Poly.Name) + ','
+                    + JsonStr('net', NetName) + ','
+                    + JsonStr('layer', GetLayerString(Poly.Layer)));
+            End;
+            Poly := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_file', Board.FileName) + ','
+        + JsonInt('pours_examined', Examined) + ','
+        + JsonInt('found', Found) + ','
+        + JsonRaw('pours', '[' + Items + ']')));
+End;
+
 Function HandlePCBCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -18446,6 +18573,8 @@ Begin
         'get_special_strings':     Result := PCB_GetSpecialStrings(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
         'get_impedance_profiles':   Result := PCB_GetImpedanceProfiles(Params, RequestId);
+        'board_options':           Result := PCB_BoardOptions(Params, RequestId);
+        'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
