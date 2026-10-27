@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.56';
+    SCRIPT_VERSION = '2026.10.27.58';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -28298,6 +28298,190 @@ Begin
         + JsonRaw('after', '[' + After + ']')));
 End;
 
+{ Move one 3D body by its bounding-box centre, adapting the rabihnd fork's  }
+{ position_3d_body to an exact library and footprint with an old-state     }
+{ precondition. MoveByXY applies a delta, avoiding MoveToXY's anchor rule.  }
+Function Lib_Position3DBody(Params : String; RequestId : String) : String;
+Var
+    LibPath, FocusedPath, FpName, Addr, Seen : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    Iter : IPCB_GroupIterator;
+    Body, TargetBody : IPCB_ComponentBody;
+    BRect : TCoordRect;
+    BodyIndex, ExpectedCount, Count, Dx, Dy, Changed : Integer;
+    TargetX, TargetY, ExpectedX, ExpectedY, OldX, OldY, NewX, NewY : Double;
+    Failed : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpName := ExtractJsonValue(Params, 'footprint_name');
+    BodyIndex := StrToIntDef(ExtractJsonValue(Params, 'body_index'), 0);
+    ExpectedCount := StrToIntDef(ExtractJsonValue(Params, 'expected_count'), -1);
+    If (LibPath = '') Or (FpName = '') Or (BodyIndex < 1) Or
+        (ExpectedCount < 1) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'expected_x_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'expected_y_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'target_x_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'target_y_mm')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'Exact library_path, footprint_name, body_index, expected_count, '
+            + 'expected centre and target centre are required');
+        Exit;
+    End;
+    ExpectedX := StrToFloatDef(ExtractJsonValue(Params, 'expected_x_mm'), 0);
+    ExpectedY := StrToFloatDef(ExtractJsonValue(Params, 'expected_y_mm'), 0);
+    TargetX := StrToFloatDef(ExtractJsonValue(Params, 'target_x_mm'), 0);
+    TargetY := StrToFloatDef(ExtractJsonValue(Params, 'target_y_mm'), 0);
+    If (Abs(TargetX) > 1000) Or (Abs(TargetY) > 1000) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_TARGET',
+            'Target centre must be within 1000 mm of the footprint origin');
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LIBRARY_FILE',
+            'The requested PcbLib does not exist: ' + LibPath);
+        Exit;
+    End;
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If UpperCase(FocusedPath) <> UpperCase(LibPath) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Requested PCB library did not become focused: ' + LibPath);
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', LibPath + ' is not a PcbLib');
+        Exit;
+    End;
+    Footprint := FootprintByName(PcbLib, FpName);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', FpName + ' not found');
+        Exit;
+    End;
+
+    Count := 0;
+    Seen := #9;
+    TargetBody := Nil;
+    Iter := Footprint.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+        Body := Iter.FirstPCBObject;
+        While Body <> Nil Do
+        Begin
+            Addr := IntToStr(Body.I_ObjectAddress);
+            If Pos(#9 + Addr + #9, Seen) = 0 Then
+            Begin
+                Seen := Seen + Addr + #9;
+                Inc(Count);
+                If Count = BodyIndex Then TargetBody := Body;
+            End;
+            Body := Iter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(Iter);
+    End;
+    If (Count <> ExpectedCount) Or (TargetBody = Nil) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BODY_SET_CHANGED',
+            '3D body count or selected index changed before the write');
+        Exit;
+    End;
+    BRect := TargetBody.BoundingRectangle;
+    OldX := (CoordToMM(BRect.Left - Footprint.X)
+        + CoordToMM(BRect.Right - Footprint.X)) / 2;
+    OldY := (CoordToMM(BRect.Bottom - Footprint.Y)
+        + CoordToMM(BRect.Top - Footprint.Y)) / 2;
+    If (Abs(OldX - ExpectedX) > 0.02) Or
+        (Abs(OldY - ExpectedY) > 0.02) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BODY_POSITION_CHANGED',
+            '3D body centre changed before the write');
+        Exit;
+    End;
+    Dx := MMToCoord(TargetX - OldX);
+    Dy := MMToCoord(TargetY - OldY);
+    Changed := 0;
+    If (Dx <> 0) Or (Dy <> 0) Then Changed := 1;
+    Failed := False;
+    If Changed = 1 Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            Try
+                PCBServer.SendMessageToRobots(TargetBody.I_ObjectAddress,
+                    c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                TargetBody.MoveByXY(Dx, Dy);
+                PCBServer.SendMessageToRobots(TargetBody.I_ObjectAddress,
+                    c_Broadcast, PCBM_EndModify, c_NoEventData);
+            Except
+                Failed := True;
+            End;
+        Finally
+            PCBServer.PostProcess;
+        End;
+    End;
+    If Failed Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MOVE_FAILED',
+            '3D body movement raised; inspect the footprint before retrying');
+        Exit;
+    End;
+    BRect := TargetBody.BoundingRectangle;
+    NewX := (CoordToMM(BRect.Left - Footprint.X)
+        + CoordToMM(BRect.Right - Footprint.X)) / 2;
+    NewY := (CoordToMM(BRect.Bottom - Footprint.Y)
+        + CoordToMM(BRect.Top - Footprint.Y)) / 2;
+    If (Abs(NewX - TargetX) > 0.02) Or (Abs(NewY - TargetY) > 0.02) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'POSITION_NOT_VERIFIED',
+            '3D body moved but its centre did not read back at the target');
+        Exit;
+    End;
+    If Changed = 1 Then
+    Begin
+        Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+        MarkDocDirtyByPath(LibPath);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('success', True) + ','
+        + JsonStr('library_path', LibPath) + ','
+        + JsonStr('footprint_name', FpName) + ','
+        + JsonInt('body_index', BodyIndex) + ','
+        + JsonInt('body_count', Count) + ','
+        + JsonInt('changed', Changed) + ','
+        + JsonFloat('before_x_mm', OldX) + ','
+        + JsonFloat('before_y_mm', OldY) + ','
+        + JsonFloat('after_x_mm', NewX) + ','
+        + JsonFloat('after_y_mm', NewY)));
+End;
+
 { Pins of a symbol, every part and display mode, for Lib_SetSymbolParts.     }
 Function SymbolPinCount(Comp : ISch_Component) : Integer;
 Var
@@ -32549,6 +32733,7 @@ Begin
         'link_footprint':       Result := Lib_LinkFootprint(Params, RequestId);
         'rotate_footprint':     Result := Lib_RotateFootprint(Params, RequestId);
         'set_3d_body':          Result := Lib_Set3DBody(Params, RequestId);
+        'position_3d_body':     Result := Lib_Position3DBody(Params, RequestId);
         'link_3d_model':        Result := Lib_Link3DModel(Params, RequestId);
         'set_mech_layers':      Result := Lib_SetMechLayers(Params, RequestId);
         'get_components':       Result := Lib_GetComponents(Params, RequestId);

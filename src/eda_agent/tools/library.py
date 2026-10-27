@@ -7293,6 +7293,90 @@ def register_library_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def lib_position_3d_body(
+        library_path: str,
+        footprint_name: str,
+        body_index: int = 1,
+        target_x_mm: float = 0.0,
+        target_y_mm: float = 0.0,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Move one footprint 3D body's bounding-box centre to X/Y in mm.
+
+        Coordinates are relative to the named footprint's origin. The
+        exact saved PcbLib and footprint are required. A dry run reports
+        the current centre; a write requires the native body count and
+        old centre to match that read and verifies the new centre. Saving
+        the library is a separate step.
+        """
+        path = Path(library_path)
+        if not path.is_absolute() or path.suffix.casefold() != ".pcblib" or not path.is_file():
+            return {"ok": False, "reason": "library_path must be an existing absolute PcbLib"}
+        name = footprint_name.strip()
+        if not name:
+            return {"ok": False, "reason": "footprint_name is required"}
+        if type(body_index) is not int or body_index < 1:
+            return {"ok": False, "reason": "body_index must be a positive integer"}
+        for key, value in (("target_x_mm", target_x_mm),
+                           ("target_y_mm", target_y_mm)):
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or abs(value) > 1000):
+                return {"ok": False, "reason": f"{key} must be finite and within 1000 mm"}
+        bridge = get_bridge()
+        snapshot = await bridge.send_command_async(
+            "library.get_footprint_primitives",
+            {"library_path": str(path), "footprint_name": name}, timeout=120.0)
+        bodies = snapshot.get("body_models") if isinstance(snapshot, dict) else None
+        if (not isinstance(snapshot, dict)
+                or str(snapshot.get("library_path", "")).casefold() != str(path).casefold()
+                or snapshot.get("name") != name
+                or not isinstance(bodies, list)
+                or snapshot.get("bodies") != len(bodies)):
+            return {"ok": False, "reason": "footprint body read was incomplete",
+                    "native_reply": snapshot}
+        if body_index > len(bodies):
+            return {"ok": False, "reason": "body_index exceeds body count",
+                    "body_count": len(bodies)}
+        body = bodies[body_index - 1]
+        try:
+            old_x = (float(body["x1"]) + float(body["x2"])) / 2
+            old_y = (float(body["y1"]) + float(body["y2"])) / 2
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"ok": False, "reason": f"body bounds unavailable: {exc}"}
+        if not math.isfinite(old_x) or not math.isfinite(old_y):
+            return {"ok": False, "reason": "body bounds are not finite"}
+        plan = {"ok": True, "dry_run": dry_run, "library_path": str(path),
+                "footprint_name": name, "body_index": body_index,
+                "body_count": len(bodies), "before_x_mm": old_x,
+                "before_y_mm": old_y, "target_x_mm": target_x_mm,
+                "target_y_mm": target_y_mm}
+        if dry_run:
+            return plan
+        reply = await bridge.send_command_async(
+            "library.position_3d_body",
+            {"library_path": str(path), "footprint_name": name,
+             "body_index": body_index, "expected_count": len(bodies),
+             "expected_x_mm": f"{old_x:.9f}",
+             "expected_y_mm": f"{old_y:.9f}",
+             "target_x_mm": f"{target_x_mm:.9f}",
+             "target_y_mm": f"{target_y_mm:.9f}"},
+            timeout=120.0)
+        if (not isinstance(reply, dict) or reply.get("success") is not True
+                or reply.get("library_path", "").casefold() != str(path).casefold()
+                or reply.get("footprint_name") != name
+                or reply.get("body_index") != body_index
+                or reply.get("body_count") != len(bodies)
+                or not math.isclose(reply.get("after_x_mm", float("nan")),
+                                    target_x_mm, abs_tol=0.02)
+                or not math.isclose(reply.get("after_y_mm", float("nan")),
+                                    target_y_mm, abs_tol=0.02)):
+            return {"ok": False, "reason": "3D body position was not verified",
+                    "native_reply": reply}
+        reply["ok"] = True
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
+
+    @mcp.tool()
     async def lib_get_footprint_primitives(
         footprint_name: str,
         library_path: str = "",

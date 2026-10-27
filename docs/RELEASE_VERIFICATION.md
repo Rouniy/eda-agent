@@ -3454,3 +3454,18 @@ in `lib_extract_embedded_models` wrote only its associated original STEP
 to `workspace/native-acceptance/StepExtract_20261027`; the saved model
 checksum verified and the output SHA-256 was
 `B5B123B0B7B89D446A648885C3979F56A3810F7E76BCC358F43980B61393C4CF`.
+
+## Exact 3D body position write (2026-10-27)
+
+Script `.57` loaded with zero cast errors. In the disposable
+`BodyEdit_20261027.PcbLib`, a stale-centre precondition returned
+`BODY_POSITION_CHANGED` without writing. `lib_position_3d_body` moved
+`TEST PAD`'s non-STEP body to (1, -1) mm and `AD_FE38`'s STEP body to
+(0.5, -0.5) mm. Both centres persisted after exact save, close and reopen.
+The STEP file name, [90, 0, 90] degree saved rotations and 10-mil model
+Z offset remained intact. Native movement uses `MoveByXY`; the Python
+wrapper sends fixed decimal strings because Altium's `IsFloatStr` rejects
+scientific notation for a centre close to zero.
+Script `.58` also rejects a missing PcbLib with `NO_LIBRARY_FILE` before
+Altium can open an empty editor tab. A no-op on the moved STEP body returned
+`changed=0` and `save_required=false`.

@@ -335,3 +335,20 @@ output directory. Its 1,069,643-byte file SHA-256 was
 `B5B123B0B7B89D446A648885C3979F56A3810F7E76BCC358F43980B61393C4CF`.
 The disposable PcbLib's SHA-256 was
 `A5AFD8514E06C3ED379C5249BA8FE7B7AC384DB35C0D5BC3A88878A2E4DBFDDB`.
+
+From `rabihnd/integration`, `lib_position_3d_body` now centres one selected
+3D body at requested footprint-relative X/Y coordinates. The port requires
+an exact existing PcbLib path and footprint name, defaults to a dry run,
+and has native preconditions on body count and old centre. It uses
+`MoveByXY`, then reads the centre back; saving remains a separate command.
+On Altium 26.11.1.5, script `.57`, a deliberately wrong old centre was
+refused. A non-STEP body moved to (1, -1) mm and remained there after
+save/reopen. A STEP body moved to (0.5, -0.5) mm and retained its named
+`LTC3895EFE.STEP` association, [90, 0, 90] degree saved rotations and
+10-mil model Z offset after save/reopen. These writes used only the
+disposable `BodyEdit_20261027.PcbLib`; multi-body footprints are still
+unverified natively.
+Script `.58` added a native file-existence check after a direct wrong-path
+probe showed that Altium otherwise opened an empty, unsaved PcbLib tab.
+The invalid path now returns `NO_LIBRARY_FILE` without changing focus;
+a valid no-op on the saved STEP body returns `changed=0`.
