@@ -6942,6 +6942,75 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_grow_pour(
+        board_path: str, index: int, expected_name: str, expected_layer: str,
+        distance_mils: float, expected_bounds: Optional[dict[str, float]] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Preview or grow one polygon outline on an exact PcbDoc.
+
+        Use the index, name and layer reported by ``pcb_get_polygons``.
+        Read with dry_run first, then pass its ``bounds_before`` as
+        ``expected_bounds`` for a write. Polygon indices may reorder after
+        Altium saves and reloads a PcbDoc.
+        Repour the polygon separately after the outline change.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if (type(index) is not int or index < 0 or not expected_name.strip()
+                or not expected_layer.strip() or type(distance_mils) not in (int, float)
+                or not math.isfinite(distance_mils) or distance_mils == 0
+                or abs(distance_mils) > 1000):
+            return {"ok": False, "reason": "invalid polygon selector or distance_mils"}
+        bridge = get_bridge()
+        params = {"board_path": board_path, "index": index,
+                  "expected_name": expected_name, "expected_layer": expected_layer,
+                  "distance_mils": distance_mils, "dry_run": True}
+        preview = await bridge.send_command_async("pcb.grow_pour", params, timeout=120.0)
+        if not isinstance(preview, dict) or preview.get("error"):
+            return preview
+        bounds = preview.get("bounds_before")
+        if (str(preview.get("board_path", "")).casefold() != board_path.casefold()
+                or preview.get("index") != index
+                or str(preview.get("name", "")).casefold() != expected_name.casefold()
+                or str(preview.get("layer", "")).casefold() != expected_layer.casefold()
+                or type(preview.get("point_count_before")) is not int
+                or preview["point_count_before"] < 3
+                or preview.get("dry_run") is not True
+                or not isinstance(bounds, dict)
+                or any(type(bounds.get(side)) not in (int, float)
+                       or not math.isfinite(bounds[side])
+                       for side in ("left", "bottom", "right", "top"))):
+            return {"ok": False, "reason": "incomplete or wrong-board pour preview",
+                    "native_reply": preview}
+        if expected_bounds is not None:
+            if (not isinstance(expected_bounds, dict)
+                    or any(type(expected_bounds.get(side)) not in (int, float)
+                           or not math.isfinite(expected_bounds[side])
+                           or not math.isclose(expected_bounds[side], bounds[side],
+                                               abs_tol=0.01, rel_tol=0)
+                           for side in ("left", "bottom", "right", "top"))):
+                return {"ok": False, "reason": "polygon bounds differ from reviewed plan",
+                        "current_bounds": bounds}
+        if dry_run:
+            return preview
+        if expected_bounds is None:
+            return {"ok": False, "reason": "expected_bounds from a reviewed dry-run is required for writes"}
+        params.update({"dry_run": False, "expected_points": preview["point_count_before"],
+                       **{f"expected_{side}": bounds[side]
+                          for side in ("left", "bottom", "right", "top")}})
+        result = await bridge.send_command_async("pcb.grow_pour", params, timeout=120.0)
+        if not isinstance(result, dict) or result.get("error"):
+            return result
+        if (str(result.get("board_path", "")).casefold() != board_path.casefold()
+                or result.get("index") != index or result.get("dry_run") is not False
+                or result.get("bounds_before") != bounds
+                or not isinstance(result.get("bounds_after"), dict)):
+            return {"ok": False, "reason": "incomplete or wrong-board pour write reply",
+                    "native_reply": result}
+        return result
+
+    @mcp.tool()
     async def pcb_modify_polygon(
         index: int,
         net: str = "",

@@ -2,6 +2,18 @@
 
 ## Latest native integration, 2026-10-27
 
+Script `.41` on Altium 26.11.1.5 added exact-board polygon-outline growth
+with a dry-run preview and required bounds token for writes. On an isolated
+PcbDoc copy, polygon index 64 grew by 1 mil on all four bounding edges.
+Exact save/close/reopen retained the new bounds, while Altium renumbered
+that polygon to index 50. Reusing the old index with its prior bounds was
+refused before a write. The pour was not refilled; a separate repour is
+needed. Three focused tests, Pascal lint/build and loaded script version
+match passed. Generated bundle SHA256:
+`B439E99C99D02DB2D28B02759A7B7B7A51730E485AF5938AA3A7C65AEE9E7189`.
+The owner PcbDoc remained unchanged at SHA256
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
 Script `.40` on Altium 26.11.1.5 added an exact-board read of each
 component pad's internal-plane connection settings. R62 pad 1 on the
 owner PcbDoc returned its GND net, native connection style and five

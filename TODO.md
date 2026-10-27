@@ -2,6 +2,9 @@
 
 ## Upstream layer-stack remainder, 2026-10-27
 
+- Complete the remaining `172d254` rule-setting, wire-tidy, pre-route and
+  paste-opening review. Pour growth is ported and persisted on an isolated
+  PcbDoc; repour and final copper acceptance remain separate.
 - Test `pcb_plane_connections` on a disposable PcbDoc with a real internal
   plane and known connected/isolated pads. The current owner board has no
   internal-plane layers, so `.40` only proves the property read path.

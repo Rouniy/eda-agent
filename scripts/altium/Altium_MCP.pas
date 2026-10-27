@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.40';
+    SCRIPT_VERSION = '2026.10.27.41';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47578,6 +47578,111 @@ Begin
     Result := '[' + Items + ']';
 End;
 
+Function PCB_PourBoundsJson(Poly : IPCB_Polygon) : String;
+Var
+    R : TCoordRect;
+Begin
+    R := Poly.BoundingRectangle;
+    Result := JsonObj(JsonRaw('left', FloatToJsonStr(CoordToMilsF(R.Left))) + ','
+        + JsonRaw('bottom', FloatToJsonStr(CoordToMilsF(R.Bottom))) + ','
+        + JsonRaw('right', FloatToJsonStr(CoordToMilsF(R.Right))) + ','
+        + JsonRaw('top', FloatToJsonStr(CoordToMilsF(R.Top))));
+End;
+
+Function PCB_GrowPour(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Poly, Found : IPCB_Polygon;
+    R : TCoordRect;
+    ExpectedPath, Why, IndexStr, NameStr, LayerStr, DistStr, Before : String;
+    LeftStr, BottomStr, RightStr, TopStr, ActualLayer : String;
+    Dist : Double;
+    TargetIdx, CurIdx, PointCount, ExpectedPoints : Integer;
+    DryRun : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    IndexStr := ExtractJsonValue(Params, 'index');
+    NameStr := ExtractJsonValue(Params, 'expected_name');
+    LayerStr := ExtractJsonValue(Params, 'expected_layer');
+    DistStr := ExtractJsonValue(Params, 'distance_mils');
+    If (ExpectedPath = '') Or (IndexStr = '') Or (NameStr = '') Or
+       (LayerStr = '') Or (Not IsFloatStr(DistStr)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path, index, expected_name, expected_layer and distance_mils required'); Exit; End;
+    TargetIdx := StrToIntDef(IndexStr, -1);
+    Dist := StrToFloatDef(DistStr, 0);
+    If (TargetIdx < 0) Or (Dist = 0) Or (Abs(Dist) > 1000) Then
+    Begin Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'index or distance_mils invalid'); Exit; End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    Found := Nil;
+    CurIdx := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Poly := Iter.FirstPCBObject;
+        While Poly <> Nil Do
+        Begin
+            If CurIdx = TargetIdx Then Begin Found := Poly; Break; End;
+            Inc(CurIdx);
+            Poly := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    If Found = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Polygon index not found'); Exit; End;
+    ActualLayer := GetLayerString(Found.Layer);
+    If (UpperCase(Found.Name) <> UpperCase(NameStr)) Or
+       (UpperCase(ActualLayer) <> UpperCase(LayerStr)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Polygon name or layer differs from expected'); Exit; End;
+    PointCount := Found.PointCount;
+    R := Found.BoundingRectangle;
+    Before := PCB_PourBoundsJson(Found);
+    DryRun := LowerCase(ExtractJsonValue(Params, 'dry_run')) <> 'false';
+    If Not DryRun Then
+    Begin
+        LeftStr := ExtractJsonValue(Params, 'expected_left');
+        BottomStr := ExtractJsonValue(Params, 'expected_bottom');
+        RightStr := ExtractJsonValue(Params, 'expected_right');
+        TopStr := ExtractJsonValue(Params, 'expected_top');
+        ExpectedPoints := StrToIntDef(ExtractJsonValue(Params, 'expected_points'), -1);
+        If (Not IsFloatStr(LeftStr)) Or (Not IsFloatStr(BottomStr)) Or
+           (Not IsFloatStr(RightStr)) Or (Not IsFloatStr(TopStr)) Or
+           (ExpectedPoints <> PointCount) Then
+        Begin Result := BuildErrorResponse(RequestId, 'STALE_PLAN', 'Polygon bounds or point count missing or changed'); Exit; End;
+        If (Abs(CoordToMilsF(R.Left) - StrToFloatDef(LeftStr, 0)) > 0.01) Or
+           (Abs(CoordToMilsF(R.Bottom) - StrToFloatDef(BottomStr, 0)) > 0.01) Or
+           (Abs(CoordToMilsF(R.Right) - StrToFloatDef(RightStr, 0)) > 0.01) Or
+           (Abs(CoordToMilsF(R.Top) - StrToFloatDef(TopStr, 0)) > 0.01) Then
+        Begin Result := BuildErrorResponse(RequestId, 'STALE_PLAN', 'Polygon bounds changed since preview'); Exit; End;
+        PCBServer.PreProcess;
+        Try
+            PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+            Found.GrowPolyshape(MilsToCoordF(Dist));
+            PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+        Finally
+            PCBServer.PostProcess;
+        End;
+        Try Found.GraphicallyInvalidate; Except End;
+        MarkDocDirtyByPath(Board.FileName);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('index', TargetIdx) + ','
+        + JsonStr('name', Found.Name) + ','
+        + JsonStr('layer', ActualLayer) + ','
+        + JsonInt('point_count_before', PointCount) + ','
+        + JsonBool('dry_run', DryRun) + ','
+        + JsonRaw('distance_mils', FloatToJsonStr(Dist)) + ','
+        + JsonRaw('bounds_before', Before) + ','
+        + JsonRaw('bounds_after', PCB_PourBoundsJson(Found)) + ','
+        + JsonBool('repour_needed', Not DryRun)));
+End;
+
 Function PCB_PlaneConnections(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -48580,6 +48685,7 @@ Begin
         'physical_stack':       Result := PCB_PhysicalStack(Params, RequestId);
         'flex_state':           Result := PCB_FlexState(Params, RequestId);
         'plane_connections':    Result := PCB_PlaneConnections(Params, RequestId);
+        'grow_pour':           Result := PCB_GrowPour(Params, RequestId);
         'set_stack_style':      Result := PCB_SetStackStyle(Params, RequestId);
         'set_dielectric':       Result := PCB_SetDielectric(Params, RequestId);
         'impedance_profile':    Result := PCB_ImpedanceProfile(Params, RequestId);

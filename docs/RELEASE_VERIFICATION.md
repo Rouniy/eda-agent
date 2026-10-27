@@ -1,4 +1,10 @@
-# Release verification: 2026.10.27.40
+# Release verification: 2026.10.27.41
+
+The `.41` pour grow tool passed three focused tests, Pascal lint/build,
+live write on an isolated PcbDoc, and exact save/close/reopen persistence.
+An old polygon index paired with reviewed bounds was refused after Altium
+renumbered its polygons. The owner PcbDoc SHA256 remained unchanged. The
+copper was not repoured in this check.
 
 The `.40` exact-board plane connection reader passed four focused tests,
 Pascal lint/build and a live Altium 26.11.1.5 read. R62 pad 1 returned
