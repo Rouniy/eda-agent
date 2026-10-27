@@ -7,6 +7,8 @@
   `eda-agent` dependencies. Ruff and six isolated tests pass, including
   a short electrothermal solve.
 - [ ] Observe the path-scoped hosted GitHub Actions workflow after push.
+  GitHub lists it as active, but its run count was still zero after the
+  `18e48a3` push; the latest repository Actions runs were from 2026-10-26.
 - [ ] Exercise the optional MPh adapter against a licensed COMSOL install
   when one is available; PyBaMM validation does not qualify COMSOL.
 

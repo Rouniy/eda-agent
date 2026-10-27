@@ -10,6 +10,8 @@ environment with PyBaMM 26.10.1.1, Ruff passed and all six package tests
 passed, including the short electrothermal smoke run and CSV/manifest
 output. COMSOL/MPh was not installed or natively exercised; its adapter
 remains optional and requires a local COMSOL installation and license.
+GitHub registered the new workflow as active but reported zero runs after
+the push, so hosted acceptance is still pending.
 
 ## Exact-board net inventory native read, 2026-10-28
 
