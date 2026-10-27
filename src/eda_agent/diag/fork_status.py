@@ -16,11 +16,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from ..noconsole import no_window
+
 
 def _git(root: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(root), *args], capture_output=True, text=True,
-        timeout=60, check=False,
+        timeout=60, check=False, **no_window(),
     )
     if completed.returncode:
         raise RuntimeError((completed.stderr or completed.stdout).strip()
@@ -100,6 +102,7 @@ def verify_fork_tips(root: Path, *, max_workers: int = 10,
             proc = subprocess.run(
                 ["git", "ls-remote", fork["clone_url"], branch_spec],
                 capture_output=True, text=True, timeout=25, check=False,
+                **no_window(),
             )
             remote_branches = {
                 line.split("\t", 1)[1].removeprefix("refs/heads/"): line.split("\t", 1)[0]

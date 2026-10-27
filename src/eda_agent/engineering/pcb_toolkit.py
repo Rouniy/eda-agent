@@ -36,6 +36,8 @@ import shutil
 import subprocess
 from typing import Any, Optional
 
+from ..noconsole import no_window
+
 __all__ = [
     "UNMAPPED",
     "cross_check",
@@ -137,25 +139,6 @@ _BUILD_HELP = (
 )
 
 
-def _hidden_window_kwargs() -> dict:
-    """Keep a console window from flashing on Windows.
-
-    Same treatment the LTspice runner already needed: a short-lived
-    child process that pops a window is disruptive when something calls
-    it in a loop.
-    """
-    import sys
-
-    if sys.platform != "win32":
-        return {}
-    startup = subprocess.STARTUPINFO()
-    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startup.wShowWindow = 0  # SW_HIDE
-    return {"startupinfo": startup,
-            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW",
-                                     0x08000000)}
-
-
 def find_binary() -> Optional[str]:
     """Path to a pcb-toolkit binary, or None.
 
@@ -246,7 +229,7 @@ def cross_check(calculator: str, kwargs: dict[str, Any], *,
     try:
         completed = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout_s,
-            check=False, **_hidden_window_kwargs())
+            check=False, **no_window())
     except (OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "reason": f"could not run pcb-toolkit: {exc}",
                 "command": argv}

@@ -941,3 +941,11 @@ The `lda-audiotech` UTF-8 response/pointer-file change (`22bb2df`) is not
 copied verbatim: `altium_bridge.py` now accepts UTF-8 with a BOM and falls
 back to the system ANSI codepage for older DelphiScript replies, while
 `diag/health.py` reads the pointer in the same encoding used to write it.
+
+Fresh `git fetch upstream main` advanced the tip to
+`c45ca0a537ad5afe0cda4ce1951e6bfb6be4ff3d` (issue #142, suppress
+unwanted console windows for child programs). Two-parent merge `bb3c404`
+records the new sync point. Its new source test exposed four fork-only
+subprocess starts; `fork_status.py`, `diag/update.py` and `pcb_toolkit.py`
+now pass `no_window()`. The focused suite passed 27 tests, and
+`git rev-list --count main..upstream/main` returned 0 after merge.

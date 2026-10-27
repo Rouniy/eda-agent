@@ -1,5 +1,19 @@
 # Fork integration TODO
 
+## New upstream point and distribution, 2026-10-27
+
+- [x] Merge upstream `c45ca0a` as a true two-parent merge and cover
+  fork-specific console subprocesses with the new `no_window()` helper.
+  The focused 27-test suite passes; upstream is again an ancestor of `main`.
+- [x] Adapt the `james-martinez` Windows binary workflow; a local exe build
+  and bundled-script installation passed. Add `yniantongtian-oss`'s weekly
+  Python and GitHub Actions dependency monitoring.
+- [ ] Observe the new Windows binary workflow in GitHub Actions. Its workflow
+  is active, but the API reported zero runs after push; local validation does
+  not substitute for the hosted runner.
+- [ ] Complete native acceptance of script `.106` after the shared Altium
+  session can be safely restarted; the last doctor check found loaded `.96`.
+
 ## Fractional-mil annotation order, 2026-10-27
 
 - [x] Remove whole-mil rounding from project annotation sort keys by using

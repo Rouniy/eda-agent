@@ -1,5 +1,21 @@
 # Current integration state / agent handoff
 
+## Upstream no-console merge, 2026-10-27
+
+`upstream/main` advanced to `c45ca0a537ad5afe0cda4ce1951e6bfb6be4ff3d`.
+Merge `bb3c404` records that exact sync point in `main`; zero upstream
+commits remain unmerged. The upstream `no_window()` helper now covers
+console subprocesses launched by the original package. Three fork-specific
+call sites in `fork_status.py`, `diag/update.py` and `pcb_toolkit.py` also
+use it. The focused suite passes 27 tests. This is Python source behavior;
+the loaded DelphiScript `.96` versus bundled `.106` gap is separate.
+
+The `james-martinez` Windows exe workflow was adapted and locally built
+from a release wheel. The exe reported 0.7.1 and installed all 15 bundled
+DelphiScript files into a disposable directory. GitHub Actions recognises
+the workflow, but had not created a run at the latest check. Weekly
+Dependabot config from `yniantongtian-oss/main` is also in `main`.
+
 ## Fractional-mil annotation order, 2026-10-27
 
 Source `.106` sorts project annotation by native TCoord positions instead
