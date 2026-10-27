@@ -1,5 +1,10 @@
 # Release verification: 2026.10.28.114
 
+The upstream probe-count merge loaded live on Altium 26.11.1.5 with zero
+cast errors. On the scratch Simulation Quick Start copy, `sim_get_probes`
+reported seven seen/seven skipped sheets with none open, then seven seen/six
+skipped and one probe with one sheet open. The project was closed unsaved.
+
 Previous live Altium script was `2026.10.28.113`. Its Pascal
 lint/build scanned 12 units with zero errors or warnings. Twelve
 schematic property/style tests passed. On a disposable SchDoc, the

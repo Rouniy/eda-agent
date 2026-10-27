@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Latest upstream ancestry merge, 2026-10-28
+
+Upstream `ee7589c` is a true merge parent of our `main`, moving the exact
+sync point forward from `f3bd57f`. Its counted `sim_get_probes` sheet lookup
+and pytest 9.2 courtyard assertion were adapted with script `.114`. Thirty-six
+focused tests and the 12-unit Pascal lint/build passed. Live Altium `.114`
+returned `sheets_seen=7, sheets_skipped=7, count=0` with no Simulation Quick
+Start copy sheets open, then `7, 6, 1` after one sheet opened. That sheet and
+the copied project were closed without saving. The script ping returned zero
+cast errors.
+
 ## MOREmbedded package-audit path, 2026-10-28
 
 With `Spirit_Level_Project.PcbLib` focused, `lib_audit_footprint_vs_package`

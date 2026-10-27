@@ -9,8 +9,11 @@ layout regression test compares the courtyard point by point for pytest
 9.2 compatibility. The merge kept our broader Pascal implementation and
 bumped the bundled script to `2026.10.28.114`. Thirty-six focused tests
 passed and `scripts/altium/build.py` linted all 12 units with zero errors
-or warnings. Native reload and probe-list acceptance are recorded
-separately once complete.
+or warnings. The Altium bridge restarted on `.114` with zero cast errors.
+On the isolated Simulation Quick Start copy, `generic.get_probes` returned
+`sheets_seen=7, sheets_skipped=7, count=0` with no sheet loaded, then
+`sheets_seen=7, sheets_skipped=6, count=1` after opening one sheet. The
+sheet and copy project were closed without saving.
 
 ## 2026-10-28 MOREmbedded package-audit routing
 
