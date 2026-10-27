@@ -2,7 +2,8 @@
 
 ## Fresh fork audit after `1d093a2`, 2026-10-27
 
-`main` and `origin/main` point to `1d093a2`; the fetched upstream tip is
+At the start of this audit, `main` and `origin/main` pointed to `1d093a2`;
+the validation fix is now on `main` as `e6ef3db`. The fetched upstream tip is
 `c45ca0a` and is an ancestor of `main` (`main..upstream/main` is empty).
 The live verifier matched 62/62 fork default tips and 117/117 branch tips
 to local refs. `MOREmbedded/main` remains `032fb4b`. Its
