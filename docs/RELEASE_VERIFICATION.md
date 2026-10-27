@@ -1,4 +1,9 @@
-# Release verification: 2026.10.27.5
+# Release verification: 2026.10.27.6
+
+The `.6` port CrossRef planner has source tests and Pascal lint/build. Its
+`ConnectedEnd` getter and the CrossRef edit/readback still need native
+acceptance on a disposable sheet; direct pin fallback remains disabled until
+the fork's live-pin filter is integrated.
 
 The `.5` generic schematic property guard has source tests and Pascal
 lint/build. Its `TextFontId` read/write path still needs native acceptance

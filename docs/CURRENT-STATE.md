@@ -2,6 +2,16 @@
 
 ## Source integration, 2026-10-27
 
+The `.6` source ports `mooreaa`'s port cross-reference planner and exposes
+`sch_fix_port_crossrefs` with dry run by default. Applying a plan requires
+an exact sheet path, a matching plan SHA-256 and `confirm=true`; each write
+uses the old CrossRef position and is read back. The native property reader
+adds read-only `ConnectedEnd`. The tool does not yet query live pins because
+our generic ePin iterator lacks the fork's hidden-pin filter; geometry and
+Altium's ConnectedEnd remain available, and ambiguous ports are not moved.
+Focused tests and Pascal lint/build pass; native disposable-sheet acceptance
+and `.6` runtime reload are pending.
+
 The `.5` source guards `Obj.FontId` in the generic schematic reader and
 writer by object type. Sheet and harness entries use typed `TextFontId`.
 This ports the `mooreaa` AD25 crash fix as refined by the latest upstream.

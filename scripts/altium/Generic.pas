@@ -266,7 +266,8 @@ Begin
                 Or ((PropName = 'IsHidden') And (Not SchObjectHasIsHidden(Obj)))
                 Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj)))
                 Or ((PropName = 'FontId') And (Not SchObjectHasFontId(Obj)))
-                Or ((PropName = 'TextFontId') And (Not SchObjectHasTextFontId(Obj))) Then
+                Or ((PropName = 'TextFontId') And (Not SchObjectHasTextFontId(Obj)))
+                Or (PropName = 'ConnectedEnd') Then
             Begin
                 Result := PropName;
                 Exit;
@@ -748,6 +749,21 @@ Begin
             Begin
                 HarnessEntryObj := Obj;
                 Result := IntToStr(HarnessEntryObj.TextFontID);
+            End
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
+        { Altium derives this from the port's wiring. It is read only: a
+          scripted write appears to take but later returns to its value. }
+        Else If PropName = 'ConnectedEnd' Then
+        Begin
+            If Obj.ObjectId = ePort Then
+            Begin
+                PortObj := Obj;
+                Result := IntToStr(PortObj.ConnectedEnd);
             End
             Else
             Begin

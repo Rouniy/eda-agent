@@ -189,6 +189,35 @@ def bad_filter(cond: str, **extra: Any) -> dict[str, Any]:
                      f"not understood.{hint} Nothing was sent.", **extra}
 
 
+async def _focus_sheet(bridge: Any,
+                       document_path: Optional[str]) -> Optional[dict[str, Any]]:
+    """Make ``document_path`` the active sheet; the reply if that failed.
+
+    Placement lands on the active schematic, and a sheet just created is
+    not focused, so without this the parts can land on another open one.
+    """
+    import ntpath
+
+    if not document_path or not ntpath.isabs(document_path):
+        return {"error": "BAD_SHEET_PATH", "reason": "absolute sheet_path is required"}
+    focus = await bridge.send_command_async(
+        "application.set_active_document", {"file_path": document_path})
+    if not isinstance(focus, dict) or focus.get("success") is False:
+        return {
+            "error": "FOCUS_FAILED",
+            "reason": f"could not focus {document_path} before placement; "
+                      "aborting to avoid placing on the wrong sheet",
+            "focus_result": focus,
+        }
+    active = await bridge.send_command_async("application.get_active_document", {})
+    actual = active.get("file_path", "") if isinstance(active, dict) else ""
+    if ntpath.normcase(ntpath.normpath(actual)) != ntpath.normcase(
+            ntpath.normpath(document_path)):
+        return {"error": "SHEET_MISMATCH", "reason":
+                f"active sheet is {actual or '(none)'}, expected {document_path}"}
+    return None
+
+
 def register_generic_tools(mcp):
     """Register generic primitive tools with the MCP server."""
 
@@ -1911,6 +1940,141 @@ def register_generic_tools(mcp):
             },
         )
         return result
+
+    @mcp.tool()
+    async def sch_fix_port_crossrefs(
+        sheet_path: str,
+        dry_run: bool = True,
+        confirm: bool = False,
+        expected_plan_sha256: str = "",
+    ) -> dict[str, Any]:
+        """Put each port's cross-reference at the end that is not wired.
+
+        With Port Cross References on, Altium draws a port's "Sheet[1B]"
+        text beside the end it treats as unwired. A port moved while it
+        had no wire keeps its old end, so after a block move the reference
+        can sit on the wire or run off the sheet, and a compile does not
+        put it back. This reads the sheet's ports, wires, live pins and
+        CrossRef parameters, takes each horizontal port's wired end from
+        Altium's ConnectedEnd (the wire geometry when that reads none or
+        both), and moves the reference to the other end (20 mil out, text
+        running away from the port).
+
+        Args:
+            sheet_path: The .SchDoc, as app_list_documents reports it.
+            dry_run: True (default) only reports what it would move.
+            confirm: Required for applying a reviewed plan.
+            expected_plan_sha256: Digest returned by the dry run. If the
+                sheet's queried state changes, the apply call refuses.
+
+        Returns:
+            ``moves`` (port, wired_end, from/to x and justification),
+            ``ok``, ``unresolved`` (neither or both ends wired, vertical,
+            or no reference), ``off_sheet`` (text estimated to run past
+            the zone border at Arial 7 widths) and, when applied,
+            ``applied`` / ``failed``. Nothing is saved.
+        """
+        import hashlib
+        import json
+
+        from .port_crossrefs import border_for, plan_crossref_fixes
+
+        bridge = get_bridge()
+        refusal = await _focus_sheet(bridge, sheet_path)
+        if refusal is not None:
+            return refusal
+        scope = f"doc:{sheet_path}"
+
+        async def query(object_type: str, properties: str, flt: str = ""):
+            res = await bridge.send_command_async("generic.query_objects", {
+                "scope": scope, "object_type": object_type,
+                "filter": flt, "properties": properties})
+            if not isinstance(res, dict) or not isinstance(res.get("objects"), list):
+                raise ValueError(f"incomplete {object_type} read: {res}")
+            if res.get("count") is not None and res["count"] != len(res["objects"]):
+                raise ValueError(f"partial {object_type} read")
+            return res["objects"]
+
+        try:
+            ports = await query("ePort",
+                                "Name,Location.X,Location.Y,Width,Style,ConnectedEnd")
+            wires = await query("eWire", "Vertices")
+            refs = await query("eParameter", "Name,Text,Location.X,Location.Y,Justification",
+                               "Name=CrossRef")
+        except ValueError as exc:
+            return {"error": "INCOMPLETE_READ", "reason": str(exc)}
+        # The current main branch does not yet have mooreaa's live-pin
+        # filter. Unfiltered ePin reads include hidden copies from other
+        # parts/display modes and can misidentify a port's wired end.
+        pins = []
+        info = await bridge.send_command_async("generic.get_document_info", {})
+        x_range = None
+        if isinstance(info, dict):
+            x_range = border_for(info.get("sheet_size", ""),
+                                 float(info.get("custom_width") or 0))
+
+        plan = plan_crossref_fixes(ports, wires, refs, pins, x_range)
+        digest_input = {"sheet_path": sheet_path, "ports": ports,
+                        "wires": wires, "crossrefs": refs, "moves": plan["moves"]}
+        plan_sha256 = hashlib.sha256(json.dumps(
+            digest_input, sort_keys=True, ensure_ascii=False,
+            default=str).encode("utf-8")).hexdigest()
+        plan.update({"sheet_path": sheet_path, "dry_run": dry_run,
+                     "ports": len(ports), "crossrefs": len(refs),
+                     "border_x": list(x_range) if x_range else None,
+                     "plan_sha256": plan_sha256,
+                     "pin_fallback": "disabled until live-pin filtering is ported"})
+        if not refs:
+            plan["note"] = ("No CrossRef parameters found: Port Cross References "
+                            "may be off, or the sheet was not compiled since "
+                            "they were turned on.")
+        if dry_run:
+            return plan
+
+        if not confirm or expected_plan_sha256 != plan_sha256:
+            return {**plan, "error": "PLAN_NOT_APPROVED",
+                    "reason": "review the dry run and pass its plan_sha256 with confirm=true"}
+
+        # The filter uses the reference's old position. If two references
+        # share it, one write could move both; refuse the entire batch.
+        locations = [(str(ref.get("Location.X")), str(ref.get("Location.Y")))
+                     for ref in refs]
+        if len(locations) != len(set(locations)):
+            return {**plan, "error": "AMBIGUOUS_CROSSREF_LOCATION"}
+
+        applied, failed = [], []
+        for m in plan["moves"]:
+            res = await bridge.send_command_async("generic.modify_objects", {
+                "scope": scope_to_wire(scope), "object_type": "eParameter",
+                "filter": (f"Name=CrossRef|Location.X={m['from_x']}"
+                           f"|Location.Y={m['from_y']}"),
+                "set": (f"Location.X={m['to_x']}"
+                        f"|Justification={m['to_justification']}")})
+            n = res.get("matched", 0) if isinstance(res, dict) else 0
+            if n != 1 or res.get("success") is False:
+                failed.append({"port": m["port"], "result": res})
+                break
+            try:
+                verify = await query("eParameter",
+                                     "Name,Location.X,Location.Y,Justification",
+                                     f"Name=CrossRef|Location.X={m['to_x']}"
+                                     f"|Location.Y={m['from_y']}")
+            except ValueError as exc:
+                failed.append({"port": m["port"], "result": res,
+                               "reason": f"readback failed: {exc}"})
+                break
+            landed = (len(verify) == 1 and
+                      str(verify[0].get("Justification")) ==
+                      str(m["to_justification"]))
+            (applied if landed else failed).append(
+                {"port": m["port"], "result": res, "readback": verify})
+            if not landed:
+                break
+        plan.update({"applied": applied, "failed": failed, "saved": False,
+                     "next_step": "Save the sheet, close and reload it "
+                                  "(app_close_document + proj_load_sheets), "
+                                  "then run this again with dry_run to confirm."})
+        return plan
 
     @mcp.tool()
     async def sch_place_port(
