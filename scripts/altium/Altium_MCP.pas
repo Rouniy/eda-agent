@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.10';
+    SCRIPT_VERSION = '2026.10.27.11';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -45104,6 +45104,91 @@ Begin
     Result := (Obj.ObjectId = eSheetEntry) Or (Obj.ObjectId = eHarnessEntry);
 End;
 
+Procedure VoteSheetFonts(SchDoc : ISch_Document; Kind : Integer;
+    Keys : TStringList; Counts : TStringList);
+Var
+    Iterator : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    EntryObj : ISch_SheetEntry;
+    Key : String;
+    Idx, FId : Integer;
+Begin
+    Iterator := SchDoc.SchIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(Kind));
+        Obj := Iterator.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            FId := 0;
+            If Obj.ObjectId = eSheetEntry Then
+            Begin
+                EntryObj := Obj;
+                Try FId := EntryObj.TextFontID; Except End;
+            End
+            Else If SchObjectHasFontId(Obj) Then
+            Begin
+                Try FId := Obj.FontId; Except End;
+            End;
+            If FId > 0 Then
+            Begin
+                Key := IntToStr(FId);
+                Idx := Keys.IndexOf(Key);
+                If Idx < 0 Then
+                Begin
+                    Keys.Add(Key);
+                    Counts.Add('1');
+                End
+                Else
+                    Counts[Idx] := IntToStr(StrToIntDef(Counts[Idx], 0) + 1);
+            End;
+            Obj := Iterator.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+End;
+
+{ The font a sheet already uses for one kind of object: the most common one
+  among its objects of that kind, or among its net labels when it has none.
+  New ports, power ports, text frames and sheet entries otherwise come in as
+  font 1 (Times New Roman 10) whatever the sheet around them uses. }
+Function InferSheetFontFor(SchDoc : ISch_Document; Kind : Integer;
+    Var OutFontId : Integer) : Boolean;
+Var
+    Keys, Counts : TStringList;
+    I, N, BestN : Integer;
+Begin
+    Result := False;
+    OutFontId := 0;
+    If SchDoc = Nil Then Exit;
+
+    Keys := TStringList.Create;
+    Counts := TStringList.Create;
+    Try
+        VoteSheetFonts(SchDoc, Kind, Keys, Counts);
+        If (Keys.Count = 0) And (Kind <> eNetLabel) Then
+            VoteSheetFonts(SchDoc, eNetLabel, Keys, Counts);
+
+        BestN := 0;
+        For I := 0 To Keys.Count - 1 Do
+        Begin
+            N := StrToIntDef(Counts[I], 0);
+            If N > BestN Then
+            Begin
+                BestN := N;
+                OutFontId := StrToIntDef(Keys[I], 0);
+            End;
+        End;
+        Result := BestN > 0;
+    Finally
+        Keys.Free;
+        Counts.Free;
+    End;
+End;
+
+{ The font a new object should take: font_id when the caller gave one,
+  otherwise the sheet's own font for that kind. 0 = leave Altium's default. }
+
 Function UnsupportedSchProperty(Obj : ISch_GraphicalObject; SetStr : String) : String;
 Var
     Remaining, Assignment, PropName : String;
@@ -46585,6 +46670,16 @@ Begin
     { handled properly by Gen_MirrorSchComponent, which moves the geometry.  }
     Try Obj.GraphicallyInvalidate; Except End;
 End;
+
+Procedure SetSchPartId(Comp : ISch_Component; PartId : Integer);
+Begin
+    SchBeginModify(Comp);
+    Try Comp.SetState_CurrentPartID(PartId); Except End;
+    Try Comp.CurrentPartID := PartId; Except End;
+    SchEndModify(Comp);
+    RefreshSchObjectRender(Comp);
+End;
+
 
 Function MatchesFilter(Obj : ISch_GraphicalObject; FilterStr : String) : Boolean;
 Var
@@ -54934,11 +55029,110 @@ End;
 { library_path and lib_reference are required; others have sane defaults.      }
 {..............................................................................}
 
+Function TidyPlacedComponent(Comp : ISch_Component; LibName : String;
+    LibRef : String; DesigFont : Integer) : String;
+Var
+    ParamIter : ISch_Iterator;
+    ParamObj : ISch_Parameter;
+    Own : TStringList;
+    ParamName, GotLib : String;
+    Hidden, FontWas : Integer;
+Begin
+    Hidden := 0;
+    FontWas := 0;
+    GotLib := '';
+    SchBeginModify(Comp);
+    Try
+        If LibName <> '' Then
+        Begin
+            Try Comp.SourceLibraryName := LibName; Except End;
+            Try Comp.LibReference := LibRef; Except End;
+            Try Comp.DatabaseTableName := ''; Except End;
+            Try Comp.UseDBTableName := False; Except End;
+            Try Comp.UseLibraryName := True; Except End;
+            Try Comp.DesignItemId := LibRef; Except End;
+        End;
+        Try GotLib := Comp.SourceLibraryName; Except End;
+
+        Own := TStringList.Create;
+        Try
+            ParamIter := Comp.SchIterator_Create;
+            ParamIter.AddFilter_ObjectSet(MkSet(eParameter));
+            ParamIter.SetState_IterationDepth(eIterateFirstLevel);
+            Try
+                ParamObj := ParamIter.FirstSchObject;
+                While ParamObj <> Nil Do
+                Begin
+                    ParamName := '';
+                    Try ParamName := ParamObj.Name; Except End;
+                    Own.Add(ParamName);
+                    ParamObj := ParamIter.NextSchObject;
+                End;
+            Finally
+                Comp.SchIterator_Destroy(ParamIter);
+            End;
+
+            ParamIter := Comp.SchIterator_Create;
+            ParamIter.AddFilter_ObjectSet(MkSet(eParameter));
+            Try
+                ParamObj := ParamIter.FirstSchObject;
+                While ParamObj <> Nil Do
+                Begin
+                    ParamName := '';
+                    Try ParamName := ParamObj.Name; Except End;
+                    If Own.IndexOf(ParamName) < 0 Then
+                    Begin
+                        If Not ParamObj.IsHidden Then
+                        Begin
+                            ParamObj.IsHidden := True;
+                            Inc(Hidden);
+                        End;
+                    End;
+                    ParamObj := ParamIter.NextSchObject;
+                End;
+            Finally
+                Comp.SchIterator_Destroy(ParamIter);
+            End;
+        Finally
+            Own.Free;
+        End;
+
+        If DesigFont > 0 Then
+        Begin
+            Try FontWas := Comp.Designator.FontId; Except End;
+            If FontWas <> DesigFont Then
+            Begin
+                Try Comp.Designator.FontId := DesigFont; Except End;
+            End;
+        End;
+    Finally
+        SchEndModify(Comp);
+    End;
+
+    Result := JsonStr('source_library', GotLib) + ',' + JsonInt('model_params_hidden', Hidden);
+    If (DesigFont > 0) And (FontWas <> DesigFont) Then
+        Result := Result + ',' + JsonInt('designator_font_id', DesigFont);
+End;
+
+{..............................................................................}
+{ Gen_PlaceSchComponentsFromLibrary - Bulk BOM placement.                       }
+{ Each op: library_path, lib_reference, x, y, designator, rotation, footprint, }
+{ part_id. library_path and lib_reference are required; others have sane      }
+{ defaults. part_id places one part of a multi-part symbol (U2 part 3): the   }
+{ same designator can then appear once per part. It is read back, and a part  }
+{ id the symbol does not have fails that placement (PART_REFUSED), because    }
+{ the assignment is accepted and silently does not take.                      }
+{..............................................................................}
+
+
 Function Gen_PlaceSchComponentsFromLibrary(Params : String; RequestId : String) : String;
 Var
     PlaceStr, Op, Remaining, FailedRefdes, ResponseBody : String;
     FpBefore, FpAfter, FpIssues : String;
+    LinkName, Tidied, PartIssues : String;
     OpCount, Placed, Failed, Rotation, OrientationVal, FpChoice, FpChosen : Integer;
+    PartId, PartAfter, DesigFont : Integer;
+    TidyOn : Boolean;
     LibPath, LibRef, Desig, Footprint, AvailHint : String;
     ResolvedLib, LibReason : String;
     X, Y : Integer;
@@ -54966,6 +55160,13 @@ Begin
     FailedRefdes := '';
     FpIssues := '';
     FpChosen := 0;
+    Tidied := '';
+    PartIssues := '';
+    TidyOn := LowerCase(ExtractJsonValue(Params, 'tidy')) <> 'false';
+    DesigFont := 0;
+    If TidyOn Then
+        If Not InferSheetFontFor(SchDoc, eDesignator, DesigFont) Then
+            DesigFont := 0;
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Try
@@ -54981,6 +55182,8 @@ Begin
             X := StrToIntDef(GetBatchField(Op, 'x'), 0);
             Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
             Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+            PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 1);
+            If PartId < 1 Then PartId := 1;
 
             If LibRef = '' Then
             Begin
@@ -55021,6 +55224,7 @@ Begin
             { and which stops the polling loop until a human clicks it. A    }
             { placed component reports its library AS an .IntLib, so callers }
             { copying source_library off the sheet hit this every time.      }
+            LinkName := ExtractFileName(LibPath);
             If LibPath <> '' Then
             Begin
                 ResolvedLib := ResolveSchLibForLoad(LibPath, LibReason);
@@ -55071,6 +55275,10 @@ Begin
                 Continue;
             End;
 
+            { Set the requested sub-part before adding it to the sheet. }
+            Try Comp.SetState_CurrentPartID(PartId); Except End;
+            Try Comp.CurrentPartID := PartId; Except End;
+
             Try SchDoc.AddSchObject(Comp); Except End;
             Try Comp.MoveToXY(MilsToCoord(X), MilsToCoord(Y)); Except End;
 
@@ -55082,6 +55290,18 @@ Begin
 
             If Desig <> '' Then
                 Try Comp.Designator.Text := Desig; Except End;
+            { The editor and compiled model must both see the part switch. }
+            SetSchPartId(Comp, PartId);
+            PartAfter := -1;
+            Try PartAfter := Comp.CurrentPartID; Except End;
+            If PartAfter <> PartId Then
+            Begin
+                If PartIssues <> '' Then PartIssues := PartIssues + ',';
+                PartIssues := PartIssues + '{"designator":"'
+                    + EscapeJsonString(Desig) + '","requested":'
+                    + IntToStr(PartId) + ',"actual":' + IntToStr(PartAfter)
+                    + ',"issue":"PART_REFUSED"}';
+            End;
             If Footprint <> '' Then
             Begin
                 FpChoice := ChooseFootprintModel(Comp, Footprint, FpBefore, FpAfter);
@@ -55101,6 +55321,12 @@ Begin
                             + EscapeJsonString(FpBefore) + '"}';
                 End;
             End;
+            If TidyOn Then
+            Begin
+                If Tidied <> '' Then Tidied := Tidied + ',';
+                Tidied := Tidied + '{' + JsonStr('designator', Desig) + ','
+                    + TidyPlacedComponent(Comp, LinkName, LibRef, DesigFont) + '}';
+            End;
 
             SchRegisterObject(SchDoc, Comp);
             Inc(Placed);
@@ -55114,7 +55340,9 @@ Begin
         + ',"failed":' + IntToStr(Failed)
         + ',"total":' + IntToStr(OpCount)
         + ',"footprints_chosen":' + IntToStr(FpChosen)
-        + ',"footprint_issues":[' + FpIssues + ']';
+        + ',"footprint_issues":[' + FpIssues + ']'
+        + ',"part_issues":[' + PartIssues + ']'
+        + ',"tidied":[' + Tidied + ']';
     If FailedRefdes <> '' Then
         ResponseBody := ResponseBody + ',"failed_refdes":"'
             + EscapeJsonString(FailedRefdes) + '"';

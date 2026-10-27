@@ -1,4 +1,10 @@
-# Release verification: 2026.10.27.10
+# Release verification: 2026.10.27.11
+
+The `.11` multipart placement and tidy port has source tests and Pascal
+lint/build. Native acceptance must place several parts of a disposable
+multipart symbol, compile the sheet and check the pin/net count, then inspect
+the source link, hidden model parameters and designator font. Three local FPC
+tests skip because the compiler is not installed.
 
 The `.10` Footprint stamp port chooses an existing model before falling back
 to a rename, counts failed stamps and refuses an unloaded explicit batch

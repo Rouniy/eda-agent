@@ -41,6 +41,7 @@ PLACEMENT_KEYS = frozenset({
     "rotation",
     "designator",
     "footprint",
+    "part_id",
 })
 
 _ERC_PROJECT_PATH_SCRIPT_VERSION = "2026.10.19.1"
@@ -3290,6 +3291,7 @@ def register_generic_tools(mcp):
         placements: list[dict[str, Any]],
         document_path: Optional[str] = None,
         allow_manual_layout: bool = False,
+        tidy: bool = True,
     ) -> dict[str, Any]:
         """Place MANY schematic components from libraries in ONE call.
 
@@ -3338,6 +3340,11 @@ def register_generic_tools(mcp):
                 - footprint (str, optional), choose a PCB model already on
                   the library symbol by name; an absent name leaves the
                   symbol's default model and appears in footprint_issues
+                - part_id (int, optional), 1-based symbol part, default 1;
+                  part_issues reports a rejected switch
+            tidy: Link each new part to its source library, hide inherited
+                model parameters and match the sheet's designator font.
+                Defaults to True; set False to retain the library defaults.
 
         Example, place a 5-part BOM row:
             sch_place_components(placements=[
@@ -3351,8 +3358,8 @@ def register_generic_tools(mcp):
             ])
 
         Returns:
-            Dict with placed, failed, total, footprints_chosen counts and
-            footprint_issues for names not on the symbol or not applied.
+            Dict with placed, failed, total, footprints_chosen counts,
+            footprint_issues, part_issues and per-part tidied details.
         """
         unknown = unknown_placement_keys(placements)
         if unknown:
@@ -3386,9 +3393,17 @@ def register_generic_tools(mcp):
                 f"rotation={int(p.get('rotation', 0))}",
             ]
             if p.get("designator"):
-                fields.append(f"designator={p['designator']}")
+                fields.append(f"designator={payload_safe(p['designator'])}")
             if p.get("footprint"):
-                fields.append(f"footprint={p['footprint']}")
+                fields.append(f"footprint={payload_safe(p['footprint'])}")
+            if p.get("part_id") is not None:
+                try:
+                    part_id = int(p["part_id"])
+                except (TypeError, ValueError):
+                    return {"error": "BAD_PART_ID", "placed": 0}
+                if part_id < 1:
+                    return {"error": "BAD_PART_ID", "placed": 0}
+                fields.append(f"part_id={part_id}")
             op_strs.append(";".join(fields))
 
         if not op_strs:
@@ -3418,7 +3433,7 @@ def register_generic_tools(mcp):
                 }
         return await bridge.send_command_async(
             "generic.place_sch_components_from_library",
-            {"placements": "~~".join(op_strs)},
+            {"placements": "~~".join(op_strs), "tidy": str(tidy).lower()},
         )
 
     @mcp.tool()

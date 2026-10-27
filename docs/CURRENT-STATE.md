@@ -2,6 +2,17 @@
 
 ## Source integration, 2026-10-27
 
+The `.11` source ports the corrected `mooreaa` multipart placement and tidy
+step. `sch_place_components` accepts `part_id` per part and a `tidy` switch
+(on by default). The native handler writes the requested part before and
+after adding the component to the sheet, reports a post-placement mismatch
+in `part_issues`, and leaves that placement visible and counted. Tidy links
+the source library, hides inherited model parameters and adopts the sheet's
+designator font; it reports each result in `tidied`. The Python placement
+encoder now sanitizes designator and footprint fields as well. 65 related
+tests pass, three FPC-dependent tests skip, and Pascal lint/build passes.
+Live `.11` reload and native multipart-sheet acceptance are pending.
+
 The `.10` source routes single/bulk `Footprint` stamps through the verified
 model chooser before any fallback rename. A component that already carries
 the requested model switches to it rather than duplicating its name and

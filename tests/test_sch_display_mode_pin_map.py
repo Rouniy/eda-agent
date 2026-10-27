@@ -71,6 +71,23 @@ def test_footprint_stamp_selects_existing_model_before_renaming():
     assert '"footprints_not_applied":' in batch
 
 
+def test_multipart_placement_and_tidy_are_reported():
+    source = _source()
+    body = _routine(source, "Gen_PlaceSchComponentsFromLibrary")
+    before_add = body.index("Comp.SetState_CurrentPartID(PartId)")
+    add = body.index("SchDoc.AddSchObject(Comp)")
+    after_add = body.index("SetSchPartId(Comp, PartId)")
+    register = body.index("SchRegisterObject(SchDoc, Comp)")
+    assert before_add < add < after_add < register
+    assert "PartAfter <> PartId" in body
+    assert '"part_issues":[' in body
+    assert "TidyPlacedComponent(Comp, LinkName, LibRef, DesigFont)" in body
+    tidy = _routine(source, "TidyPlacedComponent")
+    assert "Comp.SourceLibraryName := LibName" in tidy
+    assert "ParamIter.SetState_IterationDepth(eIterateFirstLevel)" in tidy
+    assert "ParamObj.IsHidden := True" in tidy
+
+
 def test_pin_map_parser_and_merge_check_run_in_pascal(tmp_path):
     fpc = shutil.which("fpc")
     if not fpc:

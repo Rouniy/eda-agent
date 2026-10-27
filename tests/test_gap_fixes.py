@@ -162,3 +162,21 @@ async def test_placement_without_doc_path_skips_focus(monkeypatch):
     cmds = [c for c, _ in bridge.calls]
     assert "application.set_active_document" not in cmds
     assert cmds == ["generic.place_sch_components_from_library"]
+
+
+@pytest.mark.asyncio
+async def test_placement_sends_part_and_tidy_choice(monkeypatch):
+    bridge = _RecordingBridge()
+    tool = _place_tool(monkeypatch, bridge)
+    await tool(placements=[{"lib_reference": "AMP", "x": 100, "y": 200,
+                            "part_id": 3}], tidy=False)
+    command, params = bridge.calls[-1]
+    assert command == "generic.place_sch_components_from_library"
+    assert "part_id=3" in params["placements"]
+    assert params["tidy"] == "false"
+
+    bridge.calls.clear()
+    refused = await tool(placements=[{"lib_reference": "AMP", "x": 100,
+                                      "y": 200, "part_id": 0}])
+    assert refused["error"] == "BAD_PART_ID"
+    assert bridge.calls == []
