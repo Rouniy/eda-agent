@@ -1,7 +1,7 @@
 # Upstream and fork sync checkpoint — 2026-10-27
 
 `Rouniy/eda-agent/main` remains the integration branch. These are exact
-fetched Git tips, not a claim that all their code has been merged:
+reviewed-through Git tips, not a claim that all their code has been merged:
 
 | Source | Reviewed tip | Actual merge base with our `main` before this pass |
 | --- | --- | --- |
@@ -21,6 +21,17 @@ The merge bases are older than the reviewed tips because features have been
 ported and adapted as separate commits. `git merge-base main upstream/main`
 answers ancestry; this file answers the newer **reviewed-through** point.
 Do not describe the reviewed tip as a Git merge or an exact source tree.
+
+On 2026-10-27 after commit `f61565f`, `git fetch` advanced the live
+`upstream/main` ref to `9ee593ea0dce989bf3bfc97d0c982044ed41badb`.
+Its three newer commits are `172d254` (pour growth, plane connections,
+wire tidy, rule settings, pre-routes and paste openings), `642e6a8`
+(rigid-flex regions, bend lines, layer stacks, Gloss and Retrace), and
+`9ee593e` (physical stack, dielectrics, impedance profiles, layer order
+and vias). Their feature review and port are pending; the reviewed-through
+table above therefore stays at `ce53d6e`. The actual merge base remains
+`8e659a27b05ff46be2f9ae30225b5baf0c9a8395`. `morembedded/main`
+was unchanged at `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
 
 ## Direct-fork inventory refreshed 2026-10-27
 
