@@ -11,6 +11,7 @@ user tool calls.
 
 import itertools
 import json
+import locale
 import logging
 import os
 import re
@@ -60,6 +61,25 @@ logger = logging.getLogger("eda_agent.bridge")
 # Wire protocol version. Must match scripts/altium/Main.pas:PROTOCOL_VERSION.
 # Bump together; mismatch raises AltiumProtocolError on either side.
 PROTOCOL_VERSION = 2
+
+
+def _read_response_json(path: Path) -> dict[str, Any]:
+    """Read modern UTF-8 replies and older ANSI-codepage replies.
+
+    AD25 DelphiScript can write TStringList files in the Windows system
+    codepage. The request reader uses a UTF-8 BOM, but SaveToFile on that
+    runtime need not emit UTF-8. Keep UTF-8 first so modern replies retain
+    every Unicode character; fall back only when its bytes cannot decode.
+    """
+    raw = path.read_bytes()
+    try:
+        decoded = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        system_encoding = locale.getencoding()
+        if system_encoding.lower().replace("-", "") in {"utf8", "utf8sig"}:
+            raise
+        decoded = raw.decode(system_encoding)
+    return json.loads(decoded)
 
 # Heartbeat-aware deadline extension cap. The Pascal dispatcher writes a
 # progress_<id>.json marker while a handler runs; Python's poll loop extends
@@ -978,8 +998,7 @@ class AltiumBridge:
 
             if ready:
                 try:
-                    with open(response_path, "r", encoding="utf-8-sig") as f:
-                        data = json.load(f)
+                    data = _read_response_json(response_path)
                 except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
                     parse_errors += 1
                     if parse_errors <= 3 or parse_errors % 50 == 0:
@@ -1394,8 +1413,7 @@ class AltiumBridge:
                         f"polls={poll_count}",
                     )
                 try:
-                    with open(response_path, "r", encoding="utf-8-sig") as f:
-                        data = json.load(f)
+                    data = _read_response_json(response_path)
                 except (json.JSONDecodeError, IOError, UnicodeDecodeError) as exc:
                     parse_errors += 1
                     if parse_errors >= 200:

@@ -7,8 +7,6 @@ Both showed up on a machine with a non-English locale.
 
 from __future__ import annotations
 
-import inspect
-
 from eda_agent.config import _pointer_encoding
 from eda_agent.diag import health
 from eda_agent.diag.checks import Status
@@ -37,10 +35,15 @@ def test_an_undecodable_pointer_is_reported_not_raised(tmp_path, monkeypatch):
     assert check.name == "workspace pointer file readable"
 
 
-def test_the_response_reader_tolerates_a_byte_order_mark():
+def test_response_reader_accepts_utf8_bom_and_ad25_system_codepage(tmp_path,
+                                                                  monkeypatch):
     from eda_agent.bridge import altium_bridge
-    src = inspect.getsource(altium_bridge)
-    reads = [ln for ln in src.splitlines()
-             if "open(response_path" in ln and '"r"' in ln]
-    assert reads, "the response read moved; point this test at it"
-    assert all('encoding="utf-8-sig"' in ln for ln in reads), reads
+    response = tmp_path / "response.json"
+    expected = {"name": "中文元件"}
+    response.write_bytes(b"\xef\xbb\xbf" +
+                         '{"name":"中文元件"}'.encode("utf-8"))
+    assert altium_bridge._read_response_json(response) == expected
+
+    response.write_bytes('{"name":"中文元件"}'.encode("gbk"))
+    monkeypatch.setattr(altium_bridge.locale, "getencoding", lambda: "cp936")
+    assert altium_bridge._read_response_json(response) == expected

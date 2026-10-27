@@ -2,6 +2,16 @@
 
 ## Refreshed Git and function inventory
 
+The `redbird98` AD25 Chinese-locale bridge used the system GBK codepage for
+response files. Our current request path already supplies a UTF-8 BOM to
+`TStringList.LoadFromStream`; the Python response reader now tries UTF-8
+first and uses the system codepage only when UTF-8 decoding fails. Both
+the BOM and a CP936 Chinese reply decode in the focused test; 37 bridge
+and session checks passed. A live AD25 zh-CN session is still needed to
+verify the fallback end to end. Six unrelated assertions in the older
+`test_unicode_and_detach_transport.py` fail against the current main script
+and detach API; they predate this reader change and need a separate audit.
+
 The `yniantongtian-oss` release verifier checked both wheel and sdist
 payloads and the wheel's package metadata. Our existing verifier already
 installed the wheel in a clean environment; it now also requires one sdist,
