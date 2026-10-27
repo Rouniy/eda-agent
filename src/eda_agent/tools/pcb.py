@@ -1010,14 +1010,25 @@ def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
     @mcp.tool()
-    async def pcb_get_nets() -> dict[str, Any]:
-        """Get all unique net names from the active PCB board.
+    async def pcb_get_nets(board_path: str = "") -> dict[str, Any]:
+        """Get all unique net names from the active or specified PCB board.
 
         Returns:
             Dictionary with "nets" array of net name strings and "count"
         """
+        params: dict[str, Any] = {}
+        if board_path:
+            if (not Path(board_path).is_absolute()
+                    or Path(board_path).suffix.casefold() != ".pcbdoc"):
+                return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+            params["board_path"] = board_path
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_nets", {})
+        result = await bridge.send_command_async("pcb.get_nets", params)
+        if board_path and (not isinstance(result, dict)
+                           or not isinstance(result.get("board_path"), str)
+                           or result["board_path"].casefold() != board_path.casefold()):
+            return {"ok": False, "reason": "net inventory came from another board",
+                    "native_reply": result}
         return result
 
     @mcp.tool()
@@ -9946,9 +9957,13 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "from_project requires an absolute PrjPcb path"}
         bridge = get_bridge()
         if nets is None and from_project:
-            inventory = await bridge.send_command_async("pcb.get_nets", {})
+            inventory = await bridge.send_command_async(
+                "pcb.get_nets", {"board_path": board_path})
             discovered = inventory.get("nets") if isinstance(inventory, dict) else None
-            if (not isinstance(discovered, list)
+            if (not isinstance(inventory, dict)
+                    or not isinstance(inventory.get("board_path"), str)
+                    or inventory["board_path"].casefold() != board_path.casefold()
+                    or not isinstance(discovered, list)
                     or inventory.get("count") != len(discovered)):
                 return {"ok": False, "reason": "board net inventory is incomplete",
                         "native_reply": inventory}

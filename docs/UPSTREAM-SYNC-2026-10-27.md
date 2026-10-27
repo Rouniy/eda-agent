@@ -566,7 +566,7 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 
 | Source | Remaining block | Integration check |
 | --- | --- | --- |
-| Upstream `0a9ccd4`, `bb06837` | Remaining net naming, project libraries, pin and pad properties, shared packages; native write acceptance for xSignals and unhashed package comparison | Split read and write paths; verify per-document targeting and property readback |
+| Upstream `0a9ccd4`, `bb06837` | The named net, project-library, pin/pad property and shared-package source handlers are present; native acceptance of the less-used operations and xSignal writes remains | Verify per-document targeting and property readback on disposable designs |
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Find a persistent Altium API for numeric differential-pair impedance rule fields, plus broader project STEP export; placed-component STEP export, editor preferences, pours-at-point, board options and per-net jumper display are now present | Keep numeric writes disabled until exact save/reopen proves they survive; port other families with source tests, script build and disposable-board native checks |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Multi-body STEP layer and Z-offset edits are now qualified on one disposable PcbLib; further qualify bulk edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
@@ -576,6 +576,15 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 The previous audit has the other fork branches and older upstream work. This
 table tracks next implementation batches, not a claim that the listed source
 commits are absent in full: some of their smaller changes are already here.
+
+The source audit found one cross-board flaw in that upstream block:
+`pcb_net_display(from_project=True, nets=None)` read its net names via
+unscoped `pcb.get_nets` before addressing an exact PcbDoc. With two boards
+open it could take the current board's names for the requested one. Source
+`.109` adds an optional exact board path to the inventory handler, returns
+the resolved path, and refuses a mismatched inventory before any display
+write. Eight focused tests and Pascal lint/build pass; native two-board
+acceptance is pending.
 
 The older port-by-feature history and outstanding items remain in
 `FORK-INTEGRATION-AUDIT-2026-10-26.md`. In particular, the new upstream

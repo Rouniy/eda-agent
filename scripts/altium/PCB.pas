@@ -123,14 +123,27 @@ Var
     Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Net : IPCB_Net;
-    JsonItems : String;
+    JsonItems, ExpectedPath, Why : String;
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath <> '' Then
+        Board := GetPCBBoardForMutation(Why)
+    Else
+        Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        If ExpectedPath <> '' Then
+            Result := BuildErrorResponse(RequestId, 'NO_PCB', Why)
+        Else
+            Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    If (ExpectedPath <> '') And (UpperCase(Board.FileName) <> UpperCase(ExpectedPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
         Exit;
     End;
 
@@ -155,7 +168,8 @@ Begin
     Board.BoardIterator_Destroy(Iterator);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"nets":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"board_path":"' + EscapeJsonString(Board.FileName) + '",'
+        + '"nets":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
 End;
 
 {..............................................................................}

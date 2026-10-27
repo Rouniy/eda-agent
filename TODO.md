@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## Exact-board net inventory, 2026-10-27
+
+- [x] Scope `pcb_get_nets` to an optional exact PcbDoc and make
+  `pcb_net_display(from_project=True, nets=None)` require a matching board
+  path before choosing nets. Source `.109` passes eight focused tests.
+- [ ] With two disposable PcbDocs open after loading `.109`, confirm the
+  nonfocused board is refused and the named active board returns its own
+  inventory; then check project colour planning without saving.
+
 ## Fractional schematic placements, 2026-10-27
 
 - [x] Preserve fractional mils in batch wires, DbLib component placement,

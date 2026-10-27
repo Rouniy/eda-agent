@@ -2,8 +2,10 @@
 """Net display reads and writes are board-scoped and preconditioned."""
 
 import asyncio
+from pathlib import Path
 
 from eda_agent.tools import pcb
+from tests.pascal_source import load
 
 
 PATH = r"D:\scratch\Board.PcbDoc"
@@ -120,3 +122,35 @@ def test_project_color_identity_failure_prevents_board_write(monkeypatch):
                               project_path=PROJECT, dry_run=False))
     assert result["ok"] is False
     assert len(bridge.calls) == 2
+
+
+def test_project_color_inventory_is_tied_to_the_requested_board(monkeypatch):
+    foreign = {"board_path": r"D:\other\Board.PcbDoc",
+               "count": 1, "nets": ["GND"]}
+    tool, bridge = _tool(monkeypatch, [foreign])
+    result = asyncio.run(tool(PATH, from_project=True, project_path=PROJECT))
+    assert result["ok"] is False
+    assert bridge.calls == [("pcb.get_nets", {"board_path": PATH})]
+
+    own = {"board_path": PATH, "count": 1, "nets": ["GND"]}
+    source = {"project_path": PROJECT, "net": "GND", "color": 0x332211}
+    tool, bridge = _tool(monkeypatch, [own, _read(), source])
+    result = asyncio.run(tool(PATH, from_project=True, project_path=PROJECT))
+    assert result["dry_run"] is True
+    assert bridge.calls[1] == (
+        "pcb.net_display", {"board_path": PATH, "nets": "GND"})
+
+
+def test_exact_board_net_inventory_checks_native_identity(monkeypatch):
+    bridge = _Bridge([{"board_path": r"D:\other\Board.PcbDoc",
+                       "count": 1, "nets": ["GND"]}])
+    monkeypatch.setattr(pcb, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    pcb.register_pcb_tools(mcp)
+    result = asyncio.run(mcp.tools["pcb_get_nets"](PATH))
+    assert result["ok"] is False
+    assert bridge.calls == [("pcb.get_nets", {"board_path": PATH})]
+
+    native = load(Path("scripts/altium/PCB.pas"))["PCB_GetNets"]
+    assert "GetPCBBoardForMutation(Why)" in native
+    assert "UpperCase(Board.FileName) <> UpperCase(ExpectedPath)" in native

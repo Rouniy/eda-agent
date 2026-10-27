@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Exact-board net inventory, 2026-10-27
+
+`pcb_get_nets` now accepts an optional PcbDoc path. Its native read
+checks that path against the selected board and includes the board path
+in the reply. `pcb_net_display(from_project=True, nets=None)` sends the
+same path for its net inventory and rejects a mismatched reply before
+planning any colour write. Previously it read whichever PCB was current.
+Eight focused tests pass; Pascal lint/build scanned 12 units with zero
+errors or warnings. Native two-board acceptance awaits script `.109`.
+The broader legacy `test_added_altium_tools.py` has pre-existing calls
+without newly required `board_path` arguments and is not a qualification
+of this change.
+
 ## Fractional schematic placements, 2026-10-27
 
 Source `.108` carries decimal mils through `sch_place_wires`,
