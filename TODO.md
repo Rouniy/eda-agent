@@ -1,5 +1,21 @@
 # Fork integration TODO
 
+## Project-scoped ERC and stale No ERC model, 2026-10-27
+
+- [x] Prove on separately saved project copies that the specified No ERC
+  markers suppress `NetU1_A2` and `NetIC44_1`. Both rows become active
+  only after the saved sheet is closed/reopened and the project compiled.
+  Original folder hashes remained unchanged.
+- [x] Pass `project_path` through Python's ERC run and violation-read
+  wrappers, and return the filtered violation page from the run. Repair
+  tracked-edit cleanup for confirmed-save document reloads in source `.98`.
+  Forty-two focused tests and Pascal lint/build passed.
+- [ ] Load `.98` and restart the Python bridge when the shared Altium
+  session can be cycled without interrupting other clients. Native-check
+  that an explicit project path reads that project while another project
+  is focused, and that `app_reload_document` refreshes the saved No ERC
+  model. Do not silently reload or save an unsaved sheet.
+
 ## ERC edits and compiled model, 2026-10-27
 
 - [x] Count bridge-tracked edits as dirty for compile freshness and cache

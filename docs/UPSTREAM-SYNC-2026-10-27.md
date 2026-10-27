@@ -1,5 +1,22 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Saved No ERC parity follow-up
+
+On two project copies, both named single-pin-net ERC rows stayed suppressed
+after deleting their No ERC marker, saving the exact sheet and explicitly
+compiling. Closing and reopening that saved sheet before another compile
+made each row active. The originals stayed byte-identical across all 59
+files. This proves the markers suppress the rows and that Altium's compiled
+model can retain their old state beyond a save and `DM_Compile`.
+
+Python's `proj_run_erc` accepted but discarded `project_path`, allowing a
+caller to believe it ran ERC on a named project when Altium compiled the
+focused one. The native run and violation reader already resolve an exact
+project path; both Python wrappers now pass it. The run reads and returns
+the filtered/pageable violations, merging its compile action. Script `.98`
+also makes a confirmed-save reload clear the bridge's tracked edit before
+the document close. Native qualification of these source changes is pending.
+
 ## ERC in-memory edit follow-up
 
 Two Altium 26.11.1.5 ERC checks found that deleting a No ERC marker in

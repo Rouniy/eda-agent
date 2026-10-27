@@ -69,6 +69,19 @@ def test_the_tools_send_limit_and_offset(monkeypatch):
                                  "include_suppressed": "false"})
     assert bridge.params[1] == ("generic.run_erc", {"limit": "0",
                                                     "include_suppressed": "false"})
+    assert bridge.params[2] == ("generic.get_erc_violations", {"limit": "0",
+                                                            "include_suppressed": "false"})
+
+
+def test_reader_passes_exact_project_path(monkeypatch):
+    bridge = _Bridge({"violation_count": 0, "violations": []})
+    path = r"Z:\checks\copy\board.PrjPcb"
+    tools = _tools(monkeypatch, bridge)
+    asyncio.run(tools["proj_get_erc_violations"](project_path=path))
+    assert bridge.params == [("generic.get_erc_violations",
+                              {"limit": "100", "offset": "0",
+                               "include_suppressed": "false",
+                               "project_path": path})]
 
 
 def test_a_partial_page_carries_a_warning(monkeypatch):

@@ -1281,8 +1281,9 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def proj_run_erc(limit: int = 100,
-                           include_suppressed: bool = False) -> dict[str, Any]:
-        """Run Electrical Rules Check on the focused project.
+                           include_suppressed: bool = False,
+                           project_path: str = "") -> dict[str, Any]:
+        """Run Electrical Rules Check on an exact open project.
 
         Compiles the project first (required), runs ERC, and returns
         what it found, the same list ``proj_get_erc_violations`` reads:
@@ -1290,10 +1291,17 @@ def register_generic_tools(mcp):
         type set to No Report, is left out and counted in
         ``suppressed_count`` / ``not_reported_count``.
 
+        Altium can retain an old compiled No ERC suppression after a marker
+        is deleted, even after saving and recompiling. To verify that edit,
+        save the exact sheet, reload it with ``app_reload_document``, then
+        run this tool again. A dirty sheet must never be reloaded implicitly.
+
         Args:
             limit: How many violations to return; 0 returns all of them.
             include_suppressed: list those too, each with ``suppressed``
                 and ``level``.
+            project_path: Absolute path of the open PrjPcb. When omitted,
+                use Altium's focused project.
 
         Returns:
             ``violation_count`` and ``violations``: each with its kind,
@@ -1305,13 +1313,20 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         params = {"limit": str(max(0, int(limit))),
                   "include_suppressed": "true" if include_suppressed else "false"}
-        result = await bridge.send_command_async("generic.run_erc", params)
-        # A script from before 2026.10.21 answers the run with a message
-        # only; read the list it left behind instead of returning nothing.
-        if isinstance(result, dict) and "violation_count" not in result:
-            result = await bridge.send_command_async(
-                "generic.get_erc_violations", params)
-        return _mark_erc_page(result)
+        if project_path:
+            params["project_path"] = project_path
+        run = await bridge.send_command_async("generic.run_erc", params)
+        if isinstance(run, dict) and run.get("success") is False:
+            return run
+        # The native run reply reports the raw count and compile action;
+        # the reader applies No ERC / No Report filtering and pages the rows.
+        page = await bridge.send_command_async(
+            "generic.get_erc_violations", params)
+        if isinstance(page, dict) and page.get("success") is False:
+            return page
+        if isinstance(run, dict) and isinstance(page, dict):
+            return _mark_erc_page({**run, **page})
+        return _mark_erc_page(page)
 
     @mcp.tool()
     async def sch_set_components_parameters(
@@ -1425,6 +1440,7 @@ def register_generic_tools(mcp):
         limit: int = 100,
         offset: int = 0,
         include_suppressed: bool = False,
+        project_path: str = "",
     ) -> dict[str, Any]:
         """Return the ERC violation list produced by the last
         ``proj_run_erc()`` invocation.
@@ -1444,6 +1460,8 @@ def register_generic_tools(mcp):
             include_suppressed: also list violations a No ERC marker
                 covers or whose type is set to No Report; left out and
                 only counted by default, as Altium's Messages panel does.
+            project_path: Absolute path of the open PrjPcb. When omitted,
+                use Altium's focused project.
 
         Returns:
             ``{"violation_count", "offset", "returned", "truncated",
@@ -1455,6 +1473,8 @@ def register_generic_tools(mcp):
         params = {"limit": str(max(0, int(limit))),
                   "offset": str(max(0, int(offset))),
                   "include_suppressed": "true" if include_suppressed else "false"}
+        if project_path:
+            params["project_path"] = project_path
         result = await bridge.send_command_async(
             "generic.get_erc_violations", params)
         return _mark_erc_page(result)

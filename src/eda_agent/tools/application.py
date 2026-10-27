@@ -1354,10 +1354,11 @@ def register_application_tools(mcp):
     ) -> dict[str, Any]:
         """Close and reopen a document so Altium rereads it from disk.
 
-        This is intended after checkpoint restoration or another external
-        file update. By default it refuses to overwrite unsaved in-editor
-        edits. Set ``save_before_close=True`` to preserve them, or explicitly
-        set ``discard_changes=True`` to replace them with the disk version.
+        This is intended after checkpoint restoration, another external
+        file update, or a saved No ERC edit whose compiled ERC state remains
+        stale. By default it refuses to overwrite unsaved in-editor edits.
+        Set ``save_before_close=True`` to preserve them, or explicitly set
+        ``discard_changes=True`` to replace them with the disk version.
 
         Args:
             file_path: Absolute path of the document to reload.

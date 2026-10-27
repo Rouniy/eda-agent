@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.97';
+    SCRIPT_VERSION = '2026.10.27.98';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -5066,6 +5066,7 @@ Var
     FilePath, DocKind, CloseParams, OpenParams, CloseResp : String;
     ServerDoc : IServerDocument;
     SaveBeforeClose, DiscardChanges : Boolean;
+    AgeBefore, AgeAfter : Integer;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocKind := ExtractJsonValue(Params, 'kind');
@@ -5090,6 +5091,8 @@ Begin
     End;
     If SaveBeforeClose Then
     Begin
+        AgeBefore := -1;
+        Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
         Try ServerDoc.DoFileSave(''); Except
             Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'Could not save ' + FilePath);
             Exit;
@@ -5099,6 +5102,12 @@ Begin
             Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'Document remains modified: ' + FilePath);
             Exit;
         End;
+        { CloseDocument also checks the bridge's edit record. Clear it only
+          after a confirmed disk write, as App_SaveDocument does. }
+        AgeAfter := -1;
+        Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
+        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then
+            ForgetDocEdited(FilePath);
     End;
     CloseParams := '{"file_path":"' + EscapeJsonString(FilePath) + '"';
     If DiscardChanges Then CloseParams := CloseParams + ',"discard":"true"';

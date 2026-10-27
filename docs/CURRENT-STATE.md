@@ -1,5 +1,26 @@
 # Current integration state / agent handoff
 
+## Saved No ERC copies and project-scoped ERC, 2026-10-27
+
+Two separately opened project copies proved that deleting a No ERC at
+`Main.SchDoc` (1400,6100 mil) activates `NetU1_A2`, and deleting one at
+`I2C.SchDoc` (7850,2300 mil) activates `NetIC44_1`. Both rows remained
+`suppressed=true` immediately after exact sheet save and explicit
+`DM_Compile`; after close/reopen of the saved sheet and another compile,
+both became `suppressed=false`. The other I2C marker at (7850,2400 mil)
+remained. SHA-256 manifests confirmed all 29 and 30 files in the respective
+original folders unchanged. Full call results are in
+`D:\ai\alterc7-calls.jsonl` (local evidence, not a repository artifact).
+
+The Python `proj_run_erc` wrapper had silently ignored `project_path`,
+although the native run and violation reader accept it. Both wrappers now
+pass that exact path; the run also reads and returns the filtered violation
+page rather than only a raw count. Script source `.98` repairs tracked-edit
+cleanup when `app_reload_document(save_before_close=true)` confirms a disk
+write. Forty-two focused tests passed (one optional skip); Pascal lint/build
+found zero errors or warnings. Runtime loading of `.98` and native testing
+of the updated Python wrapper remain pending.
+
 ## ERC edit tracking and close lifecycle, 2026-10-27
 
 Script source `.97` makes the bridge's tracked schematic edits invalidate
