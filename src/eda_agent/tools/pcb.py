@@ -9839,12 +9839,15 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_net_display(
         board_path: str,
-        nets: list[str],
+        nets: Optional[list[str]] = None,
         show_connections: Optional[bool] = None,
         loop_removal: Optional[bool] = None,
         use_net_color: Optional[bool] = None,
         show_jumpers: Optional[bool] = None,
+        color: Optional[str] = None,
         dry_run: bool = True,
+        from_project: bool = False,
+        project_path: str = "",
     ) -> dict[str, Any]:
         """Read or set PCB net display flags on an exact PcbDoc.
 
@@ -9852,9 +9855,28 @@ def register_pcb_tools(mcp):
         dry run returns the current state and proposed settings. Set
         dry_run=false to write; the native handler verifies the old state of
         every net before touching any and returns a per-net readback.
+        With from_project, supply the exact PrjPcb path. Each net with a
+        project colour receives it in one guarded board write; nets without
+        a project colour are left unchanged. Omit nets to use all board nets.
         """
         if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
             return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if from_project and color is not None:
+            return {"ok": False, "reason": "color and from_project cannot be combined"}
+        if from_project and use_net_color is False:
+            return {"ok": False, "reason": "from_project requires use_net_color=true or omitted"}
+        if from_project and (not Path(project_path).is_absolute()
+                             or Path(project_path).suffix.casefold() != ".prjpcb"):
+            return {"ok": False, "reason": "from_project requires an absolute PrjPcb path"}
+        bridge = get_bridge()
+        if nets is None and from_project:
+            inventory = await bridge.send_command_async("pcb.get_nets", {})
+            discovered = inventory.get("nets") if isinstance(inventory, dict) else None
+            if (not isinstance(discovered, list)
+                    or inventory.get("count") != len(discovered)):
+                return {"ok": False, "reason": "board net inventory is incomplete",
+                        "native_reply": inventory}
+            nets = discovered
         if (not isinstance(nets, list) or not nets
                 or any(not isinstance(n, str) or not n.strip() or "\t" in n for n in nets)):
             return {"ok": False, "reason": "nets must be nonempty net names without tabs"}
@@ -9867,7 +9889,15 @@ def register_pcb_tools(mcp):
                    "show_jumpers": show_jumpers}
         if any(type(v) is not bool for v in updates.values() if v is not None):
             return {"ok": False, "reason": "display settings must be booleans"}
-        bridge = get_bridge()
+        wanted_color: int | None = None
+        if color is not None:
+            if use_net_color is False:
+                return {"ok": False, "reason": "color cannot be combined with use_net_color=false"}
+            hexpart = color.strip().removeprefix("#")
+            if len(hexpart) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexpart):
+                return {"ok": False, "reason": "color must be #RRGGBB"}
+            red, green, blue = (int(hexpart[i:i + 2], 16) for i in (0, 2, 4))
+            wanted_color = red | (green << 8) | (blue << 16)
         params = {"board_path": board_path, "nets": "\t".join(names)}
         before = await bridge.send_command_async("pcb.net_display", params)
         rows = before.get("nets") if isinstance(before, dict) else None
@@ -9881,15 +9911,49 @@ def register_pcb_tools(mcp):
                 or not isinstance(bits, str) or len(bits) != 4 * len(names)
                 or any(not isinstance(row, dict) or row.get("net") != name
                        or any(type(row.get(field)) is not bool for field in flag_fields)
+                       or type(row.get("color_bgr")) is not int
                        for row, name in zip(rows, names))):
             return {"ok": False, "reason": "native net display read is incomplete or from another board",
                     "native_reply": before}
-        if not any(v is not None for v in updates.values()):
+        project_colors: list[int] = []
+        no_project_color: list[str] = []
+        if from_project:
+            for name in names:
+                source = await bridge.send_command_async("project.net_color", {
+                    "project_path": project_path, "net": name,
+                })
+                value = source.get("color") if isinstance(source, dict) else None
+                if (not isinstance(source, dict) or source.get("ok") is False
+                        or not isinstance(source.get("project_path"), str)
+                        or source["project_path"].casefold() != project_path.casefold()
+                        or source.get("net") != name or type(value) is not int
+                        or (value != 536870912 and not 0 <= value <= 16777215)):
+                    return {"ok": False, "reason": "project net color read is incomplete or from another project",
+                            "native_reply": source}
+                project_colors.append(value if value != 536870912 else -1)
+                if value == 536870912:
+                    no_project_color.append(name)
+        if not any(v is not None for v in updates.values()) and wanted_color is None and not from_project:
             return before
         if dry_run:
+            proposed = {k: v for k, v in updates.items() if v is not None}
+            if color is not None:
+                proposed["color"] = "#" + hexpart.upper()
+            if from_project:
+                proposed["project_colors_bgr"] = dict(zip(names, project_colors))
             return {"ok": True, "dry_run": True, "board_path": board_path,
-                    "before": rows, "would_set": {k: v for k, v in updates.items() if v is not None}}
+                    "before": rows, "would_set": proposed,
+                    "no_project_color": no_project_color}
+        if from_project and all(value < 0 for value in project_colors) and not any(
+                v is not None for v in updates.values()):
+            return {"ok": True, "board_path": board_path, "wrote": False,
+                    "nets": rows, "no_project_color": no_project_color}
         params["expected_bits"] = bits
+        params["expected_colors"] = "\t".join(str(row["color_bgr"]) for row in rows)
+        if wanted_color is not None:
+            params["colors"] = "\t".join([str(wanted_color)] * len(names))
+        elif from_project:
+            params["colors"] = "\t".join(str(value) for value in project_colors)
         for key, value in updates.items():
             if value is not None:
                 params[key] = "true" if value else "false"
@@ -9909,9 +9973,18 @@ def register_pcb_tools(mcp):
                 or any(not isinstance(row, dict) or row.get("net") != name
                        or any(row.get(expected_fields[key]) is not value
                               for key, value in updates.items() if value is not None)
-                       for row, name in zip(after, names))):
+                       or (wanted_color is not None and
+                           (row.get("color_bgr") != wanted_color or
+                            row.get("use_net_color") is not True))
+                       or (from_project and project_colors[index] >= 0 and
+                           (row.get("color_bgr") != project_colors[index] or
+                            row.get("use_net_color") is not True))
+                       for index, (row, name) in enumerate(zip(after, names)))):
             return {"ok": False, "reason": "net display write was not fully verified",
                     "native_reply": result}
+        if from_project:
+            result["project_path"] = project_path
+            result["no_project_color"] = no_project_color
         return result
 
     @mcp.tool()

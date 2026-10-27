@@ -2,10 +2,18 @@
 
 ## Later upstream tip in this session
 
+The `.81` follow-up ports `40814ba`'s direct PCB net colours and
+project-to-board colour synchronization into the exact-board net-display
+command. The project path is explicit; native replies identify that project;
+all net colours and display flags are checked before one batch board write.
+On the disposable board, GND changed to `#123456` and was restored from the
+loaded project's colour. The fresh upstream and MOREmbedded fetches on
+2026-10-27 found unchanged tips `40814ba` and `032fb4b`; the upstream
+merge base remains exactly `40814ba`.
+
 The `.79` follow-up ports `40814ba`'s coarse visible-grid factor and
 grid units into the exact-board grid command. Native change/restore and
-stale-state refusal passed on a disposable PcbDoc. Net colours remain
-for a separate adaptation.
+stale-state refusal passed on a disposable PcbDoc.
 
 `git fetch upstream main` advanced `upstream/main` from `9ee593e` to
 `40814badc695813157fd8c50d24feafc5a553fcd`, one new commit. The
@@ -14,7 +22,7 @@ guards retained. Its new Gerber/print settings, paste preferences,
 Testpoint Style fields and schematic border-zone reader are present in
 script `.78`. A read of both output groups on the isolated PcbDoc and a
 147-object schematic zone read passed in Altium 26.11.1.5. Net-colour
-sync and grid factor/unit controls still need adaptation to our existing
+sync and grid factor/unit controls were subsequently adapted to our existing
 preconditioned commands; see `TODO.md`. Expanded PCB editor and paste-array
 options now have that adaptation and passed live change/restore checks.
 

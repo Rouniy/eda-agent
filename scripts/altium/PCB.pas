@@ -11486,8 +11486,25 @@ Begin
         + JsonBool('connections_shown', Net.ConnectsVisible) + ','
         + JsonBool('loop_removal', Net.LoopRemoval) + ','
         + JsonBool('use_net_color', Net.OverrideColorForDraw) + ','
+        + JsonInt('color_bgr', Net.Color) + ','
         + JsonBool('jumpers_shown', Net.JumpersVisible) + ','
         + JsonBool('in_differential_pair', Net.InDifferentialPair));
+End;
+
+Function PCB_TabValue(Source : String; N : Integer) : String;
+Var
+    I, P : Integer;
+Begin
+    Result := '';
+    For I := 0 To N - 1 Do
+    Begin
+        P := Pos(#9, Source);
+        If P = 0 Then Exit;
+        Source := Copy(Source, P + 1, Length(Source));
+    End;
+    P := Pos(#9, Source);
+    If P = 0 Then Result := Source
+    Else Result := Copy(Source, 1, P - 1);
 End;
 
 { Read or update connection lines, loop removal, net colour and jumpers. }
@@ -11499,7 +11516,8 @@ Var
     Names : TStringList;
     ExpectedPath, Why, Input, Item, ExpectedBits, BeforeBits : String;
     ShowStr, LoopStr, ColourStr, JumperStr, BeforeItems, AfterItems : String;
-    TabPos, I, Applied : Integer;
+    ColorsStr, ExpectedColors, ColorValue : String;
+    TabPos, I, Applied, WantedColor, PriorColor : Integer;
     Writing : Boolean;
 Begin
     ExpectedPath := ExtractJsonValue(Params, 'board_path');
@@ -11509,6 +11527,8 @@ Begin
     LoopStr := LowerCase(ExtractJsonValue(Params, 'loop_removal'));
     ColourStr := LowerCase(ExtractJsonValue(Params, 'use_net_color'));
     JumperStr := LowerCase(ExtractJsonValue(Params, 'show_jumpers'));
+    ColorsStr := ExtractJsonValue(Params, 'colors');
+    ExpectedColors := ExtractJsonValue(Params, 'expected_colors');
     If (ExpectedPath = '') Or (Input = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
@@ -11525,11 +11545,11 @@ Begin
         Exit;
     End;
     Writing := (ShowStr <> '') Or (LoopStr <> '') Or (ColourStr <> '')
-        Or (JumperStr <> '');
-    If Writing And (ExpectedBits = '') Then
+        Or (JumperStr <> '') Or (ColorsStr <> '');
+    If Writing And ((ExpectedBits = '') Or (ExpectedColors = '')) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
-            'expected_bits from the prior read are required for writes');
+            'expected_bits and expected_colors from the prior read are required for writes');
         Exit;
     End;
     Board := GetPCBBoardForMutation(Why);
@@ -11589,6 +11609,43 @@ Begin
     End;
     If Writing Then
     Begin
+        If (PCB_TabValue(ExpectedColors, Names.Count) <> '') Or
+           ((ColorsStr <> '') And (PCB_TabValue(ColorsStr, Names.Count) <> '')) Then
+        Begin
+            Names.Free;
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                'color list contains more entries than nets');
+            Exit;
+        End;
+        For I := 0 To Names.Count - 1 Do
+        Begin
+            Net := FindNetByName(Board, Names.Strings[I]);
+            ColorValue := PCB_TabValue(ExpectedColors, I);
+            If (Not IsIntStr(ColorValue)) Or
+                (StrToIntDef(ColorValue, -1) <> Net.Color) Then
+            Begin
+                Names.Free;
+                Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+                    'net color changed; read again before writing');
+                Exit;
+            End;
+            If ColorsStr <> '' Then
+            Begin
+                ColorValue := PCB_TabValue(ColorsStr, I);
+                WantedColor := StrToIntDef(ColorValue, -2);
+                If (Not IsIntStr(ColorValue)) Or (WantedColor < -1) Or
+                    (WantedColor > 16777215) Then
+                Begin
+                    Names.Free;
+                    Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+                        'colors must contain one -1 or BGR integer per net');
+                    Exit;
+                End;
+            End;
+        End;
+    End;
+    If Writing Then
+    Begin
         PCBServer.PreProcess;
         Try
             For I := 0 To Names.Count - 1 Do
@@ -11599,6 +11656,15 @@ Begin
                 If LoopStr <> '' Then Net.LoopRemoval := (LoopStr = 'true');
                 If ColourStr <> '' Then Net.OverrideColorForDraw := (ColourStr = 'true');
                 If JumperStr <> '' Then Net.JumpersVisible := (JumperStr = 'true');
+                If ColorsStr <> '' Then
+                Begin
+                    WantedColor := StrToIntDef(PCB_TabValue(ColorsStr, I), -1);
+                    If WantedColor >= 0 Then
+                    Begin
+                        Net.Color := WantedColor;
+                        Net.OverrideColorForDraw := True;
+                    End;
+                End;
             End;
         Finally
             PCBServer.PostProcess;
@@ -11609,7 +11675,9 @@ Begin
     For I := 0 To Names.Count - 1 Do
     Begin
         Net := FindNetByName(Board, Names.Strings[I]);
-        If PCB_NetDisplayBits(Net) <> Copy(BeforeBits, I * 4 + 1, 4) Then
+        PriorColor := StrToIntDef(PCB_TabValue(ExpectedColors, I), Net.Color);
+        If (PCB_NetDisplayBits(Net) <> Copy(BeforeBits, I * 4 + 1, 4)) Or
+           (Net.Color <> PriorColor) Then
             Inc(Applied);
         If AfterItems <> '' Then AfterItems := AfterItems + ',';
         AfterItems := AfterItems + PCB_NetDisplayJson(Net);

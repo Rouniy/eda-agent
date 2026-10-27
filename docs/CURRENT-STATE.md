@@ -2,13 +2,21 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Script `.81` completes the `40814ba` net-colour adaptation. The exact-board
+`pcb_net_display` can set `#RRGGBB` or read colours from an explicitly named
+PrjPcb, with default dry run and old flag/colour preconditions before its
+single batch write. On the disposable PcbDoc, GND changed to `#123456` and
+was restored from the loaded project colour. Native readback confirmed both;
+Pascal lint/build found zero errors or warnings and 10 focused tests passed.
+Fresh fetches still identify `upstream/main=40814ba` and
+`MOREmbedded/main=032fb4b`; the upstream tip is our merge base.
+
 Script `.79` (bundle Git blob `908a03ca1aba89f3fe25825369606b3d556d21dd`)
 adds upstream's coarse visible-grid factor and grid-unit controls to the
 existing exact-board grid command. In Altium 26.11.1.5, a disposable
 PcbDoc's factor changed 5→6→5 and its visible unit mm→mil→mm. A stale
 factor precondition was refused with the value unchanged. Pascal lint/build
-had zero errors or warnings; 26 related Python tests passed. The net-colour
-and project-colour extension of upstream `40814ba` remains to integrate.
+had zero errors or warnings; 26 related Python tests passed.
 
 Fresh `upstream/main` advanced to `40814badc695813157fd8c50d24feafc5a553fcd`
 while this session was running. Merge commit `da566a8` has that tip as
@@ -25,8 +33,8 @@ now use exact-board preflight, default dry run and readback. A board-area
 colour and repeat count were changed and restored in Altium; a stale
 editor-option precondition was refused. The already reviewed exact-board
 net-display and grid commands remain in place; upstream's newly added
-colour/project sync and grid factor/unit extensions still need their
-preconditioned contracts reconciled before exposing those arguments.
+colour/project sync and grid factor/unit extensions were subsequently
+adapted to their preconditioned contracts.
 The owner PCB hash remains
 `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
 

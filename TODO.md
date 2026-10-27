@@ -2,8 +2,11 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
-- [ ] Reconcile the new upstream `40814ba` net-colour and project-colour
-  options with our exact-board, expected-state `pcb_net_display` contract.
+- [x] Reconcile upstream `40814ba` net-colour and project-colour options
+  with exact-board, expected-state `pcb_net_display`. Script `.81` changed
+  GND on a disposable board to `#123456`, planned the loaded project's
+  colour, then restored it from the project in one guarded write. Native
+  readback and 10 focused Python tests passed.
 - [x] Reconcile upstream's coarse visible-grid factor and grid units with
   our exact-board `pcb_set_grids` contract. Script `.79` changed and
   restored factor 5/6 and visible unit mm/mil on the disposable PcbDoc;

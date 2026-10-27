@@ -1,4 +1,15 @@
-# Release verification: 2026.10.27.79
+# Release verification: 2026.10.27.81
+
+Script `.81` adds guarded direct colours and project-to-board colour
+synchronization to `pcb_net_display`. A disposable PcbDoc's GND changed
+from project colour `16739950` to `#123456` (`5649426` BGR); a dry run
+identified the exact project source and proposed colour; one native write
+restored `16739950` and read it back. A stale colour precondition was
+refused without a board change in the preceding `.80` native check.
+The native response now echoes the exact PrjPcb path so the Python wrapper
+rejects a different source project. All selected nets are preflighted before
+the single board write. Pascal lint/build passed 12 files with zero errors
+or warnings; 10 focused Python tests passed.
 
 Script `.79` adds visible-grid factor and unit controls with exact-board
 identity, old-state checks and readback. On a disposable PcbDoc in Altium

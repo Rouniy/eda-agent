@@ -3918,7 +3918,8 @@ Begin
     End;
     After := Project.DM_GetNetColorByName(NetName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonStr('net', NetName) + ','
+        JsonStr('project_path', Project.DM_ProjectFullPath) + ','
+        + JsonStr('net', NetName) + ','
         + JsonInt('color_before', Before) + ','
         + JsonInt('color', After)));
 End;
