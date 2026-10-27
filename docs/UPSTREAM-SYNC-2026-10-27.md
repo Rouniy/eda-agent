@@ -2,6 +2,15 @@
 
 ## Refreshed Git and function inventory
 
+The `yniantongtian-oss` release verifier checked both wheel and sdist
+payloads and the wheel's package metadata. Our existing verifier already
+installed the wheel in a clean environment; it now also requires one sdist,
+checks its Altium and EasyEDA sources, and compares the wheel's version,
+Python requirement and console entry point with `pyproject.toml`. A fresh
+`python -m build` produced both artifacts. The verifier passed their payload
+and metadata checks, then installed the wheel and ran `--version`,
+`scripts-path` and `easyeda-extension path` from the isolated install.
+
 The `mooreaa`/`rhsvekon` library body read returned saved STEP model
 rotations and Z offsets alongside the live body properties. Our stricter
 `lib_set_3d_body` now includes `saved_bodies` on read, dry-run and verified
@@ -492,8 +501,9 @@ The `yniantongtian-oss` fix `0bbf48e` exposed one remaining WSL path
 bug in `plan_from_live_sheet`: it used the host's `Path` for Altium's
 Windows project and sheet names. Those names now use `PureWindowsPath`.
 The existing same-filename/different-directory guard was already present.
-The repository's EasyEDA extension build and distribution checks likewise
-already cover the fork's delivery work through equivalent modules. A
+The repository's EasyEDA extension build already covers the fork's builder
+through the `eda-agent easyeda-extension` command; the fuller distribution
+check is recorded above. A
 forced POSIX-path test confirms the Windows sheet name round-trips; all
 38 focused sheet-plan tests passed.
 

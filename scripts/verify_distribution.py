@@ -1,19 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Check a built wheel carries what an install needs, then use it.
+"""Check release artifacts and smoke-test the installed wheel.
 
 Run after ``python -m build``: ``python scripts/verify_distribution.py dist``.
-It opens the wheel and checks for the DelphiScript files and the EasyEDA
-extension source, installs it into a fresh virtual environment, and runs
-the commands a user runs first. A file left out of the wheel only shows
-up after somebody installs it, so CI does it first.
+It checks the wheel and sdist payloads and wheel metadata, installs the
+wheel into a fresh virtual environment, and runs the first user commands.
 """
 
 from __future__ import annotations
 
+import email
 import subprocess
 import sys
+import tarfile
 import tempfile
+import tomllib
 import venv
 import zipfile
 from pathlib import Path
@@ -28,19 +29,65 @@ REQUIRED = [
     "eda_agent/server.py",
 ]
 
+SDIST_REQUIRED = [
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/pyproject.toml",
+    "/scripts/altium/Altium_API.PrjScr",
+    "/scripts/altium/Main.pas",
+    "/extensions/easyeda/main.js",
+    "/extensions/easyeda/extension.json",
+    "/extensions/easyeda/build.py",
+    "/src/eda_agent/server.py",
+]
+
+
+def _require_suffixes(kind: str, names: set[str], suffixes: list[str]) -> None:
+    missing = [suffix for suffix in suffixes
+               if not any(name.replace("\\", "/").endswith(suffix)
+                          for name in names)]
+    if missing:
+        raise ValueError(f"{kind} is missing: {missing}")
+
+
+def _check_wheel_metadata(archive: zipfile.ZipFile, names: set[str]) -> None:
+    project = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml")
+                            .read_text(encoding="utf-8"))["project"]
+    metadata_paths = [n for n in names if n.endswith(".dist-info/METADATA")]
+    entry_paths = [n for n in names if n.endswith(".dist-info/entry_points.txt")]
+    if len(metadata_paths) != 1 or len(entry_paths) != 1:
+        raise ValueError("wheel needs one METADATA and one entry_points.txt")
+    metadata = email.message_from_bytes(archive.read(metadata_paths[0]))
+    for field, expected in (("Version", project["version"]),
+                            ("Requires-Python", project["requires-python"])):
+        if metadata.get(field) != expected:
+            raise ValueError(f"wheel {field}={metadata.get(field)!r}, expected {expected!r}")
+    entries = archive.read(entry_paths[0]).decode("utf-8")
+    if "eda-agent = eda_agent.server:main" not in entries:
+        raise ValueError("wheel is missing the eda-agent console entry point")
+
 
 def main(dist: str) -> int:
     wheels = sorted(Path(dist).glob("eda_agent-*.whl"))
-    if len(wheels) != 1:
-        print(f"expected one wheel in {dist}, found {len(wheels)}")
+    sdists = sorted(Path(dist).glob("eda_agent-*.tar.gz"))
+    if len(wheels) != 1 or len(sdists) != 1:
+        print(f"expected one wheel and one sdist in {dist}; "
+              f"found {len(wheels)} wheel(s), {len(sdists)} sdist(s)")
         return 1
     wheel = wheels[0]
-    names = set(zipfile.ZipFile(wheel).namelist())
-    missing = [n for n in REQUIRED if n not in names]
-    if missing:
-        print(f"{wheel.name} is missing: {missing}")
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            names = set(archive.namelist())
+            _require_suffixes("wheel", names, REQUIRED + ["/LICENSE", "/NOTICE"])
+            _check_wheel_metadata(archive, names)
+        with tarfile.open(sdists[0], "r:gz") as archive:
+            _require_suffixes("sdist", set(archive.getnames()), SDIST_REQUIRED)
+    except (ValueError, OSError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        print(f"distribution verification failed: {exc}")
         return 1
-    print(f"{wheel.name}: {len(names)} files, all required present")
+    print(f"{wheel.name}: {len(names)} files; {sdists[0].name}: payload present; "
+          "wheel metadata matches pyproject.toml")
 
     with tempfile.TemporaryDirectory() as tmp:
         venv.create(tmp, with_pip=True)
