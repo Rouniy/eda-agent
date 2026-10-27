@@ -1,4 +1,13 @@
-# Release verification: 2026.10.27.19
+# Release verification: 2026.10.27.20
+
+The `.20` exact-document save targets one loaded path and requires an
+observed disk write before reporting `saved=true`. Nine related tests and
+Pascal lint/build pass. Altium loaded `.20` with zero cast errors. A
+disposable PcbDoc retained 16.5-mil snap X after `app_save_document`,
+close and reopen. A nonexistent path was refused. The scratch file was
+removed; the owner's PcbDoc hash was identical before and after this
+exact-save test. Its equality to the disk revision before the earlier
+Save All remains unverified.
 
 The `.19` grid tool covers snap X/Y, track, via, fine/coarse visible grids
 and dot mode. It checks every new number and the six old sizes plus dot

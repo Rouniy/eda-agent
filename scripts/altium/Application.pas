@@ -418,6 +418,60 @@ Begin
     Result := App_OpenDocument(OpenParams, RequestId);
 End;
 
+{ Save exactly one loaded document. Never walks the project/workspace.        }
+{ The Python caller also checks the target file's timestamp and size.        }
+Function App_SaveDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, ActualPath : String;
+    ServerDoc : IServerDocument;
+    AgeBefore, AgeAfter : Integer;
+    ModifiedBefore, ModifiedAfter : Boolean;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'file_path is required');
+        Exit;
+    End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED',
+            'Document not loaded: ' + FilePath);
+        Exit;
+    End;
+    ActualPath := ServerDoc.FileName;
+    If UpperCase(ActualPath) <> UpperCase(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Loaded document path differs from file_path');
+        Exit;
+    End;
+    ModifiedBefore := False;
+    Try ModifiedBefore := ServerDoc.Modified; Except End;
+    AgeBefore := -1;
+    Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
+    Try ServerDoc.DoFileSave(''); Except
+        Result := BuildErrorResponse(RequestId, 'SAVE_FAILED',
+            'DoFileSave failed for ' + FilePath);
+        Exit;
+    End;
+    AgeAfter := -1;
+    Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
+    ModifiedAfter := False;
+    Try ModifiedAfter := ServerDoc.Modified; Except End;
+    If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
+        ForgetDocEdited(FilePath);
+    Result := BuildSuccessResponse(RequestId,
+        '{"file_path":"' + EscapeJsonString(ActualPath) + '",'
+        + '"file_exists":' + BoolToJsonStr(FileExists(FilePath)) + ','
+        + '"modified_before":' + BoolToJsonStr(ModifiedBefore) + ','
+        + '"modified_after":' + BoolToJsonStr(ModifiedAfter) + ','
+        + '"file_age_before":' + IntToStr(AgeBefore) + ','
+        + '"file_age_after":' + IntToStr(AgeAfter) + '}');
+End;
+
 Function App_RunProcess(Params : String; RequestId : String) : String;
 Var
     ProcessName, ProcessParams : String;
@@ -1051,6 +1105,7 @@ Begin
         'close_document':      Result := App_CloseDocument(Params, RequestId);
         'open_document':       Result := App_OpenDocument(Params, RequestId);
         'reload_document':     Result := App_ReloadDocument(Params, RequestId);
+        'save_document':       Result := App_SaveDocument(Params, RequestId);
         'run_process':         Result := App_RunProcess(Params, RequestId);
         'get_preferences':     Result := App_GetPreferences(RequestId);
         'execute_menu':        Result := App_ExecuteMenu(Params, RequestId);

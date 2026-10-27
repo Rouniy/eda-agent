@@ -1154,6 +1154,47 @@ def register_application_tools(mcp):
         )
 
     @mcp.tool()
+    async def app_save_document(file_path: str) -> dict[str, Any]:
+        """Save one loaded Altium document at its exact absolute path.
+
+        Unlike app_save_all, this never walks other open documents. The
+        result reports whether the named file was observably written on
+        disk; Altium's modified flag alone is not used as proof. For a
+        changed board grid this is the direct persistence step.
+        """
+        target = Path(file_path)
+        if not target.is_absolute():
+            return {"saved": False, "reason": "file_path must be absolute"}
+        try:
+            before = target.stat() if target.exists() else None
+        except OSError as exc:
+            return {"saved": False, "reason": f"could not inspect file before save: {exc}"}
+        reply = await get_bridge().send_command_async(
+            "application.save_document", {"file_path": file_path}, timeout=120.0,
+        )
+        try:
+            after = target.stat()
+        except OSError as exc:
+            return {"saved": False, "reason": f"file absent after save: {exc}",
+                    "native_reply": reply}
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("file_path"), str)
+                or reply["file_path"].casefold() != file_path.casefold()
+                or reply.get("file_exists") is not True):
+            return {"saved": False, "reason": "native save did not identify the exact document",
+                    "native_reply": reply}
+        observed = (before is None or after.st_mtime_ns != before.st_mtime_ns
+                    or after.st_size != before.st_size)
+        return {"saved": observed, "file_path": file_path,
+                "disk_write_observed": observed,
+                "mtime_ns_before": before.st_mtime_ns if before else None,
+                "mtime_ns_after": after.st_mtime_ns,
+                "size_before": before.st_size if before else None,
+                "size_after": after.st_size,
+                "modified_after": reply.get("modified_after"),
+                "reason": "no disk write observed" if not observed else ""}
+
+    @mcp.tool()
     async def app_reload_document(
         file_path: str,
         kind: Optional[str] = None,

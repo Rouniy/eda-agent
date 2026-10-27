@@ -2,9 +2,8 @@
 
 ## Exact document save, 2026-10-27
 
-- Add an exact-path save command that reports a verified disk write without
-  closing/reopening the document. `app_reload_document` with
-  `save_before_close=true` is the currently verified exact-path route.
+- [x] Add an exact-path save command that reports a verified disk write
+  without closing/reopening the document (`app_save_document`, `.20`).
 - Investigate why `MarkDocDirtyByPath` does not make the modified flag true
   for free PcbDocs after grid changes. Do not infer that modified=false
   means native changes have been saved.

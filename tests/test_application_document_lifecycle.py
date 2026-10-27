@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import os
 
 
 class _DummyMcp:
@@ -66,6 +67,56 @@ async def test_reload_document_defaults_to_disk_without_discard(monkeypatch):
             "kind": "SCH",
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_save_document_observes_only_exact_target_disk_write(monkeypatch, tmp_path):
+    from eda_agent.tools import application
+
+    target = tmp_path / "scratch.PcbDoc"
+    target.write_bytes(b"before")
+
+    class SavingBridge:
+        async def send_command_async(self, command, params, timeout=None):
+            assert command == "application.save_document"
+            assert params == {"file_path": str(target)}
+            old_ns = target.stat().st_mtime_ns
+            target.write_bytes(b"after")
+            os.utime(target, ns=(old_ns + 2_000_000_000, old_ns + 2_000_000_000))
+            return {"file_path": str(target), "file_exists": True,
+                    "modified_after": False}
+
+    monkeypatch.setattr(application, "get_bridge", lambda: SavingBridge())
+    mcp = _DummyMcp()
+    application.register_application_tools(mcp)
+    result = await mcp.tools["app_save_document"](str(target))
+    assert result["saved"] and result["disk_write_observed"]
+    assert target.read_bytes() == b"after"
+
+
+@pytest.mark.asyncio
+async def test_save_document_refuses_unobserved_or_wrong_file(monkeypatch, tmp_path):
+    from eda_agent.tools import application
+
+    target = tmp_path / "scratch.PcbDoc"
+    target.write_bytes(b"unchanged")
+
+    class NoopBridge:
+        def __init__(self, actual):
+            self.actual = actual
+
+        async def send_command_async(self, command, params, timeout=None):
+            return {"file_path": self.actual, "file_exists": True,
+                    "modified_after": False}
+
+    mcp = _DummyMcp()
+    application.register_application_tools(mcp)
+    monkeypatch.setattr(application, "get_bridge", lambda: NoopBridge(str(target)))
+    result = await mcp.tools["app_save_document"](str(target))
+    assert result["saved"] is False and result["reason"] == "no disk write observed"
+    monkeypatch.setattr(application, "get_bridge", lambda: NoopBridge(str(tmp_path / "other.PcbDoc")))
+    result = await mcp.tools["app_save_document"](str(target))
+    assert result["saved"] is False and "exact document" in result["reason"]
 
 
 @pytest.mark.asyncio

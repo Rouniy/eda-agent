@@ -2,6 +2,18 @@
 
 ## Source integration, 2026-10-27
 
+The `.20` source adds `app_save_document(file_path)` after the grid-save
+investigation. Native code saves only the loaded document whose actual path
+equals the caller's absolute path; Python requires an observed disk mtime
+or size change before reporting `saved=true`. Nine related tests pass;
+Pascal lint/build has zero errors/warnings. Altium 26.11.1.5 loaded `.20`
+with zero cast errors. On a disposable PcbDoc, a 16.5-mil snap X was
+written, the exact save reported a disk write, and closing/reopening the
+file read back 16.5 mil. A nonexistent document path was refused. The
+scratch file was closed and removed. The owner's PcbDoc SHA256 before and
+after this exact-save acceptance was identical to the post-incident
+baseline below (`F19A44DF...EC6FF76D`); it is active and modified=false.
+
 The `.19` source ports upstream's `pcb_set_grids` for six writable grid
 sizes and dot/line display, with exact PcbDoc targeting, validation of all
 new values before mutation, old-state preflight, a dry-run plan and
@@ -23,8 +35,7 @@ the active-document modified flag was false. That file's write time became
 2026-10-27 12:28:19 local; its current length is 8,336,384 bytes and SHA256
 is `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
 There is no pre-save hash, so content equivalence to the previous disk
-revision is unverified. The owner PCB is active and currently reports
-modified=false. Use the exact-path reload/save route for later scratch
+revision is unverified. Use `app_save_document` for later exact-path
 persistence checks; avoid broad Save All for this purpose.
 
 The `.18` source ports upstream's batch `pcb_net_display` for connection
