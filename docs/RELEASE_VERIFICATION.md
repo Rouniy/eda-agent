@@ -3356,3 +3356,19 @@ Script `.39` on Altium 26.11.1.5 read one board region assigned to the
 on the owner's PcbDoc. A wrong-board path was refused. Two focused tests
 and Pascal lint/build passed; the owner's PcbDoc SHA256 was unchanged.
 A board with multiple flex regions still needs native read acceptance.
+
+# PCB component origin repair, 2026-10-27
+
+Script `.53` added `pcb_recenter_component_origins` from `wizd/6d6cb62`,
+adapted with an exact board path and a dry-run plan precondition. On an
+isolated copy of `vd-tx-imod-QPA2237.PcbDoc`, the 100 mil dry run proposed
+12 of 351 components. A stale plan failed with `PLAN_CHANGED`. Applying
+J12's current plan changed one origin with zero reported failures. The
+result survived exact save, close and reopen; a second plan for J12 found
+zero candidates. All six pad names, coordinates, layers and rotations
+matched the source board after reopen. The source board SHA-256 remained
+`DDECD5314589EFC38D059A11000743E6C452A1F8209C8DEA603A63D2B5C17B05`.
+The scratch copy is at
+`C:\Users\Alex\AppData\Local\Temp\eda-agent-recenter-20261027.PcbDoc`;
+command policy rejected its removal after the test. Larger bulk writes and
+footprints with unsupported grouped primitive kinds remain unverified.

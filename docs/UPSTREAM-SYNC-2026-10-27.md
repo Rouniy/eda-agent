@@ -210,3 +210,22 @@ seen on an open managed part. The AvailableLibraryType ordinal is interpreted
 as TLibraryType; it is not used to claim that an entry is a connected
 Workspace. The existing `lib_get_installed_libraries` remains the installed
 inventory. Two focused tests cover the difference and source dispatch.
+
+From `wizd/6d6cb62`, `pcb_recenter_component_origins` was adapted to
+repair an imported PCB component whose library origin is far from its pads.
+The native port computes a pad-centroid plan, requires an exact focused
+`board_path` and a matching plan token for a write, and checks the pad
+centroid after moving the origin. It supports a single designator or a whole
+board and defaults to dry run.
+
+Live acceptance on Altium 26.11.1.5 and script `.53` completed on a
+disposable copy of `vd-tx-imod-QPA2237.PcbDoc`. A 100 mil dry run examined
+351 components and proposed 12. A stale plan was refused as `PLAN_CHANGED`;
+J12 then changed once with zero reported failures. Exact save, close and
+reopen left J12 centred with zero remaining candidates. All six J12 pad
+names, locations, layers and rotations matched the untouched source board
+after reopen; its SHA-256 stayed
+`DDECD5314589EFC38D059A11000743E6C452A1F8209C8DEA603A63D2B5C17B05`.
+The disposable saved PcbDoc remains in the Windows TEMP directory because
+automatic file removal was denied by the command policy. Other primitive
+types and large bulk recentering still need separate acceptance.

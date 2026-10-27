@@ -251,7 +251,7 @@ INTERACTION_OVERRIDES = {
     # Batch DRC runs without a dialog by default. allow_modal=True still
     # opens the Design Rule Checker and can block the bridge.
     "pcb_run_drc": SILENT,
-    "proj_export_pdf": READONLY,      # fails fast; direct print opens Preview
+    "proj_export_pdf": SILENT,        # legacy refusal now; export contract may write later
     "proj_export_schematic_pdf": SILENT,  # disposable project and PDF under _screens
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and

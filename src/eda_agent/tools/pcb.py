@@ -1750,6 +1750,40 @@ def register_pcb_tools(mcp):
         return tag_response(result, components=result, context="pcb_get_components")
 
     @mcp.tool()
+    async def pcb_recenter_component_origins(
+        board_path: str,
+        min_offset_mils: float = 100,
+        designator: str = "",
+        apply: bool = False,
+        expected_plan: str = "",
+    ) -> dict[str, Any]:
+        """Plan or fix component origins far from their pad centroids.
+
+        The origin moves while pads and artwork stay in place. Use the
+        dry run first; pass its exact ``plan`` as ``expected_plan`` with
+        ``apply=True``. Give ``designator`` to limit work to one component.
+        ``board_path`` must be the exact focused PcbDoc. This repairs
+        imported footprints whose remote origin breaks Fit Document.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "error": "BAD_BOARD_PATH"}
+        if not math.isfinite(min_offset_mils) or min_offset_mils < 0:
+            return {"ok": False, "error": "BAD_MIN_OFFSET"}
+        if apply and not expected_plan:
+            return {"ok": False, "error": "PLAN_REQUIRED"}
+        params = {"board_path": board_path,
+                  "min_offset_mils": str(min_offset_mils),
+                  "designator": designator,
+                  "apply": "true" if apply else "false"}
+        if apply:
+            params["expected_plan"] = expected_plan
+        result = await get_bridge().send_command_async(
+            "pcb.recenter_component_origins", params, timeout=120.0)
+        if not isinstance(result, dict) or str(result.get("board_path", "")).casefold() != board_path.casefold():
+            return {"ok": False, "error": "BOARD_MISMATCH", "native_reply": result}
+        return result
+
+    @mcp.tool()
     async def pcb_move_components(
         moves: list[dict[str, Any]],
     ) -> dict[str, Any]:

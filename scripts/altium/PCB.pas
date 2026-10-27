@@ -26942,6 +26942,257 @@ End;
 
 {..............................................................................}
 
+{ Shift a component's reference point to its pad centroid while cancelling
+  the automatic movement of its grouped primitives. The first call returns
+  a plan; applying requires that exact plan against the exact focused board. }
+Function PCB_RecenterComponentOrigins(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iterator : IPCB_BoardIterator;
+    GroupIter : IPCB_GroupIterator;
+    Comp : IPCB_Component;
+    Prim : IPCB_Primitive;
+    Pad : IPCB_Pad;
+    Matches : TInterfaceList;
+    BoardPath, Why, Target, Name, Plan, Expected, ItemsJson, Item : String;
+    ApplyStr : String;
+    MinOffset, SumX, SumY : Double;
+    Cx, Cy, Dx, Dy, OldX, OldY, AfterX, AfterY : TCoord;
+    PadCount, Examined, NoPads, Already, Candidates, Changed, Failed, I : Integer;
+    ApplyNow, Moved : Boolean;
+Begin
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    If BoardPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'board_path is required');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If Not SameText(Board.FileName, BoardPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Focused PCB differs from board_path');
+        Exit;
+    End;
+    MinOffset := StrToFloatDef(ExtractJsonValue(Params, 'min_offset_mils'), 100);
+    If MinOffset < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'min_offset_mils cannot be negative');
+        Exit;
+    End;
+    Target := Trim(ExtractJsonValue(Params, 'designator'));
+    ApplyStr := LowerCase(ExtractJsonValue(Params, 'apply'));
+    ApplyNow := ApplyStr = 'true';
+    Expected := ExtractJsonValue(Params, 'expected_plan');
+    If ApplyNow And (Expected = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PLAN_REQUIRED',
+            'First review the dry-run expected_plan');
+        Exit;
+    End;
+    Matches := CreateObject(TInterfaceList);
+    Plan := '';
+    ItemsJson := '';
+    Examined := 0;
+    NoPads := 0;
+    Already := 0;
+    Candidates := 0;
+    Iterator := Board.BoardIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Comp := Iterator.FirstPCBObject;
+        While Comp <> Nil Do
+        Begin
+            Name := '';
+            Try Name := Comp.Name.Text; Except End;
+            If (Target = '') Or SameText(Name, Target) Then
+            Begin
+                Inc(Examined);
+                SumX := 0;
+                SumY := 0;
+                PadCount := 0;
+                GroupIter := Comp.GroupIterator_Create;
+                Try
+                    GroupIter.AddFilter_ObjectSet(MkSet(ePadObject));
+                    Pad := GroupIter.FirstPCBObject;
+                    While Pad <> Nil Do
+                    Begin
+                        SumX := SumX + Pad.X;
+                        SumY := SumY + Pad.Y;
+                        Inc(PadCount);
+                        Pad := GroupIter.NextPCBObject;
+                    End;
+                Finally
+                    Comp.GroupIterator_Destroy(GroupIter);
+                End;
+                If PadCount = 0 Then Inc(NoPads)
+                Else
+                Begin
+                    Cx := Round(SumX / PadCount);
+                    Cy := Round(SumY / PadCount);
+                    Dx := Cx - Comp.X;
+                    Dy := Cy - Comp.Y;
+                    If (Abs(CoordToMilsF(Dx)) < MinOffset) And
+                       (Abs(CoordToMilsF(Dy)) < MinOffset) Then
+                        Inc(Already)
+                    Else
+                    Begin
+                        Inc(Candidates);
+                        Matches.Add(Comp);
+                        If Plan <> '' Then Plan := Plan + '|';
+                        Plan := Plan + Name + '@' + IntToStr(Comp.X) + ','
+                            + IntToStr(Comp.Y) + '>' + IntToStr(Cx) + ','
+                            + IntToStr(Cy);
+                        Item := '{"designator":"' + EscapeJsonString(Name) + '"'
+                            + ',"origin_x":' + FloatToJsonStr(CoordToMilsF(Comp.X))
+                            + ',"origin_y":' + FloatToJsonStr(CoordToMilsF(Comp.Y))
+                            + ',"pad_centroid_x":' + FloatToJsonStr(CoordToMilsF(Cx))
+                            + ',"pad_centroid_y":' + FloatToJsonStr(CoordToMilsF(Cy))
+                            + ',"pad_count":' + IntToStr(PadCount) + '}';
+                        If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+                        ItemsJson := ItemsJson + Item;
+                    End;
+                End;
+            End;
+            Comp := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
+    If (Target <> '') And (Examined = 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND', Target);
+        Exit;
+    End;
+    If ApplyNow And (Expected <> Plan) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PLAN_CHANGED',
+            'Component origins or pad centroids changed since dry run');
+        Exit;
+    End;
+
+    Changed := 0;
+    Failed := 0;
+    If ApplyNow Then
+    Begin
+        For I := 0 To Matches.Count - 1 Do
+        Begin
+            Comp := Matches.Items[I];
+            SumX := 0;
+            SumY := 0;
+            PadCount := 0;
+            GroupIter := Comp.GroupIterator_Create;
+            Try
+                GroupIter.AddFilter_ObjectSet(MkSet(ePadObject));
+                Pad := GroupIter.FirstPCBObject;
+                While Pad <> Nil Do
+                Begin
+                    SumX := SumX + Pad.X;
+                    SumY := SumY + Pad.Y;
+                    Inc(PadCount);
+                    Pad := GroupIter.NextPCBObject;
+                End;
+            Finally
+                Comp.GroupIterator_Destroy(GroupIter);
+            End;
+            If PadCount = 0 Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+            Cx := Round(SumX / PadCount);
+            Cy := Round(SumY / PadCount);
+            OldX := Comp.X;
+            OldY := Comp.Y;
+            Dx := Cx - OldX;
+            Dy := Cy - OldY;
+            Moved := False;
+            PCBServer.PreProcess;
+            Try
+                PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+                    PCBM_BeginModify, c_NoEventData);
+                GroupIter := Comp.GroupIterator_Create;
+                Try
+                    GroupIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
+                        eArcObject, eFillObject, eTextObject, eRegionObject,
+                        ePolyObject, eComponentBodyObject, eDimensionObject));
+                    Prim := GroupIter.FirstPCBObject;
+                    While Prim <> Nil Do
+                    Begin
+                        Prim.BeginModify;
+                        Prim.MoveByXY(-Dx, -Dy);
+                        Prim.EndModify;
+                        Prim := GroupIter.NextPCBObject;
+                    End;
+                Finally
+                    Comp.GroupIterator_Destroy(GroupIter);
+                End;
+                Comp.X := Cx;
+                Comp.Y := Cy;
+                PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+                    PCBM_EndModify, c_NoEventData);
+                Moved := True;
+            Except
+                Inc(Failed);
+            End;
+            PCBServer.PostProcess;
+            If Moved Then
+            Begin
+                AfterX := Comp.X;
+                AfterY := Comp.Y;
+                SumX := 0;
+                SumY := 0;
+                PadCount := 0;
+                GroupIter := Comp.GroupIterator_Create;
+                Try
+                    GroupIter.AddFilter_ObjectSet(MkSet(ePadObject));
+                    Pad := GroupIter.FirstPCBObject;
+                    While Pad <> Nil Do
+                    Begin
+                        SumX := SumX + Pad.X;
+                        SumY := SumY + Pad.Y;
+                        Inc(PadCount);
+                        Pad := GroupIter.NextPCBObject;
+                    End;
+                Finally
+                    Comp.GroupIterator_Destroy(GroupIter);
+                End;
+                If (AfterX = Cx) And (AfterY = Cy) And
+                   (PadCount > 0) And
+                   (Round(SumX / PadCount) = Cx) And
+                   (Round(SumY / PadCount) = Cy) Then Inc(Changed)
+                Else Inc(Failed);
+            End;
+        End;
+        If Changed > 0 Then
+        Begin
+            Try Board.ConnectivelyValidateNets; Except End;
+            Try Board.ViewManager_FullUpdate; Except End;
+            MarkDocDirtyByPath(Board.FileName);
+        End;
+    End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"board_path":"' + EscapeJsonString(Board.FileName) + '"'
+        + ',"examined":' + IntToStr(Examined)
+        + ',"no_pads":' + IntToStr(NoPads)
+        + ',"already_centered":' + IntToStr(Already)
+        + ',"candidate_count":' + IntToStr(Candidates)
+        + ',"changed":' + IntToStr(Changed)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"applied":' + BoolToJsonStr(ApplyNow)
+        + ',"plan":"' + EscapeJsonString(Plan) + '"'
+        + ',"candidates":[' + ItemsJson + ']}');
+End;
+
 Function HandlePCBCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -26962,6 +27213,7 @@ Begin
         'get_components':          Result := PCB_GetComponents(Params, RequestId);
         'move_component':          Result := PCB_MoveComponent(Params, RequestId);
         'batch_move_components':   Result := PCB_BatchMoveComponents(Params, RequestId);
+        'recenter_component_origins': Result := PCB_RecenterComponentOrigins(Params, RequestId);
         'copy_component_placement': Result := PCB_CopyComponentPlacement(Params, RequestId);
         'replicate_layout':        Result := PCB_ReplicateLayout(Params, RequestId);
         'filter_variant_components': Result := PCB_FilterVariantComponents(Params, RequestId);
