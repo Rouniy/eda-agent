@@ -2,6 +2,14 @@
 
 ## Fork behavior audit, 2026-10-28
 
+- [x] Native-qualify MOREmbedded `lib_set_symbol_aliases` and close an
+  alias-collision hole. On a disposable SchLib copy, adding/removing a
+  unique alias persisted after save/close/reopen. Script `.121` now
+  checks every live primary name and alias before any mutation: it
+  refused a primary-name collision (`CAP`), an existing alias
+  (`ADXL210`), a duplicate within one add request, and an alias just
+  added unsaved to another component. A unique `RES_GUARD_QA` still
+  saved and reopened. Pascal lint/build and 105 related tests passed.
 - [x] Native-qualify upstream `sch_optimize_wires` on a new free
   disposable SchDoc. Three touching collinear segments became one wire
   with endpoints (1000,1000) and (2500,1000) mil; the single wire

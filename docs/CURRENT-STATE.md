@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## MOREmbedded symbol alias collision guard, 2026-10-28
+
+The integrated `lib_set_symbol_aliases` feature was tested on an
+isolated copy of `SpiritLevel_2E.SchLib`. A new alias on `RES` survived
+save/close/reopen, removal survived the next save/reopen, but Altium
+also accepted `CAP` as an alias of `RES` while `CAP` was a primary
+symbol. That bad edit was discarded. Script `.121` now scans the open
+library's primary names and aliases before any alias write. Native
+checks refused primary `CAP`, existing alias `ADXL210`, a duplicate
+within the add request, and an alias added unsaved to another symbol.
+A unique `RES_GUARD_QA` was still accepted and persisted. The tested
+library copies were closed, and the example source library was not
+changed. The 12-unit Pascal build/lint had zero errors or warnings;
+105 related Python tests passed. Altium ping reported loaded `.121`.
+
 ## Upstream pre-route and paste opening QA, 2026-10-28
 
 The follow-up tested the existing `pcb.lock_net_routing` on the same

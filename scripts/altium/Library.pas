@@ -17259,6 +17259,48 @@ Begin
     Result := '[' + Result + ']';
 End;
 
+{ Return the primary symbol that already owns a library name or alias. }
+{ Walk the open SchLib so unsaved aliases are included in the preflight. }
+Function SymbolNameOwner(SchLib : ISch_Lib; Wanted : String) : String;
+Var
+    Iter : ISch_Iterator;
+    LibComp : ISch_Component;
+    I, N : Integer;
+    Candidate : String;
+Begin
+    Result := '';
+    If (SchLib = Nil) Or (Trim(Wanted) = '') Then Exit;
+    Candidate := UpperCase(Trim(Wanted));
+    Iter := SchLib.SchLibIterator_Create;
+    If Iter = Nil Then Exit;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+        LibComp := Iter.FirstSchObject;
+        While LibComp <> Nil Do
+        Begin
+            If UpperCase(LibComp.LibReference) = Candidate Then
+            Begin
+                Result := LibComp.LibReference;
+                Break;
+            End;
+            N := 0;
+            Try N := LibComp.AliasCount; Except N := 0; End;
+            For I := 0 To N - 1 Do
+            Begin
+                If UpperCase(LibComp.GetState_AliasAt(I)) = Candidate Then
+                Begin
+                    Result := LibComp.LibReference;
+                    Break;
+                End;
+            End;
+            If Result <> '' Then Break;
+            LibComp := Iter.NextSchObject;
+        End;
+    Finally
+        SchLib.SchIterator_Destroy(Iter);
+    End;
+End;
+
 { Lib_SetSymbolAliases - read, add and remove a SchLib symbol's aliases:      }
 { ISch_Component.Alias_Add / Alias_Remove, AliasCount and GetState_AliasAt    }
 { An alias lets one symbol be placed under several part                       }
@@ -17267,7 +17309,7 @@ End;
 { list of alias names).                                                        }
 Function Lib_SetSymbolAliases(Params : String; RequestId : String) : String;
 Var
-    LibPath, Name, AddStr, RemoveStr, Item, Before : String;
+    LibPath, Name, AddStr, RemoveStr, Item, Before, CheckStr, SeenAdd, Owner : String;
     SchLib : ISch_Lib;
     Comp : ISch_Component;
     TabPos : Integer;
@@ -17296,6 +17338,30 @@ Begin
         Exit;
     End;
     Before := SymbolAliasesJson(Comp);
+    CheckStr := AddStr;
+    SeenAdd := #9;
+    While CheckStr <> '' Do
+    Begin
+        TabPos := Pos(#9, CheckStr);
+        If TabPos = 0 Then Begin Item := CheckStr; CheckStr := ''; End
+        Else Begin Item := Copy(CheckStr, 1, TabPos - 1); CheckStr := Copy(CheckStr, TabPos + 1, Length(CheckStr)); End;
+        Item := Trim(Item);
+        If Item = '' Then Continue;
+        If Pos(#9 + UpperCase(Item) + #9, SeenAdd) > 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'ALIAS_COLLISION',
+                'Alias appears twice in add: ' + Item);
+            Exit;
+        End;
+        SeenAdd := SeenAdd + UpperCase(Item) + #9;
+        Owner := SymbolNameOwner(SchLib, Item);
+        If Owner <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'ALIAS_COLLISION',
+                'Alias ' + Item + ' already belongs to ' + Owner);
+            Exit;
+        End;
+    End;
     Changed := (AddStr <> '') Or (RemoveStr <> '');
     If Changed Then
     Begin
