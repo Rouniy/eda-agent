@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 from ..bridge import get_bridge
-from ..bridge.exceptions import AltiumError
+from ..bridge.exceptions import AltiumError, InvalidParameterError
 from ..bridge.payload import payload_safe
 from ..fileio import pcblib_models
 from ..libimport import extract_cse_zip, inspect_cse_zip
@@ -578,6 +578,16 @@ def _pad_corner_pct(p: dict[str, Any], units: str) -> int:
     return round(p.get("corner_radius", 25))
 
 
+def _single_pad_designator(value: Any, context: str) -> str:
+    """Reject aliases that cannot identify one symbol pin and one PCB pad."""
+    designator = str(value).strip()
+    if designator and any(char in designator for char in ",; \t\n\r"):
+        raise InvalidParameterError(
+            f"{context} designator {designator!r} must identify one pad; "
+            "split grouped pins such as A4,A6,B1 into separate pins")
+    return designator
+
+
 def _pads_payload(pads: list[dict[str, Any]],
                   units: str = "mil") -> tuple[str, int]:
     """Build the ``pads`` batch payload, and count what was dropped.
@@ -605,7 +615,8 @@ def _pads_payload(pads: list[dict[str, Any]],
         # Free-text fields are neutralised for the same reason as pins: a
         # designator or layer carrying ";", "=" or "~~" reshapes the
         # payload and lands the pad somewhere else.
-        desig = _payload_safe(str(p.get("designator", "")).strip())
+        desig = _payload_safe(_single_pad_designator(
+            p.get("designator", ""), "footprint pad"))
         # A non-plated mounting hole carries no designator in a land pattern.
         if not desig and not (p.get("hole_size") and _unplated(p.get("plated"))):
             skipped_invalid += 1
@@ -963,7 +974,8 @@ def _pins_payload(pins: list[dict[str, Any]]) -> tuple[str, int]:
     op_strs: list[str] = []
     skipped_invalid = 0
     for p in pins:
-        desig = _payload_safe(str(p.get("designator", "")).strip())
+        desig = _payload_safe(_single_pad_designator(
+            p.get("designator", ""), "schematic pin"))
         name = _payload_safe(str(p.get("name", "")).strip())
         if not desig:
             skipped_invalid += 1
@@ -2798,6 +2810,7 @@ def register_library_tools(mcp):
         Returns:
             Dictionary confirming pad addition
         """
+        designator = _single_pad_designator(designator, "footprint pad")
         refusal = _units_refusal(units)
         if refusal:
             return refusal

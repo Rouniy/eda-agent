@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import pytest
 
-from eda_agent.tools.library import _pins_payload
+from eda_agent.bridge.exceptions import InvalidParameterError
+from eda_agent.tools.library import _pads_payload, _pins_payload
 
 
 def _add_pins(bridge, pins):
@@ -108,6 +109,18 @@ def test_a_blank_designator_is_dropped_before_it_reaches_the_bridge(
     assert skipped == 1
     assert reply["total"] == 1 and reply["added"] == 1
     assert [p["name"] for p in altium_sim.lib_pins] == ["OK"]
+
+
+@pytest.mark.parametrize("alias", ["A4,A6,B1", "A4;A6", "A4 A6"])
+def test_grouped_designators_refuse_the_entire_library_batch(alias):
+    pins = [{"designator": "1", "name": "OK"},
+            {"designator": alias, "name": "GND"}]
+    pads = [{"designator": "1", "x": 0, "y": 0},
+            {"designator": alias, "x": 100, "y": 0}]
+    with pytest.raises(InvalidParameterError, match="separate pins"):
+        _pins_payload(pins)
+    with pytest.raises(InvalidParameterError, match="separate pins"):
+        _pads_payload(pads)
 
 
 def test_the_new_pin_decorations_reach_the_far_end(e2e_bridge, altium_sim):

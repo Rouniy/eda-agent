@@ -2,6 +2,14 @@
 
 ## Refreshed Git and function inventory
 
+The `rabihnd/integration` fork's one-pin-per-pad designator guard was
+missing from our batch library writers. `_pins_payload`, `_pads_payload`
+and the single footprint-pad tool now reject grouped names such as
+`A4,A6,B1` before sending any batch to Altium. Blank designators retain
+their existing handling for unplated mounting holes and skipped pins.
+The batch grammar and cross-validation checks passed (42 passed, 19
+environment-dependent skips). Native library acceptance remains pending.
+
 After a fresh fetch, `upstream/main` is still
 `fbf72a78254cb0573fb75e71600f5850e38421a0`. That exact commit is the
 merge base with `Rouniy/main`, and `main..upstream/main` contains zero
