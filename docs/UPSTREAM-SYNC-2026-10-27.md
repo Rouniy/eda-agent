@@ -33,6 +33,11 @@ have more than one. On October 27 the refreshed upstream tip was
 The direct child fork's tip was `032fb4b`, with two merge bases; its Git
 commit count is not a list of unported features. This command is read-only
 except for the explicit `--fetch`, which updates remote-tracking refs.
+`eda-agent fork-status --cached-forks --json` additionally compares every
+locally cached `forks/*` branch ref, including feature branches, with exact
+merge bases and Git ahead/behind counts. The local checkout has 90 such
+refs at this check. `--fetch` refreshes the configured main remotes only;
+the cached fork refs are explicitly identified as unrefreshed.
 
 On 2026-10-27 after commit `f61565f`, `git fetch` advanced the
 `upstream/main` ref to `9ee593ea0dce989bf3bfc97d0c982044ed41badb`.
@@ -138,7 +143,7 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Find a persistent Altium API for numeric differential-pair impedance rule fields, plus broader project STEP export; placed-component STEP export, editor preferences, pours-at-point, board options and per-net jumper display are now present | Keep numeric writes disabled until exact save/reopen proves they survive; port other families with source tests, script build and disposable-board native checks |
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Further qualify 3D-body layer changes, multi-body STEP edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
-| Upstream `ed4ef59` | Use body height/standoff in footprint previews and natively qualify the restored footprint reader and model association | Verify against a disposable PcbLib and an isolated output directory |
+| Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | Check preview dimensions against several body types |
 | MOREmbedded `pcb_check_fab_output` | A >5000-drilled-pad board and revision provenance of external packages | Real Altium GerberX2/NC Drill package now parsed and compared to its production-review PcbDoc; copper and hole counts match, exported Profile is larger than the live board. Keep that mismatch visible; a package manifest/revision proof is still needed for sign-off. |
 | `mooreaa` `dc36b7e` through `fc22136` | Remaining relink paths and native acceptance of placement/parameter ports | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
 
@@ -317,3 +322,16 @@ focused SchLib before writing and stops with an explicit partial result if
 native creation, pin addition, part selection or body drawing fails. The
 native `create_symbol` reply must confirm the requested count before pins
 are added, preventing writes to a previously selected symbol on failure.
+
+On script `.56`, the restored `library.get_footprint_primitives` read
+`AD_FE38` in the disposable 38-footprint `BodyEdit_20261027.PcbLib`. It
+reported one body on Mechanical13 with the named STEP model
+`LTC3895EFE.STEP`, 1.20000014 mm overall height and 0 mm standoff. The
+separate `TEST PAD` footprint returned an embedded non-STEP body (model
+type 2), so the reader distinguished both body types. For `AD_FE38`,
+`lib_extract_embedded_models` selected the model by its live footprint
+association and wrote the checksum-verified original STEP into an isolated
+output directory. Its 1,069,643-byte file SHA-256 was
+`B5B123B0B7B89D446A648885C3979F56A3810F7E76BCC358F43980B61393C4CF`.
+The disposable PcbLib's SHA-256 was
+`A5AFD8514E06C3ED379C5249BA8FE7B7AC384DB35C0D5BC3A88878A2E4DBFDDB`.

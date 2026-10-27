@@ -47,3 +47,12 @@ def test_status_distinguishes_exact_sync_commit_from_divergent_tips(tmp_path):
     assert origin["tip_in_head"] is False
     assert fresh["sources"]["upstream"]["available"] is False
     assert shared in format_fork_status(fresh)
+
+    _git(local, "update-ref", "refs/remotes/forks/example/main", shared)
+    with_forks = fork_status(local, remotes=("origin",), cached_forks=True)
+    cached = with_forks["cached_forks"]["forks/example/main"]
+    assert cached["tip"] == shared
+    assert cached["merge_bases"] == [shared]
+    assert (cached["ahead"], cached["behind"]) == (1, 0)
+    assert cached["tip_in_head"] is True
+    assert "not refreshed by --fetch" in format_fork_status(with_forks)

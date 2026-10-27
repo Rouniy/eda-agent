@@ -957,6 +957,9 @@ def main() -> int:
     fork_p.add_argument("--remote", action="append", dest="remotes",
                         help="Remote to compare; repeat for several. Defaults to "
                              "origin, upstream and morembedded.")
+    fork_p.add_argument("--cached-forks", action="store_true",
+                        help="Also compare every locally cached forks/* branch ref. "
+                             "These refs are not refreshed by --fetch.")
     fork_p.add_argument("--json", action="store_true", dest="json_out",
                         help="Emit machine-readable JSON.")
 
@@ -1361,7 +1364,8 @@ def main() -> int:
             report = fork_status(_Path.cwd(),
                                  remotes=tuple(args.remotes) if args.remotes else
                                  ("origin", "upstream", "morembedded"),
-                                 fetch=args.fetch)
+                                 fetch=args.fetch,
+                                 cached_forks=args.cached_forks)
         except (RuntimeError, OSError) as exc:
             print(f"fork-status: {exc}", file=sys.stderr)
             return 2

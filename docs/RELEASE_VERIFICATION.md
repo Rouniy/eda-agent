@@ -3442,3 +3442,15 @@ save, close and reopen retained `part_count=3`, `parts_with_pins=3` and
 `pin_count=7`. The tool now checks the native result at each step and can
 focus an explicit absolute SchLib path before writing. The source library
 was not used for these writes.
+
+## Footprint body and embedded STEP readback (2026-10-27)
+
+On script `.56`, `library.get_footprint_primitives` read a named STEP body
+from `AD_FE38` in the disposable 38-footprint
+`BodyEdit_20261027.PcbLib`. It reported Mechanical13, model type 1,
+`LTC3895EFE.STEP`, 1.20000014 mm overall height and zero standoff. A
+separate `TEST PAD` read returned a model type 2 body. Selecting `AD_FE38`
+in `lib_extract_embedded_models` wrote only its associated original STEP
+to `workspace/native-acceptance/StepExtract_20261027`; the saved model
+checksum verified and the output SHA-256 was
+`B5B123B0B7B89D446A648885C3979F56A3810F7E76BCC358F43980B61393C4CF`.

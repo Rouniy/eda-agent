@@ -26,7 +26,8 @@ def _git(root: Path, *args: str) -> str:
 
 def fork_status(root: Path, *, remotes: tuple[str, ...] =
                 ("origin", "upstream", "morembedded"),
-                fetch: bool = False) -> dict[str, Any]:
+                fetch: bool = False,
+                cached_forks: bool = False) -> dict[str, Any]:
     """Return HEAD, each remote tip, all merge bases and ahead/behind counts."""
     root = Path(root).resolve()
     head = _git(root, "rev-parse", "HEAD")
@@ -58,8 +59,31 @@ def fork_status(root: Path, *, remotes: tuple[str, ...] =
             entry["available"] = False
             entry["reason"] = str(exc)
         sources[remote] = entry
-    return {"root": str(root), "branch": branch, "head": head,
-            "fetch_requested": fetch, "sources": sources}
+    report = {"root": str(root), "branch": branch, "head": head,
+              "fetch_requested": fetch, "sources": sources}
+    if cached_forks:
+        refs = _git(root, "for-each-ref", "--format=%(refname:short)%09%(objectname)",
+                    "refs/remotes/forks")
+        forks: dict[str, Any] = {}
+        for line in refs.splitlines():
+            ref, tip = line.split("\t", 1)
+            entry: dict[str, Any] = {"tip": tip}
+            try:
+                entry["merge_bases"] = _git(
+                    root, "merge-base", "--all", "HEAD", ref).splitlines()
+                counts = _git(root, "rev-list", "--left-right", "--count",
+                              f"HEAD...{ref}").split()
+                entry["ahead"], entry["behind"] = map(int, counts)
+                entry["tip_in_head"] = entry["behind"] == 0
+            except (RuntimeError, OSError, ValueError,
+                    subprocess.TimeoutExpired) as exc:
+                entry["reason"] = str(exc)
+            forks[ref] = entry
+        report["cached_forks"] = forks
+        report["cached_forks_note"] = (
+            "Local refs only; --fetch refreshes configured remotes, "
+            "not refs/remotes/forks. Git divergence is not a missing-feature count.")
+    return report
 
 
 def format_fork_status(report: dict[str, Any]) -> str:
@@ -73,4 +97,14 @@ def format_fork_status(report: dict[str, Any]) -> str:
         lines.append(f"{name}: {item['tip']}; ahead {item['ahead']}, behind {item['behind']}; merge-base {bases}")
         if item.get("fetch_error"):
             lines.append(f"  fetch failed: {item['fetch_error']}; counts use cached refs")
+    if "cached_forks" in report:
+        lines.append(f"cached fork branch refs: {len(report['cached_forks'])} "
+                     "(local refs; not refreshed by --fetch)")
+        for name, item in report["cached_forks"].items():
+            if "reason" in item:
+                lines.append(f"{name}: {item['tip']}; unavailable ({item['reason']})")
+                continue
+            bases = ", ".join(item["merge_bases"]) or "none"
+            lines.append(f"{name}: {item['tip']}; ahead {item['ahead']}, "
+                         f"behind {item['behind']}; merge-base {bases}")
     return "\n".join(lines)
