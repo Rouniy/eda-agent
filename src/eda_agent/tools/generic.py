@@ -8,8 +8,11 @@ a pass-through layer for object iteration, property access, and process executio
 """
 
 import difflib
+import hashlib
+import json
 import math
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Optional
 from ..bridge.payload import payload_safe, unsendable_chars
@@ -1236,6 +1239,171 @@ def register_generic_tools(mcp):
             {"operations": "~~".join(op_strings)},
         )
         return result
+
+    @mcp.tool()
+    async def sch_batch_rename_designators(
+        project_path: str,
+        renames: list[dict[str, str]],
+        dry_run: bool = True,
+        expected_snapshot: str = "",
+    ) -> dict[str, Any]:
+        """Plan or apply collision-checked project-wide designator changes.
+
+        Each rename identifies a physical component by ``unique_id`` and
+        supplies ``to``. Query ``obj_query`` for ``UniqueId`` on the project
+        first. The dry run returns ``snapshot``; pass it unchanged with
+        ``dry_run=False``. Every project sheet is loaded and every component
+        is checked before a write. On apply, components first get distinct
+        temporary designators, then their requested final names, with a
+        project-wide readback after each phase. A failure may leave unique
+        temporary names; the reply reports exactly what remains. No document
+        is saved by this tool. The existing ``obj_batch_modify`` remains
+        available for other kinds of batch edits.
+        """
+        path = Path(project_path)
+        if not path.is_absolute() or path.suffix.casefold() not in (".prjpcb", ".prjpcbm"):
+            return {"ok": False, "reason": "project_path must be an absolute PrjPcb path"}
+        if any(x in project_path for x in (";", "~~")):
+            return {"ok": False, "reason": "project_path contains a batch delimiter"}
+        if not renames:
+            return {"ok": False, "reason": "renames is empty"}
+        wanted: dict[str, str] = {}
+        for i, item in enumerate(renames):
+            if not isinstance(item, dict):
+                return {"ok": False, "reason": f"renames[{i}] must be an object"}
+            uid = str(item.get("unique_id", "")).strip()
+            target = str(item.get("to", "")).strip()
+            if (not uid or not target or any(x in uid + target for x in ("|", ";", "~~", "\r", "\n"))):
+                return {"ok": False, "reason": f"renames[{i}] has an empty or unsendable value"}
+            if uid.casefold() in wanted:
+                return {"ok": False, "reason": f"renames[{i}] repeats UniqueId {uid}"}
+            wanted[uid.casefold()] = target
+        bridge = get_bridge()
+        loaded = await bridge.send_command_async(
+            "project.load_project_sheets", {"project_path": project_path})
+        if (not isinstance(loaded, dict) or loaded.get("failed")
+                or not isinstance(loaded.get("total_sheets"), int)
+                or loaded["total_sheets"] < 1):
+            return {"ok": False, "reason": "could not load every project sheet",
+                    "load": loaded}
+
+        async def read() -> dict[str, Any]:
+            return await bridge.send_command_async("generic.query_objects", {
+                "scope": f"project:{project_path}",
+                "object_type": "eSchComponent", "filter": "",
+                "properties": "UniqueId,Designator.Text",
+            })
+
+        async def state() -> tuple[dict[str, Any], dict[str, list[dict[str, str]]]]:
+            reply = await read()
+            if (not isinstance(reply, dict)
+                    or reply.get("sheets_processed") != loaded["total_sheets"]
+                    or not isinstance(reply.get("objects"), list)
+                    or reply.get("count") != len(reply["objects"])):
+                raise ValueError("project component query did not cover every loaded sheet")
+            groups: dict[str, list[dict[str, str]]] = {}
+            for row in reply["objects"]:
+                uid = str(row.get("UniqueId", "")).strip()
+                name = str(row.get("Designator.Text", "")).strip()
+                doc = str(row.get("_doc", "")).strip()
+                if not uid or not name or not doc:
+                    raise ValueError("component has no UniqueId, designator or sheet path")
+                groups.setdefault(uid.casefold(), []).append({"uid": uid, "name": name, "doc": doc})
+            return reply, groups
+
+        try:
+            inventory, groups = await state()
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "load": loaded}
+        missing = sorted(set(wanted) - set(groups))
+        if missing:
+            return {"ok": False, "reason": "requested UniqueIds not found", "missing": missing}
+        current: dict[str, str] = {}
+        current_names: dict[str, str] = {}
+        for uid, rows in groups.items():
+            names = {r["name"].casefold() for r in rows}
+            if len(names) != 1:
+                return {"ok": False, "reason": "multipart component has inconsistent designators",
+                        "unique_id": uid, "names": sorted(names)}
+            current[uid] = rows[0]["name"]
+            key = current[uid].casefold()
+            if key in current_names and current_names[key] != uid:
+                return {"ok": False, "reason": "project already has duplicate designators",
+                        "designator": current[uid],
+                        "unique_ids": [current_names[key], uid]}
+            current_names[key] = uid
+        final = {uid: wanted.get(uid, name) for uid, name in current.items()}
+        by_name: dict[str, str] = {}
+        for uid, name in final.items():
+            key = name.casefold()
+            if key in by_name and by_name[key] != uid:
+                return {"ok": False, "reason": "final designator collision",
+                        "designator": name, "unique_ids": [by_name[key], uid]}
+            by_name[key] = uid
+        snapshot_rows = sorted((uid, r["name"], r["doc"])
+                               for uid, rows in groups.items() for r in rows)
+        payload = {"project_path": str(path).casefold(), "rows": snapshot_rows,
+                   "renames": sorted(wanted.items())}
+        snapshot = hashlib.sha256(json.dumps(payload, ensure_ascii=False,
+                                              separators=(",", ":")).encode()).hexdigest()
+        plan = {"ok": True, "dry_run": dry_run, "snapshot": snapshot,
+                "sheets": loaded["total_sheets"], "components": len(groups),
+                "changes": [{"unique_id": uid, "from": current[uid], "to": target,
+                             "parts": len(groups[uid])}
+                            for uid, target in wanted.items() if current[uid] != target]}
+        if dry_run:
+            return plan
+        if expected_snapshot != snapshot:
+            return {**plan, "ok": False, "reason": "snapshot changed or was not supplied"}
+        changed = [uid for uid in wanted if current[uid] != wanted[uid]]
+        if not changed:
+            return {**plan, "applied": True, "verified": True}
+
+        used = {name.casefold() for name in current.values()}
+        used.update(name.casefold() for name in final.values())
+        temporary: dict[str, str] = {}
+        for uid in changed:
+            while True:
+                candidate = "ZZZ" + secrets.token_hex(7).upper()
+                if candidate.casefold() not in used:
+                    used.add(candidate.casefold())
+                    temporary[uid] = candidate
+                    break
+
+        async def phase(names: dict[str, str]) -> dict[str, Any]:
+            operations = [
+                f"scope=project:{project_path};object_type=eSchComponent;"
+                f"filter=UniqueId={groups[uid][0]['uid']};"
+                f"set=Designator.Text={names[uid]}"
+                for uid in changed]
+            reply = await bridge.send_command_async(
+                "generic.batch_modify", {"operations": "~~".join(operations)})
+            _, after = await state()
+            actual = {uid: sorted({r["name"] for r in after.get(uid, [])})
+                      for uid in changed}
+            verified = all(
+                len(after.get(uid, [])) == len(groups[uid])
+                and {r["name"].casefold() for r in after[uid]} == {names[uid].casefold()}
+                for uid in changed)
+            verified = verified and set(after) == set(groups) and all(
+                len(after[uid]) == len(groups[uid])
+                and {r["name"].casefold() for r in after[uid]}
+                    == {current[uid].casefold()}
+                for uid in groups if uid not in changed)
+            return {"native_reply": reply, "actual": actual, "verified": verified}
+
+        try:
+            first = await phase(temporary)
+            if not first["verified"]:
+                return {**plan, "ok": False, "phase": "temporary",
+                        "temporary": temporary, "readback": first}
+            second = await phase(wanted)
+        except Exception as exc:
+            return {**plan, "ok": False, "phase": "write_or_readback",
+                    "temporary": temporary, "error": str(exc)}
+        return {**plan, "ok": second["verified"], "applied": True,
+                "verified": second["verified"], "temporary_phase": first,
+                "final_phase": second, "save_required": True}
 
     @mcp.tool()
     async def obj_run_process(

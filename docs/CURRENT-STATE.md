@@ -1,5 +1,26 @@
 # Current integration state / agent handoff
 
+## Collision-checked project designator batch, 2026-10-28
+
+`sch_batch_rename_designators` is an additional path for a use case the
+`bblacklock3` fork refused and upstream later restored generically. It
+requires an explicit PrjPcb path and UniqueId-to-designator map. Its
+default dry run loads project sheets, queries every component, refuses
+existing or proposed duplicate names, and returns a snapshot hash.
+Execution requires that hash and writes distinct temporary designators
+before final names, with project-wide readback after each phase. A
+partial first phase stops without sending final names. No save is
+automatic; the generic `obj_batch_modify` remains available.
+
+On a disposable two-sheet project in Temp, two one-part components with
+UniqueIds `VTNURPGL` and `SMNYQOWP` swapped `RQA1` and `CQA1`.
+Altium reported two matched edits and no skipped operation in each
+phase. Readback after each phase and after save/close/reopen showed the
+planned values, and the QA project was closed. Twenty focused tests
+passed. Multi-part native behavior and a deliberately failed native
+second phase remain to be qualified. Multiple bridge calls are not
+atomic against another client editing the same project concurrently.
+
 ## Fractional keep-out outline and polygon-pour clearance, 2026-10-28
 
 The native `.115` keep-out-outline handler already accepted decimal-mil

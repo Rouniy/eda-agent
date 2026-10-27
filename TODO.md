@@ -45,11 +45,17 @@
   all pass. Confirm six custom-pad shape readers already name
   `eCustomShape`, and the EasyEDA extension delivery guards have adapted
   coverage. See the sync checkpoint for the six absent test-path audit.
-- [ ] Design and qualify a safe preflight/verification path for bulk
-  designator rewrites. The `bblacklock3` fork refused them because a
-  partial batch can leave duplicate designators and merge nets;
-  upstream restored the bulk capability. Preserve useful bulk editing
-  while closing that failure mode on disposable projects.
+- [x] Add a collision-checked, project-wide designator batch path while
+  retaining `obj_batch_modify` for arbitrary edits. The new
+  `sch_batch_rename_designators` plans by UniqueId, checks every loaded
+  project sheet and all final names, uses distinct temporary names,
+  then verifies the whole project after both write phases. A two-sheet
+  disposable project swapped two designators; both persisted after
+  save/close/reopen. A partial-first-phase test stops before final names.
+- [ ] Check the new designator batch on a disposable multipart project
+  and under an intentionally failed native second phase. The Python
+  path cannot make multiple bridge calls atomic against other clients;
+  a native single-command transaction would close that remaining race.
 - [x] Qualify `vincent-himpe`'s fractional circular board outline in
   Altium `.115`: exact centre and radius were returned as four closed
   quarter arcs and persisted after save/close/reopen on a disposable
