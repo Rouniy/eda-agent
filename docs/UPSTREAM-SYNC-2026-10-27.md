@@ -251,3 +251,15 @@ after reopen; its SHA-256 stayed
 The disposable saved PcbDoc remains in the Windows TEMP directory because
 automatic file removal was denied by the command policy. Other primitive
 types and large bulk recentering still need separate acceptance.
+
+The `viknandala-eng/main` commit `d4a259b` supplied managed Workspace
+component resolution through EDMS and placement of a selected immutable
+revision through `DM_UseItemRevision`. The two commands are integrated as
+`lib_resolve_workspace_component` and `sch_place_workspace_components`.
+The port validates GUIDs and rotation, checks the exact focused SchDoc in
+both Python and Pascal, and preserves the manual-layout guard. The source
+fork's Workspace search checks only the first fuzzy result against the
+requested exact Comment; until an Altium Workspace is available for live
+testing, a search that returns a near match first can report no exact match
+even when a later result would match. It fails closed in that case. No
+managed component was written to a real design during this integration.

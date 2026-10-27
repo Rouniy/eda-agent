@@ -10436,6 +10436,157 @@ End;
 {..............................................................................}
 { Lib_GetVaultName - the Workspace name the managed tools would use.          }
 {..............................................................................}
+Function Lib_ResolveWorkspaceComponent(Params : String; RequestId : String) : String;
+Var
+    ComponentName, WorkspaceGuid, ItemGuid, RevisionGuid : String;
+    ItemRevisionId, ContentTypeGuid : String;
+    ServerManagerProvider, ServerManager, Vault : Variant;
+    SearchResult, FoundRevision, LatestRevision : Variant;
+Begin
+    ComponentName := Trim(ExtractJsonValue(Params, 'component_name'));
+    If ComponentName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_COMPONENT_NAME',
+            'component_name must be a non-empty exact name');
+        Exit;
+    End;
+
+    ServerManagerProvider := Nil;
+    ServerManager := Nil;
+    Vault := Nil;
+    SearchResult := Nil;
+    FoundRevision := Nil;
+    LatestRevision := Nil;
+
+    Try Client.StartServer('EDMSInterface'); Except End;
+
+    Try
+        ServerManagerProvider :=
+            Client.GetDotNetObjectInterface('EDMS_GetDXPServerManager');
+    Except
+        ServerManagerProvider := Nil;
+    End;
+    If ServerManagerProvider <> Nil Then
+    Begin
+        Try
+            ServerManager :=
+                ServerManagerProvider.GetDXPServerManagerInterface;
+        Except
+            ServerManager := Nil;
+        End;
+    End;
+
+    { Some Altium builds publish the manager itself instead of its provider. }
+    If ServerManager = Nil Then
+    Begin
+        Try
+            ServerManager :=
+                Client.GetDotNetObjectInterface('EDMS_DXPServerManager');
+        Except
+            ServerManager := Nil;
+        End;
+    End;
+
+    If ServerManager = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE_MANAGER',
+            'The Altium Workspace server manager is unavailable');
+        Exit;
+    End;
+    If Not ServerManager.IsConnected Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_DISCONNECTED',
+            'Altium is not connected to a Workspace');
+        Exit;
+    End;
+
+    Try Vault := ServerManager.GetEnterpriseVault; Except Vault := Nil; End;
+    If Vault = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE_VAULT',
+            'The connected Workspace could not be opened');
+        Exit;
+    End;
+
+    Try
+        SearchResult := Vault.SearchItemRevisions(
+            '', '', ComponentName, '', '',
+            'CB3C11C4-E317-11DF-B822-12313F0024A2',
+            '', '', 10, 0, Nil, Nil);
+    Except
+        SearchResult := Nil;
+    End;
+    If SearchResult = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_SEARCH_FAILED',
+            'The Workspace component search could not be started');
+        Exit;
+    End;
+
+    If Not SearchResult.WaitUntilDone(30000) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_SEARCH_TIMEOUT',
+            'The Workspace component search timed out');
+        Exit;
+    End;
+
+    Try FoundRevision := SearchResult.GetFirstItemRevision; Except FoundRevision := Nil; End;
+    If FoundRevision = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_COMPONENT_NOT_FOUND',
+            'No Component Item matching "' + ComponentName + '" was found');
+        Exit;
+    End;
+
+    Try LatestRevision := Vault.GetLastItemRevision(FoundRevision.GetItemGUID);
+    Except LatestRevision := Nil; End;
+    If LatestRevision = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_REVISION_NOT_FOUND',
+            'The latest revision of "' + ComponentName + '" could not be resolved');
+        Exit;
+    End;
+
+    If UpperCase(LatestRevision.GetComment) <> UpperCase(ComponentName) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_EXACT_WORKSPACE_MATCH',
+            'Workspace search returned "' + LatestRevision.GetComment
+            + '" instead of exact component "' + ComponentName + '"');
+        Exit;
+    End;
+
+    ContentTypeGuid := LatestRevision.GetContentTypeGUID;
+    If UpperCase(ContentTypeGuid) <>
+       'CB3C11C4-E317-11DF-B822-12313F0024A2' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_COMPONENT_ITEM',
+            'The exact Workspace match is not a Component Item');
+        Exit;
+    End;
+
+    WorkspaceGuid := Vault.GetVaultGUID;
+    ItemGuid := LatestRevision.GetItemGUID;
+    RevisionGuid := LatestRevision.GetGUID;
+    ItemRevisionId := LatestRevision.GetHRID;
+    If (WorkspaceGuid = '') Or (ItemGuid = '') Or (RevisionGuid = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INCOMPLETE_WORKSPACE_IDENTITY',
+            'The Workspace returned incomplete component identifiers');
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonStr('component_name', LatestRevision.GetComment) + ',' +
+            JsonStr('workspace_guid', WorkspaceGuid) + ',' +
+            JsonStr('item_guid', ItemGuid) + ',' +
+            JsonStr('revision_guid', RevisionGuid) + ',' +
+            JsonStr('item_revision_id', ItemRevisionId) + ',' +
+            JsonStr('content_type_guid', ContentTypeGuid)
+        ));
+End;
+
+
 Function Lib_GetVaultName(Params : String; RequestId : String) : String;
 Var
     Name, Seen : String;
@@ -20065,6 +20216,7 @@ Begin
         'list_available_libraries': Result := Lib_ListAvailableLibraries(Params, RequestId);
         'set_pad_properties':   Result := Lib_SetPadProperties(Params, RequestId);
         'get_vault_component':  Result := Lib_GetVaultComponent(Params, RequestId);
+        'resolve_workspace_component': Result := Lib_ResolveWorkspaceComponent(Params, RequestId);
         'find_vault_components': Result := Lib_FindVaultComponents(Params, RequestId);
         'delete_component':     Result := Lib_DeleteComponent(Params, RequestId);
         'rename_component':     Result := Lib_RenameComponent(Params, RequestId);

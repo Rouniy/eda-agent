@@ -219,6 +219,7 @@ _DESIGN_BRIDGE = frozenset(
 # --- explicit interaction overrides (from the DelphiScript bridge audit) ----
 # Only tools that are NOT plain readonly/silent under the default rules.
 INTERACTION_OVERRIDES = {
+    "lib_resolve_workspace_component": READONLY,
     # The via write is refused locally because it crashes the script engine.
     "pcb_set_via_soldermask_relief": READONLY,
     # Pure geometry computed in DelphiScript; no document state is read or

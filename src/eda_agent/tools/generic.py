@@ -78,6 +78,16 @@ MANAGED_PLACEMENT_KEYS = frozenset({
     "designator",
 })
 
+WORKSPACE_PLACEMENT_KEYS = frozenset({
+    "workspace_guid", "item_guid", "revision_guid", "item_revision_id",
+    "x", "y", "rotation",
+})
+
+_WORKSPACE_GUID_RE = re.compile(
+    r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$"
+)
+
 
 def unknown_placement_keys(
     placements: list[dict[str, Any]],
@@ -4020,6 +4030,64 @@ def register_generic_tools(mcp):
             params["lib_identifier_kind"] = int(lib_identifier_kind)
         return await bridge.send_command_async(
             "generic.place_sch_vault_components", params)
+
+    @mcp.tool()
+    async def sch_place_workspace_components(
+        placements: list[dict[str, Any]],
+        document_path: Optional[str] = None,
+        allow_manual_layout: bool = False,
+    ) -> dict[str, Any]:
+        """Place exact managed revisions returned by lib_resolve_workspace_component.
+
+        GUIDs identify the Workspace, Item, and Revision. x and y are mils;
+        rotation is 0, 90, 180, or 270 degrees. Pass the absolute SchDoc path
+        when targeting a specific open sheet.
+        """
+        if not placements:
+            return {"error": "No placements provided", "placed": 0}
+        ops: list[str] = []
+        for index, placement in enumerate(placements):
+            if not isinstance(placement, dict):
+                return {"error": "INVALID_WORKSPACE_PLACEMENT",
+                        "reason": f"placement {index} is not an object", "placed": 0}
+            unknown = sorted(set(placement) - WORKSPACE_PLACEMENT_KEYS)
+            if unknown:
+                return {"error": "UNKNOWN_WORKSPACE_PLACEMENT_KEYS",
+                        "reason": f"placement {index}: {', '.join(unknown)}",
+                        "valid_keys": sorted(WORKSPACE_PLACEMENT_KEYS), "placed": 0}
+            guids = {}
+            for key in ("workspace_guid", "item_guid", "revision_guid"):
+                value = str(placement.get(key, "")).strip()
+                if not _WORKSPACE_GUID_RE.fullmatch(value) or (value.startswith("{") != value.endswith("}")):
+                    return {"error": "INVALID_WORKSPACE_GUID",
+                            "reason": f"placement {index} has invalid {key}", "placed": 0}
+                guids[key] = value.strip("{}")
+            try:
+                x, y = int(placement.get("x", 0)), int(placement.get("y", 0))
+                rotation = int(placement.get("rotation", 0))
+            except (TypeError, ValueError, OverflowError):
+                return {"error": "INVALID_WORKSPACE_PLACEMENT",
+                        "reason": f"placement {index} has invalid coordinates", "placed": 0}
+            if rotation not in (0, 90, 180, 270):
+                return {"error": "INVALID_ROTATION", "placed": 0}
+            fields = [f"{key}={guids[key]}" for key in
+                      ("workspace_guid", "item_guid", "revision_guid")]
+            fields.extend((f"x={x}", f"y={y}", f"rotation={rotation}"))
+            revision_id = str(placement.get("item_revision_id", "")).strip()
+            if revision_id:
+                fields.append("item_revision_id=" + payload_safe(revision_id))
+            ops.append(";".join(fields))
+        bridge = get_bridge()
+        refusal = await _refuse_manual_sheet_layout(
+            bridge, len(ops), document_path, allow_manual_layout)
+        if refusal is None:
+            refusal = await _focus_sheet(bridge, document_path)
+        if refusal is not None:
+            return refusal
+        return await bridge.send_command_async(
+            "generic.place_workspace_components",
+            {"placements": "~~".join(ops), "sheet_path": document_path or ""},
+            timeout=60.0)
 
     @mcp.tool()
     async def sim_attach_primitives(

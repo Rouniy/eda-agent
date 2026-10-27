@@ -3391,3 +3391,18 @@ than 5000 drilled holes remain to verify.
 The same call through the restarted HTTP MCP on port 14701 returned all
 three required checks and the same two outline errors; Altium's loaded
 DelphiScript stayed at `.53` because this patch changed only Python.
+# Workspace component integration (2026-10-27)
+
+Script `2026.10.27.54` loaded in Altium 26.11.1.5 after an exact
+`application.stop_server` and relaunch from the main project directory.
+The live `application.ping` returned `.54` with zero cast errors. MCP on
+port 14701 listed both `lib_resolve_workspace_component` and
+`sch_place_workspace_components`; the TCP relay remained on port 14700.
+The resolver reached its native handler and returned
+`NO_WORKSPACE_MANAGER` on this Altium session, which has no connected
+EDMS Workspace Manager. No placement was attempted. The source fork's
+managed placement API therefore still needs a disposable-sheet acceptance
+test when a Workspace connection is available. Eight focused Workspace
+tests and the 25 fabrication tests passed; Pascal build/lint passed with
+zero errors and warnings.
+

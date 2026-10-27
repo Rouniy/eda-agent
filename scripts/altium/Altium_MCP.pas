@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.53';
+    SCRIPT_VERSION = '2026.10.27.54';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -22780,6 +22780,157 @@ End;
 {..............................................................................}
 { Lib_GetVaultName - the Workspace name the managed tools would use.          }
 {..............................................................................}
+Function Lib_ResolveWorkspaceComponent(Params : String; RequestId : String) : String;
+Var
+    ComponentName, WorkspaceGuid, ItemGuid, RevisionGuid : String;
+    ItemRevisionId, ContentTypeGuid : String;
+    ServerManagerProvider, ServerManager, Vault : Variant;
+    SearchResult, FoundRevision, LatestRevision : Variant;
+Begin
+    ComponentName := Trim(ExtractJsonValue(Params, 'component_name'));
+    If ComponentName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_COMPONENT_NAME',
+            'component_name must be a non-empty exact name');
+        Exit;
+    End;
+
+    ServerManagerProvider := Nil;
+    ServerManager := Nil;
+    Vault := Nil;
+    SearchResult := Nil;
+    FoundRevision := Nil;
+    LatestRevision := Nil;
+
+    Try Client.StartServer('EDMSInterface'); Except End;
+
+    Try
+        ServerManagerProvider :=
+            Client.GetDotNetObjectInterface('EDMS_GetDXPServerManager');
+    Except
+        ServerManagerProvider := Nil;
+    End;
+    If ServerManagerProvider <> Nil Then
+    Begin
+        Try
+            ServerManager :=
+                ServerManagerProvider.GetDXPServerManagerInterface;
+        Except
+            ServerManager := Nil;
+        End;
+    End;
+
+    { Some Altium builds publish the manager itself instead of its provider. }
+    If ServerManager = Nil Then
+    Begin
+        Try
+            ServerManager :=
+                Client.GetDotNetObjectInterface('EDMS_DXPServerManager');
+        Except
+            ServerManager := Nil;
+        End;
+    End;
+
+    If ServerManager = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE_MANAGER',
+            'The Altium Workspace server manager is unavailable');
+        Exit;
+    End;
+    If Not ServerManager.IsConnected Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_DISCONNECTED',
+            'Altium is not connected to a Workspace');
+        Exit;
+    End;
+
+    Try Vault := ServerManager.GetEnterpriseVault; Except Vault := Nil; End;
+    If Vault = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE_VAULT',
+            'The connected Workspace could not be opened');
+        Exit;
+    End;
+
+    Try
+        SearchResult := Vault.SearchItemRevisions(
+            '', '', ComponentName, '', '',
+            'CB3C11C4-E317-11DF-B822-12313F0024A2',
+            '', '', 10, 0, Nil, Nil);
+    Except
+        SearchResult := Nil;
+    End;
+    If SearchResult = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_SEARCH_FAILED',
+            'The Workspace component search could not be started');
+        Exit;
+    End;
+
+    If Not SearchResult.WaitUntilDone(30000) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_SEARCH_TIMEOUT',
+            'The Workspace component search timed out');
+        Exit;
+    End;
+
+    Try FoundRevision := SearchResult.GetFirstItemRevision; Except FoundRevision := Nil; End;
+    If FoundRevision = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_COMPONENT_NOT_FOUND',
+            'No Component Item matching "' + ComponentName + '" was found');
+        Exit;
+    End;
+
+    Try LatestRevision := Vault.GetLastItemRevision(FoundRevision.GetItemGUID);
+    Except LatestRevision := Nil; End;
+    If LatestRevision = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_REVISION_NOT_FOUND',
+            'The latest revision of "' + ComponentName + '" could not be resolved');
+        Exit;
+    End;
+
+    If UpperCase(LatestRevision.GetComment) <> UpperCase(ComponentName) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_EXACT_WORKSPACE_MATCH',
+            'Workspace search returned "' + LatestRevision.GetComment
+            + '" instead of exact component "' + ComponentName + '"');
+        Exit;
+    End;
+
+    ContentTypeGuid := LatestRevision.GetContentTypeGUID;
+    If UpperCase(ContentTypeGuid) <>
+       'CB3C11C4-E317-11DF-B822-12313F0024A2' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_COMPONENT_ITEM',
+            'The exact Workspace match is not a Component Item');
+        Exit;
+    End;
+
+    WorkspaceGuid := Vault.GetVaultGUID;
+    ItemGuid := LatestRevision.GetItemGUID;
+    RevisionGuid := LatestRevision.GetGUID;
+    ItemRevisionId := LatestRevision.GetHRID;
+    If (WorkspaceGuid = '') Or (ItemGuid = '') Or (RevisionGuid = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INCOMPLETE_WORKSPACE_IDENTITY',
+            'The Workspace returned incomplete component identifiers');
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonStr('component_name', LatestRevision.GetComment) + ',' +
+            JsonStr('workspace_guid', WorkspaceGuid) + ',' +
+            JsonStr('item_guid', ItemGuid) + ',' +
+            JsonStr('revision_guid', RevisionGuid) + ',' +
+            JsonStr('item_revision_id', ItemRevisionId) + ',' +
+            JsonStr('content_type_guid', ContentTypeGuid)
+        ));
+End;
+
+
 Function Lib_GetVaultName(Params : String; RequestId : String) : String;
 Var
     Name, Seen : String;
@@ -32409,6 +32560,7 @@ Begin
         'list_available_libraries': Result := Lib_ListAvailableLibraries(Params, RequestId);
         'set_pad_properties':   Result := Lib_SetPadProperties(Params, RequestId);
         'get_vault_component':  Result := Lib_GetVaultComponent(Params, RequestId);
+        'resolve_workspace_component': Result := Lib_ResolveWorkspaceComponent(Params, RequestId);
         'find_vault_components': Result := Lib_FindVaultComponents(Params, RequestId);
         'delete_component':     Result := Lib_DeleteComponent(Params, RequestId);
         'rename_component':     Result := Lib_RenameComponent(Params, RequestId);
@@ -75222,6 +75374,138 @@ End;
 { Each op: design_item_id, x, y, designator, rotation. vault and             }
 { lib_identifier_kind apply to the whole batch.                               }
 {..............................................................................}
+Function Gen_PlaceWorkspaceComponents(Params : String; RequestId : String) : String;
+Var
+    PlaceStr, Op, Remaining, PlacementParams, FailedItems, SheetPath : String;
+    WorkspaceGuid, ItemGuid, RevisionGuid, ItemRevisionId : String;
+    ResponseBody : String;
+    X, Y, Rotation, OrientationVal : Integer;
+    OpCount, Placed, Failed : Integer;
+    SchDoc : ISch_Document;
+    ManagedWorkspace : IDXPWorkSpace;
+    PlacedOne : Boolean;
+Begin
+    PlaceStr := ExtractJsonValue(Params, 'placements');
+    If PlaceStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'placements is required');
+        Exit;
+    End;
+
+    If SchServer = Nil Then Try Client.StartServer('SCH'); Except End;
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'No schematic document is active');
+        Exit;
+    End;
+    If SchDoc.ObjectId <> eSheet Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOC_KIND',
+            'Active document is not a schematic sheet');
+        Exit;
+    End;
+    If (SheetPath <> '') And (Not SameText(SchDoc.DocumentName, SheetPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SHEET_MISMATCH',
+            'Active sheet does not match sheet_path');
+        Exit;
+    End;
+
+    ManagedWorkspace := Nil;
+    Try ManagedWorkspace := Client.GetDXPWorkspace; Except End;
+    If ManagedWorkspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MANAGED_WORKSPACE',
+            'The Altium managed Workspace interface is unavailable');
+        Exit;
+    End;
+
+    Placed := 0;
+    Failed := 0;
+    OpCount := 0;
+    FailedItems := '';
+    Remaining := PlaceStr;
+    While True Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Op = '' Then Break;
+        OpCount := OpCount + 1;
+
+        WorkspaceGuid := GetBatchField(Op, 'workspace_guid');
+        ItemGuid := GetBatchField(Op, 'item_guid');
+        RevisionGuid := GetBatchField(Op, 'revision_guid');
+        ItemRevisionId := GetBatchField(Op, 'item_revision_id');
+        X := StrToIntDef(GetBatchField(Op, 'x'), 0);
+        Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+        Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+
+        If (WorkspaceGuid = '') Or (ItemGuid = '') Or (RevisionGuid = '') Then
+        Begin
+            Inc(Failed);
+            If FailedItems <> '' Then FailedItems := FailedItems + ',';
+            If ItemRevisionId <> '' Then
+                FailedItems := FailedItems + ItemRevisionId + ':MISSING_GUID'
+            Else
+                FailedItems := FailedItems + IntToStr(OpCount) + ':MISSING_GUID';
+            Continue;
+        End;
+
+        OrientationVal := 0;
+        If Rotation = 90 Then OrientationVal := 1
+        Else If Rotation = 180 Then OrientationVal := 2
+        Else If Rotation = 270 Then OrientationVal := 3;
+        PlacementParams :=
+            'Orientation=' + IntToStr(OrientationVal)
+            + '|Location.X=' + IntToStr(MilsToCoord(X))
+            + '|Location.Y=' + IntToStr(MilsToCoord(Y));
+
+        PlacedOne := False;
+        Try
+            PlacedOne := ManagedWorkspace.DM_UseItemRevision(
+                WorkspaceGuid, ItemGuid, RevisionGuid, PlacementParams);
+        Except
+            PlacedOne := False;
+        End;
+
+        If PlacedOne Then
+            Inc(Placed)
+        Else
+        Begin
+            Inc(Failed);
+            If FailedItems <> '' Then FailedItems := FailedItems + ',';
+            If ItemRevisionId <> '' Then
+                FailedItems := FailedItems + ItemRevisionId + ':PLACE_FAILED'
+            Else
+                FailedItems := FailedItems + RevisionGuid + ':PLACE_FAILED';
+        End;
+    End;
+
+    If Placed > 0 Then
+    Begin
+        SchDoc.GraphicallyInvalidate;
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+    End;
+
+    ResponseBody := '{"placed":' + IntToStr(Placed)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount);
+    If FailedItems <> '' Then
+        ResponseBody := ResponseBody + ',"failed_items":"'
+            + EscapeJsonString(FailedItems) + '"';
+    ResponseBody := ResponseBody + '}';
+    Result := BuildSuccessResponse(RequestId, ResponseBody);
+End;
+
+{..............................................................................}
+{ Gen_PlaceNetLabels - Bulk net-label placement on the active schematic.        }
+{ Params: labels = 'text=VCC;x=100;y=200;orientation=0~~text=GND;x=...'         }
+{ One PreProcess/PostProcess wraps the whole batch; cuts ~1s/label of overhead. }
+{..............................................................................}
+
 Function Gen_PlaceSchVaultComponents(Params : String; RequestId : String) : String;
 Var
     PlaceStr, Op, Remaining, ItemsJson, VaultName, Note : String;
@@ -78908,6 +79192,7 @@ Begin
         'place_sch_components_from_library': Result := Gen_PlaceSchComponentsFromLibrary(Params, RequestId);
         'place_dblib_components':    Result := Gen_PlaceDbLibComponents(Params, RequestId);
         'place_sch_vault_components': Result := Gen_PlaceSchVaultComponents(Params, RequestId);
+        'place_workspace_components': Result := Gen_PlaceWorkspaceComponents(Params, RequestId);
         'attach_spice_primitives':    Result := Gen_AttachSpicePrimitivesBatch(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown generic action: ' + Action);

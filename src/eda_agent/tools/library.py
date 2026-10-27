@@ -4569,6 +4569,21 @@ def register_library_tools(mcp):
         return redact_reply(result)
 
     @mcp.tool()
+    async def lib_resolve_workspace_component(component_name: str) -> dict[str, Any]:
+        """Resolve an exact Component Item in the connected Altium Workspace.
+
+        Returns the latest immutable Workspace, Item, and Revision GUIDs for
+        review before ``sch_place_workspace_components`` changes a sheet.
+        """
+        name = str(component_name).strip()
+        if not name:
+            return {"ok": False, "error": "MISSING_COMPONENT_NAME",
+                    "reason": "component_name must be a non-empty exact name"}
+        return await get_bridge().send_command_async(
+            "library.resolve_workspace_component",
+            {"component_name": name}, timeout=45.0)
+
+    @mcp.tool()
     async def lib_get_component_details(
         component_name: str = "",
         library_path: Optional[str] = None,

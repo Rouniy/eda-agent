@@ -12613,6 +12613,138 @@ End;
 { Each op: design_item_id, x, y, designator, rotation. vault and             }
 { lib_identifier_kind apply to the whole batch.                               }
 {..............................................................................}
+Function Gen_PlaceWorkspaceComponents(Params : String; RequestId : String) : String;
+Var
+    PlaceStr, Op, Remaining, PlacementParams, FailedItems, SheetPath : String;
+    WorkspaceGuid, ItemGuid, RevisionGuid, ItemRevisionId : String;
+    ResponseBody : String;
+    X, Y, Rotation, OrientationVal : Integer;
+    OpCount, Placed, Failed : Integer;
+    SchDoc : ISch_Document;
+    ManagedWorkspace : IDXPWorkSpace;
+    PlacedOne : Boolean;
+Begin
+    PlaceStr := ExtractJsonValue(Params, 'placements');
+    If PlaceStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'placements is required');
+        Exit;
+    End;
+
+    If SchServer = Nil Then Try Client.StartServer('SCH'); Except End;
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+            'No schematic document is active');
+        Exit;
+    End;
+    If SchDoc.ObjectId <> eSheet Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOC_KIND',
+            'Active document is not a schematic sheet');
+        Exit;
+    End;
+    If (SheetPath <> '') And (Not SameText(SchDoc.DocumentName, SheetPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SHEET_MISMATCH',
+            'Active sheet does not match sheet_path');
+        Exit;
+    End;
+
+    ManagedWorkspace := Nil;
+    Try ManagedWorkspace := Client.GetDXPWorkspace; Except End;
+    If ManagedWorkspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MANAGED_WORKSPACE',
+            'The Altium managed Workspace interface is unavailable');
+        Exit;
+    End;
+
+    Placed := 0;
+    Failed := 0;
+    OpCount := 0;
+    FailedItems := '';
+    Remaining := PlaceStr;
+    While True Do
+    Begin
+        Op := NextBatchOp(Remaining);
+        If Op = '' Then Break;
+        OpCount := OpCount + 1;
+
+        WorkspaceGuid := GetBatchField(Op, 'workspace_guid');
+        ItemGuid := GetBatchField(Op, 'item_guid');
+        RevisionGuid := GetBatchField(Op, 'revision_guid');
+        ItemRevisionId := GetBatchField(Op, 'item_revision_id');
+        X := StrToIntDef(GetBatchField(Op, 'x'), 0);
+        Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+        Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+
+        If (WorkspaceGuid = '') Or (ItemGuid = '') Or (RevisionGuid = '') Then
+        Begin
+            Inc(Failed);
+            If FailedItems <> '' Then FailedItems := FailedItems + ',';
+            If ItemRevisionId <> '' Then
+                FailedItems := FailedItems + ItemRevisionId + ':MISSING_GUID'
+            Else
+                FailedItems := FailedItems + IntToStr(OpCount) + ':MISSING_GUID';
+            Continue;
+        End;
+
+        OrientationVal := 0;
+        If Rotation = 90 Then OrientationVal := 1
+        Else If Rotation = 180 Then OrientationVal := 2
+        Else If Rotation = 270 Then OrientationVal := 3;
+        PlacementParams :=
+            'Orientation=' + IntToStr(OrientationVal)
+            + '|Location.X=' + IntToStr(MilsToCoord(X))
+            + '|Location.Y=' + IntToStr(MilsToCoord(Y));
+
+        PlacedOne := False;
+        Try
+            PlacedOne := ManagedWorkspace.DM_UseItemRevision(
+                WorkspaceGuid, ItemGuid, RevisionGuid, PlacementParams);
+        Except
+            PlacedOne := False;
+        End;
+
+        If PlacedOne Then
+            Inc(Placed)
+        Else
+        Begin
+            Inc(Failed);
+            If FailedItems <> '' Then FailedItems := FailedItems + ',';
+            If ItemRevisionId <> '' Then
+                FailedItems := FailedItems + ItemRevisionId + ':PLACE_FAILED'
+            Else
+                FailedItems := FailedItems + RevisionGuid + ':PLACE_FAILED';
+        End;
+    End;
+
+    If Placed > 0 Then
+    Begin
+        SchDoc.GraphicallyInvalidate;
+        MarkDocDirtyByPath(SchDoc.DocumentName);
+    End;
+
+    ResponseBody := '{"placed":' + IntToStr(Placed)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount);
+    If FailedItems <> '' Then
+        ResponseBody := ResponseBody + ',"failed_items":"'
+            + EscapeJsonString(FailedItems) + '"';
+    ResponseBody := ResponseBody + '}';
+    Result := BuildSuccessResponse(RequestId, ResponseBody);
+End;
+
+{..............................................................................}
+{ Gen_PlaceNetLabels - Bulk net-label placement on the active schematic.        }
+{ Params: labels = 'text=VCC;x=100;y=200;orientation=0~~text=GND;x=...'         }
+{ One PreProcess/PostProcess wraps the whole batch; cuts ~1s/label of overhead. }
+{..............................................................................}
+
 Function Gen_PlaceSchVaultComponents(Params : String; RequestId : String) : String;
 Var
     PlaceStr, Op, Remaining, ItemsJson, VaultName, Note : String;
@@ -16299,6 +16431,7 @@ Begin
         'place_sch_components_from_library': Result := Gen_PlaceSchComponentsFromLibrary(Params, RequestId);
         'place_dblib_components':    Result := Gen_PlaceDbLibComponents(Params, RequestId);
         'place_sch_vault_components': Result := Gen_PlaceSchVaultComponents(Params, RequestId);
+        'place_workspace_components': Result := Gen_PlaceWorkspaceComponents(Params, RequestId);
         'attach_spice_primitives':    Result := Gen_AttachSpicePrimitivesBatch(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown generic action: ' + Action);
