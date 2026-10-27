@@ -586,6 +586,15 @@ the resolved path, and refuses a mismatched inventory before any display
 write. Eight focused tests and Pascal lint/build pass; native two-board
 acceptance is pending.
 
+Reviewing the older upstream xSignal checks exposed a conflicting delete
+selector: `pcb_delete_xsignals(names=[...], all=true)` passed through to
+Pascal, whose `all` branch deleted every xSignal. Source `.110` refuses
+the combination before the bridge and again in the native handler. The
+related focused tests pass (17) and Pascal lint/build has no findings;
+native disposable-board acceptance is pending. The source-side `doctor`
+check saw loaded `.96`, while `.110` is now bundled, in a shared Altium
+session listing 181 open documents.
+
 The older port-by-feature history and outstanding items remain in
 `FORK-INTEGRATION-AUDIT-2026-10-26.md`. In particular, the new upstream
 commits from `0a9ccd4` through `ce53d6e` add many project and PCB tools

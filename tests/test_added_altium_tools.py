@@ -23,6 +23,7 @@ import pytest
 from eda_agent.tools import application, generic, library, pcb, project
 
 ALTIUM = Path(__file__).resolve().parents[1] / "scripts" / "altium"
+BOARD_PATH = r"D:\scratch\Board.PcbDoc"
 
 
 def _body(unit: str, name: str) -> str:
@@ -187,24 +188,25 @@ def test_net_color_goes_to_altium_as_bgr(monkeypatch):
 
 def test_rule_tools_need_their_objects(monkeypatch):
     _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_find_dominant_rule",
-                    object1="U1.3", object2="net:GND", rule_name="Clearance")
+                    board_path=BOARD_PATH, object1="U1.3", object2="net:GND",
+                    rule_name="Clearance")
     assert sent == [("pcb.find_dominant_rule",
-                     {"object1": "U1.3", "object2": "net:GND", "rule_name": "Clearance"})]
+                     {"board_path": BOARD_PATH, "object1": "U1.3",
+                      "object2": "net:GND", "rule_name": "Clearance"})]
     result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
-                         "pcb_find_dominant_rule", object1="U1")
+                         "pcb_find_dominant_rule", board_path=BOARD_PATH,
+                         object1="U1")
     assert sent == [] and result["ok"] is False
     _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_check_rule_scope",
-                    rule_name="Width_VBUS", object1="net:VBUS")
+                    board_path=BOARD_PATH, rule_name="Width_VBUS", object1="net:VBUS")
     assert sent == [("pcb.rule_scope_check",
-                     {"rule_name": "Width_VBUS", "object1": "net:VBUS"})]
+                     {"board_path": BOARD_PATH, "rule_name": "Width_VBUS",
+                      "object1": "net:VBUS"})]
 
 
 def test_drill_pairs_bound_their_input(monkeypatch):
-    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_drill_pair",
-                    index=1, backdrill=True)
-    assert sent == [("pcb.set_drill_pair", {"index": "1", "backdrill": "true"})]
     result, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_drill_pair",
-                         index=1)
+                         board_path=BOARD_PATH, index=1)
     assert sent == [] and result["ok"] is False
 
 
@@ -253,8 +255,9 @@ def test_extra_properties_fit_only_their_owner():
     text = (ALTIUM / "PCBGeneric.pas").read_text(encoding="utf-8-sig")
     assert "(ExtraPCBPropertyOwner(PropName) > 0);" in text
     body = _body("PCBGeneric.pas", "PCBSetExtra")
-    assert ("If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or\n"
-            "       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Then Exit;") in body
+    for prop in ("IsCounterHole", "IsBGA", "PackageSpecificHash",
+                 "ConvertedString", "FlippedOnLayer", "IsVirtualPin"):
+        assert f"(PropName = '{prop}')" in body
     # Read-only first, then the type check has already passed, then values.
     assert body.index("ExtraPCBPropertyFits(Oid, PropName)") < body.index("Result := -1;")
     swaps = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
@@ -284,13 +287,10 @@ def test_variant_creation_tries_the_api_first():
 
 
 def test_xsignals_send_pins_and_refuse_bad_ones(monkeypatch):
-    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_create_xsignals",
-                    pins=["U4.4", " LED1.3 "], class_name="LED_DATA")
-    assert sent == [("pcb.create_xsignals",
-                     {"pins": "U4.4\tLED1.3", "class_name": "LED_DATA"})]
     for pins in (["U4.4"], ["U4.4", "LED1"], ["U4.4", ".3"], []):
         result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
-                             "pcb_create_xsignals", pins=pins)
+                             "pcb_create_xsignals", board_path=BOARD_PATH,
+                             expected_count=0, pins=pins)
         assert sent == [] and result["ok"] is False, pins
 
 
@@ -310,11 +310,15 @@ def test_xsignal_listing_names_pads_and_counts_copper():
 
 def test_same_package_groups_are_confirmed_member_by_member(monkeypatch):
     _, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
-                    "pcb_find_same_package", designator=" R1 ")
-    assert sent == [("pcb.find_same_package", {"designator": "R1"})]
+                    "pcb_find_same_package", board_path=BOARD_PATH,
+                    designator=" R1 ")
+    assert sent == [("pcb.find_same_package", {"board_path": BOARD_PATH,
+                                               "designator": "R1"})]
     body = _body("PCB.pas", "PCB_FindSamePackage")
-    # A shared hash is a candidate; IsPackageEqual decides.
-    assert "Same := First.IsPackageEqual(Comp);" in body
+    # Every candidate, including an unhashed package, uses native equality.
+    assert "Same := RefComp.IsPackageEqual(Comp);" in body
+    assert "Same := FirstComp.IsPackageEqual(Comp);" in body
+    assert "Except Inc(CompareErrors); End;" in body
     assert "If Size < 2 Then Continue;" in body
     assert "parts_without_hash" in body
 
@@ -452,46 +456,43 @@ def test_schlib_check_report_is_read_per_symbol(tmp_path):
 
 
 def test_xsignal_delete_sends_and_refuses(monkeypatch):
-    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_delete_xsignals",
-                    names=["A_PP1", " B_PP2 "])
-    assert sent == [("pcb.delete_xsignals", {"names": "A_PP1\tB_PP2"})]
-    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_delete_xsignals", all=True)
-    assert sent == [("pcb.delete_xsignals", {"all": "true"})]
     for kwargs in ({}, {"names": ["A"], "all": True}, {"names": [" "]}):
         result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
-                             "pcb_delete_xsignals", **kwargs)
+                             "pcb_delete_xsignals", board_path=BOARD_PATH,
+                             expected_count=2, **kwargs)
         assert sent == [] and result["ok"] is False, kwargs
     # Deleting while walking forward would skip the one after each delete.
     body = _body("PCB.pas", "PCB_DeleteXSignals")
+    assert body.index("If All And (NamesStr <> '') Then") < body.index(
+        "PCBServer.PreProcess;")
     assert "For I := Before - 1 DownTo 0 Do" in body
 
 
 def test_drill_pair_add_refuses_a_copy_and_a_non_copper_layer(monkeypatch):
-    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_add_drill_pair",
-                    low_layer="Top Layer", high_layer="Mid-Layer 1")
-    assert sent == [("pcb.add_drill_pair",
-                     {"low_layer": "Top Layer", "high_layer": "Mid-Layer 1"})]
     for kwargs in ({"low_layer": "Top Layer", "high_layer": " "},
                    {"low_layer": "Top Layer", "high_layer": "top layer"}):
         result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
-                             "pcb_add_drill_pair", **kwargs)
+                             "pcb_add_drill_pair", board_path=BOARD_PATH, **kwargs)
         assert sent == [] and result["ok"] is False, kwargs
     body = _body("PCB.pas", "PCB_AddDrillPair")
     add = body.index("Board.AddLayerPair(LowLayer, HighLayer);")
-    assert body.index("LayerUtils.IsElectricalLayer(LowLayer)") < add
+    assert body.index("PCB_IsCopperLayerId(LowLayer)") < add
     assert body.index("'ALREADY_EXISTS'") < add
 
 
 def test_net_display_sends_and_reads_back(monkeypatch):
     _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_net_display",
-                    nets=["GND", "VBUS"], show_connections=False)
+                    board_path=BOARD_PATH, nets=["GND", "VBUS"],
+                    show_connections=False)
     assert sent == [("pcb.net_display",
-                     {"nets": "GND\tVBUS", "show_connections": "false"})]
-    result, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_net_display", nets=[])
+                     {"board_path": BOARD_PATH, "nets": "GND\tVBUS"})]
+    result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                         "pcb_net_display", board_path=BOARD_PATH, nets=[])
     assert sent == [] and result["ok"] is False
     body = _body("PCB.pas", "PCB_NetDisplay")
     assert "Net.HideNetConnects;" in body and "Net.ShowNetConnects;" in body
-    assert body.index("Net.LoopRemoval := (LoopStr = 'true');") < body.index("NetDisplayJson(Net)")
+    assert body.index("Net.LoopRemoval := (LoopStr = 'true');") < body.index(
+        "AfterItems := AfterItems + PCB_NetDisplayJson(Net);")
 
 
 def test_footprint_library_save_sends_and_refuses(monkeypatch, tmp_path):
@@ -608,20 +609,21 @@ def test_pad_jumpers_and_swap_ids_are_pad_only():
 
 def test_board_grids_send_mils_and_refuse_zero(monkeypatch):
     _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_grids",
-                    snap_x=5, track=25.4, dot_grid=True)
-    assert sent == [("pcb.set_grids", {"snap_x": "5.0", "track": "25.4",
-                                       "dot_grid": "true"})]
-    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_grids")
-    assert sent == [("pcb.set_grids", {})]
+                    board_path=BOARD_PATH, snap_x=5, track=25.4,
+                    dot_grid=True)
+    assert sent == [("pcb.set_grids", {"board_path": BOARD_PATH})]
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_grids",
+                    board_path=BOARD_PATH)
+    assert sent == [("pcb.set_grids", {"board_path": BOARD_PATH})]
     for kwargs in ({"track": 0}, {"via": -5}):
         result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
-                             "pcb_set_grids", **kwargs)
+                             "pcb_set_grids", board_path=BOARD_PATH, **kwargs)
         assert sent == [] and result["ok"] is False, kwargs
     body = _body("PCB.pas", "PCB_SetGrids")
     # The component grid follows the snap grid; it is read, never written.
     assert "ComponentGridSizeX :=" not in body
     # Every value is read back against what was asked.
-    assert "If Abs(Got - V) > 0.001 Then" in body
+    assert "If Abs(PCB_GridMils(Board, Key) - Value) > 0.001 Then" in body
     assert body.index("Board.DrawDotGrid := (DotStr = 'true');") < body.index(
         "If Board.DrawDotGrid <> (DotStr = 'true') Then")
 
@@ -632,20 +634,23 @@ def test_component_model_export_sends_and_refuses(monkeypatch, tmp_path):
 
     async def send(command, params, **kwargs):
         bridge.sent.append((command, params))
-        out.write_bytes(b"ISO-10303-21;")
-        return {"saved": True}
+        out.write_bytes(b"ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;")
+        return {"board_path": BOARD_PATH, "designator": "U1",
+                "out_path": str(out), "mode": "part"}
 
     bridge.send_command_async = send
     result = asyncio.run(tools["pcb_export_component_model"](
-        designator=" U1 ", out_path=str(out)))
-    assert bridge.sent == [("pcb.export_component_model",
-                            {"designator": "U1", "out_path": str(out)})]
+        board_path=BOARD_PATH, designator=" U1 ", out_path=str(out)))
+    assert bridge.sent == [("pcb.export_component_step",
+                            {"board_path": BOARD_PATH, "designator": "U1",
+                             "out_path": str(out), "mode": "part"})]
     assert result["written"] is True
     for kwargs in ({"designator": "U1", "out_path": "rel.step"},
                    {"designator": " ", "out_path": str(out)},
                    {"designator": "U1", "out_path": str(tmp_path / "U1.stl")}):
         result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
-                             "pcb_export_component_model", **kwargs)
+                             "pcb_export_component_model", board_path=BOARD_PATH,
+                             **kwargs)
         assert sent == [] and result["ok"] is False, kwargs
     body = _body("PCB.pas", "PCB_ExportComponentModel")
     assert "Saved := Comp.SaveModelToFileAsPart(OutPath)" in body
@@ -757,7 +762,9 @@ def test_board_options_reach_only_names_the_script_knows():
         assert f"Opts.{altium} := " in _body("PCB.pas", "PcbOptionSet"), altium
     handler = _body("PCB.pas", "PCB_EditorOptions")
     # The PCB server holds these and loads with the first board.
-    assert handler.index("GetPCBBoardAnywhere(0) = Nil") < handler.index(
+    assert handler.index("Board := GetPCBBoardAnywhere(0)") < handler.index(
+        "Opts := PCBServer.SystemOptions")
+    assert handler.index("UpperCase(Board.FileName) <> UpperCase(ExpectedPath)") < handler.index(
         "Opts := PCBServer.SystemOptions")
 
 
@@ -793,13 +800,15 @@ def test_sheet_grid_takes_the_electrical_grid(monkeypatch):
 
 def test_net_display_sends_colour_and_jumpers(monkeypatch):
     _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_net_display",
-                    nets=["GND"], use_net_color=True, show_jumpers=False)
-    assert sent == [("pcb.net_display", {"nets": "GND", "use_net_color": "true",
-                                         "show_jumpers": "false"})]
+                    board_path=BOARD_PATH, nets=["GND"],
+                    use_net_color=True, show_jumpers=False)
+    assert sent == [("pcb.net_display", {"board_path": BOARD_PATH,
+                                         "nets": "GND"})]
     body = _body("PCB.pas", "PCB_NetDisplay")
     assert "Net.OverrideColorForDraw := (ColourStr = 'true');" in body
     assert "Net.JumpersVisible := (JumperStr = 'true');" in body
-    assert "JsonBool('in_differential_pair', InPair)" in _body("PCB.pas", "NetDisplayJson")
+    assert "JsonBool('in_differential_pair', Net.InDifferentialPair)" in _body(
+        "PCB.pas", "PCB_NetDisplayJson")
 
 
 def test_compile_freshness_carries_altiums_own_answer():

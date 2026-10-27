@@ -11345,6 +11345,12 @@ Begin
             'board_path, expected_count and names or all are required');
         Exit;
     End;
+    If All And (NamesStr <> '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'names and all=true cannot be combined');
+        Exit;
+    End;
     ExpectedCount := StrToIntDef(ExpectedCountStr, -1);
     If ExpectedCount < 0 Then
     Begin

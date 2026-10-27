@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.109';
+    SCRIPT_VERSION = '2026.10.27.110';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47871,6 +47871,12 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
             'board_path, expected_count and names or all are required');
+        Exit;
+    End;
+    If All And (NamesStr <> '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'names and all=true cannot be combined');
         Exit;
     End;
     ExpectedCount := StrToIntDef(ExpectedCountStr, -1);

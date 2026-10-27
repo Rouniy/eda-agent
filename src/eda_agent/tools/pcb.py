@@ -9857,6 +9857,8 @@ def register_pcb_tools(mcp):
         names = names or []
         if not isinstance(names, list) or any(not isinstance(n, str) or not n.strip() or "\t" in n for n in names):
             return {"ok": False, "reason": "names must be a list of nonempty xSignal names"}
+        if all and names:
+            return {"ok": False, "reason": "names and all=true cannot be combined"}
         if not all and not names:
             return {"ok": False, "reason": "give names, or all=true"}
         reply = await get_bridge().send_command_async(

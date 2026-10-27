@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## xSignal selector and legacy source checks, 2026-10-27
+
+- [x] Refuse `pcb_delete_xsignals` with both names and `all=true` in
+  Python and native Pascal. Script `.110` passes 17 related tests and
+  Pascal lint/build. The old behavior would select all despite names.
+- [ ] Qualify the refusal against `.110` in Altium on a disposable board.
+- [ ] Finish updating seven remaining stale cases in
+  `test_added_altium_tools.py`; focused suites for the affected tools pass.
+
 ## Exact-board net inventory, 2026-10-27
 
 - [x] Scope `pcb_get_nets` to an optional exact PcbDoc and make

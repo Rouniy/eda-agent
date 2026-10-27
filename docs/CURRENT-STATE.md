@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## xSignal selector and live runtime, 2026-10-27
+
+`pcb_delete_xsignals` now rejects conflicting `names` plus `all=true`
+in both Python and Pascal. Previously Pascal ignored the names and
+deleted all xSignals. Source `.110` passes 17 related tests; Pascal
+lint/build scanned 12 units with zero errors or warnings. The legacy
+`test_added_altium_tools.py` still has seven stale wrapper-contract
+cases after eight were reconciled; dedicated suites for those tools
+pass. A live `eda-agent doctor --json` check found Altium responsive
+with loaded `.96` and source `.109` before this change. A subsequent
+open-document read listed 181 documents and zero reported modified
+flags, so `.110` has not been loaded or natively checked.
+
 ## Exact-board net inventory, 2026-10-27
 
 `pcb_get_nets` now accepts an optional PcbDoc path. Its native read
