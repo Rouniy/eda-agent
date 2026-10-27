@@ -6,7 +6,12 @@ The `.4` source adds `pcb_pours_at` and `pcb_board_options` from upstream
 `ce53d6e`. The first reports the actual board file and accepts an expected
 file; the second requires that exact file when setting the name template and
 checks readback. Python tests and Pascal lint/build pass. Native board
-acceptance and `.4` runtime reload are pending.
+acceptance remains pending. The existing HTTP child was relaunched by its
+supervisor and Altium reloaded `.4`; `app_ping` reports loaded/bundled `.4`,
+`version_match=true`, on Altium `26.11.1.5`. TCP 14701 advertises 626 tools,
+including both new commands, while TCP 14700 still listens. Direct native
+calls with invalid parameters reached both handlers and were refused before
+accessing a board; a valid disposable-board read/write has not yet run.
 
 The `.3` source now restores the native footprint-primitives reader that was
 missing behind the registered Python tool. It includes live 3D body metadata
