@@ -6,9 +6,11 @@
   outline and board-pour edge-clearance wrappers. On a disposable
   arched board, three tracks and one arc persisted at 20.625 mil on
   KeepOutLayer after save/reopen; repeat calls added zero.
-- [ ] Qualify `pcb_place_polygon_board` copper geometry and repour on a
-  disposable board with a known net; the exact fractional keep-out
-  width is covered, but the copper pour has not been inspected natively.
+- [x] Qualify `pcb_place_polygon_board` copper creation on a disposable
+  arched board with GND: the exact 20.625-mil keep-out was reused,
+  and the poured polygon's five copper pieces persisted after reopening.
+- [ ] Independently inspect the poured polygon's arc geometry and
+  exercise an explicit repour after a board edit on a disposable copy.
 
 - [x] Compare the offline SchLib reader to the same native library:
   39 primary names match; Altium's 40th row is the `ADXL210` alias.

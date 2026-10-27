@@ -11,9 +11,13 @@ disposable arched PcbDoc, `pcb_keepout_board_outline(20.625)` added
 three tracks and one arc, then returned `added=0, already_there=4` on a
 second call. After exact save/close/reopen, `obj_query` found exactly
 three KeepOutLayer tracks and one arc with `Width=20.625` and
-`IsKeepout=true`; another outline call still added zero. The copy
-closed without additional changes. This qualifies the keep-out path;
-the polygon copper pour itself remains a separate native check.
+`IsKeepout=true`; another outline call still added zero. On this same
+disposable board, `pcb_place_polygon_board(net="GND", layer="TopLayer",
+edge_clearance_mils=10.3125, pour=True)` reused all four keep-out
+primitives (`added=0, already_there=4`) and created `Top Layer-GND 1`
+with four vertices and `poured=true`. `pcb_get_polygons` read five
+copper pieces and 68.7101666882369 mm² copper area; the same values
+remained after save/close/reopen. The QA board was then closed.
 The supervised HTTP MCP child on 14701 was restarted from this `main`
 checkout after the Python edit. A new MCP session listed 757 tools,
 the keep-out width schema is numeric, and `app_ping` reported loaded
