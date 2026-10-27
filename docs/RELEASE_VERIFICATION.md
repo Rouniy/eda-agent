@@ -3405,3 +3405,16 @@ managed placement API therefore still needs a disposable-sheet acceptance
 test when a Workspace connection is available. Eight focused Workspace
 tests and the 25 fabrication tests passed; Pascal build/lint passed with
 zero errors and warnings.
+
+## Generic schematic object creation repair (2026-10-27)
+
+Script `2026.10.27.55` loaded in Altium 26.11.1.5 with zero cast errors.
+The updated `Gen_CreateObject` removes duplicate property writes and
+refuses a failed assignment before registration. Thirty-five related
+tests passed (three optional FPC tests skipped); the Pascal build/lint
+reported zero errors and warnings. On isolated
+`C:\Users\Alex\EDA Agent\workspace\qa\eda-agent-create-object-20261027.SchDoc`,
+creating an `eLabel` with unsupported `IsHidden` returned
+`UNSUPPORTED_PROPERTY` and left zero matching objects. A valid label at
+100,100 mil persisted after save, close and reopen. The source SchDoc
+SHA-256 stayed `59E937628D564566E7F3BFBFFE4675FD02B5CCEFE83D69687F1C30EF88BABA2F`.

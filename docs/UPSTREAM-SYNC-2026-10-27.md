@@ -280,3 +280,15 @@ requested exact Comment; until an Altium Workspace is available for live
 testing, a search that returns a near match first can report no exact match
 even when a later result would match. It fails closed in that case. No
 managed component was written to a real design during this integration.
+
+Reviewing `rabihnd/integration` exposed a real merge defect in
+`Gen_CreateObject`: an older patch left two calls without the required
+diagnostic argument and an undeclared `DiagJson`, while applying the same
+properties twice. The corrected handler checks unsupported and failed
+property writes before registering an object, returns an explicit error
+and destroys the provisional object on failure, then registers a valid
+object once. On Altium 26.11.1.5, script `.55`, a rejected label property
+left zero matching labels. A valid label on an isolated copy of
+`Title.SchDoc` was present at 100,100 mil after exact save and reopen;
+the source SHA-256 remained unchanged. This qualifies the document path;
+library-component creation still needs a separate native test.

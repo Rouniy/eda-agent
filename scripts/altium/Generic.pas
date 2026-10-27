@@ -3812,9 +3812,6 @@ Begin
         Exit;
     End;
 
-    // Set properties
-    ApplySetProperties(NewObj, PropsStr);
-
     // Register in container
     If Container = 'component' Then
     Begin
@@ -3833,14 +3830,19 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_COMPONENT', 'No library component is selected');
             Exit;
         End;
-        SchServer.ProcessControl.PreProcess(SchLib, '');
         { Establish a visible default owner first; explicit OwnerPartId /  }
         { OwnerPartDisplayMode properties supplied by the caller override }
         { it, including OwnerPartId=0 for shared multipart primitives.     }
         SetOwnerPart(NewObj, Component);
-        ResetPropertyDiag;
         ApplySetProperties(NewObj, PropsStr);
-        DiagJson := RenderPropertyDiagJson;
+        If _PropertyDiagStr <> '' Then
+        Begin
+            SchServer.DestroySchObject(NewObj);
+            Result := BuildErrorResponse(RequestId, 'PROPERTY_WRITE_FAILED',
+                'Object not created; property writes failed: ' + _PropertyDiagStr);
+            Exit;
+        End;
+        SchServer.ProcessControl.PreProcess(SchLib, '');
         Component.AddSchObject(NewObj);
         SchRegisterObject(Component, NewObj);
         SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
@@ -3856,9 +3858,21 @@ Begin
             Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
             Exit;
         End;
-        ResetPropertyDiag;
+        If SchDoc.ObjectId <> eSheet Then
+        Begin
+            SchServer.DestroySchObject(NewObj);
+            Result := BuildErrorResponse(RequestId, 'WRONG_DOC_KIND',
+                'Active document is not a schematic sheet');
+            Exit;
+        End;
         ApplySetProperties(NewObj, PropsStr);
-        DiagJson := RenderPropertyDiagJson;
+        If _PropertyDiagStr <> '' Then
+        Begin
+            SchServer.DestroySchObject(NewObj);
+            Result := BuildErrorResponse(RequestId, 'PROPERTY_WRITE_FAILED',
+                'Object not created; property writes failed: ' + _PropertyDiagStr);
+            Exit;
+        End;
         SchServer.ProcessControl.PreProcess(SchDoc, '');
         SchDoc.RegisterSchObjectInContainer(NewObj);
         SchRegisterObject(SchDoc, NewObj);
@@ -3874,7 +3888,8 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
-    Result := BuildSuccessResponse(RequestId, '{"created":true,"object_type":"' + ObjTypeStr + '"}');
+    Result := BuildSuccessResponse(RequestId,
+        '{"created":true,"object_type":"' + EscapeJsonString(ObjTypeStr) + '"}');
 End;
 
 {..............................................................................}

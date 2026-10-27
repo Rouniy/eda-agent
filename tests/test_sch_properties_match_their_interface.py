@@ -276,6 +276,19 @@ def test_create_preflights_before_writing_or_registering(name):
         assert "Inc(Created)" in body[apply:]
 
 
+def test_single_create_refuses_failed_property_before_registration():
+    body = _routine(_source(), "Gen_CreateObject")
+    assert "ResetPropertyDiag;" not in body
+    assert "DiagJson := RenderPropertyDiagJson;" not in body
+    assert body.count("ApplySetProperties(NewObj, PropsStr)") == 2
+    for registration in ("Component.AddSchObject(NewObj)",
+                         "SchDoc.RegisterSchObjectInContainer(NewObj)"):
+        preceding = body[:body.index(registration)]
+        assert "If _PropertyDiagStr <> '' Then" in preceding
+        assert "SchServer.DestroySchObject(NewObj)" in preceding
+        assert "PROPERTY_WRITE_FAILED" in preceding
+
+
 def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
     """Execute production guards/parser with FPC; this is not an Altium test."""
     import shutil
