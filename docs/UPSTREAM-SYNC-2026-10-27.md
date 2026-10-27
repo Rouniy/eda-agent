@@ -924,3 +924,20 @@ Python manifest and GitHub Actions. Its two entries are carried in
 This configuration does not approve or merge dependency changes. The file's
 keys and `directory: /` for workflows were checked against GitHub's current
 Dependabot configuration documentation.
+
+Further branch-level source comparisons found these already integrated
+behaviours; their divergent commit IDs alone do not signal missing features:
+
+| Fork commit | Current source evidence |
+| --- | --- |
+| `bblacklock3/oxos/pinned` `c666912` | `PCBGeneric.pas` reads and writes arc `LineWidth` for the generic `Width` property, retaining fractional mils. |
+| `terrencehenry/fix/altium-property-access-crashes` `89c017f` | `Generic.pas` preflights unsupported schematic property/type pairs before creation or modification and reports unreadable properties. |
+| `darshp848/altium-bridge-sch-repair-tools` `63b0fef` | `kicad_local.py` searches per-user KiCad under `LOCALAPPDATA` and orders version directories numerically across install roots. |
+| `viknandala-eng/main` `d4a259b` | `lib_resolve_workspace_component` and `sch_place_workspace_components` are registered, with matching native handlers. |
+| `prototrace/runo/read-only-unicode-polyline` `961e6c3` | `Generic.pas` recognises `ePolyline`; `Utils.pas` escapes full Unicode code units. |
+| `pieterpotgieter/fix/ad23-paste-flag` `3e7369b` | `Library.pas` gates the top-paste flag by Altium major version. |
+
+The `lda-audiotech` UTF-8 response/pointer-file change (`22bb2df`) is not
+copied verbatim: `altium_bridge.py` now accepts UTF-8 with a BOM and falls
+back to the system ANSI codepage for older DelphiScript replies, while
+`diag/health.py` reads the pointer in the same encoding used to write it.
