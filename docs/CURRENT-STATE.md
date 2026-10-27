@@ -9,8 +9,12 @@ uses the old CrossRef position and is read back. The native property reader
 adds read-only `ConnectedEnd`. The tool does not yet query live pins because
 our generic ePin iterator lacks the fork's hidden-pin filter; geometry and
 Altium's ConnectedEnd remain available, and ambiguous ports are not moved.
-Focused tests and Pascal lint/build pass; native disposable-sheet acceptance
-and `.6` runtime reload are pending.
+Focused tests and Pascal lint/build pass. The existing HTTP child was
+restarted by its supervisor, then Altium loaded `.6`: `app_ping` reports
+loaded/bundled `.6`, `version_match=true`, on Altium `26.11.1.5`. TCP 14701
+advertises 627 tools including the CrossRef tool, and TCP 14700 still listens.
+A relative-path call was refused before document access. Native
+disposable-sheet read/write acceptance remains pending.
 
 The `.5` source guards `Obj.FontId` in the generic schematic reader and
 writer by object type. Sheet and harness entries use typed `TextFontId`.
