@@ -2,6 +2,16 @@
 
 ## Fork behavior audit, 2026-10-28
 
+- [x] Native-qualify MOREmbedded's `lib_check_schlib` report path on a
+  copied 40-row SchLib. `missing_description` returned two named
+  symbols, `duplicate_pins` returned zero, and a repeated description
+  check returned the same two; Altium refreshed the `.ERR` timestamp
+  each run, so the wrapper did not report the prior check's rows.
+- [x] Native-qualify MOREmbedded's single-footprint PcbLib export.
+  `lib_save_footprint_library` produced a 336,896-byte `PQ208_Only.PcbLib`
+  from a copied 33-footprint library. Altium reopened the result with
+  exactly one `PQ208`; all 210 pad records and the track, arc and 3D
+  body-model lists matched the source footprint exactly.
 - [x] Native-qualify MOREmbedded `lib_set_symbol_aliases` and close an
   alias-collision hole. On a disposable SchLib copy, adding/removing a
   unique alias persisted after save/close/reopen. Script `.121` now

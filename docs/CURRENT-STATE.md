@@ -1,5 +1,23 @@
 # Current integration state / agent handoff
 
+## MOREmbedded library checker and footprint export QA, 2026-10-28
+
+On a separate Temp copy of `SpiritLevel_2E.SchLib`, the public
+`lib_check_schlib` wrapper invoked Altium's library rule checker and
+read its `.ERR` report. A description check returned `SN74AHC1G04DBVR`
+and `TestPin` as missing descriptions; a pin-duplication check returned
+zero, and a repeated description check returned the same two. The
+report's modification timestamp advanced on each run. The copied
+library was closed without a CAD save.
+
+On a separate Temp copy of `Spirit_Level_Project.PcbLib`, the public
+`lib_save_footprint_library` wrapper exported `PQ208` into a new
+336,896-byte PcbLib. The source had 33 footprints, the output had one.
+Altium read 210 pads from each `PQ208`, with identical pad records;
+tracks, arcs, regions, fills, texts, vias and 3D body-model lists also
+matched exactly. Both libraries were closed. No source library was
+modified.
+
 ## MOREmbedded symbol alias collision guard, 2026-10-28
 
 The integrated `lib_set_symbol_aliases` feature was tested on an
