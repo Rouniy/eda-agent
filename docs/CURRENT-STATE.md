@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Combined fork decimal guard, 2026-10-27
+
+`library.py` accidentally defined `_mils` twice. The later definition
+from `vincent-himpe`'s decimal-mil port overrode a newer finite-value
+check, allowing `NaN` to be serialized into library coordinates. The
+duplicate was removed; one helper now preserves 1e-4-mil precision and
+rejects nonfinite values. Thirty relevant tests pass. A live bridge read
+found Altium `.96` responsive, 181 project-listed documents but only one
+loaded editor document (`PCB.pas`), with no modified flag. The modified
+flag is not a reliable proof of no unsaved state; full `.112` reload and
+native acceptance are separate work.
+
 ## Upstream simulation merge, 2026-10-27
 
 Upstream advanced one commit to `f3bd57ff87b915d5cfe72579fa501bfea85c3511`.

@@ -829,15 +829,6 @@ def _edge_arc(x1: float, y1: float, x2: float, y2: float,
     return cx, cy, radius, end, start
 
 
-def _mils(value: Any) -> str:
-    """A length in mils for the wire: whole numbers as integers, the rest
-    to 1e-4 mil, which is one Altium internal unit."""
-    v = float(value)
-    if v.is_integer():
-        return str(int(v))
-    return f"{v:.4f}".rstrip("0").rstrip(".")
-
-
 def _angle_text(deg: float) -> str:
     """An angle for the wire: ten decimals, trailing zeros dropped, and a
     value that rounds to 360 sent as 0."""

@@ -1,5 +1,17 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Vincent decimal helper reconciliation
+
+The `vincent-himpe` decimal-mil source carried a second module-level
+`library._mils` definition. It silently overrode our later finite-value
+check, so `NaN` could become an Altium coordinate string. The duplicate
+is removed: the retained helper keeps four decimal mil places and
+refuses nonfinite inputs. Thirty focused tests pass. A separate comparison
+of `rabihnd/integration`'s footprint diagnostics found the current
+`lib_get_footprint_primitives` already includes each 3D body's identifier,
+layer, `has_model`, model file, type, rotation, height and standoff. Its
+window capture is covered by `app_screenshot` after focusing the PcbLib.
+
 ## Upstream `f3bd57f` simulation merge
 
 `upstream/main` advanced from `c45ca0a` to

@@ -1,5 +1,11 @@
 # Fork integration TODO
 
+## Combined fork decimal guard, 2026-10-27
+
+- [x] Remove a duplicate `_mils` definition that bypassed the finite
+  coordinate guard after the `vincent-himpe` decimal-mil port. Thirty
+  library/decimal/free-text tests pass.
+
 ## Upstream simulation tip, 2026-10-27
 
 - [x] Merge upstream `f3bd57f` as a true parent, preserving local script
