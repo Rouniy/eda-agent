@@ -1,4 +1,10 @@
-# Release verification: 2026.10.27.20
+# Release verification: 2026.10.27.40
+
+The `.40` exact-board plane connection reader passed four focused tests,
+Pascal lint/build and a live Altium 26.11.1.5 read. R62 pad 1 returned
+its native rule style and relief/clearance values. A wrong-board path was
+refused; the owner PcbDoc SHA256 was unchanged. The board has zero
+internal-plane layers, so a real plane pad remains to be checked.
 
 The `.20` exact-document save targets one loaded path and requires an
 observed disk write before reporting `saved=true`. Nine related tests and

@@ -2,6 +2,16 @@
 
 ## Latest native integration, 2026-10-27
 
+Script `.40` on Altium 26.11.1.5 added an exact-board read of each
+component pad's internal-plane connection settings. R62 pad 1 on the
+owner PcbDoc returned its GND net, native connection style and five
+relief/clearance parameters; the board has zero internal-plane layers.
+A wrong-board path was refused and the owner file hash remained
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+Four focused tests and Pascal lint/build pass. Generated bundle SHA256:
+`5A959828AAEF5196B357A982A82CE99D60D138A6775A02C6809B6DEAD1B2F90E`.
+An actual internal-plane connection still needs native acceptance.
+
 Script `.39` on Altium 26.11.1.5 added an exact-board rigid-flex
 inventory: board regions, split lines, bend lines and named layer stacks
 with their copper layers. On the owner's PcbDoc it returned one region,

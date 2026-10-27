@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.39';
+    SCRIPT_VERSION = '2026.10.27.40';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47578,6 +47578,83 @@ Begin
     Result := '[' + Items + ']';
 End;
 
+Function PCB_PlaneConnections(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Comp : IPCB_Component;
+    GrpIter : IPCB_GroupIterator;
+    Pad : IPCB_Pad;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    Lyr : TLayer;
+    ExpectedPath, Why, DesStr, OnePad, PadName, NetName, Items : String;
+    Count, PlaneCount : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    DesStr := Trim(ExtractJsonValue(Params, 'designator'));
+    OnePad := Trim(ExtractJsonValue(Params, 'pad'));
+    If (ExpectedPath = '') Or (DesStr = '') Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path and designator required'); Exit; End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    Comp := Board.GetPcbComponentByRefDes(DesStr);
+    If Comp = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'Component not found: ' + DesStr); Exit; End;
+    PlaneCount := 0;
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+    If LayerStack <> Nil Then
+    Begin
+        LayerObj := LayerStack.FirstLayer;
+        While LayerObj <> Nil Do
+        Begin
+            Lyr := LayerObj.LayerID;
+            If (Lyr >= eInternalPlane1) And (Lyr <= eInternalPlane16) Then Inc(PlaneCount);
+            LayerObj := LayerStack.NextLayer(LayerObj);
+        End;
+    End;
+    Items := '';
+    Count := 0;
+    GrpIter := Comp.GroupIterator_Create;
+    Try
+        GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Pad := GrpIter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            PadName := '';
+            Try PadName := Pad.Name; Except End;
+            If (OnePad = '') Or (UpperCase(PadName) = UpperCase(OnePad)) Then
+            Begin
+                NetName := '';
+                Try If Pad.Net <> Nil Then NetName := Pad.Net.Name; Except End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonStr('pad', PadName) + ','
+                    + JsonStr('net', NetName) + ','
+                    + JsonInt('rule_style', Pad.PowerPlaneConnectStyle) + ','
+                    + JsonRaw('relief_width_mils', FloatToJsonStr(CoordToMilsF(Pad.ReliefConductorWidth))) + ','
+                    + JsonInt('relief_entries', Pad.ReliefEntries) + ','
+                    + JsonRaw('air_gap_mils', FloatToJsonStr(CoordToMilsF(Pad.ReliefAirGap))) + ','
+                    + JsonRaw('relief_expansion_mils', FloatToJsonStr(CoordToMilsF(Pad.PowerPlaneReliefExpansion))) + ','
+                    + JsonRaw('plane_clearance_mils', FloatToJsonStr(CoordToMilsF(Pad.PowerPlaneClearance))));
+                Inc(Count);
+            End;
+            Pad := GrpIter.NextPCBObject;
+        End;
+    Finally
+        Comp.GroupIterator_Destroy(GrpIter);
+    End;
+    If (OnePad <> '') And (Count = 0) Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_FOUND', DesStr + ' has no pad ' + OnePad); Exit; End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonStr('designator', DesStr) + ','
+        + JsonInt('plane_layers', PlaneCount) + ','
+        + JsonInt('pad_count', Count) + ','
+        + JsonRaw('pads', '[' + Items + ']')));
+End;
+
 Function PCB_FlexState(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -48502,6 +48579,7 @@ Begin
         'via_structures':       Result := PCB_ViaStructures(Params, RequestId);
         'physical_stack':       Result := PCB_PhysicalStack(Params, RequestId);
         'flex_state':           Result := PCB_FlexState(Params, RequestId);
+        'plane_connections':    Result := PCB_PlaneConnections(Params, RequestId);
         'set_stack_style':      Result := PCB_SetStackStyle(Params, RequestId);
         'set_dielectric':       Result := PCB_SetDielectric(Params, RequestId);
         'impedance_profile':    Result := PCB_ImpedanceProfile(Params, RequestId);

@@ -4366,6 +4366,44 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_plane_connections(
+        board_path: str, designator: str, pad: str = "",
+    ) -> dict[str, Any]:
+        """Read each pad's internal-plane connection settings on one PcbDoc.
+
+        Reports the native rule style, relief dimensions and clearance in mils.
+        An optional pad name narrows the result to one pad.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not designator.strip():
+            return {"ok": False, "reason": "designator is required"}
+        reply = await get_bridge().send_command_async(
+            "pcb.plane_connections",
+            {"board_path": board_path, "designator": designator, "pad": pad},
+            timeout=120.0,
+        )
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        pads = reply.get("pads")
+        if (str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or str(reply.get("designator", "")).casefold() != designator.casefold()
+                or type(reply.get("plane_layers")) is not int
+                or type(reply.get("pad_count")) is not int
+                or not isinstance(pads, list)
+                or len(pads) != reply["pad_count"]
+                or (pad and (len(pads) != 1
+                            or str(pads[0].get("pad", "")).casefold() != pad.casefold()))
+                or any(not isinstance(item, dict)
+                       or not all(key in item for key in (
+                           "pad", "net", "rule_style", "relief_width_mils",
+                           "relief_entries", "air_gap_mils", "relief_expansion_mils",
+                           "plane_clearance_mils")) for item in pads)):
+            return {"ok": False, "reason": "incomplete or wrong-board plane connection reply",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
     async def pcb_get_board_regions(board_path: str) -> dict[str, Any]:
         """Read rigid-flex regions, split/bend lines and named layer stacks.
 

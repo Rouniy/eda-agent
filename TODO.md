@@ -2,6 +2,9 @@
 
 ## Upstream layer-stack remainder, 2026-10-27
 
+- Test `pcb_plane_connections` on a disposable PcbDoc with a real internal
+  plane and known connected/isolated pads. The current owner board has no
+  internal-plane layers, so `.40` only proves the property read path.
 - Qualify relative movement of a populated copper layer and rigid-flex
   stack-region edits from upstream `642e6a8` and `9ee593e` on isolated
   PcbDocs with exact save/reopen checks. The exact-board rigid-flex reader
