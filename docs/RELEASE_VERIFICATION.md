@@ -2035,3 +2035,11 @@ Script `.29` on Altium 26.11.1.5 returned 730 vias in one structure
 group on the owner's PcbDoc, with `omitted_vias=0` and `truncated=false`.
 A different absolute PcbDoc path was refused. Two focused Python tests
 and Pascal lint/build passed. This was a read-only check.
+
+# Physical layer stack, 2026-10-27
+
+Script `.30` on Altium 26.11.1.5 returned all 13 physical layers of the
+owner's PcbDoc, from Top Paste to Bottom Paste, including four copper
+layers, three dielectrics and both solder masks. The total Z span was
+70.0078 mils. A different absolute PcbDoc path was refused. Two focused
+tests and Pascal lint/build passed. This was a read-only check.

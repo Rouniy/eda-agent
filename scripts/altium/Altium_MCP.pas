@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.29';
+    SCRIPT_VERSION = '2026.10.27.30';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47245,6 +47245,92 @@ Begin
     End;
 End;
 
+Function PCB_StackClassNames(MLS : IPCB_MasterLayerStack; Cls : Integer) : String;
+Var
+    L : IPCB_LayerObject;
+Begin
+    Result := '|';
+    L := MLS.First(Cls);
+    While L <> Nil Do
+    Begin
+        Result := Result + L.Name + '|';
+        L := MLS.Next(Cls, L);
+    End;
+End;
+
+Function PCB_PhysicalStack(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    MLS : IPCB_MasterLayerStack;
+    L : IPCB_LayerObject;
+    DL : IPCB_DielectricLayer;
+    ExpectedPath, Copper, Dielectric, Mask, Overlay, Paste : String;
+    Kind, Key, Items, Extra : String;
+    ZTop, ZBot, MaxTop, MinBot, LayerOrder : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath = '' Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path is required'); Exit; End;
+    If ExtractJsonValue(Params, 'style') <> '' Then
+    Begin Result := BuildErrorResponse(RequestId, 'READ_ONLY', 'stack style writes require a separate verified operation'); Exit; End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active'); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    MLS := Board.MasterLayerStack;
+    If MLS = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_STACK', 'No master layer stack'); Exit; End;
+    Copper := PCB_StackClassNames(MLS, eLayerClass_Electrical);
+    Dielectric := PCB_StackClassNames(MLS, eLayerClass_Dielectric);
+    Mask := PCB_StackClassNames(MLS, eLayerClass_SolderMask);
+    Overlay := PCB_StackClassNames(MLS, eLayerClass_Overlay);
+    Paste := PCB_StackClassNames(MLS, eLayerClass_PasteMask);
+    Items := '';
+    MaxTop := 0;
+    MinBot := 0;
+    LayerOrder := 0;
+    L := MLS.First(eLayerClass_Physical);
+    While L <> Nil Do
+    Begin
+        Key := '|' + L.Name + '|';
+        Kind := 'other';
+        If Pos(Key, Copper) > 0 Then Kind := 'copper'
+        Else If Pos(Key, Mask) > 0 Then Kind := 'solder_mask'
+        Else If Pos(Key, Dielectric) > 0 Then Kind := 'dielectric'
+        Else If Pos(Key, Overlay) > 0 Then Kind := 'overlay'
+        Else If Pos(Key, Paste) > 0 Then Kind := 'paste';
+        ZTop := MLS.Get_ZTop(L);
+        ZBot := MLS.Get_ZBottom(L);
+        If (LayerOrder = 0) Or (ZBot > MaxTop) Then MaxTop := ZBot;
+        If (LayerOrder = 0) Or (ZTop < MinBot) Then MinBot := ZTop;
+        Extra := '';
+        If (Kind = 'dielectric') Or (Kind = 'solder_mask') Then
+        Begin
+            DL := L;
+            Extra := ',' + JsonInt('dielectric_type', DL.DielectricType) + ','
+                + JsonStr('material', DL.DielectricMaterial) + ','
+                + JsonRaw('constant', FloatToJsonStr(DL.DielectricConstant)) + ','
+                + JsonRaw('loss_tangent', FloatToJsonStr(DL.DielectricLossTangent)) + ','
+                + JsonBool('stiffener', DL.IsStiffener);
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonInt('order', LayerOrder) + ','
+            + JsonStr('name', L.Name) + ',' + JsonStr('kind', Kind) + ','
+            + JsonRaw('z_top_mils', FloatToJsonStr(CoordToMilsF(ZTop))) + ','
+            + JsonRaw('z_bottom_mils', FloatToJsonStr(CoordToMilsF(ZBot))) + ','
+            + JsonRaw('thickness_mils', FloatToJsonStr(CoordToMilsF(ZBot - ZTop))) + Extra);
+        Inc(LayerOrder);
+        L := MLS.Next(eLayerClass_Physical, L);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('style', MLS.LayerStackStyle) + ','
+        + JsonInt('layer_count', LayerOrder) + ','
+        + JsonRaw('total_thickness_mils', FloatToJsonStr(CoordToMilsF(MaxTop - MinBot))) + ','
+        + JsonRaw('layers', '[' + Items + ']')));
+End;
+
 Function PCB_ViaStructureJson(Via : IPCB_Via) : String;
 Var
     VS : IPCB_ViaStructure;
@@ -47673,6 +47759,7 @@ Begin
         'export_component_step': Result := PCB_ExportComponentStep(Params, RequestId);
         'pair_impedance_rule':   Result := PCB_PairImpedanceRule(Params, RequestId);
         'via_structures':       Result := PCB_ViaStructures(Params, RequestId);
+        'physical_stack':       Result := PCB_PhysicalStack(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);

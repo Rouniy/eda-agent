@@ -4341,6 +4341,31 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_physical_stack(board_path: str) -> dict[str, Any]:
+        """Read Altium's physical layer stack in order for one exact PcbDoc.
+
+        Includes copper, dielectric, mask, paste and overlay layers, Z
+        positions and thicknesses in mils, plus dielectric material data.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.physical_stack", {"board_path": board_path}, timeout=120.0,
+        )
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        layers = reply.get("layers")
+        if (str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or type(reply.get("style")) is not int
+                or type(reply.get("layer_count")) is not int
+                or not isinstance(layers, list)
+                or len(layers) != reply["layer_count"]
+                or not isinstance(reply.get("total_thickness_mils"), (int, float))):
+            return {"ok": False, "reason": "incomplete or wrong-board physical stack reply",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
     async def pcb_get_impedance_profiles() -> dict[str, Any]:
         """Read Altium's own layer-stack impedance profiles for the open board.
 
