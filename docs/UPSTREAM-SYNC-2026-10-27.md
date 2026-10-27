@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 fractional PCB batch placement
+
+The fork's fractional batch placement and bottom-side flip were tested
+in loaded script `.113` on a disposable board. `pcb_place_components`
+placed two `CC1608-0603` footprints from Altium's installed example
+PcbLib. Top and bottom origins, sides and rotations matched after
+exact save/reopen. The bottom X readback was 1500.6248 mil for a
+1500.625-mil request, within one native PCB coordinate step. The
+source PcbLib was read only and closed; no managed board was edited.
+
 ## 2026-10-28 fractional schematic native fix
 
 The fork's fractional-coordinate port preserved batch wire vertices

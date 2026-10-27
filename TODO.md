@@ -108,9 +108,12 @@
 - [x] Preserve sub-mil X/Y coordinates through Python batch serialization
   and Pascal's `pcb.place_components` parser. Script `.107` passes 19
   focused tests and Pascal lint/build.
-- [ ] Place a component at fractional-mil coordinates in a disposable board
-  with loaded `.107`; read back after exact save/reopen and verify the
-  bottom-side flip still leaves the requested origin and rotation.
+- [x] In loaded `.113`, place two `CC1608-0603` footprints on a
+  disposable free board at fractional-mil coordinates. After exact
+  save/reopen, `QA_TOP` retained (1000.125,1200.375), TopLayer and
+  45 degrees; `QA_BOT` retained (1500.6248,1600.875), BottomLayer and
+  90 degrees. The requested 1500.625 mil is represented at native PCB
+  coordinate resolution as 1500.6248 mil. No owner board was changed.
 
 ## MOREmbedded footprint layer identity, 2026-10-27
 

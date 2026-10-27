@@ -7,6 +7,12 @@ text-frame placement reply and `obj_query` returned exact fractional
 corners; `obj_modify` changed one corner and save/reopen preserved both
 frames. Batch wire vertices also persisted with fractional mils.
 
+On a disposable PcbDoc, `pcb_place_components` placed one top and one
+bottom `CC1608-0603` at fractional coordinates. Save/reopen preserved
+TopLayer (1000.125,1200.375; 45 degrees) and BottomLayer
+(1500.6248,1600.875; 90 degrees). The bottom X request was 1500.625
+mil; the native coordinate grid accounted for the 0.0002-mil difference.
+
 ## Previous native verification: 2026.10.27.112
 
 At that checkpoint `altium_script_version` was `2026.10.27.112`.

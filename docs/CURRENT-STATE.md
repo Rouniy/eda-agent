@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Native fractional PCB placement on `.113`, 2026-10-28
+
+The original `Spirit_Level_Project.PcbLib` was read only to choose its
+`CC1608-0603` footprint. A disposable free PcbDoc received two batch
+placements. `QA_TOP` read back at (1000.125,1200.375) mil, 45 degrees
+on TopLayer. `QA_BOT` was flipped to BottomLayer and read back at
+(1500.6248,1600.875) mil, 90 degrees; the requested X was 1500.625
+mil and Altium's PCB coordinate resolution accounts for 0.0002 mil.
+Both values, sides and rotations survived exact save/close/reopen.
+The test board and source PcbLib were closed without further edits.
+
 ## Live fractional schematic acceptance on `.113`, 2026-10-28
 
 An isolated free `Fractional_QA.SchDoc` showed batch wire vertices at
