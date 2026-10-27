@@ -4484,8 +4484,8 @@ def register_pcb_tools(mcp):
         use_current_variant: bool = False,
     ) -> dict[str, Any]:
         """Suppress stencil paste on Not-Fitted (DNP) components, so no
-        paste lands on empty pads. Each surface pad gets a paste expansion
-        of minus its larger size; through-hole pads are skipped.
+        paste lands on empty pads. Each surface pad's paste opening is
+        disabled; through-hole pads are skipped.
 
         Apply with no ``designators`` uses the current variant's
         Not-Fitted list. RESTORE THE SAME LIST YOU APPLIED: restore
@@ -4599,8 +4599,8 @@ def register_pcb_tools(mcp):
     async def pcb_make_paste_grid(
         designator: str,
         pad_name: str,
-        min_grid_size_mils: int = 15,
-        min_gap_mils: int = 5,
+        min_grid_size_mils: float = 15,
+        min_gap_mils: float = 5,
         min_coverage_pct: float = 60.0,
     ) -> dict[str, Any]:
         """Split one pad's solder-paste opening into a regular grid of
@@ -4620,8 +4620,9 @@ def register_pcb_tools(mcp):
         Returns:
             ``{designator, pad_name, grid_x, grid_y, grid_size_mils,
             gap_x_mils, gap_y_mils, fills_placed, coverage_pct}``. The
-            pad's own paste opening is suppressed with a manual
-            negative paste-mask expansion before the fills go down.
+            pad's own paste opening is disabled before the fills go down.
+            A pad with paste already disabled is refused, preventing a
+            duplicate grid.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -4629,8 +4630,8 @@ def register_pcb_tools(mcp):
             {
                 "designator": designator,
                 "pad_name": pad_name,
-                "min_grid_size_mils": str(round(min_grid_size_mils)),
-                "min_gap_mils": str(round(min_gap_mils)),
+                "min_grid_size_mils": _mils(min_grid_size_mils),
+                "min_gap_mils": _mils(min_gap_mils),
                 "min_coverage_pct": str(float(min_coverage_pct)),
             },
             timeout=30.0,

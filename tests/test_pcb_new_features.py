@@ -72,6 +72,21 @@ async def test_component_grid_and_distribution_keep_fractional_mils(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_paste_grid_keeps_fractional_size_and_gap(monkeypatch):
+    bridge = RecBridge()
+    tools = _pcb(monkeypatch, bridge)
+    await tools["pcb_make_paste_grid"](
+        "U1", "0", min_grid_size_mils=39.37, min_gap_mils=5.125)
+    assert bridge.calls[-1] == (
+        "pcb.make_paste_grid", {
+            "designator": "U1", "pad_name": "0",
+            "min_grid_size_mils": "39.37", "min_gap_mils": "5.125",
+            "min_coverage_pct": "60.0",
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_stitching_vias_preserves_fractional_mils(monkeypatch):
     bridge = RecBridge()
     tools = _pcb(monkeypatch, bridge)

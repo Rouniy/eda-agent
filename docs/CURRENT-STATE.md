@@ -2,6 +2,24 @@
 
 ## Refreshed handoff, 2026-10-27
 
+The current source candidate is script `.76` (bundle Git blob
+`8ddab41edc39cffabf14aac92a2e0d9f339fd61f`); Altium 26.11.1.5
+answered `application.ping` with `.76` and zero cast errors. The
+decimal-mil paste-grid port from `vincent-himpe/fix/decimal-mils-leftovers`
+was checked on a disposable PcbDoc: a 39.37-mil grid with 5.125-mil
+minimum gap created six fills at 67.567% reported coverage. The six fills
+and disabled top-paste flag survived exact save, close and reopen. A repeat
+call was refused with `PASTE_DISABLED`, preventing duplicate fills. A
+cache-only negative paste expansion did not survive reopen, so the grid
+and DNP exclusion now disable the pad's side-specific paste flag. DNP
+apply and restore on both R1 pads each survived a separate save/reopen.
+The generic PCB writer now routes supported extra properties to its
+existing setter; an exact, single-pad mask-mode write also survived
+save/reopen. Pascal lint/build passed with zero errors or warnings and
+37 focused Python tests passed. The owner PcbDoc SHA256 remains
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+Altium PID 29396, HTTP MCP 14701 and TCP relay 14700 are listening.
+
 `f339ee53e2643f1e222015028cb239b9fb9ede58` is the last reviewed
 feature/acceptance commit; later ledger commits may advance `main`.
 Use `git rev-parse main origin/main` for the live heads.

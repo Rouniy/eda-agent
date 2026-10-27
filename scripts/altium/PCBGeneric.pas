@@ -1952,6 +1952,13 @@ Begin
                 Body.BodyOpacity3D := StrToFloatDef(Value, 1);
             End;
         End
+        { Route the properties exposed by PCBGetExtra through their writer. }
+        Else If ExtraPCBPropertyOwner(PropName) > 0 Then
+        Begin
+            PosVal := PCBSetExtra(Obj, PropName, Value);
+            If PosVal = 0 Then Matched := False
+            Else If PosVal < 0 Then Refused := True;
+        End
         { Turning a region INTO a board cutout, the other half of the
           read above. The five identifiers are attested: four independent
           scripts in reference/ compare against them, so they exist in

@@ -2,6 +2,15 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [x] Port decimal-mil paste-grid dimensions and gaps from
+  `vincent-himpe/fix/decimal-mils-leftovers`; confirm six fills and the
+  disabled top-paste flag persist on a disposable PcbDoc under script `.76`.
+  Fix DNP apply/restore persistence with the same side-specific flag.
+- [ ] Confirm the resulting Top Paste output geometrically with a fresh
+  native Gerber/export from the same disposable board snapshot. The pad
+  flags, primitive counts and save/reopen checks establish persisted PCB
+  state, not the fabrication file geometry.
+
 - [x] Establish an exact upstream merge point: `9ee593e` is an ancestor
   of our current `main`, and there are zero upstream commits behind it.
 - [x] Recheck every fork branch against its cached ref: 62 default tips

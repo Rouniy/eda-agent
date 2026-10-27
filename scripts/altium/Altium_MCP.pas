@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.68';
+    SCRIPT_VERSION = '2026.10.27.76';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -34778,6 +34778,13 @@ Begin
                 Body.BodyOpacity3D := StrToFloatDef(Value, 1);
             End;
         End
+        { Route the properties exposed by PCBGetExtra through their writer. }
+        Else If ExtraPCBPropertyOwner(PropName) > 0 Then
+        Begin
+            PosVal := PCBSetExtra(Obj, PropName, Value);
+            If PosVal = 0 Then Matched := False
+            Else If PosVal < 0 Then Refused := True;
+        End
         { Turning a region INTO a board cutout, the other half of the
           read above. The five identifiers are attested: four independent
           scripts in reference/ compare against them, so they exist in
@@ -47659,8 +47666,8 @@ Var
     FilterNet, FilterDesig, OffsetStr, LimitStr : String;
     JsonItems, PadName, NetName, LayerStr, CompDesig, ShapeStr : String;
     PadCache : TPadCache;
-    SolderMask, PasteMask : Integer;
-    First, Emit : Boolean;
+    SolderMask, PasteMask, PasteMode : Integer;
+    First, Emit, PasteEnabled, TopPasteEnabled, BottomPasteEnabled : Boolean;
     Count, Matched, Scanned, OffsetVal, LimitVal : Integer;
     MaskSeparateFlag : Boolean;
     SolderMaskBottom : Integer;
@@ -47757,6 +47764,10 @@ Begin
         SolderMaskBottom := 0;
         MaskSeparateFlag := False;
         PasteMask := 0;
+        PasteMode := -1;
+        PasteEnabled := True;
+        TopPasteEnabled := True;
+        BottomPasteEnabled := True;
         Try
             PadCache := Pad.GetState_Cache;
             MaskSeparateFlag := PadCache.UseSeparateExpansions;
@@ -47768,6 +47779,10 @@ Begin
             If PadCache.PasteMaskExpansionValid = eCacheManual Then
                 PasteMask := CoordToMils(PadCache.PasteMaskExpansion);
         Except End;
+        Try PasteEnabled := Pad.PasteMaskEnabled; Except End;
+        Try PasteMode := Pad.PasteMaskExpansionMode; Except End;
+        Try TopPasteEnabled := Pad.GetState_IsTopPasteEnabled; Except End;
+        Try BottomPasteEnabled := Pad.GetState_IsBottomPasteEnabled; Except End;
 
         JsonItems := JsonItems + '{"name":"' + EscapeJsonString(PadName) + '",'
             + '"component":"' + EscapeJsonString(CompDesig) + '",'
@@ -47784,7 +47799,11 @@ Begin
             + '"solder_mask_expansion":' + IntToStr(SolderMask) + ','
             + '"solder_mask_bottom_expansion":' + IntToStr(SolderMaskBottom) + ','
             + '"solder_mask_separate":' + BoolToJsonStr(MaskSeparateFlag) + ','
-            + '"paste_mask_expansion":' + IntToStr(PasteMask) + '}';
+            + '"paste_mask_expansion":' + IntToStr(PasteMask) + ','
+            + '"paste_mask_enabled":' + BoolToJsonStr(PasteEnabled) + ','
+            + '"top_paste_enabled":' + BoolToJsonStr(TopPasteEnabled) + ','
+            + '"bottom_paste_enabled":' + BoolToJsonStr(BottomPasteEnabled) + ','
+            + '"paste_mask_expansion_mode":' + IntToStr(PasteMode) + '}';
         Inc(Count);
 
         Pad := Iterator.NextPCBObject;
@@ -51875,13 +51894,13 @@ Var
     Pad : IPCB_Pad;
     Cache : TPadCache;
     Designator, PadName, CompDes, PadId : String;
-    MinGridSizeMils, MinGapMils : Integer;
+    MinGridSizeMils, MinGapMils : Double;
     MinCoverPct : Double;
-    GridSize, MinGap : Integer;
+    GridSize, MinGap : Double;
     GridXCnt, GridYCnt : Integer;
-    GridXPad, GridYPad : Integer;
+    GridXPad, GridYPad : Double;
     PadW, PadH, PadCenterX, PadCenterY : Integer;
-    PadAreaMils2, PasteAreaMils2 : Int64;
+    PadWMils, PadHMils, PadAreaMils2, PasteAreaMils2 : Double;
     PctCover : Double;
     Found : Boolean;
     PasteLayer : TLayer;
@@ -51899,9 +51918,16 @@ Begin
     End;
     Designator := ExtractJsonValue(Params, 'designator');
     PadName    := ExtractJsonValue(Params, 'pad_name');
-    MinGridSizeMils := StrToIntDef(ExtractJsonValue(Params, 'min_grid_size_mils'), 15);
-    MinGapMils      := StrToIntDef(ExtractJsonValue(Params, 'min_gap_mils'), 5);
+    MinGridSizeMils := StrToFloatDef(ExtractJsonValue(Params, 'min_grid_size_mils'), 15);
+    MinGapMils      := StrToFloatDef(ExtractJsonValue(Params, 'min_gap_mils'), 5);
     MinCoverPct     := StrToFloatDef(ExtractJsonValue(Params, 'min_coverage_pct'), 60.0);
+    If (MinGridSizeMils <= 0) Or (MinGapMils < 0)
+        Or (MinCoverPct <= 0) Or (MinCoverPct > 100) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'grid size must be positive, gap nonnegative and coverage in (0,100]');
+        Exit;
+    End;
     If Designator = '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
@@ -51978,7 +52004,22 @@ Begin
 
     PadCenterX := Pad.X;
     PadCenterY := Pad.Y;
-    PadAreaMils2 := CoordToMils(PadW) * CoordToMils(PadH);
+    If ((Pad.Layer = eTopLayer) And (Not Pad.GetState_IsTopPasteEnabled)) Or
+       ((Pad.Layer = eBottomLayer) And (Not Pad.GetState_IsBottomPasteEnabled)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PASTE_DISABLED',
+            'Pad paste is already disabled; refusing to add a duplicate grid');
+        Exit;
+    End;
+    PadWMils := CoordToMilsF(PadW);
+    PadHMils := CoordToMilsF(PadH);
+    PadAreaMils2 := PadWMils * PadHMils;
+    If PadAreaMils2 <= 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INFEASIBLE',
+            'Pad has no positive X/Y area for a paste grid');
+        Exit;
+    End;
     GridSize := MinGridSizeMils;
     MinGap := MinGapMils;
 
@@ -51991,8 +52032,8 @@ Begin
     { Outer loop -- bump grid size until coverage % satisfied.               }
     While PctCover < MinCoverPct Do
     Begin
-        GridXCnt := Trunc(CoordToMils(PadW) / GridSize);
-        GridYCnt := Trunc(CoordToMils(PadH) / GridSize);
+        GridXCnt := Trunc(PadWMils / GridSize);
+        GridYCnt := Trunc(PadHMils / GridSize);
 
         { Inner loop -- shrink grid count until gap is >= MinGap.             }
         GridXPad := 0; GridYPad := 0;
@@ -52000,8 +52041,8 @@ Begin
         Begin
             If GridXCnt <= 0 Then Break;
             If GridYCnt <= 0 Then Break;
-            GridXPad := (CoordToMils(PadW) - (GridXCnt * GridSize)) Div (GridXCnt + 1);
-            GridYPad := (CoordToMils(PadH) - (GridYCnt * GridSize)) Div (GridYCnt + 1);
+            GridXPad := (PadWMils - (GridXCnt * GridSize)) / (GridXCnt + 1);
+            GridYPad := (PadHMils - (GridYCnt * GridSize)) / (GridYCnt + 1);
             If GridXPad < MinGap Then Dec(GridXCnt);
             If GridYPad < MinGap Then Dec(GridYCnt);
         End;
@@ -52009,8 +52050,8 @@ Begin
         If (GridXCnt <= 0) Or (GridYCnt <= 0) Then
         Begin
             Result := BuildErrorResponse(RequestId, 'INFEASIBLE',
-                'Pad too small to fit grid at min_grid_size=' + IntToStr(MinGridSizeMils) +
-                ' / min_gap=' + IntToStr(MinGapMils));
+                'Pad too small to fit grid at min_grid_size=' + FloatToJsonStr(MinGridSizeMils) +
+                ' / min_gap=' + FloatToJsonStr(MinGapMils));
             Exit;
         End;
 
@@ -52018,20 +52059,41 @@ Begin
         PctCover := (PasteAreaMils2 * 100.0) / PadAreaMils2;
         If PctCover < MinCoverPct Then GridSize := GridSize + 5;
         { Safety -- stop if a single grid square fills the whole pad.        }
-        If GridSize >= CoordToMils(PadW) Then Break;
-        If GridSize >= CoordToMils(PadH) Then Break;
+        If GridSize >= PadWMils Then Break;
+        If GridSize >= PadHMils Then Break;
     End;
+
+    If PctCover < MinCoverPct Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INFEASIBLE',
+            'Cannot reach requested paste coverage with this pad and minimum gap');
+        Exit;
+    End;
+    { Report and place the same gap at Altium's 0.0001-mil resolution. }
+    GridXPad := Round(GridXPad * 10000) / 10000;
+    GridYPad := Round(GridYPad * 10000) / 10000;
 
     PCBServer.PreProcess;
     Try
-        { Suppress the existing full-area paste opening on the pad.          }
-        Cache := Pad.GetState_Cache;
+        { The side-specific paste enable flag persists across a PcbDoc save.
+          A cache-only negative expansion does not, so the flag is essential. }
+        PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast,
+            PCBM_BeginModify, c_NoEventData);
         Try
+            { Preserve the negative expansion for the current session too. }
+            Pad.PasteMaskEnabled := True;
+            Pad.PasteMaskExpansionMode := 1;
+            Cache := Pad.GetState_Cache;
             Cache.PasteMaskExpansionValid := eCacheManual;
             If PadW > PadH Then Cache.PasteMaskExpansion := -PadW
             Else Cache.PasteMaskExpansion := -PadH;
             Pad.SetState_Cache := Cache;
-        Except End;
+            If Pad.Layer = eTopLayer Then Pad.SetState_IsTopPasteEnabled(False)
+            Else If Pad.Layer = eBottomLayer Then Pad.SetState_IsBottomPasteEnabled(False);
+        Finally
+            PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast,
+                PCBM_EndModify, c_NoEventData);
+        End;
 
         Placed := 0;
         For I := 0 To GridXCnt - 1 Do
@@ -52039,11 +52101,11 @@ Begin
             For J := 0 To GridYCnt - 1 Do
             Begin
                 FillX1 := PadCenterX - (PadW Div 2)
-                          + MilsToCoord(GridXPad * (I + 1) + I * GridSize);
-                FillX2 := FillX1 + MilsToCoord(GridSize);
+                          + MilsToCoordF(GridXPad * (I + 1) + I * GridSize);
+                FillX2 := FillX1 + MilsToCoordF(GridSize);
                 FillY1 := PadCenterY - (PadH Div 2)
-                          + MilsToCoord(GridYPad * (J + 1) + J * GridSize);
-                FillY2 := FillY1 + MilsToCoord(GridSize);
+                          + MilsToCoordF(GridYPad * (J + 1) + J * GridSize);
+                FillY2 := FillY1 + MilsToCoordF(GridSize);
 
                 Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
                 Fill.X1Location := FillX1;
@@ -52068,9 +52130,9 @@ Begin
             JsonStr('pad_name', PadName) + ',' +
             JsonInt('grid_x', GridXCnt) + ',' +
             JsonInt('grid_y', GridYCnt) + ',' +
-            JsonInt('grid_size_mils', GridSize) + ',' +
-            JsonInt('gap_x_mils', GridXPad) + ',' +
-            JsonInt('gap_y_mils', GridYPad) + ',' +
+            JsonFloat('grid_size_mils', GridSize) + ',' +
+            JsonFloat('gap_x_mils', GridXPad) + ',' +
+            JsonFloat('gap_y_mils', GridYPad) + ',' +
             JsonInt('fills_placed', Placed) + ',' +
             JsonFloat('coverage_pct', PctCover)
         ));
@@ -52087,16 +52149,12 @@ End;
 { is passed IN rather than re-detected here, so the mutation is reviewable    }
 { and a caller can override the selection; detection stays in one place.      }
 {                                                                             }
-{ Mechanism: per-pad PasteMaskExpansion set manual and negative, which is     }
-{ what PCB_MakePasteGrid already does to clear a pad before laying its grid.  }
-{ An expansion of minus the larger pad dimension collapses the aperture       }
-{ whatever the shape.                                                         }
+{ Mechanism: disable each surface pad's paste flag, which persists when the   }
+{ PcbDoc is saved and reopened. A negative cache expansion is also applied     }
+{ for the current session; by itself that cache value does not persist.        }
 {                                                                             }
-{ restore=true puts PasteMaskExpansionValid back to eCacheInvalid, which      }
-{ discards the manual override and makes Altium recompute from the design     }
-{ rules. TCacheState is (eCacheInvalid, eCacheValid, eCacheManual); there is  }
-{ no "use the rule" member, and eCacheValid would assert that a rule-derived  }
-{ value already sits in the field, which after an override it does not.       }
+{ restore=true re-enables the side-specific paste flag and invalidates the   }
+{ cache, so Altium recomputes the opening from the design rules.              }
 {                                                                             }
 { Only surface pads are touched. A multi-layer (through-hole) pad gets no     }
 { stencil aperture anyway, so overriding it would be a no-op recorded as a    }
@@ -52181,19 +52239,30 @@ Begin
                             If (Pad.Layer = eTopLayer) Or (Pad.Layer = eBottomLayer) Then
                             Begin
                                 Try
-                                    Cache := Pad.GetState_Cache;
-                                    If Restore Then
-                                        Cache.PasteMaskExpansionValid := eCacheInvalid
-                                    Else
-                                    Begin
-                                        PadW := Pad.TopXSize;
-                                        PadH := Pad.TopYSize;
-                                        If PadW > PadH Then Expansion := -PadW
-                                        Else Expansion := -PadH;
-                                        Cache.PasteMaskExpansionValid := eCacheManual;
-                                        Cache.PasteMaskExpansion := Expansion;
+                                    PCBServer.SendMessageToRobots(Pad.I_ObjectAddress,
+                                        c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                                    Try
+                                        Cache := Pad.GetState_Cache;
+                                        If Restore Then
+                                            Cache.PasteMaskExpansionValid := eCacheInvalid
+                                        Else
+                                        Begin
+                                            PadW := Pad.TopXSize;
+                                            PadH := Pad.TopYSize;
+                                            If PadW > PadH Then Expansion := -PadW
+                                            Else Expansion := -PadH;
+                                            Cache.PasteMaskExpansionValid := eCacheManual;
+                                            Cache.PasteMaskExpansion := Expansion;
+                                        End;
+                                        Pad.SetState_Cache := Cache;
+                                        If Pad.Layer = eTopLayer Then
+                                            Pad.SetState_IsTopPasteEnabled(Restore)
+                                        Else
+                                            Pad.SetState_IsBottomPasteEnabled(Restore);
+                                    Finally
+                                        PCBServer.SendMessageToRobots(Pad.I_ObjectAddress,
+                                            c_Broadcast, PCBM_EndModify, c_NoEventData);
                                     End;
-                                    Pad.SetState_Cache := Cache;
                                     Inc(PadsChanged);
                                     CompPads := CompPads + 1;
                                 Except End;
