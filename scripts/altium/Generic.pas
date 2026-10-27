@@ -8538,8 +8538,11 @@ Begin
     Else If Id = eBus Then Result := 'bus'
     Else If Id = eBusEntry Then Result := 'bus_entry'
     Else If Id = eParameter Then Result := 'parameter'
+    Else If Id = eParameterSet Then Result := 'parameter_set'
+    Else If Id = ePin Then Result := 'pin'
     Else If Id = eLabel Then Result := 'text'
     Else If Id = eLine Then Result := 'line'
+    Else If Id = ePolyline Then Result := 'polyline'
     Else If Id = eRectangle Then Result := 'rectangle'
     Else If Id = eSheetSymbol Then Result := 'sheet_symbol'
     Else If Id = eSheetEntry Then Result := 'sheet_entry'
@@ -8552,6 +8555,13 @@ Begin
     Else If Id = eHarnessConnector Then Result := 'harness_connector'
     Else If Id = eCrossSheetConnector Then Result := 'cross_sheet_connector'
     Else If Id = eCompileMask Then Result := 'compile_mask'
+    Else If Id = ePolygon Then Result := 'sch_polygon'
+    Else If Id = eArc Then Result := 'sch_arc'
+    Else If Id = eEllipticalArc Then Result := 'sch_elliptical_arc'
+    Else If Id = eEllipse Then Result := 'sch_ellipse'
+    Else If Id = eBezier Then Result := 'sch_bezier'
+    Else If Id = eDesignator Then Result := 'designator'
+    Else If Id = eRoundRectangle Then Result := 'round_rectangle'
     Else Result := 'type_' + IntToStr(Id);
 End;
 

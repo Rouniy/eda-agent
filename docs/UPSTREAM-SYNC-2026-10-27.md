@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Schematic frame type names
+
+Current upstream and `MOREmbedded/main` both map schematic polygons, arcs,
+elliptical arcs, ellipses and Bezier curves back to readable `sch_*`
+names. Our `SchTypeName` had lost those five cases, making
+`app_get_sheet_frame` emit numeric `type_<id>` fallbacks. Source `.101`
+restores the cases and adds names for five more accepted schematic types.
+Seventy-one related tests and Pascal lint/build passed. Native verification
+remains pending.
+
 ## Multipart symbol line ownership
 
 The `rabihnd/integration` single-line tool exposed an explicit

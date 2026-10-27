@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Schematic object type names, 2026-10-27
+
+Source `.101` restores five schematic graphic names in `SchTypeName`
+that upstream and MOREmbedded already return. Without them,
+`app_get_sheet_frame` reported `type_<id>` for polygons, arcs,
+elliptical arcs, ellipses and Bezier curves. Five more accepted schematic
+types now receive readable names instead of numeric fallbacks. Source
+tests passed (71 related tests), and Pascal lint/build found zero errors
+or warnings; native sheet-frame acceptance
+requires a controlled Altium reload.
+
 ## Multipart symbol lines from `rabihnd/integration`, 2026-10-27
 
 Source `.100` carries the fork's explicit `owner_part_id` on schematic

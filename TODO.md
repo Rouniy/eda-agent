@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Schematic object type names, 2026-10-27
+
+- [x] Restore upstream/MOREmbedded's five `SchTypeName` graphic names
+  lost during a merge. Name another five schematic types already accepted
+  by `ObjectTypeFromString`, so sheet-frame output is readable.
+- [ ] Verify the ten names on a disposable schematic after source `.101`
+  is loaded in Altium; compare the frame inventory with native objects.
+
 ## Multipart symbol lines, 2026-10-27
 
 - [x] Port `rabihnd/integration`'s explicit line `owner_part_id` through
@@ -10,10 +18,8 @@
   symbol. Source `.100` passes 69 related tests and Pascal lint/build.
 - [ ] In a disposable multipart SchLib, add lines to part 2 and shared
   part 0, save/reopen, and verify their owner and visibility in each part.
-- [ ] Reconcile the older `test_symbol_writes_on_screen.py` schematic-name
-  assertion with current object type reporting. It expects reverse names
-  that `Generic.pas` does not currently emit; this is separate from the
-  symbol line ownership check.
+- [x] Reconcile the older `test_symbol_writes_on_screen.py` schematic-name
+  assertion: the reverse names were lost from `Generic.pas` in a merge.
 
 ## Lost helpers in fork reconciliation, 2026-10-27
 
