@@ -2,6 +2,16 @@
 
 ## Source integration, 2026-10-27
 
+The `.22` source ports Altium's dominant PCB rule lookup and rule-scope
+evaluation for component, pad and net objects. Both require an exact absolute
+PcbDoc path and reject incomplete native replies. Two focused tests pass;
+Pascal lint/build reports zero errors/warnings. Altium 26.11.1.5 loaded `.22`.
+On the owner's 47-rule board, dominant-rule lookup for R62 returned native
+rule data; unary and binary scope queries returned applicability flags. A
+binary query lacking its second object and a mismatched board path were
+refused. The board stayed active and unmodified; its SHA256 remained the
+baseline below.
+
 The `.21` source ports drill layer pair read, flag setting and pair addition.
 Writes use exact PcbDoc identity and a full pair-count snapshot; flag writes
 also compare the old layer IDs and flags. Three focused tests pass, Pascal

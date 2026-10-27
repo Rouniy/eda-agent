@@ -1966,3 +1966,12 @@ After adding MidLayer1 to the disposable board, a new TopLayer–MidLayer1
 pair raised the count from one to two and an independent read returned both
 spans. The owner's board hash was unchanged in the first test; the second
 test never selected the owner for a write.
+
+# Rule engine queries, 2026-10-27
+
+Script `.22` on Altium 26.11.1.5 answered `pcb_find_dominant_rule` for R62
+on a board with 47 rules. `pcb_check_rule_scope` returned native flags for a
+unary room rule and a binary clearance rule. A missing second object for the
+binary rule and a wrong PcbDoc path were refused. The owner file's SHA256 was
+unchanged. Source tests: `tests/test_pcb_rule_resolution.py` (2 passed);
+Pascal lint/build clean.

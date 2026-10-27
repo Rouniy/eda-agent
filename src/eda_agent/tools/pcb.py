@@ -731,6 +731,75 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_find_dominant_rule(
+        board_path: str,
+        object1: str,
+        object2: str = "",
+        rule_name: str = "",
+        rule_kind: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Ask Altium which rule applies to a component, pad or net.
+
+        Object syntax: U1, U1.3 or net:GND. Give a rule name or its
+        Altium rule-kind integer from pcb_get_design_rules.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not object1.strip():
+            return {"ok": False, "reason": "object1 is required"}
+        if not rule_name.strip() and (type(rule_kind) is not int or rule_kind < 0):
+            return {"ok": False, "reason": "give rule_name or a nonnegative rule_kind"}
+        params = {"board_path": board_path, "object1": object1.strip()}
+        if object2.strip():
+            params["object2"] = object2.strip()
+        if rule_name.strip():
+            params["rule_name"] = rule_name.strip()
+        else:
+            params["rule_kind"] = str(rule_kind)
+        reply = await get_bridge().send_command_async(
+            "pcb.find_dominant_rule", params, timeout=120.0,
+        )
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or type(reply.get("found")) is not bool
+                or type(reply.get("rule_kind")) is not int
+                or (reply["found"] and not isinstance(reply.get("rule"), dict))):
+            return {"ok": False, "reason": "dominant-rule answer is incomplete",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_check_rule_scope(
+        board_path: str,
+        rule_name: str,
+        object1: str,
+        object2: str = "",
+    ) -> dict[str, Any]:
+        """Ask Altium whether a rule's scopes include real PCB objects."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not rule_name.strip() or not object1.strip():
+            return {"ok": False, "reason": "rule_name and object1 are required"}
+        params = {"board_path": board_path, "rule_name": rule_name.strip(),
+                  "object1": object1.strip()}
+        if object2.strip():
+            params["object2"] = object2.strip()
+        reply = await get_bridge().send_command_async(
+            "pcb.rule_scope_check", params, timeout=120.0,
+        )
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or not isinstance(reply.get("rule"), dict)
+                or any(type(reply.get(field)) is not bool for field in
+                       ("unary", "scope1_includes_object1",
+                        "scope2_includes_object2", "applies"))):
+            return {"ok": False, "reason": "rule-scope answer is incomplete",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
     async def pcb_set_rules_enabled(
         names: list[str],
         enabled: bool,

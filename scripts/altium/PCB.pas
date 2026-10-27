@@ -19751,6 +19751,178 @@ Begin
         + JsonRaw('pours', '[' + Items + ']')));
 End;
 
+Function PCB_ResolveRuleObject(Board : IPCB_Board; Spec : String;
+    Var Problem : String) : IPCB_Primitive;
+Var
+    Comp : IPCB_Component;
+    Net : IPCB_Net;
+    Desig, PadName : String;
+    Dot : Integer;
+Begin
+    Result := Nil;
+    Problem := '';
+    Spec := Trim(Spec);
+    If Spec = '' Then Begin Problem := 'empty object'; Exit; End;
+    If LowerCase(Copy(Spec, 1, 4)) = 'net:' Then
+    Begin
+        Net := FindNetByName(Board, Copy(Spec, 5, Length(Spec)));
+        If Net = Nil Then Problem := 'no net named ' + Copy(Spec, 5, Length(Spec))
+        Else Result := Net;
+        Exit;
+    End;
+    Dot := Pos('.', Spec);
+    If Dot > 0 Then
+    Begin
+        Desig := Copy(Spec, 1, Dot - 1);
+        PadName := Copy(Spec, Dot + 1, Length(Spec));
+    End
+    Else Begin Desig := Spec; PadName := ''; End;
+    Comp := FindPCBComponentByDesignator(Board, Desig);
+    If Comp = Nil Then Begin Problem := 'no component ' + Desig; Exit; End;
+    If PadName = '' Then Begin Result := Comp; Exit; End;
+    Result := PCB_XSignalPadOfComponent(Comp, PadName);
+    If Result = Nil Then Problem := Desig + ' has no pad ' + PadName;
+End;
+
+Function PCB_RuleSummaryJson(Rule : IPCB_Rule) : String;
+Var
+    Name, S1, S2, Descr : String;
+    Kind, Prio : Integer;
+    Enabled : Boolean;
+Begin
+    Name := ''; S1 := ''; S2 := ''; Descr := '';
+    Kind := -1; Prio := -1; Enabled := False;
+    Try Name := Rule.Name; Except End;
+    Try Kind := Rule.RuleKind; Except End;
+    Try Prio := Rule.Priority; Except End;
+    Try Enabled := Rule.Enabled; Except End;
+    Try S1 := Rule.Scope1Expression; Except End;
+    Try S2 := Rule.Scope2Expression; Except End;
+    Try Descr := Rule.Descriptor; Except End;
+    Result := JsonObj(JsonStr('name', Name) + ','
+        + JsonInt('kind', Kind) + ',' + JsonInt('priority', Prio) + ','
+        + JsonBool('enabled', Enabled) + ',' + JsonStr('scope1', S1) + ','
+        + JsonStr('scope2', S2) + ',' + JsonStr('descriptor', Descr));
+End;
+
+Function PCB_FindDominantRule(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    ExpectedPath, Spec1, Spec2, RuleName, Problem : String;
+    P1, P2 : IPCB_Primitive;
+    Named, Rule : IPCB_Rule;
+    Kind : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Spec1 := ExtractJsonValue(Params, 'object1');
+    Spec2 := ExtractJsonValue(Params, 'object2');
+    RuleName := ExtractJsonValue(Params, 'rule_name');
+    Kind := StrToIntDef(ExtractJsonValue(Params, 'rule_kind'), -1);
+    If (ExpectedPath = '') Or (Spec1 = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path and object1 are required');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Problem);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Problem); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    If RuleName <> '' Then
+    Begin
+        Named := PCB_FindRuleByName(Board, RuleName);
+        If Named = Nil Then
+        Begin Result := BuildErrorResponse(RequestId, 'NO_RULE', 'No rule named ' + RuleName); Exit; End;
+        Kind := Named.RuleKind;
+    End;
+    If Kind < 0 Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'rule_name or rule_kind is required'); Exit; End;
+    P1 := PCB_ResolveRuleObject(Board, Spec1, Problem);
+    If P1 = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object1: ' + Problem); Exit; End;
+    P2 := Nil;
+    If Spec2 <> '' Then
+    Begin
+        P2 := PCB_ResolveRuleObject(Board, Spec2, Problem);
+        If P2 = Nil Then
+        Begin Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object2: ' + Problem); Exit; End;
+    End;
+    Rule := Nil;
+    If P2 = Nil Then Rule := Board.FindDominantRuleForObject(P1, Kind)
+    Else Rule := Board.FindDominantRuleForObjectPair(P1, P2, Kind);
+    If Rule = Nil Then
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('board_path', Board.FileName) + ','
+            + JsonInt('rule_kind', Kind) + ',' + JsonBool('found', False)))
+    Else
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('board_path', Board.FileName) + ','
+            + JsonInt('rule_kind', Kind) + ',' + JsonBool('found', True) + ','
+            + JsonRaw('rule', PCB_RuleSummaryJson(Rule))));
+End;
+
+Function PCB_RuleScopeCheck(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    ExpectedPath, Spec1, Spec2, RuleName, Problem : String;
+    P1, P2 : IPCB_Primitive;
+    Rule : IPCB_Rule;
+    In1, In2, Applies, Unary : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    RuleName := ExtractJsonValue(Params, 'rule_name');
+    Spec1 := ExtractJsonValue(Params, 'object1');
+    Spec2 := ExtractJsonValue(Params, 'object2');
+    If (ExpectedPath = '') Or (RuleName = '') Or (Spec1 = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path, rule_name and object1 are required');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Problem);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Problem); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Rule := PCB_FindRuleByName(Board, RuleName);
+    If Rule = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_RULE', 'No rule named ' + RuleName); Exit; End;
+    P1 := PCB_ResolveRuleObject(Board, Spec1, Problem);
+    If P1 = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object1: ' + Problem); Exit; End;
+    P2 := Nil;
+    If Spec2 <> '' Then
+    Begin
+        P2 := PCB_ResolveRuleObject(Board, Spec2, Problem);
+        If P2 = Nil Then
+        Begin Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object2: ' + Problem); Exit; End;
+    End;
+    Unary := Rule.IsUnary;
+    If (Not Unary) And (P2 = Nil) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'this binary rule requires object2');
+        Exit;
+    End;
+    In1 := Rule.Scope1Includes(P1);
+    If P2 <> Nil Then In2 := Rule.Scope2Includes(P2)
+    Else In2 := Rule.Scope2Includes(P1);
+    If Unary Then Applies := Rule.CheckUnaryScope(P1)
+    Else Applies := Rule.CheckBinaryScope(P1, P2);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonRaw('rule', PCB_RuleSummaryJson(Rule)) + ','
+        + JsonBool('unary', Unary) + ','
+        + JsonBool('scope1_includes_object1', In1) + ','
+        + JsonBool('scope2_includes_object2', In2) + ','
+        + JsonBool('applies', Applies)));
+End;
+
 Function HandlePCBCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -19763,6 +19935,8 @@ Begin
         'create_net_class':        Result := PCB_CreateNetClass(Params, RequestId);
         'get_design_rules':        Result := PCB_GetDesignRules(Params, RequestId);
         'get_rule_properties':     Result := PCB_GetRuleProperties(Params, RequestId);
+        'find_dominant_rule':     Result := PCB_FindDominantRule(Params, RequestId);
+        'rule_scope_check':       Result := PCB_RuleScopeCheck(Params, RequestId);
         'set_rule_properties':     Result := PCB_SetRuleProperties(Params, RequestId);
         'set_rules_enabled':       Result := PCB_SetRulesEnabled(Params, RequestId);
         'run_drc':                 Result := PCB_RunDRC(Params, RequestId);

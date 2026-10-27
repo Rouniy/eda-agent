@@ -77,6 +77,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | Upstream `5797fc0` (board grids) | Read and set six board grids and dot mode on an exact PcbDoc, validating all values before writes with old-state preflight and readback | Three focused tests, Pascal lint/build, loaded `.19`; disposable changes read back, exact-path save/reload persisted snap X; broad Save All side effect recorded in CURRENT-STATE |
 | Local persistence fix after upstream grid port | Save one exact loaded document with an observed disk write, without Save All | Nine related tests, Pascal lint/build, loaded `.20`; disposable grid persisted after close/reopen; owner PcbDoc hash unchanged during this test |
 | Upstream drill layer pair family | Read pair spans/flags; set flags and add pairs with exact-board identity, count preflight, dry-run and readback | Three focused tests, Pascal lint/build, loaded `.21`; disposable pair flag changed and independently read back; duplicate span and wrong board refused; new TopLayer–MidLayer1 span added and independently read back on disposable three-layer board |
+| Upstream rule resolution (`pcb_find_dominant_rule`, `pcb_check_rule_scope`) | Ask Altium's rule engine about component/pad/net objects, with exact PcbDoc identity and complete replies | Two focused tests, Pascal lint/build, loaded `.22`; on a 47-rule board R62 dominant-rule lookup worked, unary and binary scope queries returned native answers, missing binary object and wrong board refused; owner SHA256 unchanged |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
@@ -98,7 +99,7 @@ been checked end to end, so NPI DFM remains pending that acceptance.
 | Source | Remaining block | Integration check |
 | --- | --- | --- |
 | Upstream `0a9ccd4`, `bb06837` | Remaining net naming, project libraries, pin and pad properties, shared packages; native write acceptance for xSignals and unhashed package comparison | Split read and write paths; verify per-document targeting and property readback |
-| Upstream `5797fc0`, `bff741b`, `ce53d6e` | Remaining editor preferences, jumpers, routing preferences, pair impedance and STEP export | Port one tool family at a time with source tests, script build and disposable-board native checks |
+| Upstream `5797fc0`, `bff741b`, `ce53d6e` | Remaining editor preferences, routing preferences, pair impedance and STEP export; compare inventory before porting because pours-at-point, board options and per-net jumper display are already present | Port one tool family at a time with source tests, script build and disposable-board native checks |
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews and natively qualify the restored footprint reader and model association | Verify against a disposable PcbLib and an isolated output directory |
