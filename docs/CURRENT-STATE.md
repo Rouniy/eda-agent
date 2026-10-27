@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## ERC edit tracking and close lifecycle, 2026-10-27
+
+Script source `.97` makes the bridge's tracked schematic edits invalidate
+the compile cache and count as dirty even when Altium's `Modified` flag is
+false. Exact document close now refuses an unacknowledged tracked edit and
+clears its marker only after confirmed close; project close with
+`save=false` clears markers for documents confirmed gone. Pascal lint/build
+found no errors or warnings, and 51 focused tests passed (one optional
+skip). This source change is not yet loaded in Altium. Two no-save ERC
+experiments removed one No ERC marker each in memory, but `DM_Compile`
+still returned both original rows as suppressed. Whether Altium compiles
+those unsaved edits or holds a separate stale model remains unresolved.
+
 ## Fork source scan and EasyEDA build, 2026-10-27
 
 Across 119 cached fork branch refs, the only tracked Python source path

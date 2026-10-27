@@ -299,7 +299,7 @@ Function App_CloseDocument(Params : String; RequestId : String) : String;
 Var
     FilePath : String;
     ServerDoc, Again : IServerDocument;
-    WasModified, Discard : Boolean;
+    WasModified, WasEdited, Discard, Closed : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     Discard := LowerCase(ExtractJsonValue(Params, 'discard')) = 'true';
@@ -316,7 +316,8 @@ Begin
     End;
     WasModified := False;
     Try WasModified := ServerDoc.Modified; Except WasModified := False; End;
-    If WasModified And Not Discard Then
+    WasEdited := DocWasEdited(FilePath);
+    If (WasModified Or WasEdited) And Not Discard Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MODIFIED',
             'The document has unsaved changes, so it was not closed: ' + FilePath);
@@ -329,8 +330,10 @@ Begin
     Client.CloseDocument(ServerDoc);
     Again := Nil;
     Try Again := Client.GetDocumentByPath(FilePath); Except Again := Nil; End;
-    Result := BuildSuccessResponse(RequestId, '{"closed":' + BoolToJsonStr(Again = Nil)
-        + ',"discarded":' + BoolToJsonStr(Discard And WasModified)
+    Closed := Again = Nil;
+    If Closed Then ForgetDocEdited(FilePath);
+    Result := BuildSuccessResponse(RequestId, '{"closed":' + BoolToJsonStr(Closed)
+        + ',"discarded":' + BoolToJsonStr(Discard And (WasModified Or WasEdited))
         + ',"file_path":"' + EscapeJsonString(FilePath) + '"}');
 End;
 

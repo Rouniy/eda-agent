@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.96';
+    SCRIPT_VERSION = '2026.10.27.97';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -350,6 +350,14 @@ Begin
 
         If ServerDoc <> Nil Then
         Begin
+            { SetModified may stay False after an MCP edit. Our own edit
+              record still makes the cached compiled model unsafe. }
+            If Pos('|' + UpperCase(ExtractFileName(Doc.DM_FullPath)) + '|',
+                   EditedDocs) > 0 Then
+            Begin
+                Result := True;
+                Exit;
+            End;
             Try
                 If ServerDoc.Modified Then
                 Begin
@@ -531,6 +539,7 @@ Var
 Begin
     If FilePath = '' Then Exit;
     NoteDocEdited(FilePath);
+    InvalidateCompileCache(0);
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
     Try ServerDoc.SetModified(True); Except End;
@@ -4951,7 +4960,7 @@ Function App_CloseDocument(Params : String; RequestId : String) : String;
 Var
     FilePath : String;
     ServerDoc, Again : IServerDocument;
-    WasModified, Discard : Boolean;
+    WasModified, WasEdited, Discard, Closed : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     Discard := LowerCase(ExtractJsonValue(Params, 'discard')) = 'true';
@@ -4968,7 +4977,8 @@ Begin
     End;
     WasModified := False;
     Try WasModified := ServerDoc.Modified; Except WasModified := False; End;
-    If WasModified And Not Discard Then
+    WasEdited := DocWasEdited(FilePath);
+    If (WasModified Or WasEdited) And Not Discard Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MODIFIED',
             'The document has unsaved changes, so it was not closed: ' + FilePath);
@@ -4981,8 +4991,10 @@ Begin
     Client.CloseDocument(ServerDoc);
     Again := Nil;
     Try Again := Client.GetDocumentByPath(FilePath); Except Again := Nil; End;
-    Result := BuildSuccessResponse(RequestId, '{"closed":' + BoolToJsonStr(Again = Nil)
-        + ',"discarded":' + BoolToJsonStr(Discard And WasModified)
+    Closed := Again = Nil;
+    If Closed Then ForgetDocEdited(FilePath);
+    Result := BuildSuccessResponse(RequestId, '{"closed":' + BoolToJsonStr(Closed)
+        + ',"discarded":' + BoolToJsonStr(Discard And (WasModified Or WasEdited))
         + ',"file_path":"' + EscapeJsonString(FilePath) + '"}');
 End;
 
@@ -6266,6 +6278,42 @@ Begin
     Result := Result + ']';
 End;
 
+{ A discarded project can leave edit records behind even though Altium's
+  Modified flag was cleared before close. Drop a record only after the
+  document itself is confirmed closed; a retained free document may still
+  contain an unsaved edit. }
+Procedure ForgetClosedEditedPaths(PathList : String);
+Var
+    Remaining, Path : String;
+    P : Integer;
+    ServerDoc : IServerDocument;
+    Readable : Boolean;
+Begin
+    Remaining := PathList;
+    While Remaining <> '' Do
+    Begin
+        P := Pos('|', Remaining);
+        If P > 0 Then
+        Begin
+            Path := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+        End
+        Else
+        Begin
+            Path := Remaining;
+            Remaining := '';
+        End;
+        If Path = '' Then Continue;
+        ServerDoc := Nil;
+        Readable := False;
+        Try
+            ServerDoc := Client.GetDocumentByPath(Path);
+            Readable := True;
+        Except End;
+        If Readable And (ServerDoc = Nil) Then ForgetDocEdited(Path);
+    End;
+End;
+
 {..............................................................................}
 { WorkspaceManager:CloseObject CLOSES THE FOCUSED PROJECT.                    }
 {                                                                             }
@@ -6551,13 +6599,16 @@ Begin
             End;
 
             If Closed And (ClosedInstead = '') Then
+            Begin
+                If Not SaveFirst Then ForgetClosedEditedPaths(Discarded);
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":true,"closed":true,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
                     + ',"saved":' + BoolToJsonStr(SaveFirst)
                     + ',"discarded":' + PipePathsToJsonArray(Discarded)
                     + ',"attempts":' + IntToStr(Attempts)
-                    + ',"closed_instead":[]}')
+                    + ',"closed_instead":[]}');
+            End
             Else
             Begin
                 If ClosedInstead <> '' Then
@@ -12130,7 +12181,7 @@ Begin
             Inc(OpenCount);
 
             Try
-                If ServerDoc.Modified Then
+                If ServerDoc.Modified Or DocWasEdited(FullPath) Then
                 Begin
                     Inc(DirtyCount);
                     If Not First Then DirtyList := DirtyList + ',';

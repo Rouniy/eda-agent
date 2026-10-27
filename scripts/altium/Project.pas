@@ -278,6 +278,42 @@ Begin
     Result := Result + ']';
 End;
 
+{ A discarded project can leave edit records behind even though Altium's
+  Modified flag was cleared before close. Drop a record only after the
+  document itself is confirmed closed; a retained free document may still
+  contain an unsaved edit. }
+Procedure ForgetClosedEditedPaths(PathList : String);
+Var
+    Remaining, Path : String;
+    P : Integer;
+    ServerDoc : IServerDocument;
+    Readable : Boolean;
+Begin
+    Remaining := PathList;
+    While Remaining <> '' Do
+    Begin
+        P := Pos('|', Remaining);
+        If P > 0 Then
+        Begin
+            Path := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+        End
+        Else
+        Begin
+            Path := Remaining;
+            Remaining := '';
+        End;
+        If Path = '' Then Continue;
+        ServerDoc := Nil;
+        Readable := False;
+        Try
+            ServerDoc := Client.GetDocumentByPath(Path);
+            Readable := True;
+        Except End;
+        If Readable And (ServerDoc = Nil) Then ForgetDocEdited(Path);
+    End;
+End;
+
 {..............................................................................}
 { WorkspaceManager:CloseObject CLOSES THE FOCUSED PROJECT.                    }
 {                                                                             }
@@ -563,13 +599,16 @@ Begin
             End;
 
             If Closed And (ClosedInstead = '') Then
+            Begin
+                If Not SaveFirst Then ForgetClosedEditedPaths(Discarded);
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":true,"closed":true,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
                     + ',"saved":' + BoolToJsonStr(SaveFirst)
                     + ',"discarded":' + PipePathsToJsonArray(Discarded)
                     + ',"attempts":' + IntToStr(Attempts)
-                    + ',"closed_instead":[]}')
+                    + ',"closed_instead":[]}');
+            End
             Else
             Begin
                 If ClosedInstead <> '' Then
@@ -6142,7 +6181,7 @@ Begin
             Inc(OpenCount);
 
             Try
-                If ServerDoc.Modified Then
+                If ServerDoc.Modified Or DocWasEdited(FullPath) Then
                 Begin
                     Inc(DirtyCount);
                     If Not First Then DirtyList := DirtyList + ',';

@@ -1,5 +1,18 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## ERC in-memory edit follow-up
+
+Two Altium 26.11.1.5 ERC checks found that deleting a No ERC marker in
+memory did not change the target row's `suppressed=true` status after a
+reported recompile. The bridge also reported `dirty_doc_count=0` after
+an edit it had acknowledged. Source `.97` now invalidates the cache on a
+tracked edit, counts that edit as dirty independently of Altium's
+`Modified` flag, and clears its record after a confirmed discard/close.
+Native execution of `.97` and Altium's treatment of unsaved No ERC edits
+remain to be checked on disposable documents. A fresh fetch still puts
+`upstream/main` at `fbf72a78254cb0573fb75e71600f5850e38421a0` and
+`MOREmbedded/main` at `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+
 ## Refreshed Git and function inventory
 
 The `redbird98` AD25 Chinese-locale bridge used the system GBK codepage for

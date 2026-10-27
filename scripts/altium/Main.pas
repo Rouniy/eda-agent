@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.96';
+    SCRIPT_VERSION = '2026.10.27.97';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -341,6 +341,14 @@ Begin
 
         If ServerDoc <> Nil Then
         Begin
+            { SetModified may stay False after an MCP edit. Our own edit
+              record still makes the cached compiled model unsafe. }
+            If Pos('|' + UpperCase(ExtractFileName(Doc.DM_FullPath)) + '|',
+                   EditedDocs) > 0 Then
+            Begin
+                Result := True;
+                Exit;
+            End;
             Try
                 If ServerDoc.Modified Then
                 Begin
@@ -522,6 +530,7 @@ Var
 Begin
     If FilePath = '' Then Exit;
     NoteDocEdited(FilePath);
+    InvalidateCompileCache(0);
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
     Try ServerDoc.SetModified(True); Except End;

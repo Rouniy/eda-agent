@@ -1,5 +1,17 @@
 # Fork integration TODO
 
+## ERC edits and compiled model, 2026-10-27
+
+- [x] Count bridge-tracked edits as dirty for compile freshness and cache
+  invalidation, and clear tracked records after confirmed discard/close.
+  Source `.97` passes Pascal lint/build and 51 focused tests.
+- [ ] Load `.97` in a controlled Altium session. On disposable sheets,
+  verify that a no-save No ERC delete reports a dirty document and that
+  a later compile reflects the in-memory marker state. Altium 26.11.1.5
+  returned `suppressed=true` before and after deleting markers in two
+  owner projects, despite `compile_action=compiled`; those projects were
+  closed with `save=false`. Do not infer the suppressing object yet.
+
 ## Library preview fork parity, 2026-10-27
 
 - [x] Restore Altium mechanical-kind coloring and courtyard/assembly role
