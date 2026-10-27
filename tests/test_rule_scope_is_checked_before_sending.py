@@ -107,6 +107,14 @@ def test_set_rule_properties_refuses_before_sending(monkeypatch, field):
     assert bridge.calls == []
 
 
+def test_set_rule_properties_refuses_empty_write_before_sending(monkeypatch):
+    tools, bridge = _tools(monkeypatch)
+    out = asyncio.run(tools["pcb_set_rule_properties"](name="Height"))
+    assert out["error"] == "NO_PROPERTIES"
+    assert out["properties_updated"] == 0
+    assert bridge.calls == []
+
+
 def test_the_scope_is_assigned_not_spliced_into_script_text():
     """Why the fix is a check and not an escape: nothing to escape."""
     text = (SCRIPTS / "PCB.pas").read_text(encoding="utf-8", errors="replace")

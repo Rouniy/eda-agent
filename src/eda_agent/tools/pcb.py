@@ -9588,9 +9588,11 @@ def register_pcb_tools(mcp):
         worked rather than the count.
 
         Pass only the parameters you want to change; everything else
-        stays untouched. Each VERIFIED field write increments
-        ``properties_updated`` in the response, so a refused constraint
-        no longer inflates it.
+        stays untouched. ``properties_updated`` counts native write
+        groups (for example, all Height settings together), while
+        ``settings_not_applied`` names individual values that did not
+        read back. A call without a property is refused before Altium
+        can mark the document dirty.
 
         NOTE: Priority is NOT writable from this tool. ``IPCB_Rule.Priority``
         is a read-only function in the PCB scripting API
@@ -9748,6 +9750,11 @@ def register_pcb_tools(mcp):
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
                     return {"ok": False, "reason": f"testpoint {key} is a length of 0 or more"}
                 params["testpoint_" + key] = repr(float(value))
+
+        if len(params) == 1:
+            return {"success": False, "error": "NO_PROPERTIES",
+                    "reason": "provide at least one rule property to change",
+                    "properties_updated": 0}
 
         bridge = get_bridge()
         return await bridge.send_command_async(

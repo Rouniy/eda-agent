@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Upstream rule-setting QA and empty-write guard, 2026-10-28
+
+On a new free Temp PcbDoc, `pcb.set_rule_properties` wrote Height
+10/900/450 mil, ComponentClearance vertical gap 12.5 mil,
+RoutingCorners setbacks 75.5/125.5 mil and NetAntennae tolerance
+15.5 mil. All four native replies had empty `settings_not_applied`;
+after exact save/close/reopen, `pcb.get_rule_properties` descriptors
+contained those values. An exploratory native setter call with only
+`name` returned `properties_updated=0` but dirtied the board. The
+public Python wrapper now refuses that empty write before transport;
+its description also correctly says `properties_updated` counts
+successful groups, not individual fields. The free QA board was closed
+with its empty-call dirty state discarded. Twenty-six focused tests pass.
+
 ## Upstream wire optimizer QA, 2026-10-28
 
 Fresh fetches left `upstream/main` at `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`

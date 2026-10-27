@@ -6,6 +6,12 @@
   disposable SchDoc. Three touching collinear segments became one wire
   with endpoints (1000,1000) and (2500,1000) mil; the single wire
   persisted after save/close/reopen and a second optimize was a no-op.
+- [x] Native-qualify four rule-setting classes from upstream `172d254`
+  on a new free PcbDoc. Height 10/900/450 mil, component vertical gap
+  12.5 mil, routing corner setbacks 75.5/125.5 mil, and antenna
+  tolerance 15.5 mil all read back from Altium rule descriptors after
+  exact save/close/reopen. The native setter dirtied the board for an
+  empty write; the MCP wrapper now refuses that call before transport.
 - [x] Native-qualify MOREmbedded `lib_set_symbol_parts` on a separate
   copied Spirit Level SchLib. `ADXL202E` changed from one part to two,
   persisted after save/close/reopen, then returned to one part with all
@@ -609,9 +615,10 @@
 
 ## Upstream layer-stack remainder, 2026-10-27
 
-- Complete the remaining `172d254` rule-setting, wire-tidy, pre-route and
-  paste-opening review. Pour growth is ported and persisted on an isolated
-  PcbDoc; repour and final copper acceptance remain separate.
+- Complete the remaining `172d254` pre-route and paste-opening review.
+  Four rule-setting classes and wire tidy passed native save/reopen QA.
+  Pour growth is ported and persisted on an isolated PcbDoc; repour and
+  final copper acceptance remain separate.
 - Test `pcb_plane_connections` on a disposable PcbDoc with a real internal
   plane and known connected/isolated pads. The current owner board has no
   internal-plane layers, so `.40` only proves the property read path.
