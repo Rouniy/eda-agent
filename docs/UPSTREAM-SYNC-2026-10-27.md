@@ -916,3 +916,11 @@ DelphiScript project to a disposable directory. A local Windows build passed:
 the exe reported version 0.7.1 and copied 15 script files including
 `Altium_API.PrjScr`, `Main.pas` at `.106`, and `StatusForm.dfm`. The GitHub
 Actions run on this branch remains to be observed after push.
+
+The `yniantongtian-oss/main` maintenance commit `e7fd6f1` adds a separate
+useful repository capability: weekly Dependabot proposals for the root
+Python manifest and GitHub Actions. Its two entries are carried in
+`.github/dependabot.yml`, with five open version-update PRs per ecosystem.
+This configuration does not approve or merge dependency changes. The file's
+keys and `directory: /` for workflows were checked against GitHub's current
+Dependabot configuration documentation.
