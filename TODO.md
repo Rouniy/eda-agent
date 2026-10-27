@@ -88,9 +88,13 @@
 - [x] Scope `pcb_get_nets` to an optional exact PcbDoc and make
   `pcb_net_display(from_project=True, nets=None)` require a matching board
   path before choosing nets. Source `.109` passes eight focused tests.
-- [ ] With two disposable PcbDocs open after loading `.109`, confirm the
-  nonfocused board is refused and the named active board returns its own
-  inventory; then check project colour planning without saving.
+- [x] With two disposable PcbDocs open on loaded `.114`, `pcb_get_nets`
+  refused the nonfocused board with `TARGET_CHANGED`. The focused empty
+  QA board returned zero nets; after `pcb_focus_board` selected a temporary
+  copy of Altium's Spirit Level board, the exact-path read returned 126
+  nets. Both boards closed without saving and the extra copy was removed.
+- [ ] Check project colour planning from an exact selected project and board
+  without saving.
 
 ## Fractional schematic placements, 2026-10-27
 
@@ -126,10 +130,13 @@
   Assembly, Courtyard, 3D Body and Center roles read back with counts
   4/4/4/2; the focused library had no such layer kinds. Both libraries
   were read only and closed.
-- [ ] Repeat the two-library native routing check through
-  `lib_audit_footprint_vs_package` with a real vendor package drawing.
-  Its exact-library path is covered by source tests; a fabricated spec
-  would not establish package-audit validity.
+- [x] Repeat the two-library native routing check through
+  `lib_audit_footprint_vs_package` with a Molex drawing. The exact inactive
+  PcbLib path and its mechanical layer kinds were used; no wrong-library
+  note appeared. Seven signal pad widths differed from the drawing.
+- [ ] Independently transcribe the complete Molex pad centres and body
+  geometry before treating that diagnostic audit as package signoff; its
+  first run provisionally aligned pad centres to the existing footprint.
 
 ## New upstream point and distribution, 2026-10-27
 

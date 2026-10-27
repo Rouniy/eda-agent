@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+## Exact-board net inventory native read, 2026-10-28
+
+Script `.114` opened two disposable PcbDocs. `pcb_get_nets` with the
+nonfocused Spirit Level copy's exact path raised `TARGET_CHANGED` while
+the empty QA board was focused. The focused QA board returned zero nets.
+After `pcb_focus_board` selected the Spirit Level copy, its exact-path
+inventory returned 126 nets. Both boards were closed without saving and
+the extra copied PcbDoc was removed. Project net-colour planning still
+needs its own exact-project check.
+
+The local SDK reflection produced 1,946 interfaces and 2,332 properties
+from the running installation's `Altium.SDK.Interfaces.dll`; 1,913 types
+were unresolved and 37 methods skipped. `sdk-coverage` reported 662 of
+2,207 properties reachable by its *generic chain* model. That model does
+not count all dedicated handlers, so the percentage is not total tool
+coverage or a claim that the remaining properties are safely writable.
+
 ## Latest upstream ancestry merge, 2026-10-28
 
 Upstream `ee7589c` is a true merge parent of our `main`, moving the exact
