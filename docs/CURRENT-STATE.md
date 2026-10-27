@@ -2,7 +2,9 @@
 
 ## Refreshed handoff, 2026-10-27
 
-`main` and `origin/main` are at `f339ee53e2643f1e222015028cb239b9fb9ede58`.
+`f339ee53e2643f1e222015028cb239b9fb9ede58` is the last reviewed
+feature/acceptance commit; later ledger commits may advance `main`.
+Use `git rev-parse main origin/main` for the live heads.
 The exact upstream synchronization point remains
 `9ee593ea0dce989bf3bfc97d0c982044ed41badb`: it is both the
 `upstream/main` tip fetched this day and `git merge-base main upstream/main`.
