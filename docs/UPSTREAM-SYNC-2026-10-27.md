@@ -246,7 +246,6 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 | --- | --- | --- |
 | Upstream `0a9ccd4`, `bb06837` | Remaining net naming, project libraries, pin and pad properties, shared packages; native write acceptance for xSignals and unhashed package comparison | Split read and write paths; verify per-document targeting and property readback |
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Find a persistent Altium API for numeric differential-pair impedance rule fields, plus broader project STEP export; placed-component STEP export, editor preferences, pours-at-point, board options and per-net jumper display are now present | Keep numeric writes disabled until exact save/reopen proves they survive; port other families with source tests, script build and disposable-board native checks |
-| Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Multi-body STEP layer and Z-offset edits are now qualified on one disposable PcbLib; further qualify bulk edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
 | MOREmbedded `pcb_check_fab_output` | A >5000-drilled-pad board and revision provenance of external packages | Real Altium GerberX2/NC Drill package now parsed and compared to its production-review PcbDoc; copper and hole counts match, exported Profile is larger than the live board. Keep that mismatch visible; a package manifest/revision proof is still needed for sign-off. |
@@ -503,3 +502,24 @@ to Mechanical15 and its saved Z offset from 10 to 19.685 mil; the first
 body and 90-degree rotation survived save/reopen. A wrong saved model name
 was refused with neither body's layer changed. Other body types and
 multi-body bulk edits remain unqualified.
+
+A 2026-10-27 tool-name scan of 110 cached `forks/*` branch refs found 15
+names absent from `main`. They are naming/surface candidates, not 15
+missing features. The following existing tools provide the corresponding
+operations, subject to the behaviour-level review still in progress:
+
+| Fork name(s) | Current `main` operation |
+| --- | --- |
+| `lib_add_pin`, `lib_add_symbol_line` | `lib_add_pins`, `lib_add_symbol_lines` with one item |
+| `pcb_move_component`, `pcb_place_track`, `pcb_place_component` | `pcb_move_components`, `pcb_place_tracks`, `pcb_place_components` with one item |
+| `sch_attach_spice_model`, `sch_attach_spice_primitive`, `sch_attach_spice_primitives`, `sch_get_simulation_readiness` | `sim_attach_model`, `sim_attach_primitives` with one item or batch, `sim_get_readiness` |
+| `lib_set_label_format` | `lib_set_label_formats` with one operation |
+| `sch_add_net_label`, `sch_add_text` | `sch_place_net_label`, `sch_place_note` or `sch_place_text_frame` |
+| `lib_diag_footprint`, `lib_screenshot_footprint` | `lib_get_footprint_primitives`/`lib_probe_footprint`, `app_screenshot` |
+| `lib_list_vault_libraries` | `lib_list_available_libraries` plus `lib_get_vault_name`; the fork's `is_vault` inference from `AvailableLibraryType` was not carried because that ordinal is a library type, not a reliable Workspace source |
+
+The pending table formerly listed upstream `184301d` as a separate source
+candidate. It is already an ancestor of `main`; its `SchExtraOwner` and
+`SchExtraFits` test dependencies are present. The focused test file passed
+9 cases with 1 optional Free Pascal case skipped. Six source/qualification
+groups remain in that table, not a count of individual missing features.

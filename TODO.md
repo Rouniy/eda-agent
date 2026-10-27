@@ -2,6 +2,17 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [x] Add `rabihnd/integration`'s STEP body creation on an exact PcbLib.
+  Script `.87` preserved the existing body, centre, layer, rotation and
+  saved Z offset after save/reopen on a disposable library.
+- [x] Fix and native-qualify the MOREmbedded multi-body STEP edit path.
+  Script `.88` changes only the selected body's layer and model Z offset;
+  a stale saved-model name refuses before any change.
+- [x] Recheck tool names across 110 cached fork branch refs. The 15 names
+  absent from our surface map to existing single/bulk or diagnostic tools;
+  behaviour differences still need feature-by-feature review. Remove the
+  already merged upstream `184301d` test fix from the pending table.
+
 - [x] Restore `4pplet`'s automatic EasyEDA DesignPlan emission as an
   optional path alongside hand templates. Seven offline tests cover
   placement, real-pin wiring, refusal of missing positions and registry.
