@@ -906,3 +906,13 @@ second copy of the feature was merged:
 This is a source-level equivalence check, not native acceptance of the
 currently bundled script `.106`. The live Altium session is still running
 `.96`; restarting it while other projects are open remains pending.
+
+The `james-martinez/add-windows-binary-workflow-15064193229940641520`
+branch (`1ccf16c`) had a distinct distribution feature: a Windows exe
+artifact. Its GitHub Actions job is adapted in `build-windows-binary.yml`:
+build and install the release wheel first, bundle that package's data and
+modules with PyInstaller, then run the exe and make it copy its embedded
+DelphiScript project to a disposable directory. A local Windows build passed:
+the exe reported version 0.7.1 and copied 15 script files including
+`Altium_API.PrjScr`, `Main.pas` at `.106`, and `StatusForm.dfm`. The GitHub
+Actions run on this branch remains to be observed after push.
