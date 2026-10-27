@@ -9,8 +9,10 @@ the width, with native readback in the reply; text-frame `\\n` and line breaks
 are normalized for Altium. A `Value` stamp now updates an existing first-level
 Value parameter alongside Comment, and newly created parameters are hidden
 at the component location. 70 related tests pass, three FPC-dependent tests
-skip, and Pascal lint/build passes. Native disposable-sheet acceptance and
-live `.12` reload are pending.
+skip, and Pascal lint/build passes. The HTTP child was restarted through its
+supervisor and Altium loaded `.12`: `app_ping` reports loaded/bundled `.12`,
+`version_match=true`, Altium `26.11.1.5` and zero cast errors. TCP 14700 and
+14701 listen. Native disposable-sheet acceptance remains pending.
 
 The `.11` source ports the corrected `mooreaa` multipart placement and tidy
 step. `sch_place_components` accepts `part_id` per part and a `tidy` switch
