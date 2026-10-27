@@ -11,7 +11,10 @@ PATH = r"D:\scratch\Board.PcbDoc"
 OLD = {"snap_x": 10.0, "snap_y": 10.0,
        "component_x": 10.0, "component_y": 10.0,
        "track": 5.0, "via": 5.0,
-       "visible": 20.0, "visible_big": 100.0, "dot_grid": True}
+       "visible": 20.0, "visible_big": 100.0,
+       "visible_factor": 1.0, "visible_big_factor": 10.0,
+       "snap_unit": "mil", "visible_unit": "mil",
+       "visible_big_unit": "mil", "dot_grid": True}
 
 
 class _Mcp:
@@ -71,6 +74,8 @@ def test_write_carries_full_old_snapshot_and_verifies_new_values(monkeypatch):
     assert params["expect_snap_x"] == "10.0"
     assert params["expect_visible_big"] == "100.0"
     assert params["expect_dot_grid"] == "true"
+    assert params["expect_visible_big_factor"] == "10.0"
+    assert params["expect_snap_unit"] == "mil"
     tool, _ = _tool(monkeypatch, [_read(), {**applied, "not_applied": ["track"]}])
     assert asyncio.run(tool(PATH, track=7.5, dry_run=False))["ok"] is False
 
@@ -82,3 +87,18 @@ def test_invalid_size_and_wrong_board_refuse_before_write(monkeypatch):
     tool, bridge = _tool(monkeypatch, [{**_read(), "board_path": r"D:\other.PcbDoc"}])
     assert asyncio.run(tool(PATH, via=5, dry_run=False))["ok"] is False
     assert len(bridge.calls) == 1
+
+
+def test_coarse_factor_and_units_keep_the_exact_board_contract(monkeypatch):
+    applied = {**_read(), "wrote": True, "changed": True,
+               "grids": {**OLD, "visible_big_factor": 8.0,
+                         "visible_unit": "mm"}}
+    tool, bridge = _tool(monkeypatch, [_read(), applied])
+    result = asyncio.run(tool(PATH, visible_big_factor=8.0,
+                              visible_unit="mm", dry_run=False))
+    assert result["grids"]["visible_big_factor"] == 8.0
+    params = bridge.calls[1][1]
+    assert params["expect_visible_big_factor"] == "10.0"
+    assert params["expect_visible_unit"] == "mil"
+    assert params["visible_big_factor"] == "8.0"
+    assert params["visible_unit"] == "mm"

@@ -1,4 +1,10 @@
-# Release verification: 2026.10.27.78
+# Release verification: 2026.10.27.79
+
+Script `.79` adds visible-grid factor and unit controls with exact-board
+identity, old-state checks and readback. On a disposable PcbDoc in Altium
+26.11.1.5, factor 5→6→5 and visible unit mm→mil→mm both read back; a stale
+factor was refused before mutation. Pascal lint/build and 26 focused Python
+tests passed.
 
 Script `.78` adds exact-board preflight and old-value checks to the
 expanded PCB editor and paste-array preferences. On the isolated PcbDoc,

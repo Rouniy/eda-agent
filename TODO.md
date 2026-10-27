@@ -4,8 +4,10 @@
 
 - [ ] Reconcile the new upstream `40814ba` net-colour and project-colour
   options with our exact-board, expected-state `pcb_net_display` contract.
-  Reconcile its coarse visible-grid factor and grid units with our
-  exact-board `pcb_set_grids` contract.
+- [x] Reconcile upstream's coarse visible-grid factor and grid units with
+  our exact-board `pcb_set_grids` contract. Script `.79` changed and
+  restored factor 5/6 and visible unit mm/mil on the disposable PcbDoc;
+  a stale expected factor was refused before writing.
 - [x] Expand PCB editor preference and paste-array wrappers for the new
   font, colour, confirmation and pan settings, with exact-board preflight.
   Script `.78` read all properties and changed/restored board-area colour

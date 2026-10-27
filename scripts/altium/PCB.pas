@@ -11638,6 +11638,18 @@ Begin
     Else If Key = 'visible_big' Then Result := CoordToMilsF(Board.BigVisibleGridSize);
 End;
 
+Function PCB_GridUnitName(U : Integer) : String;
+Begin
+    If U = eMetric Then Result := 'mm' Else Result := 'mil';
+End;
+
+Function PCB_GridUnit(Board : IPCB_Board; Key : String) : String;
+Begin
+    If Key = 'snap_unit' Then Result := PCB_GridUnitName(Board.SnapGridUnit)
+    Else If Key = 'visible_unit' Then Result := PCB_GridUnitName(Board.VisibleGridUnit)
+    Else Result := PCB_GridUnitName(Board.BigVisibleGridUnit);
+End;
+
 Function PCB_GridsJson(Board : IPCB_Board) : String;
 Begin
     Result := JsonFloat('snap_x', PCB_GridMils(Board, 'snap_x')) + ','
@@ -11648,6 +11660,11 @@ Begin
         + JsonFloat('via', PCB_GridMils(Board, 'via')) + ','
         + JsonFloat('visible', PCB_GridMils(Board, 'visible')) + ','
         + JsonFloat('visible_big', PCB_GridMils(Board, 'visible_big')) + ','
+        + JsonFloat('visible_factor', Board.VisibleGridMultFactor) + ','
+        + JsonFloat('visible_big_factor', Board.BigVisibleGridMultFactor) + ','
+        + JsonStr('snap_unit', PCB_GridUnit(Board, 'snap_unit')) + ','
+        + JsonStr('visible_unit', PCB_GridUnit(Board, 'visible_unit')) + ','
+        + JsonStr('visible_big_unit', PCB_GridUnit(Board, 'visible_big_unit')) + ','
         + JsonBool('dot_grid', Board.DrawDotGrid);
 End;
 
@@ -11656,9 +11673,9 @@ End;
 Function PCB_SetGrids(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    ExpectedPath, Why, Keys, Key, ValueStr, OldStr, DotStr : String;
+    ExpectedPath, Why, Keys, Key, ValueStr, OldStr, DotStr, BigFactorStr : String;
     BeforeJson, AfterJson, NotApplied : String;
-    CommaPos : Integer;
+    CommaPos, UnitWanted : Integer;
     Value, OldValue : Double;
     Writing : Boolean;
 Begin
@@ -11699,6 +11716,34 @@ Begin
         Begin
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
                 'dot_grid must be true or false');
+            Exit;
+        End;
+    End;
+    BigFactorStr := ExtractJsonValue(Params, 'visible_big_factor');
+    If BigFactorStr <> '' Then
+    Begin
+        Writing := True;
+        If (Not IsFloatStr(BigFactorStr)) Or
+            (StrToFloatDef(BigFactorStr, 0) <= 0) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+                'visible_big_factor must be positive');
+            Exit;
+        End;
+    End;
+    Keys := 'snap_unit,visible_unit,visible_big_unit';
+    While Keys <> '' Do
+    Begin
+        CommaPos := Pos(',', Keys);
+        If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+        Else Begin Key := Copy(Keys, 1, CommaPos - 1);
+            Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+        ValueStr := LowerCase(ExtractJsonValue(Params, Key));
+        If ValueStr = '' Then Continue;
+        Writing := True;
+        If (ValueStr <> 'mm') And (ValueStr <> 'mil') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', Key + ' must be mm or mil');
             Exit;
         End;
     End;
@@ -11752,6 +11797,40 @@ Begin
                 'dot grid changed; read again before writing');
             Exit;
         End;
+        OldStr := ExtractJsonValue(Params, 'expect_visible_big_factor');
+        If Not IsFloatStr(OldStr) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+                'old visible_big_factor is required');
+            Exit;
+        End;
+        If Abs(Board.BigVisibleGridMultFactor - StrToFloatDef(OldStr, -1)) > 0.001 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+                'visible grid factor changed; read again before writing');
+            Exit;
+        End;
+        Keys := 'snap_unit,visible_unit,visible_big_unit';
+        While Keys <> '' Do
+        Begin
+            CommaPos := Pos(',', Keys);
+            If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+            Else Begin Key := Copy(Keys, 1, CommaPos - 1);
+                Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+            OldStr := LowerCase(ExtractJsonValue(Params, 'expect_' + Key));
+            If (OldStr <> 'mm') And (OldStr <> 'mil') Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+                    'old grid units are required');
+                Exit;
+            End;
+            If PCB_GridUnit(Board, Key) <> OldStr Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+                    'grid unit changed; read again before writing');
+                Exit;
+            End;
+        End;
     End;
     NotApplied := '';
     If Writing Then
@@ -11787,6 +11866,35 @@ Begin
                 Begin
                     If NotApplied <> '' Then NotApplied := NotApplied + ',';
                     NotApplied := NotApplied + '"dot_grid"';
+                End;
+            End;
+            If BigFactorStr <> '' Then
+            Begin
+                Value := StrToFloatDef(BigFactorStr, 0);
+                Board.BigVisibleGridMultFactor := Value;
+                If Abs(Board.BigVisibleGridMultFactor - Value) > 0.001 Then
+                Begin
+                    If NotApplied <> '' Then NotApplied := NotApplied + ',';
+                    NotApplied := NotApplied + '"visible_big_factor"';
+                End;
+            End;
+            Keys := 'snap_unit,visible_unit,visible_big_unit';
+            While Keys <> '' Do
+            Begin
+                CommaPos := Pos(',', Keys);
+                If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+                Else Begin Key := Copy(Keys, 1, CommaPos - 1);
+                    Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+                ValueStr := LowerCase(ExtractJsonValue(Params, Key));
+                If ValueStr = '' Then Continue;
+                If ValueStr = 'mm' Then UnitWanted := eMetric Else UnitWanted := eImperial;
+                If Key = 'snap_unit' Then Board.SnapGridUnit := UnitWanted
+                Else If Key = 'visible_unit' Then Board.VisibleGridUnit := UnitWanted
+                Else Board.BigVisibleGridUnit := UnitWanted;
+                If PCB_GridUnit(Board, Key) <> ValueStr Then
+                Begin
+                    If NotApplied <> '' Then NotApplied := NotApplied + ',';
+                    NotApplied := NotApplied + '"' + Key + '"';
                 End;
             End;
         Finally

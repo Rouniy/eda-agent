@@ -2,6 +2,11 @@
 
 ## Later upstream tip in this session
 
+The `.79` follow-up ports `40814ba`'s coarse visible-grid factor and
+grid units into the exact-board grid command. Native change/restore and
+stale-state refusal passed on a disposable PcbDoc. Net colours remain
+for a separate adaptation.
+
 `git fetch upstream main` advanced `upstream/main` from `9ee593e` to
 `40814badc695813157fd8c50d24feafc5a553fcd`, one new commit. The
 explicit two-parent merge `da566a8` is pushed to `Rouniy/main` with our exact-board

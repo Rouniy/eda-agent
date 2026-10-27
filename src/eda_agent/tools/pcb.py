@@ -9924,6 +9924,10 @@ def register_pcb_tools(mcp):
         visible: Optional[float] = None,
         visible_big: Optional[float] = None,
         dot_grid: Optional[bool] = None,
+        visible_big_factor: Optional[float] = None,
+        snap_unit: Optional[str] = None,
+        visible_unit: Optional[str] = None,
+        visible_big_unit: Optional[str] = None,
         dry_run: bool = True,
     ) -> dict[str, Any]:
         """Read or set PCB grids in mils on one exact PcbDoc.
@@ -9945,6 +9949,15 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "grid sizes must be finite positive mils"}
         if dot_grid is not None and type(dot_grid) is not bool:
             return {"ok": False, "reason": "dot_grid must be boolean"}
+        if (visible_big_factor is not None and
+                (type(visible_big_factor) not in (int, float)
+                 or not math.isfinite(visible_big_factor) or visible_big_factor <= 0)):
+            return {"ok": False, "reason": "visible_big_factor must be finite and positive"}
+        units = {"snap_unit": snap_unit, "visible_unit": visible_unit,
+                 "visible_big_unit": visible_big_unit}
+        if any(value is not None and value not in ("mm", "mil")
+               for value in units.values()):
+            return {"ok": False, "reason": "grid units must be mm or mil"}
         bridge = get_bridge()
         before = await bridge.send_command_async(
             "pcb.set_grids", {"board_path": board_path}, timeout=120.0,
@@ -9956,13 +9969,18 @@ def register_pcb_tools(mcp):
                 or not isinstance(old, dict)
                 or any(type(old.get(key)) not in (int, float)
                        or not math.isfinite(old[key])
-                       for key in (*requested, "component_x", "component_y"))
-                or type(old.get("dot_grid")) is not bool):
+                       for key in (*requested, "component_x", "component_y",
+                                   "visible_factor", "visible_big_factor"))
+                or type(old.get("dot_grid")) is not bool
+                or any(old.get(key) not in ("mm", "mil") for key in units)):
             return {"ok": False, "reason": "native grid read is incomplete or from another board",
                     "native_reply": before}
         changes = {key: value for key, value in requested.items() if value is not None}
         if dot_grid is not None:
             changes["dot_grid"] = dot_grid
+        if visible_big_factor is not None:
+            changes["visible_big_factor"] = visible_big_factor
+        changes.update({key: value for key, value in units.items() if value is not None})
         if not changes:
             return before
         if dry_run:
@@ -9972,8 +9990,16 @@ def register_pcb_tools(mcp):
         for key in requested:
             params["expect_" + key] = repr(float(old[key]))
         params["expect_dot_grid"] = "true" if old["dot_grid"] else "false"
+        params["expect_visible_big_factor"] = repr(float(old["visible_big_factor"]))
+        for key in units:
+            params["expect_" + key] = old[key]
         for key, value in changes.items():
-            params[key] = ("true" if value else "false") if key == "dot_grid" else repr(float(value))
+            if key == "dot_grid":
+                params[key] = "true" if value else "false"
+            elif key in units:
+                params[key] = value
+            else:
+                params[key] = repr(float(value))
         result = await bridge.send_command_async("pcb.set_grids", params, timeout=120.0)
         actual = result.get("grids") if isinstance(result, dict) else None
         if (not isinstance(result, dict)
@@ -9984,8 +10010,11 @@ def register_pcb_tools(mcp):
                 or result.get("not_applied") != []
                 or any(type(actual.get(key)) not in (int, float)
                        or abs(float(actual[key]) - float(value)) > 0.001
-                       for key, value in changes.items() if key != "dot_grid")
-                or ("dot_grid" in changes and actual.get("dot_grid") is not dot_grid)):
+                       for key, value in changes.items()
+                       if key != "dot_grid" and key not in units)
+                or ("dot_grid" in changes and actual.get("dot_grid") is not dot_grid)
+                or any(actual.get(key) != value for key, value in units.items()
+                       if value is not None)):
             return {"ok": False, "reason": "board grid write was not fully verified",
                     "native_reply": result}
         result["save_required"] = bool(result.get("changed"))

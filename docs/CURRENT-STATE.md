@@ -2,6 +2,14 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Script `.79` (bundle Git blob `908a03ca1aba89f3fe25825369606b3d556d21dd`)
+adds upstream's coarse visible-grid factor and grid-unit controls to the
+existing exact-board grid command. In Altium 26.11.1.5, a disposable
+PcbDoc's factor changed 5→6→5 and its visible unit mm→mil→mm. A stale
+factor precondition was refused with the value unchanged. Pascal lint/build
+had zero errors or warnings; 26 related Python tests passed. The net-colour
+and project-colour extension of upstream `40814ba` remains to integrate.
+
 Fresh `upstream/main` advanced to `40814badc695813157fd8c50d24feafc5a553fcd`
 while this session was running. Merge commit `da566a8` has that tip as
 its second parent and is pushed to `origin/main`. Script `.78` (bundle Git
