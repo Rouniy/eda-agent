@@ -13011,6 +13011,7 @@ Var
     TracksJson, ArcsJson, RegionsJson, FillsJson, TextsJson, ViasJson, BodyLayersJson : String;
     Workspace : IWorkspace;
     Doc : IDocument;
+    ServerDoc : IServerDocument;
     PcbLib : IPCB_Library;
     Iter : IPCB_LibraryIterator;
     Footprint, Target : IPCB_LibComponent;
@@ -13034,6 +13035,7 @@ Var
     ModelRot, BodyTop, BodyStandoff : Double;
     Kinds, SelStr, BodyBoxJson : String;
     OriginX, OriginY : Double;
+    DocumentStateKnown, DocumentModified : Boolean;
 Begin
     BodyModelsJson := '';
     SelStr := 'null';
@@ -13520,9 +13522,25 @@ Begin
         Try SeenPrims.Free; Except End;
     End;
 
+    { This is the exact PcbLib opened above. Report its own unsaved state;
+      a later active-document query may name a different editor tab. }
+    DocumentStateKnown := False;
+    DocumentModified := True;
+    ServerDoc := Nil;
+    Try
+        ServerDoc := Client.GetDocumentByPath(FocusedPath);
+        If ServerDoc <> Nil Then
+        Begin
+            DocumentModified := ServerDoc.Modified;
+            DocumentStateKnown := True;
+        End;
+    Except End;
+
     RespJson :=
         '{"name":"' + EscapeJsonString(FpName) + '"' +
         ',"library_path":"' + EscapeJsonString(LibPath) + '"' +
+        ',"document_state_known":' + BoolToJsonStr(DocumentStateKnown) +
+        ',"document_modified":' + BoolToJsonStr(DocumentModified) +
         ',"height_mm":' + FloatToJsonStr(HeightMM) +
         ',"editor_origin_x_mm":' + FloatToJsonStr(OriginX) +
         ',"editor_origin_y_mm":' + FloatToJsonStr(OriginY) +

@@ -2,13 +2,18 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [x] Resolve saved STEP Z offset for a named clean PcbLib even when a
+  separate PCB tab is active. Script `.83` reads the exact library's
+  known/modified state natively; `AD_FE38` returned its saved 0.254 mm
+  offset in Altium. Unknown/dirty libraries remain unverified.
+
 - [x] Enforce board identity for the upstream-adapted pour lookup and
   board options. Script `.82` rejects a wrong `expect_file` natively and
   echoes the actual board; the Python wrappers verify that identity.
 - [x] Native-read the ported footprint primitive handler on a disposable
   PcbLib. `AD_FE38` returned tracks, arcs, regions, text, vias and STEP
   body metadata; a wrong library path was refused. Saved STEP standoff
-  substitution remains conditional on a clean active PcbLib.
+  substitution now uses the exact library's native clean-state report.
 
 - [x] Reconcile upstream `40814ba` net-colour and project-colour options
   with exact-board, expected-state `pcb_net_display`. Script `.81` changed

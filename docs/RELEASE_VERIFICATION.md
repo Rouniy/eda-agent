@@ -1,4 +1,13 @@
-# Release verification: 2026.10.27.82
+# Release verification: 2026.10.27.83
+
+Script `.83` makes the native footprint primitive reply include
+`document_state_known` and `document_modified` for the requested PcbLib.
+On `BodyEdit_20261027.PcbLib`, `AD_FE38` returned known=true,
+modified=false, and the wrapper resolved the saved `LTC3895EFE.STEP`
+Z offset to 0.254 mm while preserving the live body field as 0. The
+previous active-document query had reported the separate scratch PCB.
+Fourteen related embedded-model tests passed, with one optional test skipped;
+Pascal lint/build passed 12 files with zero errors or warnings.
 
 Script `.82` enforces `expect_file` in native `pcb.pours_at` and
 `pcb.board_options`, and echoes `board_file` for wrapper verification. On

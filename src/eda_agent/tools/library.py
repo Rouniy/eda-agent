@@ -55,8 +55,8 @@ async def _resolve_saved_step_standoff(bridge: Any, reply: Any) -> Any:
 
     Altium's live ComponentBody.StandoffHeight reads zero for an embedded
     STEP even when its model has a nonzero MODEL.3D.DZ. Only substitute a
-    saved record when the focused PcbLib is clean and every body matches
-    its saved record in order and model identity.
+    saved record when the native read identifies a clean exact PcbLib and
+    every body matches its saved record in order and model identity.
     """
     if not isinstance(reply, dict) or not isinstance(reply.get("body_models"), list):
         return reply
@@ -72,9 +72,8 @@ async def _resolve_saved_step_standoff(bridge: Any, reply: Any) -> Any:
     if not path.is_file() or not name:
         return reply
     try:
-        active = await bridge.send_command_async("application.get_active_document", {})
-        if (not isinstance(active, dict) or active.get("modified") is not False
-                or str(active.get("file_path", "")).casefold() != str(path).casefold()):
+        if (reply.get("document_state_known") is not True
+                or reply.get("document_modified") is not False):
             return reply
         from ..fileio.altium_pcblib import read_pcblib_saved_body_models
         saved = await asyncio.to_thread(read_pcblib_saved_body_models, path, name)
@@ -7479,6 +7478,12 @@ def register_library_tools(mcp):
         reply = await bridge.send_command_async(
             "library.get_footprint_primitives",
             {"footprint_name": footprint_name, "library_path": library_path})
+        if library_path and (not isinstance(reply, dict)
+                             or not isinstance(reply.get("library_path"), str)
+                             or reply["library_path"].casefold() != library_path.casefold()
+                             or reply.get("name") != footprint_name):
+            return {"ok": False, "reason": "footprint read did not identify the requested library and footprint",
+                    "native_reply": reply}
         reply = await _resolve_saved_step_standoff(bridge, reply)
         if isinstance(reply, dict) and isinstance(reply.get("body_models"), list):
             for body in reply["body_models"]:

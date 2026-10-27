@@ -2,6 +2,13 @@
 
 ## Later upstream tip in this session
 
+Script `.83` completes the saved STEP standoff read on a named clean
+PcbLib even when another document is the active tab. The native footprint
+read reports whether that exact library's unsaved state is known and whether
+it is modified. Python only substitutes a matching saved model when the
+target is known clean. Native `AD_FE38` readback returned 0.254 mm from
+the saved STEP record. Unknown or dirty state stays unverified.
+
 Script `.82` corrects a source-level omission in the adapted upstream
 `pcb_pours_at` and `pcb_board_options`: `expect_file` had reached the bridge
 but the native handlers ignored it. They now refuse a different board and
@@ -9,7 +16,7 @@ report the actual board path, which Python checks. Disposable-board native
 reads and wrong-path refusals passed. A previously pending PcbLib read was
 also accepted on a disposable 38-footprint library (`AD_FE38`: 493 tracks,
 38 regions, 12 vias, one STEP body); wrong-path lookup was refused. The
-saved STEP standoff resolver remains conditional on a clean active PcbLib.
+saved STEP standoff resolver remains conditional on a known clean PcbLib.
 The live fork inventory check returned 62/62 fresh default tips and 117/117
 fresh branches, with MOREmbedded still at `032fb4b`.
 

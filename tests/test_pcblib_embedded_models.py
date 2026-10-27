@@ -177,9 +177,10 @@ def test_live_step_standoff_uses_matching_clean_saved_model(monkeypatch, tmp_pat
         modified = False
 
         async def send_command_async(self, command, params=None, timeout=None):
-            if command == "application.get_active_document":
-                return {"file_path": str(libfile), "modified": self.modified}
+            assert command == "library.get_footprint_primitives"
             return {"name": "FP", "library_path": str(libfile), "bodies": 1,
+                    "document_state_known": True,
+                    "document_modified": self.modified,
                     "body_models": [{"model_type": 1, "model_file": "part.step",
                                      "standoff_mm": 0.0}]}
 
@@ -197,6 +198,23 @@ def test_live_step_standoff_uses_matching_clean_saved_model(monkeypatch, tmp_pat
     dirty = asyncio.run(tool("FP", str(libfile)))["body_models"][0]
     assert dirty["standoff_mm"] == 0.0
     assert dirty["standoff_source"] == "live_body_field_unverified"
+
+    bridge.modified = False
+    async def unknown(command, params=None, timeout=None):
+        reply = await Bridge().send_command_async(command, params, timeout)
+        reply["document_state_known"] = False
+        return reply
+    bridge.send_command_async = unknown
+    uncertain = asyncio.run(tool("FP", str(libfile)))["body_models"][0]
+    assert uncertain["standoff_source"] == "live_body_field_unverified"
+
+    async def wrong_library(command, params=None, timeout=None):
+        reply = await Bridge().send_command_async(command, params, timeout)
+        reply["library_path"] = str(tmp_path / "Other.PcbLib")
+        return reply
+    bridge.send_command_async = wrong_library
+    mismatch = asyncio.run(tool("FP", str(libfile)))
+    assert mismatch["ok"] is False
 
 
 class _Storages(_Ole):

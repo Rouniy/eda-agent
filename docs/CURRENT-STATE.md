@@ -2,16 +2,22 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Script `.83` reports the exact PcbLib document's known/modified state in
+`lib_get_footprint_primitives` and resolves saved STEP Z offsets when that
+document is clean. The disposable `AD_FE38` library read returned
+`standoff_mm=0.254` from its saved model while the active-document API had
+reported the scratch PCB. Unknown/dirty cases remain unverified. Altium
+26.11.1.5 accepted `.83`; Pascal lint/build had no errors or warnings,
+and 14 related Python tests passed (one optional test skipped).
+
 Script `.82` fixes exact-board identity for `pcb_pours_at` and
 `pcb_board_options`: the Pascal handlers now enforce `expect_file` and echo
 `board_file`; the Python wrappers reject a mismatched reply. On the
 disposable PcbDoc, reads named the correct board, and wrong-path pour reads
 and option writes were refused in Altium 26.11.1.5. The same runtime read
 `AD_FE38` from a disposable PcbLib: 493 tracks, 38 regions, 12 vias and
-one STEP body; a wrong library path was refused. Full saved STEP standoff
-resolution remained unverified because `application.get_active_document`
-reported the separate scratch PCB, so the wrapper preserved its conservative
-`live_body_field_unverified` marker. Fork branch check: 62/62 default tips
+one STEP body; a wrong library path was refused. Saved STEP standoff was
+subsequently qualified in `.83`. Fork branch check: 62/62 default tips
 and 117/117 branch tips still match their cached refs.
 
 Script `.81` completes the `40814ba` net-colour adaptation. The exact-board
