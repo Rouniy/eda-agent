@@ -118,6 +118,27 @@ def test_the_board_pour_draws_the_keepout_first(monkeypatch):
     assert out["keepout"] == {"success": True}
 
 
+def test_fractional_keepout_width_reaches_native_handler(monkeypatch):
+    sent = []
+    tools = _tools(monkeypatch, sent)
+    asyncio.run(tools["pcb_keepout_board_outline"](width_mils=20.625))
+    assert sent == [("pcb.keepout_board_outline", {"width": "20.625"})]
+    sent.clear()
+    asyncio.run(tools["pcb_place_polygon_board"](
+        net="GND", edge_clearance_mils=12.25))
+    assert sent[0] == ("pcb.keepout_board_outline", {"width": "24.5"})
+
+
+def test_nonfinite_outline_width_is_refused_before_native_call(monkeypatch):
+    sent = []
+    tools = _tools(monkeypatch, sent)
+    assert asyncio.run(tools["pcb_keepout_board_outline"](
+        width_mils=float("nan")))["success"] is False
+    assert asyncio.run(tools["pcb_place_polygon_board"](
+        net="GND", edge_clearance_mils=float("inf")))["success"] is False
+    assert sent == []
+
+
 def test_a_rectangle_pour_removes_dead_copper_by_default(monkeypatch):
     sent = []
     asyncio.run(_tools(monkeypatch, sent)["pcb_place_polygon_rect"](

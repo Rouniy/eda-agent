@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## Fractional keep-out outline and polygon-pour clearance, 2026-10-28
+
+The native `.115` keep-out-outline handler already accepted decimal-mil
+widths, but Python's `pcb_keepout_board_outline` and
+`pcb_place_polygon_board(edge_clearance_mils=...)` cast them to integers.
+Both now serialize finite decimal mils; the latter doubles the exact
+requested edge clearance. Eleven focused source tests pass. On the
+disposable arched PcbDoc, `pcb_keepout_board_outline(20.625)` added
+three tracks and one arc, then returned `added=0, already_there=4` on a
+second call. After exact save/close/reopen, `obj_query` found exactly
+three KeepOutLayer tracks and one arc with `Width=20.625` and
+`IsKeepout=true`; another outline call still added zero. The copy
+closed without additional changes. This qualifies the keep-out path;
+the polygon copper pour itself remains a separate native check.
+
 ## Offline SchLib header and alias parity, 2026-10-28
 
 On the same disposable Spirit Level library copy, Altium listed 40

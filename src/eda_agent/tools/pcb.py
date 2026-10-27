@@ -6749,7 +6749,7 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_keepout_board_outline(width_mils: int = 20) -> dict[str, Any]:
+    async def pcb_keepout_board_outline(width_mils: float = 20) -> dict[str, Any]:
         """Draw the board outline on the Keep-Out layer.
 
         Every outline edge, arcs included, becomes a keep-out track or arc
@@ -6766,17 +6766,18 @@ def register_pcb_tools(mcp):
         Returns:
             ``edges``, ``added``, ``already_there`` and ``width_mils``.
         """
-        if width_mils <= 0:
-            return {"success": False, "error": "width_mils must be positive"}
+        if (type(width_mils) not in (int, float)
+                or not math.isfinite(width_mils) or width_mils <= 0):
+            return {"success": False, "error": "width_mils must be finite and positive"}
         bridge = get_bridge()
         return await bridge.send_command_async(
-            "pcb.keepout_board_outline", {"width": str(int(width_mils))})
+            "pcb.keepout_board_outline", {"width": _mils(width_mils)})
 
     @mcp.tool()
     async def pcb_place_polygon_board(
         net: str,
         layer: str = "TopLayer",
-        edge_clearance_mils: int = 10,
+        edge_clearance_mils: float = 10,
         pour_over: bool = True,
         remove_dead: bool = True,
         pour: bool = True,
@@ -6810,12 +6811,17 @@ def register_pcb_tools(mcp):
             ``repour_mode``) and ``keepout`` (what the keep-out outline
             added).
         """
+        if (type(edge_clearance_mils) not in (int, float)
+                or not math.isfinite(edge_clearance_mils)
+                or edge_clearance_mils < 0):
+            return {"success": False,
+                    "error": "edge_clearance_mils must be finite and nonnegative"}
         bridge = get_bridge()
         keepout: Any = None
         if edge_clearance_mils > 0:
             keepout = await bridge.send_command_async(
                 "pcb.keepout_board_outline",
-                {"width": str(int(2 * edge_clearance_mils))})
+                {"width": _mils(2 * edge_clearance_mils)})
             if isinstance(keepout, dict) and keepout.get("success") is False:
                 return {"success": False, "error": "the keep-out outline failed",
                         "keepout": keepout}
