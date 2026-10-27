@@ -46,7 +46,7 @@ automatic pass from the current partial reads.
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Board grids/options, editor preferences, jumpers, routing preferences, pours at a point, pair impedance, STEP export | Port one tool family at a time with source tests, script build and disposable-board native checks |
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
-| Upstream `ed4ef59` | Report 3D body model metadata from live footprints and use its height/standoff in previews; associate extracted models with a footprint | Verify against a disposable PcbLib and an isolated output directory |
+| Upstream `ed4ef59` | First restore the missing native `library.get_footprint_primitives` handler behind our existing Python wrapper, then report 3D body model metadata and use its height/standoff in previews; associate extracted models with a footprint | Verify against a disposable PcbLib and an isolated output directory |
 | MOREmbedded `pcb_check_fab_output` | Compare exported fab package with one exact board | Eliminate the 5000-pad cap and reject incomplete/mismatched reads |
 
 The previous audit has the other fork branches and older upstream work. This

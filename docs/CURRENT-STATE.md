@@ -7,6 +7,9 @@ now checks Altium's stored checksum before writing the original bytes, and
 `lib_build_integrated_library` can create/open, populate, save and compile an
 exact-path LibPkg. It claims a build only when a fresh, nonempty IntLib is
 observed. Source tests pass; no native build or owner-library write was run.
+After restarting the existing HTTP child through its supervisor, TCP 14701
+advertises 624 tools, including this builder; `app_ping` reports both script
+versions `2026.10.27.2` and `version_match=true`. TCP 14700 is listening.
 
 The `main` source now includes SDK coverage and NPI phase gates from
 `MOREmbedded/main`, a periodic datasheet reminder from upstream, and a
