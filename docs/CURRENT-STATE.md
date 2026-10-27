@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Component parameter scope and native Value readback, 2026-10-28
+
+The fork template-value reconciliation exposed a native scope defect:
+`SetCompParamText` could match a nested model `VALUE` when the caller
+intended a parameter on the placed component. Script `.115` restricts
+that lookup to `eIterateFirstLevel`, matching the existing `Value` update
+helper. Pascal lint/build passed all 12 units with zero warnings or
+errors; 15 focused Python tests passed with one optional skip. On a
+disposable placed `CAP`, a direct `VALUE=direct-old` was created and
+persisted, then `Value=33nF` updated it and the visible Comment after
+save/close/readback. The nested model `VALUE=old-component-value`
+remained unchanged. The bridge reloaded `.115` from the main script
+project without an Altium restart.
+
 ## mooreaa template Value fix, 2026-10-28
 
 Running the fork's 22 placement-cleanup source checks against current

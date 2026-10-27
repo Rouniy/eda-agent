@@ -47,6 +47,7 @@ def test_value_stamps_update_existing_parameter_and_hide_new_ones():
     assert "SetState_IterationDepth(eIterateFirstLevel)" in setter
     assert "SchObjectFactory" not in setter
     creator = _routine(source, "SetCompParamText")
+    assert "SetState_IterationDepth(eIterateFirstLevel)" in creator
     assert creator.index("NewParam.IsHidden := True") < creator.index(
         "Comp.AddSchObject(NewParam)")
     for handler, comp in (("Gen_SetSchComponentParameters", "TargetComp"),

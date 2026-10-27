@@ -11,9 +11,13 @@
 - [x] Verify a disposable `sch_draw_template` placement and visible
   Comment readback in Altium. The `RES` and `CAP` symbols both produced
   the requested visible value after save/reopen.
-- [ ] Verify an existing *component-level* Value parameter readback.
-  The installed `CAP` library's `VALUE` belongs to a nested model, so
-  it does not exercise the component parameter update path.
+- [x] Verify an existing *component-level* Value parameter readback.
+  On a disposable `CAP` placement, script `.115` created a direct
+  `VALUE=direct-old`, then a `Value=33nF` stamp changed both that parameter
+  and the visible Comment after exact save/close/readback. The nested
+  model `VALUE` stayed unchanged. The first `.114` check had mistakenly
+  updated the model parameter; `.115` confines component parameter lookup
+  to first-level children.
 
 ## Battery research branch, 2026-10-28
 

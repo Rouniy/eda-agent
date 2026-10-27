@@ -1,5 +1,18 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 native parameter-scope follow-up
+
+The `mooreaa` template Value reconciliation led to a first-level
+parameter scope fix in `Generic.pas`. A prior native stamp on an
+installed `CAP` symbol had modified a nested model `VALUE`, revealing
+that `SetCompParamText` traversed implementation children. Loaded
+script `.115` created a direct component `VALUE` and then updated it
+to `33nF` together with Comment, while the model `VALUE` stayed put.
+The disposable sheet was saved and closed; 15 focused tests and the
+12-unit Pascal lint/build passed. A fresh fork-tip check still found
+62/62 default tips and 117/117 branch tips cached. `upstream/main`
+remains the exact ancestor `ee7589c`.
+
 ## 2026-10-28 mooreaa behavioral test reconciliation
 
 The fork's original `test_placement_cleanup.py` was run against our main:
