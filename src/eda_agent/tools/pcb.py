@@ -7196,6 +7196,109 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_get_xsignals(board_path: str) -> dict[str, Any]:
+        """Read every xSignal, its lengths and path items from one exact PcbDoc.
+
+        The reply names the board. A missing native pair or mismatched count
+        is reported as incomplete rather than silently returning a short list.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.get_xsignals", {"board_path": board_path}, timeout=120.0,
+        )
+        pairs = reply.get("xsignals") if isinstance(reply, dict) else None
+        count = reply.get("count") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or type(count) is not int or count < 0
+                or not isinstance(pairs, list) or len(pairs) != count):
+            return {"ok": False, "reason": "native xSignal read is incomplete or from a different board",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_create_xsignals(
+        board_path: str,
+        expected_count: int,
+        pins: list[str],
+        class_name: str = "",
+    ) -> dict[str, Any]:
+        """Create xSignals between at least two pads on an exact board.
+
+        Obtain expected_count from pcb_get_xsignals immediately before the
+        write. The native handler rejects a changed count and reads back
+        created pairs; a failed or partial result is exposed to the caller.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(expected_count) is not int or expected_count < 0:
+            return {"ok": False, "reason": "expected_count must be non-negative"}
+        if not isinstance(pins, list) or len(pins) < 2 or any(
+            not isinstance(p, str) or "\t" in p or "." not in p
+            or not p.split(".", 1)[0] or not p.split(".", 1)[1]
+            for p in pins
+        ):
+            return {"ok": False, "reason": "pins must contain at least two designator.pad names"}
+        if len({p.casefold() for p in pins}) != len(pins) or "\t" in class_name:
+            return {"ok": False, "reason": "pins must be unique and class_name cannot contain tabs"}
+        reply = await get_bridge().send_command_async(
+            "pcb.create_xsignals",
+            {"board_path": board_path, "expected_count": str(expected_count),
+             "pins": "\t".join(pins), "class_name": class_name}, timeout=120.0,
+        )
+        created = reply.get("created") if isinstance(reply, dict) else None
+        after = reply.get("count_after") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or reply.get("count_before") != expected_count
+                or type(after) is not int or after <= expected_count
+                or not isinstance(created, list) or len(created) != after - expected_count
+                or not reply.get("returned_pairs")
+                or (class_name and not reply.get("class_assigned"))):
+            return {"ok": False, "reason": "xSignal creation was not fully verified",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_delete_xsignals(
+        board_path: str,
+        expected_count: int,
+        names: list[str] | None = None,
+        all: bool = False,
+    ) -> dict[str, Any]:
+        """Delete named xSignals, or all, with exact-board/count preconditions."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(expected_count) is not int or expected_count < 0:
+            return {"ok": False, "reason": "expected_count must be non-negative"}
+        names = names or []
+        if not isinstance(names, list) or any(not isinstance(n, str) or not n.strip() or "\t" in n for n in names):
+            return {"ok": False, "reason": "names must be a list of nonempty xSignal names"}
+        if not all and not names:
+            return {"ok": False, "reason": "give names, or all=true"}
+        reply = await get_bridge().send_command_async(
+            "pcb.delete_xsignals",
+            {"board_path": board_path, "expected_count": str(expected_count),
+             "names": "\t".join(names), "all": "true" if all else "false"},
+            timeout=120.0,
+        )
+        deleted = reply.get("deleted") if isinstance(reply, dict) else None
+        after = reply.get("count_after") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or reply.get("count_before") != expected_count
+                or type(after) is not int or after < 0 or after > expected_count
+                or not isinstance(deleted, list) or len(deleted) != expected_count - after
+                or (all and after != 0)):
+            return {"ok": False, "reason": "xSignal deletion was not fully verified",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
     async def pcb_check_fab_output(
         directory: str,
         board_path: str,

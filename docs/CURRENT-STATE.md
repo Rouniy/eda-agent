@@ -2,6 +2,18 @@
 
 ## Source integration, 2026-10-27
 
+The `.16` source ports upstream's xSignal read/create/delete family with
+explicit PcbDoc paths, native path checks, and an expected pair count for
+writes. The Python layer verifies complete readback and the count delta.
+28 focused tests pass; Pascal lint/build reports zero errors/warnings.
+Altium 26.11.1.5 loaded/bundled `.16` with zero cast errors. A disposable
+PcbDoc reported zero xSignals; nonexistent pins were refused, a stale count
+was refused, and an empty delete left the count at zero. The disposable
+document was closed and its saved file removed. The original PCB is active
+and unmodified. Creating and deleting an actual xSignal on a populated
+disposable board still needs native acceptance. TCP 14700 and MCP 14701
+listen.
+
 The `.14` source integrates MOREmbedded's fab-output comparison as an
 exact-board check. `pcb_get_fab_board_facts` reads the focused PcbDoc path,
 copper layer count, outline size and all drilled pads/vias in one native

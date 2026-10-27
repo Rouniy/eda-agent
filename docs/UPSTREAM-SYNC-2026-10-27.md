@@ -9,6 +9,14 @@ fetched Git tips, not a claim that all their code has been merged:
 | `MOREmbedded/eda-agent` `main` | `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41` | `0fc7f02a7a56a130d0cfded4a2a922d313c9ea99` |
 | `mooreaa/eda-agent` `main` | `fc22136ca5d28e6442c979417d8615c8ff4a2d35` | `8e659a27b05ff46be2f9ae30225b5baf0c9a8395` |
 
+Additional `MOREmbedded` branches fetched on this pass: `feature/company-profiles`
+at `6bd492d`, `claude/project-thread-6aorpk` at `5954a6f`, and
+`agent/sync-upstream-d6823d5` at `93141c6`. Their named profile, library,
+fractional-layer-thickness and rotation-audit features are already present
+in our adapted `main`; this is a feature-level observation, not an ancestry
+claim. The `93141c6` branch syncs an older upstream point (`d6823d5`),
+so it does not advance our reviewed-through upstream tip.
+
 The merge bases are older than the reviewed tips because features have been
 ported and adapted as separate commits. `git merge-base main upstream/main`
 answers ancestry; this file answers the newer **reviewed-through** point.
@@ -63,6 +71,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | `mooreaa` `dc36b7e`–`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests, Pascal lint/build and loaded `.12` runtime; native disposable-sheet acceptance pending |
 | `mooreaa` through `fc22136` (port AutoSize getter) | Return the native port AutoSize flag through generic queries, with a port-only type guard | Native `.12` query exposed the omission; loaded `.13` ePort query read back false, font 1 and width 400 on an isolated sheet |
 | MOREmbedded through `032fb4b` (`pcb_check_fab_output`) | Rework fab comparison around one exact-board, uncapped native snapshot and require all three core comparisons | 23 focused tests, Pascal lint/build, loaded `.14`; disposable PCB facts and wrong-path refusal passed; full export comparison pending |
+| Upstream `0a9ccd4`, `bb06837` (xSignals) | Read, create and delete xSignals on an exact PcbDoc; use count preconditions and verify native pair deltas | 28 focused tests, Pascal lint/build, loaded `.16`; disposable read and refusal/no-op checks passed; actual populated-board write pending |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
@@ -83,7 +92,7 @@ been checked end to end, so NPI DFM remains pending that acceptance.
 
 | Source | Remaining block | Integration check |
 | --- | --- | --- |
-| Upstream `0a9ccd4`, `bb06837` | xSignals, net naming/display, project libraries, pin and pad properties, shared packages | Split read and write paths; verify per-document targeting and property readback |
+| Upstream `0a9ccd4`, `bb06837` | Remaining net naming/display, project libraries, pin and pad properties, shared packages; native write acceptance for xSignals | Split read and write paths; verify per-document targeting and property readback |
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Remaining board grids, editor preferences, jumpers, routing preferences, pair impedance and STEP export | Port one tool family at a time with source tests, script build and disposable-board native checks |
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |

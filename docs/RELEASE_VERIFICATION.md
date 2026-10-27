@@ -1,4 +1,14 @@
-# Release verification: 2026.10.27.14
+# Release verification: 2026.10.27.16
+
+The `.16` xSignal port requires an exact PcbDoc path for reads and writes
+and an expected count for create/delete. 28 focused tests pass and Pascal
+lint/build reports zero errors/warnings. Altium loaded `.16` with zero cast
+errors. On a disposable PcbDoc, the native getter returned zero pairs and
+the exact path; nonexistent pins and a stale delete count were refused;
+an empty delete left zero pairs. The disposable document was closed and
+its file removed; the original PCB remains active and unmodified. Actual
+creation/class assignment/deletion on a populated disposable board is
+pending native acceptance.
 
 The `.14` fab-output port uses one exact PcbDoc native snapshot for all
 board facts, with an uncapped hole count. The comparison refuses a pass

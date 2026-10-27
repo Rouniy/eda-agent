@@ -1,5 +1,12 @@
 # Fork integration TODO
 
+## xSignal acceptance, 2026-10-27
+
+- On a disposable populated PCB, read an initial xSignal count, create a
+  pair through a series part, verify its returned path/length/class, delete
+  it with the new expected count, and independently read back the original
+  count. Do not exercise the write on an owner's board.
+
 ## Fab-output acceptance, 2026-10-27
 
 - Run `pcb_check_fab_output` on a disposable PcbDoc and its freshly exported

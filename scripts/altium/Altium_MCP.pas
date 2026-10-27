@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.14';
+    SCRIPT_VERSION = '2026.10.27.16';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -35482,6 +35482,377 @@ Begin
 End;
 
 {..............................................................................}
+{ One xSignal as Altium reports it: length, topology and path items.         }
+Function PCB_XSignalJson(PP : IPCB_PinPair; PairIdx : Integer) : String;
+Var
+    Name, Items, Item : String;
+    Len, Routed, Unrouted : Double;
+    Nodes, Prims, I, Oid, Tracks, Vias : Integer;
+    Prim : IPCB_Primitive;
+Begin
+    Name := ''; Len := 0; Routed := 0; Unrouted := 0; Nodes := 0; Prims := 0;
+    Tracks := 0; Vias := 0;
+    Try Name := PP.Name; Except End;
+    Try Len := PP.Length / 10000; Except End;
+    Try Routed := PP.RoutedLength / 10000; Except End;
+    Try Unrouted := PP.UnroutedLength / 10000; Except End;
+    Try Nodes := PP.NodeCount; Except End;
+    Try Prims := PP.PrimitivesCount; Except End;
+    Items := '';
+    For I := 0 To Prims - 1 Do
+    Begin
+        Item := '';
+        Prim := Nil;
+        Try Prim := PP.Primitives[I]; Except Prim := Nil; End;
+        If Prim = Nil Then Continue;
+        Oid := Prim.ObjectId;
+        If (Oid = eTrackObject) Or (Oid = eArcObject) Then
+        Begin
+            Inc(Tracks);
+            Continue;
+        End;
+        If Oid = eViaObject Then
+        Begin
+            Inc(Vias);
+            Continue;
+        End;
+        Try Item := PP.GetPinPairItemDisplayName(Prim); Except End;
+        If Item = '' Then Continue;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + EscapeJsonString(Item) + '"';
+    End;
+    Result := JsonObj(JsonInt('index', PairIdx) + ','
+        + JsonStr('name', Name) + ','
+        + JsonFloat('length_mils', Len) + ','
+        + JsonFloat('routed_length_mils', Routed) + ','
+        + JsonFloat('unrouted_length_mils', Unrouted) + ','
+        + JsonInt('node_count', Nodes) + ','
+        + JsonInt('track_count', Tracks) + ','
+        + JsonInt('via_count', Vias) + ','
+        + JsonRaw('path', '[' + Items + ']'));
+End;
+
+{ Read xSignals from one exact PcbDoc, not whichever board happens to be open. }
+Function PCB_GetXSignals(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Mgr : IPCB_PinPairsManager;
+    PP : IPCB_PinPair;
+    ExpectedPath, Why, Items : String;
+    I, Count : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path is required');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Mgr := Board.PinPairsManager;
+    If Mgr = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_XSIGNALS',
+            'The board has no xSignal manager');
+        Exit;
+    End;
+    Count := Mgr.PinPairsCount;
+    Items := '';
+    For I := 0 To Count - 1 Do
+    Begin
+        PP := Nil;
+        Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
+        If PP = Nil Then Continue;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + PCB_XSignalJson(PP, I);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('count', Count) + ','
+        + JsonRaw('xsignals', '[' + Items + ']')));
+End;
+
+Function PCB_XSignalPadOfComponent(Comp : IPCB_Component; PadName : String) : IPCB_Pad;
+Var
+    Iter : IPCB_GroupIterator;
+    Pad : IPCB_Pad;
+Begin
+    Result := Nil;
+    Iter := Comp.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(ePadObject));
+        Pad := Iter.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            If UpperCase(Pad.Name) = UpperCase(PadName) Then
+            Begin
+                Result := Pad;
+                Break;
+            End;
+            Pad := Iter.NextPCBObject;
+        End;
+    Finally
+        Comp.GroupIterator_Destroy(Iter);
+    End;
+End;
+
+Function PCB_XSignalFindComponent(Board : IPCB_Board; Desig : String) : IPCB_Component;
+Var
+    Iter : IPCB_BoardIterator;
+    Comp : IPCB_Component;
+    NameStr : String;
+Begin
+    Result := Nil;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Comp := Iter.FirstPCBObject;
+    While Comp <> Nil Do
+    Begin
+        NameStr := '';
+        Try NameStr := Comp.Name.Text; Except End;
+        If UpperCase(NameStr) = UpperCase(Desig) Then
+        Begin
+            Result := Comp;
+            Break;
+        End;
+        Comp := Iter.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(Iter);
+End;
+
+Function PCB_CreateXSignals(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Mgr : IPCB_PinPairsManager;
+    PP : IPCB_PinPair;
+    Comp : IPCB_Component;
+    Pad : IPCB_Pad;
+    Pins : TInterfaceList;
+    Made : IInterface;
+    PinStr, ClassName, Item, Desig, PadName, Missing, NewItems, BeforeNames : String;
+    ExpectedPath, Why, ExpectedCountStr : String;
+    TabPos, DotPos, I, Before, After, Found, ExpectedCount : Integer;
+    Classed : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    ExpectedCountStr := ExtractJsonValue(Params, 'expected_count');
+    PinStr := ExtractJsonValue(Params, 'pins');
+    ClassName := ExtractJsonValue(Params, 'class_name');
+    If (ExpectedPath = '') Or (ExpectedCountStr = '') Or (PinStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path, expected_count and pins are required');
+        Exit;
+    End;
+    ExpectedCount := StrToIntDef(ExpectedCountStr, -1);
+    If ExpectedCount < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'expected_count must be non-negative');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Mgr := Board.PinPairsManager;
+    If Mgr = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_XSIGNALS',
+            'The board has no xSignal manager');
+        Exit;
+    End;
+    Before := Mgr.PinPairsCount;
+    If Before <> ExpectedCount Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'STALE_COUNT',
+            'xSignal count changed; read it again before writing');
+        Exit;
+    End;
+    BeforeNames := #9;
+    For I := 0 To Before - 1 Do
+    Begin
+        PP := Nil;
+        Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
+        If PP <> Nil Then BeforeNames := BeforeNames + PP.Name + #9;
+    End;
+    Pins := TInterfaceList.Create;
+    Missing := '';
+    Found := 0;
+        While PinStr <> '' Do
+        Begin
+            TabPos := Pos(#9, PinStr);
+            If TabPos = 0 Then Begin Item := PinStr; PinStr := ''; End
+            Else Begin Item := Copy(PinStr, 1, TabPos - 1);
+                PinStr := Copy(PinStr, TabPos + 1, Length(PinStr)); End;
+            Item := Trim(Item);
+            If Item = '' Then Continue;
+            DotPos := Pos('.', Item);
+            Pad := Nil;
+            If DotPos > 1 Then
+            Begin
+                Desig := Copy(Item, 1, DotPos - 1);
+                PadName := Copy(Item, DotPos + 1, Length(Item));
+                Comp := PCB_XSignalFindComponent(Board, Desig);
+                If Comp <> Nil Then Pad := PCB_XSignalPadOfComponent(Comp, PadName);
+            End;
+            If Pad = Nil Then
+            Begin
+                If Missing <> '' Then Missing := Missing + ', ';
+                Missing := Missing + Item;
+                Continue;
+            End;
+            Pins.Add(Pad);
+            Inc(Found);
+        End;
+        If Missing <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PIN', 'No pad for: ' + Missing);
+            Exit;
+        End;
+        If Found < 2 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'give at least two pins');
+            Exit;
+        End;
+        Made := Nil;
+        PCBServer.PreProcess;
+        Try
+            Made := Mgr.CreateFromPins(Pins);
+        Finally
+            PCBServer.PostProcess;
+        End;
+        Classed := False;
+        If (ClassName <> '') And (Made <> Nil) Then
+        Begin
+            Try
+                Mgr.AssignPinPairClass(Made, ClassName);
+                Classed := True;
+            Except End;
+        End;
+    { DelphiScript can fault when releasing a TInterfaceList of live board
+      primitive interfaces. The host owns this short-lived script list. }
+    After := Mgr.PinPairsCount;
+    NewItems := '';
+    For I := 0 To After - 1 Do
+    Begin
+        PP := Nil;
+        Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
+        If PP = Nil Then Continue;
+        If Pos(#9 + PP.Name + #9, BeforeNames) > 0 Then Continue;
+        If NewItems <> '' Then NewItems := NewItems + ',';
+        NewItems := NewItems + PCB_XSignalJson(PP, I);
+    End;
+    If (After > Before) Or Classed Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('count_before', Before) + ','
+        + JsonInt('count_after', After) + ','
+        + JsonBool('returned_pairs', Made <> Nil) + ','
+        + JsonStr('class_name', ClassName) + ','
+        + JsonBool('class_assigned', Classed) + ','
+        + JsonRaw('created', '[' + NewItems + ']')));
+End;
+
+Function PCB_DeleteXSignals(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Mgr : IPCB_PinPairsManager;
+    PP : IPCB_PinPair;
+    ExpectedPath, ExpectedCountStr, Why, NamesStr, Name, Deleted : String;
+    I, Before, After, ExpectedCount : Integer;
+    All : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    ExpectedCountStr := ExtractJsonValue(Params, 'expected_count');
+    NamesStr := ExtractJsonValue(Params, 'names');
+    All := LowerCase(ExtractJsonValue(Params, 'all')) = 'true';
+    If (ExpectedPath = '') Or (ExpectedCountStr = '') Or ((NamesStr = '') And (Not All)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path, expected_count and names or all are required');
+        Exit;
+    End;
+    ExpectedCount := StrToIntDef(ExpectedCountStr, -1);
+    If ExpectedCount < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'expected_count must be non-negative');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Mgr := Board.PinPairsManager;
+    If Mgr = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_XSIGNALS',
+            'The board has no xSignal manager');
+        Exit;
+    End;
+    Before := Mgr.PinPairsCount;
+    If Before <> ExpectedCount Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'STALE_COUNT',
+            'xSignal count changed; read it again before writing');
+        Exit;
+    End;
+    NamesStr := #9 + UpperCase(NamesStr) + #9;
+    Deleted := '';
+    PCBServer.PreProcess;
+    Try
+        For I := Before - 1 DownTo 0 Do
+        Begin
+            PP := Nil;
+            Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
+            If PP = Nil Then Continue;
+            Name := '';
+            Try Name := PP.Name; Except End;
+            If (Not All) And (Pos(#9 + UpperCase(Name) + #9, NamesStr) = 0) Then Continue;
+            Mgr.Delete(PP);
+            If Deleted <> '' Then Deleted := Deleted + ',';
+            Deleted := Deleted + '"' + EscapeJsonString(Name) + '"';
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    After := Mgr.PinPairsCount;
+    If After <> Before Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('count_before', Before) + ','
+        + JsonInt('count_after', After) + ','
+        + JsonRaw('deleted', '[' + Deleted + ']')));
+End;
+
+{..............................................................................}
 { PCB_GetFabBoardFacts - one exact-board snapshot for fab package checks.    }
 { No outline rebuild and no capped object window.                          }
 {..............................................................................}
@@ -44911,6 +45282,9 @@ Begin
         'delete_object':           Result := PCB_DeleteObject(Params, RequestId);
         'get_pad_properties':      Result := PCB_GetPadProperties(Params, RequestId);
         'get_fab_board_facts':     Result := PCB_GetFabBoardFacts(Params, RequestId);
+        'get_xsignals':           Result := PCB_GetXSignals(Params, RequestId);
+        'create_xsignals':        Result := PCB_CreateXSignals(Params, RequestId);
+        'delete_xsignals':        Result := PCB_DeleteXSignals(Params, RequestId);
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
         'rebuild_connectivity':    Result := PCB_RebuildConnectivity(Params, RequestId);
