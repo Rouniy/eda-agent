@@ -48,6 +48,28 @@ _SESSION_REMINDER = {
     "datasheet_rules": DATASHEET_RULES,
 }
 
+_REMINDER_EVERY_ENV = "EDA_AGENT_REMINDER_EVERY"
+_REMINDER_EVERY_DEFAULT = 10
+_reminder_calls = 0
+
+
+def _reminder_every() -> int:
+    raw = (os.environ.get(_REMINDER_EVERY_ENV) or "").strip()
+    try:
+        every = int(raw) if raw else _REMINDER_EVERY_DEFAULT
+    except ValueError:
+        every = _REMINDER_EVERY_DEFAULT
+    return max(every, 1)
+
+
+def _with_session_reminder(reply: dict[str, Any]) -> dict[str, Any]:
+    """Include the session reminder on the first call and every Nth after."""
+    global _reminder_calls
+    _reminder_calls += 1
+    if (_reminder_calls - 1) % _reminder_every() == 0:
+        reply["_system_reminder"] = _SESSION_REMINDER
+    return reply
+
 
 def _get_ui_inspector():
     """Build a Win32 inspector for the live Altium PID (lazy for tests/Linux)."""
@@ -527,7 +549,7 @@ def register_application_tools(mcp):
                         launch_error = str(exc)
             if not script_loaded:
                 bridge.detach()
-            return {
+            return _with_session_reminder({
                 "attached": script_loaded,
                 "script_loaded": script_loaded,
                 "worker_launch_requested": relaunched,
@@ -535,15 +557,13 @@ def register_application_tools(mcp):
                 "message": "Connected to Altium Designer, script is responding"
                 if script_loaded
                 else "Altium is running but StartMCPServer did not respond.",
-                "_system_reminder": _SESSION_REMINDER,
-            }
+            })
         except AltiumNotRunningError as e:
-            return {
+            return _with_session_reminder({
                 "attached": False,
                 "script_loaded": False,
                 "message": str(e),
-                "_system_reminder": _SESSION_REMINDER,
-            }
+            })
 
     @mcp.tool()
     async def app_save_all() -> dict[str, Any]:
@@ -972,7 +992,7 @@ def register_application_tools(mcp):
                 f"Altium_API.PrjScr (or restart Altium) to recompile."
             )
 
-        return {
+        return _with_session_reminder({
             "success": True,
             "mcp_server_version": _mcp_server_version,
             "altium_script_version": altium_ver,
@@ -980,8 +1000,7 @@ def register_application_tools(mcp):
             "version_match": match,
             "altium_version": result.get("altium_version") or "",
             "message": msg,
-            "_system_reminder": _SESSION_REMINDER,
-        }
+        })
 
     @mcp.tool()
     async def app_get_report() -> dict[str, Any]:
