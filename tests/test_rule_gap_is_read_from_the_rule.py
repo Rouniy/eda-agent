@@ -37,7 +37,7 @@ def test_the_gap_is_read_through_a_typed_iterator_local():
 
 
 def test_both_rule_readers_report_gap_mm():
-    listing = _body("PCB_GetDesignRules")
+    listing = _body("PCB_GetDesignRulesForBoard")
     assert "ClearRule := GapIter.FirstPCBObject;" in listing
     assert ',"gap_mm":' in listing
     _kinds_ok(listing)

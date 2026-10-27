@@ -744,6 +744,36 @@ End;
 {..............................................................................}
 
 { Core body shared with the selection-scoped profile (see PCB_GetComponents). }
+Function ClearanceGapMM(Board : IPCB_Board; RuleName : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    ClearRule : IPCB_ClearanceConstraint;
+    Kind : Integer;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        ClearRule := Iter.FirstPCBObject;
+        While ClearRule <> Nil Do
+        Begin
+            If ClearRule.Name = RuleName Then
+            Begin
+                Kind := -1;
+                Try Kind := ClearRule.RuleKind; Except Kind := -1; End;
+                If (Kind = eRule_Clearance) Or (Kind = 24) Or (Kind = 52) Or (Kind = 63) Then
+                    Try Result := FloatToJsonStr(CoordToMM(ClearRule.Gap)); Except Result := ''; End;
+                Break;
+            End;
+            ClearRule := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 Function PCB_GetDesignRulesForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
     Iterator : IPCB_BoardIterator;
@@ -756,6 +786,34 @@ Var
     ClearRule : IPCB_ClearanceConstraint;
     Kind : Integer;
 Begin
+    GapNames := TStringList.Create;
+    GapValues := TStringList.Create;
+    GapIter := Board.BoardIterator_Create;
+    Try
+        GapIter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        GapIter.AddFilter_LayerSet(AllLayers);
+        GapIter.AddFilter_Method(eProcessAll);
+        ClearRule := GapIter.FirstPCBObject;
+        While ClearRule <> Nil Do
+        Begin
+            Kind := -1;
+            Try Kind := ClearRule.RuleKind; Except Kind := -1; End;
+            If (Kind = eRule_Clearance) Or (Kind = 24) Or (Kind = 52) Or (Kind = 63) Then
+            Begin
+                GapStr := '';
+                Try GapStr := FloatToJsonStr(CoordToMM(ClearRule.Gap)); Except End;
+                If GapStr <> '' Then
+                Begin
+                    GapNames.Add(ClearRule.Name);
+                    GapValues.Add(GapStr);
+                End;
+            End;
+            ClearRule := GapIter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(GapIter);
+    End;
+
     JsonItems := '';
     First := True;
     Count := 0;
