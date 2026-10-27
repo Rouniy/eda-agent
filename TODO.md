@@ -2,6 +2,12 @@
 
 ## Fork behavior audit, 2026-10-28
 
+- [x] Native-qualify the MOREmbedded integrated-library build path on
+  copied Altium example libraries. Script `.115` compiled a LibPkg with
+  exact SchLib and PcbLib members into a 123,392-byte IntLib containing
+  both library streams; the QA project closed. Installation of that
+  IntLib into Altium's global library list was not part of this check.
+
 - [x] Run the 11 `vincent-himpe` decimal-length tests against `main`;
   all pass. Confirm six custom-pad shape readers already name
   `eCustomShape`, and the EasyEDA extension delivery guards have adapted

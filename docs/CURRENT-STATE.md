@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Native integrated-library build from MOREmbedded path, 2026-10-28
+
+With loaded script `.115`, `lib_build_integrated_library` created
+`Spirit_QA.LibPkg` in `C:\Users\Alex\AppData\Local\Temp\eda-intlib-qa-20261028`
+from copies of Altium's installed `SpiritLevel_2E.SchLib` (186,880 bytes)
+and `Spirit_Level_Project.PcbLib` (715,264 bytes). Both exact paths appear
+as members in the saved LibPkg and `project.get_documents` returned both.
+Altium's `project.compile` returned success and wrote a fresh
+`Project Outputs for Spirit_QA\Spirit_QA.IntLib` (123,392 bytes).
+The OLE container has `SchLib/0.schlib` and `PCBLib/0.pcblib` streams,
+not merely a nonempty placeholder. The exact LibPkg closed successfully
+with no other project closed. Its isolated outputs remain in Temp; the
+installed source libraries were only copied.
+
 ## Hosted Actions on the fork, 2026-10-28
 
 The public GitHub API lists `battery-research-lab` as active but with

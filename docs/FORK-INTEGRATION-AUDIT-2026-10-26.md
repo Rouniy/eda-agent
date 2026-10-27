@@ -1,5 +1,10 @@
 # Fork integration audit - 2026-10-26
 
+On 2026-10-28, the adapted integrated-library build path passed native
+Altium acceptance on copied example SchLib/PcbLib files: the exact-path
+LibPkg compiled a nonempty IntLib containing both library streams. See
+`CURRENT-STATE.md` for the output and close evidence.
+
 On 2026-10-28, the circular board outline mentioned below passed native
 save/close/reopen acceptance with a fractional-mil centre and radius on
 a disposable PcbDoc under script `.115`. The exact geometry is in
