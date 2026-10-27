@@ -8,8 +8,12 @@
   `Value`, which leaves the component's Value parameter stale. It now
   sends `Value`; the native handler updates both the visible Comment and
   the Value parameter. Forty-two related tests pass (19 optional skips).
-- [ ] Verify a disposable `sch_draw_template` placement and its Comment
-  and Value readback in Altium after restarting the Python MCP service.
+- [x] Verify a disposable `sch_draw_template` placement and visible
+  Comment readback in Altium. The `RES` and `CAP` symbols both produced
+  the requested visible value after save/reopen.
+- [ ] Verify an existing *component-level* Value parameter readback.
+  The installed `CAP` library's `VALUE` belongs to a nested model, so
+  it does not exercise the component parameter update path.
 
 ## Battery research branch, 2026-10-28
 

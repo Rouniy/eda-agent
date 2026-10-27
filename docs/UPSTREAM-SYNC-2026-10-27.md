@@ -10,7 +10,10 @@ port width keeps fractional mils. The third revealed that
 `Comment`; our native handler uses `Value` to update both Comment and
 the component Value parameter. The adapted fix is in our Python tool.
 Forty-two related tests pass with 19 optional skips. Native end-to-end
-acceptance is still pending.
+placement and visible Comment readback passed for two symbols on
+disposable SchDocs. An existing component-level Value parameter still
+needs native readback; the available `CAP` symbol's `VALUE` is a nested
+model parameter.
 
 ## 2026-10-28 optional battery lab branch
 

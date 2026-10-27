@@ -9,8 +9,15 @@ as `Comment`, while the native `Value` key intentionally updates both
 template drawer now emits `Value`. The other two fork-test failures were
 source-shape assumptions superseded by our query-only live-pin filter
 and fractional-width serialization. The template, multipart and cross-
-validation suites pass: 42 passed, 19 optional skips. Native end-to-end
-save/reopen acceptance remains pending.
+validation suites pass: 42 passed, 19 optional skips. On disposable
+SchDocs, `RES` and `CAP` placements both set the visible Comment to the
+requested value after save/reopen (`4k7` and `47nF`). The installed
+`CAP` library's `VALUE=0.1uF` is nested under a model, not owned by the
+component, so an existing component-level Value parameter still needs
+native readback. Altium crashed twice during the first `CAP` attempt;
+after a restart the same copy opened and the placement succeeded.
+`app_ping` then confirmed `.114` and the script project in the main
+source directory. The scratch documents and library were closed.
 
 ## Exact-project PCB net-colour plan, 2026-10-28
 

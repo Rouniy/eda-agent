@@ -319,8 +319,9 @@ def register_sch_template_tools(mcp):
         parts are placed, their pins are read back off the sheet, the
         wiring is checked again against those real pins (and every other
         part already on the sheet), and only then are the wires, power
-        ports, net labels and values (the Comment) drawn. Any error stops
-        it before the first wire. A designator already on the sheet is
+        ports, net labels and values (visible Comment and an existing
+        component-level Value parameter) are drawn. Any error stops it
+        before the first wire. A designator already on the sheet is
         refused: redraw on a fresh sheet rather than patching. Does not
         save.
 
