@@ -191,3 +191,14 @@ commands. The `xthanhn91` note CRUD branch (`fc08cf1`) was also reviewed:
 `eNote`/`eTextFrame` generic mapping and placement already exist locally;
 its small loop-renewal helper duplicates the more capable supervisor and
 was not copied.
+
+The other active branch heads checked in this pass mostly contain changes
+already integrated by function: `prototrace/961e6c3` Unicode JSON escapes
+and schematic polylines; `vincent-himpe/bf31274` footprint fills;
+`TerrenceHenry/89c017f` schematic property refusals;
+`mityafoxy/bba6811` non-raising IPC file reads;
+`bblacklock3/78791d3` fractional-mil PCB coordinates; and
+`darshp848/d89589b` schematic repair tools. Source comparisons confirmed
+the corresponding handlers and Python tools in `main`. The AD23/AD26 paste
+flag guard `4f9b64a` is an ancestor of `main`, so the earlier audit's
+paste-compatibility candidate is no longer outstanding.
