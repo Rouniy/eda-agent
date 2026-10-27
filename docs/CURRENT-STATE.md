@@ -18,9 +18,24 @@ Altium gave its two placed parts different UniqueIds, and also reminted
 a replicated same-sheet part. The safe designator batch correctly
 refused the two `UQA1` symbols with distinct UniqueIds before a write.
 The disposable project was closed without saving; native multipart
-acceptance remains open. A separate close-with-discard call on another
-scratch copy left previously added symbols visible after reopening;
-whether this was editor cache or a disk write is not yet established.
+acceptance remains open.
+
+## Project-sheet discard cache, 2026-10-28
+
+A fresh project-backed scratch sheet kept an unsaved placed `UQA1`
+visible after `app_close_document(discard_changes=True)` and reopen,
+although its SHA-256 stayed
+`25e7c99c611c4ab62a0c3de6c393b8a89c25356b35ef1c255725f679ddc6545b`
+before placement, after tab close, and after reopen. Closing the whole
+project with `save=false` and reopening it returned only the original
+`RQA1`. A free scratch SchDoc discarded an unsaved `RQA99` edit normally
+and returned to `RQA1` on reopen with the same disk hash. Thus the
+project's in-memory sheet state, not a disk write, caused the difference.
+Script `.120` now detects that the closed sheet remains a member of an
+open project and reports `discarded=false`, `project_retains_sheet=true`
+with the required project-close step. Native checks confirmed that
+reply for a project sheet and `discarded=true` for a free sheet. The
+generated script rebuilt and all 12 Pascal units linted cleanly.
 
 ## Collision-checked project designator batch, 2026-10-28
 

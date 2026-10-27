@@ -63,9 +63,12 @@
 - [ ] Establish a real shared-UniqueId multipart fixture in Altium.
   Placing parts separately and replicating a part both caused Altium to
   mint distinct IDs; the current safe batch refused duplicate `UQA1`.
-- [ ] Investigate why closing a disposable SchDoc with discard left
-  unsaved placed symbols visible after reopening; compare file hashes
-  to distinguish editor cache from an unexpected disk write.
+- [x] Identify and report the project-sheet discard cache. Exact
+  SHA-256 stayed unchanged while an open project reloaded the unsaved
+  symbol; closing the project with `save=false` cleared it. Script
+  `.120` reports `discarded=false, project_retains_sheet=true` when a
+  project sheet's tab closes with discard requested. A free sheet
+  reports `discarded=true` and reopens from its unchanged file.
 - [x] Qualify `vincent-himpe`'s fractional circular board outline in
   Altium `.115`: exact centre and radius were returned as four closed
   quarter arcs and persisted after save/close/reopen on a disposable

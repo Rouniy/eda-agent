@@ -781,13 +781,17 @@ def register_application_tools(mcp):
         Args:
             file_path: the document's full path, as app_list_documents
                 reports it.
-            discard_changes: close it even when it reads modified, and
-                LOSE the unsaved edits: the modified flag is cleared first
-                so no save prompt appears. For scratch copies and documents
-                Altium changed by merely opening them, never for work.
+            discard_changes: close it even when it reads modified. A sheet
+                in an open project may remain in Altium's project cache;
+                ``discarded=false`` and ``project_retains_sheet=true`` then
+                mean the tab closed but the edit is not proven gone. Close
+                the project with ``proj_close(save=False)`` to discard it.
+                Use this only for scratch copies and documents Altium
+                changed by merely opening them.
 
         Returns:
-            ``{"closed": bool, "discarded": bool, "file_path": ...}``; an
+            ``{"closed": bool, "discarded": bool,
+            "project_retains_sheet": bool, "file_path": ...}``; an
             error when the path is not open, or when the document reads
             modified and ``discard_changes`` is not set.
         """

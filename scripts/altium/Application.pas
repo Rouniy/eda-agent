@@ -293,13 +293,47 @@ End;
 { object itself, as the reference scripts do (Client.CloseDocument), refuses }
 { one that reads modified (a floor only: that read can miss editor edits),  }
 { and looks it up again afterwards to say whether it is really gone.        }
-{ With discard, the modified flag is cleared first, unread, which is what   }
-{ keeps the save prompt away; the edits are lost.                           }
+{ With discard, the modified flag is cleared first to avoid a save prompt. }
+{ An open project's DM cache can still retain unsaved sheet state after the }
+{ editor tab closes; report that the discard is unverified in that case.   }
+Function AppOpenProjectHoldsSheet(FilePath : String) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    I, J : Integer;
+    Want, Have : String;
+Begin
+    Result := False;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Want := UpperCase(CanonicalPathValue('path', FilePath));
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Project := Nil;
+        Try Project := Workspace.DM_Projects(I); Except End;
+        If Project = Nil Then Continue;
+        For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Nil;
+            Try Doc := Project.DM_LogicalDocuments(J); Except End;
+            If Doc = Nil Then Continue;
+            Have := '';
+            Try Have := Doc.DM_FullPath; Except End;
+            If UpperCase(CanonicalPathValue('path', Have)) = Want Then
+            Begin
+                Result := True;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
 Function App_CloseDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath : String;
+    FilePath, DiscardNote : String;
     ServerDoc, Again : IServerDocument;
-    WasModified, WasEdited, Discard, Closed : Boolean;
+    WasModified, WasEdited, Discard, Closed, ProjectRetainsSheet : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     Discard := LowerCase(ExtractJsonValue(Params, 'discard')) = 'true';
@@ -331,9 +365,21 @@ Begin
     Again := Nil;
     Try Again := Client.GetDocumentByPath(FilePath); Except Again := Nil; End;
     Closed := Again = Nil;
+    ProjectRetainsSheet := False;
+    If Closed And Discard And (WasModified Or WasEdited)
+        And (LowerCase(ExtractFileExt(FilePath)) = '.schdoc') Then
+        ProjectRetainsSheet := AppOpenProjectHoldsSheet(FilePath);
     If Closed Then ForgetDocEdited(FilePath);
+    DiscardNote := '';
+    If ProjectRetainsSheet Then
+        DiscardNote := 'The open project may still hold this sheet in memory. '
+            + 'Close the project with save=false to discard it completely.';
     Result := BuildSuccessResponse(RequestId, '{"closed":' + BoolToJsonStr(Closed)
-        + ',"discarded":' + BoolToJsonStr(Discard And (WasModified Or WasEdited))
+        + ',"discard_requested":' + BoolToJsonStr(Discard)
+        + ',"discarded":' + BoolToJsonStr(Discard And (WasModified Or WasEdited)
+            And Not ProjectRetainsSheet)
+        + ',"project_retains_sheet":' + BoolToJsonStr(ProjectRetainsSheet)
+        + ',"discard_note":"' + EscapeJsonString(DiscardNote) + '"'
         + ',"file_path":"' + EscapeJsonString(FilePath) + '"}');
 End;
 
