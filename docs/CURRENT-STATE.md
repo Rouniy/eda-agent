@@ -14,6 +14,10 @@ three KeepOutLayer tracks and one arc with `Width=20.625` and
 `IsKeepout=true`; another outline call still added zero. The copy
 closed without additional changes. This qualifies the keep-out path;
 the polygon copper pour itself remains a separate native check.
+The supervised HTTP MCP child on 14701 was restarted from this `main`
+checkout after the Python edit. A new MCP session listed 757 tools,
+the keep-out width schema is numeric, and `app_ping` reported loaded
+script `.115` with `version_match=true`. TCP 14700 remained listening.
 
 ## Offline SchLib header and alias parity, 2026-10-28
 
