@@ -52,10 +52,15 @@
   then verifies the whole project after both write phases. A two-sheet
   disposable project swapped two designators; both persisted after
   save/close/reopen. A partial-first-phase test stops before final names.
-- [ ] Check the new designator batch on a disposable multipart project
-  and under an intentionally failed native second phase. The Python
-  path cannot make multiple bridge calls atomic against other clients;
-  a native single-command transaction would close that remaining race.
+- [x] Check recovery after an intentionally interrupted second phase
+  on a disposable Altium project. One final edit was applied, its
+  response was withheld, and readback reported the final and temporary
+  names. A fresh plan repaired only the remaining component; both
+  final names persisted after save/close/reopen.
+- [ ] Check the new designator batch on a real shared-UniqueId multipart
+  project. The Python path cannot make multiple bridge calls atomic
+  against other clients; a native single-command transaction would
+  close that remaining race.
 - [x] Fix malformed JSON on schematic ambiguity and UniqueId refusal
   paths. Script `.118` returns structured `WRITE_REFUSED` details on a
   native rejected UniqueId write; the same call had produced an

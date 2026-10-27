@@ -53,9 +53,14 @@ On a disposable two-sheet project in Temp, two one-part components with
 UniqueIds `VTNURPGL` and `SMNYQOWP` swapped `RQA1` and `CQA1`.
 Altium reported two matched edits and no skipped operation in each
 phase. Readback after each phase and after save/close/reopen showed the
-planned values, and the QA project was closed. Twenty focused tests
-passed. Multi-part native behavior and a deliberately failed native
-second phase remain to be qualified. Multiple bridge calls are not
+planned values, and the QA project was closed. On a second disposable
+two-sheet project, a proxy sent only the first native final edit and
+then raised a simulated transport error. The tool's readback reported
+one final name and one unique temporary name. A new dry run planned
+only the remaining component; applying it and saving/closing/reopening
+left both final names persisted. Twenty-seven focused tests passed,
+including the simulated partial second phase. Multi-part native
+behavior remains to be qualified. Multiple bridge calls are not
 atomic against another client editing the same project concurrently.
 
 ## Fractional keep-out outline and polygon-pour clearance, 2026-10-28

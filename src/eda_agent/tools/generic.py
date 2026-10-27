@@ -1256,9 +1256,10 @@ def register_generic_tools(mcp):
         is checked before a write. On apply, components first get distinct
         temporary designators, then their requested final names, with a
         project-wide readback after each phase. A failure may leave unique
-        temporary names; the reply reports exactly what remains. No document
-        is saved by this tool. The existing ``obj_batch_modify`` remains
-        available for other kinds of batch edits.
+        temporary names; the reply reads the actual project state even if
+        the bridge response was lost after a partial write. Run a fresh dry
+        run for any remaining names. No document is saved by this tool.
+        The existing ``obj_batch_modify`` remains available for other edits.
         """
         path = Path(project_path)
         if not path.is_absolute() or path.suffix.casefold() not in (".prjpcb", ".prjpcbm"):
@@ -1376,9 +1377,20 @@ def register_generic_tools(mcp):
                 f"filter=UniqueId={groups[uid][0]['uid']};"
                 f"set=Designator.Text={names[uid]}"
                 for uid in changed]
-            reply = await bridge.send_command_async(
-                "generic.batch_modify", {"operations": "~~".join(operations)})
-            _, after = await state()
+            reply: Any = None
+            native_error = ""
+            try:
+                reply = await bridge.send_command_async(
+                    "generic.batch_modify", {"operations": "~~".join(operations)})
+            except Exception as exc:
+                # A transport error may arrive after Altium applied some edits.
+                # Query the project before deciding what actually happened.
+                native_error = str(exc)
+            try:
+                _, after = await state()
+            except Exception as exc:
+                return {"native_reply": reply, "native_error": native_error,
+                        "readback_error": str(exc), "verified": False}
             actual = {uid: sorted({r["name"] for r in after.get(uid, [])})
                       for uid in changed}
             verified = all(
@@ -1390,17 +1402,20 @@ def register_generic_tools(mcp):
                 and {r["name"].casefold() for r in after[uid]}
                     == {current[uid].casefold()}
                 for uid in groups if uid not in changed)
-            return {"native_reply": reply, "actual": actual, "verified": verified}
+            return {"native_reply": reply, "native_error": native_error,
+                    "actual": actual, "verified": verified}
 
-        try:
-            first = await phase(temporary)
-            if not first["verified"]:
-                return {**plan, "ok": False, "phase": "temporary",
-                        "temporary": temporary, "readback": first}
-            second = await phase(wanted)
-        except Exception as exc:
-            return {**plan, "ok": False, "phase": "write_or_readback",
-                    "temporary": temporary, "error": str(exc)}
+        first = await phase(temporary)
+        if not first["verified"]:
+            return {**plan, "ok": False, "phase": "temporary",
+                    "temporary": temporary, "readback": first,
+                    "save_required": True}
+        second = await phase(wanted)
+        if not second["verified"]:
+            return {**plan, "ok": False, "phase": "final",
+                    "temporary": temporary, "temporary_phase": first,
+                    "final_phase": second, "save_required": True,
+                    "recovery": "Read the current project state and run a fresh dry run for the remaining UniqueIds."}
         return {**plan, "ok": second["verified"], "applied": True,
                 "verified": second["verified"], "temporary_phase": first,
                 "final_phase": second, "save_required": True}

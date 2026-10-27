@@ -26,6 +26,7 @@ class Bridge:
         ]
         self.batches = []
         self.fail_after_first_op = False
+        self.raise_in_second_phase = False
 
     async def send_command_async(self, command, params, **kwargs):
         if command == "project.load_project_sheets":
@@ -42,6 +43,8 @@ class Bridge:
                 for row in self.rows:
                     if row["UniqueId"] == uid:
                         row["Designator.Text"] = name
+                if self.raise_in_second_phase and len(self.batches) == 2:
+                    raise RuntimeError("transport failed after one final write")
             return {"operations_processed": len(ops), "operations_skipped": 0}
         raise AssertionError(command)
 
@@ -94,4 +97,21 @@ async def test_partial_first_phase_stops_before_final_names(monkeypatch):
                         expected_snapshot=plan["snapshot"])
     assert not result["ok"] and result["phase"] == "temporary"
     assert len(bridge.batches) == 1
+    assert len({r["Designator.Text"] for r in bridge.rows}) == 3
+
+
+@pytest.mark.asyncio
+async def test_second_phase_transport_failure_reports_actual_names(monkeypatch):
+    bridge = Bridge()
+    bridge.raise_in_second_phase = True
+    tool = make_tool(monkeypatch, bridge)
+    renames = [{"unique_id": "A", "to": "R2"},
+               {"unique_id": "B", "to": "R1"}]
+    plan = await tool(r"C:\qa\Board.PrjPcb", renames)
+    result = await tool(r"C:\qa\Board.PrjPcb", renames, dry_run=False,
+                        expected_snapshot=plan["snapshot"])
+    assert not result["ok"] and result["phase"] == "final"
+    assert "transport failed" in result["final_phase"]["native_error"]
+    assert result["final_phase"]["actual"]["a"] == ["R2"]
+    assert result["final_phase"]["actual"]["b"][0].startswith("ZZZ")
     assert len({r["Designator.Text"] for r in bridge.rows}) == 3
