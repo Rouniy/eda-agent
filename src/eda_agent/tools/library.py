@@ -2380,6 +2380,74 @@ def register_library_tools(mcp):
             return {"ok": False, "reason": str(exc)}
 
     @mcp.tool()
+    async def lib_build_integrated_library(
+        package_path: str,
+        source_libraries: list[str],
+        install: bool = False,
+    ) -> dict[str, Any]:
+        """Create/open a LibPkg, add libraries and compile a fresh IntLib.
+
+        The output is accepted only when Altium actually writes a new IntLib
+        under ``Project Outputs for <package name>``. Paths must be absolute
+        so project targeting cannot silently depend on the focused document.
+        """
+        package = Path(package_path)
+        sources = [Path(source) for source in source_libraries or []]
+        if package.suffix.lower() != ".libpkg" or not package.is_absolute():
+            return {"success": False, "error": "BAD_PACKAGE_PATH"}
+        if not sources or any(not source.is_absolute() or not source.is_file()
+                              or source.suffix.lower() not in
+                              {".schlib", ".pcblib", ".pcblib3d", ".dblib"}
+                              for source in sources):
+            return {"success": False, "error": "BAD_SOURCE_LIBRARIES"}
+        bridge = get_bridge()
+        created = not package.is_file()
+        if created:
+            package.parent.mkdir(parents=True, exist_ok=True)
+        setup = await bridge.send_command_async(
+            "project.create" if created else "project.open",
+            {"project_path": str(package), **({"project_type": "IntegratedLibrary"}
+              if created else {})})
+        if not isinstance(setup, dict) or setup.get("success") is not True:
+            return {"success": False, "stage": "create" if created else "open",
+                    "reply": setup}
+        added = []
+        for source in sources:
+            reply = await bridge.send_command_async(
+                "project.add_document", {"project_path": str(package),
+                                         "document_path": str(source)})
+            added.append({"library": str(source), "reply": reply})
+            if not isinstance(reply, dict) or reply.get("success") is not True:
+                return {"success": False, "stage": "add_document", "added": added}
+        saved = await bridge.send_command_async(
+            "project.save", {"project_path": str(package)})
+        if not isinstance(saved, dict) or saved.get("success") is not True:
+            return {"success": False, "stage": "save", "added": added,
+                    "reply": saved}
+        output = package.parent / f"Project Outputs for {package.stem}" / f"{package.stem}.IntLib"
+        before = output.stat().st_mtime_ns if output.is_file() else None
+        compile_reply = await bridge.send_command_async(
+            "project.compile", {"project_path": str(package)}, timeout=300.0)
+        after = output.stat().st_mtime_ns if output.is_file() else None
+        built = (isinstance(compile_reply, dict) and
+                 compile_reply.get("success") is True and
+                 after is not None and (before is None or after > before) and
+                 output.stat().st_size > 0)
+        result: dict[str, Any] = {
+            "success": built, "built": built, "created": created,
+            "package_path": str(package), "added": added,
+            "compile": compile_reply, "intlib": str(output) if built else None,
+            "intlib_bytes": output.stat().st_size if built else None}
+        if not built:
+            result["reason"] = "Altium did not produce a new nonempty IntLib"
+        elif install:
+            result["install"] = await bridge.send_command_async(
+                "library.install_library", {"library_path": str(output)})
+            result["success"] = bool(isinstance(result["install"], dict)
+                                     and result["install"].get("installed"))
+        return result
+
+    @mcp.tool()
     async def lib_backup_library(library_path: str, label: str = "") -> dict[str, Any]:
         """Copy one library file into the workspace before editing it.
 

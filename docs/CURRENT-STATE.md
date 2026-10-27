@@ -2,6 +2,12 @@
 
 ## Source integration, 2026-10-27
 
+The `ed4ef59` library block is partially integrated: embedded model extraction
+now checks Altium's stored checksum before writing the original bytes, and
+`lib_build_integrated_library` can create/open, populate, save and compile an
+exact-path LibPkg. It claims a build only when a fresh, nonempty IntLib is
+observed. Source tests pass; no native build or owner-library write was run.
+
 The `main` source now includes SDK coverage and NPI phase gates from
 `MOREmbedded/main`, a periodic datasheet reminder from upstream, and a
 schematic generic edit response that no longer calls a dirty document saved.

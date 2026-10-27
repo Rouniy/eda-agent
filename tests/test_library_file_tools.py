@@ -47,8 +47,9 @@ class _FakeOle:
 
 def _two_models() -> _FakeOle:
     step = b"ISO-10303-21;\r\nHEADER;\r\nEND-ISO-10303-21;\r\n"
+    checksum = altium_pcblib.model_checksum(step)
     data = (_record("EMBED=TRUE|MODELSOURCE=Undefined|ID={A}|ROTX=0.000|ROTY=0.000|"
-                    "ROTZ=90.000|DZ=161417|CHECKSUM=1|NAME=0603.stp")
+                    f"ROTZ=90.000|DZ=161417|CHECKSUM={checksum}|NAME=0603.stp")
             + _record("EMBED=TRUE|ID={B}|ROTX=90.000|DZ=0|NAME=body/odd:name"))
     return _FakeOle({("Library", "Models", "Data"): data,
                      ("Library", "Models", "Header"): struct.pack("<I", 2),
@@ -71,6 +72,7 @@ def test_extraction_writes_step_and_reports_a_bad_stream(tmp_path, monkeypatch):
     (w,) = r["written"]
     assert Path(w["path"]).name == "0603.stp" and w["is_step"]
     assert Path(w["path"]).read_bytes().startswith(b"ISO-10303-21")
+    assert w["checksum_verified"]
     assert r["failed"][0]["name"] == "body/odd:name"
     # A second run leaves the file alone unless told to overwrite.
     again = altium_pcblib.extract_pcblib_models("x.PcbLib", tmp_path)
@@ -81,6 +83,20 @@ def test_extraction_by_name_reports_names_it_did_not_find(tmp_path, monkeypatch)
     monkeypatch.setattr(altium_pcblib, "_open_pcblib", lambda path: _two_models())
     r = altium_pcblib.extract_pcblib_models("x.PcbLib", tmp_path, names=["0603.STP", "nope"])
     assert len(r["written"]) == 1 and r["not_found"] == ["nope"]
+
+
+def test_extraction_refuses_model_with_mismatched_checksum(tmp_path, monkeypatch):
+    fake = _two_models()
+    raw = fake.streams[("Library", "Models", "Data")]
+    checksum = altium_pcblib.model_checksum(
+        b"ISO-10303-21;\r\nHEADER;\r\nEND-ISO-10303-21;\r\n")
+    fake.streams[("Library", "Models", "Data")] = raw.replace(
+        f"CHECKSUM={checksum}".encode(), b"CHECKSUM=1")
+    monkeypatch.setattr(altium_pcblib, "_open_pcblib", lambda path: fake)
+    result = altium_pcblib.extract_pcblib_models("x.PcbLib", tmp_path)
+    assert result["written"] == []
+    assert "checksum" in result["failed"][0]["reason"]
+    assert not list(tmp_path.iterdir())
 
 
 def test_unsafe_model_names_become_safe_filenames():

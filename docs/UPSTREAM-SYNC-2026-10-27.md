@@ -22,6 +22,7 @@ Do not describe the reviewed tip as a Git merge or an exact source tree.
 | Upstream `7a65a96` | Periodic datasheet reminder, preserving our bridge reattach workflow | Interval and datasheet-hint tests |
 | Upstream `2b0344f` (response fix) | Schematic `obj_modify` reports dirty state without claiming a disk save | Source test and Pascal lint |
 | Upstream `f39f28b` (impedance profile read) | Read the board's solved impedance profiles and restore the NPI criterion's actual tool reference | Wrapper/source tests and Pascal lint |
+| Upstream `ed4ef59` (partial) | Verify stored Altium checksums before extracting embedded 3D model bytes; compile an integrated library only with an explicit package path and a fresh nonempty IntLib artifact | 21 focused tests, Python compile and Pascal lint; native LibPkg build still pending |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
@@ -45,7 +46,7 @@ automatic pass from the current partial reads.
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Board grids/options, editor preferences, jumpers, routing preferences, pours at a point, pair impedance, STEP export | Port one tool family at a time with source tests, script build and disposable-board native checks |
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
-| Upstream `ed4ef59` | Build integrated libraries and extract embedded STEP files | Verify generated artifacts and model bytes in an isolated output directory |
+| Upstream `ed4ef59` | Report 3D body model metadata from live footprints and use its height/standoff in previews; associate extracted models with a footprint | Verify against a disposable PcbLib and an isolated output directory |
 | MOREmbedded `pcb_check_fab_output` | Compare exported fab package with one exact board | Eliminate the 5000-pad cap and reject incomplete/mismatched reads |
 
 The previous audit has the other fork branches and older upstream work. This

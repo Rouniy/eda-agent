@@ -230,13 +230,23 @@ def _safe_filename(name: str, index: int) -> str:
     return stem
 
 
+def model_checksum(data: bytes) -> int:
+    """Return Altium's signed 32-bit checksum of an embedded model file."""
+    total = 0
+    for index, byte in enumerate(data):
+        total = (total + byte * (index or 1)) & 0xFFFFFFFF
+    return total - 0x100000000 if total & 0x80000000 else total
+
+
 def extract_pcblib_models(path: str | Path, out_dir: str | Path,
                           names: list[str] | None = None,
                           overwrite: bool = False) -> dict[str, Any]:
-    """Write the embedded STEP models to ``out_dir``; ``names`` limits it to
-    those model names (case-insensitive). A model whose stream is missing or
-    is not zlib is reported in ``failed``, an existing file left alone in
-    ``skipped`` unless ``overwrite``."""
+    """Write original embedded models only after their stored checksum matches.
+
+    ``names`` limits by model name (case-insensitive). Missing, corrupt and
+    unverified streams are reported in ``failed``; existing files in ``skipped``.
+    """
+    import hashlib
     import zlib
 
     want = {n.lower() for n in names or []}
@@ -265,12 +275,24 @@ def extract_pcblib_models(path: str | Path, out_dir: str | Path,
             except zlib.error as exc:
                 failed.append({"name": m["name"], "reason": f"not zlib data: {exc}"})
                 continue
+            try:
+                expected = int(m["checksum"])
+            except (TypeError, ValueError):
+                failed.append({"name": m["name"], "reason": "model checksum missing or invalid"})
+                continue
+            actual = model_checksum(step)
+            if actual != expected:
+                failed.append({"name": m["name"], "reason":
+                               f"checksum {actual} does not match stored {expected}"})
+                continue
             if target.exists() and not overwrite:
                 skipped.append({"name": m["name"], "path": str(target),
                                 "reason": "file exists (overwrite=False)"})
                 continue
             target.write_bytes(step)
             written.append({"name": m["name"], "path": str(target), "bytes": len(step),
+                            "sha256": hashlib.sha256(step).hexdigest(),
+                            "checksum_verified": True,
                             "is_step": step.startswith(b"ISO-10303-21")})
     finally:
         ole.close()
