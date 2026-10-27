@@ -2077,3 +2077,11 @@ set width bounds 3.5/4.5 mil, gap bounds 5/7 mil, 8 mil plane clearance,
 and solder-mask use and thicknesses 0.4/0.5 mil. These persisted after
 another exact save/reopen. A wrong-board write was refused. Six related
 tests and Pascal lint/build passed; the owner's PcbDoc SHA256 was unchanged.
+
+# Layer-stack style, 2026-10-27
+
+Script `.35` on Altium 26.11.1.5 changed numeric style 0 to 1 on an
+isolated PcbDoc copy. An exact save, close and reopen retained style 1,
+the 13 physical layers and 70.0078-mil Z span. A wrong-board write was
+refused. Four related tests and Pascal lint/build passed; the owner's
+PcbDoc SHA256 stayed unchanged.

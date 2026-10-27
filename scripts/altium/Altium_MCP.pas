@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.34';
+    SCRIPT_VERSION = '2026.10.27.35';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47339,6 +47339,58 @@ Begin
         + JsonRaw('layers', '[' + Items + ']')));
 End;
 
+Function PCB_SetStackStyle(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    MLS : IPCB_MasterLayerStack;
+    L : IPCB_LayerObject;
+    ExpectedPath, Why, StyleS : String;
+    OldStyle, NewStyle, OldCount, Count : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    StyleS := ExtractJsonValue(Params, 'style');
+    If (ExpectedPath = '') Or (StyleS = '') Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path and style required'); Exit; End;
+    If (Not IsIntStr(StyleS)) Or (StrToIntDef(StyleS, -1) < 0) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'style must be a nonnegative integer'); Exit; End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    MLS := Board.MasterLayerStack;
+    If MLS = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_STACK', 'No master layer stack'); Exit; End;
+    OldStyle := MLS.LayerStackStyle;
+    Count := 0;
+    L := MLS.First(eLayerClass_Physical);
+    While L <> Nil Do
+    Begin Inc(Count); L := MLS.Next(eLayerClass_Physical, L); End;
+    OldCount := StrToIntDef(ExtractJsonValue(Params, 'expect_layer_count'), -1);
+    If (StrToIntDef(ExtractJsonValue(Params, 'expect_style'), -1) <> OldStyle)
+       Or (OldCount <> Count) Then
+    Begin Result := BuildErrorResponse(RequestId, 'STALE_STACK', 'style or layer count changed'); Exit; End;
+    NewStyle := StrToInt(StyleS);
+    If NewStyle <> OldStyle Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            MLS.LayerStackStyle := NewStyle;
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, c_NoEventData);
+        Finally
+            PCBServer.PostProcess;
+        End;
+    End;
+    If MLS.LayerStackStyle <> NewStyle Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_APPLIED', 'Altium did not accept stack style'); Exit; End;
+    If OldStyle <> NewStyle Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('before_style', OldStyle) + ','
+        + JsonInt('after_style', MLS.LayerStackStyle) + ','
+        + JsonInt('layer_count', Count) + ','
+        + JsonBool('changed', OldStyle <> NewStyle)));
+End;
+
 Function PCB_DielectricState(DL : IPCB_DielectricLayer) : String;
 Begin
     Result := JsonObj(JsonInt('dielectric_type', DL.DielectricType) + ','
@@ -48151,6 +48203,7 @@ Begin
         'pair_impedance_rule':   Result := PCB_PairImpedanceRule(Params, RequestId);
         'via_structures':       Result := PCB_ViaStructures(Params, RequestId);
         'physical_stack':       Result := PCB_PhysicalStack(Params, RequestId);
+        'set_stack_style':      Result := PCB_SetStackStyle(Params, RequestId);
         'set_dielectric':       Result := PCB_SetDielectric(Params, RequestId);
         'impedance_profile':    Result := PCB_ImpedanceProfile(Params, RequestId);
         'impedance_profile_layer': Result := PCB_ImpedanceProfileLayer(Params, RequestId);

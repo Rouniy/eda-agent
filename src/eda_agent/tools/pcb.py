@@ -4366,6 +4366,45 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_set_stack_style(
+        board_path: str, style: int, dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Plan or set Altium's layer-stack style for one exact PcbDoc.
+
+        Read the current style first with ``pcb_physical_stack``. Save the
+        PcbDoc separately after inspecting the resulting physical stack.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(style) is not int or style < 0:
+            return {"ok": False, "reason": "style must be a nonnegative integer"}
+        before = await pcb_physical_stack(board_path)
+        if not isinstance(before, dict) or type(before.get("style")) is not int:
+            return {"ok": False, "reason": "could not read exact-board stack",
+                    "native_reply": before}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "before_style": before["style"], "would_set_style": style,
+                    "layer_count": before["layer_count"]}
+        params = {"board_path": board_path, "style": str(style),
+                  "expect_style": str(before["style"]),
+                  "expect_layer_count": str(before["layer_count"])}
+        reply = await get_bridge().send_command_async("pcb.set_stack_style", params,
+                                                       timeout=120.0)
+        if (not isinstance(reply, dict)
+                or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or reply.get("before_style") != before["style"]
+                or reply.get("after_style") != style):
+            return {"ok": False, "reason": "native stack style readback failed",
+                    "native_reply": reply}
+        after = await pcb_physical_stack(board_path)
+        if not isinstance(after, dict) or after.get("style") != style:
+            return {"ok": False, "reason": "independent stack style readback failed",
+                    "native_reply": reply, "after": after}
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
+
+    @mcp.tool()
     async def pcb_set_dielectric(
         board_path: str,
         layer: str,

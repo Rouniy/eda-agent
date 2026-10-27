@@ -2,10 +2,11 @@
 
 ## Upstream layer-stack remainder, 2026-10-27
 
-- Qualify stack-style writes, layer ordering/addition and rigid-flex
+- Qualify layer ordering/addition and rigid-flex
   stack-region edits from upstream `642e6a8` and `9ee593e` on isolated
-  PcbDocs with exact save/reopen checks. Impedance profile lifecycle and
-  per-copper-layer settings are now ported and natively checked.
+  PcbDocs with exact save/reopen checks. Stack-style writes, impedance
+  profile lifecycle and per-copper-layer settings are now ported and
+  natively checked.
 - Continue reviewing upstream `172d254` and the remaining direct/child
   fork features against the sync ledger before claiming a true merge.
 

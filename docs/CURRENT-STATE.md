@@ -2,6 +2,16 @@
 
 ## Latest native integration, 2026-10-27
 
+Script `.35` on Altium 26.11.1.5 added an exact-board stack-style edit with
+old-style/layer-count preconditions and a default dry-run plan. On an
+isolated PcbDoc copy, style 0 changed to 1 and remained 1 after exact
+save, close and reopen; all 13 physical layers and their 70.0078-mil Z
+span remained. A wrong-board write was refused. Four related tests and
+Pascal lint/build pass. Generated bundle SHA256:
+`33BF9B90CAD6C77805604894545CC9DF4DA2326C6DBE000E7722B7235E734B28`.
+The owner's PcbDoc SHA256 remained
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
 `Rouniy/eda-agent/main` is the integration branch. Script `.34` on Altium
 26.11.1.5 added exact-board impedance-profile layer reads and edits, with
 profile and layer state tokens before writes. On an isolated PcbDoc copy,
