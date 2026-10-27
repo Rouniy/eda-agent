@@ -6,7 +6,12 @@ The `.3` source now restores the native footprint-primitives reader that was
 missing behind the registered Python tool. It includes live 3D body metadata
 and a focused-library identity check; embedded STEP extraction can filter by
 the model files attached to a named footprint. Pascal lint/build and focused
-source tests pass. Native read acceptance and `.3` runtime reload are pending.
+source tests pass. The existing MCP supervisor reloaded its HTTP child from
+`main`, then Altium loaded `.3`: `app_ping` reports both versions `.3` with
+`version_match=true` on Altium `26.11.1.5`. TCP 14701 lists 624 tools and TCP
+14700 still listens. A no-target call reached the native handler and returned
+`footprint_name is required`, then ping remained healthy. Reading a real
+disposable PcbLib and comparing its body records is still pending.
 
 The `ed4ef59` library block is partially integrated: embedded model extraction
 now checks Altium's stored checksum before writing the original bytes, and
