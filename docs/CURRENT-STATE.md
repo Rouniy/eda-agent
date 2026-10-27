@@ -8,7 +8,10 @@ the requested model switches to it rather than duplicating its name and
 keeping the previous model's pin map. A failed choice is counted separately.
 Bulk parameter stamping now refuses an explicitly named sheet that is not
 loaded rather than falling through to the focused document. Pascal lint/build
-and focused tests pass; live reload and native sheet acceptance are pending.
+and 52 related tests pass (three FPC-dependent tests skipped). The HTTP child
+was restarted by its supervisor and Altium loaded `.10`: `app_ping` reports
+loaded/bundled `.10`, `version_match=true`, Altium `26.11.1.5` and zero cast
+errors. TCP 14700 and 14701 listen. Native sheet acceptance remains pending.
 
 The `.9` source ports the `mooreaa` footprint-model chooser to single and
 bulk schematic placement. A requested footprint is matched against the
