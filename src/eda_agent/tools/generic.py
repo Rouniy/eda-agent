@@ -1085,16 +1085,17 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def obj_measure_distance(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
     ) -> dict[str, Any]:
         """Calculate Cartesian distance between two EDA points in mils."""
         bridge = get_bridge()
         return await bridge.send_command_async(
             "generic.measure_distance",
-            {"x1": str(x1), "y1": str(y1), "x2": str(x2), "y2": str(y2)},
+            {"x1": _mils(x1), "y1": _mils(y1),
+             "x2": _mils(x2), "y2": _mils(y2)},
         )
 
     @mcp.tool()
@@ -3863,8 +3864,8 @@ def register_generic_tools(mcp):
             fields = [
                 f"library_path={payload_safe(p.get('library_path', ''))}",
                 f"lib_reference={payload_safe(lib_ref)}",
-                f"x={int(p.get('x', 0))}",
-                f"y={int(p.get('y', 0))}",
+                f"x={_mils(p.get('x', 0))}",
+                f"y={_mils(p.get('y', 0))}",
                 f"rotation={int(p.get('rotation', 0))}",
             ]
             if p.get("designator"):
@@ -3931,9 +3932,9 @@ def register_generic_tools(mcp):
                         "placement": p, "placed": 0}
             try:
                 part_id = int(p.get("part_id", 1))
-                x, y = int(p.get("x", 0)), int(p.get("y", 0))
+                x, y = _mils(p.get("x", 0)), _mils(p.get("y", 0))
                 rotation = int(p.get("rotation", 0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return {"error": "BAD_COORDINATE_OR_PART_ID", "placed": 0}
             if part_id < 1 or rotation not in (0, 90, 180, 270):
                 return {"error": "BAD_ROTATION_OR_PART_ID", "placed": 0}
@@ -4007,8 +4008,8 @@ def register_generic_tools(mcp):
                 continue
             fields = [
                 f"design_item_id={payload_safe(item_id)}",
-                f"x={int(p.get('x', 0))}",
-                f"y={int(p.get('y', 0))}",
+                f"x={_mils(p.get('x', 0))}",
+                f"y={_mils(p.get('y', 0))}",
                 f"rotation={int(p.get('rotation', 0))}",
             ]
             if p.get("designator"):

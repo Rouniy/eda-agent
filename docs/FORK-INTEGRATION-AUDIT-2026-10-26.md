@@ -28,6 +28,12 @@ Workspace part coordinates, and library label coordinates. The main branch
 already carried the region true-arc work from that fork's other branch.
 Script `.64` passed a live fractional-grid audit; remaining length handlers
 in the source candidate still need line-by-line reconciliation.
+Script `.65` additionally ports decimal symbol lookup, distance measurement,
+component placement and pin reads. Running the fork's expanded source audit
+against current `main` leaves 30 `CoordToMils` function hits, 36 computed
+`MilsToCoord` hits, 15 integer-read length parameters, and 14 whole-mil
+reply hits. These categories overlap; they are exact current audit findings,
+not a count of distinct features or files.
 
 `be21eb3` bottom-side placement is now an exact-board adapted port in
 `main`. On 2026-10-27 it passed a native mirror and rotation check on an

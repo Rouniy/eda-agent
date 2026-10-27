@@ -3545,3 +3545,19 @@ was not loaded, so the count is limited to the read sheet. Script `.64`
 rounds reported dx/dy to the editor's 0.0001-mil resolution. After reloading
 `.64`, the same native query again found 135 violations; the first two
 offsets read back as 0.1 and 0.2 mil with no floating-point tail.
+
+## Schematic decimal positions and pin reads (2026-10-27)
+
+Script `.65` adapts the next `vincent-himpe/fix/decimal-mils-leftovers`
+portion: distance measurement, multipart symbol lookup by exact decimal
+location, file/DbLib/managed component positions, and placed pin coordinates.
+The Python placement wrappers and distance tool now accept fractional mils.
+Live Altium 26.11.1.5 returned `dx=3.5`, `dy=5.625`, and
+`distance_mils=6.625` for (1.25, -2.5) to (4.75, 3.125). A read-only query
+on R13 returned its two pins and connection endpoints; the whole sheet
+returned 397 pins without error. Those existing pins sit on whole-mil
+coordinates, so this native check proves compilation and read paths, while
+a fractional placed-pin readback remains to be tested on a disposable sheet.
+The expanded source audit from the fork now passes its decimal symbol
+location check. It still identifies PCB geometry and audit/reply conversions
+for later reconciliation.
