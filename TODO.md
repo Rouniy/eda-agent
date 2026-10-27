@@ -9,8 +9,11 @@
 - [x] Qualify `pcb_place_polygon_board` copper creation on a disposable
   arched board with GND: the exact 20.625-mil keep-out was reused,
   and the poured polygon's five copper pieces persisted after reopening.
-- [ ] Independently inspect the poured polygon's arc geometry and
-  exercise an explicit repour after a board edit on a disposable copy.
+- [x] Explicitly repour the new arched-board GND polygon on a disposable
+  copy: one rebuilt, two skipped, zero failed, and five copper pieces
+  before and after.
+- [ ] Independently inspect the poured polygon's arc geometry. The
+  current `pcb_get_polygons` reports vertex count but no segment data.
 
 - [x] Compare the offline SchLib reader to the same native library:
   39 primary names match; Altium's 40th row is the `ADXL210` alias.
