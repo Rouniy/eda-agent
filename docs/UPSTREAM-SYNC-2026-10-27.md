@@ -7,11 +7,37 @@ fetched Git tips, not a claim that all their code has been merged:
 | --- | --- | --- |
 | `salitronic/eda-agent` `main` | `ce53d6ea0f01db7aa43b840c53b758bd18812684` | `8e659a27b05ff46be2f9ae30225b5baf0c9a8395` |
 | `MOREmbedded/eda-agent` `main` | `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41` | `0fc7f02a7a56a130d0cfded4a2a922d313c9ea99` |
+| `mooreaa/eda-agent` `main` | `fc22136ca5d28e6442c979417d8615c8ff4a2d35` | `8e659a27b05ff46be2f9ae30225b5baf0c9a8395` |
 
 The merge bases are older than the reviewed tips because features have been
 ported and adapted as separate commits. `git merge-base main upstream/main`
 answers ancestry; this file answers the newer **reviewed-through** point.
 Do not describe the reviewed tip as a Git merge or an exact source tree.
+
+## Direct-fork inventory refreshed 2026-10-27
+
+The GitHub API lists 60 direct forks of `salitronic/eda-agent`. Their default
+branch tips were compared with the 60 cached `forks/*/main` refs by
+`git ls-remote`: 58 were unchanged, our `Rouniy/main` advanced through this
+integration, and `mooreaa/main` advanced from `bfa9bde` to `fc22136`.
+`MOREmbedded/eda-agent` is a child of `Rouniy/eda-agent`, not a direct upstream
+fork; its separate `morembedded/main` ref remains at `032fb4b`.
+
+At the fetched upstream `ce53d6e`, ten **other** direct-fork main branches have
+commits outside upstream: `4pplet` (128), `cad435` (5), `lda-audiotech` (1),
+`mooreaa` (11), `pieterpotgieter` (1), `redbird98` (37),
+`tisn1678065900-dot` (1), `viknandala-eng` (1), `xthanhn91` (3), and
+`yniantongtian-oss` (52). These are commit counts, not missing-feature counts;
+the earlier audit records features already ported from several of them.
+`mooreaa/main` diverges at `0a9ccd46d1259e29c02ddb904b99b4dbd0d82f1d`.
+Its unmerged work adds placement cleanup, per-part live pin queries, port
+cross-reference repair, footprint model selection, display mode and pin-map
+editing, plus DelphiScript fixes. Review the later `fc22136` corrections with
+that block: earlier versions of its tidy and pin-filter logic stopped the
+polling loop on AD 25.8.1. No `mooreaa` feature is claimed integrated yet.
+
+Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
+`git ls-remote` for every default branch, and local `git rev-list` comparisons.
 
 ## Integrated from the newly fetched tips
 
@@ -50,6 +76,7 @@ automatic pass from the current partial reads.
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews and natively qualify the restored footprint reader and model association | Verify against a disposable PcbLib and an isolated output directory |
 | MOREmbedded `pcb_check_fab_output` | Compare exported fab package with one exact board | Eliminate the 5000-pad cap and reject incomplete/mismatched reads |
+| `mooreaa` `ad8d5fa` through `fc22136` | Port placement cleanup, selected footprint models, display modes, pin maps, port cross-reference repair and per-part pin reads | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This
 table tracks next implementation batches, not a claim that the listed source
