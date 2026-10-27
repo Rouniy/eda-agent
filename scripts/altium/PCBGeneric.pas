@@ -2813,3 +2813,10 @@ Begin
     { recompute, and vice versa.                                              }
     Try Board.ViewManager_FullUpdate; Except End;
 End;
+
+{ UnitStamp_PCBGeneric - which build of PCBGeneric.pas Altium compiled. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_PCBGeneric(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
+End;

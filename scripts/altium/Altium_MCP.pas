@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.89';
+    SCRIPT_VERSION = '2026.10.27.90';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -90,7 +90,6 @@ Const
 
 Var
     WorkspaceDir : String;
-    Running : Boolean;
     SelectedCompileReady : Boolean;
     SelectedCompileProject : IProject;
 
@@ -4626,6 +4625,13 @@ Begin
     Except
         Result := 'Unknown';
     End;
+End;
+
+{ UnitStamp_Utils - which build of Utils.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Utils(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;
 
 {=== Application.pas ===}
@@ -36251,6 +36257,13 @@ Begin
     { Repaint separately: a failed repaint must not mask a successful         }
     { recompute, and vice versa.                                              }
     Try Board.ViewManager_FullUpdate; Except End;
+End;
+
+{ UnitStamp_PCBGeneric - which build of PCBGeneric.pas Altium compiled. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_PCBGeneric(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;
 
 {=== PCB.pas ===}
@@ -90584,6 +90597,7 @@ Var
     PumpInterval         : Integer;
     PumpInTick           : Boolean;
     PumpFinalised        : Boolean;
+    Running              : Boolean;
     { True when the session is ending because ALTIUM is closing, as
       opposed to Detach, the stop file, the stop command or auto-shutdown.
       The difference decides how much teardown is safe to attempt. }

@@ -595,6 +595,20 @@ def cmd_eco_execute(*, confirm: bool, validate_only: bool,
     return 0
 
 
+_UTF8_BOM = bytes((0xEF, 0xBB, 0xBF))
+
+
+def _stamp_deployed_unit(path: Path) -> None:
+    """Stamp the copied unit while keeping repository sources at ``dev``."""
+    from .script_stamps import has_stamp, stamp_source
+
+    raw = path.read_bytes()
+    text = raw.decode("utf-8-sig")
+    if has_stamp(text):
+        path.write_bytes((_UTF8_BOM if raw.startswith(_UTF8_BOM) else b"")
+                         + stamp_source(text).encode("utf-8"))
+
+
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
     """Copy the bundled script project to a user-chosen directory.
 

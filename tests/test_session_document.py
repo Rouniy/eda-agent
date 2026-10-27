@@ -37,7 +37,7 @@ def _norm(text: str) -> str:
 # ---- Pascal -------------------------------------------------------------
 
 def test_the_cross_checked_copy_is_the_shipped_function():
-    main = _function((_ALTIUM / "Main.pas").read_text(encoding="ascii"),
+    main = _function((_ALTIUM / "Main.pas").read_text(encoding="utf-8-sig"),
                      "SessionFocusAction")
     copy = _function(HARNESS.read_text(encoding="ascii"), "SessionFocusAction")
     assert _norm(main) == _norm(copy)
@@ -141,7 +141,7 @@ def wired(monkeypatch, tmp_path):
     def publish(request):
         box.sent.append(request.to_dict())
 
-    def poll(request_id, timeout):
+    def poll(request_id, timeout, max_extensions=None):
         return box.replies.pop(0)
 
     monkeypatch.setattr(bridge, "_publish_request", publish)
@@ -166,6 +166,26 @@ def test_the_server_carries_its_document_from_call_to_call(wired):
     bridge._execute_command("pcb.get_nets", {}, 5)
     pins = [s.get("session_doc_path", "") for s in box.sent]
     assert pins == ["", r"C:\A\a.PcbDoc", "", "", r"C:\A\a.PcbDoc"]
+
+
+def test_async_commands_keep_their_session_document(wired, monkeypatch):
+    import asyncio
+
+    bridge, box = wired
+    box.replies = [
+        _reply(data={}, active_document_changed={"from": "", "to": r"C:\A\a.PcbDoc"}),
+        _reply(data={"nets": []}, session_document={"restored": r"C:\A\a.PcbDoc"}),
+    ]
+
+    async def poll(request_id, timeout, max_extensions=None):
+        return box.replies.pop(0)
+
+    monkeypatch.setattr(bridge, "_poll_response_async", poll)
+    asyncio.run(bridge._execute_command_async("pcb.focus_board", {}, 5))
+    result = asyncio.run(bridge._execute_command_async("pcb.get_nets", {}, 5))
+    assert [s.get("session_doc_path", "") for s in box.sent] == [
+        "", r"C:\A\a.PcbDoc"]
+    assert result["session_document"]["restored"] == r"C:\A\a.PcbDoc"
 
 
 def test_the_public_tool_asks_for_what_is_really_in_front(monkeypatch):

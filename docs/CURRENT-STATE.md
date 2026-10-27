@@ -2,7 +2,22 @@
 
 ## Refreshed handoff, 2026-10-27
 
-Script `.89` is loaded in Altium 26.11.1.5 with zero cast errors. It restores
+Script `.90` is now loaded after an Altium restart. The former `.89`
+script raised an undeclared `UnitStamp_Utils` error when another client
+requested unit stamps; `Utils.pas` and `PCBGeneric.pas` had lost their
+stamp functions. The same merge had dropped the CLI's
+`_stamp_deployed_unit` helper, so `install-scripts` also failed. Both are
+restored, and `Running` now lives in the `StatusForm` unit that uses it.
+Live `application.get_unit_stamps` returned all ten unit names with no
+modal; ping reported Altium 26.11.1.5, `.90`, and zero cast errors.
+The Python bridge again carries each session's document on both sync and
+async calls and updates it from response focus changes; the focused
+32-test suite passes. The supervisor restarted HTTP 14701 into the new
+Python source and a real MCP initialize/list-tools exchange returned 754
+tools. TCP 14700 still listens. The main script project remains
+`D:\AI\eda-agent\scripts\altium`.
+
+Script `.89` previously loaded in Altium 26.11.1.5 with zero cast errors. It restores
 the pin-property helpers lost in an earlier merge; without them a generic
 schematic query raised a modal undeclared-identifier error. On disposable
 SchDoc/SchLib files, two sections of a three-part symbol survived exact

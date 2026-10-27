@@ -555,3 +555,14 @@ gives merge base `40814badc695813157fd8c50d24feafc5a553fcd` and zero
 unmerged upstream commits.
 The live `fork-status --verify-fork-branches` rerun also found all 62
 default fork tips and all 117 branch tips still equal to their local refs.
+
+The first later `application.get_unit_stamps` request exposed two more
+merge-loss faults: `UnitStamp_Utils` and `UnitStamp_PCBGeneric` were called
+but not defined, and `install-scripts` called a missing
+`_stamp_deployed_unit`. These are restored on script `.90`. A fresh Altium
+26.11.1.5 session returned all ten unit stamps, `dev` for this source
+checkout, without a modal. The bridge's session document pin had also
+been dropped from the sync response path and async request/response path;
+both paths now carry and update it. The focused 32-test suite passes,
+including a new async document-continuity check; Pascal lint/build found
+zero errors/warnings across 12 units.

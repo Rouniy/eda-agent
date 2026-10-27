@@ -2,6 +2,12 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [x] Restore per-unit stamps, script-install stamping and the session
+  document pin lost across merges. Script `.90` returned all ten unit stamps
+  natively after an Altium restart; sync and async pin tests pass. The
+  supervisor restarted HTTP 14701 into the new Python source and a live
+  MCP handshake listed 754 tools; TCP 14700 remained listening.
+
 - [x] Native-qualify the `mooreaa` multipart placement and existing SchLib
   relink path on disposable SchDoc/SchLib files. Script `.89` restored the
   missing pin-property helpers. Both placed sections and their later link

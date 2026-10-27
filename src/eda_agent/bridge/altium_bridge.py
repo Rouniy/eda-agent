@@ -1278,6 +1278,10 @@ class AltiumBridge:
                 server_version=response.protocol_version,
             )
 
+        if not _unpinned(command, params):
+            self._session_doc = next_session_doc(
+                self._session_doc, command, params, response)
+
         shown = self._reshow_hidden_frame(command, request.id)
 
         if response.success:
@@ -1431,7 +1435,9 @@ class AltiumBridge:
         timeout: float,
         max_extensions: Optional[int] = None,
     ) -> Any:
-        request = CommandRequest(command=command, params=params)
+        request = CommandRequest(
+            command=command, params=params,
+            session_doc="" if _unpinned(command, params) else self._session_doc)
         workspace_dir = self.config.workspace_dir
         _trace_log(workspace_dir, f"SEND cmd={command} id={request.id[:8]}")
         self._publish_request(request)
@@ -1453,9 +1459,13 @@ class AltiumBridge:
                 client_version=PROTOCOL_VERSION,
                 server_version=response.protocol_version,
             )
+        if not _unpinned(command, params):
+            self._session_doc = next_session_doc(
+                self._session_doc, command, params, response)
         if response.success:
             self._clear_fault_if_any(workspace_dir)
-            return self._maybe_attach_detach_hint(command, response.data)
+            return self._maybe_attach_detach_hint(
+                command, _with_envelope_notes(response.data, response))
         error = response.error or {}
         raise_for_code(
             error.get("code", "UNKNOWN_ERROR"),

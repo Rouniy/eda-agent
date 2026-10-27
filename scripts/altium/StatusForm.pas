@@ -1280,6 +1280,7 @@ Var
     PumpInterval         : Integer;
     PumpInTick           : Boolean;
     PumpFinalised        : Boolean;
+    Running              : Boolean;
     { True when the session is ending because ALTIUM is closing, as
       opposed to Detach, the stop file, the stop command or auto-shutdown.
       The difference decides how much teardown is safe to attempt. }
