@@ -2,6 +2,14 @@
 
 ## Refreshed Git and function inventory
 
+The `mooreaa`/`rhsvekon` library body read returned saved STEP model
+rotations and Z offsets alongside the live body properties. Our stricter
+`lib_set_3d_body` now includes `saved_bodies` on read, dry-run and verified
+edit replies when saved body count matches the live count. The reply labels
+these records as coming from the file on disk, since unsaved editor changes
+can differ. Fifteen body-model checks passed, with one optional dependency
+skip; native readback remains to be checked on a disposable PcbLib.
+
 The `abed-amraie` footprint preview used Altium's mechanical-layer kind
 and returned courtyard/assembly roles plus silk-on-copper findings. Our
 existing `lib_render_footprint` now adds those findings while keeping its

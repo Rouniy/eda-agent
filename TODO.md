@@ -7,6 +7,9 @@
   Thirty focused tests pass.
 - [ ] Verify a real PcbLib preview with a Courtyard Top mechanical layer
   and a silkscreen line crossing a pad on a disposable Altium library.
+- [x] Return saved STEP Z offsets and rotations from `lib_set_3d_body`
+  alongside live body values, labeling the saved-file source.
+- [ ] Check that combined read on a disposable multi-body PcbLib in Altium.
 
 ## MOREmbedded bridge reply parity, 2026-10-27
 

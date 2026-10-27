@@ -64,6 +64,23 @@ def test_saved_body_parser_preserves_model_name_rotation_and_offset():
     assert abs(found[0]["model_z_offset_mils"] - 10) < 1e-6
 
 
+def test_read_and_plan_show_saved_step_offset_separately(tmp_path, monkeypatch):
+    path = tmp_path / "test.PcbLib"
+    path.touch()
+    saved = [{"model_file": "part.step", "model_type": 1,
+              "rotation_deg": [90, 0, 270], "model_z_offset_mils": 10.0}]
+    monkeypatch.setattr(altium_pcblib, "read_pcblib_saved_body_models",
+                        lambda *args: saved)
+    tool, bridge = _tool(monkeypatch, [_read(path), _read(path)])
+    read = asyncio.run(tool("PART", str(path)))
+    plan = asyncio.run(tool("PART", str(path), opacity=0.5))
+    assert read["before"][0]["standoff_height_mils"] == 0.0
+    assert read["saved_bodies"][0]["model_z_offset_mils"] == 10.0
+    assert read["saved_bodies_source"] == "file_on_disk"
+    assert plan["saved_bodies"] == read["saved_bodies"]
+    assert len(bridge.calls) == 2
+
+
 def test_dry_run_uses_one_read_and_wrong_library_is_refused(tmp_path, monkeypatch):
     path = tmp_path / "test.PcbLib"
     path.touch()

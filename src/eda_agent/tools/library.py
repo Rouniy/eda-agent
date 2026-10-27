@@ -7423,7 +7423,9 @@ def register_library_tools(mcp):
 
         For STEP bodies, standoff changes the model's Z offset. Its three
         rotations come from the saved library file; unsaved rotations in
-        Altium cannot be preserved by this API.
+        Altium cannot be preserved by this API. ``saved_bodies`` shows the
+        model names, rotations and Z offsets in the file on disk, not unsaved
+        edits in the Altium editor.
         """
         path = Path(library_path)
         if not path.is_absolute() or path.suffix.casefold() != ".pcblib" or not path.is_file():
@@ -7464,18 +7466,31 @@ def register_library_tools(mcp):
             return {"ok": False, "reason": "3D body read is incomplete", "native_reply": snapshot}
         if body_index is not None and body_index > count:
             return {"ok": False, "reason": "body_index exceeds body count"}
+        from ..fileio.altium_pcblib import read_pcblib_saved_body_models
+
+        try:
+            saved = read_pcblib_saved_body_models(path, footprint_name.strip())
+        except (OSError, ValueError):
+            saved = None
+        if saved is not None and len(saved) == count:
+            snapshot["saved_bodies"] = [
+                dict(body, index=i) for i, body in enumerate(saved, 1)]
+            snapshot["saved_bodies_source"] = "file_on_disk"
         selected = bodies if body_index is None else [bodies[body_index - 1]]
         if not updates:
             return snapshot
         if dry_run:
-            return {"ok": True, "dry_run": True, "library": str(path),
+            plan = {"ok": True, "dry_run": True, "library": str(path),
                     "footprint": footprint_name.strip(), "bodies": count,
                     "before": selected, "would_set": updates}
+            for key in ("saved_bodies", "saved_bodies_source"):
+                if key in snapshot:
+                    plan[key] = snapshot[key]
+            return plan
         params = {**base, **updates, "expected_count": str(count)}
         if body_index is not None:
             params["body_index"] = str(body_index)
         if "standoff_height" in updates and any(b.get("step") for b in selected):
-            from ..fileio.altium_pcblib import read_pcblib_saved_body_models
             live = await bridge.send_command_async(
                 "library.get_footprint_primitives", base, timeout=120.0)
             live_bodies = live.get("body_models") if isinstance(live, dict) else None
@@ -7488,10 +7503,6 @@ def register_library_tools(mcp):
                            or item.get("layer") != body.get("layer")
                            for item, body in zip(live_bodies, bodies))):
                 return {"ok": False, "reason": "live STEP body identities are unavailable"}
-            try:
-                saved = read_pcblib_saved_body_models(path, footprint_name.strip())
-            except (OSError, ValueError):
-                saved = None
             if saved is None or len(saved) != count:
                 return {"ok": False, "reason": "saved model records do not match live bodies"}
             for body in selected:
@@ -7550,6 +7561,9 @@ def register_library_tools(mcp):
                 return {"ok": False, "reason": "STEP model offset was not written",
                         "native_reply": reply}
         reply["save_required"] = bool(reply.get("changed"))
+        if "saved_bodies" in snapshot:
+            reply["saved_bodies"] = snapshot["saved_bodies"]
+            reply["saved_bodies_source"] = "file_on_disk_before_save"
         return reply
 
     @mcp.tool()
