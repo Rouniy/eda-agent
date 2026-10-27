@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Native fractional polygon outline with arc, 2026-10-28
+
+The same disposable PcbDoc used for the circle check was then given a
+four-vertex arched polygon through `pcb.set_board_shape`. Vertices were
+(7000.125,7000.375), (8000.125,7000.375), (8000.125,7500.375) and
+(7000.125,7500.375) mil; the third-to-fourth edge is a counter-clockwise
+half-circle centred at (7500.125,7500.375) mil, radius 500 mil. Loaded
+script `.115` returned one arc, three lines, `closed=true`, and bounding
+box (7000.125,7000.375)..(8000.125,8000.375) mil. Exact save, close
+and reopen retained those four vertices and the arc's 0..180-degree
+angles. The copy then closed. Its current Temp contents are the polygon;
+the earlier circle check remains an observed test result, not the copy's
+current shape.
+
 ## Native fractional circular board outline, 2026-10-28
 
 Loaded script `.115` set a circle on disposable

@@ -4,7 +4,9 @@ On 2026-10-28, the circular board outline mentioned below passed native
 save/close/reopen acceptance with a fractional-mil centre and radius on
 a disposable PcbDoc under script `.115`. The exact geometry is in
 `CURRENT-STATE.md`; the older statement below describes its original
-source-only state.
+source-only state. The polygon outline candidate also passed native
+save/close/reopen with one true arc and fractional-mil vertices on the
+same disposable copy; see `CURRENT-STATE.md`.
 
 The newer fetched tips and current reviewed-through checkpoint are in
 `UPSTREAM-SYNC-2026-10-27.md`. The former `bf9e08c` via-tenting hold was

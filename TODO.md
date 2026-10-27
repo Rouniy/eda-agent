@@ -15,6 +15,9 @@
   Altium `.115`: exact centre and radius were returned as four closed
   quarter arcs and persisted after save/close/reopen on a disposable
   PcbDoc. See `docs/CURRENT-STATE.md` for coordinates.
+- [x] Qualify a fractional polygon board outline with a true arc in
+  Altium `.115`: three lines and a 500-mil half-circle persisted after
+  save/close/reopen on the same disposable PcbDoc.
 
 ## mooreaa template value reconciliation, 2026-10-28
 
