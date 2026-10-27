@@ -11,7 +11,10 @@ the source library, hides inherited model parameters and adopts the sheet's
 designator font; it reports each result in `tidied`. The Python placement
 encoder now sanitizes designator and footprint fields as well. 65 related
 tests pass, three FPC-dependent tests skip, and Pascal lint/build passes.
-Live `.11` reload and native multipart-sheet acceptance are pending.
+The HTTP child was restarted through its supervisor and Altium loaded `.11`:
+`app_ping` reports loaded/bundled `.11`, `version_match=true`, Altium
+`26.11.1.5` and zero cast errors. TCP 14700 and 14701 listen. Native
+multipart-sheet acceptance is pending.
 
 The `.10` source routes single/bulk `Footprint` stamps through the verified
 model chooser before any fallback rename. A component that already carries
