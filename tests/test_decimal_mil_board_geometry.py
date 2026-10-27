@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Keep fractional mils across the board geometry bridge until native QA."""
 
 from pathlib import Path

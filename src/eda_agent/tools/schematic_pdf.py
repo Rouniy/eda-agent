@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Stage a read-only schematic project for silent Altium PDF publishing."""
 
 from __future__ import annotations

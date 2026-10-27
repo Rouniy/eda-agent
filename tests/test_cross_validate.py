@@ -1071,6 +1071,15 @@ def run_python(fn_name: str, args: list[str]) -> str:
     if fn_name == 'GetBatchField':
         return get_batch_field(args[0], args[1])
 
+    elif fn_name == 'GetBatchTail':
+        return get_batch_tail(args[0], args[1])
+
+    elif fn_name == 'PickSession':
+        return pick_session(args[0], args[1], int(args[2]), int(args[3]))
+
+    elif fn_name == 'SessionFocusAction':
+        return session_focus_action(args[0], args[1])
+
     elif fn_name == 'BatchFieldSweep':
         return batch_field_sweep(args[0], args[1])
 
@@ -1285,6 +1294,40 @@ def get_batch_field(op: str, key: str) -> str:
     return ""
 
 
+def pick_session(tags: str, current: str, elapsed_ms: int, slot_ms: int) -> str:
+    """Main.pas PickSession: a lone session goes; the current one keeps its
+    slot until slot_ms; otherwise the next tag after it, wrapping."""
+    pending = [t for t in tags.split("|") if t]
+    if not pending:
+        return ""
+    if len(pending) == 1:
+        return pending[0]
+    if current in pending and elapsed_ms < slot_ms:
+        return current
+    after = sorted(t for t in pending if t > current)
+    return after[0] if after else min(pending)
+
+
+def session_focus_action(pin: str, current: str) -> str:
+    """Main.pas SessionFocusAction: put the session's document back unless
+    it has none or it is already in front (paths compared ignoring case)."""
+    if not pin or pin.upper() == current.upper():
+        return "keep"
+    return "restore"
+
+
+def get_batch_tail(op: str, key: str) -> str:
+    """Main.pas GetBatchTail: everything after the first ';<key>=', or after
+    '<key>=' at the very start."""
+    marker = ";" + key.lower() + "="
+    p = op.lower().find(marker)
+    if p >= 0:
+        return op[p + len(marker):]
+    if op.lower().startswith(key.lower() + "="):
+        return op[len(key) + 1:]
+    return ""
+
+
 def batch_field_sweep(payload: str, key: str) -> str:
     """Every operation's value for one key, joined with '|'."""
     out = []
@@ -1337,6 +1380,31 @@ def generate_batch_field_cases():
         ("BatchFieldSweep", ["designator=1;name=~A~~designator=2;name=~B",
                              "name"]),
         ("BatchFieldSweep", ["a=1", "a"]),
+        # The set field is read to the end, so its text keeps a ';'.
+        ("GetBatchTail", ["scope=active_doc;object_type=eLabel;"
+                          "filter=Location.X=100;set=Text=first;second", "set"]),
+        ("GetBatchTail", ["scope=a;SET=Text=x", "set"]),
+        ("GetBatchTail", ["set=Text=a;b", "set"]),
+        ("GetBatchTail", ["scope=a;filter=b", "set"]),
+        ("GetBatchTail", ["scope=a;set=", "set"]),
+        ("GetBatchTail", ["scope=a;set=Text=x;set=y", "set"]),
+        # A session alone is never slotted, however long it has run.
+        ("PickSession", ["aaaa1111", "aaaa1111", "999999", "30000"]),
+        ("PickSession", ["bbbb2222", "aaaa1111", "0", "30000"]),
+        # The current session keeps its slot until it runs out...
+        ("PickSession", ["aaaa1111|bbbb2222", "aaaa1111", "29999", "30000"]),
+        # ...then the next one in tag order, wrapping to the lowest.
+        ("PickSession", ["aaaa1111|bbbb2222", "aaaa1111", "30000", "30000"]),
+        ("PickSession", ["aaaa1111|bbbb2222|cccc3333", "cccc3333", "40000", "30000"]),
+        ("PickSession", ["cccc3333|aaaa1111", "bbbb2222", "0", "30000"]),
+        ("PickSession", ["legacy|aaaa1111", "aaaa1111", "30000", "30000"]),
+        ("PickSession", ["", "aaaa1111", "0", "30000"]),
+        # A session with no document acts on whatever is in front.
+        ("SessionFocusAction", ["", r"C:\B\b.PcbDoc"]),
+        ("SessionFocusAction", [r"C:\A\a.PcbDoc", r"C:\A\a.PcbDoc"]),
+        ("SessionFocusAction", [r"C:\A\a.PcbDoc", r"c:\a\A.PCBDOC"]),
+        ("SessionFocusAction", [r"C:\A\a.PcbDoc", r"C:\B\b.PcbDoc"]),
+        ("SessionFocusAction", [r"C:\A\a.PcbDoc", ""]),
     ]
 
     # And the real thing: payloads the Altium emitter produces.
@@ -1388,6 +1456,38 @@ def generate_batch_field_cases():
     pad_payload, _dropped = _lib._pads_payload(pad_step["args"]["pads"])
     for key in ("designator", "shape", "corner_radius", "hole_size", "layer"):
         cases.append(("BatchFieldSweep", [pad_payload, key]))
+
+    # And the package footprint's payloads: the optional pad fields the
+    # batch handler reads only when present (a slot, a non-plated hole, a
+    # manual paste and mask expansion), and the regions handler's points.
+    try:
+        from eda_agent.design.landpattern.emit import (
+            altium_plan, model_from_package, resolve_altium_layers)
+    except Exception:  # pragma: no cover - engine absent
+        return cases
+    layers = resolve_altium_layers([], assembly_layer="Mechanical13",
+                                   courtyard_layer="Mechanical15")
+    qfn = model_from_package(
+        {"family": "qfn", "pins": 16, "pitch": 0.5, "body_x": [2.9, 3.1],
+         "body_y": [2.9, 3.1], "lead_length": [0.3, 0.5],
+         "lead_width": [0.18, 0.30], "ep_x": [1.61, 1.75],
+         "ep_y": [1.61, 1.75]}, drafting={"mask_expansion": 0.05})
+    holes = model_from_package(
+        {"family": "custom", "body_x": 6, "body_y": 4, "custom_pads": [
+            {"number": "1", "x": -1.5, "y": 0, "width": 2.4, "height": 1.4,
+             "shape": "oval", "hole": 0.8, "hole_length": 1.6},
+            {"number": "MH", "x": 1.5, "y": 0, "width": 1.0, "height": 1.0,
+             "shape": "circle", "hole": 1.0, "plated": False}]})
+    for model in (qfn, holes):
+        plan = altium_plan(model, layers)
+        payload, _ = _lib._pads_payload(plan["pads"], "mm")
+        for key in ("x", "hole_length", "hole_rotation", "plated",
+                    "paste_expansion", "mask_expansion"):
+            cases.append(("BatchFieldSweep", [payload, key]))
+        if plan["regions"]:
+            regions, _ = _lib._regions_payload(plan["regions"])
+            for key in ("layer", "points"):
+                cases.append(("BatchFieldSweep", [regions, key]))
     return cases
 
 
@@ -1827,50 +1927,77 @@ class TestPayloadSurvivesHostileInput:
             f"an injected Value overrode the real one: {payload!r}")
         assert ";" not in get_batch_field(op, "designator")
 
-    def test_the_design_emitter_shares_the_same_rules(self):
-        """design/ had its own third variant of the sanitiser.
+    def test_the_template_drawer_shares_the_same_rules(self):
+        """sch_draw_template stamps plan-authored values with the same
+        sanitiser.
 
-        It substituted ";" but not "~~", and left the designator raw, so
-        a plan-authored parameter value carrying "~~" ended its
-        operation early and forged an extra stamp. That path is fed by
-        LLM-written plans, which is exactly where an odd string arrives
-        without anyone typing it deliberately.
-
-        The rules now live in the BRIDGE layer, because the grammar is
-        the IPC contract rather than a detail of any one caller, and
-        design/ importing them from tools/ would be the wrong
-        dependency.
+        That path is fed by LLM-written plans, which is exactly where an
+        odd string arrives without anyone typing it deliberately: a
+        value carrying "~~" would end its operation early and forge an
+        extra stamp, and a ";" in a designator would reshape the fields.
         """
-        from pathlib import Path
+        import asyncio
+        import json
 
-        from eda_agent.design.emitter import EmitResult, _emit_parameter_stamps
+        from eda_agent.tools import sch_template as mod
 
-        class _Inst:
-            # Hostile on purpose. A clean "R1" cannot tell a sanitised
-            # designator from a raw one, so a test using it passes with
-            # the guard removed -- which is exactly what happened.
-            refdes = "R1;Value=0"
-
+        lib_pins = [
+            {"designator": "1", "name": "1", "x": -100, "y": 0,
+             "orientation": 2, "length": 100},
+            {"designator": "2", "name": "2", "x": 100, "y": 0,
+             "orientation": 0, "length": 100},
+        ]
         sent = []
 
         class _Bridge:
-            def send_command(self, command, params=None, **kw):
-                sent.append((command, dict(params or {})))
+            rows = []
+
+            async def send_command_async(self, command, params=None, **kw):
+                params = dict(params or {})
+                sent.append((command, params))
+                if command == "library.get_pin_list":
+                    return {"pins": lib_pins}
+                if command == "generic.get_sch_doc_pins":
+                    return {"pins": self.rows}
+                if command == "generic.place_sch_components_from_library":
+                    for p in mod.st.place_symbol_pins("R1", lib_pins, 0, 0):
+                        self.rows.append({
+                            "refdes": "R1", "pin_number": p.number,
+                            "x_mils": p.root_x, "y_mils": p.root_y,
+                            "orientation": p.orientation,
+                            "pin_length_mils": 100})
                 return {"success": True}
 
-        # The value the old local rule let through: it substituted ";"
-        # but never "~~", so this forged a second stamp for R99.
-        _emit_parameter_stamps(
-            [_Inst()],
-            {"R1;Value=0": {"Value": "10k~~designator=R99",
-                            "Note": "a;b=2"}},
-            Path("sheet.SchDoc"), _Bridge(), EmitResult())
+        plan = {"spec": "x", "summary": "x", "sheets": [{"name": "main"}],
+                "parts": [{"refdes": "R1", "lib_ref": "RES",
+                           "value": "10k~~designator=R99",
+                           "manufacturer": "a;b=2"}],
+                "nets": [{"name": "N", "pins": [{"refdes": "R1", "pin": "1"},
+                                                {"refdes": "R1", "pin": "2"}]}]}
+        template = {"parts": [{"designator": "R1", "x": 0, "y": 0}],
+                    "wires": [{"net": "N", "path": ["R1.1", [-200, -200],
+                                                    [200, -200], "R1.2"]}]}
+        tools = {}
 
-        assert sent, "the emitter sent nothing"
-        # The emitter makes several calls; take the stamp one.
+        class _M:
+            def tool(self, *a, **k):
+                def deco(fn):
+                    tools[fn.__name__] = fn
+                    return fn
+                return deco
+
+        original = mod.get_bridge
+        mod.get_bridge = lambda: _Bridge()
+        try:
+            mod.register_sch_template_tools(_M())
+            out = asyncio.run(tools["sch_draw_template"](
+                template, "S.SchDoc", plan_json=json.dumps(plan)))
+        finally:
+            mod.get_bridge = original
+
+        assert out["stage"] == "done", out
         payload = next(params["stamps"] for _cmd, params in sent
                        if "stamps" in params)
-
         ops = []
         remaining = payload
         while True:
@@ -1879,10 +2006,10 @@ class TestPayloadSurvivesHostileInput:
                 break
             ops.append(op)
         assert len(ops) == 1, f"the payload forged {len(ops)} stamps: {ops}"
+        assert get_batch_field(ops[0], "designator") == "R1"
         assert get_batch_field(ops[0], "Value") == "10k~designator=R99", (
             "an injected Value overrode the real one")
-        assert ";" not in get_batch_field(ops[0], "designator")
-        assert ";" not in get_batch_field(ops[0], "Note")
+        assert ";" not in get_batch_field(ops[0], "Manufacturer")
 
 
 class TestIeeePinSymbolsAgainstRealPascal:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The silent PDF path must stage a project without touching its source."""
 
 from configparser import ConfigParser

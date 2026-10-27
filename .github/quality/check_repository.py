@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Check tracked checkout portability and package manifests without running project code."""
 
 from __future__ import annotations

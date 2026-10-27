@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Recovery policy for the long-running network MCP monitor."""
 
 import importlib.util

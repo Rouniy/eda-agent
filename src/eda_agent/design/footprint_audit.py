@@ -233,7 +233,9 @@ class LandPatternSpec(BaseModel):
         default=None,
         description=(
             "{count, pitch, span, pad_w, pad_h, shape?} -- count is "
-            "TOTAL pads, span is centre-to-centre between columns."
+            "TOTAL pads, span is centre-to-centre between columns. pad_w "
+            "is the pad's X size, ACROSS the row (along the span); note "
+            "quad uses pad_w the other way, along the row."
         ),
     )
     quad: Optional[dict[str, Any]] = Field(
@@ -421,7 +423,7 @@ def audit_footprint_against_spec(
 
     # --- alignment: centre both point sets, try the 4 rotations -------
     spec_pts_raw = [(p.x, p.y) for p in spec_pads]
-    fp_pts_raw = [(float(p["x_mm"]), float(p["y_mm"])) for p in fp_pads]
+    fp_pts_raw = [pad_position_mm(p) for p in fp_pads]
     scx, scy = _centroid(spec_pts_raw)
     fcx, fcy = _centroid(fp_pts_raw)
     spec_pts = [(x - scx, y - scy) for (x, y) in spec_pts_raw]
@@ -533,8 +535,7 @@ def audit_footprint_against_spec(
                 pad=str(fp.get("name")),
                 message="footprint pad has no counterpart in the "
                         "datasheet land pattern",
-                actual=(
-                    f"({float(fp['x_mm']):.3f}, {float(fp['y_mm']):.3f}) mm"),
+                actual="({:.3f}, {:.3f}) mm".format(*pad_position_mm(fp)),
             ))
 
     # --- thermal-pad paste policy ---------------------------------------

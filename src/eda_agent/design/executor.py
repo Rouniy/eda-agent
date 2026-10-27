@@ -407,12 +407,18 @@ def execute_plan(plan: DesignPlan, project_path: str, *, bridge: Optional[Any] =
             placement_by_refdes=placement_by_refdes,
         )
 
-    # Save everything we touched.
+    # Save only documents this plan touched.
     try:
-        bridge.send_command("application.save_all", {}, timeout=_SAVE_TIMEOUT_S)
-        result.notes.append("save_all completed")
+        for sheet_name in result.sheets_touched:
+            bridge.send_command(
+                "application.save_document",
+                {"file_path": str(_sheet_path(project, sheet_name))},
+                timeout=_SAVE_TIMEOUT_S)
+        bridge.send_command("project.save", {"project_path": str(project)},
+                            timeout=_SAVE_TIMEOUT_S)
+        result.notes.append("plan sheets and project saved")
     except Exception as exc:
-        result.notes.append(f"save_all failed: {exc}")
+        result.notes.append(f"saving plan documents failed: {exc}")
         result.ok = False
 
     # Net verification: query Altium's compiled netlist and check that

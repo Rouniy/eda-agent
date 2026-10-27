@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """RCS parsing must report only paths and commands supported by source text."""
 
 from eda_agent.tools import resource_catalog as catalog

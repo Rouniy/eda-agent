@@ -38,7 +38,8 @@ Three axes:
     ``readonly``   queries / reads; no mutation.
     ``silent``     mutates, no dialog -- the loop stays responsive.
     ``modal``      pops a non-suppressible Altium dialog that BLOCKS the
-                   polling loop until a human clicks (see the bridge audit).
+                   polling loop until it is answered; answer it yourself
+                   with app_press_dialog_button (see the bridge audit).
     ``partial``    succeeds but leaves the job incomplete; a follow-up tool
                    is required to finish.
 """
@@ -61,6 +62,7 @@ INTERACTIONS = (READONLY, SILENT, MODAL, PARTIAL)
 # --- category derivation ----------------------------------------------------
 # Ordered longest-prefix-first so ``application`` wins over ``app_`` etc.
 _CATEGORY_BY_PREFIX = (
+    ("physics_calc_", "engineering"),
     ("app_", "application"),
     ("proj_", "project"),
     ("lib_", "library"),
@@ -99,7 +101,7 @@ _CATEGORY_BY_PREFIX = (
 # handler, and a tool is only covered when EVERY command it sends is,
 # because one unanswered call ends the run just as surely.
 _SIMULATOR_TOOLS = frozenset({
-    "app_context", "app_detach", "app_get_active_document",
+    "app_checkpoint", "app_context", "app_detach", "app_get_active_document",
     "app_get_version",
     "app_list_documents", "app_restart_altium_bridge",
     "app_set_active_document", "app_visual_context",
@@ -109,10 +111,11 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_add_footprint_arc", "lib_add_footprint_pad",
     "lib_add_footprint_pads", "lib_add_footprint_track",
     "lib_add_footprint_tracks", "lib_add_pins",
-    "lib_add_symbol_rectangle", "lib_add_symbol_text",
-    "lib_batch_rename", "lib_batch_set_params", "lib_create_footprint",
+    "lib_add_symbol_polygon", "lib_add_symbol_rectangle", "lib_add_symbol_text",
+    "lib_batch_rename", "lib_batch_set_params", "lib_create_3d_model",
+    "lib_create_footprint",
     "lib_create_ic_symbol", "lib_create_standard_footprint",
-    "lib_create_symbol", "lib_diff_libraries",
+    "lib_create_symbol", "lib_delete_footprint_primitives", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components",
     "lib_link_3d_model", "lib_link_footprint", "lib_search",
     "obj_batch_delete", "obj_batch_modify",
@@ -153,7 +156,7 @@ _OFFLINE_TOOLS = frozenset({
     "profile_show", "profile_list",
     # Read or write library FILES directly (OLE streams, LibPkg text,
     # byte copies); the bridge is never called.
-    "lib_read_pcblib_headers", "lib_extract_step_models", "lib_write_libpkg",
+    "lib_read_pcblib_headers", "lib_write_libpkg",
     "lib_backup_library", "lib_list_library_backups",
     "lib_restore_library_backup",
 })
@@ -175,18 +178,23 @@ _ENGINEERING_EXTERNAL = frozenset({
 # bridge round-trip). Substring match keeps the calculators in one rule.
 _OFFLINE_SUBSTRINGS = ("_calc_", "calc_", "_compute_", "compute_")
 
+# Pure Python tools filed under a category that is otherwise bridge-backed:
+# the package checks compute over a package description and never reach an
+# editor, so they work with nothing running.
+_OFFLINE_BY_NAME = frozenset({"footprint_check_package",
+                              "footprint_render_package"})
+
 # ...except calculators that read their input FROM THE BOARD. The
 # substring rule above assumes a calc tool is pure maths; these query
 # Altium first, so reporting them as offline sends anyone filtering for
 # "works without Altium" straight into a bridge error.
-_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area"})
+_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area", "lib_extract_step_models"})
 
 # design_* tools that are pure Python (per the design-agent surface: plan
 # authoring, analysis, and derivation all run offline). The bridge-backed
 # design tools are the explicit exceptions in _DESIGN_BRIDGE below.
 _DESIGN_BRIDGE = frozenset(
     {
-        "design_execute_plan",
         "design_audit_schematic",
         "design_validate",
         "design_review_snapshot",
@@ -197,20 +205,22 @@ _DESIGN_BRIDGE = frozenset(
         # Both fetch board state over the bridge before reporting.
         "design_lint_report",
         "design_visual_review",
-        # These three extract symbol geometry, or read the live sheet,
-        # over the bridge. Each CATCHES the failure and answers anyway,
-        # so with no Altium running they return a degraded result rather
-        # than an error, and calling them offline is what sends somebody
-        # to rely on that result.
-        "design_preview_plan",
-        "design_hints_from_sheet",
+        # Reads the live sheet over the bridge. It CATCHES the failure
+        # and answers anyway, so with no Altium running it returns a
+        # degraded result rather than an error, and calling it offline
+        # is what sends somebody to rely on that result.
         "design_plan_from_sheet",
+        "design_execute_plan",
+        "design_hints_from_sheet",
+        "design_preview_plan",
     }
 )
 
 # --- explicit interaction overrides (from the DelphiScript bridge audit) ----
 # Only tools that are NOT plain readonly/silent under the default rules.
 INTERACTION_OVERRIDES = {
+    # The via write is refused locally because it crashes the script engine.
+    "pcb_set_via_soldermask_relief": READONLY,
     # Pure geometry computed in DelphiScript; no document state is read or
     # changed. Its verb does not match the generic readonly name rules.
     "obj_measure_distance": READONLY,
@@ -230,6 +240,10 @@ INTERACTION_OVERRIDES = {
     # answer, and anyone filtering for operations that keep the session
     # responsive must not be handed this one.
     "app_update_from_libraries": MODAL,
+    # Pulls new code into the installation and can restart the Altium
+    # loop. It is filed under meta, which counts as offline, and offline
+    # would otherwise read as readonly.
+    "server_update": SILENT,
     # MEASURED MODAL during the live sweep of 2026-08-24. Each of these was
     # published as silent, so anything filtering for "keeps the session
     # responsive" was handed a tool that blocks the bridge until a human
@@ -288,13 +302,18 @@ INTERACTION_OVERRIDES = {
     # lib_extract_cse_zip, proj_export_pdf, pcb_render_svg) is SILENT,
     # so match them. part_search never writes and stays readonly.
     "part_fetch": SILENT,
-    # Refuses on this Altium build: the via soldermask write raises an
-    # access violation inside ScriptingSystem.DLL, so the handler
-    # answers NOT_SCRIPTABLE and touches nothing. The pcb_set_ prefix
-    # defaults to "silent" (mutates), which tells a caller filtering for
-    # safe operations the opposite of the truth. If a build is ever
-    # found where the write works, this goes back to SILENT with it.
-    "pcb_set_via_soldermask_relief": READONLY,
+    # Writes the downloaded PDF and its sidecar into the workspace cache.
+    # Filed under parts, which is offline and so falls back to READONLY;
+    # a tool that writes files is SILENT here, as part_fetch is.
+    "datasheet_fetch": SILENT,
+    # Writes the SVG (and a PNG) it draws, as pcb_render_svg does.
+    "footprint_render_package": SILENT,
+    # Writes the .cir / .net deck it builds into the workspace.
+    "design_export_spice_deck": SILENT,
+    # Reads the footprint's pads, primitives and the library's layers and
+    # writes nothing. The lib_ prefix says nothing about that, and the
+    # default would publish an audit as a tool that edits the library.
+    "lib_audit_footprint_vs_package": READONLY,
 }
 
 # --- explicit maturity overrides -------------------------------------------
@@ -326,12 +345,18 @@ _READONLY_SUBSTRINGS = (
 # entry points invisible to a client discovering by category, which bites
 # hardest under the minimal toolset where the catalog IS the interface.
 _CATEGORY_BY_NAME = {
+    "datasheet_fetch": "parts",
+    "footprint_check_package": "design",
+    "footprint_render_package": "design",
     "review_design": "core",
     "get_board_info": "core",
     "list_components": "core",
     "list_nets": "core",
     "run_drc": "core",
     "run_erc": "core",
+    # Updates eda-agent itself, on every backend: about the tool surface,
+    # like tool_catalog, rather than about any one EDA tool.
+    "server_update": "meta",
 }
 
 
@@ -425,6 +450,9 @@ _EASYEDA_CATEGORY_OVERRIDE = {
     "easyeda_create_ic_symbol": "library",
     "easyeda_create_passive_symbol": "library",
     "easyeda_create_standard_footprint": "library",
+    # Delegates the drawing like the one above; its only command of its
+    # own is the pad readback, a pcb read the deriver would file it under.
+    "easyeda_create_footprint_from_package": "library",
     # Bundles five reads through a helper that takes the command as an
     # argument, so there is no literal for the deriver to see. Every
     # one of those reads is a pcb command.
@@ -434,8 +462,8 @@ _EASYEDA_CATEGORY_OVERRIDE = {
     # other record-reading tool, list_checkpoints.
     "easyeda_get_measured_shapes": "application",
     # Pure computation over a plan; they send nothing.
-    "easyeda_emit_plan": "design",
-    "easyeda_emit_connections": "design",
+    "easyeda_emit_template": "design",
+    "easyeda_emit_template_connections": "design",
     # Sends nothing directly either: it dispatches to whichever tools an
     # emitted plan names, so there is no command namespace to read.
     "easyeda_run_plan": "design",
@@ -510,6 +538,8 @@ def _is_offline(name: str, category: str) -> bool:
     if name in _ENGINEERING_EXTERNAL:
         return False
     if category in _OFFLINE_CATEGORIES or name in _OFFLINE_TOOLS:
+        return True
+    if name in _OFFLINE_BY_NAME:
         return True
     if name in _CALC_NEEDS_BRIDGE:
         return False

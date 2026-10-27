@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Static safety/ordering checks for the standalone probe; no Altium execution."""
 from pathlib import Path
 import re

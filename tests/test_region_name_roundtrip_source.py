@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Region names can be written and read across both placement paths."""
 
 from pathlib import Path

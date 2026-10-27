@@ -98,6 +98,16 @@ def setup_logging() -> None:
     root = logging.getLogger("eda_agent")
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    # A capped file in the workspace beside stderr, and secrets redacted
+    # from both. Best-effort: a workspace that cannot be written never
+    # stops the server.
+    try:
+        from .config import get_config
+        from .server_log import install
+
+        install(root, get_config().workspace_dir)
+    except Exception:  # noqa: BLE001
+        pass
 
     # A rotating, capped, secret-redacting file under %USERPROFILE%\EDA
     # Agent\logs\ (or EDA_AGENT_LOG_DIR), alongside the stderr handler
@@ -162,14 +172,16 @@ _ENGINE_ALTIUM = (
 )
 
 _ENGINE_EASYEDA = (
-    "DO NOT DRAW A SCHEMATIC BY HAND. Placing parts one at a time\n"
-    "with easyeda_place_schematic_components and joining them with\n"
-    "easyeda_add_wires gives a netlist-correct sheet that reads like\n"
-    "nothing a person would draw, and it is the most common way this\n"
-    "server is misused. A schematic comes from a DesignPlan: build the\n"
-    "plan, lay it out with design_layout_schematic, which runs the same\n"
-    "engine measured against hand-drawn boards, then apply it with\n"
-    "easyeda_emit_plan.\n"
+    "A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE. Build the DesignPlan,\n"
+    "then plan the sheet the way an engineer draws it, every coordinate\n"
+    "on the 100 mil grid: the IC in the middle, rails as straight wires\n"
+    "with their capacitors hanging straight down to ground, a divider\n"
+    "whose midpoint runs straight across to its pin, net labels only\n"
+    "where a signal leaves the block. easyeda_emit_template returns the\n"
+    "calls that place the parts there; run them, read the pins back with\n"
+    "easyeda_get_schematic_pins, and easyeda_emit_template_connections\n"
+    "checks the template's wiring against those pins and the plan's\n"
+    "nets and returns the calls that draw it.\n"
     "\n"
 )
 
@@ -189,16 +201,27 @@ _ENGINE_PARAGRAPHS = {
 # in a plan to edit 1,499 symbols through the Properties panel. The API
 # route existed for two of the three; the third was a real gap, now fixed.
 # "Usually" is the accurate word, and a genuine gap is worth reporting.
+# The paragraph then told sessions to ask the user before driving the
+# interface, and they did: they asked George to click things they could
+# click themselves. His rule (2026-10-23): the API route when there is
+# one, otherwise the interface, without asking.
 _UI_AUTOMATION_ALTIUM = (
-    "The app_ tools that press buttons, pick menus and type into Altium's\n"
-    "dialogs (app_click_menu, app_run_ui_command, app_set_dialog_control,\n"
-    "app_canvas and the rest) are a last resort, not a second route. When\n"
-    "an API tool seems to fail or be missing, the cause has usually been a\n"
-    "wrong argument or a tool that was not found, and driving a dialog\n"
-    "instead has ended with Altium crashed. Before reaching for one,\n"
-    "{reach} with what you are trying to do. If it still finds nothing,\n"
-    "say so and ask the user before driving the interface: a genuine gap\n"
-    "is worth reporting, because it gets fixed.\n"
+    "API FIRST, THEN THE INTERFACE, WITHOUT ASKING. The app_ tools that\n"
+    "press buttons, pick menus and type into Altium's dialogs\n"
+    "(app_click_menu, app_run_ui_command, app_press_dialog_button,\n"
+    "app_drive_dialogs, app_set_dialog_control, app_canvas and the rest)\n"
+    "come second to an API tool. When an API tool seems to fail or be\n"
+    "missing, the cause has usually been a wrong argument or a tool that\n"
+    "was not found, and driving a dialog instead has ended with Altium\n"
+    "crashed, so first {reach} with what you are trying to do. When there\n"
+    "is no API route, drive the interface yourself and carry on: never\n"
+    "ask the user to click, pick a menu or press a button you can press.\n"
+    "Read every dialog you raise (app_list_open_dialogs, app_screenshot)\n"
+    "and answer it as the task requires; needs_a_human marks one the\n"
+    "dialog driver will not answer blindly, not one to hand to the user.\n"
+    "Ask the user only for a decision that is theirs, never for a click.\n"
+    "Say in your report which step needed the interface: a missing API\n"
+    "route is worth reporting, because it gets fixed.\n"
     "\n"
 )
 
@@ -221,9 +244,9 @@ def build_server_instructions(
     saying which applies is the difference between guidance and a dead
     end for the clients that most need the guidance.
 
-    The backend does the same job for the schematic-engine paragraph:
-    design_execute_plan is Altium-only, so naming it to a KiCad client
-    sent it looking for a tool that backend never registers.
+    The backend does the same job for the schematic paragraph: the
+    template tools differ per backend, so naming Altium's to a KiCad
+    client would send it looking for a tool that backend never registers.
     """
     if (toolset or DEFAULT_TOOLSET).strip().lower() == "minimal":
         reach = ('reach tool_guide through tool_invoke, since this server '
@@ -255,14 +278,60 @@ def build_server_instructions(
         + ui
         + engine +
         "Coordinates are in mils throughout, on every backend.\n"
+        "\n"
+        "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
+        "the user what is new and ask; call server_update(apply=True) only\n"
+        "after they agree.\n"
     )
 
 
 SERVER_INSTRUCTIONS = build_server_instructions(ACTIVE_TOOLSET, ACTIVE_BACKEND)
 
+
+def compact_text_blocks(blocks):
+    """Re-serialize JSON text blocks without the indentation.
+
+    FastMCP writes a returned dict as JSON with indent=2, which is 40-65%
+    more characters than the same JSON compact. A client that reads the
+    text copy (rather than structuredContent) sends all of that padding to
+    the model on every call. Only text that parses as JSON is rewritten, so
+    the data is unchanged; anything else passes through as it was.
+    """
+    import json
+    out = []
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text[:1] in ("{", "["):
+            try:
+                compact = json.dumps(json.loads(text), separators=(",", ":"),
+                                     ensure_ascii=False)
+            except ValueError:
+                compact = None
+            if compact is not None and len(compact) < len(text):
+                block = block.model_copy(update={"text": compact})
+        out.append(block)
+    return out
+
+
+class _CompactFastMCP(FastMCP):
+    """FastMCP whose tool results carry compact JSON text.
+
+    structuredContent is left exactly as FastMCP builds it: Claude Code
+    reads that copy, and only the text copy carried the indentation.
+    """
+
+    async def call_tool(self, name, arguments):
+        result = await super().call_tool(name, arguments)
+        if isinstance(result, tuple):
+            return (compact_text_blocks(result[0]), result[1])
+        if isinstance(result, list):
+            return compact_text_blocks(result)
+        return result
+
+
 # Create global FastMCP instance, named for the backend so a client that
 # lists several eda-agent servers can tell them apart.
-mcp = FastMCP(
+mcp = _CompactFastMCP(
     f"eda-agent-{ACTIVE_BACKEND.strip().lower() or DEFAULT_BACKEND}",
     instructions=SERVER_INSTRUCTIONS,
 )
@@ -399,6 +468,29 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     config.ensure_workspace()
     logger.info("Workspace directory: %s", config.workspace_dir)
 
+    # Trim the logs, old checkpoints and old screenshots. Off the main
+    # thread so a large prune never delays the MCP handshake.
+    from . import housekeeping
+    threading.Thread(target=housekeeping.run, args=(config.workspace_dir,),
+                     name="workspace-housekeeping", daemon=True).start()
+
+    # The first 3D model would otherwise wait on a cold CadQuery import.
+    from .design.models3d import warm_cadquery
+    warm_cadquery()
+
+    # Record this server and warn (stderr only) about others on the same
+    # workspace. Never refuses and never stops anything: several sessions
+    # at once are allowed. app_ping and app_get_status repeat the warning.
+    from . import server_registry, updates
+    server_registry.register(config.workspace_dir)
+    # Once a day at most, in the background: a newer eda-agent is then
+    # reported by app_ping and app_context, never installed unasked.
+    updates.start_background_check()
+    duplicate = server_registry.duplicate_warning(
+        server_registry.others(config.workspace_dir))
+    if duplicate:
+        logger.warning("%s", duplicate)
+
     # Auto-launch the web dashboard in-process. Skip for headless / strict
     # MCP clients that can't tolerate dashboard side-effects.
     if no_dashboard or _dashboard_disabled_via_env():
@@ -422,6 +514,9 @@ def serve_mcp(no_dashboard: bool = False) -> int:
                     srv.shutdown()  # type: ignore[attr-defined]
             except Exception as e:
                 logger.debug("dashboard shutdown raised: %s", e)
+        # Before _exit, which skips atexit. A record left by a crash is
+        # removed by the next server that reads the folder.
+        server_registry.unregister(config.workspace_dir)
         import os as _os
         _os._exit(0)
     return 0
@@ -524,6 +619,9 @@ def _run_bom(args) -> int:
     except (ValueError, OSError) as e:
         print(f"ERROR: cannot read {args.file}: {e}", file=sys.stderr)
         return 2
+    if not lines:
+        from .fileio.bom import EMPTY_BOM_WARNING
+        print(f"WARNING: {args.file}: {EMPTY_BOM_WARNING}", file=sys.stderr)
 
     if getattr(args, "csv", False):
         print(bom_to_csv(lines), end="")
@@ -594,6 +692,8 @@ def main() -> int:
       serve             -- run the MCP server (default when no args given)
       scripts-path      -- print the path to the bundled DelphiScript files
       install-scripts   -- copy bundled scripts to a chosen directory
+      easyeda-extension -- locate or build the EasyEDA extension
+      relaunch          -- start the bridge script in the running Altium
 
     IMPORTANT: when invoked with no arguments, this MUST start the MCP
     server on stdio -- MCP-compatible clients rely on that behaviour.
@@ -700,6 +800,55 @@ def main() -> int:
         action="store_true",
         help="Overwrite existing scripts without prompting",
     )
+
+    # easyeda-extension -- where the editor half is, and building it
+    ext_p = subparsers.add_parser(
+        "easyeda-extension",
+        help=("Print where the EasyEDA extension source is (path), or "
+              "build the .eext to import into EasyEDA Pro (build; needs "
+              "Node.js)."),
+    )
+    ext_p.add_argument("action", choices=["path", "build"])
+    ext_p.add_argument(
+        "--out", default=None, metavar="DIR",
+        help=("Folder to build in. An installed copy is built beside the "
+              "default workspace unless this is given; a checkout builds "
+              "in place."),
+    )
+
+    # relaunch -- start the bridge script in the running Altium, on request
+    relaunch_p = subparsers.add_parser(
+        "relaunch",
+        help=("Ask the running Altium to run StartMCPServer from the "
+              "installed script project. Leaves pending requests alone and "
+              "does nothing if the bridge already answers."),
+    )
+    relaunch_p.add_argument("--prjscr", default=None, metavar="PATH",
+                            help="Script project to run (default: the "
+                                 "install-scripts destination).")
+    relaunch_p.add_argument("--dry-run", action="store_true",
+                            help="Print the command instead of running it.")
+    relaunch_p.add_argument("--force", action="store_true",
+                            help="Run it even when the bridge answers a ping.")
+    relaunch_p.add_argument("--restart", action="store_true",
+                            help="Stop the running loop after its current "
+                                 "command and start it again (after "
+                                 "install-scripts). Other sessions' calls "
+                                 "wait through it instead of failing.")
+
+    # update -- pull a newer eda-agent into this clone, after asking
+    update_p = subparsers.add_parser(
+        "update",
+        help=("Show what a newer eda-agent brings and, once you agree, "
+              "fast-forward this clone, reinstall if needed, copy the "
+              "scripts and restart the Altium loop."),
+    )
+    update_p.add_argument("--check", action="store_true",
+                          help="Only show what an update would bring.")
+    update_p.add_argument("--yes", action="store_true",
+                          help="Update without asking.")
+    update_p.add_argument("--no-relaunch", action="store_true",
+                          help="Leave the Altium loop running the old scripts.")
 
     # health -- offline, fast
     subparsers.add_parser(
@@ -948,24 +1097,6 @@ def main() -> int:
               "Altium script and you want to kill it without rebooting."),
     )
 
-    # vote -- pairwise-preference vote UI in the browser
-    vote_p = subparsers.add_parser(
-        "vote",
-        help=(
-            "Launch the pairwise layout-preference vote UI in your "
-            "browser. Generates two layouts of the same plan; you click "
-            "the better one. Builds training data for the quality model."
-        ),
-    )
-    vote_p.add_argument("--plan", required=True, type=Path,
-                        help="Path to the DesignPlan JSON to vote on.")
-    vote_p.add_argument("--symbols", type=Path, default=None,
-                        help="Symbol fixtures JSON for offline mode. "
-                             "Omit to use the live Altium bridge.")
-    vote_p.add_argument("--host", default="127.0.0.1")
-    vote_p.add_argument("--port", type=int, default=8765)
-    vote_p.add_argument("--debug", action="store_true")
-
     # review -- OFFLINE FALLBACK, opt-in schematic review (no Altium).
     # Not the preferred path: the live-Altium tools see connectivity this
     # reader can't. Disabled unless --offline / EDA_AGENT_HEADLESS_REVIEW=1.
@@ -1033,6 +1164,18 @@ def main() -> int:
                        help="Exit non-zero on a finding at/above this "
                             "severity (default: error).")
 
+    # calc -- the offline engineering calculators, without an MCP client.
+    calc_p = subparsers.add_parser(
+        "calc",
+        help=("Run an engineering calculator: `eda-agent calc fusing-current "
+              "seconds=1 area_sq_mils=103`. `eda-agent calc` lists them; "
+              "`eda-agent calc NAME --help` shows a calculator's inputs."),
+    )
+    calc_p.add_argument("name", nargs="?", help="Calculator name.")
+    calc_p.add_argument("inputs", nargs="*", metavar="KEY=VALUE",
+                        help="Inputs, named as the calculator's arguments.")
+    calc_p.add_argument("--json", action="store_true", help="Emit JSON.")
+
     args = parser.parse_args()
 
     # Resolve the active profile (see profile.py) before anything else runs,
@@ -1079,6 +1222,14 @@ def main() -> int:
         return cli.cmd_scripts_path()
     if args.command == "install-scripts":
         return cli.cmd_install_scripts(dest=args.dest, force=args.force)
+    if args.command == "easyeda-extension":
+        return cli.cmd_easyeda_extension(args.action, out=args.out)
+    if args.command == "relaunch":
+        return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
+                                force=args.force, restart=args.restart)
+    if args.command == "update":
+        return cli.cmd_update(check_only=args.check, assume_yes=args.yes,
+                              relaunch=not args.no_relaunch)
     if args.command in ("a365-login", "a365-logout"):
         from .engineering.a365 import TokenStore, interactive_login
         from .tools.engineering import a365_config
@@ -1134,15 +1285,6 @@ def main() -> int:
         except Exception as e:
             print(f"could not stop dashboard pid {pid}: {e}")
             return 1
-    if args.command == "vote":
-        from .web.server import main as vote_main
-        return vote_main([
-            "--plan", str(args.plan),
-            *(["--symbols", str(args.symbols)] if args.symbols else []),
-            "--host", args.host,
-            "--port", str(args.port),
-            *(["--debug"] if args.debug else []),
-        ])
     if args.command == "review":
         return _run_review(args)
     if args.command == "bom":

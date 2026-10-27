@@ -1,11 +1,17 @@
-# Upstream and fork sync checkpoint — 2026-10-27
+# Upstream and fork sync checkpoint - 2026-10-27
 
-`Rouniy/eda-agent/main` remains the integration branch. These are exact
-reviewed-through Git tips, not a claim that all their code has been merged:
+`Rouniy/eda-agent/main` remains the integration branch. The October 27
+integration merge has `9ee593ea0dce989bf3bfc97d0c982044ed41badb`
+(`salitronic/eda-agent/main`) as its second parent. Once the merge is
+committed, `git merge-base main upstream/main` identifies this precise
+upstream synchronization point. The fork rows below record feature review
+and ports, not Git ancestry with those forks.
+
+These are the exact Git tips reviewed in this pass:
 
 | Source | Reviewed tip | Actual merge base with our `main` before this pass |
 | --- | --- | --- |
-| `salitronic/eda-agent` `main` | `ce53d6ea0f01db7aa43b840c53b758bd18812684` | `8e659a27b05ff46be2f9ae30225b5baf0c9a8395` |
+| `salitronic/eda-agent` `main` | `9ee593ea0dce989bf3bfc97d0c982044ed41badb` | `8e659a27b05ff46be2f9ae30225b5baf0c9a8395` |
 | `MOREmbedded/eda-agent` `main` | `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41` | `0fc7f02a7a56a130d0cfded4a2a922d313c9ea99` |
 | `mooreaa/eda-agent` `main` | `fc22136ca5d28e6442c979417d8615c8ff4a2d35` | `8e659a27b05ff46be2f9ae30225b5baf0c9a8395` |
 
@@ -22,16 +28,14 @@ ported and adapted as separate commits. `git merge-base main upstream/main`
 answers ancestry; this file answers the newer **reviewed-through** point.
 Do not describe the reviewed tip as a Git merge or an exact source tree.
 
-On 2026-10-27 after commit `f61565f`, `git fetch` advanced the live
+On 2026-10-27 after commit `f61565f`, `git fetch` advanced the
 `upstream/main` ref to `9ee593ea0dce989bf3bfc97d0c982044ed41badb`.
-Its three newer commits are `172d254` (pour growth, plane connections,
-wire tidy, rule settings, pre-routes and paste openings), `642e6a8`
-(rigid-flex regions, bend lines, layer stacks, Gloss and Retrace), and
-`9ee593e` (physical stack, dielectrics, impedance profiles, layer order
-and vias). Their feature review and port are pending; the reviewed-through
-table above therefore stays at `ce53d6e`. The actual merge base remains
-`8e659a27b05ff46be2f9ae30225b5baf0c9a8395`. `morembedded/main`
-was unchanged at `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+Its three newer commits are `172d254` (pour growth and related PCB tools),
+`642e6a8` (rigid-flex and stack features), and `9ee593e` (physical stack,
+dielectrics, impedance and vias). These commits are included in the merge
+candidate, with our already tested exact-board adaptations retained.
+`morembedded/main` was unchanged at
+`032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
 
 ## Direct-fork inventory refreshed 2026-10-27
 
@@ -73,13 +77,13 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | Upstream `5d79657` through `ce53d6e`, `ed4ef59` (footprint read) | Restore the native `library.get_footprint_primitives` handler, including body metadata, region shapes and layer names; restrict saved STEP extraction to a named footprint's live model files | 33 focused tests, Pascal lint/build, loaded `.3` runtime and no-target native dispatch; real PcbLib read still pending |
 | Upstream `ce53d6e` (PCB pours/options) | Look up polygon outlines at a board point and read/set the new-polygon name template; include board identity and require an expected file for writes | 28 related tests, Pascal lint/build, loaded `.4` runtime, and no-target native refusals; real-board acceptance pending |
 | `mooreaa` `ad8d5fa`, also in upstream by `ce53d6e` (font safety) | Guard generic `FontId` by actual schematic object type and expose `TextFontId` through typed sheet/harness entries | 22 related tests, Pascal lint/build, loaded `.5` runtime; native entry readback pending |
-| `mooreaa` `dc36b7e`–`fc22136` (port cross-references, partial) | Plan CrossRef positions from a port's read-only `ConnectedEnd` and wire geometry; require an exact sheet, a reviewed plan digest and per-reference readback for writes | 41 related tests, Pascal lint/build, loaded `.6` runtime and bad-path refusal; native sheet acceptance pending |
+| `mooreaa` `dc36b7e`-`fc22136` (port cross-references, partial) | Plan CrossRef positions from a port's read-only `ConnectedEnd` and wire geometry; require an exact sheet, a reviewed plan digest and per-reference readback for writes | 41 related tests, Pascal lint/build, loaded `.6` runtime and bad-path refusal; native sheet acceptance pending |
 | `mooreaa` through `fc22136` (live pins) | Filter hidden part/display-mode copies from schematic ePin queries, preserving explicit `OwnerPart` inspection; use visible pins in CrossRef planning and its digest | 21 focused tests, Pascal lint/build and loaded `.7` runtime; native multipart-sheet acceptance pending |
 | `mooreaa` `64a71c3` through `fc22136` (part properties) | Read and write a placed part's display mode and current PCB model pin map, with type guards and readback | 22 related source tests, Pascal lint/build; native disposable-sheet acceptance pending |
 | `mooreaa` `053aff9` through `fc22136` (placement model choice) | Select a named PCB model the library symbol already carries on single and bulk placement, verify all current flags and restore them on failure | Focused source tests and Pascal lint/build; native disposable-sheet acceptance pending |
 | `mooreaa` `3d5817f` through `fc22136` (Footprint stamps) | Choose an existing model on single/bulk Footprint parameter writes before fallback rename; refuse unloaded explicit batch sheets | 52 related tests, Pascal lint/build and loaded `.10` runtime; native multi-model acceptance pending |
-| `mooreaa` `dc36b7e`–`fc22136` (multipart placement and tidy) | Place an explicit sub-part, verify its sheet state and report issues; link the library, hide inherited model parameters and adopt the sheet designator font | 65 related tests, Pascal lint/build and loaded `.11` runtime; native multipart-sheet acceptance pending |
-| `mooreaa` `dc36b7e`–`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests, Pascal lint/build and loaded `.12` runtime; native disposable-sheet acceptance pending |
+| `mooreaa` `dc36b7e`-`fc22136` (multipart placement and tidy) | Place an explicit sub-part, verify its sheet state and report issues; link the library, hide inherited model parameters and adopt the sheet designator font | 65 related tests, Pascal lint/build and loaded `.11` runtime; native multipart-sheet acceptance pending |
+| `mooreaa` `dc36b7e`-`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests, Pascal lint/build and loaded `.12` runtime; native disposable-sheet acceptance pending |
 | `mooreaa` through `fc22136` (port AutoSize getter) | Return the native port AutoSize flag through generic queries, with a port-only type guard | Native `.12` query exposed the omission; loaded `.13` ePort query read back false, font 1 and width 400 on an isolated sheet |
 | MOREmbedded through `032fb4b` (`pcb_check_fab_output`) | Rework fab comparison around one exact-board, uncapped native snapshot and require all three core comparisons | 23 focused tests, Pascal lint/build, loaded `.14`; disposable PCB facts and wrong-path refusal passed; full export comparison pending |
 | Upstream `0a9ccd4`, `bb06837` (xSignals) | Read, create and delete xSignals on an exact PcbDoc; use count preconditions and verify native pair deltas | 28 focused tests, Pascal lint/build, loaded `.16`; disposable read and refusal/no-op checks passed; actual populated-board write pending |
@@ -87,7 +91,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | Upstream `bb06837` (net display) | Read and batch-set four per-net display flags on an exact PcbDoc, with old-state preflight, dry-run plan and readback | Six related tests, Pascal lint/build, loaded `.18`; one-net and two-net disposable writes read back; missing net/wrong board refused |
 | Upstream `5797fc0` (board grids) | Read and set six board grids and dot mode on an exact PcbDoc, validating all values before writes with old-state preflight and readback | Three focused tests, Pascal lint/build, loaded `.19`; disposable changes read back, exact-path save/reload persisted snap X; broad Save All side effect recorded in CURRENT-STATE |
 | Local persistence fix after upstream grid port | Save one exact loaded document with an observed disk write, without Save All | Nine related tests, Pascal lint/build, loaded `.20`; disposable grid persisted after close/reopen; owner PcbDoc hash unchanged during this test |
-| Upstream drill layer pair family | Read pair spans/flags; set flags and add pairs with exact-board identity, count preflight, dry-run and readback | Three focused tests, Pascal lint/build, loaded `.21`; disposable pair flag changed and independently read back; duplicate span and wrong board refused; new TopLayer–MidLayer1 span added and independently read back on disposable three-layer board |
+| Upstream drill layer pair family | Read pair spans/flags; set flags and add pairs with exact-board identity, count preflight, dry-run and readback | Three focused tests, Pascal lint/build, loaded `.21`; disposable pair flag changed and independently read back; duplicate span and wrong board refused; new TopLayer-MidLayer1 span added and independently read back on disposable three-layer board |
 | Upstream rule resolution (`pcb_find_dominant_rule`, `pcb_check_rule_scope`) | Ask Altium's rule engine about component/pad/net objects, with exact PcbDoc identity and complete replies | Two focused tests, Pascal lint/build, loaded `.22`; on a 47-rule board R62 dominant-rule lookup worked, unary and binary scope queries returned native answers, missing binary object and wrong board refused; owner SHA256 unchanged |
 | MOREmbedded `84b682c` (`lib_set_3d_body`) | Edit an existing footprint body's height, opacity and layer; preserve saved STEP rotations while setting model Z offset, with exact PcbLib identity, count preflight and dry-run | Three focused tests, Pascal lint/build, loaded `.23`; on an isolated copy of a 38-footprint library, STEP Z offset persisted at 10 mil with all three rotations unchanged and opacity 0.7; overall height read back at 50 mil before discard; owner library and board hashes unchanged |
 | MOREmbedded complete-footprint rotation | Rotate pads, tracks, arcs, regions, vias, texts and 3D bodies about the footprint origin with an exact PcbLib path; plan first and verify pad centres/angles | Three focused tests, Pascal lint/build, loaded `.24`; on an isolated library copy, AD_FE38 rotated 580 primitives with zero pad mismatches, exact save and reopen preserved all 32 pad rotations/positions and STEP Z offset; owner library and board hashes unchanged |
@@ -141,17 +145,22 @@ The older port-by-feature history and outstanding items remain in
 commits from `0a9ccd4` through `ce53d6e` add many project and PCB tools
 that still need a dependency and native-behaviour review.
 
-## Why this is not yet a merge commit
+## October 27 integration merge
 
-A trial `git merge --no-commit --no-ff -X ours upstream/main` was run in the
-existing `eda-agent-large-integration` worktree and aborted without a commit.
-It would have changed 439 files and removed local design pipeline modules
-that our `DesignPlan` path still uses. It also left three modify/delete
-conflicts. Accepting that tree would mark the upstream tip as merged while
-losing working local capabilities. The next actual merge commit should be
-created after remaining changes are either integrated or explicitly excluded
-with a reason and a test.
+The earlier aborted trial was followed by a fresh two-parent merge of the
+fetched upstream tip. The candidate retains the local `DesignPlan` tools,
+exact-board write guards and Altium crash refusals while adding the upstream
+design, library, routing, simulation, fabrication and maintenance modules.
+The MOREmbedded NPI and SDK features remain integrated as adapted ports.
+Pascal lint/build, source tests and the live runtime check are recorded in
+`docs/RELEASE_VERIFICATION.md`. Native acceptance of new write paths must
+use disposable CAD documents; this Git merge alone does not validate them.
 
 The shared operating runbook linked by `AGENTS.md` is absent from the sibling
-`PLT-hw` checkout. Source and offline tests can proceed; native CAD write
-acceptance needs a disposable project and the release gates.
+`PLT-hw` checkout. Native CAD write acceptance still needs disposable
+documents. The candidate was built with Pascal lint at zero errors and zero
+warnings. A broad Python run had 7419 passes, 147 skips, one expected failure
+and 30 failures; the identified production gaps were addressed in focused
+groups afterwards. Upstream's legacy `test_added_altium_tools.py` still has
+17 cases that assume implicit board selection or old argument forms, so they
+do not yet qualify the exact-board wrappers.

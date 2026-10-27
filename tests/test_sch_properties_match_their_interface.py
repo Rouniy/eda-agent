@@ -287,7 +287,8 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
     source = _source()
     routines = "\n".join(_routine(source, name) for name in
                          ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
-                          "UnsupportedSchProperty"))
+                          "SchObjectHasFontId", "SchObjectHasTextFontId",
+                          "SchExtraOwner", "SchExtraFits", "UnsupportedSchProperty"))
     # Match all identifiers used by the real guards, so existing denylist
     # exclusions remain part of the executable test.
     types = sorted(set(re.findall(r"\be[A-Z]\w*", routines)) |
@@ -317,6 +318,10 @@ def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
         ("eNetLabel", "IsHidden|Text=GOOD", ""),
         ("eNetLabel", "Text=contains=equals", ""),
         ("eNetLabel", "", ""),
+        ("ePin", "Symbol_Outer=1|DefinedFunctions=A;B", ""),
+        ("eWire", "Symbol_Outer=1", "Symbol_Outer"),
+        ("ePin", "PinsMoveable=true", "PinsMoveable"),
+        ("eSchComponent", "ShowHiddenPins=true", ""),
     ]
     calls = "\n".join(
         f"  Obj.ObjectId := {kind}; if UnsupportedSchProperty(Obj, '{props}') <> '{expected}' then Halt({i});"
@@ -351,7 +356,9 @@ def test_extracted_pascal_single_and_mixed_batch_creation(tmp_path):
     source = _source()
     main = MAIN.read_text(encoding="utf-8")
     guards = "\n".join(_routine(source, name) for name in
-                       ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor", "UnsupportedSchProperty"))
+                       ("SchObjectHasText", "SchObjectHasIsHidden", "SchObjectHasTextColor",
+                        "SchObjectHasFontId", "SchObjectHasTextFontId",
+                        "SchExtraOwner", "SchExtraFits", "UnsupportedSchProperty"))
     creators = "\n".join(_routine(source, name) for name in
                          ("Gen_CreateObject", "Gen_BatchCreate"))
     parsers = "\n".join(_routine(main, name) for name in ("NextBatchOp", "GetBatchField"))
@@ -421,6 +428,8 @@ procedure ResetPropertyDiag(Dummy: Integer);
 begin DiagDirty := False; Inc(ResetCount); end;
 procedure SchRegisterObject(Container, Obj: TSchObject);
 begin if not Obj.Registered then Halt(54); end;
+procedure ApplyNoErcDefaults(Obj: TSchObject);
+begin end;
 procedure MarkDocDirtyByPath(Path: String);
 begin end;
 function ObjectTypeFromString(S: String): Integer;
@@ -432,6 +441,8 @@ begin
   if S='ePowerObject' then Result:=ePowerObject;
 end;
 function UnknownObjectTypeMessage(S: String): String;
+begin Result := S; end;
+function SchOnlyTypeMessage(S: String; ToolName: String): String;
 begin Result := S; end;
 function EscapeJsonString(S: String): String;
 begin Result := S; end;

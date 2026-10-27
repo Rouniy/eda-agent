@@ -1,4 +1,4 @@
-# Fork integration audit — 2026-10-26
+# Fork integration audit - 2026-10-26
 
 The newer fetched tips and current reviewed-through checkpoint are in
 `UPSTREAM-SYNC-2026-10-27.md`.

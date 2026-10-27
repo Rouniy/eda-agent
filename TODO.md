@@ -1,5 +1,17 @@
 # Fork integration TODO
 
+## Upstream merge qualification, 2026-10-27
+
+- The two-parent merge includes upstream `9ee593e`; follow-up work should
+  reconcile legacy upstream tests that assume implicit active-board writes
+  with the exact-board contracts retained here. The broad suite previously
+  reached 7419 passing tests; focused fixes after that run passed.
+- Natively check `.42` on disposable Altium documents, including bottom-side
+  component placement and flip readback. Keep these native acceptance checks
+  separate from the source merge.
+- Keep reviewing the latest MOREmbedded tip `032fb4b` for behavior that
+  needs additional native qualification. Its NPI/SDK/3D features are ported.
+
 ## Upstream layer-stack remainder, 2026-10-27
 
 - Complete the remaining `172d254` rule-setting, wire-tidy, pre-route and
@@ -15,7 +27,7 @@
   still needed. Empty-layer ordering, stack-style writes, impedance
   profile lifecycle and per-copper-layer settings are ported and checked.
 - Continue reviewing upstream `172d254` and the remaining direct/child
-  fork features against the sync ledger before claiming a true merge.
+  fork features against the sync ledger for native acceptance gaps.
 
 ## Exact document save, 2026-10-27
 

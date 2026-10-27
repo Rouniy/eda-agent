@@ -18,7 +18,7 @@ __all__ = ["register_stackup_tools"]
 def register_stackup_tools(mcp, *, altium: bool = False) -> None:
 
     @mcp.tool()
-    async def design_list_fab_vendors() -> dict[str, Any]:
+    async def design_list_stackup_vendors() -> dict[str, Any]:
         """Fab vendors whose capabilities ship with eda-agent.
 
         Each entry carries the page it was transcribed from, the date,
@@ -58,7 +58,7 @@ def register_stackup_tools(mcp, *, altium: bool = False) -> None:
         return load_vendor(vendor)
 
     @mcp.tool()
-    async def design_fab_vendor_profile(
+    async def design_stackup_vendor_profile(
             vendor: str,
             fill: Optional[dict] = None) -> dict[str, Any]:
         """Turn a bundled vendor into a FabProfile for design_synthesize_rules.
@@ -133,7 +133,7 @@ def register_stackup_tools(mcp, *, altium: bool = False) -> None:
 
     if altium:
         @mcp.tool()
-        async def pcb_check_stackup(vendor: str,
+        async def pcb_check_vendor_stackup(vendor: str,
                                     stackup: str) -> dict[str, Any]:
             """Read the open board's stackup and check it against a template.
 
@@ -167,7 +167,7 @@ def register_stackup_tools(mcp, *, altium: bool = False) -> None:
             return result
 
         @mcp.tool()
-        async def pcb_apply_stackup_template(
+        async def pcb_apply_vendor_stackup_template(
                 vendor: str, stackup: str,
                 dry_run: bool = True) -> dict[str, Any]:
             """Set the open board's stackup to a bundled template.

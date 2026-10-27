@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Source contracts only: these do not execute Altium's scripting engine."""
 from pathlib import Path
 import re

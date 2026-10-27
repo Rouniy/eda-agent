@@ -57,6 +57,7 @@ from ctypes import POINTER, byref, c_long, wintypes
 
 from . import altium_locale
 from . import windows as win
+from .captions import plain
 
 try:                                            # pragma: no cover - platform
     import comtypes
@@ -167,7 +168,7 @@ def _same(a: str, b: str) -> bool:
     the menu shows "Rules".
     """
     def flat(text):
-        return (str(text or "").replace("&", "").strip()
+        return (plain(text).replace("&", "").strip()
                 .rstrip(".").strip().lower())
     if flat(a) == flat(b):
         return True
@@ -341,9 +342,21 @@ def _press(pid: int, node, wanted: str, until) -> str:
 
 
 def frame(pid: int):
-    """Altium's main document frame, or None."""
+    """Altium's main document frame, or None.
+
+    A HIDDEN frame is shown again and returned. Altium's main window has
+    been found hidden (not minimized) while the bridge kept answering;
+    the bridge re-shows it after each reply, but a menu walk does not go
+    through the bridge, and app_update_from_libraries then failed with
+    "no Altium main window" on an Altium that was running.
+    """
     for window in win.enumerate_windows(pid=pid):
         if window.class_name == _FRAME_CLASS:
+            return window
+    for window in win.enumerate_windows(pid=pid, visible_only=False):
+        if window.class_name == _FRAME_CLASS:
+            win.show_without_focus(window.hwnd)
+            win.wait_until(lambda: bool(win32gui.IsWindowVisible(window.hwnd)), 1.0)
             return window
     return None
 
@@ -543,7 +556,7 @@ def click_path(pid: int, path: str, settle: float = 1.2, expect_dialog: str = ""
         owned = False
     try:
         before = {d.hwnd for d in win.dialogs(pid)}
-        out = _click_path(pid, path, settle)
+        out = _click_path_read_twice(pid, path, settle)
         if not out.get("ok"):
             return out
 
@@ -621,6 +634,34 @@ def bring_to_front(pid: int) -> bool:
     return True
 
 
+def _click_path_read_twice(pid: int, path, settle: float) -> dict:
+    """``_click_path``, walked once more when a level's items read wrong.
+
+    MEASURED on AD 26.10.1.6: the first read of Tools came back "a menu
+    opened but exposed no items" one time in six. Reported on AD 25:
+    asked for Tools, the items read were the Design menu's about one time
+    in four, and the same call worked straight after. Nothing here can
+    tell which menu a popup belongs to, so "not found" is retried too.
+
+    Both failures happen before the last entry is pressed, so no command
+    has run and the walk can be made again. Once only, and when both
+    reads fail the reply carries both.
+    """
+    first = _click_path(pid, path, settle)
+    if first.get("ok") or not first.pop("_read_failed", False):
+        return first
+    close_open_menu(pid)
+    second = _click_path(pid, path, settle)
+    second.pop("_read_failed", None)
+    second["retried"] = True
+    second["first_read"] = {"reason": first.get("reason"),
+                            "offered": first.get("offered", [])}
+    if not second.get("ok"):
+        second["reason"] = (f"{second.get('reason')}. Read twice; the first "
+                            f"read said: {first.get('reason')}")
+    return second
+
+
 def _click_path(pid: int, path, settle: float) -> dict:
     levels = _levels(path)
     if not levels:
@@ -670,7 +711,7 @@ def _click_path(pid: int, path, settle: float) -> dict:
                 f"a menu opened but exposed no items, so {wanted!r} could "
                 f"not be looked for. The accessible layer returned "
                 f"nothing, which usually means COM is not initialised on "
-                f"this thread"), "offered": []}
+                f"this thread"), "offered": [], "_read_failed": True}
 
         hits = [e for e in entries if _same(_name(e), wanted)]
         if not hits:
@@ -678,7 +719,8 @@ def _click_path(pid: int, path, settle: float) -> dict:
             close_open_menu(pid)
             return {"ok": False,
                     "reason": f"{wanted!r} is not in {levels[depth - 1]!r}",
-                    "offered": [o for o in offered if o]}
+                    "offered": [o for o in offered if o],
+                    "_read_failed": True}
         if len({_visible_rect(h) for h in hits}) > 1:
             close_open_menu(pid)
             return {"ok": False, "reason": (
@@ -1085,7 +1127,7 @@ def click_toolbar(pid: int, name: str, settle: float = 0.8) -> dict:
         return listing
 
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     hit = next((b for b in listing["buttons"]
                 if flat(b["name"]) == flat(name)), None)
@@ -1098,3 +1140,135 @@ def click_toolbar(pid: int, name: str, settle: float = 0.8) -> dict:
     win.wait_until(lambda: bool(_submenus(pid)), settle)
     return {"ok": True, "button": hit["name"],
             "opened_menu": bool(_submenus(pid))}
+
+
+#: The toolbar that carries the view-configuration combo, by its
+#: accessible name, and the combo's item name on that bar. Measured on
+#: AD26: the combo is a bar item with a plain Edit window over it that
+#: holds the current configuration. Its default action reports success
+#: and opens nothing, as Altium's menu bars do, so it is opened with a
+#: real click on its arrow. It drops a TdxBarDropDownListBox, which has
+#: no accessible children but answers the standard listbox messages.
+_VIEW_CONFIG_ITEM = "Change View Configuration"
+_DROP_LIST_CLASS = "TdxBarDropDownListBox"
+_LB_GETTEXT, _LB_GETTEXTLEN, _LB_GETCOUNT = 0x0189, 0x018A, 0x018B
+_LB_GETITEMRECT = 0x0198
+
+
+def _view_config_combo(pid: int, bar_name: str):
+    """(combo node, edit hwnd) on one toolbar, or None.
+
+    The bar is matched by its accessible name, not its window text:
+    window text was measured empty on the same bar a minute after it
+    read "PCB Standard", and its handle changes as editors switch.
+    """
+    from . import controls as ctl
+
+    frame_win = frame(pid)
+    if frame_win is None:
+        return None
+    captured = win.capture(frame_win.hwnd)
+    if captured is None:
+        return None
+    for control in captured.controls:
+        if "clientbarcontrol" not in control.class_name.lower():
+            continue
+        if control.rect[0] < -10000:
+            continue
+        if ctl.read(control.hwnd).get("name") != bar_name:
+            continue
+        node = next((c["node"] for c in ctl.list_choices(control.hwnd)
+                     if _same(c["name"], _VIEW_CONFIG_ITEM)), None)
+        if node is None:
+            continue
+        edit = next((c.hwnd for c in captured.controls
+                     if c.class_name == "Edit"
+                     and win32gui.GetParent(c.hwnd) == control.hwnd), None)
+        return node, edit
+    return None
+
+
+def view_configuration(pid: int, bar_name: str = "PCB Standard") -> str | None:
+    """The configuration the toolbar combo shows, or None if it is not there."""
+    found = _view_config_combo(pid, bar_name)
+    if found is None or found[1] is None:
+        return None
+    return win.read_text(found[1]) or None
+
+
+def _drop_list(pid: int):
+    return next((w.hwnd for w in win.enumerate_windows(pid=pid)
+                 if w.class_name == _DROP_LIST_CLASS), None)
+
+
+def _list_box_items(hwnd: int) -> list:
+    user32 = _u()
+    out = []
+    for index in range(max(user32.SendMessageW(hwnd, _LB_GETCOUNT, 0, 0), 0)):
+        length = user32.SendMessageW(hwnd, _LB_GETTEXTLEN, index, 0)
+        buffer = ctypes.create_unicode_buffer(max(length, 0) + 2)
+        user32.SendMessageW(hwnd, _LB_GETTEXT, index, buffer)
+        out.append(buffer.value)
+    return out
+
+
+def set_view_configuration(pid: int, name: str = "",
+                           bar_name: str = "PCB Standard",
+                           settle: float = 2.0) -> dict:
+    """Pick a view configuration in the toolbar combo, and read it back.
+
+    There is no API route: PCB:ChangeViewConfiguration ignores every
+    parameter name tried, and the only setter is internal to the view.
+    With no ``name`` this only reads the combo. A name the list does not
+    hold is refused with the names it does.
+    """
+    from . import controls as ctl
+
+    found = _view_config_combo(pid, bar_name)
+    if found is None:
+        return {"ok": False, "reason": (
+            f"no {bar_name!r} toolbar with a view configuration combo is "
+            "showing. It shows only while that editor is the active one")}
+    node, edit = found
+    was = win.read_text(edit) if edit else None
+    if not name:
+        return {"ok": True, "value": was}
+    if was and _same(was, name):
+        return {"ok": True, "value": was, "changed": False}
+
+    rect = ctl._node_rect(node)
+    if rect is None:
+        return {"ok": False, "reason": "the combo has no screen rectangle"}
+    if not bring_to_front(pid):
+        return {"ok": False, "reason": "could not focus Altium"}
+    left, top, width, height = rect
+    refused = _click(pid, left + width - 8, top + height // 2,
+                     until=lambda: _drop_list(pid) is not None, wait=settle)
+    drop = _drop_list(pid)
+    if refused or drop is None:
+        return {"ok": False, "value": was,
+                "reason": refused or "the combo did not drop its list"}
+
+    offered = _list_box_items(drop)
+    index = next((i for i, text in enumerate(offered) if _same(text, name)),
+                 None)
+    if index is None:
+        _tap(pid, _VK_ESC)
+        win.wait_until(lambda: _drop_list(pid) is None, 0.6)
+        return {"ok": False, "value": was, "offered": offered,
+                "reason": f"no view configuration named {name!r}"}
+
+    item = wintypes.RECT()
+    _u().SendMessageW(drop, _LB_GETITEMRECT, index, byref(item))
+    corner = wintypes.POINT(item.left, item.top)
+    _u().ClientToScreen(drop, byref(corner))
+    _click(pid, corner.x + (item.right - item.left) // 2,
+           corner.y + (item.bottom - item.top) // 2,
+           until=lambda: _drop_list(pid) is None, wait=settle)
+    win.wait_until(
+        lambda: _same(view_configuration(pid, bar_name) or "", name), settle)
+    now = view_configuration(pid, bar_name)
+    if now is None or not _same(now, name):
+        return {"ok": False, "value": now, "was": was, "offered": offered,
+                "reason": f"chose {name!r} and the combo still reads {now!r}"}
+    return {"ok": True, "value": now, "was": was, "changed": True}

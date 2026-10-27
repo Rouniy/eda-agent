@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.41';
+    SCRIPT_VERSION = '2026.10.27.42';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -27,6 +27,10 @@ Const
     // pair above it is known to have been skipped rather than judged clean.
     MechScanLimit = 64;
 
+    // The colour Altium gives a net label by default: maroon, RGB(128, 0, 0),
+    // packed as BGR. Every net label a tool places takes it.
+    NET_LABEL_COLOR = 128;
+
     // Wire protocol version. Bumped whenever the request/response JSON shape
     // changes incompatibly. Python and Pascal must agree; mismatch returns
     // PROTOCOL_VERSION_MISMATCH on the Pascal side and raises on the Python
@@ -39,6 +43,11 @@ Const
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
     { so bursts without this cache add up to 30-40 s of needless recompiles.   }
     COMPILE_CACHE_TTL_MS = 2000;
+
+    { How long one Claude session may run commands back to back while      }
+    { another session is waiting. See ScanForRequestFile. A session alone   }
+    { is never slotted.                                                     }
+    SESSION_SLOT_MS = 30000;
 
     CONFIG_FILE = 'mcp_config.json';
 
@@ -63,11 +72,23 @@ Const
     // below it.
     MAX_INT = 1000000000;
 
+    // TLibIdentifierKind in declaration order: 0 Any, 1 NameNoType,
+    // 2 NameWithType, 3 FullPath, 4 VaultName (System API constants).
+    // VaultName is how SchServer.LoadComponent addresses a part in a
+    // Workspace. Written as a number so no enum name has to exist in
+    // this host; an unknown identifier stops the script.
+    LIB_IDENT_KIND_VAULT_NAME = 4;
+
 Var
     WorkspaceDir : String;
     Running : Boolean;
     SelectedCompileReady : Boolean;
     SelectedCompileProject : IProject;
+
+    { The last error reply built, unescaped: request id, code and message.  }
+    { The status window shows this instead of re-reading the JSON, which    }
+    { turns non-Latin text into '?'. See BuildErrorResponseDetailed.        }
+    LastErrorId, LastErrorCode, LastErrorMsg : String;
 
     { Polling tunables, defaults below, overridden by mcp_config.json at      }
     { startup via LoadMCPConfig. Single source of truth: the config file.     }
@@ -144,11 +165,6 @@ Var
       library, and the name is compared against this recorded string
       rather than against anything read back off the component. }
     LastCreatedLibComponentName : String;
-
-    { Re-entry guard for LookupLibComponent's last-resort reopen. A
-      reopen re-reads the document and the retry looks the name up
-      again; without this the retry could trigger another reopen. }
-    RefreshingLib : Boolean;
 
 {..............................................................................}
 { Initialise polling tunables to compile-time defaults. Called by the          }
@@ -231,6 +247,24 @@ Begin
             End;
         End;
     End;
+End;
+
+{ The value of an op's LAST field, everything after ';<key>='. GetBatchField  }
+{ stops at the next ';', which cut a batch_modify set of Text=first;second    }
+{ to Text=first. Python writes set last and refuses a ';' in the fields      }
+{ before it, so the first ';set=' is the real one.                           }
+Function GetBatchTail(Op : String; Key : String) : String;
+Var
+    Marker : String;
+    P : Integer;
+Begin
+    Result := '';
+    Marker := ';' + LowerCase(Key) + '=';
+    P := Pos(Marker, LowerCase(Op));
+    If P > 0 Then
+        Result := Copy(Op, P + Length(Marker), Length(Op))
+    Else If Pos(LowerCase(Key) + '=', LowerCase(Op)) = 1 Then
+        Result := Copy(Op, Length(Key) + 2, Length(Op));
 End;
 
 {..............................................................................}
@@ -516,6 +550,13 @@ End;
 
 {..............................................................................}
 { GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
+{                                                                              }
+{ When no board is focused it answers from the first PcbDoc of the open        }
+{ projects, and the reply then names that board (BoardFallbackNote), so a     }
+{ caller can tell it from the one it meant. With a PcbLib in front the caller  }
+{ is working on a library, not a board: it answers only when exactly one board }
+{ is open, and with several gives Nil with the reason in BoardMissWhy, rather  }
+{ than reading or writing whichever board the walk reached first.             }
 {..............................................................................}
 
 Function GetPCBBoardAnywhere(Dummy : Integer): IPCB_Board;
@@ -525,8 +566,8 @@ Var
     Doc : IDocument;
     ServerDoc : IServerDocument;
     PrevView : IServerDocumentView;
-    Path : String;
-    I, P : Integer;
+    Path, FocusKind, Candidates : String;
+    I, P, Found : Integer;
 Begin
     Result := Nil;
 
@@ -542,10 +583,46 @@ Begin
     { absent server) that Try/Except cannot swallow and that hangs the       }
     { polling loop. So only touch PCBServer when a PCB is actually focused.  }
     Doc := Workspace.DM_FocusedDocument;
-    If (Doc <> Nil) And (UpperCase(Doc.DM_DocumentKind) = 'PCB') Then
+    FocusKind := '';
+    If Doc <> Nil Then
+        Try FocusKind := UpperCase(Doc.DM_DocumentKind); Except End;
+    If FocusKind = 'PCB' Then
     Begin
         Result := PCBServer.GetCurrentPCBBoard;
         If Result <> Nil Then Exit;
+    End;
+
+    { A library in front: a board is meant only when there is just one. }
+    If FocusKind = 'PCBLIB' Then
+    Begin
+        Found := 0;
+        Candidates := '';
+        For P := 0 To Workspace.DM_ProjectCount - 1 Do
+        Begin
+            Project := Workspace.DM_Projects(P);
+            If Project = Nil Then Continue;
+            For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+            Begin
+                Doc := Project.DM_LogicalDocuments(I);
+                If Doc = Nil Then Continue;
+                Path := '';
+                Try Path := Doc.DM_FullPath; Except End;
+                If Path = '' Then Continue;
+                If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
+                   (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
+                Found := Found + 1;
+                If Candidates <> '' Then Candidates := Candidates + ', ';
+                Candidates := Candidates + Path;
+            End;
+        End;
+        If Found > 1 Then
+        Begin
+            BoardMissWhy := 'A PCB library is in front and ' + IntToStr(Found)
+                + ' boards are open (' + Candidates + '), so no board was '
+                + 'picked. For the library use the lib_ tools; for a board, '
+                + 'focus it first.';
+            Exit;
+        End;
     End;
 
     { Fallback: no PCB tab is focused (the user is on a schematic, a library }
@@ -582,7 +659,12 @@ Begin
 
             Try Client.ShowDocument(ServerDoc); Except End;
             Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-            If Result <> Nil Then Break;
+            If Result <> Nil Then
+            Begin
+                BoardFallbackPath := Path;
+                BoardFallbackFrom := FocusKind;
+                Break;
+            End;
         End;
 
         If Result <> Nil Then Break;
@@ -597,14 +679,26 @@ End;
 { ResolvePCBBoard - get a SPECIFIC board by path when several PcbDocs are     }
 { open. GetPCBBoardAnywhere returns the focused/current board, which is the   }
 { WRONG one when the caller meant a different (e.g. newly created) board.     }
-{ PCBServer.GetPCBBoardByPath is undeclared on this build, so we open + show  }
-{ the target (which focuses it) and then read GetCurrentPCBBoard. Empty path  }
-{ falls back to GetPCBBoardAnywhere.                                          }
+{ PCBServer.GetPCBBoardByPath is undeclared on this build, so the target is   }
+{ shown (which focuses it) and GetCurrentPCBBoard read. Empty path means      }
+{ GetPCBBoardAnywhere.                                                        }
+{                                                                             }
+{ A loaded document is shown; an unloaded one is opened only when it is a    }
+{ document of an open project or a file that exists. A mangled path (no such }
+{ file) once opened as a "free document" and left the project unfocused. A   }
+{ path that does not resolve gives Nil, never some other board, and a board  }
+{ that did not come to the front is Nil too, so the caller reports it.       }
 {..............................................................................}
 
 Function ResolvePCBBoard(Path : String) : IPCB_Board;
 Var
     ServerDoc : IServerDocument;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    DocPath : String;
+    I, P : Integer;
+    InProject : Boolean;
 Begin
     Result := Nil;
     If Path = '' Then
@@ -635,6 +729,8 @@ Begin
 
     Try Client.ShowDocument(ServerDoc); Except End;
     Try Result := PCBServer.GetCurrentPCBBoard; Except Result := Nil; End;
+    If Result <> Nil Then
+        If UpperCase(Result.FileName) <> UpperCase(Path) Then Result := Nil;
 End;
 
 {..............................................................................}
@@ -1401,10 +1497,11 @@ Begin
             Else If NextCh = 'f' Then Begin Result := Result + #12; Inc(I, 2); End
             Else If NextCh = 'u' Then
             Begin
-                // \uXXXX, 4 hex digits. Codepoints <= 255 are emitted as a
-                // single ANSI byte (Pascal native). Higher codepoints can't
-                // be represented in single-byte ANSI; replaced with '?' so
-                // downstream string handling doesn't see truncated bytes.
+                // \uXXXX, 4 hex digits. Codepoints <= 255 become one
+                // character; higher ones are replaced with '?'. The bridge
+                // sends non-ASCII as literal UTF-8 behind a byte-order mark
+                // (_publish_request), so only control characters arrive
+                // escaped from it.
                 If I + 5 <= L Then
                 Begin
                     HexStr := Copy(S, I + 2, 4);
@@ -1447,6 +1544,28 @@ Begin
             Inc(I);
         End;
     End;
+End;
+
+{ One spelling for a file path a caller sends. Altium keys an open document  }
+{ by the path string it was opened with, so the same file opened as         }
+{ C:/dir\x.PcbLib and as C:\dir\x.PcbLib is TWO open documents. A later     }
+{ open or focus by the other spelling loaded a second copy from disk, the   }
+{ tool then edited that copy, and an edit after it raised "Object accessed  }
+{ after being destroyed" in ADVPCB (measured 2026-10-18). Only a value under }
+{ a key ending in "path" that is a drive or UNC path is rewritten, so a     }
+{ menu_path like "File|Open" passes untouched.                              }
+Function CanonicalPathValue(Key : String; Value : String) : String;
+Var
+    K : String;
+Begin
+    Result := Value;
+    K := LowerCase(Key);
+    If (Length(K) < 4) Or (Copy(K, Length(K) - 3, 4) <> 'path') Then Exit;
+    If (Length(Value) >= 3) And (Copy(Value, 2, 1) = ':')
+        And ((Copy(Value, 3, 1) = '/') Or (Copy(Value, 3, 1) = '\')) Then
+        Result := StringReplace(Value, '/', '\', -1)
+    Else If (Copy(Value, 1, 2) = '//') Or (Copy(Value, 1, 2) = '\\') Then
+        Result := StringReplace(Value, '/', '\', -1);
 End;
 
 Function ExtractJsonValue(Json : String; Key : String) : String;
@@ -1492,7 +1611,8 @@ Begin
                     End;
                     Inc(EndPos);
                 End;
-                Result := UnescapeJsonString(Copy(Json, StartPos, EndPos - StartPos));
+                Result := CanonicalPathValue(Key,
+                    UnescapeJsonString(Copy(Json, StartPos, EndPos - StartPos)));
             End
             Else If (Copy(Json, StartPos, 1) = '{') Or
                     (Copy(Json, StartPos, 1) = '[') Then
@@ -1562,6 +1682,49 @@ Begin
     Result := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION) +
               ',"id":"' + RequestId + '","success":true,"data":' +
               Data + ',"error":null}';
+End;
+
+{..............................................................................}
+{ ProjectSheet - a project sheet for a project-wide read, counted.            }
+{                                                                              }
+{ SchServer.GetSchDocumentByPath returns Nil for a sheet the editor has not    }
+{ loaded, and every project loop skipped it with Continue. An audit over a    }
+{ partly loaded project then answered checked:0 / violations:0, the same as   }
+{ "looked and found nothing". Each lookup through here is counted, and        }
+{ SheetCoverage puts the counts on the reply at the one dispatch point, so a  }
+{ loop added later is covered without remembering to.                         }
+{..............................................................................}
+Function ProjectSheet(Path : String) : ISch_Document;
+Begin
+    Result := Nil;
+    Inc(SheetsSeen);
+    Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
+    If Result = Nil Then Inc(SheetsSkipped);
+End;
+
+{ The reply with the sheet counts added when a project-wide read skipped a   }
+{ sheet. Only a success whose data is an object is touched; an error, or a   }
+{ reply that read no project sheet, goes back unchanged.                     }
+Function SheetCoverage(Response : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If SheetsSkipped = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Added := '"sheets_seen":' + IntToStr(SheetsSeen)
+        + ',"sheets_skipped":' + IntToStr(SheetsSkipped)
+        + ',"sheets_warning":"' + IntToStr(SheetsSkipped) + ' of '
+        + IntToStr(SheetsSeen) + ' project sheets are not loaded in the editor '
+        + 'and were NOT read, so counts and findings cover only the rest. '
+        + 'Run proj_load_sheets and ask again."';
+    { A data object that was empty takes the fields without a comma. }
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
 {..............................................................................}
@@ -1660,6 +1823,9 @@ Begin
     { and must not be doubled. Decided on the handler's own words,       }
     { BEFORE the focus note is added, because a file name such as        }
     { power_lib_parts.SchLib contains "lib_" and would read as a pointer.}
+    { Why GetPCBBoardAnywhere gave no board, when it decided not to guess. }
+    If (ErrorCode = 'NO_PCB') And (BoardMissWhy <> '') Then
+        ErrorMsg := WithFullStop(ErrorMsg) + ' ' + BoardMissWhy;
     Hint := CrossDocumentHint(ErrorCode);
     Pointed := MessageNamesATool(ErrorMsg);
     If Hint <> '' Then
@@ -1673,9 +1839,10 @@ Begin
     End;
 
     // Inline escape (EscapeJsonString is not yet declared in build order).
-    // Must also \u00XX-escape control and non-ASCII bytes: one raw byte
-    // >127 in an error message (an accented file path, say) makes the whole
-    // response unparseable on the Python side and hides the real error.
+    // Must also \uXXXX-escape control and non-ASCII characters: one raw
+    // byte >127 in an error message (an accented file path, say) makes the
+    // whole response unparseable on the Python side and hides the real
+    // error. All four digits: a CJK path is above 255.
     HexDigits := '0123456789abcdef';
     EscMsg := '';
     For I := 1 To Length(ErrorMsg) Do
@@ -1688,7 +1855,9 @@ Begin
         Else If O = 10 Then EscMsg := EscMsg + '\n'
         Else If O = 9 Then EscMsg := EscMsg + '\t'
         Else If (O < 32) Or (O >= 128) Then
-            EscMsg := EscMsg + '\u00'
+            EscMsg := EscMsg + '\u'
+                + Copy(HexDigits, ((O Shr 12) And $F) + 1, 1)
+                + Copy(HexDigits, ((O Shr 8) And $F) + 1, 1)
                 + Copy(HexDigits, ((O Shr 4) And $F) + 1, 1)
                 + Copy(HexDigits, (O And $F) + 1, 1)
         Else
@@ -1704,6 +1873,13 @@ Begin
                   ',"id":"' + RequestId + '","success":false,"data":null,' +
                   '"error":{"code":"' + ErrorCode + '","message":"' + EscMsg +
                   '","details":' + DetailsJson + '}}';
+
+    { The message as written, for the status window. Read back out of the
+      JSON it loses every character above 255 to '?', since the unescaper
+      cannot build one in this script host (issue #91). }
+    LastErrorId := RequestId;
+    LastErrorCode := ErrorCode;
+    LastErrorMsg := ErrorMsg;
 End;
 
 Function BuildErrorResponse(RequestId : String; ErrorCode : String; ErrorMsg : String) : String;
@@ -1830,17 +2006,112 @@ End;
 { Per-request files on both sides, request_<id>.json + response_<id>.json, }
 { eliminate any cross-caller race: each caller publishes to its own filename }
 { and polls only its own response file.                                      }
+{                                                                              }
+{ TIME SLOTS BETWEEN CLAUDE SESSIONS. Each eda-agent server (one per Claude   }
+{ session) writes ids <tag>-<seq>-<random>: an 8-character session tag and an }
+{ 8-digit sequence. Any other id is the 'legacy' session (a server from       }
+{ before this). Of the pending requests, each session's lowest sequence is    }
+{ its next. With one session pending it is served straight through: one      }
+{ session is never slotted. With several, the session whose slot is running  }
+{ keeps it for SESSION_SLOT_MS, then the next waiting session in tag order    }
+{ gets one slot, so no session has a second slot before every waiting one     }
+{ has had one. A command is never cut off: slots change between commands.    }
+{ While sessions contend, queue.json is refreshed about once a second, so a  }
+{ waiting client can tell a queue from a dead loop.                           }
+
+{ PickSession - which session's request goes next. Tags: the sessions with   }
+{ a pending request, joined by '|'. Current: the session whose slot is       }
+{ running, ElapsedMs how long it has run. A session alone always goes; the   }
+{ current session keeps its slot until SlotMs; otherwise the first tag after }
+{ Current in string order, wrapping to the lowest. Pure strings, so the Free }
+{ Pascal cross-check runs a verbatim copy.                                   }
+Function PickSession(Tags : String; Current : String; ElapsedMs : Integer;
+    SlotMs : Integer) : String;
+Var
+    Rest, Tag, Lowest, After : String;
+    Bar, Count : Integer;
+    HasCurrent : Boolean;
+Begin
+    Result := '';
+    Lowest := '';
+    After := '';
+    Count := 0;
+    HasCurrent := False;
+    Rest := Tags;
+    While Rest <> '' Do
+    Begin
+        Bar := Pos('|', Rest);
+        If Bar = 0 Then
+        Begin
+            Tag := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Tag := Copy(Rest, 1, Bar - 1);
+            Rest := Copy(Rest, Bar + 1, Length(Rest));
+        End;
+        If Tag <> '' Then
+        Begin
+            Inc(Count);
+            If Tag = Current Then HasCurrent := True;
+            If (Lowest = '') Or (Tag < Lowest) Then Lowest := Tag;
+            If Tag > Current Then
+                If (After = '') Or (Tag < After) Then After := Tag;
+        End;
+    End;
+    If Count = 0 Then Exit;
+    If Count = 1 Then
+    Begin
+        Result := Lowest;
+        Exit;
+    End;
+    If HasCurrent And (ElapsedMs < SlotMs) Then
+    Begin
+        Result := Current;
+        Exit;
+    End;
+    If After <> '' Then Result := After
+    Else Result := Lowest;
+End;
+
+{ SessionFocusAction - whether to put a session's document back in front    }
+{ before its command runs. Most commands act on the focused document, and   }
+{ any session can move it between two calls of another: measured on        }
+{ 2026-10-23, 309 of about 1500 commands in a day were set_active_document, }
+{ sessions taking the focus back from each other, with a gap in which a    }
+{ write could land on the wrong document. Pin is the document the session  }
+{ last had in front, Current what is in front now, both canonical.         }
+{   'keep'    no pin, or the pin is already in front                      }
+{   'restore' put the pin back in front first                             }
+{ A session's command always runs on the document that session chose, even }
+{ when a person at the keyboard clicked elsewhere in between, by choice    }
+{ (2026-10-23): a write on a document the session never picked             }
+{ is worse than a view that moves. A session is pointed at another         }
+{ document by focusing it, which moves its pin.                           }
+{ Pure strings, so the Free Pascal cross-check runs a verbatim copy.       }
+Function SessionFocusAction(Pin : String; Current : String) : String;
+Begin
+    Result := 'keep';
+    If Pin = '' Then Exit;
+    If UpperCase(Pin) = UpperCase(Current) Then Exit;
+    Result := 'restore';
+End;
+
 Function ScanForRequestFile(Var FilePath : String; Var RequestId : String) : Boolean;
 Var
-    Files : TStringList;
-    I, NameLen : Integer;
-    Name, IdPart : String;
+    Files, Tags, BestSeq, BestName : TStringList;
+    I, NameLen, Pick, NowTick : Integer;
+    Name, IdPart, Tag, Seq, NextTag, Pending : String;
 Begin
     Result := False;
     FilePath := '';
     RequestId := '';
 
     Files := TStringList.Create;
+    Tags := TStringList.Create;
+    BestSeq := TStringList.Create;
+    BestName := TStringList.Create;
     Try
         FindFiles(WorkspaceDir, 'request_*.json', 63, False, Files);
         For I := 0 To Files.Count - 1 Do
@@ -1856,15 +2127,78 @@ Begin
                 IdPart := Copy(Name, 9, NameLen - 13);
                 If IsValidRequestId(IdPart) Then
                 Begin
-                    RequestId := IdPart;
-                    FilePath := WorkspaceDir + Name;
-                    Result := True;
-                    Exit;
+                    Tag := 'legacy';
+                    Seq := '';
+                    If (Length(IdPart) >= 19) And (Pos('-', IdPart) = 9)
+                        And (Copy(IdPart, 18, 1) = '-') Then
+                    Begin
+                        Tag := LowerCase(Copy(IdPart, 1, 8));
+                        Seq := Copy(IdPart, 10, 8);
+                    End;
+                    Pick := Tags.IndexOf(Tag);
+                    If Pick < 0 Then
+                    Begin
+                        Tags.Add(Tag);
+                        BestSeq.Add(Seq);
+                        BestName.Add(Name);
+                    End
+                    Else
+                    Begin
+                        If Seq < BestSeq[Pick] Then
+                        Begin
+                            BestSeq[Pick] := Seq;
+                            BestName[Pick] := Name;
+                        End;
+                    End;
                 End;
             End;
         End;
+
+        If Tags.Count > 0 Then
+        Begin
+            NowTick := GetTickCount;
+            Pending := '';
+            For I := 0 To Tags.Count - 1 Do
+            Begin
+                If Pending <> '' Then Pending := Pending + '|';
+                Pending := Pending + Tags[I];
+            End;
+            NextTag := PickSession(Pending, SlotSession, NowTick - SlotStartTick,
+                SESSION_SLOT_MS);
+            Pick := Tags.IndexOf(NextTag);
+            If Pick < 0 Then Pick := 0;
+            If Tags.Count > 1 Then
+            Begin
+                If (NowTick - QueueNoteTick >= 1000) Or (Tags[Pick] <> SlotSession) Then
+                Begin
+                    Pending := '';
+                    For I := 0 To Tags.Count - 1 Do
+                    Begin
+                        If Pending <> '' Then Pending := Pending + ',';
+                        Pending := Pending + '"' + Tags[I] + '"';
+                    End;
+                    Try
+                        WriteFileContent(WorkspaceDir + 'queue.json',
+                            '{"serving":"' + Tags[Pick] + '","pending":[' + Pending
+                            + '],"slot_ms":' + IntToStr(SESSION_SLOT_MS) + '}');
+                    Except End;
+                    QueueNoteTick := NowTick;
+                End;
+            End;
+            If Tags[Pick] <> SlotSession Then
+            Begin
+                SlotSession := Tags[Pick];
+                SlotStartTick := NowTick;
+            End;
+            RequestId := Copy(BestName[Pick], 9, Length(BestName[Pick]) - 13);
+            FilePath := WorkspaceDir + BestName[Pick];
+            Result := True;
+        End;
     Finally
         Files.Free;
+        Tags.Free;
+        BestSeq.Free;
+        BestName.Free;
     End;
 End;
 
@@ -1891,11 +2225,22 @@ End;
 {                                                                              }
 { The purged count is logged, so an operator can tell "the loop is slow" from }
 { "the loop is draining a backlog".                                          }
+{ EXCEPT DURING A RESTART. eda-agent relaunch --restart writes             }
+{ maintenance.json for as long as it takes, and other sessions' calls wait  }
+{ through it instead of failing, so the requests on disk then are live      }
+{ callers waiting for the new loop, not orphans. Each one still runs on its }
+{ own session's document (SessionFocus), and a caller that gave up has      }
+{ withdrawn its own request.                                               }
 Procedure CleanupOrphanRequests(Dummy : Integer);
 Var
     Files : TStringList;
     I, Purged : Integer;
 Begin
+    If FileExists(WorkspaceDir + 'maintenance.json') Then
+    Begin
+        AppendLog(FormatLogStamp(0) + ',0,_purge_requests,kept for restart,0,');
+        Exit;
+    End;
     Purged := 0;
     Files := TStringList.Create;
     Try
@@ -2025,3 +2370,10 @@ End;
 { Request dispatch and the poll timer are in StatusForm.pas (the pump's     }
 { handler must live in the form's own unit); the StartMCPServer entry point }
 { stays in Dispatcher.pas, which compiles last.                             }
+
+{ UnitStamp_Main - which build of Main.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Main(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
+End;

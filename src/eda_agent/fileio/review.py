@@ -321,7 +321,7 @@ def review_project_file(path: str | Path) -> dict[str, Any]:
     ``sheet`` key per finding. Falls back to reviewing ``path`` directly if
     it is itself a .SchDoc.
     """
-    from .altium_project import read_project_sheets
+    from .altium_project import check_design_file, read_project_sheets, required_project_sheets
 
     path = Path(path)
     # A missing/unreadable .SchDoc or .SchLib fails naturally in its reader;

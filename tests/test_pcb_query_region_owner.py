@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The public Owner alias uses the native Component property."""
 
 import asyncio

@@ -5,8 +5,8 @@
 Claude Code is the planner. It calls ``design_get_discipline`` to read
 the rules, ``design_snapshot_inventory`` to learn what parts exist in
 the user's libraries, then constructs a DesignPlan JSON, validates it
-with ``design_validate_plan``, and hands it to ``design_execute_plan``
-to instantiate the schematic.
+with ``design_validate_plan``, and draws it from a hand template with
+``sch_draw_template``.
 
 This module deliberately makes no Anthropic API calls, the AI is the
 client (Claude Code), this is just the tool layer it drives.
@@ -42,6 +42,7 @@ from ..design.component_values import (
 )
 from ..design.discipline import get_discipline
 from ..design.executor import execute_plan_from_json
+from ..design import fab_library
 from ..design.fab_profile import load_fab_profile
 from ..design.hierarchy import apply_hierarchy, plan_hierarchy
 from ..design.requirement import (
@@ -56,9 +57,9 @@ from ..design.orchestrator import (
     execute_plan_via_canvas_from_json,
     hints_from_sheet,
     layout_plan_from_json,
-    plan_from_live_sheet,
     preview_plan_from_json,
 )
+from ..design.sheet_plan import plan_from_live_sheet
 from ..design.motif_descriptions import describe_motifs
 from ..design.net_classes import classify_nets
 from ..design.placement_constraints import infer_placement_constraints
@@ -119,26 +120,65 @@ def _divider_payload(r, series: str, mode: str) -> dict[str, Any]:
     }
 
 
+#: Entries a list in a job result keeps inline; the rest go to a file.
+_JOB_LIST_INLINE = 25
+
+
+def _trim_job_result(rec: dict, job_id: str) -> dict:
+    """``rec`` with each long list in its result cut to its first entries
+    and counted, the whole of it written to the workspace."""
+    import json
+
+    from ..config import get_config
+
+    result = dict(rec["result"])
+    trimmed = {}
+    for key, value in list(result.items()):
+        if isinstance(value, list) and len(value) > _JOB_LIST_INLINE:
+            trimmed[key] = len(value)
+            result[key] = value[:_JOB_LIST_INLINE]
+    out = dict(rec, result=result)
+    if trimmed:
+        folder = get_config().workspace_dir / "jobs"
+        folder.mkdir(parents=True, exist_ok=True)
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in job_id)
+        path = folder / f"{safe}.json"
+        path.write_text(json.dumps(rec, default=str), encoding="utf-8")
+        out["trimmed"] = {k: f"{n} entries, first {_JOB_LIST_INLINE} shown"
+                          for k, n in trimmed.items()}
+        out["full_path"] = str(path)
+    return out
+
+
 def register_design_tools(mcp) -> None:
     """Register the design-agent tools with the MCP server."""
 
     @mcp.tool()
-    async def design_get_discipline() -> dict[str, Any]:
-        """Read the design discipline + DesignPlan JSON schema.
+    async def design_get_discipline(include_schema: bool = False) -> dict[str, Any]:
+        """Read the design discipline, and on request the DesignPlan schema.
 
         ALWAYS call this first when starting a design task. The result
-        contains the hard rules the planner must follow (net-label-driven
-        wiring, datasheet-first part choice, NDA isolation, etc.) plus
-        the JSON schema that ``design_execute_plan`` enforces on input.
+        contains the hard rules the planner must follow (datasheet-first
+        part choice, NDA isolation, the template method for schematics,
+        placement and routing discipline).
+
+        Args:
+            include_schema: Also return the DesignPlan JSON schema, which
+                the plan tools (design_validate_plan, design_review_plan,
+                design_compose_netlist) take. A schematic drawn from
+                templates does not need it.
 
         Returns:
-            A dict with ``discipline`` (markdown text) and
+            A dict with ``discipline`` (markdown text) and, when asked,
             ``schema`` (DesignPlan JSON schema as a dict).
         """
-        return {
-            "discipline": get_discipline(),
-            "schema": DesignPlan.model_json_schema(),
-        }
+        # Under one tool result: with the schema always in, the reply was
+        # 52.5 KB and Claude Code set it aside in a file under the user's
+        # profile, whose path it then showed on screen.
+        out: dict[str, Any] = {"discipline": get_discipline(include_schema=False)}
+        if include_schema:
+            out["schema"] = DesignPlan.model_json_schema()
+        return out
 
     # --- session journal (autonomy-harness durable state) ----------------
 
@@ -456,16 +496,12 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Measure a board for the layout stages' exit gates. Changes nothing.
 
-        Reads the focused board exactly, the way ``pcb_autoroute`` does
-        (``pcb.get_layout_model``), or a saved LayoutBoard JSON, and runs the
-        in-house checks over it. Every check returns counts and itemised
-        findings with coordinates in mils:
+        Reads the focused board (or a saved LayoutBoard JSON) and runs
+        these checks, each with counts and findings in mils:
 
-        - ``placement_audit``: overlapping bodies on one side, pads of
-          different nets closer than the clearance rule, parts on keepouts
-          or mounting holes, parts off the board.
-        - ``connectivity_summary``: nets routed / partly routed / not
-          started, and every unreached pad.
+        - ``placement_audit``: body overlaps, pads under clearance, parts
+          on keepouts or off the board.
+        - ``connectivity_summary``: routed / partial / unstarted nets.
         - ``drc``: the exact clearance check.
         - ``corner_audit``: track junctions bending sharper than 45 degrees.
         - ``return_via_audit``: signal vias with no ground or plane via
@@ -481,21 +517,17 @@ def register_design_tools(mcp) -> None:
           unequally (tombstoning). Fails only on high-severity findings.
 
         Log the result as ``data`` on the stage_result
-        (``design_session_log``); ``design_next_action`` checks the numbers
-        against the stage's gate.
+        (``design_session_log``).
 
         Args:
             checks: names from the list above; None runs them all.
-            expect_file: full path of the focused board, for a live read.
-                The read refuses on the first reply if another board is
-                focused.
-            board_json_path: a saved LayoutBoard (.json or .json.gz) to audit
-                offline instead; nothing is read from the editor.
-            nets: the signal nets ``return_via_audit`` checks. None checks
-                differential-pair and high-speed-class nets, or every signal
-                via when the board names neither.
-            max_distance_mils: how near a return via must be (centre to
-                centre). Default 40.
+            expect_file: full path of the focused board, for a live read;
+                refused if another board is focused.
+            board_json_path: a saved LayoutBoard (.json or .json.gz) to
+                audit offline instead.
+            nets: nets for ``return_via_audit``; None checks diff-pair
+                and high-speed nets, or every signal via.
+            max_distance_mils: return via distance, centre to centre.
             limit: findings listed per kind; counts are never cut.
 
         Returns:
@@ -557,12 +589,16 @@ def register_design_tools(mcp) -> None:
 
     # --- async jobs (engine runs that outlive a tool timeout) ------------
 
+    #: Longest design_job_status holds a call: under the client's 120 s.
+    _JOB_WAIT_CAP_S = 100.0
+
     @mcp.tool()
     async def design_job_start(kind: str, params: dict) -> dict[str, Any]:
         """Start a long engine run as a background job; returns its id.
 
         For work that can exceed the MCP tool timeout (routing a dense
-        board). Poll `design_job_status`, then `design_job_result` when done.
+        board). Call `design_job_status` with ``wait_seconds`` until it is
+        done (nothing notifies you), then `design_job_result`.
 
         Args:
             kind: registered job kind. Currently: ``route`` (offline A*
@@ -582,21 +618,53 @@ def register_design_tools(mcp) -> None:
         return {"job_id": job_id, "kind": kind}
 
     @mcp.tool()
-    async def design_job_status(job_id: str = "") -> dict[str, Any]:
-        """Status of a background job (or all jobs if ``job_id`` is blank)."""
+    async def design_job_status(job_id: str = "", wait_seconds: float = 0) -> dict[str, Any]:
+        """Status of a background job (or all jobs if ``job_id`` is blank).
+
+        Nothing tells you when a job finishes, so keep calling this until
+        it is done rather than ending your turn: a session that stopped to
+        "check when it finishes" was never woken again.
+
+        Args:
+            job_id: the job; blank lists every job.
+            wait_seconds: hold the call until the job finishes or this
+                many seconds pass (capped at 100, inside the client's
+                two-minute limit). 0 answers at once.
+        """
+        import asyncio
+
         from ..design.jobs import get_job_store
         store = get_job_store()
         if not job_id:
             return {"jobs": store.list()}
+        wait = max(0.0, min(float(wait_seconds or 0), _JOB_WAIT_CAP_S))
+        if wait and store.get(job_id) is not None:
+            await asyncio.to_thread(store.wait, job_id, wait)
         rec = store.status(job_id)
         return rec if rec else {"error": f"no such job: {job_id}"}
 
     @mcp.tool()
-    async def design_job_result(job_id: str) -> dict[str, Any]:
-        """Fetch a finished job's result payload (None until it's done)."""
+    async def design_job_result(job_id: str, full: bool = False) -> dict[str, Any]:
+        """Fetch a finished job's result payload (None until it's done).
+
+        A router result lists every track and via, which ran to 250,000
+        characters on a 61-LED board; the client set it aside in a file
+        instead of reading it. So any list longer than a few dozen
+        entries comes back as its count and first entries, and the whole
+        result is written to ``full_path`` (pcb_autoroute_apply takes the
+        tracks from the job itself, not from this reply).
+
+        Args:
+            job_id: the job.
+            full: return every entry inline, however long.
+        """
         from ..design.jobs import get_job_store
         rec = get_job_store().result(job_id)
-        return rec if rec else {"error": f"no such job: {job_id}"}
+        if not rec:
+            return {"error": f"no such job: {job_id}"}
+        if full or not isinstance(rec.get("result"), dict):
+            return rec
+        return _trim_job_result(rec, job_id)
 
     @mcp.tool()
     async def design_snapshot_inventory(
@@ -607,15 +675,11 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Open a list of SchLib files and return what components live in them.
 
-        NDA scope: only pass paths to the user's own neutral standard
-        libraries. Do NOT pass project-local library paths from another
-        client engagement, design knowledge cannot cross NDA boundaries.
+        NDA scope: pass only the user's own neutral standard libraries,
+        never project-local libraries from another client engagement.
 
-        Large libraries (passives/connectors can hold hundreds of parts)
-        easily exceed the tool-output token budget, so the RETURNED set is
-        filtered and capped. The FULL inventory is always cached to
-        ``<workspace>/inventory.json`` for the dashboard regardless of
-        these limits.
+        The returned set is filtered and capped; the full inventory is
+        always written to ``<workspace>/inventory.json``.
 
         Args:
             library_paths: Absolute paths to .SchLib files to scan.
@@ -625,8 +689,8 @@ def register_design_tools(mcp) -> None:
             limit_per_library: Cap components returned per library
                 (default 60; 0 = unlimited). Each library reports
                 ``total`` and ``returned`` so you know if it was capped.
-            include_descriptions: Drop the (often long) ``description``
-                field from the returned rows to save tokens. Default True.
+            include_descriptions: False drops the (often long)
+                ``description`` from each row. Default True.
 
         Returns:
             Inventory dict: ``{"libraries": [{"path", "total",
@@ -680,9 +744,9 @@ def register_design_tools(mcp) -> None:
     async def design_validate_plan(plan_json: Union[str, dict]) -> dict[str, Any]:
         """Validate a candidate DesignPlan JSON against the schema + cross-check.
 
-        Run this before ``design_execute_plan`` to catch schema problems
-        and cross-references that the executor will reject. Cheap; no
-        Altium round-trip.
+        Run this before drawing to catch schema problems and
+        cross-references that ``sch_draw_template`` would reject. Cheap;
+        no Altium round-trip.
 
         Args:
             plan_json: Either a JSON string of the DesignPlan, or the
@@ -776,80 +840,42 @@ def register_design_tools(mcp) -> None:
         block: str,
         params: dict,
     ) -> dict[str, Any]:
-        """Fold a canonical circuit block into a DesignPlan in one call.
+        """Add a standard sub-circuit to a DesignPlan, wired, in one call.
 
-        Authoring boilerplate sub-circuits pin-by-pin in plan JSON is slow
-        and error-prone (a decoupling network is N caps, 2N pins, and two
-        net merges that must line up). This emits the canonical *topology*
-        of a common block and wires it into ``plan_json`` -- allocating
-        unique refdes, tying every pin to the right net, and tagging
-        power/ground and roles -- then returns the augmented plan plus an
-        inline re-validation so the next authoring step starts from a known
-        state.
+        It sets the topology (unique refdes, every pin on its net, power
+        and ground tagged) and re-validates the plan. You choose every
+        part: lib_ref, value, footprint, mpn, datasheet_url in ``params``.
+        Nets the block only touches (a pull-up's signal, a divider's rail)
+        should already exist in the plan.
 
-        It is **naming-agnostic**: it owns the wiring pattern, never the
-        part choice. YOU supply every part identity in ``params``
-        (``lib_ref``/``value``/``footprint``/``mpn``/``datasheet_url``),
-        picked semantically from the live inventory snapshot. Pass computed
-        values from ``design_compute_component_value`` where relevant.
-
-        Blocks and their required ``params`` (all also accept ``pins`` to
-        override default pin names, ``refdes_prefix``, ``sheet``):
-
-          * ``decoupling``      power_net, ground_net, lib_ref [, count,
-                                value, footprint] -- N bypass caps.
-          * ``pullup``          signal_net, rail_net, lib_ref [, value].
-          * ``pulldown``        signal_net, ground_net, lib_ref [, value].
-          * ``series_resistor`` net_a, net_b, lib_ref [, value].
-          * ``voltage_divider`` rail_net, ground_net, lib_ref_top,
-                                lib_ref_bottom [, value_top, value_bottom,
-                                output_net] -- fresh midpoint net.
-          * ``rc_lowpass``      input_net, ground_net, lib_ref_r, lib_ref_c
-                                [, value_r, value_c, output_net].
-          * ``rc_highpass``     input_net, ground_net, lib_ref_r, lib_ref_c
-                                [, value_r, value_c, output_net] -- series
-                                C + shunt R (AC coupling).
-          * ``led_indicator``   anode_net, cathode_net, lib_ref_r,
-                                lib_ref_led [, value_r, mid_net].
-          * ``crystal``         xin_net, xout_net, ground_net, lib_ref,
-                                cap_lib_ref [, value, cap_value] -- crystal
-                                + a matched pair of load caps (one shared
-                                cap_value keeps the legs equal).
-          * ``pi_filter``       input_net, ground_net, lib_ref_l, lib_ref_c
-                                [, value_l, value_c, output_net] -- shunt C,
-                                series L/ferrite, shunt C.
-          * ``mosfet_low_side`` control_net, load_net, ground_net,
-                                lib_ref_r, lib_ref_fet [, value_r_gate,
-                                value_r_pulldown, pulldown, fet_pins] --
-                                gate series R + gate pull-down + FET
-                                switching a load low-side.
-          * ``mosfet_high_side`` control_net, load_net, rail_net,
-                                lib_ref_r, lib_ref_fet [, value_r_gate,
-                                value_r_pullup, pullup, fet_pins] -- gate
-                                series R + gate pull-up + PMOS switching a
-                                load high-side (source at the rail).
-
-        Call ``design_list_circuit_blocks`` for the full per-block
-        parameter contract.
-
-        Net endpoints the block does NOT own (a pullup's signal, an RC
-        input, a divider rail) should already exist in the plan; the block
-        only creates the nets it fully populates. If you point a block at a
-        net that ends up with a single pin, the inline ERC reports it as a
-        floating net for you to complete.
+        Blocks and required params (all accept pins, refdes_prefix, sheet;
+        design_list_circuit_blocks gives the full contract):
+          ``decoupling``: power_net, ground_net, lib_ref [count, value]
+          ``pullup``: signal_net, rail_net, lib_ref
+          ``pulldown``: signal_net, ground_net, lib_ref
+          ``series_resistor``: net_a, net_b, lib_ref
+          ``voltage_divider``: rail_net, ground_net, lib_ref_top,
+            lib_ref_bottom [output_net]
+          ``rc_lowpass`` / ``rc_highpass``: input_net, ground_net,
+            lib_ref_r, lib_ref_c [output_net]
+          ``led_indicator``: anode_net, cathode_net, lib_ref_r,
+            lib_ref_led
+          ``crystal``: xin_net, xout_net, ground_net, lib_ref, cap_lib_ref
+          ``pi_filter``: input_net, ground_net, lib_ref_l, lib_ref_c
+          ``mosfet_low_side``: control_net, load_net, ground_net,
+            lib_ref_r, lib_ref_fet
+          ``mosfet_high_side``: control_net, load_net, rail_net,
+            lib_ref_r, lib_ref_fet
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
-            block: block name (see the list above).
-            params: block parameters (see per-block requirements above).
+            block: block name from the list.
+            params: block parameters.
 
         Returns:
-            ``{ok, plan, added: {refdes, nets, extended_nets}, notes,
-            validation}`` where ``plan`` is the augmented DesignPlan dict
-            ready for the next ``design_add_circuit_block`` or
-            ``design_execute_plan``, and ``validation`` is the same payload
-            ``design_validate_plan`` returns. ``ok`` is False on a bad
-            block name / missing param / schema error, with ``errors``.
+            {ok, plan, added: {refdes, nets, extended_nets}, notes,
+            validation}; ``plan`` is ready for the next block or for
+            drawing. ``ok`` False comes with ``errors``.
         """
         if isinstance(plan_json, dict):
             payload = plan_json
@@ -933,18 +959,11 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Add one part and wire its pins to named nets, in one call.
 
-        The atomic authoring primitive under the block/bus tools: place a
-        single arbitrary part -- an MCU, a connector, a regulator -- and
-        fold each pin into a net. ``connections`` is a pin->net map, the
-        shape a datasheet pinout reads in; pins that map to the same net
-        (an IC's five VCC pins) merge onto one net automatically, so you
-        never hand-maintain a net's pin list. Chain with
-        ``design_add_circuit_block`` (peripherals) and
-        ``design_connect_bus`` (wide interfaces) to author a whole netlist
-        without writing raw net JSON.
-
-        Naming-agnostic: you supply the part identity and net names chosen
-        from the live inventory; this owns only the pin->net folding.
+        ``connections`` maps pin to net, as a datasheet pinout reads;
+        pins on the same net merge onto it. With
+        ``design_add_circuit_block`` and ``design_connect_bus`` this
+        builds a whole netlist without raw net JSON. You choose the part
+        and the net names.
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
@@ -1040,14 +1059,9 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Wire a parallel bus across two+ parts in one call.
 
-        A wide interface -- an 8-bit data bus between an MCU and a display,
-        an address bus to a memory -- is otherwise N near-identical net
-        objects where bit i of one side is easily misaligned with bit i+1
-        of the other. This joins the i-th pin of every endpoint into one
-        net per bit, so alignment is structural and the whole bus is one
-        call. It creates NO parts: the endpoints reference parts already in
-        the plan. The nets share one part-set -- the signature the pipeline
-        uses to DRAW a >=4-bit bus as a bus glyph automatically.
+        Joins the i-th pin of every endpoint into one net per bit, so
+        bits cannot be misaligned. Creates no parts. A bus of 4 or more
+        bits is drawn as a bus.
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
@@ -1133,13 +1147,8 @@ def register_design_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Apply many authoring operations to a plan in ONE call.
 
-        The bulk form of the authoring primitives -- the same reason you
-        prefer a batch Altium tool over looping the singular one. Instead
-        of one round-trip per part/block/bus, pass an ordered list and this
-        threads the plan through all of them, then validates once. Each
-        operation sees the previous one's result, so a part added early is
-        available to a bus wired later. Build a whole board in a single
-        call.
+        Runs the operations in order, each seeing the last one's result,
+        and validates once at the end: a whole netlist in one call.
 
         Args:
             plan_json: the DesignPlan as a JSON string or dict.
@@ -1238,7 +1247,7 @@ def register_design_tools(mcp) -> None:
             plan_json: the DesignPlan as a JSON string or dict.
             set_on_plan: when True (default), the returned ``plan`` carries
                 the generated BOM in its ``bom`` field, ready for
-                ``design_execute_plan``; the parts are unchanged.
+                ``sch_draw_template``; the parts are unchanged.
 
         Returns:
             ``{ok, bom: [{refdes_list, manufacturer, mpn, description,
@@ -1278,14 +1287,10 @@ def register_design_tools(mcp) -> None:
         plan_json: Union[str, dict],
         operations: list,
     ) -> dict[str, Any]:
-        """Edit an existing plan -- the MODIFY complement to the add tools.
-
-        Authoring is iterative: a review turns up a wrong value, a part to
-        drop, two nets that should be one. Fix it with edits instead of
-        re-emitting the whole plan, and let the tool own the error-prone
-        bookkeeping (deleting a part scrubs it from every net; merging nets
-        moves and de-dupes pins). Ordered ops, each sees the previous
-        result; validates once at the end so a now-floating net surfaces.
+        """Edit an existing plan instead of re-emitting it. The tool does
+        the bookkeeping (a deleted part leaves every net; merged nets
+        de-dupe pins). Ops run in order and the result is validated once
+        at the end, so a newly floating net surfaces.
 
         Operations (each a dict keyed by ``"op"``):
 
@@ -1405,56 +1410,31 @@ def register_design_tools(mcp) -> None:
         t_ambient: float = 25.0,
         tj_max: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Compute a manufacturable component value, snapped to an E-series.
-
-        Use this instead of doing the arithmetic by hand: it applies the
-        standard sizing equation, snaps to the nearest IEC 60063 preferred
-        value, and reports the ACHIEVED result plus the error so you can see
-        if the snap is good enough or a tighter ``series`` is needed.
+        """Compute a component value snapped to an E-series, with the value
+        actually achieved and its error. Use it instead of hand arithmetic.
 
         Args:
-            kind: Which calculation:
-              - ``"nearest"``: snap ``value`` to the nearest preferred value.
-              - ``"feedback_divider"``: regulator FB divider
-                ``v_out = v_ref*(1+Rtop/Rbot)``; needs ``v_out``, ``v_ref``;
-                optional ``r_bottom_ohms`` to fix the low side.
-              - ``"resistor_divider"``: unloaded divider
-                ``v_out = v_in*Rb/(Rt+Rb)``; needs ``v_in``, ``v_out``.
-              - ``"led_resistor"``: series resistor; needs ``v_supply``,
-                ``v_forward``, ``i_led_ma``.
-              - ``"rc_lowpass"``: first-order RC; needs ``f_cutoff_hz`` and
-                exactly one of ``r_ohms`` / ``c_farads``.
-              - ``"crystal_load_caps"``: symmetric crystal load caps; needs
-                ``c_load_pf`` (datasheet CL), optional ``c_stray_pf`` (default
-                5 pF per leg).
-              - ``"i2c_pullup"``: bus pull-up window (NXP UM10204); needs
-                ``v_bus``, ``c_bus_pf``, ``t_rise_ns`` (1000 standard / 300
-                fast / 120 fast-plus).
-              - ``"divider_tolerance"``: worst-case output window of an
-                unloaded divider; needs ``v_in``, ``r_top_ohms``,
-                ``r_bottom_ohms``, optional ``tol_pct`` (default 1).
-              - ``"opamp_gain"``: Rf/Rin (or Rg) for a gain stage; needs
-                ``gain`` and ``config`` (``inverting`` / ``non_inverting``).
-              - ``"buck_inductor"``: buck inductor; needs ``v_in``, ``v_out``,
-                ``i_out_a``, ``f_sw_khz``, optional ``ripple_pct`` (default 30).
-              - ``"capacitor_energy"``: stored energy; needs ``c_farads``,
-                ``voltage``.
-              - ``"holdup_cap"``: bulk hold-up capacitance; needs ``i_load_a``,
-                ``t_s`` (hold-up time), ``v_drop`` (allowed sag).
-              - ``"discharge_resistor"``: bleeder; needs ``c_farads``,
-                ``v_initial``, ``v_final``, ``t_s`` (discharge time).
-              - ``"junction_temp"``: Tj = Ta + P*theta_JA; needs ``power_w``,
-                ``theta_ja``, optional ``t_ambient`` (default 25).
-              - ``"max_power"``: thermal derating; needs ``tj_max``,
-                ``theta_ja``, optional ``t_ambient``.
-              - ``"required_theta_ja"``: package/heatsink sizing; needs
-                ``power_w``, ``tj_max``, optional ``t_ambient``.
-            series: E-series name (E6/E12/E24/E48/E96). Default E96 for
-                dividers/precision, pass E24 for jellybean R/C.
+            kind and what it needs:
+              nearest: value
+              feedback_divider: v_out, v_ref [r_bottom_ohms]
+              resistor_divider: v_in, v_out
+              led_resistor: v_supply, v_forward, i_led_ma
+              rc_lowpass: f_cutoff_hz and one of r_ohms / c_farads
+              crystal_load_caps: c_load_pf [c_stray_pf, default 5]
+              i2c_pullup: v_bus, c_bus_pf, t_rise_ns (1000/300/120)
+              divider_tolerance: v_in, r_top_ohms, r_bottom_ohms [tol_pct]
+              opamp_gain: gain, config (inverting / non_inverting)
+              buck_inductor: v_in, v_out, i_out_a, f_sw_khz [ripple_pct]
+              capacitor_energy: c_farads, voltage
+              holdup_cap: i_load_a, t_s, v_drop
+              discharge_resistor: c_farads, v_initial, v_final, t_s
+              junction_temp: power_w, theta_ja [t_ambient, default 25]
+              max_power: tj_max, theta_ja [t_ambient]
+              required_theta_ja: power_w, tj_max [t_ambient]
+            series: E6/E12/E24/E48/E96 (default E96; E24 for jellybean).
 
         Returns:
-            ``{"ok": True, ...fields..., "summary": "..."}`` or
-            ``{"ok": False, "error": "..."}``.
+            {"ok": True, ...values..., "summary"} or {"ok": False, "error"}.
         """
         try:
             k = kind.strip().lower()
@@ -1745,23 +1725,12 @@ def register_design_tools(mcp) -> None:
     async def design_review_file(path: str) -> dict[str, Any]:
         """Offline FALLBACK review of a .SchDoc/.PrjPcb: OFF by default.
 
-        This is NOT the preferred way to review a design. It parses the
-        Altium file directly (OLE reader) with no running Altium and no
-        license, so it only covers the netlist-free, component-level subset
-        (missing MPN / datasheet / manufacturer, placeholder values,
-        designator collisions, missing / unannotated designators, incomplete
-        title block). It cannot compile a netlist or run ERC, and an offline
-        parser can misread a file.
-
-        Prefer the live-Altium tools whenever a session is available:
-        ``design_lint_report``, ``proj_run_erc``, ``design_review_snapshot``,
-        and the ``audit_*`` family run Altium's own engines and see
-        connectivity this reader cannot. Reach for this tool only when Altium
-        genuinely can't be opened (a file on disk, a CI runner).
-
-        Because of that, this surface is **disabled by default**. To enable
-        it, set the environment variable ``EDA_AGENT_HEADLESS_REVIEW=1``.
-        Without it the tool returns an ``error`` explaining the opt-in.
+        Reads the file without Altium, so it checks only component-level
+        items (MPN, datasheet, placeholder values, designators, title
+        block): no netlist, no ERC. With Altium running prefer
+        ``design_lint_report``, ``proj_run_erc``, ``design_review_snapshot``
+        and the ``audit_*`` tools. Disabled unless
+        ``EDA_AGENT_HEADLESS_REVIEW=1``.
 
         Args:
             path: a ``.SchDoc`` sheet or a ``.PrjPcb`` project (reviews all
@@ -1845,7 +1814,10 @@ def register_design_tools(mcp) -> None:
 
         Returns ``{file, line_count, part_count, lines}`` where each line is
         ``{quantity, designators, mpn, manufacturer, value, lib_reference,
-        datasheet}``: or ``{"error": ...}`` if disabled or unreadable.
+        datasheet}``: or ``{"error": ...}`` if disabled or unreadable
+        (missing file, a suffix other than .SchDoc/.PrjPcb, or a project
+        whose sheets cannot be resolved). A design read with zero parts
+        adds a ``warning``: an empty BOM is not proof of an empty design.
         """
         from ..fileio.review import (
             HEADLESS_DISABLED_MESSAGE,
@@ -2313,6 +2285,548 @@ def register_design_tools(mcp) -> None:
         }
 
     @mcp.tool()
+    async def design_suggest_partition(
+        plan_json: Union[str, dict],
+        n_groups: int = 2,
+        max_fanout: int = 8,
+    ) -> dict[str, Any]:
+        """Split a plan's parts into ``n_groups`` balanced groups with the
+        fewest nets crossing between them (min-cut, Kernighan-Lin style),
+        for PCB rooms or schematic sheets. Pure data; touches nothing.
+        Assign the groups to part ``sheet`` or ``zone`` yourself.
+
+        A hub-centric design (one IC wired to everything) does not split
+        cleanly; check ``cut_nets`` and ``group_sizes`` before acting.
+
+        Args:
+            plan_json: A DesignPlan (dict or JSON string).
+            n_groups: Number of groups.
+            max_fanout: Nets touching more than this many parts are
+                treated as rails and ignored.
+
+        Returns:
+            ``{ok, n_groups, groups: {idx: [refdes...]}, cut_nets,
+            boundary_nets: [names...], group_sizes, summary}``. ``cut_nets``
+            is how many nets cross the boundary (lower is cleaner);
+            ``boundary_nets`` names them -- those become cross-sheet labels or
+            off-sheet connectors if you split there.
+        """
+        if isinstance(plan_json, dict):
+            payload = plan_json
+        else:
+            try:
+                payload = json.loads(plan_json)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "errors": [f"invalid JSON: {exc}"]}
+        try:
+            plan = DesignPlan.model_validate(payload)
+        except ValidationError as exc:
+            return {"ok": False, "errors": [
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
+                for err in exc.errors()]}
+
+        from ..design.partition import partition_netlist
+        refdes = [p.refdes for p in plan.parts]
+        nets = [[pr.refdes for pr in n.pins] for n in plan.nets]
+        res = partition_netlist(refdes, nets, n_groups=int(n_groups),
+                                max_fanout=int(max_fanout))
+        groups: dict[str, list[str]] = {}
+        for r, g in res["group_of"].items():
+            groups.setdefault(str(g), []).append(r)
+        for g in groups:
+            groups[g].sort()
+        # Named nets whose pins span more than one group -- what a split there
+        # would have to carry across the boundary (labels / off-sheet conns).
+        group_of = res["group_of"]
+        boundary_nets = sorted(
+            n.name for n in plan.nets
+            if len({group_of.get(pr.refdes) for pr in n.pins
+                    if pr.refdes in group_of} - {None}) > 1
+        )
+        summary = (
+            f"{res['n_groups']}-way split, group sizes {res['group_sizes']}, "
+            f"{res['cut_nets']} net(s) cross the boundary (lower is cleaner)."
+        )
+        return {
+            "ok": True,
+            "n_groups": res["n_groups"],
+            "groups": groups,
+            "cut_nets": res["cut_nets"],
+            "boundary_nets": boundary_nets,
+            "group_sizes": res["group_sizes"],
+            "summary": summary,
+        }
+
+    @mcp.tool()
+    async def design_plan_from_sheet(
+        project_path: str,
+        sheet_document: str = "",
+    ) -> dict[str, Any]:
+        """Read a DesignPlan back off a schematic so an edit becomes a
+        plan edit. Parts come from the components, nets from the compiled
+        netlist, rails from the power ports; the plan is validated.
+
+        A schematic does not record, so you supply:
+
+        - ``role`` on each part (decoupling, crystal, op-amp motif...).
+        - ``zone`` on each part, for functional blocks.
+        - Single-pin nets, which a plan cannot express; they come back
+          in ``dropped_pins``.
+
+        Edit the plan, then redraw the block on a fresh sheet with
+        ``sch_preview_template`` and ``sch_draw_template`` (plan_json).
+
+        Args:
+            project_path: The .PrjPcb the sheet belongs to. Its compiled
+                netlist is what supplies the nets.
+            sheet_document: Full path to the .SchDoc to read. Defaults to
+                the active document.
+
+        Returns:
+            ``ok`` / ``plan`` (a DesignPlan dict, or None on a refusal) /
+            ``parts_read`` / ``nets_read`` / ``dropped_pins`` / ``notes``,
+            and ``complete``: false when anything on the sheet is not in
+            the plan. ``interfaces_not_in_plan`` lists each lost
+            connection as ``{refdes, pin, net, why, is_rail}`` and
+            ``skipped_components`` the parts left out. A redraw from an
+            incomplete plan drops them: restore each one and compare the
+            netlists before keeping it.
+        """
+        return plan_from_live_sheet(project_path, sheet_document)
+
+    @mcp.tool()
+    async def design_audit_schematic(
+        project_path: Optional[str] = None,
+        cluster_radius_mils: int = 600,
+    ) -> dict[str, Any]:
+        """Structured visual/layout audit of the active schematic.
+
+        Call AFTER ``sch_draw_template`` and BEFORE ``design_validate``
+        so layout problems are fixed first; ERC violations downstream are
+        less noisy. Detects three classes of issue, each with enough
+        geometry for the planner to compute a corrective move:
+
+          * overlaps        - pairs of components whose bboxes intersect
+          * wire_crossings  - wire segments that cross a component body
+                              (excluding pin-to-pin connections)
+          * stacked_ports   - 3+ power/ground glyphs of the same net
+                              huddled inside ``cluster_radius_mils``
+
+        Args:
+            project_path: Optional .PrjPcb path. None uses the focused
+                project.
+            cluster_radius_mils: Radius for stacked-port clustering.
+                Default 600 mils.
+
+        Returns:
+            SchematicAuditReport dict: ``{ok, project_path, overlaps[],
+            wire_crossings[], stacked_ports[], notes[]}``.
+            ``ok=True`` iff every list is empty.
+        """
+        report = run_audit_schematic(
+            project_path,
+            cluster_radius_mils=cluster_radius_mils,
+        )
+        return report.to_dict()
+
+    @mcp.tool()
+    async def design_validate(project_path: Optional[str] = None) -> dict[str, Any]:
+        """ERC + connectivity sanity report on the focused project.
+
+        Runs run_erc, project.get_messages, and get_unconnected_pins,
+        then bundles the output into a structured ValidationReport that
+        the planner can read and respond to. Schematic-only in this
+        slice, PCB validation is a separate later slice.
+
+        Args:
+            project_path: Optional absolute path to a .PrjPcb. If omitted,
+                uses the focused project.
+
+        Returns:
+            ValidationReport dict: ``{passed, project_path, errors,
+            warnings, notes}`` where each error/warning is an Issue with
+            ``{category, severity, text, refdes, pin, net, sheet}``.
+        """
+        report = run_validate(project_path)
+        return report.to_dict()
+
+    @mcp.tool()
+    async def design_validate_requirement(
+        requirement: dict,
+    ) -> dict[str, Any]:
+        """Validate a DesignRequirement before part selection and planning
+        (stage 1 of the autonomous flow). Pure Python, no Altium.
+
+        A fact the requirement does not state goes into ``open_questions``
+        for the user, never guessed; validation fails while any remain.
+        Also fails on: no outputs, no power source, inverted temperature or
+        IO-voltage ranges, comms IO without a protocol, and a rail or power
+        output larger than every power input (a boost or inverting stage
+        the user must confirm).
+
+        ``board_intent`` (stackup, impedance, peak currents, edges,
+        enclosure, assembly, finish, test) is optional; when one matters
+        and is missing, ``notes`` suggests a question.
+
+        Args:
+            requirement: DesignRequirement as a JSON object/dict. Units are
+                SI with the unit in the field name (``voltage_v``,
+                ``current_a``, ``temp_min_c``); mechanical dimensions are
+                MILLIMETRES (``board_size_mm``, ``height_max_mm``).
+
+        Returns:
+            ``{"ok": True, "issues": [], "notes": [...], "summary": "..."}``
+            when the requirement is planning-ready (``summary`` is the
+            labelled-line block to embed in ``DesignPlan.summary``), or
+            ``{"ok": False, "issues": [...]}`` / ``{"ok": False,
+            "errors": [...]}`` (schema problems) listing what to resolve.
+        """
+        try:
+            req = DesignRequirement.model_validate(requirement)
+        except ValidationError as exc:
+            return {
+                "ok": False,
+                "errors": [
+                    f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
+                    for err in exc.errors()
+                ],
+            }
+        result = validate_requirement(req)
+        result["summary"] = summarize_requirement(req)
+        return result
+
+    @mcp.tool()
+    async def design_load_fab_profile(profile: dict) -> dict[str, Any]:
+        """Validate a fab capability profile and echo the normalized form.
+
+        Stage 8 of the autonomous flow (rules & stackup,
+        reference/autonomy-roadmap.md): before synthesizing design rules,
+        the fab's published limits are captured as a ``FabProfile`` dict --
+        transcribed from the fab's capability page (cite it in ``source``),
+        NEVER recalled from memory. This tool is the schema gate: it
+        validates the dict (all dimensions MILS, copper weight oz/ft^2,
+        stackups with copper outer layers and no adjacent copper plies) and
+        returns the normalized profile for ``design_synthesize_rules``.
+
+        Args:
+            profile: FabProfile as a JSON object/dict: ``name``, optional
+                ``source`` citation, ``copper_layer_counts``, the seven
+                ``min_*_mils`` floors, and optional ``stackups``.
+
+        Returns:
+            ``{"ok": True, "profile": {...}, "stackups": [names],
+            "summary": "..."}`` or ``{"ok": False, "reason": "..."}``.
+        """
+        loaded = load_fab_profile(profile)
+        if not loaded["ok"]:
+            return loaded
+        prof = loaded["profile"]
+        return {
+            "ok": True,
+            "profile": prof.model_dump(),
+            "stackups": [s.name for s in prof.stackups],
+            "summary": (
+                f"{prof.name}: {len(prof.stackups)} stackup(s), copper "
+                f"layer counts {prof.copper_layer_counts}, min track "
+                f"{prof.min_track_mils:g} / gap {prof.min_gap_mils:g} / "
+                f"drill {prof.min_drill_mils:g} mils."
+            ),
+        }
+
+    @mcp.tool()
+    async def design_list_fab_vendors() -> dict[str, Any]:
+        """Fab houses whose published capabilities ship with this server.
+
+        Each has its capability page, the day it was read, whether that
+        is over a year ago (``stale``), its tiers and how many stack-ups
+        it has. Nothing here is recalled: every figure was read off the
+        fab's page and carries the fab's own words.
+
+        Returns:
+            ``{"ok": True, "vendors": [...], "laminates": [...]}``; each
+            laminate with its design Dk.
+        """
+        return {"ok": True, "vendors": fab_library.list_vendors(),
+                "laminates": fab_library.list_laminates()}
+
+    @mcp.tool()
+    async def design_fab_vendor_profile(
+        vendor: str,
+        copper_layers: int = 0,
+        outer_oz: float = 1.0,
+        tier: str = "standard",
+        fill: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """A fab profile for one build at a fab, ready for
+        ``design_synthesize_rules``, with every value's source.
+
+        Minimums depend on the build: JLCPCB's track is 4 mil on two
+        layers, 3.5 mil on four, and grows with copper weight. The
+        profile is built for the layer count and outer copper given.
+        A figure the fab does not publish is never filled in here: the
+        profile is refused, naming each one, until ``fill`` supplies it
+        (recorded as yours, not the fab's). PCBWay's standard table, for
+        one, gives no hole-to-hole or mask bridge; its ``advanced_normal``
+        tier does.
+
+        With ``copper_layers`` 0, returns the vendor's raw figures with
+        their quotes instead.
+
+        Args:
+            vendor: "JLCPCB" or "PCBWay" (see design_list_fab_vendors)
+            copper_layers: copper layer count of the board
+            outer_oz: outer copper weight, oz
+            tier: the vendor's tier, "standard" by default
+            fill: {FabProfile field: mils} for figures the fab does not
+                publish, e.g. {"min_hole_to_hole_mils": 10}
+
+        Returns:
+            ``{"ok": True, "profile": {...}, "provenance": {field:
+            {quote, ...}}, "age": {...}}`` or ``{"ok": False, "missing":
+            [{field, reason}], ...}``.
+        """
+        if not copper_layers:
+            return fab_library.vendor(vendor)
+        got = fab_library.fab_profile(vendor, copper_layers=copper_layers,
+                                      outer_oz=outer_oz, tier=tier, fill=fill)
+        if got.get("ok"):
+            got["profile"] = got["profile"].model_dump()
+        return got
+
+    @mcp.tool()
+    async def design_list_stackups(
+        vendor: str = "", copper_layers: int = 0,
+    ) -> dict[str, Any]:
+        """The fabs' own stack-ups that ship with this server.
+
+        JLCPCB's are parsed ply by ply from its impedance page (36 at
+        1.6 mm, 4 and 6 layers), so every height and Dk is JLCPCB's.
+
+        Args:
+            vendor: limit to one fab ("" for all)
+            copper_layers: limit to one copper count (0 for all)
+
+        Returns:
+            ``{"ok": True, "stackups": [{name, vendor, copper_layers,
+            total_mm, dielectrics}]}``.
+        """
+        return {"ok": True, "stackups": fab_library.stackup_templates(
+            vendor or None, copper_layers or None)}
+
+    @mcp.tool()
+    async def design_get_stackup(
+        name: str,
+        impedance_targets: Optional[list] = None,
+        board_stackup: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """One fab stack-up ply by ply, with optional trace widths for
+        target impedances and an optional comparison against a board.
+
+        Widths: outer layers as microstrip over the dielectric to the next
+        copper; an inner layer only when it sits near the middle of its
+        two planes (the closed form is symmetric; otherwise it is reported
+        and not sized). Closed forms are +/-10 %, so these are starting
+        widths for the fab's solver to confirm.
+
+        Args:
+            name: stack-up name, e.g. "JLC04161H-7628"
+            impedance_targets: e.g. [{"ohms": 50}, {"ohms": 90,
+                "spacing_mils": 6}] (spacing makes it differential)
+            board_stackup: a ``pcb_get_layer_stackup`` result to compare
+                with; the template's plies are first collapsed to one
+                dielectric per copper gap, as Altium keeps them
+
+        Returns:
+            ``{"ok": True, "stackup": {...}, "plies": [...], "source":
+            {...}, "impedance": {...}?, "comparison": {...}?}``.
+        """
+        got = fab_library.stackup_template(name)
+        if not got["ok"]:
+            return got
+        got["stackup"] = got["stackup"].model_dump()
+        if impedance_targets:
+            got["impedance"] = fab_library.impedance_widths(name, impedance_targets)
+        if board_stackup:
+            got["comparison"] = fab_library.compare_stackup(board_stackup, name)
+        return got
+
+    @mcp.tool()
+    async def design_get_laminate(
+        name: str, frequency_ghz: float = 0.0,
+    ) -> dict[str, Any]:
+        """A laminate's datasheet figures and the Dk to design with.
+
+        Makers publish different kinds of Dk: Rogers a process value (a QC
+        test) AND a design value 5 % higher, Isola and Panasonic typical
+        values by frequency. Each figure here says which it is, with its
+        frequency, method and datasheet. The returned design Dk is the
+        design value when there is one, else the typical value nearest
+        ``frequency_ghz``; never a process value.
+
+        Args:
+            name: e.g. "RO4350B", "370HR", "MEGTRON 6" (prefix matches)
+            frequency_ghz: the frequency to pick a typical Dk at (0: the
+                highest listed)
+
+        Returns:
+            The laminate record plus the design Dk it chose and why.
+        """
+        got = fab_library.laminate(name)
+        if got["ok"]:
+            got["design_dk"] = fab_library.design_dk(name, frequency_ghz or None)
+        return got
+
+    @mcp.tool()
+    async def design_synthesize_rules(
+        profile: dict,
+        plan_json: Union[str, dict] = "",
+        net_class_map: Optional[dict] = None,
+        options: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """Synthesize PCB design rules + stackup ops from a fab profile.
+
+        Returns ``pcb_create_design_rule`` and ``pcb_modify_layer``
+        parameter dicts to send as they are, after
+        ``pcb_create_net_class`` creates the classes they name. Every
+        number comes from a profile field or a calculator (IPC-2221
+        width, IPC-2141 impedance); a rule missing an input is skipped
+        with a note. Pure Python, no Altium.
+
+        Args:
+            profile: FabProfile as a dict (see ``design_load_fab_profile``).
+            plan_json: Optional DesignPlan (JSON string or dict). When given
+                and ``net_class_map`` is not, net classes are derived from
+                the plan (flags + net roles, naming-agnostic).
+            net_class_map: Optional explicit ``{net_name: class}`` map;
+                takes precedence over ``plan_json`` derivation.
+            options: Optional synthesis targets: ``stackup`` (name, default
+                first), ``class_current_a`` ({class: amps} -> per-class
+                width rules), ``delta_t_c``, ``track_margin``, ``layer``,
+                ``copper_oz``, ``geometry``, ``diff_pair_target_ohms``
+                (required for differential rules),
+                ``diff_pair_spacing_mils``.
+
+        Returns:
+            ``{"ok": True, "rules": [...], "stackup_ops": [...],
+            "notes": [...], "stackup": name|None, "net_classes": {...}}``
+            -- rule values are INTEGER MILS -- or
+            ``{"ok": False, "reason": "..."}``.
+        """
+        ncm: dict = {}
+        if net_class_map is not None:
+            ncm = net_class_map
+        elif plan_json:
+            payload = plan_json if isinstance(plan_json, dict) else None
+            if payload is None:
+                try:
+                    payload = json.loads(plan_json)
+                except json.JSONDecodeError as exc:
+                    return {"ok": False, "reason": f"invalid plan JSON: {exc}"}
+            try:
+                plan = DesignPlan.model_validate(payload)
+            except ValidationError as exc:
+                return {"ok": False, "reason": f"invalid plan: {exc}"}
+            ncm = classify_nets(plan).by_net
+
+        result = synthesize_rules(profile, ncm, options)
+        if not result["ok"]:
+            return result
+        result["net_classes"] = ncm
+        return result
+
+    @mcp.tool()
+    async def design_plan_hierarchy(
+        plan_json: Union[str, dict],
+        max_parts_per_sheet: int = 20,
+    ) -> dict[str, Any]:
+        """Propose a multi-sheet hierarchy for a dense DesignPlan.
+
+        Splits the parts by signal connectivity (min-cut, zones kept
+        whole), names each sheet from its main zone, makes ports from the
+        signal nets the cut severs (rails stay power ports), and returns
+        top-sheet ops shaped for ``sch_place_sheet_symbol``,
+        ``sch_place_sheet_entry`` and ``sch_generate_toc``. Apply with
+        ``design_apply_hierarchy`` before drawing the sheets. Pure
+        Python, deterministic.
+
+        Args:
+            plan_json: DesignPlan as a JSON string or dict.
+            max_parts_per_sheet: Split threshold (default 20). At or below
+                it the plan stays single-sheet (``split=False``).
+
+        Returns:
+            ``{"ok": True, "split": bool, "top_sheet": str, "sheets":
+            [{name, refdes, zones, part_count}], "ports": [{net,
+            from_sheet, to_sheet, io_type}], "top_sheet_ops": [{tool,
+            params}], "cut_nets": int}`` (op coordinates are MILS) or
+            ``{"ok": False, "reason": "..."}``.
+        """
+        payload = plan_json if isinstance(plan_json, dict) else None
+        if payload is None:
+            try:
+                payload = json.loads(plan_json)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "reason": f"invalid plan JSON: {exc}"}
+        return plan_hierarchy(payload, max_parts_per_sheet=max_parts_per_sheet)
+
+    @mcp.tool()
+    async def design_apply_hierarchy(
+        plan_json: Union[str, dict],
+        hierarchy: dict,
+    ) -> dict[str, Any]:
+        """Rewrite a DesignPlan onto the sheets a hierarchy proposes.
+
+        Stage 6 of the autonomous flow (schematic emit,
+        reference/autonomy-roadmap.md), the second half of the hierarchy
+        step: take the result of ``design_plan_hierarchy`` and produce a
+        NEW plan with ``sheets`` = [top sheet, *child sheets], every
+        part's ``sheet`` re-homed per the hierarchy, and every zone moved
+        with its parts (part-less zones park on the top sheet). The input
+        plan is never mutated; a non-split hierarchy returns the plan
+        unchanged. Feed the returned plan to ``design_validate_plan`` and
+        draw each sheet with ``sch_draw_template``; emit the hierarchy's
+        ``top_sheet_ops`` separately to draw the top sheet. Pure Python.
+
+        Args:
+            plan_json: DesignPlan as a JSON string or dict.
+            hierarchy: The dict returned by ``design_plan_hierarchy``.
+
+        Returns:
+            ``{"ok": True, "plan": {...rewritten DesignPlan...},
+            "sheets": [names], "summary": "..."}`` or
+            ``{"ok": False, "reason": "..."}`` on a malformed plan or
+            hierarchy.
+        """
+        payload = plan_json if isinstance(plan_json, dict) else None
+        if payload is None:
+            try:
+                payload = json.loads(plan_json)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "reason": f"invalid plan JSON: {exc}"}
+        try:
+            new_plan = apply_hierarchy(payload, hierarchy)
+        except ValidationError as exc:
+            return {"ok": False, "reason": f"invalid plan: {exc}"}
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        sheet_names = [s.name for s in new_plan.sheets]
+        per_sheet = {
+            name: sum(1 for p in new_plan.parts if p.sheet == name)
+            for name in sheet_names
+        }
+        return {
+            "ok": True,
+            "plan": new_plan.model_dump(mode="json"),
+            "sheets": sheet_names,
+            "summary": (
+                f"{len(new_plan.parts)} part(s) across "
+                f"{len(sheet_names)} sheet(s): "
+                + ", ".join(f"{n}={per_sheet[n]}" for n in sheet_names)
+                + "."
+            ),
+        }
+
+    @mcp.tool()
     async def design_layout_schematic(
         plan_json: Union[str, dict],
         sheet: str = "main",
@@ -2376,93 +2890,6 @@ def register_design_tools(mcp) -> None:
                 len(result.get("placements", [])),
             )
         return result
-
-    @mcp.tool()
-    async def design_suggest_partition(
-        plan_json: Union[str, dict],
-        n_groups: int = 2,
-        max_fanout: int = 8,
-    ) -> dict[str, Any]:
-        """Suggest how to split a design into balanced functional groups.
-
-        Computes a min-cut partition (Kernighan-Lin style) of the plan's
-        components into ``n_groups`` balanced groups that MINIMISE the number
-        of nets crossing between groups -- so each group is internally
-        well-connected and few signals span the boundary. Use it to group a
-        PCB into functional ROOMS, or to decide how to break a design with
-        SEPARABLE blocks across schematic sheets.
-
-        Note: a HUB-centric design (one IC fanning out to many peripherals)
-        does not separate cleanly -- the hub is connected to everything, so
-        the cut stays high and per-sheet density barely drops. Partitioning
-        helps when the netlist has genuinely distinct functional blocks; read
-        ``cut_nets`` (low = clean) and ``group_sizes`` to judge before acting.
-
-        Power/ground rails (nets touching more than ``max_fanout`` parts) are
-        excluded from the connectivity graph -- they route as planes and
-        connect nearly everything, so the split follows the SIGNAL structure.
-
-        Pure data; touches nothing. Assign the returned groups to part
-        ``sheet`` (or ``zone``) fields yourself if you act on the suggestion.
-
-        Args:
-            plan_json: A DesignPlan (dict or JSON string).
-            n_groups: Number of groups to split into (default 2).
-            max_fanout: Nets above this pin count are treated as rails and
-                ignored for partitioning (default 8).
-
-        Returns:
-            ``{ok, n_groups, groups: {idx: [refdes...]}, cut_nets,
-            boundary_nets: [names...], group_sizes, summary}``. ``cut_nets``
-            is how many nets cross the boundary (lower is cleaner);
-            ``boundary_nets`` names them -- those become cross-sheet labels or
-            off-sheet connectors if you split there.
-        """
-        if isinstance(plan_json, dict):
-            payload = plan_json
-        else:
-            try:
-                payload = json.loads(plan_json)
-            except json.JSONDecodeError as exc:
-                return {"ok": False, "errors": [f"invalid JSON: {exc}"]}
-        try:
-            plan = DesignPlan.model_validate(payload)
-        except ValidationError as exc:
-            return {"ok": False, "errors": [
-                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
-                for err in exc.errors()]}
-
-        from ..design.partition import partition_netlist
-        refdes = [p.refdes for p in plan.parts]
-        nets = [[pr.refdes for pr in n.pins] for n in plan.nets]
-        res = partition_netlist(refdes, nets, n_groups=int(n_groups),
-                                max_fanout=int(max_fanout))
-        groups: dict[str, list[str]] = {}
-        for r, g in res["group_of"].items():
-            groups.setdefault(str(g), []).append(r)
-        for g in groups:
-            groups[g].sort()
-        # Named nets whose pins span more than one group -- what a split there
-        # would have to carry across the boundary (labels / off-sheet conns).
-        group_of = res["group_of"]
-        boundary_nets = sorted(
-            n.name for n in plan.nets
-            if len({group_of.get(pr.refdes) for pr in n.pins
-                    if pr.refdes in group_of} - {None}) > 1
-        )
-        summary = (
-            f"{res['n_groups']}-way split, group sizes {res['group_sizes']}, "
-            f"{res['cut_nets']} net(s) cross the boundary (lower is cleaner)."
-        )
-        return {
-            "ok": True,
-            "n_groups": res["n_groups"],
-            "groups": groups,
-            "cut_nets": res["cut_nets"],
-            "boundary_nets": boundary_nets,
-            "group_sizes": res["group_sizes"],
-            "summary": summary,
-        }
 
     @mcp.tool()
     async def design_execute_plan(
@@ -2593,53 +3020,6 @@ def register_design_tools(mcp) -> None:
         return learn_from_layout(project_path)
 
     @mcp.tool()
-    async def design_plan_from_sheet(
-        project_path: str,
-        sheet_document: str = "",
-    ) -> dict[str, Any]:
-        """Read a DesignPlan back off a schematic, including one you did
-        not draw.
-
-        Use this when you are asked to change a schematic that has no
-        ``<project>.canvas.json`` beside it: a sheet drawn by hand, or
-        one from an older project. It gives you the plan the rest of the
-        design tools take, so an edit becomes "change the plan, lay it
-        out again" instead of dragging symbols around one at a time.
-
-        The plan is reconstructed from what is actually drawn: the
-        components give the parts, the compiled netlist gives the nets,
-        and the power-port glyphs say which nets are rails. It is
-        validated before it is returned.
-
-        WHAT A SCHEMATIC DOES NOT RECORD, so you must supply it:
-
-        - ``role`` on each part. This is the tag that lets the placer
-          recognise a decoupling bank, a crystal cluster, an op-amp
-          motif. A plan without roles lays out noticeably worse. Read
-          the returned part list and netlist and assert the roles
-          yourself before laying it out.
-        - ``zone`` on each part, if you want functional blocks.
-        - Single-pin nets, which the plan schema cannot express. They
-          come back in ``dropped_pins``.
-
-        Then: edit the plan, call ``design_layout_schematic`` to see it,
-        and ``design_execute_plan`` to apply it. Pass
-        ``design_hints_from_sheet`` output as ``placement_hints`` if you
-        want the existing positions kept.
-
-        Args:
-            project_path: The .PrjPcb the sheet belongs to. Its compiled
-                netlist is what supplies the nets.
-            sheet_document: Full path to the .SchDoc to read. Defaults to
-                the active document.
-
-        Returns:
-            ``ok`` / ``plan`` (a DesignPlan dict, or None on a refusal) /
-            ``parts_read`` / ``nets_read`` / ``dropped_pins`` / ``notes``.
-        """
-        return plan_from_live_sheet(project_path, sheet_document)
-
-    @mcp.tool()
     async def design_hints_from_sheet(
         project_path: str,
     ) -> dict[str, Any]:
@@ -2721,303 +3101,3 @@ def register_design_tools(mcp) -> None:
         except (OSError, json.JSONDecodeError, TypeError):
             pass
         return result
-
-    @mcp.tool()
-    async def design_audit_schematic(
-        project_path: Optional[str] = None,
-        cluster_radius_mils: int = 600,
-    ) -> dict[str, Any]:
-        """Structured visual/layout audit of the active schematic.
-
-        Call AFTER ``design_execute_plan`` and BEFORE ``design_validate``
-        so layout problems are fixed first; ERC violations downstream are
-        less noisy. Detects three classes of issue, each with enough
-        geometry for the planner to compute a corrective move:
-
-          * overlaps        - pairs of components whose bboxes intersect
-          * wire_crossings  - wire segments that cross a component body
-                              (excluding pin-to-pin connections)
-          * stacked_ports   - 3+ power/ground glyphs of the same net
-                              huddled inside ``cluster_radius_mils``
-
-        Args:
-            project_path: Optional .PrjPcb path. None uses the focused
-                project.
-            cluster_radius_mils: Radius for stacked-port clustering.
-                Default 600 mils.
-
-        Returns:
-            SchematicAuditReport dict: ``{ok, project_path, overlaps[],
-            wire_crossings[], stacked_ports[], notes[]}``.
-            ``ok=True`` iff every list is empty.
-        """
-        report = run_audit_schematic(
-            project_path,
-            cluster_radius_mils=cluster_radius_mils,
-        )
-        return report.to_dict()
-
-    @mcp.tool()
-    async def design_validate(project_path: Optional[str] = None) -> dict[str, Any]:
-        """ERC + connectivity sanity report on the focused project.
-
-        Runs run_erc, project.get_messages, and get_unconnected_pins,
-        then bundles the output into a structured ValidationReport that
-        the planner can read and respond to. Schematic-only in this
-        slice, PCB validation is a separate later slice.
-
-        Args:
-            project_path: Optional absolute path to a .PrjPcb. If omitted,
-                uses the focused project.
-
-        Returns:
-            ValidationReport dict: ``{passed, project_path, errors,
-            warnings, notes}`` where each error/warning is an Issue with
-            ``{category, severity, text, refdes, pin, net, sheet}``.
-        """
-        report = run_validate(project_path)
-        return report.to_dict()
-
-    @mcp.tool()
-    async def design_validate_requirement(
-        requirement: dict,
-    ) -> dict[str, Any]:
-        """Validate a structured DesignRequirement before planning starts.
-
-        Stage 1 of the autonomous flow (requirement capture & architecture,
-        reference/autonomy-roadmap.md): capture what the board must do as a
-        ``DesignRequirement`` dict, run this gate, and only move on to part
-        selection / DesignPlan construction when it returns ok. Every fact
-        the requirement does NOT state goes into ``open_questions`` as a
-        question for the user -- it is never guessed -- and validation fails
-        while any question remains unresolved.
-
-        Checks beyond the schema: unresolved open questions, no outputs, no
-        power source, inverted temperature / IO-voltage ranges, comms IO
-        without a protocol, and supply rails or power outputs whose
-        magnitude exceeds every stated power input (a boost / inverting
-        stage the user must confirm). Pure Python, no Altium.
-
-        Args:
-            requirement: DesignRequirement as a JSON object/dict. Units are
-                SI with the unit in the field name (``voltage_v``,
-                ``current_a``, ``temp_min_c``); mechanical dimensions are
-                MILLIMETRES (``board_size_mm``, ``height_max_mm``).
-
-        Returns:
-            ``{"ok": True, "issues": [], "summary": "..."}`` when the
-            requirement is planning-ready (``summary`` is the labelled-line
-            block to embed in ``DesignPlan.summary``), or
-            ``{"ok": False, "issues": [...]}`` / ``{"ok": False,
-            "errors": [...]}`` (schema problems) listing what to resolve.
-        """
-        try:
-            req = DesignRequirement.model_validate(requirement)
-        except ValidationError as exc:
-            return {
-                "ok": False,
-                "errors": [
-                    f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
-                    for err in exc.errors()
-                ],
-            }
-        result = validate_requirement(req)
-        result["summary"] = summarize_requirement(req)
-        return result
-
-    @mcp.tool()
-    async def design_load_fab_profile(profile: dict) -> dict[str, Any]:
-        """Validate a fab capability profile and echo the normalized form.
-
-        Stage 8 of the autonomous flow (rules & stackup,
-        reference/autonomy-roadmap.md): before synthesizing design rules,
-        the fab's published limits are captured as a ``FabProfile`` dict --
-        transcribed from the fab's capability page (cite it in ``source``),
-        NEVER recalled from memory. This tool is the schema gate: it
-        validates the dict (all dimensions MILS, copper weight oz/ft^2,
-        stackups with copper outer layers and no adjacent copper plies) and
-        returns the normalized profile for ``design_synthesize_rules``.
-
-        Args:
-            profile: FabProfile as a JSON object/dict: ``name``, optional
-                ``source`` citation, ``copper_layer_counts``, the seven
-                ``min_*_mils`` floors, and optional ``stackups``.
-
-        Returns:
-            ``{"ok": True, "profile": {...}, "stackups": [names],
-            "summary": "..."}`` or ``{"ok": False, "reason": "..."}``.
-        """
-        loaded = load_fab_profile(profile)
-        if not loaded["ok"]:
-            return loaded
-        prof = loaded["profile"]
-        return {
-            "ok": True,
-            "profile": prof.model_dump(),
-            "stackups": [s.name for s in prof.stackups],
-            "summary": (
-                f"{prof.name}: {len(prof.stackups)} stackup(s), copper "
-                f"layer counts {prof.copper_layer_counts}, min track "
-                f"{prof.min_track_mils:g} / gap {prof.min_gap_mils:g} / "
-                f"drill {prof.min_drill_mils:g} mils."
-            ),
-        }
-
-    @mcp.tool()
-    async def design_synthesize_rules(
-        profile: dict,
-        plan_json: Union[str, dict] = "",
-        net_class_map: Optional[dict] = None,
-        options: Optional[dict] = None,
-    ) -> dict[str, Any]:
-        """Synthesize PCB design rules + stackup ops from a fab profile.
-
-        Stage 8 of the autonomous flow (rules & stackup,
-        reference/autonomy-roadmap.md): turn the validated fab profile, the
-        plan's net classes, and a few board-level targets into the concrete
-        ``pcb_create_design_rule`` and ``pcb_modify_layer`` parameter dicts,
-        dispatched verbatim after ``pcb_create_net_class`` creates classes
-        named after the synthesized groups. Every number traces to a
-        profile field or a verified calculator (IPC-2221 width inverse,
-        IPC-2141 impedance inverse); a rule whose inputs are missing is
-        skipped with a note, never guessed. Pure Python, no Altium.
-
-        Args:
-            profile: FabProfile as a dict (see ``design_load_fab_profile``).
-            plan_json: Optional DesignPlan (JSON string or dict). When given
-                and ``net_class_map`` is not, net classes are derived from
-                the plan (flags + net roles, naming-agnostic).
-            net_class_map: Optional explicit ``{net_name: class}`` map;
-                takes precedence over ``plan_json`` derivation.
-            options: Optional synthesis targets: ``stackup`` (name, default
-                first), ``class_current_a`` ({class: amps} -> per-class
-                width rules), ``delta_t_c``, ``track_margin``, ``layer``,
-                ``copper_oz``, ``geometry``, ``diff_pair_target_ohms``
-                (required for differential rules),
-                ``diff_pair_spacing_mils``.
-
-        Returns:
-            ``{"ok": True, "rules": [...], "stackup_ops": [...],
-            "notes": [...], "stackup": name|None, "net_classes": {...}}``
-            -- rule values are INTEGER MILS -- or
-            ``{"ok": False, "reason": "..."}``.
-        """
-        ncm: dict = {}
-        if net_class_map is not None:
-            ncm = net_class_map
-        elif plan_json:
-            payload = plan_json if isinstance(plan_json, dict) else None
-            if payload is None:
-                try:
-                    payload = json.loads(plan_json)
-                except json.JSONDecodeError as exc:
-                    return {"ok": False, "reason": f"invalid plan JSON: {exc}"}
-            try:
-                plan = DesignPlan.model_validate(payload)
-            except ValidationError as exc:
-                return {"ok": False, "reason": f"invalid plan: {exc}"}
-            ncm = classify_nets(plan).by_net
-
-        result = synthesize_rules(profile, ncm, options)
-        if not result["ok"]:
-            return result
-        result["net_classes"] = ncm
-        return result
-
-    @mcp.tool()
-    async def design_plan_hierarchy(
-        plan_json: Union[str, dict],
-        max_parts_per_sheet: int = 20,
-    ) -> dict[str, Any]:
-        """Propose a multi-sheet hierarchy for a dense DesignPlan.
-
-        Stage 6 of the autonomous flow (schematic emit,
-        reference/autonomy-roadmap.md): a plan past ~20 parts stops fitting
-        one readable sheet and dense single sheets are the known short-risk
-        regime. This tool partitions the parts by signal connectivity
-        (min-cut, zones kept atomic), names each child sheet from its
-        dominant zone role, derives the inter-sheet ports from the signal
-        nets the cut severs (power/ground rails are continuous through
-        power ports and never become sheet entries), and emits the
-        top-sheet op list in the exact parameter shapes of
-        ``sch_place_sheet_symbol`` / ``sch_place_sheet_entry`` /
-        ``sch_generate_toc``. Apply the result to the plan with
-        ``design_apply_hierarchy`` before ``design_execute_plan``.
-        Deterministic; pure Python, no Altium.
-
-        Args:
-            plan_json: DesignPlan as a JSON string or dict.
-            max_parts_per_sheet: Split threshold (default 20). At or below
-                it the plan stays single-sheet (``split=False``).
-
-        Returns:
-            ``{"ok": True, "split": bool, "top_sheet": str, "sheets":
-            [{name, refdes, zones, part_count}], "ports": [{net,
-            from_sheet, to_sheet, io_type}], "top_sheet_ops": [{tool,
-            params}], "cut_nets": int}`` (op coordinates are MILS) or
-            ``{"ok": False, "reason": "..."}``.
-        """
-        payload = plan_json if isinstance(plan_json, dict) else None
-        if payload is None:
-            try:
-                payload = json.loads(plan_json)
-            except json.JSONDecodeError as exc:
-                return {"ok": False, "reason": f"invalid plan JSON: {exc}"}
-        return plan_hierarchy(payload, max_parts_per_sheet=max_parts_per_sheet)
-
-    @mcp.tool()
-    async def design_apply_hierarchy(
-        plan_json: Union[str, dict],
-        hierarchy: dict,
-    ) -> dict[str, Any]:
-        """Rewrite a DesignPlan onto the sheets a hierarchy proposes.
-
-        Stage 6 of the autonomous flow (schematic emit,
-        reference/autonomy-roadmap.md), the second half of the hierarchy
-        step: take the result of ``design_plan_hierarchy`` and produce a
-        NEW plan with ``sheets`` = [top sheet, *child sheets], every
-        part's ``sheet`` re-homed per the hierarchy, and every zone moved
-        with its parts (part-less zones park on the top sheet). The input
-        plan is never mutated; a non-split hierarchy returns the plan
-        unchanged. Feed the returned plan to ``design_validate_plan`` and
-        then ``design_execute_plan``; emit the hierarchy's
-        ``top_sheet_ops`` separately to draw the top sheet. Pure Python.
-
-        Args:
-            plan_json: DesignPlan as a JSON string or dict.
-            hierarchy: The dict returned by ``design_plan_hierarchy``.
-
-        Returns:
-            ``{"ok": True, "plan": {...rewritten DesignPlan...},
-            "sheets": [names], "summary": "..."}`` or
-            ``{"ok": False, "reason": "..."}`` on a malformed plan or
-            hierarchy.
-        """
-        payload = plan_json if isinstance(plan_json, dict) else None
-        if payload is None:
-            try:
-                payload = json.loads(plan_json)
-            except json.JSONDecodeError as exc:
-                return {"ok": False, "reason": f"invalid plan JSON: {exc}"}
-        try:
-            new_plan = apply_hierarchy(payload, hierarchy)
-        except ValidationError as exc:
-            return {"ok": False, "reason": f"invalid plan: {exc}"}
-        except ValueError as exc:
-            return {"ok": False, "reason": str(exc)}
-        sheet_names = [s.name for s in new_plan.sheets]
-        per_sheet = {
-            name: sum(1 for p in new_plan.parts if p.sheet == name)
-            for name in sheet_names
-        }
-        return {
-            "ok": True,
-            "plan": new_plan.model_dump(mode="json"),
-            "sheets": sheet_names,
-            "summary": (
-                f"{len(new_plan.parts)} part(s) across "
-                f"{len(sheet_names)} sheet(s): "
-                + ", ".join(f"{n}={per_sheet[n]}" for n in sheet_names)
-                + "."
-            ),
-        }

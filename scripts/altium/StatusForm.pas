@@ -1284,7 +1284,61 @@ Var
       opposed to Detach, the stop file, the stop command or auto-shutdown.
       The difference decides how much teardown is safe to attempt. }
     PumpQuitting         : Boolean;
+    { Set by the first tick, which logs _tick_first. A session that logs  }
+    { _session_start and never _tick_first armed a timer that never ran.  }
+    PumpTicked           : Boolean;
 
+
+{ UnitStamp_StatusForm - which build of StatusForm.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_StatusForm(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
+End;
+
+{ UnitStampsResponse - every unit's stamp, so app_ping can name a unit that   }
+{ Altium is still running an older compile of. One version constant cannot:  }
+{ a unit that fails to compile keeps serving its previous image while         }
+{ Main.pas reads new.                                                         }
+Function UnitStampsResponse(RequestId : String) : String;
+Begin
+    Result := BuildSuccessResponse(RequestId,
+        '{"Main":"' + UnitStamp_Main(0) + '"'
+        + ',"Utils":"' + UnitStamp_Utils(0) + '"'
+        + ',"Application":"' + UnitStamp_Application(0) + '"'
+        + ',"Project":"' + UnitStamp_Project(0) + '"'
+        + ',"Library":"' + UnitStamp_Library(0) + '"'
+        + ',"PCBGeneric":"' + UnitStamp_PCBGeneric(0) + '"'
+        + ',"PCB":"' + UnitStamp_PCB(0) + '"'
+        + ',"Generic":"' + UnitStamp_Generic(0) + '"'
+        + ',"Audit":"' + UnitStamp_Audit(0) + '"'
+        + ',"StatusForm":"' + UnitStamp_StatusForm(0) + '"}');
+End;
+
+{ The reply names the board it came from when GetPCBBoardAnywhere answered  }
+{ from one that was not focused: with a library or a sheet in front, a      }
+{ board found by walking the projects looks exactly like the one the caller }
+{ meant. Only a success whose data is an object is touched.                 }
+Function BoardFallbackNote(Response : String) : String;
+Var
+    Marker, Added, Front : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If BoardFallbackPath = '' Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Front := BoardFallbackFrom;
+    If Front = '' Then Front := 'no document';
+    Added := '"board_used":"' + EscapeJsonString(BoardFallbackPath) + '"'
+        + ',"board_note":"No board was focused (' + EscapeJsonString(Front)
+        + ' in front), so this used ' + EscapeJsonString(ExtractFileName(BoardFallbackPath))
+        + ', the first board of the open projects."';
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
 
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
@@ -1308,6 +1362,18 @@ Begin
         Action := '';
     End;
 
+    { Answered here, after every unit it asks, rather than in Application.pas. }
+    If Command = 'application.get_unit_stamps' Then
+    Begin
+        Result := UnitStampsResponse(RequestId);
+        Exit;
+    End;
+
+    SheetsSeen := 0;
+    SheetsSkipped := 0;
+    BoardFallbackPath := '';
+    BoardFallbackFrom := '';
+    BoardMissWhy := '';
     Case Category Of
         'application': Result := HandleApplicationCommand(Action, Params, RequestId);
         'project':     Result := HandleProjectCommand(Action, Params, RequestId);
@@ -1321,6 +1387,8 @@ Begin
             '. Use generic.* for object operations, pcb.* for PCB-specific ' +
             'commands, or audit.* for design-lint checks.');
     End;
+    Result := SheetCoverage(Result);
+    Result := BoardFallbackNote(Result);
 End;
 
 {..............................................................................}
@@ -1384,13 +1452,55 @@ Begin
            Or (Verb = 'ping');
 End;
 
+{ SessionFocus - put the session's own document back in front, in the same }
+{ turn of the loop as its command, so nothing can move it in between. Pin   }
+{ is the session_doc_path its server sent. Returns the envelope field that }
+{ says what happened, '' when nothing did. Only an open document is shown: }
+{ a closed one is reported, never reopened, because reopening outside its  }
+{ project makes it a free document.                                        }
+Function SessionFocus(PinIn : String) : String;
+Var
+    Pin, Current, After : String;
+    ServerDoc : IServerDocument;
+Begin
+    Result := '';
+    { Both spelled one way: C:/x and C:\x name the same file but open as two }
+    { documents, and a mismatch here would re-show it on every command.    }
+    Pin := CanonicalPathValue('file_path', PinIn);
+    Current := CanonicalPathValue('file_path', CurrentFocusedDocPath(0));
+    If SessionFocusAction(Pin, Current) <> 'restore' Then Exit;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(Pin); Except ServerDoc := Nil; End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := '"session_document":' + JsonObj(
+            JsonStr('missing', Pin) + ',' + JsonStr('kept', Current) + ',' +
+            JsonStr('note', 'This session''s document is no longer open, so '
+                + 'the command ran on the one in front.'));
+        Exit;
+    End;
+    Try Client.ShowDocument(ServerDoc); Except End;
+    After := CanonicalPathValue('file_path', CurrentFocusedDocPath(0));
+    If UpperCase(After) <> UpperCase(Pin) Then
+    Begin
+        Result := '"session_document":' + JsonObj(
+            JsonStr('not_restored', Pin) + ',' + JsonStr('kept', After) + ',' +
+            JsonStr('note', 'The focus had moved and this session''s '
+                + 'document could not be put back, so the command ran on '
+                + 'the one in front.'));
+        Exit;
+    End;
+    Result := '"session_document":' + JsonObj(
+        JsonStr('restored', Pin) + ',' + JsonStr('from', Current));
+End;
+
 Function ProcessSingleRequest(Dummy : Integer): Boolean;
 Var
     RequestPath, RequestId : String;
     RequestContent, ResponseContent : String;
     Command, Params, ProtoVer, EnvelopeError : String;
     ExceptionMsg : String;
-    FocusBefore, FocusAfter : String;
+    FocusBefore, FocusAfter, SessionNote : String;
     StartMs, DurationMs : Cardinal;
     ResultTag : String;
     DashIsError : Boolean;
@@ -1483,7 +1593,10 @@ Begin
       session spent a long time looking for a placement bug that was not
       there.
       Captured here rather than per handler because there are hundreds of
-      them and this is the one place every command passes through. }
+      them and this is the one place every command passes through.
+      Taken AFTER the session's own document is put back, so the note
+      below reports only what the handler itself moved. }
+    SessionNote := SessionFocus(ExtractJsonValue(RequestContent, 'session_doc_path'));
     FocusBefore := CurrentFocusedDocPath(0);
     ResetNextStep(0);
 
@@ -1493,6 +1606,9 @@ Begin
     { out on a legitimately-slow handler. Delete only AFTER writing the       }
     { response, so at no point are both files missing.                        }
     StartProgress(RequestId);
+    LastErrorId := '';
+    LastErrorCode := '';
+    LastErrorMsg := '';
     Try
         Try
             ResponseContent := ProcessCommand(Command, Params, RequestId);
@@ -1529,6 +1645,9 @@ Begin
             ResponseContent := AppendEnvelopeField(ResponseContent,
                 JsonStr('next_step', PendingNextStep(0)));
 
+        If SessionNote <> '' Then
+            ResponseContent := AppendEnvelopeField(ResponseContent, SessionNote);
+
         FocusAfter := CurrentFocusedDocPath(0);
         If FocusAfter <> FocusBefore Then
             ResponseContent := AppendEnvelopeField(ResponseContent,
@@ -1562,6 +1681,11 @@ Begin
         DashIsError := True;
         DashCode    := ExtractJsonValue(DashErrPayload, 'code');
         DashDetail  := ExtractJsonValue(DashErrPayload, 'message');
+        { The message as the handler wrote it, when this reply is the error }
+        { it built: the JSON copy has lost non-Latin text to '?' (#91).     }
+        If (LastErrorId = RequestId) And (LastErrorCode = DashCode)
+            And (LastErrorMsg <> '') Then
+            DashDetail := LastErrorMsg;
         { Explicit Begin/End around each branch, DelphiScript parser   }
         { trips on `Else If` without them.                               }
         If (DashCode <> '') And (DashDetail <> '') Then
@@ -1696,6 +1820,12 @@ Begin
             Begin
                 FinalisePump(0);
                 Exit;
+            End;
+            If Not PumpTicked Then
+            Begin
+                PumpTicked := True;
+                AppendLog(FormatLogStamp(0) + ',0,_tick_first,interval='
+                          + IntToStr(PumpInterval));
             End;
 
             { Altium is closing. The old loop could not get here, because the  }
@@ -1859,6 +1989,8 @@ End;
 {..............................................................................}
 
 Procedure StartMCPPump(Dummy : Integer);
+Var
+    Armed : Boolean;
 Begin
     If Running Then Exit;
 
@@ -1873,6 +2005,13 @@ Begin
     CleanupOrphanResponses(0);
     CleanupOrphanProgress(0);
 
+    { Script globals outlive a stop and a redeploy, but a design object    }
+    { held in one does not: MEASURED, the first symbol write after a       }
+    { relaunch read CurrentPartID off the old LastCreatedLibComponent and  }
+    { stopped the loop on "Undeclared identifier". Start with none held.   }
+    LastCreatedLibComponent := Nil;
+    LastCreatedLibComponentName := '';
+
     Running := True;
     PumpStopPath := WorkspaceDir + 'stop';
     If FileExists(PumpStopPath) Then DeleteFile(PumpStopPath);
@@ -1882,6 +2021,7 @@ Begin
     PumpInTick := False;
     PumpFinalised := False;
     PumpQuitting := False;
+    PumpTicked := False;
 
     StatusStartTick := GetTickCount;
     StatusRequestCount := 0;
@@ -1897,10 +2037,19 @@ Begin
               + ',protocol=' + IntToStr(PROTOCOL_VERSION));
 
     PumpInterval := PollIntervalActiveMs;
+    Armed := False;
     Try
         tmr_Poll.Interval := PumpInterval;
         tmr_Poll.Enabled := True;
     Except End;
+    { Read back: an arm that raised inside the Try used to leave a session }
+    { that logged _session_start and then served nothing, with no sign.    }
+    Try Armed := tmr_Poll.Enabled; Except Armed := False; End;
+    If Not Armed Then
+    Begin
+        AppendLog(FormatLogStamp(0) + ',0,_arm_failed,the poll timer did not start');
+        UpdateStatusHeader('MCP: poll timer did not start');
+    End;
 End;
 
 

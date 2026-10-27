@@ -1,3 +1,4 @@
+{ SPDX-License-Identifier: Apache-2.0 }
 { Shared read-only selection. Loaded after Project and before StatusForm/Dispatcher.
   No project opens, focus changes, saves or writes. UI is the only selection grant. }
 Var

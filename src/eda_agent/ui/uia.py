@@ -32,8 +32,11 @@ the pointer nor need the window in front.
 """
 from __future__ import annotations
 
+import threading
 from collections import deque
 from typing import Any, Optional
+
+from .captions import plain
 
 try:                                            # pragma: no cover - platform
     import comtypes.client as _cc
@@ -45,10 +48,15 @@ try:                                            # pragma: no cover - platform
 except Exception:                               # pragma: no cover - platform
     _AVAILABLE = False
 
-#: Cached automation object. Creating it is the expensive part and it is
-#: stateless, so one per process is right. A fresh one per call showed up
-#: as latency on every read.
-_AUTOMATION = None
+#: Cached automation object, ONE PER THREAD. Creating it is the expensive
+#: part, so it is kept (a fresh one per call showed up as latency on every
+#: read), but COM is per thread: an object made on the event loop thread
+#: and used from an executor worker, or any call on a worker that never
+#: initialised COM, found no elements at all. app_press_dialog_button runs
+#: in an executor and reported "no element named 'Save'" with nothing
+#: offered on a WPF "Unsaved Changes" that app_invoke_element, on the loop
+#: thread, pressed nine seconds later.
+_LOCAL = threading.local()
 
 
 def available() -> bool:
@@ -57,16 +65,23 @@ def available() -> bool:
 
 
 def _uia():
-    global _AUTOMATION
     if not _AVAILABLE:
         return None
-    if _AUTOMATION is None:
+    auto = getattr(_LOCAL, "automation", None)
+    if auto is None:
         try:
-            _AUTOMATION = _cc.CreateObject(
+            # Left initialised: an executor's workers are reused, and
+            # the object made here lives as long as the thread.
+            _cc.comtypes.CoInitialize()
+        except Exception:                       # noqa: BLE001
+            pass
+        try:
+            auto = _cc.CreateObject(
                 _UIA.CUIAutomation, interface=_UIA.IUIAutomation)
         except Exception:                       # noqa: BLE001
             return None
-    return _AUTOMATION
+        _LOCAL.automation = auto
+    return auto
 
 
 def _element(hwnd: int):
@@ -194,9 +209,9 @@ def text_of(hwnd: int) -> list:
 
 
 def _find(hwnd: int, name: str, control_type: Optional[str] = None):
-    """One element by name, ignoring case and accelerators."""
+    """One element by name, ignoring case, accelerators and curly quotes."""
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     root = _element(hwnd)
     if root is None:
@@ -227,7 +242,7 @@ def _find_pressable(hwnd: int, name: str):
     implements Invoke, then the first match.
     """
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     root = _element(hwnd)
     if root is None:

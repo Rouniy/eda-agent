@@ -129,7 +129,7 @@ def _live_4layer():
 
 
 def test_the_vendor_list_is_reachable_as_a_tool():
-    result = asyncio.run(_tools().get("design_list_fab_vendors").fn())
+    result = asyncio.run(_tools().get("design_list_stackup_vendors").fn())
     assert result["ok"] and result["count"] >= 2
     assert all(v["source"] for v in result["vendors"])
 
@@ -146,7 +146,7 @@ def test_an_unknown_vendor_is_refused_by_the_tool():
 
 def test_the_profile_tool_refuses_to_invent_a_rule():
     result = asyncio.run(
-        _tools().get("design_fab_vendor_profile").fn("jlcpcb"))
+        _tools().get("design_stackup_vendor_profile").fn("jlcpcb"))
     assert result["ok"] is False and result["missing"]
 
 
@@ -169,14 +169,14 @@ def test_a_vendor_with_no_stackups_says_so_rather_than_erroring():
 
 
 def test_the_altium_tools_only_exist_on_altium():
-    assert _tools(altium=False).get("pcb_check_stackup") is None
-    assert _tools(altium=True).get("pcb_check_stackup") is not None
+    assert _tools(altium=False).get("pcb_check_vendor_stackup") is None
+    assert _tools(altium=True).get("pcb_check_vendor_stackup") is not None
 
 
 def test_checking_the_open_board_reads_it_for_you(monkeypatch):
     bridge = _Bridge(live=_live_4layer())
     result = asyncio.run(_tools(monkeypatch, bridge).get(
-        "pcb_check_stackup").fn("jlcpcb", "JLC04161H-7628"))
+        "pcb_check_vendor_stackup").fn("jlcpcb", "JLC04161H-7628"))
     assert result["ok"] and result["matches"]
     assert bridge.calls[0][0] == "pcb.get_layer_stackup"
     assert result["board_name"] == "B.PcbDoc"
@@ -185,7 +185,7 @@ def test_checking_the_open_board_reads_it_for_you(monkeypatch):
 def test_a_board_that_cannot_be_read_is_refused_not_raised(monkeypatch):
     bridge = _Bridge(fail_on="pcb.get_layer_stackup")
     result = asyncio.run(_tools(monkeypatch, bridge).get(
-        "pcb_check_stackup").fn("jlcpcb", "JLC04161H-7628"))
+        "pcb_check_vendor_stackup").fn("jlcpcb", "JLC04161H-7628"))
     assert result["ok"] is False and "not answering" in result["reason"]
 
 
@@ -196,7 +196,7 @@ def test_applying_a_template_is_a_dry_run_by_default(monkeypatch):
     touch the board."""
     bridge = _Bridge(live=_live_4layer())
     result = asyncio.run(_tools(monkeypatch, bridge).get(
-        "pcb_apply_stackup_template").fn("jlcpcb", "JLC04161H-7628"))
+        "pcb_apply_vendor_stackup_template").fn("jlcpcb", "JLC04161H-7628"))
     assert result["ok"] and result["dry_run"] is True
     assert [c[0] for c in bridge.calls] == ["pcb.get_layer_stackup"]
     assert len(result["operations"]) == 4
@@ -205,7 +205,7 @@ def test_applying_a_template_is_a_dry_run_by_default(monkeypatch):
 def test_applying_sends_one_modify_per_copper_layer(monkeypatch):
     bridge = _Bridge(live=_live_4layer())
     result = asyncio.run(_tools(monkeypatch, bridge).get(
-        "pcb_apply_stackup_template").fn("jlcpcb", "JLC04161H-7628",
+        "pcb_apply_vendor_stackup_template").fn("jlcpcb", "JLC04161H-7628",
                                          dry_run=False))
     assert result["ok"] and result["dry_run"] is False
     modifies = [c for c in bridge.calls if c[0] == "pcb.modify_layer"]
@@ -218,7 +218,7 @@ def test_the_operations_carry_fractional_mils(monkeypatch):
     here, the fix downstream buys nothing."""
     bridge = _Bridge(live=_live_4layer())
     result = asyncio.run(_tools(monkeypatch, bridge).get(
-        "pcb_apply_stackup_template").fn("jlcpcb", "JLC04161H-7628"))
+        "pcb_apply_vendor_stackup_template").fn("jlcpcb", "JLC04161H-7628"))
     top = result["operations"][0]
     assert top["copper_thickness_mils"] == pytest.approx(1.378, abs=0.001)
     assert top["dielectric_height_mils"] == pytest.approx(8.2835, abs=0.001)
@@ -229,7 +229,7 @@ def test_the_bottom_layer_gets_no_dielectric(monkeypatch):
     add a ply the template does not have."""
     bridge = _Bridge(live=_live_4layer())
     result = asyncio.run(_tools(monkeypatch, bridge).get(
-        "pcb_apply_stackup_template").fn("jlcpcb", "JLC04161H-7628"))
+        "pcb_apply_vendor_stackup_template").fn("jlcpcb", "JLC04161H-7628"))
     assert "dielectric_height_mils" not in result["operations"][-1]
 
 
@@ -241,7 +241,7 @@ def test_a_different_layer_count_refuses_rather_than_restructuring(
     live["layers"] = live["layers"][:2]
     bridge = _Bridge(live=live)
     result = asyncio.run(_tools(monkeypatch, bridge).get(
-        "pcb_apply_stackup_template").fn("jlcpcb", "JLC04161H-7628",
+        "pcb_apply_vendor_stackup_template").fn("jlcpcb", "JLC04161H-7628",
                                          dry_run=False))
     assert result["ok"] is False
     assert "Layer Stack Manager" in result["reason"]
@@ -253,7 +253,7 @@ def test_a_failure_part_way_reports_what_did_change(monkeypatch):
     know which half took."""
     bridge = _Bridge(live=_live_4layer(), fail_on="Inner2")
     result = asyncio.run(_tools(monkeypatch, bridge).get(
-        "pcb_apply_stackup_template").fn("jlcpcb", "JLC04161H-7628",
+        "pcb_apply_vendor_stackup_template").fn("jlcpcb", "JLC04161H-7628",
                                          dry_run=False))
     assert result["ok"] is False
     assert result["applied"] == ["Top", "Inner1"]

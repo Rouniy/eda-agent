@@ -32,8 +32,9 @@ def test_stage_switches():
     assert StageOptions.coerce(None) == StageOptions()
     off = StageOptions.coerce(False)
     assert not off.any() and not off.class_order and off.pad_vias == "any"
-    assert off.legacy() and not off.bends and not off.fallback
-    assert not StageOptions.coerce(None).legacy()
+    assert off.legacy() and not off.bends and not off.fallback and not off.straight
+    assert not StageOptions.coerce(None).legacy() and StageOptions.coerce(None).straight
+    assert not StageOptions.coerce({"straight": False}).legacy(), "the rest still runs"
     corners_only = StageOptions.coerce({"diff_pairs": False, "plane_fanout": False,
                                         "pin_lanes": False, "bus_lanes": False,
                                         "class_order": False, "pad_vias": "any"})
@@ -41,6 +42,18 @@ def test_stage_switches():
     assert StageOptions.coerce({"bus_lanes": False}).bus_lanes is False
     with pytest.raises(ValueError):
         StageOptions.coerce({"bus_lane": False})
+
+
+def test_what_b3_measured_better_is_on_and_the_rest_waits_behind_a_switch():
+    on = StageOptions()
+    assert on.global_stall and on.quick_release
+    assert not (on.repair_clean or on.repair_negotiate or on.stall_stop or on.exact_pad_via)
+    off = StageOptions.coerce(False)
+    assert not (off.global_stall or off.repair_clean or off.repair_negotiate
+                or off.quick_release or off.exact_pad_via)
+    for name in ("global_stall", "repair_clean", "repair_negotiate", "quick_release",
+                 "exact_pad_via"):
+        assert not StageOptions(**{**vars(off), name: True}).legacy(), name
 
 
 def _fine_row(b, y=200.0, nets=None):
@@ -268,13 +281,14 @@ async def test_the_autoroute_tool_hands_its_stage_switches_to_the_job(monkeypatc
     assert sent["params"]["stages"] == {"diff_pairs": True, "plane_fanout": True,
                                         "pin_lanes": True, "bus_lanes": False}
     assert StageOptions.coerce(sent["params"]["stages"]).diff_pairs
-    # The defaults are the measured set: pairs, pin lanes and buses on,
-    # plane fanout off, no via in a passive's pad (vias allowed in IC pins).
+    # The defaults: pairs, pin lanes and buses on, plane fanout off, and a
+    # via only in a BGA ball or an exposed pad (the fallback widens that to
+    # IC pins when it alone leaves connections unmade).
     await tools["pcb_autoroute"](expect_file=r"C:\b\b.PcbDoc")
     chosen = StageOptions.coerce(sent["params"]["stages"])
     assert sent["params"]["stages"] == {"diff_pairs": True, "plane_fanout": False,
                                         "pin_lanes": True, "bus_lanes": True}
-    assert chosen.pad_vias == "ic" and chosen.bends and chosen.class_order
+    assert chosen.pad_vias == "bga" and chosen.bends and chosen.class_order
     # All four off is the router as it was before the stages.
     await tools["pcb_autoroute"](expect_file=r"C:\b\b.PcbDoc", diff_pairs=False,
                                  pin_lanes=False, bus_lanes=False)

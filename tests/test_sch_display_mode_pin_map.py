@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Placed symbol mode and current footprint pin-map integration."""
 from __future__ import annotations
 

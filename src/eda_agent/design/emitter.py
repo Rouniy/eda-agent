@@ -103,11 +103,17 @@ def emit_canvas(
                     parameter_stamps=parameter_stamps)
 
     try:
-        bridge.send_command("application.save_all", {}, timeout=_SAVE_TIMEOUT_S)
-        result.notes.append("save_all completed")
+        for sheet in canvas.sheets:
+            bridge.send_command(
+                "application.save_document",
+                {"file_path": str(_sheet_path(project, sheet.name))},
+                timeout=_SAVE_TIMEOUT_S)
+        bridge.send_command("project.save", {"project_path": str(project)},
+                            timeout=_SAVE_TIMEOUT_S)
+        result.notes.append("emitted sheets and project saved")
     except Exception as exc:
         result.ok = False
-        result.notes.append(f"save_all failed: {exc}")
+        result.notes.append(f"saving emitted documents failed: {exc}")
 
     return result
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Classify amplifier pin names into functional units."""
 import re as _re
 

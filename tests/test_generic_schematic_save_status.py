@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A generic schematic edit marks the document dirty without saving it."""
 
 from pathlib import Path

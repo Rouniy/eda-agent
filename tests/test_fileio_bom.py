@@ -6,8 +6,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from eda_agent.fileio.altium_sch import read_schematic_components
 from eda_agent.fileio.bom import bom_from_file, bom_to_csv, consolidate_bom
+from eda_agent.fileio.review import review_project_file
 
 _FIXDIR = Path(__file__).resolve().parent / "integration" / "fixtures"
 FIXTURE = _FIXDIR / "main.SchDoc"

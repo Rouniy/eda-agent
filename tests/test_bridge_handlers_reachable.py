@@ -81,6 +81,10 @@ KNOWN_UNREACHABLE = {
     # design/emitter.py). The handler stays for a manual junction
     # where two wires cross and must connect.
     "place_junctions",
+    # Superseded by the exact-board STEP export wrappers, which verify a
+    # fresh file. These older handlers resolve whichever PCB is focused.
+    "export_component_model",
+    "save_component_model",
 }
 
 #: The modules do NOT all dispatch the same way, and matching only one
@@ -393,6 +397,24 @@ def _sent_commands() -> dict[str, str]:
     return sent
 
 
+def _answered_before_routing() -> set[str]:
+    """Full command names ProcessCommand answers itself, before its Case.
+
+    Read from the file that holds the category routing, by content, the
+    same way ``_category_to_module`` finds it. application.get_unit_stamps
+    is answered there because it asks every unit, not one.
+    """
+    for path in sorted(PASCAL_DIR.glob("*.pas")):
+        if path.name == "Altium_MCP.pas":
+            continue
+        body = path.read_text(encoding="utf-8", errors="replace")
+        if not re.search(r"'\w+':\s*Result\s*:=\s*Handle\w+Command", body):
+            continue
+        routing = body[:body.index("Case Category Of")]
+        return set(re.findall(r"If\s+Command\s*=\s*'(\w+\.\w+)'\s+Then", routing))
+    return set()
+
+
 @pytest.fixture(scope="module")
 def unhandled() -> dict[str, str]:
     handlers = _dispatched_handlers()
@@ -402,8 +424,9 @@ def unhandled() -> dict[str, str]:
         f"vacuously")
 
     sent = _sent_commands()
+    early = _answered_before_routing()
     return {cmd: where for cmd, where in sent.items()
-            if cmd.split(".", 1)[1] not in handlers}
+            if cmd.split(".", 1)[1] not in handlers and cmd not in early}
 
 
 def test_every_command_python_sends_has_a_handler(unhandled):

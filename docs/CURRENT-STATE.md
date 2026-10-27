@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Upstream merge candidate, 2026-10-27
+
+An isolated worktree at `D:\ai\eda-agent-large-integration` is merging
+`upstream/main` at `9ee593ea0dce989bf3bfc97d0c982044ed41badb` into
+`Rouniy/eda-agent` after `e6a3a7b`. The merge is under test and has not
+been committed or deployed. Its script identifies itself as `.42` for
+source review; the live Altium bridge still runs the verified `.41` build
+from `main`. Do not interpret source lint as native acceptance. The
+MOREmbedded NPI, SDK, Altium 365 and library tests pass in the merge
+candidate; bottom-side placement has a new exact-board post-commit flip
+path that still needs native acceptance on a disposable PcbDoc.
+
 ## Latest native integration, 2026-10-27
 
 Script `.41` on Altium 26.11.1.5 added exact-board polygon-outline growth
@@ -136,7 +148,7 @@ lint/build reports zero errors/warnings, and Altium 26.11.1.5 loaded `.21`
 with zero cast errors. On a disposable two-layer PcbDoc, the drawing flag
 changed from false to true and an independent read returned true. A duplicate
 pair and wrong-board read were refused. On the same disposable board with
-MidLayer1 added, a new TopLayer–MidLayer1 pair raised the count from one to
+MidLayer1 added, a new TopLayer-MidLayer1 pair raised the count from one to
 two and an independent read returned both spans. The owner board was restored active and
 its SHA256 matched the baseline below. The disposable file remains at
 `workspace/native-acceptance/DrillPairs_20261027.PcbDoc`: automatic command
@@ -599,7 +611,7 @@ or board outline. The exact failing operation on the panel remains unknown.
 
 The existing `scripts/keep-altium-mcp.py` supervisor now checks every 60 seconds
 and publishes its last result atomically to
-`C:\Users\Alex\EDA Agent\workspace\altium-mcp-supervisor-status.json`.
+`<workspace>\altium-mcp-supervisor-status.json`.
 It records MCP listener/protocol health, Altium PID, whether a native command is
 active, script responsiveness when it is safe to ping, overall bridge usability,
 and the full open-dialog diagnostic. It logs a newly observed dialog once and

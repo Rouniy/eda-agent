@@ -51,8 +51,11 @@ from ctypes import wintypes
 import os
 import re
 import time
+from ctypes import byref, wintypes
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+from .captions import plain
 
 try:                                            # pragma: no cover - platform
     import win32api
@@ -79,6 +82,43 @@ def _require():
             "pywin32 is not importable, so no dialog can be inspected or "
             "driven. It is a declared dependency on win32, so this usually "
             "means a non-Windows host or a broken install.")
+    _make_dpi_aware()
+
+
+_DPI_DONE = False
+
+
+def _make_dpi_aware() -> None:
+    """Read and click in physical pixels, once per process.
+
+    A process that does not declare DPI awareness is handed rectangles
+    scaled down by the display scale, while Altium (DPI aware) draws in
+    physical pixels. At 200% every rectangle read was half size and a
+    click aimed by one landed in the wrong place (issue #94). Per-monitor
+    v2 first, then the older per-monitor and system calls for older
+    Windows builds. Called before any window is read, and harmless for
+    a server process that owns no windows.
+    """
+    global _DPI_DONE
+    if _DPI_DONE:
+        return
+    _DPI_DONE = True
+    try:
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is (HANDLE)-4.
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(
+                ctypes.c_void_p(-4)):
+            return
+    except Exception:                            # pragma: no cover - platform
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:                            # pragma: no cover - platform
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:                            # pragma: no cover - platform
+        pass
 
 
 #: Class-name fragments that mark a pressable pushbutton.
@@ -552,7 +592,7 @@ _CONTAINER_CLASSES = ("panel", "groupbox", "static")
 
 
 def _normalise(text: str) -> str:
-    return re.sub(r"[&\s.]+", "", str(text or "")).lower()
+    return re.sub(r"[&\s.]+", "", plain(text)).lower()
 
 
 def read_text(hwnd: int) -> str:
@@ -873,7 +913,7 @@ _KEYS = {
     "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
     "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74,
     "f6": 0x75, "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79,
-    "f11": 0x7A, "f12": 0x7B,
+    "f11": 0x7A, "f12": 0x7B, "insert": 0x2D, "ins": 0x2D,
 }
 _KEYS.update({chr(code).lower(): code for code in range(0x41, 0x5B)})
 _KEYS.update({chr(code): code for code in range(0x30, 0x3A)})
@@ -911,7 +951,7 @@ def press_key(hwnd: int, key: str) -> bool:
     code = _KEYS.get(key.lower())
     if code is None:
         raise ValueError(f"unsupported key {key!r}; use one of "
-                         f"{sorted(_KEYS)}")
+                         f"{_KEYS_HELP}")
     try:
         win32gui.SetForegroundWindow(hwnd)
     except Exception:                            # pragma: no cover - guard
@@ -987,7 +1027,7 @@ def send_keys(sequence: str, hold: float = 0.03, target=None) -> dict:
         if key not in _KEYS:
             return {"ok": False, "reason": (
                 f"{key!r} is not a known key. Known: "
-                f"{', '.join(sorted(_KEYS))}"), "sent": sent}
+                f"{_KEYS_HELP}"), "sent": sent}
 
         for code in codes:
             if target is not None:
@@ -1074,7 +1114,7 @@ def drag(x1: int, y1: int, x2: int, y2: int, steps: int = 12, target=None,
     _gate("synthesised input")
     user32 = ctypes.windll.user32
     point = wintypes.POINT()
-    user32.GetCursorPos(ctypes.byref(point))
+    user32.GetCursorPos(byref(point))
     origin = (point.x, point.y)
 
     ax, ay = _to_absolute(int(x1), int(y1))
@@ -1127,7 +1167,7 @@ def click_at(x: int, y: int, double: bool = False, target=None) -> dict:
     _gate("synthesised input")
     user32 = ctypes.windll.user32
     point = wintypes.POINT()
-    user32.GetCursorPos(ctypes.byref(point))
+    user32.GetCursorPos(byref(point))
     origin = (point.x, point.y)
 
     ax, ay = _to_absolute(int(x), int(y))

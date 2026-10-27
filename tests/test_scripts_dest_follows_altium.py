@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Script deployment follows Altium's registered project and server workspace."""
 
 from pathlib import Path

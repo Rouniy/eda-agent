@@ -62,6 +62,13 @@ Begin
     Else Result := MilsToCoordF(Value);
 End;
 
+{ The other way: a coordinate in the caller's unit, for a read-back. }
+Function CoordToUnits(Coord : TCoord; Units : String) : Double;
+Begin
+    If UnitsAreMM(Units) Then Result := CoordToMilsF(Coord) * 0.0254
+    Else Result := CoordToMilsF(Coord);
+End;
+
 { A default written in mils, in the caller's unit. A bare default of 60 is  }
 { 60 mils; read as millimetres it would be a 60 mm pad.                     }
 Function MilsInUnits(Mils : Double; Units : String) : Double;
@@ -280,6 +287,37 @@ End;
 { to be skipped, which emptied the filter and matched every object: an       }
 { obj_delete given one removed every track on the board and reported         }
 { success. Names are letters, digits, '_' and '.' (Designator.Text).        }
+{ FilterOpPos - where a condition's operator starts (its first = ! < or >), }
+{ 0 when it has none. Names hold none of those characters.                }
+Function FilterOpPos(Condition : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := 0;
+    For I := 1 To Length(Condition) Do
+        If Pos(Copy(Condition, I, 1), '=!<>') > 0 Then
+        Begin
+            Result := I;
+            Exit;
+        End;
+End;
+
+{ FilterOpText - the condition's operator: = != < > <= >=, '' for none or }
+{ a bare '!'.                                                              }
+Function FilterOpText(Condition : String) : String;
+Var
+    P : Integer;
+    Two, One : String;
+Begin
+    Result := '';
+    P := FilterOpPos(Condition);
+    If P = 0 Then Exit;
+    Two := Copy(Condition, P, 2);
+    One := Copy(Condition, P, 1);
+    If One <> '!' Then Result := One;
+    If (Two = '!=') Or (Two = '<=') Or (Two = '>=') Then Result := Two;
+End;
+
 Function FilterProblem(FilterStr : String) : String;
 Var
     Remaining, Condition, PropName, Ch : String;
@@ -302,8 +340,8 @@ Begin
             Remaining := '';
         End;
         If Trim(Condition) = '' Then Continue;
-        EqPos := Pos('=', Condition);
-        Ok := EqPos > 1;
+        EqPos := FilterOpPos(Condition);
+        Ok := (EqPos > 1) And (FilterOpText(Condition) <> '');
         If Ok Then
         Begin
             PropName := Copy(Condition, 1, EqPos - 1);
@@ -331,7 +369,8 @@ Begin
        And (Pos(' ', Trim(Condition)) = 0) Then
         Hint := 'For a true/false property write ' + Trim(Condition) + '=true. ';
     Result := 'Filter condition "' + Condition + '" is not Name=Value. A filter '
-        + 'is Name=Value pairs joined by |, each matched exactly; Altium query '
+        + 'is Name=Value conditions joined by |, each matched exactly (also '
+        + 'Name!=Value, and Name<Value, >, <=, >= on numbers); Altium query '
         + 'expressions (OnLayer(...), Or, And) and bare names are not understood. '
         + Hint + 'Nothing was matched or changed.';
 End;
@@ -1072,6 +1111,45 @@ Begin
     End;
 End;
 
+{ FilterOpHolds - whether Actual stands in relation Op to Expected. Equal }
+{ is the caller's own equality (a PCB length matches within half a unit). }
+{ < > <= >= compare numbers ('.' or ',' decimal); a value that is not a   }
+{ number matches none of them.                                            }
+Function FilterOpHolds(Op, Actual, Expected : String; Equal : Boolean) : Boolean;
+Var
+    A, E, Ch : String;
+    I : Integer;
+    AV, EV : Double;
+Begin
+    If Op = '=' Then Begin Result := Equal; Exit; End;
+    If Op = '!=' Then Begin Result := Not Equal; Exit; End;
+    Result := False;
+    A := '';
+    For I := 1 To Length(Actual) Do
+    Begin
+        Ch := Copy(Actual, I, 1);
+        If Ch = ',' Then Ch := '.';
+        A := A + Ch;
+    End;
+    E := '';
+    For I := 1 To Length(Expected) Do
+    Begin
+        Ch := Copy(Expected, I, 1);
+        If Ch = ',' Then Ch := '.';
+        E := E + Ch;
+    End;
+    A := Trim(A);
+    E := Trim(E);
+    If Not IsFloatStr(A) Then Exit;
+    If Not IsFloatStr(E) Then Exit;
+    AV := StrToFloatDef(A, 0);
+    EV := StrToFloatDef(E, 0);
+    If Op = '<' Then Result := AV < EV;
+    If Op = '>' Then Result := AV > EV;
+    If Op = '<=' Then Result := AV <= EV;
+    If Op = '>=' Then Result := AV >= EV;
+End;
+
 { The first length a rule's Descriptor states, in mils, or -1 when it     }
 { states none. A descriptor carries the rule's value, as in "Clearance     }
 { Constraint (Gap=6mil) (All),(All)", in the board's units. The silk rules }
@@ -1312,6 +1390,29 @@ Begin
     Else Result := 'Unknown';
 End;
 
+{ GetLayerString, plus Mechanical17 and up, which it calls Unknown. The     }
+{ number is taken from the layer's distance to Mechanical17 and kept only    }
+{ when LayerUtils.MechanicalLayer gives the same layer back for it.          }
+Function LayerDisplayName(Layer : TLayer) : String;
+Var
+    Base, Back : TLayer;
+    N : Integer;
+Begin
+    Result := GetLayerString(Layer);
+    If Result <> 'Unknown' Then Exit;
+    Try
+        Base := LayerUtils.MechanicalLayer(17);
+        N := 17 + (Layer - Base);
+        If (N >= 17) And (N <= 1024) Then
+        Begin
+            Back := LayerUtils.MechanicalLayer(N);
+            If Back = Layer Then Result := 'Mechanical' + IntToStr(N);
+        End;
+    Except
+        Result := 'Unknown';
+    End;
+End;
+
 Function ExtractJsonArray(Json : String; Key : String) : String;
 Var
     StartPos, EndPos : Integer;
@@ -1386,7 +1487,9 @@ Begin
     Result := StringReplace(Result, '_', '', -1);
     Result := StringReplace(Result, '-', '', -1);
     { The leading 'e' is Altium's convention and the first thing a caller
-      drops. No type here is ambiguous once it is gone. }
+      drops. A name that itself starts with 'e' (ellipse) loses its own
+      first letter, so a caller that must match the bare name checks it
+      before normalizing. }
     If (Length(Result) > 1) And (Copy(Result, 1, 1) = 'e') Then
         Result := Copy(Result, 2, Length(Result));
 End;
@@ -1438,7 +1541,11 @@ Begin
     Else If N = 'componentbodyobject' Then Result := eComponentBodyObject
     Else If N = 'componentbody' Then Result := eComponentBodyObject
     Else If N = 'body'           Then Result := eComponentBodyObject
-    Else If N = '3dbody'         Then Result := eComponentBodyObject;
+    Else If N = '3dbody'         Then Result := eComponentBodyObject
+    { A plane's net lives on its split-plane regions as well as on the   }
+    { layer; nothing could read them to see which net a plane carries.   }
+    Else If N = 'splitplaneobject' Then Result := eSplitPlaneObject
+    Else If N = 'splitplane'     Then Result := eSplitPlaneObject;
 End;
 
 { What the refusal should have said. Listed from the resolver above so the
@@ -1449,7 +1556,7 @@ Begin
     Result := 'eTrackObject, ePadObject, eViaObject, eComponentObject, '
             + 'eArcObject, eFillObject, eTextObject, ePolyObject, '
             + 'eRegionObject, eRuleObject, eDimensionObject, '
-            + 'eComponentBodyObject, eConnectionObject';
+            + 'eComponentBodyObject, eConnectionObject, eSplitPlaneObject';
 End;
 
 { Inverse of ObjectTypeFromStringPCB. Written here, next to it, so the
@@ -1482,6 +1589,7 @@ Begin
     Else If Id = eRuleObject         Then Result := 'rule'
     Else If Id = eDimensionObject    Then Result := 'dimension'
     Else If Id = eConnectionObject   Then Result := 'connection'
+    Else If Id = eSplitPlaneObject   Then Result := 'split_plane'
     Else Result := 'objectid_' + IntToStr(Id);
 End;
 
@@ -1978,6 +2086,7 @@ End;
 
 Var
     _PropertyDiagStr : String;
+    _DeleteFaultStr : String;
 
 { Buffer is a String, not a TStringList. DelphiScript drops class-method  }
 { visibility on TStringList declared at module scope (Undeclared          }
@@ -1990,6 +2099,15 @@ Var
 Procedure ResetPropertyDiag(Dummy : Integer);
 Begin
     _PropertyDiagStr := '';
+    _DeleteFaultStr := '';
+End;
+
+{ Why a delete loop stopped early. The objects removed before it stopped are }
+{ gone and counted; the reply must say both, or a caller reads the failure   }
+{ as "nothing changed" and repeats a delete that already happened.           }
+Procedure NoteDeleteFault(Msg : String);
+Begin
+    If _DeleteFaultStr = '' Then _DeleteFaultStr := Msg;
 End;
 
 Procedure NotePropertyDiag(Kind : String; PropName : String);
@@ -2085,6 +2203,14 @@ End;
 Function ModifyOutcomeJson(Dummy : Integer): String;
 Begin
     Result := ',"properties":' + RenderPropertyDiagJson(0);
+    If _DeleteFaultStr <> '' Then
+    Begin
+        Result := Result + ',"success":false,"partial":true,"delete_error":"'
+            + EscapeJsonString(_DeleteFaultStr) + '","reason":"the delete '
+            + 'stopped part way. matched counts the objects already removed; '
+            + 'query again before repeating it."';
+        Exit;
+    End;
     If _PropertyDiagStr <> '' Then
         Result := Result + ',"success":false,"reason":"one or more properties '
             + 'were not written. properties.unknown lists names this build '

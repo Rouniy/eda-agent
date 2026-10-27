@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The placement handlers keep sheet typography and fixed port geometry."""
 from __future__ import annotations
 

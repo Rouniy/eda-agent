@@ -6,7 +6,10 @@
 
 Function App_Ping(RequestId : String) : String;
 Var
-    Ver : String;
+    Ver, ScriptProjects : String;
+    Workspace : IWorkspace;
+    Proj : IProject;
+    I : Integer;
 Begin
     // Return the compiled-in SCRIPT_VERSION so Python can detect a stale
     // Altium script cache. cast_errors surfaces the silent-cast counter
@@ -28,11 +31,41 @@ Begin
     Except
         Ver := '';
     End;
+    // Where the script project is open from. Python compares
+    // SCRIPT_VERSION against a Main.pas it can see, and in a working-tree
+    // setup Altium can have the script project open from somewhere else,
+    // so the open Altium_API.PrjScr paths go back for it to compare.
+    // Read only; a failure costs this field and nothing else.
+    ScriptProjects := '';
+    Try
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            For I := 0 To Workspace.DM_ProjectCount - 1 Do
+            Begin
+                Proj := Workspace.DM_Projects(I);
+                If Proj = Nil Then Continue;
+                If Pos('ALTIUM_API.PRJSCR', UpperCase(Proj.DM_ProjectFullPath)) > 0 Then
+                Begin
+                    If ScriptProjects <> '' Then ScriptProjects := ScriptProjects + ',';
+                    ScriptProjects := ScriptProjects + '"'
+                        + EscapeJsonString(Proj.DM_ProjectFullPath) + '"';
+                End;
+            End;
+        End;
+    Except
+        ScriptProjects := '';
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"pong":true,"script_version":"' + SCRIPT_VERSION +
         '","altium_version":"' + EscapeJsonString(Ver) +
         '","protocol_version":' + IntToStr(PROTOCOL_VERSION) +
-        ',"cast_errors":' + IntToStr(CastErrorCount) + '}');
+        ',"cast_errors":' + IntToStr(CastErrorCount) +
+        { The folder this loop takes requests from. Two script projects, or }
+        { two servers on one machine, are told apart by it: a request only  }
+        { reaches the loop whose folder it was written to (issue #94).      }
+        ',"workspace_dir":"' + EscapeJsonString(WorkspaceDir) + '"' +
+        ',"script_projects":[' + ScriptProjects + ']}');
 End;
 
 Function App_GetVersion(RequestId : String) : String;
@@ -712,15 +745,80 @@ Begin
     End;
 End;
 
+{ The open project at ProjectPath, under either slash spelling, or Nil. }
+Function OpenProjectAt(Workspace : IWorkspace; ProjectPath : String) : IProject;
+Var
+    I : Integer;
+    Proj : IProject;
+    Want, Have : String;
+Begin
+    Result := Nil;
+    Want := UpperCase(CanonicalPathValue('path', ProjectPath));
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try Proj := Workspace.DM_Projects(I); Except End;
+        If Proj = Nil Then Continue;
+        Have := '';
+        Try Have := Proj.DM_ProjectFullPath; Except End;
+        If UpperCase(CanonicalPathValue('path', Have)) = Want Then
+        Begin
+            Result := Proj;
+            Exit;
+        End;
+    End;
+End;
+
+{ The projects that list FilePath among their documents, as a JSON array    }
+{ of project paths. What membership IS, read back, rather than what the     }
+{ create call was asked to do.                                              }
+Function ProjectsHoldingJson(FilePath : String) : String;
+Var
+    Workspace : IWorkspace;
+    Proj : IProject;
+    Doc : IDocument;
+    I, J : Integer;
+    Want, Have, ProjPath : String;
+Begin
+    Result := '';
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Want := UpperCase(CanonicalPathValue('path', FilePath));
+    For I := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Proj := Nil;
+        Try Proj := Workspace.DM_Projects(I); Except End;
+        If Proj = Nil Then Continue;
+        For J := 0 To Proj.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Nil;
+            Try Doc := Proj.DM_LogicalDocuments(J); Except End;
+            If Doc = Nil Then Continue;
+            Have := '';
+            Try Have := Doc.DM_FullPath; Except End;
+            If UpperCase(CanonicalPathValue('path', Have)) = Want Then
+            Begin
+                ProjPath := '';
+                Try ProjPath := Proj.DM_ProjectFullPath; Except End;
+                If Result <> '' Then Result := Result + ',';
+                Result := Result + '"' + EscapeJsonString(ProjPath) + '"';
+                Break;
+            End;
+        End;
+    End;
+End;
+
 {..............................................................................}
 { Create a new blank document of a given kind (PCB, SCH, PCBLIB, SCHLIB,       }
-{ OUTPUTJOB, ...). Saves it to disk and optionally adds it to the focused      }
-{ project. Uses IClient.OpenNewDocument, the documented API for this.          }
+{ OUTPUTJOB, ...). Saves it to disk and optionally adds it to a project.       }
+{ Uses IClient.OpenNewDocument, the documented API for this.                   }
 {                                                                               }
 { Params: kind (required, e.g. 'PCB' or 'SCH'),                                }
 {         file_path (required, absolute path where the doc should live),       }
 {         name (optional display name, defaults to the filename),             }
-{         add_to_project (optional bool, defaults to true)                    }
+{         add_to_project (optional bool, defaults to true),                   }
+{         project_path (optional: the project to add it to, rather than       }
+{         whichever project has focus)                                         }
 {..............................................................................}
 
 Function App_CreateDocument(Params : String; RequestId : String) : String;
@@ -738,6 +836,29 @@ Begin
     AddStr := ExtractJsonValue(Params, 'add_to_project');
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     AddToProject := (AddStr = '') Or (AddStr = 'true');
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+
+    { THE PROJECT IS NAMED OR IT IS THE FOCUSED ONE, decided before anything }
+    { is created. A temporary sheet went into whichever project had focus,   }
+    { a production project, while the caller meant another (issue #94).     }
+    Project := Nil;
+    If AddToProject Then
+    Begin
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            If ProjectPath <> '' Then
+                Project := OpenProjectAt(Workspace, ProjectPath)
+            Else
+                Project := Workspace.DM_FocusedProject;
+        End;
+        If (Project = Nil) And (ProjectPath <> '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PROJECT',
+                'No open project at ' + ProjectPath + '. Nothing was created.');
+            Exit;
+        End;
+    End;
 
     If DocKind = '' Then
     Begin
@@ -808,7 +929,8 @@ Begin
     { documented project-side API and the approach that works reliably        }
     { across workspace states.                                                }
     Added := False;
-    If AddToProject Then
+    ProjSaved := False;
+    If AddToProject And (Project <> Nil) Then
     Begin
         Workspace := GetWorkspace;
         If Workspace <> Nil Then
@@ -868,12 +990,92 @@ Begin
         ',"file_path":"' + EscapeJsonString(FilePath) + '"' +
         ',"saved":' + BoolToJsonStr(Saved) +
         ',"focused":' + BoolToJsonStr(Focused) +
-        ',"added_to_project":' + BoolToJsonStr(Added) + '}');
+        ',"added_to_project":' + BoolToJsonStr(Added) +
+        ',"project_saved":' + BoolToJsonStr(ProjSaved) +
+        ',"member_of":[' + ProjectsHoldingJson(FilePath) + ']}');
+End;
+
+{..............................................................................}
+{ App_SaveDocument - save ONE open document: file_path, or the focused one.    }
+{                                                                              }
+{ app_save_all writes every open document, so one that cannot be written (a   }
+{ sheet in a read-only folder) stops a save the caller never asked for. This  }
+{ touches only the named document, never focuses anything and never walks the }
+{ workspace. Whether it reached disk is measured by the file's age, because   }
+{ DoFileSave does not raise when the editor declines, and Modified is         }
+{ reported but not trusted, as App_SaveAll records.                           }
+{..............................................................................}
+
+Function App_SaveDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, Reason : String;
+    ServerDoc : IServerDocument;
+    WasModified, Saved : Boolean;
+    AgeBefore, AgeAfter : Integer;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    If FilePath = '' Then FilePath := CurrentFocusedDocPath(0);
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
+            'No file_path given and no document is focused');
+        Exit;
+    End;
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
+            FilePath + ' is not open in Altium, so it holds no unsaved edits');
+        Exit;
+    End;
+
+    WasModified := False;
+    Try WasModified := ServerDoc.Modified; Except End;
+    AgeBefore := -1;
+    Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
+    Try ServerDoc.SetModified(True); Except End;
+    Try ServerDoc.DoFileSave(''); Except End;
+    AgeAfter := -1;
+    Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
+    Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore);
+    { Written, so a later stop has nothing of this edit left to save. }
+    If Saved Then ForgetDocEdited(FilePath);
+
+    Reason := '';
+    If Not Saved Then
+        Reason := 'The file did not get newer. Altium declines a save while a '
+            + 'command is active in the editor, which an abandoned edit can '
+            + 'leave behind with nothing on screen, and a read-only folder '
+            + 'refuses it. File ages tick every two seconds, so a save right '
+            + 'after another can also read as not written: try again.';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"file_path":"' + EscapeJsonString(FilePath) + '"'
+        + ',"saved":' + BoolToJsonStr(Saved)
+        + ',"was_modified":' + BoolToJsonStr(WasModified)
+        + ',"reason":"' + EscapeJsonString(Reason) + '"}');
 End;
 
 {..............................................................................}
 { Command Handler - must be at end so all functions are declared               }
 {..............................................................................}
+
+{ Stop the polling loop. Documents a tool edited, or that the editor marks  }
+{ modified, are saved first; a clean document is not touched, so detaching  }
+{ never rewrites a file nobody changed. app_save_all keeps its full flush.  }
+Function App_StopServer(RequestId : String) : String;
+Begin
+    SaveScope := 'edited';
+    CleanLeftAlone := 0;
+    SaveAttempts := 0;
+    Try SaveAllDirty(0); Except End;
+    SaveScope := '';
+    Running := False;
+    Result := BuildSuccessResponse(RequestId, '{"stopped":true,"edited_saved":'
+        + IntToStr(SaveAttempts) + ',"clean_left_alone":'
+        + IntToStr(CleanLeftAlone) + '}');
+End;
 
 Function App_SaveAll(RequestId : String) : String;
 Var
@@ -1093,6 +1295,56 @@ Begin
         + 'anything: call app_save_all afterwards and check still_dirty."}');
 End;
 
+{ App_Autosave - read, or set, Altium's auto-save (document recovery): on or  }
+{ off and the interval in minutes. Both are read back. Altium keeps the      }
+{ interval in milliseconds (measured on AD 26.11: 30 minutes reads 1800000). }
+{ Params: enabled ('true' / 'false'; empty = keep), interval (minutes, 1 or  }
+{ more; empty = keep).                                                       }
+Function App_Autosave(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    EnStr, IntStr : String;
+    Enabled, Changed : Boolean;
+    Interval : Integer;
+Begin
+    EnStr := LowerCase(ExtractJsonValue(Params, 'enabled'));
+    IntStr := ExtractJsonValue(Params, 'interval');
+    If (IntStr <> '') And (Not IsIntStr(IntStr)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'interval must be a whole number of minutes');
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    Enabled := Workspace.DM_GetRecoveryIsEnabled;
+    Interval := Workspace.DM_GetRecoveryInterval;
+    Changed := False;
+    If EnStr <> '' Then
+    Begin
+        Enabled := EnStr = 'true';
+        Changed := True;
+    End;
+    If IntStr <> '' Then
+    Begin
+        Interval := StrToInt(IntStr) * 60000;
+        If Interval < 60000 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'interval is 1 minute or more');
+            Exit;
+        End;
+        Changed := True;
+    End;
+    If Changed Then Workspace.DM_SetRecoveryParameters(Enabled, Interval);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('changed', Changed) + ','
+        + JsonBool('enabled', Workspace.DM_GetRecoveryIsEnabled) + ','
+        + JsonInt('interval_minutes', Workspace.DM_GetRecoveryInterval Div 60000)));
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -1113,8 +1365,16 @@ Begin
         'create_document':     Result := App_CreateDocument(Params, RequestId);
         'save_all':            Result := App_SaveAll(RequestId);
         'diag_workspace':      Result := App_DiagWorkspace(Params, RequestId);
+        'autosave':            Result := App_Autosave(Params, RequestId);
         'stop_server':         Begin Running := False; Result := BuildSuccessResponse(RequestId, '{"stopped":true}'); End;
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;
+End;
+
+{ UnitStamp_Application - which build of Application.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
+Function UnitStamp_Application(Dummy : Integer) : String;
+Begin
+    Result := 'dev';
 End;

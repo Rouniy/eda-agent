@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Altium 365 design data through the Nexar GraphQL API.
 
 Vendor facts used (support.nexar.com, Appendix A of the manual):
@@ -36,7 +37,6 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from ..atomicfile import replace_with_retry
 from .config import A365Policy
 from ..atomicfile import replace_with_retry
 from .errors import AuthenticationFailed, NotFound, PermissionDenied, ValidationFailed

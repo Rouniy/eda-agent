@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """PCB selection must not repeat the 2026-10-16 false-success incident."""
 
 import asyncio

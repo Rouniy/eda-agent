@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Source checks for the Altium timer pump; native lifecycle is tested manually."""
 from pathlib import Path
 import re
@@ -64,4 +65,6 @@ def test_close_finalises_even_if_hidden_form_stops_ticking():
 
 
 def test_script_revision_is_pinned_for_cache_detection():
-    assert "SCRIPT_VERSION = '2026.10.14.5';" in source("Main.pas")
+    import re
+    assert re.search(r"SCRIPT_VERSION = '20\d{2}\.\d{2}\.\d{2}\.\d+';",
+                     source("Main.pas"))

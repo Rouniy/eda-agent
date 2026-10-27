@@ -111,11 +111,16 @@ class _RecordingBridge:
     def __init__(self, focus_ok=True):
         self.calls = []
         self._focus_ok = focus_ok
+        self._active = ""
 
     async def send_command_async(self, command, params=None, timeout=None):
         self.calls.append((command, params or {}))
         if command == "application.set_active_document":
+            if self._focus_ok:
+                self._active = params["file_path"]
             return {"success": self._focus_ok}
+        if command == "application.get_active_document":
+            return {"file_path": self._active}
         return {"placed": 1, "failed": 0, "total": 1}
 
 
@@ -136,7 +141,8 @@ async def test_placement_focuses_target_doc_first(monkeypatch):
     )
     cmds = [c for c, _ in bridge.calls]
     assert cmds[0] == "application.set_active_document"
-    assert cmds[1] == "generic.place_sch_components_from_library"
+    assert cmds[1:] == ["application.get_active_document",
+                        "generic.place_sch_components_from_library"]
 
 
 @pytest.mark.asyncio

@@ -290,6 +290,73 @@ RULE_ARC_WIDTH = LineRule(
     description="IPCB_Arc has no Width; use Arc.LineWidth (Arc.Width raises a modal that stops the loop).",
 )
 
+# Pascal binds boolean operators before comparisons. Catch unbracketed
+# comparisons so a merged script cannot silently change a condition.
+_UNBRACKETED_COMPARISON = re.compile(
+    r"(?<![(\w.'])[A-Za-z_][\w.]*(?:\[[^\]]*\])?\s*(?:=|<>|<=|>=|<|>)\s*"
+    r"(?:'[^']*'|[\w.]+(?:\([^()]*\))?)\s+(?:Or|And|Xor)\b"
+    r"|\b(?:Or|And|Xor)\s+(?!\(|Not\b)[A-Za-z_][\w.]*(?:\[[^\]]*\])?\s*"
+    r"(?:=|<>|<=|>=|<|>)\s*", re.IGNORECASE)
+
+
+def _blank_comments_and_strings(text: str) -> str:
+    """Blank comments and strings while preserving source line numbers."""
+    def blank(chunk: str) -> str:
+        return "".join("\n" if c == "\n" else " " for c in chunk)
+
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "{":
+            end = text.find("}", i)
+            end = n if end == -1 else end + 1
+            out.append(blank(text[i:end]))
+            i = end
+        elif text.startswith("(*", i):
+            end = text.find("*)", i)
+            end = n if end == -1 else end + 2
+            out.append(blank(text[i:end]))
+            i = end
+        elif text.startswith("//", i):
+            end = text.find("\n", i)
+            end = n if end == -1 else end
+            out.append(blank(text[i:end]))
+            i = end
+        elif ch == "'":
+            end = i + 1
+            while end < n:
+                if text[end] == "'":
+                    if text[end + 1:end + 2] == "'":
+                        end += 2
+                        continue
+                    break
+                end += 1
+            out.append("'" + blank(text[i + 1:end]) + "'")
+            i = end + 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _scan_unbracketed_comparison(path: str, text: str) -> list[Finding]:
+    """Find a comparison beside Or, And or Xor without brackets."""
+    findings: list[Finding] = []
+    raw_lines = text.split("\n")
+    clean_lines = _blank_comments_and_strings(text).split("\n")
+    for line_no, clean in enumerate(clean_lines, 1):
+        m = _UNBRACKETED_COMPARISON.search(clean)
+        if m:
+            findings.append(Finding(
+                file=path, line=line_no, col=m.start() + 1,
+                rule="unbracketed-comparison", severity="error",
+                snippet=raw_lines[line_no - 1],
+                memory="delphiscript_api_quirks.md",
+            ))
+    return findings
+
+
 # IPCB_Rule.Priority is a read-only function, not a property.
 RULE_RULE_PRIORITY_WRITE = LineRule(
     name="rule-priority-readonly-write",
@@ -983,8 +1050,10 @@ def lint_file(path: str) -> list[Finding]:
     findings.extend(_scan_reserved_in_var_block(rel, raw_lines))
     findings.extend(_scan_param_redeclared_as_local(rel, raw_lines))
     findings.extend(_scan_dollar_i(rel, text))
+    findings.extend(_scan_unbracketed_comparison(rel, text))
     findings.extend(_scan_call_before_definition(rel, raw_lines))
     findings.extend(_scan_undeclared_local(rel, raw_lines))
+    findings.extend(_scan_local_shadows_enum(rel, raw_lines))
     # Comment-brace check uses raw text (it tracks comment depth itself).
     findings.extend(_scan_comment_brace(rel, text))
 
@@ -1347,6 +1416,47 @@ def _declared_names(lines: list[str], start: int, begin: int) -> set:
             take(line)
     return names
 
+
+
+def _scan_local_shadows_enum(path: str, lines: list[str]) -> list[Finding]:
+    """A local or parameter whose name is an enum constant in other case.
+
+    DelphiScript names are case-insensitive, so a local ``EArc`` IS
+    ``eArc`` inside its routine. Gen_MirrorSchComponent declared
+    ``EArc : ISch_EllipticalArc`` and compared ``Kind = eArc``: the
+    comparison read the unassigned local (0), never matched, and every
+    arc of a mirrored symbol stayed where it was while the call reported
+    it skipped as kind 8. Nothing raises; the constant is simply gone in
+    that routine.
+
+    Flags a use spelled like an enum constant (``e`` then a capital) whose
+    name the routine declares in a different case. A local declared with
+    the same spelling as its uses is the local, and is left alone.
+
+    Line by line, not through _blank_block_comments: that one reads the
+    brace in a string such as '{"designator":' as a comment opening and
+    blanked the very lines this rule has to see.
+    """
+    findings: list[Finding] = []
+    for _name, start, begin, stop in _routine_spans(lines):
+        declared = _declared_names(lines, start, begin)
+        if not declared:
+            continue
+        header = " ".join(strip_comments_and_strings(lines[k])
+                          for k in range(start, begin))
+        spelled = set(re.findall(r"\b\w+\b", header))
+        for k in range(begin, stop):
+            text = strip_comments_and_strings(lines[k])
+            for m in re.finditer(r"\be[A-Z]\w*", text):
+                tok = m.group(0)
+                if tok.lower() in declared and tok not in spelled:
+                    findings.append(Finding(
+                        file=path, line=k + 1, col=m.start() + 1,
+                        rule="local-shadows-enum", severity="error",
+                        snippet=lines[k],
+                        memory="delphiscript_reserved_words.md",
+                    ))
+    return findings
 
 def _scan_undeclared_local(path: str, lines: list[str]) -> list[Finding]:
     """An identifier used as a local that this routine never declares.

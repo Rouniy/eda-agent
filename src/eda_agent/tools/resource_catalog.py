@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Read-only catalog of installed Altium resource definitions.
 
 RCS describes factory menus and launchers. It does not describe the final

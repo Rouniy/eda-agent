@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Keep the impedance profile reader wired into the PCB script."""
 
 from pathlib import Path

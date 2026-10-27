@@ -36,6 +36,7 @@ from ctypes import POINTER, byref, c_long, wintypes
 from typing import Optional
 
 from . import windows as win
+from .captions import plain
 
 try:                                            # pragma: no cover - platform
     import comtypes
@@ -182,7 +183,7 @@ def find(window, label: str, role: Optional[str] = None):
     was asked for rather than whichever came first in the tree.
     """
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     def bare(text):
         # Wizard arrows and the ellipsis that marks a dialog-opening
@@ -411,7 +412,7 @@ def select_row(hwnd: int, name: str, settle: float = 0.6) -> dict:
         return {"ok": False, "reason": "that control exposes no rows"}
 
     def flat(text):
-        return str(text or "").strip().lower()
+        return plain(text).strip().lower()
 
     match = next((r for r in rows if flat(r["name"]) == flat(name)), None)
     if match is None:
@@ -524,9 +525,10 @@ def _node_rect(node):
     return int(left), int(top), int(width), int(height)
 
 
-def _click_node(node) -> bool:
+def _click_node(node, hwnd: int) -> bool:
     """Real click at a node's centre. The last resort, and it moves the
-    pointer, so everything above tries not to need it."""
+    pointer, so everything above tries not to need it. ``hwnd`` is the
+    window the node belongs to, which must own the foreground."""
     rect = _node_rect(node)
     if rect is None:
         return False
@@ -587,7 +589,7 @@ def select_item(hwnd: int, name: str, settle: float = 0.6) -> dict:
     nothing is reported rather than believed.
     """
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     choices = list_choices(hwnd)
     if not choices:
@@ -615,7 +617,7 @@ def select_item(hwnd: int, name: str, settle: float = 0.6) -> dict:
             except COMError:
                 acted = False
         else:
-            acted = _click_node(node)
+            acted = _click_node(node, hwnd)
         if not acted:
             continue
 
@@ -641,7 +643,7 @@ def expand(hwnd: int, name: str, want: bool = True,
     whose contents do not exist as far as a caller is concerned.
     """
     def flat(text):
-        return str(text or "").strip().lower()
+        return plain(text).strip().lower()
 
     rows = list_rows(hwnd)
     if not rows:
@@ -670,7 +672,7 @@ def expand(hwnd: int, name: str, want: bool = True,
                 "changed": False, "note": "already in that state"}
 
     for how in ("default_action", "click"):
-        acted = _default_action(node) if how == "default_action"             else _click_node(node)
+        acted = _default_action(node) if how == "default_action"             else _click_node(node, hwnd)
         if not acted:
             continue
         win.wait_until(lambda: expanded() == want, settle)
@@ -692,7 +694,7 @@ def list_cells(hwnd: int, row_name: str) -> dict:
     is still addressable by where it sits.
     """
     def flat(text):
-        return str(text or "").strip().lower()
+        return plain(text).strip().lower()
 
     rows = list_rows(hwnd)
     match = next((r for r in rows if flat(r["name"]) == flat(row_name)), None)
@@ -766,7 +768,7 @@ def set_cell(hwnd: int, row_name: str, column: str, text: str,
     # Put the cell into edit mode. A grid that answers the default action
     # opens its editor without the pointer moving; otherwise click it.
     if not _default_action(cell):
-        if not _click_node(cell):
+        if not _click_node(cell, hwnd):
             return {"ok": False, "reason": (
                 "that cell has no screen rectangle and refused its default "
                 "action, so there is no way to start editing it")}
@@ -861,7 +863,7 @@ def list_tabs(window) -> list:
 def select_tab(window, name: str, settle: float = 0.6) -> dict:
     """Switch to a tab page by name, and verify it is the selected one."""
     def flat(text):
-        return str(text or "").replace("&", "").strip().lower()
+        return plain(text).replace("&", "").strip().lower()
 
     tabs = list_tabs(window)
     if not tabs:
@@ -886,7 +888,7 @@ def select_tab(window, name: str, settle: float = 0.6) -> dict:
             except COMError:
                 acted = False
         else:
-            acted = _click_node(node)
+            acted = _click_node(node, window.hwnd)
         if not acted:
             continue
         win.wait_until(lambda: _state_has(node, _STATE_SELECTED), settle)
@@ -954,7 +956,7 @@ def activate_row(hwnd: int, name: str, double: bool = False,
     to do the second.
     """
     def flat(text):
-        return str(text or "").strip().lower()
+        return plain(text).strip().lower()
 
     rows = list_rows(hwnd)
     match = next((r for r in rows if flat(r["name"]) == flat(name)), None)

@@ -186,7 +186,12 @@ def test_every_shared_calculator_is_covered_or_known_different(registries):
     known_different = {"pcb_calc_track_current_capacity"}
     already_agreed = {"pcb_calc_impedance",
                       "pcb_calc_trace_width_for_impedance",
-                      "pcb_calc_length_match"}
+                          "pcb_calc_length_match",
+                          # Registered from the same shared implementation on
+                          # all three backends; signatures were compared.
+                          "pcb_calc_pdn_target_impedance",
+                          "pcb_calc_spiral_inductance",
+                          "pcb_calc_via_inductance"}
 
     shared = set.intersection(*(set(registries[b].names) for b in _BACKENDS))
     calculators = {n for n in shared if "_calc_" in n}
@@ -217,19 +222,19 @@ def _single_registration_calculators() -> set[str]:
     calc_py = (Path(__file__).resolve().parents[1] / "src" / "eda_agent"
                / "tools" / "calc.py")
     tree = ast.parse(calc_py.read_text(encoding="utf-8"))
+    names = set()
     for node in tree.body:
         if (isinstance(node, ast.FunctionDef)
-                and node.name == "register_pcb_calc_tools"):
-            return {
+                and node.name in {"register_pcb_calc_tools", "register_physics_calc_tools"}):
+            names.update({
                 inner.name
                 for inner in ast.walk(node)
                 if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and inner.name != "register_pcb_calc_tools"
-            }
-    raise AssertionError(
-        "register_pcb_calc_tools is gone from tools/calc.py. If its "
-        "calculators moved somewhere that defines them per backend, they "
-        "CAN drift on spelling again and belong in _CASES.")
+                and inner.name != node.name
+            })
+    if not names:
+        raise AssertionError("Shared calculator registration is gone")
+    return names
 
 
 def test_the_single_registration_set_is_not_silently_empty():
@@ -237,7 +242,7 @@ def test_the_single_registration_set_is_not_silently_empty():
     set would make it a no-op that still reads like a check."""
     names = _single_registration_calculators()
     assert len(names) >= 5, names
-    assert all(n.startswith("pcb_calc_") for n in names), names
+    assert all(n.startswith(("pcb_calc_", "physics_calc_")) for n in names), names
 
 
 def test_a_single_registration_calculator_is_not_also_defined_elsewhere(

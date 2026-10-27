@@ -135,7 +135,7 @@ async def test_layout_render_png_writes_preview(tmp_path):
     out = await tool(_plan_dict(), render_png=str(out_png))
     assert out["ok"] is True
     # The data result is unchanged; the preview path is added on success.
-    assert out.get("preview_png") == str(out_png)
+    assert out.get("preview_png") == str(out_png), out.get("preview_error")
     assert "preview_error" not in out
     from PIL import Image
     assert out_png.exists() and out_png.stat().st_size > 1000

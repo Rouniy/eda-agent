@@ -1,3 +1,4 @@
+{ SPDX-License-Identifier: Apache-2.0 }
 { Standalone lifecycle probe. No CAD, host Client, or MCP access. }
 { Deploy a copy with @LOG_DIRECTORY@ replaced by a dedicated absolute folder. }
 Const
