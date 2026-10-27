@@ -10,8 +10,10 @@ existing missing local `Pin` declaration in `SetSchProperty`; it is fixed.
 The focused CrossRef suite has 21 passing tests and Pascal lint/build passes.
 The HTTP child was restarted through its supervisor and Altium loaded `.7`:
 `app_ping` reports loaded/bundled `.7`, `version_match=true`, on Altium
-`26.11.1.5`, with zero cast errors. TCP 14700 and 14701 listen. Only a PCB
-document is currently loaded, so native multipart-sheet acceptance is pending.
+`26.11.1.5`, with zero cast errors. TCP 14700 and 14701 listen. The active
+document is a PCB and the project schematic sheets are not loaded, so native
+multipart-sheet acceptance is pending. A no-target ePin query returned the
+expected `Document not loaded` refusal without affecting the bridge.
 
 The `.6` source ports `mooreaa`'s port cross-reference planner and exposes
 `sch_fix_port_crossrefs` with dry run by default. Applying a plan requires
