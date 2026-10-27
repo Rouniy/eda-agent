@@ -425,6 +425,42 @@ def cmd_update(check_only: bool = False, assume_yes: bool = False,
     return 1 if out.get("failed_steps") else 0
 
 
+def cmd_update_status(*, fetch: bool = False, source: str = "",
+                      as_json: bool = False) -> int:
+    """Read the checkout, package, script files and compiled Altium version.
+
+    Adapted from MOREmbedded's four-layer update report. This entry point is
+    read-only: the existing ``update --yes`` remains the apply path.
+    """
+    import json
+    from dataclasses import asdict
+
+    from .diag.update import Step, altium_runtime, format_report, gather_state, plan
+
+    source = source.strip()
+    source_dir = source if source and Path(source).expanduser().is_dir() else ""
+    compare_remote = "" if source_dir else source
+    state = gather_state(fetch=fetch, compare_remote=compare_remote,
+                         source_dir=source_dir)
+    runtime = altium_runtime()
+    if runtime:
+        state["loaded_script_projects"] = runtime.get("script_projects") or []
+    steps = plan(state, compiled_version=(runtime or {}).get("script_version"),
+                 source_dir=source_dir)
+    if compare_remote and state.get("upstream_missing"):
+        steps.append(Step("original project", "action",
+                          f"remote {compare_remote} is not configured",
+                          action="Choose a configured remote with --from.",
+                          details={"available": state["upstream_missing"]}))
+    code = 1 if any(s.status in ("action", "unknown") for s in steps) else 0
+    if as_json:
+        print(json.dumps({"state": state, "steps": [asdict(s) for s in steps],
+                          "exit_code": code}, indent=2))
+    else:
+        print(format_report(steps))
+    return code
+
+
 def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
                  force: bool = False, restart: bool = False) -> int:
     """Start the bridge script in the running Altium, when you ask for it.

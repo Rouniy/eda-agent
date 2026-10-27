@@ -849,6 +849,14 @@ def main() -> int:
                           help="Update without asking.")
     update_p.add_argument("--no-relaunch", action="store_true",
                           help="Leave the Altium loop running the old scripts.")
+    update_p.add_argument("--status", action="store_true",
+                          help="Read checkout, package, deployed scripts and compiled Altium state without changing them.")
+    update_p.add_argument("--fetch", action="store_true",
+                          help="With --status, refresh Git remote refs before comparing.")
+    update_p.add_argument("--from", dest="source", default="",
+                          help="With --status, compare a named remote or source folder.")
+    update_p.add_argument("--json", action="store_true", dest="json_out",
+                          help="With --status, print structured JSON.")
 
     # health -- offline, fast
     subparsers.add_parser(
@@ -1247,6 +1255,17 @@ def main() -> int:
         return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
                                 force=args.force, restart=args.restart)
     if args.command == "update":
+        if args.status:
+            if args.yes or args.no_relaunch:
+                print("update --status cannot be combined with --yes or --no-relaunch",
+                      file=sys.stderr)
+                return 2
+            return cli.cmd_update_status(fetch=args.fetch, source=args.source,
+                                         as_json=args.json_out)
+        if args.fetch or args.source or args.json_out:
+            print("--fetch, --from and --json require update --status",
+                  file=sys.stderr)
+            return 2
         return cli.cmd_update(check_only=args.check, assume_yes=args.yes,
                               relaunch=not args.no_relaunch)
     if args.command in ("a365-login", "a365-logout"):

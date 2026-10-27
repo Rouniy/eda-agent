@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## MOREmbedded updater parity, 2026-10-27
+
+- [x] Port the child fork's four-layer update diagnostic as a read-only
+  `eda-agent update --status` mode. It checks the source checkout, package,
+  script directory and compiled Altium session; the current workspace's
+  source-directory runtime is recognized. Twenty-one focused tests pass.
+- [ ] Recheck the loaded script-project path on a responsive Altium session;
+  the present process is hung, so only source/deployment state was verified.
+
 ## Upstream `fbf72a7` source merge, 2026-10-27
 
 - [x] Reconcile the four new upstream commits after `40814ba` into the

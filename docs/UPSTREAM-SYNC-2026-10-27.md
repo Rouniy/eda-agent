@@ -31,6 +31,22 @@ compared all 62 direct/child fork default tips and all 117 branch tips
 with live remote refs; every cached tip matched. This is branch freshness,
 not proof that all divergent behavior has already been ported.
 
+## MOREmbedded update-status integration
+
+The child fork's `ff4d7e8` and `43457f4` added a four-layer update
+diagnostic: Git checkout, installed Python package, script files on disk,
+and the version compiled by Altium. Our existing `update --yes` already
+provides the apply path, so this port adds the read-only `update --status`
+mode, with optional `--fetch`, `--from` and `--json`. It reports the
+editable checkout as the script source when no copy or registry entry is
+present, matching this workspace's main-directory setup. A responsive
+Altium ping also supplies the loaded script-project path for comparison;
+when Altium is busy, the session is explicitly unknown. Ping extensions
+are disabled for this report so a queued command cannot delay it for
+minutes. Twenty-one focused update tests passed. The current live run
+reported Git/package/script source current, and the unresponsive Altium
+session and loaded path unknown.
+
 ## Later upstream tip in this session
 
 The fork tool-name scan also exposed a real feature removed from our

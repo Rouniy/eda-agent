@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Child-fork update report, 2026-10-27
+
+The source now includes a read-only `eda-agent update --status` mode
+adapted from MOREmbedded's four-layer updater. It checks the tracked Git
+remote, installed Python package, script source/deployment and compiled
+Altium version; `--from upstream` adds the original project, `--fetch`
+refreshes refs, and `--json` emits the same findings for automation.
+This machine's main-directory script setup is recognized without creating
+a second script copy. The current Altium process is unresponsive, so its
+compiled version and loaded project path correctly report as unknown.
+Twenty-one focused tests passed. Existing `update --yes` behavior remains
+the apply path.
+
 ## New upstream source merge, 2026-10-27
 
 The current source candidate is script `.93`. It reconciles upstream
