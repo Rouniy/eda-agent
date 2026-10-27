@@ -8004,7 +8004,7 @@ def register_library_tools(mcp):
                           or library_path or "")
         try:
             reply = await get_bridge().send_command_async(
-                "library.get_mech_layers", {})
+                "library.get_mech_layers", {"library_path": source_path})
             read_path = str((reply or {}).get("library_path") or "")
             if read_path and source_path and read_path.lower() != source_path.lower():
                 notes.append(f"mechanical layer kinds came from {read_path}, "
@@ -8256,7 +8256,8 @@ def register_library_tools(mcp):
         mech: Optional[list[dict[str, Any]]] = None
         notes: list[str] = []
         try:
-            reply = await bridge.send_command_async("library.get_mech_layers", {})
+            reply = await bridge.send_command_async(
+                "library.get_mech_layers", {"library_path": lib_path})
             mpath = str((reply or {}).get("library_path") or "")
             if mpath and lib_path and mpath.lower() != lib_path.lower():
                 notes.append(f"the mechanical layer kinds come from {mpath}, "

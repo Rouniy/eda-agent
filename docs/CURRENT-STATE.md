@@ -1,5 +1,15 @@
 # Current integration state / agent handoff
 
+## MOREmbedded mechanical-layer targeting, 2026-10-27
+
+`lib_render_footprint` and `lib_audit_footprint_vs_package` now ask the
+native `library.get_mech_layers` handler for the same PcbLib path used for
+the footprint's pads and primitives. Previously they sent no path, so
+multiple open PcbLibs could give the correct footprint geometry with layer
+kinds from the focused, unrelated library. This adapts the child fork's
+`_live_footprint` behaviour into our existing tools. Forty-three focused
+tests pass. Native multi-library acceptance remains pending on script `.106`.
+
 ## Upstream no-console merge, 2026-10-27
 
 `upstream/main` advanced to `c45ca0a537ad5afe0cda4ce1951e6bfb6be4ff3d`.

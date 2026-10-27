@@ -229,6 +229,7 @@ def test_audit_a_correct_footprint(audit):
         "library.get_mech_layers"]
     # The primitives read is aimed at the library the pads came from.
     assert bridge.calls[1][1]["library_path"] == "scratch.PcbLib"
+    assert bridge.calls[2][1] == {"library_path": "scratch.PcbLib"}
     assert out["library_path"] == "scratch.PcbLib"
     assert "courtyard" in out["examined"] and out["package_check"]["ok"]
     assert out["primitives_read"] == {"tracks": 11, "arcs": 1, "regions": 0,

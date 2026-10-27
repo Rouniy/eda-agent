@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## MOREmbedded footprint layer identity, 2026-10-27
+
+- [x] Pass the footprint's exact PcbLib path to both mechanical-layer reads
+  in the existing render and package-audit tools. Forty-three focused tests
+  pass, including call-parameter assertions.
+- [ ] With two disposable PcbLibs open, read a footprint from the inactive
+  one and confirm that its layer kinds, not the focused library's, reach
+  render and package audit. Do this after the new script is loaded.
+
 ## New upstream point and distribution, 2026-10-27
 
 - [x] Merge upstream `c45ca0a` as a true two-parent merge and cover

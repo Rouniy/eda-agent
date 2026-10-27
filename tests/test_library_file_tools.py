@@ -298,6 +298,7 @@ def test_live_render_reports_mechanical_role_and_silk_contact(tmp_path, monkeypa
             if command == "library.get_footprint_primitives":
                 return prims
             assert command == "library.get_mech_layers"
+            assert params == {"library_path": "Parts.PcbLib"}
             return {"library_path": "Parts.PcbLib", "layers": [
                 {"layer": "Mechanical1", "name": "Mech 1",
                  "kind": "Courtyard Top"}]}

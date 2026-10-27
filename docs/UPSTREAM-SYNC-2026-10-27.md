@@ -949,3 +949,11 @@ records the new sync point. Its new source test exposed four fork-only
 subprocess starts; `fork_status.py`, `diag/update.py` and `pcb_toolkit.py`
 now pass `no_window()`. The focused suite passed 27 tests, and
 `git rev-list --count main..upstream/main` returned 0 after merge.
+
+The child fork's private `_live_footprint` helper is the sole async
+function name in `morembedded/main`'s tool modules absent from current
+`main` (998 fork names compared with 1104 in `main`). Our render and audit
+tools already perform the same reads but had omitted its explicit PcbLib
+path on the mechanical-layer call. Both now pass the path returned by the
+pad/primitive read. Forty-three related tests pass; the name comparison is
+only a surface check, and native multi-library acceptance is still needed.
