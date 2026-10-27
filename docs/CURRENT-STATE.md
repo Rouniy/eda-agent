@@ -1,5 +1,15 @@
 # Current integration state / agent handoff
 
+## Fork behavior review, 2026-10-27
+
+The remaining-name audit checked `rabihnd/integration`'s extra property
+catch and `cad435/main`'s vault-library list against current equivalents;
+neither needs a duplicate public tool. The MOREmbedded NPI and SDK
+reflection modules are present; their focused suites pass 66 tests.
+The NPI fab-capability DVT criterion stays manual until a complete
+same-snapshot export comparison is natively verified. Details are in the
+dated sync ledger.
+
 ## Schematic source-library cleanup, 2026-10-27
 
 Source `.105` adapts `wizd/edev`'s optional footprint-library cleanup to

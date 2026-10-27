@@ -1,5 +1,23 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Reviewed fork names with existing behavior
+
+`rabihnd/integration`'s `ApplySetPropertiesEx` adds a call-site catch and
+returns skipped names. Our `ApplySetProperties` preflights unsupported
+properties, `SetSchProperty` records failed and unknown writes, and
+`ModifyOutcomeJson` returns that diagnostic. A second parser would duplicate
+this behavior. `cad435/main`'s `Lib_ListVaultLibraries` maps to
+`lib_list_available_libraries` plus `lib_get_vault_name`; the current code
+uses `TLibraryType` correctly and reports Workspace identity separately
+from the available-file list. No donor API was copied here.
+
+The sole child fork's NPI and SDK reflection modules are present on main.
+The NPI criteria file differs by nine lines: the fab-capability DVT gate
+is manual until a complete same-snapshot export comparison is proven, and
+the impedance gate names the current fab-vendor tool. The NPI and SDK
+reflection suites passed 66 tests. This confirms source and test coverage,
+not native Altium acceptance of the SDK-derived tools.
+
 ## Schematic source-library cleanup
 
 The `wizd/edev` clear command also unpinned every PCBLIB model's datafile

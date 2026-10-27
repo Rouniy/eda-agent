@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## Fork behavior review, 2026-10-27
+
+- [x] Compare `rabihnd/integration`'s `ApplySetPropertiesEx` with the
+  current property diagnostic path, `cad435/main`'s vault-library list
+  with the current available-library/Workspace pair, and MOREmbedded's
+  NPI/SDK modules. No additional public tool was needed; 66 NPI/SDK
+  tests passed. See the dated sync ledger.
+- [ ] Continue behavioral review of other fork differences and native
+  acceptance of already ported SDK-derived tools.
+
 ## Schematic source-library cleanup, 2026-10-27
 
 - [x] Port `wizd/edev`'s footprint-library clearing into the existing
