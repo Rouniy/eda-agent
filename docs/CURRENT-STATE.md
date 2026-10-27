@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Fresh fork audit after `1d093a2`, 2026-10-27
+
+`main` and `origin/main` point to `1d093a2`; the fetched upstream tip is
+`c45ca0a` and is an ancestor of `main` (`main..upstream/main` is empty).
+The live verifier matched 62/62 fork default tips and 117/117 branch tips
+to local refs. `MOREmbedded/main` remains `032fb4b`. Its
+`via_loop_inductance` is already exposed here as `pcb_calc_via_inductance`
+using the same Johnson loop formula. Comparison found that the older
+shared calculator accepted nonfinite values, while the fork refused them;
+the shared calculator now refuses nonnumeric and nonfinite inputs too.
+The Windows binary GitHub Actions workflow still has zero
+recorded runs, so its hosted build remains unverified.
+
 ## xSignal selector and live runtime, 2026-10-27
 
 `pcb_delete_xsignals` now rejects conflicting `names` plus `all=true`

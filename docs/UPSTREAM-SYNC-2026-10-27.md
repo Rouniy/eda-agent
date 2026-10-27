@@ -1,5 +1,21 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Fresh live inventory after `1d093a2`
+
+Fetched `upstream/main`, `morembedded/main` and `origin/main`, then ran
+`python -m eda_agent fork-status --verify-fork-branches`. The exact upstream
+tip and merge base are `c45ca0a537ad5afe0cda4ce1951e6bfb6be4ff3d`;
+zero upstream commits remain outside `main`. The live check matched 62/62
+fork default tips and 117/117 branch tips to local refs.
+`MOREmbedded/main` is still `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+Its separate `via_loop_inductance` function is the already registered
+`pcb_calc_via_inductance` in our broader calculator module. The Johnson
+formula agrees, but the shared calculator accepted `NaN` as a successful
+result; the fork's input guard refused it. The shared calculator now rejects
+nonnumeric and nonfinite values. The GitHub Actions API returned zero
+runs for `build-windows-binary.yml`; the local exe smoke test remains the
+only build evidence for that workflow.
+
 ## Legacy wrapper suite reconciliation
 
 The seven remaining stale calls in `test_added_altium_tools.py` were

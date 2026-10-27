@@ -25,6 +25,21 @@ from eda_agent import cli
 from eda_agent.design import calculators as c
 
 
+@pytest.mark.parametrize("field,bad", [
+    ("plane_spacing_mils", float("nan")),
+    ("via_diameter_mils", float("inf")),
+    ("return_spacing_mils", "20"),
+    ("return_spacing_mils", True),
+])
+def test_via_loop_inductance_refuses_nonfinite_or_nonnumeric_input(field, bad):
+    args = {"plane_spacing_mils": 40, "via_diameter_mils": 10,
+            "return_spacing_mils": 20}
+    args[field] = bad
+    result = c.via_inductance(**args)
+    assert result["ok"] is False
+    assert field in result["reason"]
+
+
 def test_fusing_current_matches_brooks_and_adams_worked_example():
     got = c.fusing_current(1.0, area_sq_mils=103)
     assert got["amps"] == pytest.approx(19, abs=0.3)

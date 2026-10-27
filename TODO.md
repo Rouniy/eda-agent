@@ -1,5 +1,17 @@
 # Fork integration TODO
 
+## Fresh fork parity check, 2026-10-27
+
+- [x] Refresh all live fork refs: 62/62 default tips and 117/117 branch
+  tips match local refs; fetched upstream `c45ca0a` remains an ancestor of
+  `main`.
+- [x] Compare MOREmbedded's `via_loop_inductance` with our registered
+  `pcb_calc_via_inductance`. The formula was present, but our input guard
+  returned `ok=true` for `NaN`; it now refuses nonnumeric and nonfinite
+  values. The calculator, NPI and SDK suites pass (222 tests).
+- [ ] Observe a hosted run of `build-windows-binary.yml`; GitHub Actions
+  reports zero runs so far.
+
 ## xSignal selector and legacy source checks, 2026-10-27
 
 - [x] Refuse `pcb_delete_xsignals` with both names and `all=true` in
