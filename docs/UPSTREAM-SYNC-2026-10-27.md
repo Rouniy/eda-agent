@@ -26,6 +26,19 @@ checkpoint the command returned `checked=62, fresh=62`, including
 `MOREmbedded` as the one child fork. A mismatch gives the exact repo,
 branch, remote commit and local ref to fetch and review.
 
+`--verify-fork-branches` expanded the check to 117 live branches across
+those 62 forks. Twenty branches were absent from the old cache. Their
+refs were fetched from `vincent-himpe`, `yanivbi1`,
+`andrzej-sikora-elte`, `pieterpotgieter` and `redbird98`; a rerun returned
+`117/117` matching tips. The new branches expose mostly features already
+adapted into `main` (for example decimal mils, true-arc regions, via masks
+and footprint body editing). The `andrzej-sikora-elte/elte` branch also
+exposed generic DbLib link flags and current footprint model reads. Their
+component-typed, read-only property paths were ported in script `.61`;
+native read acceptance is still pending. Re-linking a database component
+and changing its footprint remain dedicated operations rather than bare
+property assignments, so their multi-field identity can be verified.
+
 `Rouniy/eda-agent/main` remains the integration branch. The October 27
 integration merge has `9ee593ea0dce989bf3bfc97d0c982044ed41badb`
 (`salitronic/eda-agent/main`) as its second parent. `git merge-base main

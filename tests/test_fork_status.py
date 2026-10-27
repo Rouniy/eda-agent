@@ -70,10 +70,7 @@ def test_live_fork_tip_check_distinguishes_stale_direct_and_current_child(monkey
                     "upstream": "https://github.com/salitronic/eda-agent.git",
                     "morembedded": "https://github.com/MOREmbedded/eda-agent.git"}[args[2]]
         if args[0] == "for-each-ref":
-            return "forks/example/main\told"
-        if args[0] == "rev-parse":
-            return {"origin/main": "ours", "upstream/main": "base",
-                    "morembedded/main": "child"}[args[-1]]
+            return "forks/example/main\told\nmorembedded/main\tchild"
         raise AssertionError(args)
 
     def forks(repo):
@@ -91,8 +88,9 @@ def test_live_fork_tip_check_distinguishes_stale_direct_and_current_child(monkey
     monkeypatch.setattr(fork_module, "_git", git)
     monkeypatch.setattr(fork_module, "_github_forks", forks)
     monkeypatch.setattr(fork_module.subprocess, "run", ls_remote)
-    check = verify_fork_tips(tmp_path)
+    check = verify_fork_tips(tmp_path, all_branches=True)
     assert (check["checked"], check["fresh"]) == (2, 1)
+    assert (check["checked_branches"], check["fresh_branches"]) == (2, 1)
     assert check["forks"][0]["ref"] == "forks/example/main"
     assert check["forks"][0]["fresh"] is False
     assert check["forks"][1]["ref"] == "morembedded/main"

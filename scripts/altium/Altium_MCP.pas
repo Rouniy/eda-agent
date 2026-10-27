@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.60';
+    SCRIPT_VERSION = '2026.10.27.61';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -64404,6 +64404,7 @@ Var
     R : ISch_Rectangle;
     L : ISch_Line;
     Comp : ISch_Component;
+    Impl : ISch_Implementation;
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
@@ -64516,15 +64517,32 @@ Begin
         // ISch_Component only. Without these branches a query for them
         // answered an empty string as if the part had no link, which is how
         // a database-linked part read as unlinked during the DbLib live test.
-        Else If (PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName') Then
+        Else If (PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName')
+             Or (PropName = 'UseDBTableName') Or (PropName = 'UseLibraryName')
+             Or (PropName = 'FootprintModel') Then
         Begin
             If Obj.ObjectId = eSchComponent Then
             Begin
                 Comp := Obj;
-                If PropName = 'DatabaseTableName' Then
-                    Result := Comp.DatabaseTableName
-                Else
-                    Result := Comp.DatabaseLibraryName;
+                Try
+                    If PropName = 'DatabaseTableName' Then
+                        Result := Comp.DatabaseTableName
+                    Else If PropName = 'DatabaseLibraryName' Then
+                        Result := Comp.DatabaseLibraryName
+                    Else If PropName = 'UseDBTableName' Then
+                        Result := BoolToJsonStr(Comp.UseDBTableName)
+                    Else If PropName = 'UseLibraryName' Then
+                        Result := BoolToJsonStr(Comp.UseLibraryName)
+                    Else
+                    Begin
+                        Impl := CurrentFootprintImpl(Comp);
+                        If (Impl <> Nil) And Impl.IsCurrent Then
+                            Result := Impl.ModelName;
+                    End;
+                Except
+                    NotePropertyDiag('failed', PropName);
+                    Result := '';
+                End;
             End
             Else
             Begin

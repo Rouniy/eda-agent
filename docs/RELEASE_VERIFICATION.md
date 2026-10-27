@@ -3507,3 +3507,15 @@ new read had a new object-address token, as expected after reload.
 The same live session compiled and answered `pcb.focus_board` after
 removing an undeclared `FrontPCBBoardPath` reference found during this
 acceptance run. Altium reported version 26.11.1.5 and script `.60`.
+
+## Fork branch audit and generic DbLib reads (2026-10-27)
+
+The live fork-tip audit covered 62 default branches and 117 branches
+overall. Twenty newly discovered branches were fetched into local
+remote-tracking refs; all 117 refs then matched their live tips. The
+`andrzej-sikora-elte/elte` branch contributed generic reads of
+`UseDBTableName`, `UseLibraryName` and `FootprintModel` on placed schematic
+components. The footprint read uses the existing typed implementation
+iterator and returns a name only when that model is current. Script `.61`
+has source tests and Pascal lint/build; these three reads have not yet
+been exercised in the Altium VM on a database-linked test component.

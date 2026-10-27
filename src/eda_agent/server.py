@@ -963,6 +963,9 @@ def main() -> int:
     fork_p.add_argument("--verify-fork-tips", action="store_true",
                         help="Read every direct upstream and origin fork's live "
                              "default-branch tip and compare it with local refs.")
+    fork_p.add_argument("--verify-fork-branches", action="store_true",
+                        help="Also compare every live branch of those forks, "
+                             "including branches not cached locally.")
     fork_p.add_argument("--json", action="store_true", dest="json_out",
                         help="Emit machine-readable JSON.")
 
@@ -1369,8 +1372,9 @@ def main() -> int:
                                  ("origin", "upstream", "morembedded"),
                                  fetch=args.fetch,
                                  cached_forks=args.cached_forks)
-            if args.verify_fork_tips:
-                report["fork_tip_check"] = verify_fork_tips(_Path.cwd())
+            if args.verify_fork_tips or args.verify_fork_branches:
+                report["fork_tip_check"] = verify_fork_tips(
+                    _Path.cwd(), all_branches=args.verify_fork_branches)
         except (RuntimeError, OSError) as exc:
             print(f"fork-status: {exc}", file=sys.stderr)
             return 2
@@ -1379,7 +1383,9 @@ def main() -> int:
         return 1 if (any(item.get("fetch_error") for item in
                          report["sources"].values()) or
                      report.get("fork_tip_check", {}).get("fresh") !=
-                     report.get("fork_tip_check", {}).get("checked")) else 0
+                     report.get("fork_tip_check", {}).get("checked") or
+                     report.get("fork_tip_check", {}).get("fresh_branches") !=
+                     report.get("fork_tip_check", {}).get("checked_branches")) else 0
     if args.command == "profile-init":
         return cli.cmd_profile_init(args.name, here=args.here)
     if args.command == "profile-list":

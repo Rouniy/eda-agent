@@ -55,7 +55,8 @@ def _github_forks(repo: str) -> list[dict[str, Any]]:
         page += 1
 
 
-def verify_fork_tips(root: Path, *, max_workers: int = 10) -> dict[str, Any]:
+def verify_fork_tips(root: Path, *, max_workers: int = 10,
+                     all_branches: bool = False) -> dict[str, Any]:
     """Read live default-branch tips of direct upstream and origin forks.
 
     This neither fetches commit history nor changes refs. A matching tip
@@ -74,12 +75,8 @@ def verify_fork_tips(root: Path, *, max_workers: int = 10) -> dict[str, Any]:
         parents.append(_github_repo(_git(root, "remote", "get-url", name)))
     cached = dict(line.split("\t", 1) for line in _git(
         root, "for-each-ref", "--format=%(refname:short)%09%(objectname)",
-        "refs/remotes/forks").splitlines())
-    for name in remote_names:
-        try:
-            cached[f"{name}/main"] = _git(root, "rev-parse", "--verify", f"{name}/main")
-        except RuntimeError:
-            pass
+        "refs/remotes/forks", *(f"refs/remotes/{name}" for name in remote_names)
+    ).splitlines())
 
     seen: set[str] = set()
     candidates = []
@@ -99,27 +96,48 @@ def verify_fork_tips(root: Path, *, max_workers: int = 10) -> dict[str, Any]:
         configured = remote_repos.get(name.casefold())
         ref = f"{configured}/{branch}" if configured else f"forks/{owner}/{branch}"
         try:
+            branch_spec = "refs/heads/*" if all_branches else f"refs/heads/{branch}"
             proc = subprocess.run(
-                ["git", "ls-remote", fork["clone_url"], f"refs/heads/{branch}"],
+                ["git", "ls-remote", fork["clone_url"], branch_spec],
                 capture_output=True, text=True, timeout=25, check=False,
             )
-            tip = proc.stdout.split()[0] if proc.returncode == 0 and proc.stdout.strip() else ""
+            remote_branches = {
+                line.split("\t", 1)[1].removeprefix("refs/heads/"): line.split("\t", 1)[0]
+                for line in proc.stdout.splitlines() if "\trefs/heads/" in line
+            } if proc.returncode == 0 else {}
+            tip = remote_branches.get(branch, "")
             error = (proc.stderr or "branch not found").strip() if not tip else ""
         except (OSError, subprocess.TimeoutExpired) as exc:
             tip = ""
             error = str(exc)
+            remote_branches = {}
         result = {"repo": name, "parent": parent, "branch": branch,
                   "ref": ref, "remote_tip": tip, "cached_tip": cached.get(ref)}
         result["fresh"] = bool(tip and tip == result["cached_tip"])
         if not tip:
             result["error"] = error
+        if all_branches:
+            result["branches"] = []
+            for branch_name, branch_tip in sorted(remote_branches.items()):
+                branch_ref = (f"{configured}/{branch_name}" if configured else
+                              f"forks/{owner}/{branch_name}")
+                result["branches"].append({
+                    "branch": branch_name, "ref": branch_ref,
+                    "remote_tip": branch_tip, "cached_tip": cached.get(branch_ref),
+                    "fresh": branch_tip == cached.get(branch_ref),
+                })
         return result
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         entries = list(pool.map(check, candidates))
-    return {"parents": parents, "checked": len(entries),
-            "fresh": sum(entry["fresh"] for entry in entries),
-            "forks": entries}
+    report = {"parents": parents, "checked": len(entries),
+              "fresh": sum(entry["fresh"] for entry in entries),
+              "forks": entries}
+    if all_branches:
+        rows = [branch for entry in entries for branch in entry["branches"]]
+        report["checked_branches"] = len(rows)
+        report["fresh_branches"] = sum(row["fresh"] for row in rows)
+    return report
 
 
 def fork_status(root: Path, *, remotes: tuple[str, ...] =
@@ -209,6 +227,9 @@ def format_fork_status(report: dict[str, Any]) -> str:
         check = report["fork_tip_check"]
         lines.append(f"live fork default branches: {check['fresh']}/{check['checked']} "
                      "match local refs")
+        if "checked_branches" in check:
+            lines.append(f"live fork branches: {check['fresh_branches']}/"
+                         f"{check['checked_branches']} match local refs")
         for item in check["forks"]:
             if not item["fresh"]:
                 lines.append(f"{item['repo']} {item['branch']}: "
@@ -216,4 +237,10 @@ def format_fork_status(report: dict[str, Any]) -> str:
                              f"local {item['cached_tip'] or 'missing'} "
                              f"({item['ref']})"
                              + (f"; {item['error']}" if item.get("error") else ""))
+            for branch in item.get("branches", []):
+                if not branch["fresh"] and branch["branch"] != item["branch"]:
+                    lines.append(f"{item['repo']} {branch['branch']}: "
+                                 f"remote {branch['remote_tip']}, "
+                                 f"local {branch['cached_tip'] or 'missing'} "
+                                 f"({branch['ref']})")
     return "\n".join(lines)

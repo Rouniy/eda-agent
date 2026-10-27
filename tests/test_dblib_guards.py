@@ -175,7 +175,13 @@ def test_a_parts_database_link_is_readable_and_never_silently_empty():
     start = code.index("Function GetSchProperty(")
     body = code[start:code.index("Function SetSchProperty(", start)]
     branch = body[body.index("(PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName')"):]
-    branch = branch[:branch.index("Else If PropName")]
+    branch = branch[:branch.index("// Which part of a multi-part symbol")]
     assert "Obj.ObjectId = eSchComponent" in branch
     assert "Comp.DatabaseTableName" in branch and "Comp.DatabaseLibraryName" in branch
+    assert "Comp.UseDBTableName" in branch and "Comp.UseLibraryName" in branch
+    assert "BoolToJsonStr(Comp.UseDBTableName)" in branch
+    assert "BoolToJsonStr(Comp.UseLibraryName)" in branch
+    assert "Impl := CurrentFootprintImpl(Comp)" in branch
+    assert "(Impl <> Nil) And Impl.IsCurrent" in branch
+    assert "Result := Impl.ModelName" in branch
     assert "NotePropertyDiag('unreadable', PropName)" in branch
