@@ -1,5 +1,34 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 public-tool-name cross-check
+
+An AST inventory compared public function names in `src/eda_agent/tools`
+across 120 cached remote refs with `main`. Twenty-two refs have names
+that do not appear literally in today's modules. This is a lead list,
+not a feature-gap count: several old forks predate the `app_*` and
+`lib_*` names, and nested helper names are also counted.
+
+The four apparent stackup gaps in `MOREmbedded/main` are renamed tools:
+`design_list_fab_vendors` is `design_list_stackup_vendors`,
+`design_fab_vendor_profile` is `design_stackup_vendor_profile`,
+`pcb_check_stackup` is `pcb_check_vendor_stackup`, and
+`pcb_apply_stackup_template` is `pcb_apply_vendor_stackup_template`.
+The fork's `lib_list_vault_libraries` is covered by
+`lib_list_available_libraries` and `lib_get_vault_name`; the latter
+separates Workspace identity from Altium's available-library **type**
+ordinal. On the loaded `.117` script, the available-library reader
+returned five file libraries, all with their actual types, and no
+Workspace identity from the open design. That is a valid empty
+Workspace observation, not proof that none is connected.
+
+The two `vincent-himpe` branch commits `b05ac10` (via-mask bottom
+follows top) and `530db39` (filtered PCB object walks) are also present
+in adapted source and their focused tests already exist in `main`.
+The via-mask, filtered-walk and available-library focused suites passed
+19/19 checks in this review.
+This name scan does not prove complete behavioral parity across the
+120 refs; remaining differences require source and native checks.
+
 ## 2026-10-28 additional branch behavior audit
 
 Across 111 cached external fork refs, six Python test paths are absent
