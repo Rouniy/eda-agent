@@ -61,7 +61,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | `mooreaa` `3d5817f` through `fc22136` (Footprint stamps) | Choose an existing model on single/bulk Footprint parameter writes before fallback rename; refuse unloaded explicit batch sheets | 52 related tests, Pascal lint/build and loaded `.10` runtime; native multi-model acceptance pending |
 | `mooreaa` `dc36b7e`–`fc22136` (multipart placement and tidy) | Place an explicit sub-part, verify its sheet state and report issues; link the library, hide inherited model parameters and adopt the sheet designator font | 65 related tests, Pascal lint/build and loaded `.11` runtime; native multipart-sheet acceptance pending |
 | `mooreaa` `dc36b7e`–`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests, Pascal lint/build and loaded `.12` runtime; native disposable-sheet acceptance pending |
-| `mooreaa` through `fc22136` (port AutoSize getter) | Return the native port AutoSize flag through generic queries, with a port-only type guard | Native `.12` query exposed the omission; `.13` source tests and Pascal lint/build pass, readback pending |
+| `mooreaa` through `fc22136` (port AutoSize getter) | Return the native port AutoSize flag through generic queries, with a port-only type guard | Native `.12` query exposed the omission; loaded `.13` ePort query read back false, font 1 and width 400 on an isolated sheet |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium

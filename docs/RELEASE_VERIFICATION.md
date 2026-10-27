@@ -2,8 +2,12 @@
 
 The `.13` port AutoSize getter follows a native `.12` finding: direct
 placement reported false, while generic ePort query returned an empty
-AutoSize property. Lint/build and source tests pass; repeat the native read
-on the same disposable sheet after loading `.13`.
+AutoSize property. Lint/build and source tests pass. On the isolated
+PlacementStyle sheet, native `.13` ePort query returned AutoSize false,
+font 1 and width 400; text-frame CRLF and power-port font also read back.
+The sheet was closed and its saved blank file removed; the original PCB is
+active and unmodified. Sheet-entry placement and font inheritance still need
+native checks.
 
 The `.12` font/width/newline/Value cleanup has source tests and Pascal
 lint/build. Native acceptance requires a disposable sheet with an established

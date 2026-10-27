@@ -9,9 +9,14 @@ with `add_to_project=false`: `sch_place_port` returned font 1, width 400 mil
 and AutoSize false; `obj_query` independently read font 1 and width 400.
 The AutoSize field was empty on that read, which led to this getter fix.
 `sch_place_text_frame` returned font 1 and a second query read
-`LINE_A`/`LINE_B` separated by CRLF. The test sheet is disposable and no
-working project CAD file was edited. Pascal lint/build and focused tests pass;
-`.13` reload and AutoSize readback are pending.
+`LINE_A`/`LINE_B` separated by CRLF. After Altium loaded `.13`, `app_ping`
+reported loaded/bundled `.13`, `version_match=true`, Altium `26.11.1.5`
+and zero cast errors; a fresh ePort query returned `AutoSize="false"` along
+with font 1 and width 400. A power port written with font 1 read back with
+font 1. The disposable sheet was closed and its saved blank file removed;
+the original PCB is active again and reports `modified=false`. TCP 14700 and
+14701 listen. Sheet-entry/font inheritance and multipart placement still
+need native acceptance.
 
 The `.12` source ports the remaining `mooreaa` placement styling: new ports,
 power ports, text frames and sheet entries use an explicit `font_id` or infer
