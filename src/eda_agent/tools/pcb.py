@@ -5717,9 +5717,15 @@ def register_pcb_tools(mcp):
 
         if not (math.isfinite(x) and math.isfinite(y)):
             return {"success": False, "error": "x and y must be finite"}
-        return await get_bridge().send_command_async(
+        reply = await get_bridge().send_command_async(
             "pcb.pours_at", {"x": repr(float(x)), "y": repr(float(y)),
                              "expect_file": expect_file})
+        if expect_file and (not isinstance(reply, dict)
+                            or not isinstance(reply.get("board_file"), str)
+                            or reply["board_file"].casefold() != expect_file.casefold()):
+            return {"ok": False, "reason": "pour read did not identify the requested board",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_board_options(
@@ -5741,7 +5747,13 @@ def register_pcb_tools(mcp):
                 return {"success": False, "error":
                         "expect_file is required to change board options"}
             params["polygon_name_template"] = str(polygon_name_template)
-        return await get_bridge().send_command_async("pcb.board_options", params)
+        reply = await get_bridge().send_command_async("pcb.board_options", params)
+        if expect_file and (not isinstance(reply, dict)
+                            or not isinstance(reply.get("board_file"), str)
+                            or reply["board_file"].casefold() != expect_file.casefold()):
+            return {"ok": False, "reason": "board options did not identify the requested board",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_query_region(

@@ -1,4 +1,19 @@
-# Release verification: 2026.10.27.81
+# Release verification: 2026.10.27.82
+
+Script `.82` enforces `expect_file` in native `pcb.pours_at` and
+`pcb.board_options`, and echoes `board_file` for wrapper verification. On
+the disposable `ViaArrayDecimal_20261027.PcbDoc`, the pour read examined
+66 pours, the board-options read returned template 0, and both named the
+expected board. Wrong-path pour read and board-options write returned
+`WRONG_DOCUMENT_FOCUSED` before mutation. Native Altium ping reported
+26.11.1.5, script `.82` and zero cast errors. The real disposable PcbLib
+read returned 493 tracks, 3 arcs, 38 regions, 1 text, 12 vias and one
+STEP body for `AD_FE38`; a wrong library path was refused. Its saved file
+SHA-256 remained `F4A08E82AC6807564893AB0C692D42D9DAAE69128416A1F311663EF125E16EDC`.
+Pascal lint/build found zero errors or warnings; 3 focused wrapper tests
+passed. The old broad `test_added_altium_tools.py` suite still has 19
+historical API-shape failures (84 passed), including its unrelated
+`GetPCBBoardAnywhere(0) = Nil` source assertion.
 
 Script `.81` adds guarded direct colours and project-to-board colour
 synchronization to `pcb_net_display`. A disposable PcbDoc's GND changed

@@ -22540,7 +22540,7 @@ End;
 Function PCB_BoardOptions(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    TemplStr, NotApplied : String;
+    TemplStr, NotApplied, ExpectFile : String;
     Changed : Boolean;
 Begin
     TemplStr := ExtractJsonValue(Params, 'polygon_name_template');
@@ -22555,6 +22555,19 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+    ExpectFile := ExtractJsonValue(Params, 'expect_file');
+    If (ExpectFile <> '') And (UpperCase(ExpectFile) <> UpperCase(Board.FileName)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'The board is ' + Board.FileName + ', not ' + ExpectFile);
+        Exit;
+    End;
+    If (TemplStr <> '') And (ExpectFile = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+            'expect_file is required to change board options');
+        Exit;
+    End;
     NotApplied := '';
     Changed := False;
     If TemplStr <> '' Then
@@ -22567,7 +22580,8 @@ Begin
     If NotApplied <> '' Then NotApplied := Copy(NotApplied, 1, Length(NotApplied) - 1);
     If Changed Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonInt('polygon_name_template', Board.PolygonNameTemplate) + ','
+        JsonStr('board_file', Board.FileName) + ','
+        + JsonInt('polygon_name_template', Board.PolygonNameTemplate) + ','
         + JsonBool('automatic_split_planes', Board.AutomaticSplitPlanes) + ','
         + JsonBool('changed', Changed) + ','
         + JsonRaw('not_applied', '[' + NotApplied + ']')));
@@ -22851,7 +22865,7 @@ Var
     Board : IPCB_Board;
     Iter : IPCB_BoardIterator;
     Poly : IPCB_Polygon;
-    XStr, YStr, Items, NetName : String;
+    XStr, YStr, Items, NetName, ExpectFile : String;
     X, Y, Examined, Found : Integer;
 Begin
     XStr := ExtractJsonValue(Params, 'x');
@@ -22865,6 +22879,13 @@ Begin
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    ExpectFile := ExtractJsonValue(Params, 'expect_file');
+    If (ExpectFile <> '') And (UpperCase(ExpectFile) <> UpperCase(Board.FileName)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'The board is ' + Board.FileName + ', not ' + ExpectFile);
         Exit;
     End;
     X := MilsToCoordF(StrToFloatDef(XStr, 0)) + Board.XOrigin;
@@ -22897,7 +22918,8 @@ Begin
         Board.BoardIterator_Destroy(Iter);
     End;
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonInt('pours_examined', Examined) + ','
+        JsonStr('board_file', Board.FileName) + ','
+        + JsonInt('pours_examined', Examined) + ','
         + JsonInt('found', Found) + ','
         + JsonRaw('pours', '[' + Items + ']')));
 End;

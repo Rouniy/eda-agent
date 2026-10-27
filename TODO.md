@@ -2,6 +2,14 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [x] Enforce board identity for the upstream-adapted pour lookup and
+  board options. Script `.82` rejects a wrong `expect_file` natively and
+  echoes the actual board; the Python wrappers verify that identity.
+- [x] Native-read the ported footprint primitive handler on a disposable
+  PcbLib. `AD_FE38` returned tracks, arcs, regions, text, vias and STEP
+  body metadata; a wrong library path was refused. Saved STEP standoff
+  substitution remains conditional on a clean active PcbLib.
+
 - [x] Reconcile upstream `40814ba` net-colour and project-colour options
   with exact-board, expected-state `pcb_net_display`. Script `.81` changed
   GND on a disposable board to `#123456`, planned the loaded project's

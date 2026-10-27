@@ -56,3 +56,19 @@ def test_board_option_write_needs_exact_board_and_rejects_bad_values(monkeypatch
     assert bridge.sent == [("pcb.board_options", {
         "polygon_name_template": "2",
         "expect_file": r"D:\scratch\board.PcbDoc"})]
+
+
+def test_board_identity_mismatch_is_not_reported_as_success(monkeypatch):
+    bridge = _Bridge()
+    async def wrong_board(command, params):
+        return {"success": True, "board_file": r"D:\other\board.PcbDoc"}
+    bridge.send_command_async = wrong_board
+    monkeypatch.setattr(pcb, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    pcb.register_pcb_tools(mcp)
+    path = r"D:\scratch\board.PcbDoc"
+    pours = asyncio.run(mcp.tools["pcb_pours_at"](100, 50, expect_file=path))
+    options = asyncio.run(mcp.tools["pcb_board_options"](
+        polygon_name_template=2, expect_file=path))
+    assert pours["ok"] is False
+    assert options["ok"] is False

@@ -2,6 +2,17 @@
 
 ## Later upstream tip in this session
 
+Script `.82` corrects a source-level omission in the adapted upstream
+`pcb_pours_at` and `pcb_board_options`: `expect_file` had reached the bridge
+but the native handlers ignored it. They now refuse a different board and
+report the actual board path, which Python checks. Disposable-board native
+reads and wrong-path refusals passed. A previously pending PcbLib read was
+also accepted on a disposable 38-footprint library (`AD_FE38`: 493 tracks,
+38 regions, 12 vias, one STEP body); wrong-path lookup was refused. The
+saved STEP standoff resolver remains conditional on a clean active PcbLib.
+The live fork inventory check returned 62/62 fresh default tips and 117/117
+fresh branches, with MOREmbedded still at `032fb4b`.
+
 The `.81` follow-up ports `40814ba`'s direct PCB net colours and
 project-to-board colour synchronization into the exact-board net-display
 command. The project path is explicit; native replies identify that project;

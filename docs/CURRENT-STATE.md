@@ -2,6 +2,18 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Script `.82` fixes exact-board identity for `pcb_pours_at` and
+`pcb_board_options`: the Pascal handlers now enforce `expect_file` and echo
+`board_file`; the Python wrappers reject a mismatched reply. On the
+disposable PcbDoc, reads named the correct board, and wrong-path pour reads
+and option writes were refused in Altium 26.11.1.5. The same runtime read
+`AD_FE38` from a disposable PcbLib: 493 tracks, 38 regions, 12 vias and
+one STEP body; a wrong library path was refused. Full saved STEP standoff
+resolution remained unverified because `application.get_active_document`
+reported the separate scratch PCB, so the wrapper preserved its conservative
+`live_body_field_unverified` marker. Fork branch check: 62/62 default tips
+and 117/117 branch tips still match their cached refs.
+
 Script `.81` completes the `40814ba` net-colour adaptation. The exact-board
 `pcb_net_display` can set `#RRGGBB` or read colours from an explicitly named
 PrjPcb, with default dry run and old flag/colour preconditions before its
