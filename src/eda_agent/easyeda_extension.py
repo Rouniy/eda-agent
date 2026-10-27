@@ -54,7 +54,7 @@ def default_build_dir() -> Path:
     return _default_workspace_dir().parent / "easyeda-extension"
 
 
-def build(out_dir: Optional[str] = None) -> tuple[int, str]:
+def build(out_dir: Optional[str] = None, *, force: bool = False) -> tuple[int, str]:
     """Build the .eext and return ``(exit code, message)``.
 
     A checkout builds in place, as ``python extensions/easyeda/build.py``
@@ -67,10 +67,17 @@ def build(out_dir: Optional[str] = None) -> tuple[int, str]:
     target = source
     if out_dir or is_packaged(source):
         target = Path(out_dir) if out_dir else default_build_dir()
+        if target.exists() and not target.is_dir():
+            return 1, f"destination is not a directory: {target}"
+        if (target.exists() and target.resolve() != source.resolve()
+                and any(target.iterdir()) and not force):
+            return 1, (f"destination is not empty: {target}; "
+                       "pass --force to replace packaged source files")
         target.mkdir(parents=True, exist_ok=True)
-        for name in SOURCE_FILES:
-            if (source / name).is_file():
-                shutil.copy2(source / name, target / name)
+        if target.resolve() != source.resolve():
+            for name in SOURCE_FILES:
+                if (source / name).is_file():
+                    shutil.copy2(source / name, target / name)
     if shutil.which("node") is None:
         return 1, ("the build checks the entry parses the way EasyEDA "
                    "loads it, and that needs Node.js on the PATH; install "
@@ -78,4 +85,10 @@ def build(out_dir: Optional[str] = None) -> tuple[int, str]:
     done = subprocess.run([sys.executable, "build.py"], cwd=str(target),
                           capture_output=True, text=True)
     output = (done.stdout + done.stderr).strip()
-    return done.returncode, output
+    if done.returncode != 0:
+        return done.returncode, output
+    package = target / "eda-agent-bridge.eext"
+    if not package.is_file() or package.stat().st_size == 0:
+        return 1, (f"build reported success but did not create a usable "
+                   f"{package.name} in {target}")
+    return 0, output or str(package)

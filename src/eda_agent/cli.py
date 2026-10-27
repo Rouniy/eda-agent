@@ -193,7 +193,8 @@ def cmd_scripts_path() -> int:
 # easyeda-extension
 # --------------------------------------------------------------------------
 
-def cmd_easyeda_extension(action: str, out: Optional[str] = None) -> int:
+def cmd_easyeda_extension(action: str, out: Optional[str] = None,
+                          force: bool = False) -> int:
     """Print the EasyEDA extension source folder, or build its .eext."""
     from . import easyeda_extension
 
@@ -205,7 +206,7 @@ def cmd_easyeda_extension(action: str, out: Optional[str] = None) -> int:
             return 1
         print(str(folder))
         return 0
-    code, message = easyeda_extension.build(out)
+    code, message = easyeda_extension.build(out, force=force)
     print(message, file=sys.stdout if code == 0 else sys.stderr)
     return code
 

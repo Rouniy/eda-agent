@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Fork source scan and EasyEDA build, 2026-10-27
+
+Across 119 cached fork branch refs, the only tracked Python source path
+absent from `main` after the updater port was
+`yniantongtian-oss`'s `easyeda_extension_cli.py`; its path/build commands
+already have our `easyeda-extension` equivalent. Its nonempty build-folder
+refusal and nonempty `.eext` result check are now integrated into that
+existing command. Seven focused packaging tests and a real isolated Node
+build (55,115-byte `.eext`) passed. Shared-file behavior still needs
+review beyond this file inventory.
+
 ## Child-fork update report, 2026-10-27
 
 The source now includes a read-only `eda-agent update --status` mode

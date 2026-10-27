@@ -815,6 +815,8 @@ def main() -> int:
               "default workspace unless this is given; a checkout builds "
               "in place."),
     )
+    ext_p.add_argument("--force", action="store_true",
+                       help="Allow replacing source files in a nonempty build folder.")
 
     # relaunch -- start the bridge script in the running Altium, on request
     relaunch_p = subparsers.add_parser(
@@ -1250,7 +1252,8 @@ def main() -> int:
     if args.command == "install-scripts":
         return cli.cmd_install_scripts(dest=args.dest, force=args.force)
     if args.command == "easyeda-extension":
-        return cli.cmd_easyeda_extension(args.action, out=args.out)
+        return cli.cmd_easyeda_extension(args.action, out=args.out,
+                                         force=args.force)
     if args.command == "relaunch":
         return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
                                 force=args.force, restart=args.restart)

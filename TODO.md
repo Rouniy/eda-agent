@@ -8,6 +8,13 @@
   source-directory runtime is recognized. Twenty-one focused tests pass.
 - [ ] Recheck the loaded script-project path on a responsive Altium session;
   the present process is hung, so only source/deployment state was verified.
+- [x] Compare tracked Python source paths across 119 fork branch refs.
+  The sole remaining path, `easyeda_extension_cli.py` in the
+  `yniantongtian-oss` fork, duplicates our EasyEDA path/build CLI. Port its
+  nonempty destination and `.eext` artifact guards into the existing CLI;
+  seven packaging tests and an isolated real Node build pass.
+- [ ] Continue behavior-level review of shared source files; matching file
+  names and tool names alone do not prove feature parity.
 
 ## Upstream `fbf72a7` source merge, 2026-10-27
 

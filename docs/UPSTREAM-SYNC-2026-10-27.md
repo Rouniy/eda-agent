@@ -47,6 +47,22 @@ minutes. Twenty-one focused update tests passed. The current live run
 reported Git/package/script source current, and the unresponsive Altium
 session and loaded path unknown.
 
+## Fork source-file inventory and EasyEDA build guard
+
+The 119 cached direct and child fork branch refs were compared by tracked
+Python source path against `main`. After the MOREmbedded update report was
+ported, the sole path absent from `main` was
+`yniantongtian-oss/main:src/eda_agent/easyeda_extension_cli.py`. Its
+`path`/`build` operations already exist in our `easyeda-extension` CLI.
+The fork additionally refused a nonempty destination without `--force`
+and checked that the build produced a nonempty `.eext`; these safeguards
+are now adapted into our existing builder. The checkout still builds in
+place, and wheel builds still use the configured writable directory.
+Seven EasyEDA packaging tests passed, including the new refusal and
+artifact checks. A real isolated build with Node produced a 55,115-byte
+`.eext`. The source-file scan detects file-level omissions, not every
+behavior difference in shared files; behavioral review continues.
+
 ## Later upstream tip in this session
 
 The fork tool-name scan also exposed a real feature removed from our

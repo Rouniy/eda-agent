@@ -839,6 +839,7 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent serve` | Explicit form of the above |
 | `eda-agent --no-dashboard` / `eda-agent --headless` | MCP server only, no web dashboard. Required by strict-stdio MCP clients (Codex, etc) that can't tolerate the dashboard thread. Also via env var: `EDA_AGENT_DISABLE_DASHBOARD=1` or `EDA_AGENT_HEADLESS=1`. |
 | `eda-agent scripts-path` | Print path to bundled DelphiScript sources |
+| `eda-agent easyeda-extension path` / `eda-agent easyeda-extension build [--out DIR] [--force]` | Find or build the EasyEDA Pro extension. An explicit nonempty build directory requires `--force`; a successful build must produce a nonempty `.eext`. |
 | `eda-agent install-scripts [--dest PATH] [--force]` | Copy scripts to every folder Altium loads them from, or to PATH |
 | `eda-agent update [--check] [--yes] [--no-relaunch]` | Show the new commits on the repository and, once you agree, update this clone, the Altium scripts and the polling loop |
 | `eda-agent update --status [--fetch] [--from REMOTE_OR_FOLDER] [--json]` | Read-only report of Git checkout, installed Python package, script source or deployment, and the version and project path Altium compiled. Without `--fetch`, Git comparisons use cached refs. A busy or stopped Altium is reported as unknown. |
