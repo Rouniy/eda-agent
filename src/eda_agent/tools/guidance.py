@@ -1041,12 +1041,14 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "when": (("pre", "route"), ("paste", "percent"), ("mask", "mode")),
         "document_kind": "board",
         "backends": ("altium",),
-        "use": ["obj_query", "obj_modify"],
+        "use": ["obj_query", "obj_modify", "pcb_lock_net_routing",
+                "pcb_edit_options"],
         "avoid": [],
         "note": ("A pad percentage opening needs PasteMaskExpansionMode=2 "
                  "(Manual Expansion), PasteMaskUsePercent=true and "
                  "PasteMaskEnabled=true; read back after saving. IsPreRoute "
-                 "reverted after save/reopen on AD 26.11 in native QA."),
+                 "reverted after save/reopen on AD 26.11; lock the net's "
+                 "routing and enable Protect Locked Objects instead."),
     },
     {
         "task": "Set up a rigid-flex board: split it into regions, give each a layer stack, add bend lines",

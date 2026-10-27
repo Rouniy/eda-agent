@@ -15,8 +15,11 @@
 - [ ] Find a persistent implementation for upstream `IsPreRoute` writes.
   Script `.120` read true immediately on netless and netted tracks, but
   both reopened as false after exact save. `UserRouted=false` did not
-  change that outcome. Public generic replies now warn that this native
-  property did not persist in AD 26.11; do not claim pre-route lock-in.
+  change that outcome. The existing `pcb_lock_net_routing` did persist
+  `Locked=true` on the QA net after save/reopen; `ProtectLockedPrimitives`
+  was false in this editor and must be enabled to protect that routing.
+  Public generic replies point to this persistent workflow. Do not
+  claim the `IsPreRoute` property itself persists.
 - [x] Native-qualify four rule-setting classes from upstream `172d254`
   on a new free PcbDoc. Height 10/900/450 mil, component vertical gap
   12.5 mil, routing corner setbacks 75.5/125.5 mil, and antenna

@@ -66,8 +66,10 @@ def _pcb_write_notes(object_type: str, assignments: str) -> list[str]:
     notes: list[str] = []
     if object_type in ("eTrackObject", "eArcObject", "eViaObject") and "IsPreRoute" in keys:
         notes.append("IsPreRoute read back in memory but reverted after save/reopen "
-                     "on AD 26.11, even for a netted track; verify persistence "
-                     "before relying on it for an autorouter run.")
+                     "on AD 26.11, even for a netted track. To protect a "
+                     "routed net persistently, use pcb_lock_net_routing and "
+                     "enable Protect Locked Objects in pcb_edit_options "
+                     "before autorouting.")
     if object_type == "ePadObject" and keys.intersection(
             {"PasteMaskUsePercent", "PasteMaskPercent"}):
         notes.append("A pad's percentage paste opening requires "

@@ -2,6 +2,16 @@
 
 ## Upstream pre-route and paste opening QA, 2026-10-28
 
+The follow-up tested the existing `pcb.lock_net_routing` on the same
+QA board. Its netted track changed from `Locked=false` to true and
+remained true after exact save/close/reopen, while `IsPreRoute` remained
+false. A read of `pcb.editor_options` showed
+`ProtectLockedPrimitives=false` and `LockPreRoutes=false` in the current
+editor. Altium's protection preference must therefore be enabled for
+the persistent lock to govern subsequent editing/autorouting; the
+global preference was only read, not changed. Public guidance now
+recommends this workflow.
+
 On a new free Temp PcbDoc, `generic.modify_objects` set `IsPreRoute=true`
 on a track and `generic.query_objects` read true immediately. After exact
 save/close/reopen it read false. A second experiment set
