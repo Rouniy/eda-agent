@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 from ..bridge import get_bridge
+from ..bridge.exceptions import AltiumError
 from ..bridge.payload import payload_safe
 from ..fileio import pcblib_models
 from ..libimport import extract_cse_zip, inspect_cse_zip
@@ -36,6 +37,60 @@ def _pad_geometry_problem(reply: Any) -> str:
     if not isinstance(reply.get("pads"), list):
         return "the read carried no pad list"
     return ""
+
+
+async def _resolve_saved_step_standoff(bridge: Any, reply: Any) -> Any:
+    """Use a saved STEP model's Z offset instead of the unused body field.
+
+    Altium's live ComponentBody.StandoffHeight reads zero for an embedded
+    STEP even when its model has a nonzero MODEL.3D.DZ. Only substitute a
+    saved record when the focused PcbLib is clean and every body matches
+    its saved record in order and model identity.
+    """
+    if not isinstance(reply, dict) or not isinstance(reply.get("body_models"), list):
+        return reply
+    bodies = reply["body_models"]
+    steps = [b for b in bodies if isinstance(b, dict) and b.get("model_type") == 1]
+    if not steps:
+        return reply
+    for body in steps:
+        body["body_standoff_mm"] = body.get("standoff_mm")
+        body["standoff_source"] = "live_body_field_unverified"
+    path = Path(str(reply.get("library_path") or ""))
+    name = str(reply.get("name") or "")
+    if not path.is_file() or not name:
+        return reply
+    try:
+        active = await bridge.send_command_async("application.get_active_document", {})
+        if (not isinstance(active, dict) or active.get("modified") is not False
+                or str(active.get("file_path", "")).casefold() != str(path).casefold()):
+            return reply
+        from ..fileio.altium_pcblib import read_pcblib_saved_body_models
+        saved = await asyncio.to_thread(read_pcblib_saved_body_models, path, name)
+    except (OSError, ValueError, TypeError, AltiumError):
+        return reply
+    if not isinstance(saved, list) or len(saved) != len(bodies):
+        return reply
+    offsets: list[float] = []
+    for body, record in zip(bodies, saved):
+        if not isinstance(body, dict) or not isinstance(record, dict):
+            return reply
+        if (body.get("model_type") != record.get("model_type")
+                or str(body.get("model_file") or "").casefold() !=
+                   str(record.get("model_file") or "").casefold()):
+            return reply
+        if body.get("model_type") == 1:
+            try:
+                value = float(record["model_z_offset_mils"]) * MM_PER_MIL
+            except (KeyError, TypeError, ValueError):
+                return reply
+            if not math.isfinite(value):
+                return reply
+            offsets.append(value)
+    for body, value in zip(steps, offsets):
+        body["standoff_mm"] = value
+        body["standoff_source"] = "saved_model_z_offset"
+    return reply
 
 
 _SCHLIB_CHECKS = (
@@ -7413,6 +7468,7 @@ def register_library_tools(mcp):
         reply = await bridge.send_command_async(
             "library.get_footprint_primitives",
             {"footprint_name": footprint_name, "library_path": library_path})
+        reply = await _resolve_saved_step_standoff(bridge, reply)
         if isinstance(reply, dict) and isinstance(reply.get("body_models"), list):
             for body in reply["body_models"]:
                 if isinstance(body, dict):
@@ -7470,8 +7526,8 @@ def register_library_tools(mcp):
             problem = _pad_geometry_problem(pads)
             if problem:
                 return None, None, problem
-            prims = await bridge.send_command_async(
-                "library.get_footprint_primitives", args)
+            prims = await lib_get_footprint_primitives(
+                footprint_name, library_path)
         except AltiumCommandError as e:
             return None, None, str(e)
         if not isinstance(prims, dict) or prims.get("success") is False:

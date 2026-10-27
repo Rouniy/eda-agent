@@ -163,6 +163,42 @@ def test_the_tool_extracts_what_altium_says_the_footprint_uses(monkeypatch, tmp_
     assert bridge.sent[0][0] == "library.get_footprint_primitives"
 
 
+def test_live_step_standoff_uses_matching_clean_saved_model(monkeypatch, tmp_path):
+    from eda_agent.fileio import altium_pcblib
+
+    libfile = tmp_path / "Lib.PcbLib"
+    libfile.write_bytes(b"saved library stand-in")
+    monkeypatch.setattr(altium_pcblib, "read_pcblib_saved_body_models",
+                        lambda path, name: [{"model_type": 1,
+                                             "model_file": "part.step",
+                                             "model_z_offset_mils": 10.0}])
+
+    class Bridge:
+        modified = False
+
+        async def send_command_async(self, command, params=None, timeout=None):
+            if command == "application.get_active_document":
+                return {"file_path": str(libfile), "modified": self.modified}
+            return {"name": "FP", "library_path": str(libfile), "bodies": 1,
+                    "body_models": [{"model_type": 1, "model_file": "part.step",
+                                     "standoff_mm": 0.0}]}
+
+    bridge = Bridge()
+    monkeypatch.setattr(lib_tools, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    lib_tools.register_library_tools(mcp)
+    tool = mcp.tools["lib_get_footprint_primitives"]
+    clean = asyncio.run(tool("FP", str(libfile)))["body_models"][0]
+    assert clean["standoff_mm"] == pytest.approx(0.254)
+    assert clean["body_standoff_mm"] == 0.0
+    assert clean["standoff_source"] == "saved_model_z_offset"
+
+    bridge.modified = True
+    dirty = asyncio.run(tool("FP", str(libfile)))["body_models"][0]
+    assert dirty["standoff_mm"] == 0.0
+    assert dirty["standoff_source"] == "live_body_field_unverified"
+
+
 class _Storages(_Ole):
     def listdir(self):
         return [name.split("/") for name in self.streams]

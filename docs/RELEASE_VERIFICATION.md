@@ -3469,3 +3469,14 @@ scientific notation for a centre close to zero.
 Script `.58` also rejects a missing PcbLib with `NO_LIBRARY_FILE` before
 Altium can open an empty editor tab. A no-op on the moved STEP body returned
 `changed=0` and `save_required=false`.
+
+## STEP standoff in live footprint reads (2026-10-27)
+
+The clean saved `AD_FE38` scratch PcbLib has a 10-mil STEP model Z offset,
+while Altium's live body field reports zero. The Python footprint read now
+returns `standoff_mm=0.254`, `body_standoff_mm=0` and
+`standoff_source=saved_model_z_offset` after matching the focused, unmodified
+library to its saved body records. The land-pattern model then reports
+`z0=0.254` and `z1=1.20000014` mm. The PcbLib SHA-256 remained
+`F4A08E82AC6807564893AB0C692D42D9DAAE69128416A1F311663EF125E16EDC`
+through the read.
