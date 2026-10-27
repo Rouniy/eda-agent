@@ -31,6 +31,12 @@ After the impedance-profile port, the endpoint reported 623 tools and
 loaded/bundled `2026.10.27.2`. The profile reader itself has not yet been
 run against a disposable board.
 
+The fork's `pcb_check_fab_output` remains to be rewritten: its board reads
+do not verify an exact board identity across calls, and its pad count stops
+at 5000 without a completeness check. The NPI DFM criterion is therefore
+manual until an exact-board, complete comparison exists; it cannot claim an
+automatic pass from the current partial reads.
+
 The older port-by-feature history and outstanding items remain in
 `FORK-INTEGRATION-AUDIT-2026-10-26.md`. In particular, the new upstream
 commits from `0a9ccd4` through `ce53d6e` add many project and PCB tools

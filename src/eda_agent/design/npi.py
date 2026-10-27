@@ -389,11 +389,10 @@ DVT_CRITERIA: tuple[Criterion, ...] = (
        why="Minimum trace, annular ring and drill sizes are per-fab. A "
            "board that is clean against a generic profile and not against "
            "the chosen one gets quoted at a higher class or refused.",
-       kind=AUTOMATIC,
-       tools=("pcb_get_fab_stats", "design_load_fab_profile",
-              "pcb_get_drill_layer_pairs"),
+       kind=MANUAL,
        passes_when="no violation of the named fab's capability, at the "
-                   "quoted class"),
+                   "quoted class; confirm the exported package and the "
+                   "specific board were compared completely"),
     _c(id="dvt.creepage", phase=Phase.DVT,
        title="Creepage and clearance met for the working voltage and "
              "pollution degree",
