@@ -28,6 +28,30 @@ def test_component_only_properties_and_readback():
     assert source.index("Function CurrentFootprintImpl(") < source.index("Function GetSchProperty(")
 
 
+def test_placement_chooses_its_own_model_and_reports_failures():
+    source = _source()
+    chooser = _routine(source, "ChooseFootprintModel")
+    walk_end = chooser.index("Comp.SchIterator_Destroy(ImplIter)")
+    assert "IsCurrent :=" not in chooser[:walk_end]
+    clear = chooser.index("Impl.IsCurrent := False", walk_end)
+    select = chooser.index("Impl.IsCurrent := True", walk_end)
+    verify = chooser.index("Held := True", walk_end)
+    assert clear < select < verify
+    assert "UpperCase(Trim(MN)) = UpperCase(Trim(Name))" in chooser
+    assert "Result := -1" in chooser
+    assert ".Free" not in chooser
+    for name in ("Gen_PlaceSchComponentFromLibrary",
+                 "Gen_PlaceSchComponentsFromLibrary"):
+        body = _routine(source, name)
+        assert "ChooseFootprintModel(Comp," in body
+        assert "FOOTPRINT_NOT_ON_SYMBOL" in body
+        assert "FOOTPRINT_NOT_APPLIED" in body
+        assert "SchRegisterObject(SchDoc, Comp)" in body
+    batch = _routine(source, "Gen_PlaceSchComponentsFromLibrary")
+    assert '"footprints_chosen":' in batch
+    assert '"footprint_issues":[' in batch
+
+
 def test_pin_map_parser_and_merge_check_run_in_pascal(tmp_path):
     fpc = shutil.which("fpc")
     if not fpc:

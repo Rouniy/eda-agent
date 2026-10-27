@@ -2,6 +2,16 @@
 
 ## Source integration, 2026-10-27
 
+The `.9` source ports the `mooreaa` footprint-model chooser to single and
+bulk schematic placement. A requested footprint is matched against the
+symbol's own PCB models; the helper clears other current flags, sets the
+requested one, verifies every flag and restores the originals if it fails.
+Placement reports a missing or unapplied model without silently renaming
+another one. Pascal lint/build and focused source tests pass. The remaining
+model-name stamp/relink handlers still rename the current implementation and
+need the same chooser. Live `.9` reload and native disposable-sheet checks
+are pending.
+
 The `.8` source adds `mooreaa`'s placed-component `DisplayMode`,
 `DisplayModeCount` and current `FootprintPinMap` property handling. Reads and
 writes are gated to `eSchComponent`; mode writes check the available range and
@@ -9,8 +19,7 @@ read back, and pin-map writes require an old-map read, check the requested
 entries after Altium's merge and restore the old map on failure. The related
 source suite passed 22 tests; three FPC-dependent tests were skipped because
 `fpc` is unavailable here. Pascal lint/build passes. Native component
-acceptance is pending, and the fork's named footprint-model chooser remains
-to be ported.
+acceptance is pending.
 
 The `.7` source ports `mooreaa`'s corrected live-pin filter. Schematic ePin
 queries omit hidden copies from other parts and display modes unless the

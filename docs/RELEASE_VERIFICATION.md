@@ -1,4 +1,9 @@
-# Release verification: 2026.10.27.8
+# Release verification: 2026.10.27.9
+
+The `.9` placement port chooses a named model already carried by the
+symbol, verifies all `IsCurrent` flags and reports a missing or failed
+choice. Source tests and Pascal lint/build pass; native placement on a
+disposable schematic remains pending.
 
 The `.8` placed-component property port has source tests and Pascal
 lint/build. `DisplayMode`, `DisplayModeCount` and `FootprintPinMap` still need

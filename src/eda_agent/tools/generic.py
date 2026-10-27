@@ -3332,7 +3332,9 @@ def register_generic_tools(mcp):
                 - x, y (int, mils), placement location
                 - designator (str, optional), override designator
                 - rotation (int, optional), 0 / 90 / 180 / 270
-                - footprint (str, optional), override current footprint
+                - footprint (str, optional), choose a PCB model already on
+                  the library symbol by name; an absent name leaves the
+                  symbol's default model and appears in footprint_issues
 
         Example, place a 5-part BOM row:
             sch_place_components(placements=[
@@ -3346,7 +3348,8 @@ def register_generic_tools(mcp):
             ])
 
         Returns:
-            Dict with placed, failed, total counts.
+            Dict with placed, failed, total, footprints_chosen counts and
+            footprint_issues for names not on the symbol or not applied.
         """
         unknown = unknown_placement_keys(placements)
         if unknown:
