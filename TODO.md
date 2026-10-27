@@ -2,6 +2,12 @@
 
 ## Fork behavior audit, 2026-10-28
 
+- [x] Native-read footprint primitives from a copied 33-footprint
+  PcbLib under script `.115`: `PQ208` and `CC1608-0603` returned the
+  exact library identity and non-pad geometry; separate pad reads
+  returned 210 and two pads. Full independent primitive parity remains
+  a separate validation task.
+
 - [x] Native-qualify the MOREmbedded integrated-library build path on
   copied Altium example libraries. Script `.115` compiled a LibPkg with
   exact SchLib and PcbLib members into a 123,392-byte IntLib containing

@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Native footprint-primitives read on copied PcbLib, 2026-10-28
+
+Loaded script `.115` opened the copied
+`C:\Users\Alex\AppData\Local\Temp\eda-intlib-qa-20261028\Spirit_Level_Project.PcbLib`
+and enumerated 33 footprints. `lib_get_footprint_primitives` with that
+exact path returned `PQ208` with 209 body records, four tracks and
+three arcs; independent `lib_get_pad_geometry` reported 210 pads
+(including two fiducials). `CC1608-0603` returned one body, three
+tracks and two pads. The library path and footprint name in the
+replies matched the requests. The copied library closed without a save.
+This qualifies a real native read and routing to the named PcbLib; it
+does not compare every primitive against an independent file parser.
+
 ## Native integrated-library build from MOREmbedded path, 2026-10-28
 
 With loaded script `.115`, `lib_build_integrated_library` created
