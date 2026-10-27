@@ -27,6 +27,9 @@ After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
 `26.11.1.5`. This confirms deployment and tool registration, not native
 acceptance of a CAD write.
+After the impedance-profile port, the endpoint reported 623 tools and
+loaded/bundled `2026.10.27.2`. The profile reader itself has not yet been
+run against a disposable board.
 
 The older port-by-feature history and outstanding items remain in
 `FORK-INTEGRATION-AUDIT-2026-10-26.md`. In particular, the new upstream

@@ -6,6 +6,10 @@ The `main` source now includes SDK coverage and NPI phase gates from
 `MOREmbedded/main`, a periodic datasheet reminder from upstream, and a
 schematic generic edit response that no longer calls a dirty document saved.
 It now also reads the board's impedance profiles from Altium's layer stack.
+The `.2` build was loaded from `main`; the HTTP MCP endpoint on TCP 14701
+advertises 623 tools including `pcb_get_impedance_profiles`, and `app_ping`
+reports loaded/bundled `2026.10.27.2`, `version_match=true`, on Altium
+`26.11.1.5`. Native execution of this board read is still pending.
 The reviewed upstream and fork tips, true merge bases and remaining merge
 work are recorded in `docs/UPSTREAM-SYNC-2026-10-27.md`. The bridge was
 reloaded from the same `main` directory. Streamable HTTP on TCP 14701 now
