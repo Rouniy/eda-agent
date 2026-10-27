@@ -45,6 +45,11 @@ PLACEMENT_KEYS = frozenset({
     "part_id",
 })
 
+DBLIB_PLACEMENT_KEYS = frozenset({
+    "dblib_path", "table", "part_number", "key_field", "keys",
+    "x", "y", "rotation", "designator", "part_id",
+})
+
 _ERC_PROJECT_PATH_SCRIPT_VERSION = "2026.10.19.1"
 
 
@@ -3878,6 +3883,75 @@ def register_generic_tools(mcp):
         return await bridge.send_command_async(
             "generic.place_sch_components_from_library",
             {"placements": "~~".join(op_strs), "tidy": str(tidy).lower()},
+        )
+
+    @mcp.tool()
+    async def sch_place_dblib_components(
+        placements: list[dict[str, Any]],
+        dblib_path: Optional[str] = None,
+        document_path: Optional[str] = None,
+        allow_manual_layout: bool = False,
+    ) -> dict[str, Any]:
+        """Place linked parts from a database library (.DbLib) in one batch.
+
+        Each placement needs ``table`` and ``part_number`` (or raw ``keys``).
+        Give ``dblib_path`` once or per placement. Optional ``key_field``
+        defaults to ``Part Number``; ``part_id`` selects a multipart symbol.
+        Coordinates are mils. Pass an absolute ``document_path`` to target a
+        specific .SchDoc; the active document is used when it is omitted.
+        """
+        unknown = sorted({k for p in placements if isinstance(p, dict)
+                          for k in p} - DBLIB_PLACEMENT_KEYS)
+        if unknown:
+            return {"error": "UNKNOWN_PLACEMENT_KEYS", "reason":
+                    ", ".join(map(str, unknown)), "valid_keys":
+                    sorted(DBLIB_PLACEMENT_KEYS), "placed": 0}
+        ops: list[str] = []
+        for p in placements:
+            if not isinstance(p, dict):
+                return {"error": "BAD_PLACEMENT", "placed": 0}
+            lib = str(p.get("dblib_path") or dblib_path or "").strip()
+            table = str(p.get("table") or "").strip()
+            part = str(p.get("part_number") or "").strip()
+            keys = str(p.get("keys") or "").strip()
+            if not lib or not table or not (part or keys):
+                return {"error": "MISSING_FIELD", "reason":
+                        "dblib_path, table and part_number or keys are required",
+                        "placement": p, "placed": 0}
+            try:
+                part_id = int(p.get("part_id", 1))
+                x, y = int(p.get("x", 0)), int(p.get("y", 0))
+                rotation = int(p.get("rotation", 0))
+            except (TypeError, ValueError):
+                return {"error": "BAD_COORDINATE_OR_PART_ID", "placed": 0}
+            if part_id < 1 or rotation not in (0, 90, 180, 270):
+                return {"error": "BAD_ROTATION_OR_PART_ID", "placed": 0}
+            fields = [
+                f"dblib_path={payload_safe(lib)}",
+                f"table={payload_safe(table)}",
+                f"key_field={payload_safe(p.get('key_field') or 'Part Number')}",
+                f"key_value={payload_safe(part)}",
+                f"x={x}", f"y={y}", f"rotation={rotation}",
+                f"part_id={part_id}",
+            ]
+            if keys:
+                fields.append(f"keys={payload_safe(keys)}")
+            if p.get("designator"):
+                fields.append(f"designator={payload_safe(p['designator'])}")
+            ops.append(";".join(fields))
+        if not ops:
+            return {"error": "No valid placements", "placed": 0}
+        bridge = get_bridge()
+        refusal = await _refuse_manual_sheet_layout(
+            bridge, len(ops), document_path, allow_manual_layout)
+        if refusal is None:
+            refusal = await _focus_sheet(bridge, document_path)
+        if refusal is not None:
+            return refusal
+        return await bridge.send_command_async(
+            "generic.place_dblib_components",
+            {"placements": "~~".join(ops),
+             "sheet_path": document_path or ""},
         )
 
     @mcp.tool()

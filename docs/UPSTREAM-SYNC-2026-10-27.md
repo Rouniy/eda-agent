@@ -164,3 +164,30 @@ and 30 failures; the identified production gaps were addressed in focused
 groups afterwards. Upstream's legacy `test_added_altium_tools.py` still has
 17 cases that assume implicit board selection or old argument forms, so they
 do not yet qualify the exact-board wrappers.
+
+## Fork branch integration after the upstream merge
+
+`git merge-base main upstream/main` is `9ee593ea0dce989bf3bfc97d0c982044ed41badb`.
+The two-parent merge `f71a076` records that upstream point in history.
+`MOREmbedded/main` remains `032fb4b`; it is the only child fork returned by
+the GitHub API for `Rouniy/eda-agent`. The upstream fork network was checked
+again on October 27. `RHSvekon/main` equals the upstream tip and adds no code.
+
+The `vanlong2109` branch `feat/dblib-placement` (`476d75e`) supplied
+bulk database-library placement; the repository already had a singular
+`lib_place_dblib_component` path. `sch_place_dblib_components` now sends one
+batch to `SchServer.LoadComponentFromDatabaseLibrary`, preserves the
+database-linked symbol, selects multipart IDs and reports per-part failures.
+The port adds exact-sheet resolution in the native handler, a part-ID
+readback and parameter checks. Eleven focused tests and Pascal lint/build
+passed. Altium loaded script `.51`; an actual DbLib placement on a
+disposable sheet is still required before claiming native write acceptance.
+
+The `tisn1678065900-dot` `boardquality` branch (`21f0412`) contributed
+the English/Chinese PCB quality rules, board-intent and fab-profile
+templates, and an optional client skill. These are now in `docs/pcb-quality`
+and `skills/boardquality`, with attribution. They add guidance, not MCP
+commands. The `xthanhn91` note CRUD branch (`fc08cf1`) was also reviewed:
+`eNote`/`eTextFrame` generic mapping and placement already exist locally;
+its small loop-renewal helper duplicates the more capable supervisor and
+was not copied.

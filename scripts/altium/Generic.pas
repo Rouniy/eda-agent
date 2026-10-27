@@ -12097,6 +12097,170 @@ Begin
 End;
 
 {..............................................................................}
+{ Gen_PlaceDbLibComponents - load database-linked symbols in one batch.          }
+{ Try both full and bare DbLib names and several database key spellings.        }
+{..............................................................................}
+Function TryLoadDbLibComponent(LibName, TableName, Keys : String) : ISch_Component;
+Begin
+    Result := Nil;
+    If (LibName = '') Or (Keys = '') Then Exit;
+    Try
+        Result := SchServer.LoadComponentFromDatabaseLibrary(LibName, TableName, Keys);
+    Except
+        Result := Nil;
+    End;
+End;
+
+Function Gen_PlaceDbLibComponents(Params : String; RequestId : String) : String;
+Var
+    PlaceStr, Op, Remaining, FailedRefdes, Forms, ResponseBody : String;
+    SheetPath, DbLibPath, TableName, KeyField, KeyValue, RawKeys, Desig : String;
+    LibName, Keys, UsedForm, GotTable : String;
+    OpCount, Placed, Failed, Rotation, LibIdx, KeyIdx, PartId, GotPartId : Integer;
+    SchDoc : ISch_Document;
+    Comp : ISch_Component;
+Begin
+    PlaceStr := ExtractJsonValue(Params, 'placements');
+    If PlaceStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'placements is required');
+        Exit;
+    End;
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    SchDoc := Nil;
+    If SheetPath <> '' Then
+    Begin
+        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_NOT_FOUND', SheetPath);
+            Exit;
+        End;
+        If Not SameText(SchDoc.DocumentName, SheetPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_MISMATCH', SchDoc.DocumentName);
+            Exit;
+        End;
+    End
+    Else SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    If SchDoc.ObjectId <> eSheet Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOC_KIND',
+            'Target document is not a schematic sheet');
+        Exit;
+    End;
+
+    Placed := 0;
+    Failed := 0;
+    OpCount := 0;
+    Remaining := PlaceStr;
+    FailedRefdes := '';
+    Forms := '';
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    Try
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            Inc(OpCount);
+            DbLibPath := GetBatchField(Op, 'dblib_path');
+            TableName := GetBatchField(Op, 'table');
+            KeyField := GetBatchField(Op, 'key_field');
+            KeyValue := GetBatchField(Op, 'key_value');
+            RawKeys := GetBatchField(Op, 'keys');
+            Desig := GetBatchField(Op, 'designator');
+            Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
+            PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 1);
+            UsedForm := '';
+            If (DbLibPath = '') Or (TableName = '') Or
+               ((KeyValue = '') And (RawKeys = '')) Then
+                UsedForm := 'MISSING_FIELD';
+            If (PartId < 1) Or
+               ((Rotation <> 0) And (Rotation <> 90) And
+                (Rotation <> 180) And (Rotation <> 270)) Then
+                UsedForm := 'BAD_PART_OR_ROTATION';
+            Comp := Nil;
+            If UsedForm = '' Then
+            Begin
+                For LibIdx := 0 To 1 Do
+                Begin
+                    If Comp <> Nil Then Break;
+                    If LibIdx = 0 Then LibName := DbLibPath
+                    Else LibName := ExtractFileName(DbLibPath);
+                    For KeyIdx := 0 To 4 Do
+                    Begin
+                        If Comp <> Nil Then Break;
+                        Keys := '';
+                        If KeyIdx = 0 Then Keys := RawKeys
+                        Else If KeyValue <> '' Then
+                        Begin
+                            If KeyIdx = 1 Then Keys := KeyValue
+                            Else If KeyField <> '' Then
+                            Begin
+                                If KeyIdx = 2 Then Keys := KeyField + '=' + KeyValue
+                                Else If KeyIdx = 3 Then Keys := '[' + KeyField + ']=' + KeyValue
+                                Else Keys := '[' + KeyField + '] = ''' + KeyValue + '''';
+                            End;
+                        End;
+                        If Keys <> '' Then
+                            Comp := TryLoadDbLibComponent(LibName, TableName, Keys);
+                        If Comp <> Nil Then
+                            UsedForm := 'lib' + IntToStr(LibIdx) + '/key' + IntToStr(KeyIdx);
+                    End;
+                End;
+                If Comp = Nil Then UsedForm := 'LOAD_FAILED';
+            End;
+            If Comp <> Nil Then
+            Begin
+                Try Comp.SetState_CurrentPartID(PartId); Except End;
+                Try Comp.CurrentPartID := PartId; Except End;
+                GotPartId := 0;
+                Try GotPartId := Comp.CurrentPartID; Except End;
+                GotTable := '';
+                Try GotTable := Comp.DatabaseTableName; Except End;
+                If GotPartId <> PartId Then
+                    UsedForm := 'PART_REFUSED'
+                Else If GotTable = '' Then
+                    UsedForm := 'DATABASE_LINK_MISSING'
+                Else If Not SameText(GotTable, TableName) Then
+                    UsedForm := 'TABLE_MISMATCH'
+                Else
+                Begin
+                    PutLoadedComponent(SchDoc, Comp,
+                        StrToIntDef(GetBatchField(Op, 'x'), 0),
+                        StrToIntDef(GetBatchField(Op, 'y'), 0), Rotation, Desig);
+                    Inc(Placed);
+                    If Forms <> '' Then Forms := Forms + ',';
+                    Forms := Forms + Desig + ':' + UsedForm;
+                    Continue;
+                End;
+            End;
+            Inc(Failed);
+            If FailedRefdes <> '' Then FailedRefdes := FailedRefdes + ',';
+            FailedRefdes := FailedRefdes + Desig + ':' + UsedForm;
+        End;
+    Finally
+        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        If Placed > 0 Then SchDoc.GraphicallyInvalidate;
+    End;
+    ResponseBody := '{"placed":' + IntToStr(Placed)
+        + ',"failed":' + IntToStr(Failed)
+        + ',"total":' + IntToStr(OpCount)
+        + ',"load_forms":"' + EscapeJsonString(Forms) + '"';
+    If FailedRefdes <> '' Then
+        ResponseBody := ResponseBody + ',"failed_refdes":"'
+            + EscapeJsonString(FailedRefdes) + '"';
+    ResponseBody := ResponseBody + '}';
+    If Placed > 0 Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId, ResponseBody);
+End;
+
+{..............................................................................}
 { Gen_PlaceSchComponentsFromLibrary - Bulk BOM placement.                       }
 { Each op: library_path, lib_reference, x, y, designator, rotation, footprint, }
 { part_id. library_path and lib_reference are required; others have sane      }
@@ -16133,6 +16297,7 @@ Begin
         'set_sch_components_parameters': Result := Gen_SetSchComponentsParameters(Params, RequestId);
         'set_sch_text_positions':      Result := Gen_SetSchTextPositions(Params, RequestId);
         'place_sch_components_from_library': Result := Gen_PlaceSchComponentsFromLibrary(Params, RequestId);
+        'place_dblib_components':    Result := Gen_PlaceDbLibComponents(Params, RequestId);
         'place_sch_vault_components': Result := Gen_PlaceSchVaultComponents(Params, RequestId);
         'attach_spice_primitives':    Result := Gen_AttachSpicePrimitivesBatch(Params, RequestId);
     Else
