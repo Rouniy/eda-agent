@@ -2,6 +2,14 @@
 
 ## Later upstream tip in this session
 
+The fork tool-name scan also exposed a real feature removed from our
+current EasyEDA backend: `4pplet/main` had a two-pass automatic DesignPlan
+emitter. It now coexists with our hand-template route as
+`easyeda_emit_plan` plus `easyeda_emit_connections`, using the shared
+layout and wiring rules. The first pass reports pending nets; the second
+uses supplied real pin positions and blocks any net with a missing pin.
+Offline tests passed; no live EasyEDA editor result is claimed.
+
 The 119 cached fork/default/feature refs were scanned for async tool names.
 Most apparent missing names were old aliases for existing tools. One
 substantive difference was `rabihnd/integration`'s custom pad-list

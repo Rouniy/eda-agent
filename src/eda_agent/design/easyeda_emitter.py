@@ -33,12 +33,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from ._wiring import _is_ground_net, _net_representation
 from .plan import DesignPlan, PartStatus
 
 __all__ = [
     "EmittedCall",
     "EasyEdaPlan",
     "emit_easyeda_plan",
+    "emit_easyeda_connections",
     "emit_template_connections",
 ]
 
@@ -294,6 +296,153 @@ def emit_easyeda_plan(
 
     return out
 
+
+def emit_easyeda_connections(
+    plan: DesignPlan,
+    pin_positions: dict[tuple[str, str], tuple[float, float]],
+) -> EasyEdaPlan:
+    """Emit the calls that connect a plan's nets, given real pin points.
+
+    The second pass. Placement can be emitted from the plan alone, but a
+    wire or a label is drawn AT a pin, and a pin's position only exists
+    once its symbol is on the sheet. So this takes the positions read
+    back from the editor rather than deriving them, and a net with a
+    missing pin is reported instead of connected to a guess.
+
+    How each net is drawn comes from ``_net_representation``, the same
+    rule the Altium path uses, imported rather than restated. Two
+    backends that decide this separately would drift, and the drift
+    would show up as one tool drawing labels where the other draws
+    wires, on the same plan.
+
+    Args:
+        plan: the validated DesignPlan.
+        pin_positions: (refdes, pin) -> (x_mils, y_mils), in MILS. What
+            the editor reports is in schematic units of ten mils, so a
+            caller passing those through unconverted puts every wire a
+            tenth of the way to where it belongs.
+
+    Returns:
+        An EasyEdaPlan whose calls connect the nets. ``blockers`` names
+        any net that could not be drawn.
+    """
+    out = EasyEdaPlan()
+
+    refdes_to_zone = {p.refdes: p.zone for p in plan.parts}
+
+    for net in plan.nets:
+        points: list[tuple[str, float, float]] = []
+        missing: list[str] = []
+        for pin in net.pins:
+            position = pin_positions.get((pin.refdes, pin.pin))
+            if position is None:
+                missing.append(f"{pin.refdes}.{pin.pin}")
+                continue
+            points.append((pin.refdes, position[0], position[1]))
+
+        if missing:
+            # Drawing the pins that ARE known would produce a net that
+            # looks connected and is not, which survives review.
+            out.blockers.append(
+                f"net {net.name}: no position for "
+                f"{', '.join(missing)}; nothing drawn for this net")
+            continue
+
+        representation = _net_representation(net, refdes_to_zone)
+
+        if representation == "port":
+            kind = "Ground" if _is_ground_net(net) else "Power"
+            for _refdes, x, y in points:
+                out.calls.append(EmittedCall(
+                    tool="easyeda_create_net_flag",
+                    arguments={"name": net.name, "x": x, "y": y,
+                               "kind": kind},
+                    purpose=f"{kind.lower()} rail glyph on {net.name}",
+                ))
+            continue
+
+        if representation == "label_per_pin":
+            for _refdes, x, y in points:
+                out.calls.append(EmittedCall(
+                    tool="easyeda_create_net_label",
+                    arguments={"name": net.name, "x": x, "y": y},
+                    purpose=f"label {net.name} at a pin it crosses to",
+                ))
+            continue
+
+        # A wire. Drawn pin to pin in the order the net lists them,
+        # which is the plan's order rather than a shortest path: routing
+        # is not this function's job, and a net named by the planner in
+        # signal order reads correctly drawn that way.
+        previous: Optional[list[list[float]]] = None
+        for (from_ref, x1, y1), (to_ref, x2, y2) in zip(points, points[1:]):
+            # A ZERO LENGTH WIRE IS NOT A CONNECTION, IT IS A SYMPTOM.
+            #
+            # Two pins at one coordinate means the symbols are on top of
+            # each other, which is a placement fault. Drawing a wire
+            # from a point to itself adds an invisible primitive that
+            # cannot be selected and hides the real problem, so the
+            # overlap is reported instead.
+            if x1 == x2 and y1 == y2:
+                out.notes.append(
+                    f"net {net.name}: {from_ref} and {to_ref} are at the "
+                    f"same point ({x1}, {y1}), so no wire was drawn. Two "
+                    f"pins in one place means the parts are placed on top "
+                    f"of one another; fix the placement rather than the "
+                    f"wiring.")
+                previous = None
+                continue
+
+            route = _orthogonal(x1, y1, x2, y2, previous=previous)
+            previous = route
+            out.calls.append(EmittedCall(
+                tool="easyeda_add_wire",
+                arguments={"points": route, "net": net.name},
+                purpose=f"wire {net.name} from {from_ref} to {to_ref}",
+            ))
+
+    return out
+
+
+def _orthogonal(x1: float, y1: float, x2: float, y2: float, *,
+                previous: "Optional[list[list[float]]]" = None,
+                ) -> list[list[float]]:
+    """Pin to pin as horizontal and vertical runs, never a diagonal.
+
+    A two-point segment between pins that share neither coordinate is a
+    DIAGONAL wire. Schematics are drawn on the square: every reader
+    expects horizontal and vertical runs, a diagonal reads as a mistake
+    even where the editor accepts it, and this project holds its
+    schematics to what a person would draw by hand.
+
+    Aligned pins keep their single straight segment. Everything else
+    gets one elbow, horizontal first by default. That default is
+    arbitrary between the two L shapes and is fixed rather than chosen
+    per net, so two runs of one plan draw the same schematic.
+
+    IT FLIPS TO VERTICAL FIRST WHEN HORIZONTAL WOULD RETRACE. A net of
+    three or more pins is wired as a chain, so each wire starts where
+    the last one ended. On a three pin net whose first two pins share a
+    row, the horizontal first elbow sent the branch back along the wire
+    just drawn, laying a second line on top of it before turning off.
+    Doubled copper is not what it looks like on a schematic; it looks
+    like one wire, and the drawing quietly stops matching what was
+    emitted.
+    """
+    if x1 == x2 or y1 == y2:
+        return [[x1, y1], [x2, y2]]
+
+    horizontal_first = [[x1, y1], [x2, y1], [x2, y2]]
+    if previous and len(previous) >= 2:
+        last = previous[-2:]
+        (px1, py1), (px2, py2) = last[0], last[1]
+        # The previous run ends horizontally at our starting height, and
+        # our first leg would travel back along it.
+        retraces = (py1 == py2 == y1
+                    and min(px1, px2) <= x2 <= max(px1, px2))
+        if retraces:
+            return [[x1, y1], [x1, y2], [x2, y2]]
+    return horizontal_first
 
 def emit_template_connections(drawing: Any) -> EasyEdaPlan:
     """The calls that draw a checked hand template (design/sch_template).

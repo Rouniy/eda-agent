@@ -1,5 +1,12 @@
 # Release verification: 2026.10.27.85
 
+The EasyEDA backend restores the `4pplet` automatic two-pass DesignPlan
+emitter without changing the hand-template route. Seven focused tests passed:
+two placements emitted, the pending-net next step named, a pin-to-pin
+orthogonal wire emitted from real coordinates, missing/nonfinite pin
+positions refused, and both tools registered for the EasyEDA backend.
+This is offline emission; the live EasyEDA extension remains untested.
+
 Script `.85` adds the adapted `rabihnd/integration` custom footprint
 creator. An isolated copy of `BodyEdit_20261027.PcbLib` received
 `EDA_AGENT_CUSTOM_2P_OVAL` with two pads. Native readback found pad 1

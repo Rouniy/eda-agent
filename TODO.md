@@ -2,6 +2,12 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [x] Restore `4pplet`'s automatic EasyEDA DesignPlan emission as an
+  optional path alongside hand templates. Seven offline tests cover
+  placement, real-pin wiring, refusal of missing positions and registry.
+- [ ] Run the emitted plan and its second-pass connections in a disposable
+  EasyEDA design through the live extension; current evidence is offline.
+
 - [x] Adapt `rabihnd/integration`'s custom pad-list footprint creator to
   one guarded native call. Script `.85` plans against an exact PcbLib,
   reads back pad and outline geometry, and persisted the corrected oval

@@ -2,6 +2,14 @@
 
 ## Refreshed handoff, 2026-10-27
 
+The `4pplet` EasyEDA auto-layout emission path is restored alongside the
+hand-template workflow: `easyeda_emit_plan` computes placements from a
+validated DesignPlan and `easyeda_emit_connections` emits wires, labels or
+flags only from real pin positions supplied in mils. Neither tool writes
+to CAD; the returned calls are reviewable data. Seven focused auto/template
+tests passed, including missing-pin refusal and backend registration.
+Live EasyEDA extension acceptance remains pending.
+
 Script `.85` adapts `rabihnd/integration`'s custom pad-list footprint
 creation as `lib_create_pcb_footprint`. It plans by default, requires an
 exact existing PcbLib, validates every pad and refuses an occupied name or

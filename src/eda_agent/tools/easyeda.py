@@ -26,6 +26,7 @@ it against the real editor, not before.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Optional
 
 __all__ = ["register_easyeda_tools"]
@@ -4477,6 +4478,96 @@ def register_easyeda_tools(mcp):
         })
 
     # ---- turning a plan into EasyEDA calls ---------------------------
+
+    @mcp.tool()
+    async def easyeda_emit_plan(
+        plan_json: str | dict,
+        resolved_parts: dict[str, dict[str, str]] | None = None,
+        engine: str = "auto",
+    ) -> dict[str, Any]:
+        """Emit placement calls from an automatically laid out DesignPlan.
+
+        This restores the 4pplet fork's optional auto-layout path alongside
+        the hand-template emitter. It returns calls as data and never picks a
+        library part. Once parts are placed, read their actual pin positions
+        in mils and pass them to easyeda_emit_connections.
+        """
+        from pydantic import ValidationError
+
+        from ..design.easyeda_emitter import emit_easyeda_plan
+        from ..design.layout import compute_layout
+        from ..design.plan import DesignPlan
+
+        if engine not in ("auto", "sugiyama", "force_directed"):
+            return {"ok": False, "reason": "engine is auto, sugiyama or force_directed"}
+        try:
+            payload = json.loads(plan_json) if isinstance(plan_json, str) else plan_json
+        except json.JSONDecodeError as exc:
+            return {"ok": False, "reason": f"plan_json is not JSON: {exc}"}
+        try:
+            plan = DesignPlan.model_validate(payload)
+        except ValidationError as exc:
+            return {"ok": False, "reason": "plan did not validate",
+                    "errors": [str(e) for e in exc.errors()]}
+        placements: dict[str, tuple[float, float, float]] = {}
+        try:
+            for placed in compute_layout(plan, engine=engine):
+                values = (float(placed.x_mils), float(placed.y_mils),
+                          float(placed.rotation))
+                if not all(math.isfinite(v) for v in values):
+                    return {"ok": False, "reason": "layout produced a nonfinite position"}
+                placements[placed.refdes] = values
+        except Exception as exc:
+            return {"ok": False, "reason": f"layout failed: {exc}"}
+        emitted = emit_easyeda_plan(
+            plan, placements=placements, resolved_parts=resolved_parts)
+        if emitted.nets_pending:
+            emitted.next_step = "easyeda_emit_connections"
+        out = emitted.to_dict()
+        out["ok"] = True
+        return out
+
+    @mcp.tool()
+    async def easyeda_emit_connections(
+        plan_json: str | dict,
+        pin_positions: dict[str, list[float]],
+    ) -> dict[str, Any]:
+        """Emit calls to wire a DesignPlan using real pin positions in mils.
+
+        The second pass after easyeda_emit_plan. The EasyEDA editor reports
+        schematic units of ten mils; multiply those coordinates by ten
+        before passing them here. Missing pins block the affected net.
+        """
+        from pydantic import ValidationError
+
+        from ..design.easyeda_emitter import emit_easyeda_connections as emit
+        from ..design.plan import DesignPlan
+
+        try:
+            payload = json.loads(plan_json) if isinstance(plan_json, str) else plan_json
+        except json.JSONDecodeError as exc:
+            return {"ok": False, "reason": f"plan_json is not JSON: {exc}"}
+        try:
+            plan = DesignPlan.model_validate(payload)
+        except ValidationError as exc:
+            return {"ok": False, "reason": "plan did not validate",
+                    "errors": [str(e) for e in exc.errors()]}
+        positions: dict[tuple[str, str], tuple[float, float]] = {}
+        if not isinstance(pin_positions, dict):
+            return {"ok": False, "reason": "pin_positions must be a mapping"}
+        for key, value in pin_positions.items():
+            if not isinstance(key, str) or "." not in key:
+                return {"ok": False, "reason": f"pin key {key!r} is not REFDES.PIN"}
+            refdes, pin = key.split(".", 1)
+            if (not refdes or not pin or not isinstance(value, (list, tuple))
+                    or len(value) != 2 or any(type(v) not in (int, float)
+                    or not math.isfinite(v) for v in value)):
+                return {"ok": False, "reason": f"pin_positions[{key!r}] must be two finite mil coordinates"}
+            positions[(refdes, pin)] = (float(value[0]), float(value[1]))
+        emitted = emit(plan, positions)
+        out = emitted.to_dict()
+        out["ok"] = True
+        return out
 
     @mcp.tool()
     async def easyeda_emit_template(
