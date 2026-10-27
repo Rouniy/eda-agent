@@ -2055,3 +2055,14 @@ to true read back immediately but reopened as false. Script `.32`
 therefore refuses that field in both the Python tool and native handler;
 the native refusal was observed. Four related tests and Pascal lint/build
 passed. The owner PcbDoc was restored active and was not saved.
+
+# Impedance profile lifecycle, 2026-10-27
+
+Script `.33` on Altium 26.11.1.5 created `EDA_AGENT_TEST_100` on an
+isolated PcbDoc copy (100 ohms, 10% tolerance, differential=true,
+coplanar=false). Exact save, close and reopen retained all fields. A
+second write renamed it `EDA_AGENT_TEST_110` and changed the target to
+110 ohms, tolerance to 8%, differential=false and coplanar=true;
+these also persisted after exact save/reopen. Removal then persisted
+with profile count zero. The owner's PcbDoc SHA256 stayed unchanged.
+Twenty related tests and Pascal lint/build passed.

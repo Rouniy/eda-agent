@@ -4451,7 +4451,7 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
-    async def pcb_get_impedance_profiles() -> dict[str, Any]:
+    async def pcb_get_impedance_profiles(board_path: str = "") -> dict[str, Any]:
         """Read Altium's own layer-stack impedance profiles for the open board.
 
         Returns targets, tolerances, reference layers, solved widths and gaps,
@@ -4459,9 +4459,117 @@ def register_pcb_tools(mcp):
         The reply names the board so the result can be checked against the
         intended design.
         """
-        return await get_bridge().send_command_async(
-            "pcb.get_impedance_profiles", {}
+        if board_path and (not Path(board_path).is_absolute()
+                           or Path(board_path).suffix.casefold() != ".pcbdoc"):
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.get_impedance_profiles",
+            {"board_path": board_path} if board_path else {},
         )
+        if board_path and isinstance(reply, dict) and not reply.get("error"):
+            if str(reply.get("board_path", "")).casefold() != board_path.casefold():
+                return {"ok": False, "reason": "wrong-board impedance profile reply",
+                        "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_impedance_profile(
+        board_path: str,
+        action: str,
+        profile: str,
+        name: str = "",
+        target_ohms: Optional[float] = None,
+        tolerance: Optional[float] = None,
+        differential: Optional[bool] = None,
+        coplanar: Optional[bool] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Plan, create, change or remove one exact-board impedance profile.
+
+        Checks the current profile count and old values before any write.
+        Saving the PcbDoc is a separate operation.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        action = action.strip().lower()
+        profile = profile.strip()
+        name = name.strip()
+        if action not in ("create", "set", "remove") or not profile:
+            return {"ok": False, "reason": "action must be create/set/remove and profile required"}
+        updates = {"name": name or None, "target_ohms": target_ohms,
+                   "tolerance": tolerance, "differential": differential,
+                   "coplanar": coplanar}
+        updates = {key: value for key, value in updates.items() if value is not None}
+        if action == "create" and target_ohms is None:
+            return {"ok": False, "reason": "target_ohms required for create"}
+        if action == "set" and not updates:
+            return {"ok": False, "reason": "give at least one profile setting"}
+        if action == "remove" and updates:
+            return {"ok": False, "reason": "remove accepts no profile settings"}
+        if action == "create" and name:
+            return {"ok": False, "reason": "use profile as the new name for create"}
+        for key in ("target_ohms", "tolerance"):
+            if key in updates:
+                value = updates[key]
+                if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                    return {"ok": False, "reason": f"{key} must be positive and finite"}
+        for key in ("differential", "coplanar"):
+            if key in updates and type(updates[key]) is not bool:
+                return {"ok": False, "reason": f"{key} must be boolean"}
+        before = await pcb_get_impedance_profiles(board_path)
+        if (not isinstance(before, dict) or before.get("board_path", "").casefold() != board_path.casefold()
+                or type(before.get("profile_count")) is not int
+                or type(before.get("read_errors")) is not int
+                or before["read_errors"] != 0
+                or not isinstance(before.get("profiles"), list)
+                or len(before["profiles"]) != before["profile_count"]):
+            return {"ok": False, "reason": "incomplete profile preflight", "native_reply": before}
+        found = [p for p in before["profiles"] if p.get("name", "").casefold() == profile.casefold()]
+        if (action == "create" and found) or (action != "create" and len(found) != 1):
+            return {"ok": False, "reason": "profile existence differs from action"}
+        if name and any(p.get("name", "").casefold() == name.casefold()
+                        for p in before["profiles"] if p not in found):
+            return {"ok": False, "reason": "new profile name already exists"}
+        old = found[0] if found else None
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "action": action, "profile": profile, "before": old,
+                    "would_set": updates, "profile_count": before["profile_count"]}
+        params = {"board_path": board_path, "action": action, "profile": profile,
+                  "expect_count": str(before["profile_count"])}
+        if old is not None:
+            for key in ("name", "target_ohms", "tolerance", "differential", "coplanar"):
+                value = old[key]
+                params[f"expect_{key}"] = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        for key, value in updates.items():
+            params[key] = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        reply = await get_bridge().send_command_async("pcb.impedance_profile", params,
+                                                       timeout=120.0)
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        after = await pcb_get_impedance_profiles(board_path)
+        expected_count = before["profile_count"] + (1 if action == "create" else -1 if action == "remove" else 0)
+        if (not isinstance(after, dict) or after.get("board_path", "").casefold() != board_path.casefold()
+                or after.get("profile_count") != expected_count
+                or after.get("read_errors") != 0
+                or not isinstance(after.get("profiles"), list)):
+            return {"ok": False, "reason": "profile count/readback failed", "native_reply": reply,
+                    "after": after}
+        result_name = name or profile
+        matches = [p for p in after["profiles"] if p.get("name", "").casefold() == result_name.casefold()]
+        if (action == "remove" and matches) or (action != "remove" and len(matches) != 1):
+            return {"ok": False, "reason": "profile identity readback failed", "after": after}
+        if action != "remove":
+            for key, value in updates.items():
+                actual = matches[0].get(key)
+                if key in ("target_ohms", "tolerance"):
+                    matched = isinstance(actual, (int, float)) and math.isclose(actual, value, abs_tol=0.001)
+                else:
+                    matched = actual == value
+                if not matched:
+                    return {"ok": False, "reason": f"{key} did not read back", "after": after}
+        reply["save_required"] = True
+        return reply
 
     @mcp.tool()
     async def pcb_pours_at(

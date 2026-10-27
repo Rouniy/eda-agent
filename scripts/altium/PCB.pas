@@ -5218,7 +5218,7 @@ Var
     PCount, TCount, I, J, Misses : Integer;
     Items, Traces, PName, LName, RefTop, RefBottom : String;
     Target, Tol, Calc, Err, Etch, Speed : Double;
-    IsDiff, Enabled : Boolean;
+    IsDiff, IsCopl, Enabled : Boolean;
     Width, Gap : TCoord;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -5227,6 +5227,10 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+    If (ExtractJsonValue(Params, 'board_path') <> '') And
+       (UpperCase(Board.FileName) <> UpperCase(ExtractJsonValue(Params, 'board_path'))) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+        'Selected PCB path differs from board_path'); Exit; End;
     Stack := Nil;
     Try Stack := Board.MasterLayerStack; Except Stack := Nil; End;
     If Stack = Nil Then
@@ -5260,10 +5264,12 @@ Begin
         Target := 0;
         Tol := 0;
         IsDiff := False;
+        IsCopl := False;
         Try PName := Profile.Name; Except Inc(Misses); End;
         Try Target := Profile.Impedance; Except Inc(Misses); End;
         Try Tol := Profile.ImpedanceTolerance; Except Inc(Misses); End;
         Try IsDiff := Profile.IsDiffPair; Except Inc(Misses); End;
+        Try IsCopl := Profile.IsCoplanar; Except Inc(Misses); End;
 
         Traces := '';
         TCount := 0;
@@ -5325,11 +5331,13 @@ Begin
             + JsonFloat('target_ohms', Target) + ','
             + JsonFloat('tolerance', Tol) + ','
             + JsonBool('differential', IsDiff) + ','
+            + JsonBool('coplanar', IsCopl) + ','
             + JsonRaw('layers', '[' + Traces + ']'));
     End;
 
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('board', ExtractFileName(Board.FileName)) + ','
+        + JsonStr('board_path', Board.FileName) + ','
         + JsonInt('profile_count', PCount) + ','
         + JsonInt('read_errors', Misses) + ','
         + JsonRaw('profiles', '[' + Items + ']')));
@@ -20307,6 +20315,123 @@ Begin
         + JsonRaw('after', AfterJson)));
 End;
 
+Function PCB_FindImpedanceProfile(Stack : IPCB_MasterLayerStack2; Name : String) : IPCB_ImpedanceProfile;
+Var
+    I : Integer;
+    P : IPCB_ImpedanceProfile;
+Begin
+    Result := Nil;
+    For I := 0 To Stack.GetImpedanceProfileCount - 1 Do
+    Begin
+        P := Stack.GetImpedanceProfileByIndex(I);
+        If (P <> Nil) And (UpperCase(P.Name) = UpperCase(Name)) Then
+        Begin Result := P; Exit; End;
+    End;
+End;
+
+Function PCB_ImpedanceProfileState(P : IPCB_ImpedanceProfile) : String;
+Begin
+    If P = Nil Then Begin Result := 'null'; Exit; End;
+    Result := JsonObj(JsonStr('name', P.Name) + ','
+        + JsonFloat('target_ohms', P.Impedance) + ','
+        + JsonFloat('tolerance', P.ImpedanceTolerance) + ','
+        + JsonBool('differential', P.IsDiffPair) + ','
+        + JsonBool('coplanar', P.IsCoplanar));
+End;
+
+Function PCB_ImpedanceProfile(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_MasterLayerStack2;
+    P : IPCB_ImpedanceProfile;
+    ExpectedPath, Why, Op, ProfName, NewName, TargetS, TolS, DiffS, CoplS : String;
+    BeforeJson, AfterJson : String;
+    BeforeCount, AfterCount : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Op := LowerCase(ExtractJsonValue(Params, 'action'));
+    ProfName := Trim(ExtractJsonValue(Params, 'profile'));
+    NewName := Trim(ExtractJsonValue(Params, 'name'));
+    TargetS := ExtractJsonValue(Params, 'target_ohms');
+    TolS := ExtractJsonValue(Params, 'tolerance');
+    DiffS := LowerCase(ExtractJsonValue(Params, 'differential'));
+    CoplS := LowerCase(ExtractJsonValue(Params, 'coplanar'));
+    If (ExpectedPath = '') Or (ProfName = '') Or
+       ((Op <> 'create') And (Op <> 'set') And (Op <> 'remove')) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'board_path, profile and valid action required'); Exit; End;
+    If ((TargetS <> '') And ((Not IsFloatStr(TargetS)) Or (StrToFloatDef(TargetS, 0) <= 0)))
+       Or ((TolS <> '') And ((Not IsFloatStr(TolS)) Or (StrToFloatDef(TolS, 0) <= 0)))
+       Or ((DiffS <> '') And (DiffS <> 'true') And (DiffS <> 'false'))
+       Or ((CoplS <> '') And (CoplS <> 'true') And (CoplS <> 'false')) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'invalid profile value'); Exit; End;
+    If (Op = 'create') And (TargetS = '') Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'target_ohms required for create'); Exit; End;
+    If (Op = 'set') And (NewName = '') And (TargetS = '') And
+       (TolS = '') And (DiffS = '') And (CoplS = '') Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'no profile update'); Exit; End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    Stack := Board.MasterLayerStack;
+    If Stack = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_STACK', 'No master layer stack'); Exit; End;
+    BeforeCount := Stack.GetImpedanceProfileCount;
+    If StrToIntDef(ExtractJsonValue(Params, 'expect_count'), -1) <> BeforeCount Then
+    Begin Result := BuildErrorResponse(RequestId, 'STALE_PROFILES', 'profile count changed'); Exit; End;
+    P := PCB_FindImpedanceProfile(Stack, ProfName);
+    If Op = 'create' Then
+    Begin
+        If P <> Nil Then Begin Result := BuildErrorResponse(RequestId, 'ALREADY_EXISTS', ProfName); Exit; End;
+        BeforeJson := 'null';
+    End
+    Else
+    Begin
+        If P = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROFILE', ProfName); Exit; End;
+        BeforeJson := PCB_ImpedanceProfileState(P);
+        If (ExtractJsonValue(Params, 'expect_name') <> P.Name)
+           Or (Abs(StrToFloatDef(ExtractJsonValue(Params, 'expect_target_ohms'), -1) - P.Impedance) > 0.001)
+           Or (Abs(StrToFloatDef(ExtractJsonValue(Params, 'expect_tolerance'), -1) - P.ImpedanceTolerance) > 0.001)
+           Or ((LowerCase(ExtractJsonValue(Params, 'expect_differential')) = 'true') <> P.IsDiffPair)
+           Or ((LowerCase(ExtractJsonValue(Params, 'expect_coplanar')) = 'true') <> P.IsCoplanar) Then
+        Begin Result := BuildErrorResponse(RequestId, 'STALE_PROFILE', 'profile changed; read again'); Exit; End;
+    End;
+    If (NewName <> '') And (UpperCase(NewName) <> UpperCase(ProfName)) And
+       (PCB_FindImpedanceProfile(Stack, NewName) <> Nil) Then
+    Begin Result := BuildErrorResponse(RequestId, 'ALREADY_EXISTS', NewName); Exit; End;
+    PCBServer.PreProcess;
+    Try
+        If Op = 'remove' Then Stack.RemoveImpedanceProfile(P)
+        Else
+        Begin
+            If Op = 'create' Then
+            Begin
+                P := Stack.CreateImpedanceProfile;
+                P.Name := ProfName;
+            End;
+            If NewName <> '' Then P.Name := NewName;
+            If DiffS <> '' Then P.IsDiffPair := (DiffS = 'true');
+            If CoplS <> '' Then P.IsCoplanar := (CoplS = 'true');
+            If TargetS <> '' Then P.Impedance := StrToFloatDef(TargetS, 0);
+            If TolS <> '' Then P.ImpedanceTolerance := StrToFloatDef(TolS, 0);
+        End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    AfterCount := Stack.GetImpedanceProfileCount;
+    If Op = 'remove' Then AfterJson := 'null'
+    Else AfterJson := PCB_ImpedanceProfileState(P);
+    MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonStr('action', Op) + ','
+        + JsonInt('profiles_before', BeforeCount) + ','
+        + JsonInt('profiles_after', AfterCount) + ','
+        + JsonRaw('before', BeforeJson) + ','
+        + JsonRaw('after', AfterJson)));
+End;
+
 Function PCB_ViaStructureJson(Via : IPCB_Via) : String;
 Var
     VS : IPCB_ViaStructure;
@@ -20737,6 +20862,7 @@ Begin
         'via_structures':       Result := PCB_ViaStructures(Params, RequestId);
         'physical_stack':       Result := PCB_PhysicalStack(Params, RequestId);
         'set_dielectric':       Result := PCB_SetDielectric(Params, RequestId);
+        'impedance_profile':    Result := PCB_ImpedanceProfile(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
