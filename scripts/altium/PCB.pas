@@ -9800,6 +9800,162 @@ Begin
 End;
 
 {..............................................................................}
+Function PCB_NetDisplayBits(Net : IPCB_Net) : String;
+Begin
+    Result := '';
+    If Net.ConnectsVisible Then Result := Result + '1' Else Result := Result + '0';
+    If Net.LoopRemoval Then Result := Result + '1' Else Result := Result + '0';
+    If Net.OverrideColorForDraw Then Result := Result + '1' Else Result := Result + '0';
+    If Net.JumpersVisible Then Result := Result + '1' Else Result := Result + '0';
+End;
+
+Function PCB_NetDisplayJson(Net : IPCB_Net) : String;
+Begin
+    Result := JsonObj(JsonStr('net', Net.Name) + ','
+        + JsonBool('connections_shown', Net.ConnectsVisible) + ','
+        + JsonBool('loop_removal', Net.LoopRemoval) + ','
+        + JsonBool('use_net_color', Net.OverrideColorForDraw) + ','
+        + JsonBool('jumpers_shown', Net.JumpersVisible) + ','
+        + JsonBool('in_differential_pair', Net.InDifferentialPair));
+End;
+
+{ Read or update connection lines, loop removal, net colour and jumpers. }
+{ Every target is resolved and its four old flags checked before a write. }
+Function PCB_NetDisplay(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Net : IPCB_Net;
+    Names : TStringList;
+    ExpectedPath, Why, Input, Item, ExpectedBits, BeforeBits : String;
+    ShowStr, LoopStr, ColourStr, JumperStr, BeforeItems, AfterItems : String;
+    TabPos, I, Applied : Integer;
+    Writing : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Input := ExtractJsonValue(Params, 'nets');
+    ExpectedBits := ExtractJsonValue(Params, 'expected_bits');
+    ShowStr := LowerCase(ExtractJsonValue(Params, 'show_connections'));
+    LoopStr := LowerCase(ExtractJsonValue(Params, 'loop_removal'));
+    ColourStr := LowerCase(ExtractJsonValue(Params, 'use_net_color'));
+    JumperStr := LowerCase(ExtractJsonValue(Params, 'show_jumpers'));
+    If (ExpectedPath = '') Or (Input = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path and nets are required');
+        Exit;
+    End;
+    If ((ShowStr <> '') And (ShowStr <> 'true') And (ShowStr <> 'false'))
+       Or ((LoopStr <> '') And (LoopStr <> 'true') And (LoopStr <> 'false'))
+       Or ((ColourStr <> '') And (ColourStr <> 'true') And (ColourStr <> 'false'))
+       Or ((JumperStr <> '') And (JumperStr <> 'true') And (JumperStr <> 'false')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'display flags must be true or false');
+        Exit;
+    End;
+    Writing := (ShowStr <> '') Or (LoopStr <> '') Or (ColourStr <> '')
+        Or (JumperStr <> '');
+    If Writing And (ExpectedBits = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+            'expected_bits from the prior read are required for writes');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Names := TStringList.Create;
+    BeforeBits := '';
+    BeforeItems := '';
+    While Input <> '' Do
+    Begin
+        TabPos := Pos(#9, Input);
+        If TabPos = 0 Then Begin Item := Input; Input := ''; End
+        Else Begin Item := Copy(Input, 1, TabPos - 1);
+            Input := Copy(Input, TabPos + 1, Length(Input)); End;
+        Item := Trim(Item);
+        If Item = '' Then Continue;
+        If Names.IndexOf(Item) >= 0 Then
+        Begin
+            Names.Free;
+            Result := BuildErrorResponse(RequestId, 'DUPLICATE_NET',
+                'net names must be unique');
+            Exit;
+        End;
+        Net := FindNetByName(Board, Item);
+        If Net = Nil Then
+        Begin
+            Names.Free;
+            Result := BuildErrorResponse(RequestId, 'NO_NET', 'No net ' + Item);
+            Exit;
+        End;
+        Names.Add(Item);
+        BeforeBits := BeforeBits + PCB_NetDisplayBits(Net);
+        If BeforeItems <> '' Then BeforeItems := BeforeItems + ',';
+        BeforeItems := BeforeItems + PCB_NetDisplayJson(Net);
+    End;
+    If Names.Count = 0 Then
+    Begin
+        Names.Free;
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'nets is empty');
+        Exit;
+    End;
+    If Writing And (ExpectedBits <> BeforeBits) Then
+    Begin
+        Names.Free;
+        Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+            'one or more net display flags changed; read again before writing');
+        Exit;
+    End;
+    If Writing Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            For I := 0 To Names.Count - 1 Do
+            Begin
+                Net := FindNetByName(Board, Names.Strings[I]);
+                If ShowStr = 'true' Then Net.ShowNetConnects;
+                If ShowStr = 'false' Then Net.HideNetConnects;
+                If LoopStr <> '' Then Net.LoopRemoval := (LoopStr = 'true');
+                If ColourStr <> '' Then Net.OverrideColorForDraw := (ColourStr = 'true');
+                If JumperStr <> '' Then Net.JumpersVisible := (JumperStr = 'true');
+            End;
+        Finally
+            PCBServer.PostProcess;
+        End;
+    End;
+    Applied := 0;
+    AfterItems := '';
+    For I := 0 To Names.Count - 1 Do
+    Begin
+        Net := FindNetByName(Board, Names.Strings[I]);
+        If PCB_NetDisplayBits(Net) <> Copy(BeforeBits, I * 4 + 1, 4) Then
+            Inc(Applied);
+        If AfterItems <> '' Then AfterItems := AfterItems + ',';
+        AfterItems := AfterItems + PCB_NetDisplayJson(Net);
+    End;
+    If Applied > 0 Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('count', Names.Count) + ','
+        + JsonBool('wrote', Writing) + ','
+        + JsonInt('applied_count', Applied) + ','
+        + JsonStr('before_bits', BeforeBits) + ','
+        + JsonRaw('before', '[' + BeforeItems + ']') + ','
+        + JsonRaw('nets', '[' + AfterItems + ']')));
+    Names.Free;
+End;
+
+{..............................................................................}
 { PCB_GetFabBoardFacts - one exact-board snapshot for fab package checks.    }
 { No outline rebuild and no capped object window.                          }
 {..............................................................................}
@@ -19233,6 +19389,7 @@ Begin
         'create_xsignals':        Result := PCB_CreateXSignals(Params, RequestId);
         'delete_xsignals':        Result := PCB_DeleteXSignals(Params, RequestId);
         'find_same_package':      Result := PCB_FindSamePackage(Params, RequestId);
+        'net_display':            Result := PCB_NetDisplay(Params, RequestId);
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
         'rebuild_connectivity':    Result := PCB_RebuildConnectivity(Params, RequestId);

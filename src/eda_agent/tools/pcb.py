@@ -7344,6 +7344,84 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_net_display(
+        board_path: str,
+        nets: list[str],
+        show_connections: Optional[bool] = None,
+        loop_removal: Optional[bool] = None,
+        use_net_color: Optional[bool] = None,
+        show_jumpers: Optional[bool] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Read or set PCB net display flags on an exact PcbDoc.
+
+        Without any flags, reads all requested nets. With flags, the default
+        dry run returns the current state and proposed settings. Set
+        dry_run=false to write; the native handler verifies the old state of
+        every net before touching any and returns a per-net readback.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if (not isinstance(nets, list) or not nets
+                or any(not isinstance(n, str) or not n.strip() or "\t" in n for n in nets)):
+            return {"ok": False, "reason": "nets must be nonempty net names without tabs"}
+        names = [n.strip() for n in nets]
+        if len({n.casefold() for n in names}) != len(names):
+            return {"ok": False, "reason": "nets must be unique"}
+        updates = {"show_connections": show_connections,
+                   "loop_removal": loop_removal,
+                   "use_net_color": use_net_color,
+                   "show_jumpers": show_jumpers}
+        if any(type(v) is not bool for v in updates.values() if v is not None):
+            return {"ok": False, "reason": "display settings must be booleans"}
+        bridge = get_bridge()
+        params = {"board_path": board_path, "nets": "\t".join(names)}
+        before = await bridge.send_command_async("pcb.net_display", params)
+        rows = before.get("nets") if isinstance(before, dict) else None
+        bits = before.get("before_bits") if isinstance(before, dict) else None
+        flag_fields = ("connections_shown", "loop_removal", "use_net_color", "jumpers_shown")
+        if (not isinstance(before, dict)
+                or not isinstance(before.get("board_path"), str)
+                or before["board_path"].casefold() != board_path.casefold()
+                or before.get("count") != len(names)
+                or not isinstance(rows, list) or len(rows) != len(names)
+                or not isinstance(bits, str) or len(bits) != 4 * len(names)
+                or any(not isinstance(row, dict) or row.get("net") != name
+                       or any(type(row.get(field)) is not bool for field in flag_fields)
+                       for row, name in zip(rows, names))):
+            return {"ok": False, "reason": "native net display read is incomplete or from another board",
+                    "native_reply": before}
+        if not any(v is not None for v in updates.values()):
+            return before
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "before": rows, "would_set": {k: v for k, v in updates.items() if v is not None}}
+        params["expected_bits"] = bits
+        for key, value in updates.items():
+            if value is not None:
+                params[key] = "true" if value else "false"
+        result = await bridge.send_command_async("pcb.net_display", params)
+        after = result.get("nets") if isinstance(result, dict) else None
+        expected_fields = {"show_connections": "connections_shown",
+                           "loop_removal": "loop_removal",
+                           "use_net_color": "use_net_color",
+                           "show_jumpers": "jumpers_shown"}
+        if (not isinstance(result, dict)
+                or not isinstance(result.get("board_path"), str)
+                or result["board_path"].casefold() != board_path.casefold()
+                or result.get("before_bits") != bits
+                or result.get("count") != len(names)
+                or result.get("wrote") is not True
+                or not isinstance(after, list) or len(after) != len(names)
+                or any(not isinstance(row, dict) or row.get("net") != name
+                       or any(row.get(expected_fields[key]) is not value
+                              for key, value in updates.items() if value is not None)
+                       for row, name in zip(after, names))):
+            return {"ok": False, "reason": "net display write was not fully verified",
+                    "native_reply": result}
+        return result
+
+    @mcp.tool()
     async def pcb_check_fab_output(
         directory: str,
         board_path: str,

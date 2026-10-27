@@ -2,6 +2,19 @@
 
 ## Source integration, 2026-10-27
 
+The `.18` source ports upstream's batch `pcb_net_display` for connection
+lines, loop removal, own net colour and jumper visibility. It requires an
+exact PcbDoc; the native handler resolves every net and checks all four
+old flags before any write. Python returns a dry-run plan by default and
+verifies per-net readback after an explicit write. Six focused tests pass;
+Pascal lint/build has zero errors/warnings. Altium 26.11.1.5 loaded
+`.18` with zero cast errors. On disposable PCBs, a one-net connection-line
+change read back independently; a two-net batch changed the other three
+flags on both nets and read back `1010` per net. A missing net and a wrong
+board path were refused. The disposable documents were closed with changes
+discarded and their saved blank files removed. The owner's PCB is active
+and unmodified. TCP 14700 and MCP 14701 listen.
+
 The `.17` source ports upstream's `pcb_find_same_package` with an exact
 PcbDoc path and native package comparisons. It groups even parts without
 a package hash and reports comparison errors rather than silently skipping

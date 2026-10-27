@@ -1,4 +1,14 @@
-# Release verification: 2026.10.27.17
+# Release verification: 2026.10.27.18
+
+The `.18` net-display tool reads or sets four display flags across a
+batch of nets. A write checks the old four-bit state of every net before
+mutating any of them; Python defaults to a dry-run plan and verifies the
+native readback. Six focused tests and Pascal lint/build pass. Altium
+loaded `.18` with zero cast errors. On disposable PCBs, a connection-line
+change and a two-net batch of loop-removal, net-colour and jumper changes
+read back independently. A missing net and a wrong board path were
+refused. Scratch changes were discarded, scratch files removed and the
+owner's active PCB remains unmodified.
 
 The `.17` package matcher uses Altium's `IsPackageEqual` on one exact
 PcbDoc and includes components without a package hash. Eight focused
