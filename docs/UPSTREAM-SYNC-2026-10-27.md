@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Fractional-mil annotation follow-up
+
+The residual decimal-mil audit found that `Proj_Annotate` converted
+component positions to whole mils before sorting. Source `.106` keeps
+native TCoord integers as its sort keys, preserving the relative order of
+components with sub-mil spacing. Native annotation acceptance remains
+pending. Five related tests and Pascal lint/build passed. Direct
+`CoordToMils(` calls remain only in utility/self-test code in the split
+Pascal units; other decimal conversions still require behavior review.
+
 ## Reviewed fork names with existing behavior
 
 `rabihnd/integration`'s `ApplySetPropertiesEx` adds a call-site catch and

@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## Fractional-mil annotation order, 2026-10-27
+
+- [x] Remove whole-mil rounding from project annotation sort keys by using
+  native TCoord integers. Source `.106` passes five related tests and
+  Pascal lint/build. Direct `CoordToMils(` calls are now confined to
+  utility/self-test code.
+- [ ] On a disposable sheet, annotate two same-prefix components whose
+  sort positions differ by less than 1 mil; confirm exact order after
+  save/reopen.
+
 ## Fork behavior review, 2026-10-27
 
 - [x] Compare `rabihnd/integration`'s `ApplySetPropertiesEx` with the

@@ -2153,10 +2153,9 @@ Begin
 End;
 
 { Helper: compare two component entries by the requested annotation order.
-  Returns -1 if A should come before B, +1 if after, 0 if equal.
-  Each "entry" is encoded as a flat string "X|Y|DocIdx|CompIdx" where X and Y
-  are integer mils (padded to a consistent width to allow lexical sort-safe
-  decoding). We pass them as separate integer params to keep it simple. }
+  Returns -1 if A should come before B, +1 if after, 0 if equal. X and Y are
+  native TCoord integers; converting to whole mils would collapse distinct
+  fractional-mil placements onto the same annotation sort key. }
 Function CompareAnnotationOrder(Order : String;
     AX, AY, ADocIdx : Integer;
     BX, BY, BDocIdx : Integer) : Integer;
@@ -2223,8 +2222,8 @@ Var
       pointers is unreliable). }
     CompList   : TInterfaceList;
     Prefixes   : TStringList;
-    XCoords    : TStringList;  { X in mils as integer-string }
-    YCoords    : TStringList;  { Y in mils as integer-string }
+    XCoords    : TStringList;  { native TCoord as integer-string }
+    YCoords    : TStringList;  { native TCoord as integer-string }
     DocIndices : TStringList;
 
     { Set of modified docs, PreProcess/PostProcess/Invalidate are scoped to these only }
@@ -2345,8 +2344,8 @@ Begin
                         Begin
                             CompList.Add(Comp);
                             Prefixes.Add(ExtractDesignatorPrefix(Comp.Designator.Text));
-                            XCoords.Add(IntToStr(CoordToMils(Comp.Location.X)));
-                            YCoords.Add(IntToStr(CoordToMils(Comp.Location.Y)));
+                            XCoords.Add(IntToStr(Comp.Location.X));
+                            YCoords.Add(IntToStr(Comp.Location.Y));
                             DocIndices.Add(IntToStr(I));
                         End;
                     Except

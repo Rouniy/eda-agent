@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Fractional-mil annotation order, 2026-10-27
+
+Source `.106` sorts project annotation by native TCoord positions instead
+of rounding components to whole mils first. Distinct imported placements
+less than 1 mil apart therefore retain their order within a sheet. The
+wire reply and annotation numbering contract are unchanged. Native
+acceptance on a disposable schematic with fractional positions remains
+pending. Five related tests passed; Pascal lint/build found zero errors or
+warnings. The only remaining direct `CoordToMils(` calls in split Pascal
+units are utility/self-test definitions and assertions.
+
 ## Fork behavior review, 2026-10-27
 
 The remaining-name audit checked `rabihnd/integration`'s extra property
