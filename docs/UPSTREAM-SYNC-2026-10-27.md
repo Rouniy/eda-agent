@@ -1,5 +1,17 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 MOREmbedded two-library read
+
+The adapted `lib_render_footprint` path was checked live on script
+`.113` with two PcbLibs open. `Spirit_Level_Project.PcbLib` was focused,
+but the render targeted `FP-51021-0700-MFG` from inactive `PCB1.PcbLib`.
+The target's Mechanical5/2/3/16 kinds became Assembly, 3D Body,
+Courtyard and Center roles (four/four/four/two primitives). The
+focused library had no such kinds. Both libraries were closed without
+edits. The package-audit path uses the same exact `library_path` in
+source tests but still needs a real vendor drawing for native
+acceptance; no synthetic dimensions were treated as package evidence.
+
 ## 2026-10-28 fractional PCB batch placement
 
 The fork's fractional batch placement and bottom-side flip were tested

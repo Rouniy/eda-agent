@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## MOREmbedded multi-library render check, 2026-10-28
+
+Two installed Altium example PcbLibs were opened read only.
+`Spirit_Level_Project.PcbLib` was focused while
+`lib_render_footprint` targeted `FP-51021-0700-MFG` in inactive
+`PCB1.PcbLib`. The target library's mechanical layers were explicitly
+`Assembly Top` (Mechanical5), `3D Body Top` (Mechanical2),
+`Courtyard Top` (Mechanical3) and `Component Center Top`
+(Mechanical16); the focused library had none of those kinds. The render
+reported roles with counts 4/4/4/2, no wrong-library note, and an SVG.
+Both PcbLibs were closed without edits. This qualifies the render half
+of the MOREmbedded layer-path adaptation; package audit still needs a
+real vendor package drawing for native acceptance.
+
 ## Native fractional PCB placement on `.113`, 2026-10-28
 
 The original `Spirit_Level_Project.PcbLib` was read only to choose its

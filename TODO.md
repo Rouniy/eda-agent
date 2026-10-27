@@ -120,9 +120,16 @@
 - [x] Pass the footprint's exact PcbLib path to both mechanical-layer reads
   in the existing render and package-audit tools. Forty-three focused tests
   pass, including call-parameter assertions.
-- [ ] With two disposable PcbLibs open, read a footprint from the inactive
-  one and confirm that its layer kinds, not the focused library's, reach
-  render and package audit. Do this after the new script is loaded.
+- [x] With two installed example PcbLibs open, render
+  `FP-51021-0700-MFG` from inactive `PCB1.PcbLib` while
+  `Spirit_Level_Project.PcbLib` is focused. The target library's
+  Assembly, Courtyard, 3D Body and Center roles read back with counts
+  4/4/4/2; the focused library had no such layer kinds. Both libraries
+  were read only and closed.
+- [ ] Repeat the two-library native routing check through
+  `lib_audit_footprint_vs_package` with a real vendor package drawing.
+  Its exact-library path is covered by source tests; a fabricated spec
+  would not establish package-audit validity.
 
 ## New upstream point and distribution, 2026-10-27
 

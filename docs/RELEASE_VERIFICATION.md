@@ -13,6 +13,13 @@ TopLayer (1000.125,1200.375; 45 degrees) and BottomLayer
 (1500.6248,1600.875; 90 degrees). The bottom X request was 1500.625
 mil; the native coordinate grid accounted for the 0.0002-mil difference.
 
+The MOREmbedded-derived exact-PcbLib render path was checked with two
+installed example libraries open. While one library was focused,
+`lib_render_footprint` targeted a footprint in the other and returned
+its Assembly, Courtyard, 3D Body and Center roles with counts 4/4/4/2.
+The focused library had no such layer kinds. Both were closed without
+edits. Native package-audit acceptance remains separate.
+
 ## Previous native verification: 2026.10.27.112
 
 At that checkpoint `altium_script_version` was `2026.10.27.112`.
