@@ -2,6 +2,16 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [ ] Reconcile the new upstream `40814ba` net-colour and project-colour
+  options with our exact-board, expected-state `pcb_net_display` contract.
+  Reconcile its coarse visible-grid factor and grid units with our
+  exact-board `pcb_set_grids` contract. Expand the PCB editor preference
+  wrappers for the new font, colour, confirmation and pan settings.
+- [x] Merge the `40814ba` upstream tip with a two-parent commit, add its
+  Gerber/print setup, paste-array preferences, Testpoint Style rule fields
+  and schematic reference zones. Script `.77` compiled and answered native
+  reads on an isolated board and the loaded schematic.
+
 - [x] Port decimal-mil paste-grid dimensions and gaps from
   `vincent-himpe/fix/decimal-mils-leftovers`; confirm six fills and the
   disabled top-paste flag persist on a disposable PcbDoc under script `.76`.

@@ -838,6 +838,82 @@ async def _pcb_export_component_step(board_path: str, designator: str,
             "sha256": digest}
 
 
+def _option_number_refusal(counts: dict[str, Any],
+                           colors: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """A refusal for a whole number below 0 or a colour outside 0 to
+    16777215 (Altium's colour number), else None."""
+    for key, value in counts.items():
+        if value is not None and value < 0:
+            return {"ok": False, "reason": f"{key} is 0 or more"}
+    for key, value in colors.items():
+        if value is not None and not 0 <= value <= 0xFFFFFF:
+            return {"ok": False, "reason": f"{key} is a colour from 0 to 16777215"}
+    return None
+
+
+#: Paste and paste-array preferences: argument name to Altium's.
+_PCB_PASTE_OPTIONS = {
+    "paste_same_net": "Paste_InSameNet",
+    "paste_same_class": "Paste_InSameClass",
+    "paste_same_layer": "Paste_OnSameLayer",
+    "paste_same_designator": "Paste_HasSameDesignator",
+    "repeat_count": "RepeatCountDefault",
+    "repeat_increment": "RepeatInc",
+    "repeat_circular": "RepeatCircular",
+    "repeat_angle": "RepeatDegrees",
+    "repeat_rotate": "RepeatRotateItem",
+    "repeat_x_mils": "RepeatX",
+    "repeat_y_mils": "RepeatY",
+}
+
+#: The board's Gerber settings: argument name to Altium's.
+_GERBER_OPTIONS = {
+    "units": "GerberUnits",
+    "decimals": "GerberDecs",
+    "sort_output": "SortOutput",
+    "software_arcs": "UseSoftwareArcs",
+    "centre_on_film": "CenterPhotoPlots",
+    "embed_apertures": "EmbedApertures",
+    "panelize": "Panelize",
+    "g54": "G54",
+    "relief_shapes_allowed": "ReliefShapesAllowed",
+    "flash_pads_only": "PadsFlashOnly",
+    "flash_all_fills": "FlashAllFills",
+    "plus_tolerance_mils": "PlusTol",
+    "minus_tolerance_mils": "MinusTol",
+    "film_x_mils": "FilmSizeX",
+    "film_y_mils": "FilmSizeY",
+    "border_mils": "BorderSize",
+    "max_aperture_mils": "MaxAperSize",
+}
+
+#: The board's print settings: argument name to Altium's.
+_PRINT_OPTIONS = {
+    "scale": "Scale",
+    "scale_to_fit_page": "ScaleToFitPage",
+    "x_correction": "XCorrect",
+    "y_correction": "YCorrect",
+    "show_holes": "ShowHoles",
+    "printer_fonts": "UsePrinterFonts",
+    "software_arcs": "UseSoftwareArcs",
+    "pad_nets": "PlotPadNets",
+    "pad_numbers": "PlotPadNumbers",
+    "border_mils": "cBorderSize",
+    "composite_type": "CompositeType",
+    "batch_type": "BatchType",
+}
+
+#: The Testpoint Style rule settings pcb_set_rule_properties takes, and
+#: whether each is a switch (else a length in mils).
+_TESTPOINT_SETTINGS = {
+    "min_size_mils": False, "max_size_mils": False, "preferred_size_mils": False,
+    "min_hole_mils": False, "max_hole_mils": False, "preferred_hole_mils": False,
+    "grid_mils": False, "grid_tolerance_mils": False, "min_spacing_mils": False,
+    "body_clearance_mils": False, "edge_clearance_mils": False,
+    "under_component": True, "use_grid": True,
+}
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -9304,6 +9380,7 @@ def register_pcb_tools(mcp):
         min_via_hole_mils: float | None = None,
         max_via_hole_mils: float | None = None,
         preferred_via_hole_mils: float | None = None,
+        testpoint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Update metadata AND constraint values of a named PCB design rule.
 
@@ -9486,6 +9563,18 @@ def register_pcb_tools(mcp):
             params["show_distances"] = "true" if show_distances else "false"
         if dp_impedance_driven is not None:
             params["dp_impedance_driven"] = "true" if dp_impedance_driven else "false"
+        for key, value in (testpoint or {}).items():
+            if key not in _TESTPOINT_SETTINGS:
+                return {"ok": False, "reason": f"testpoint has no setting {key}; it takes "
+                        + ", ".join(_TESTPOINT_SETTINGS)}
+            if _TESTPOINT_SETTINGS[key]:
+                if not isinstance(value, bool):
+                    return {"ok": False, "reason": f"testpoint {key} is True or False"}
+                params["testpoint_" + key] = "true" if value else "false"
+            else:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                    return {"ok": False, "reason": f"testpoint {key} is a length of 0 or more"}
+                params["testpoint_" + key] = repr(float(value))
 
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -10134,3 +10223,202 @@ def register_pcb_tools(mcp):
         result["board_path"] = board_path
         result["board_facts"] = facts_reply
         return result
+
+
+    @mcp.tool()
+    async def pcb_paste_options(
+        paste_same_net: Optional[bool] = None,
+        paste_same_class: Optional[bool] = None,
+        paste_same_layer: Optional[bool] = None,
+        paste_same_designator: Optional[bool] = None,
+        repeat_count: Optional[int] = None,
+        repeat_increment: Optional[str] = None,
+        repeat_circular: Optional[bool] = None,
+        repeat_angle: Optional[float] = None,
+        repeat_rotate: Optional[bool] = None,
+        repeat_x_mils: Optional[float] = None,
+        repeat_y_mils: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, what the board editor keeps when pasting, and
+        its paste array (Paste Special > Paste Array): how many
+        instances, how designators step, and a line or circle of them.
+
+        These are Altium's own preferences and apply to every board. A
+        board must be open. Call with nothing to read; every option set
+        is read back.
+
+        Args:
+            paste_same_net / paste_same_class / paste_same_layer /
+                paste_same_designator: Pasted objects keep their net,
+                classes, layer and designators.
+            repeat_count: How many instances a paste array places.
+            repeat_increment: How each instance's designator steps, e.g.
+                "1".
+            repeat_circular: Lay the instances on a circle instead of a
+                line.
+            repeat_angle: Degrees between instances on a circle.
+            repeat_rotate: Turn each instance on a circle with it.
+            repeat_x_mils / repeat_y_mils: Step between instances in a
+                line; may be negative.
+
+        Returns:
+            ``options`` (each option by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        refusal = _option_number_refusal({"repeat_count": repeat_count}, {})
+        if refusal:
+            return refusal
+        if repeat_angle is not None and repeat_angle < 0:
+            return {"ok": False, "reason": "repeat_angle is 0 or more"}
+        reply = await run_options("pcb.editor_options", _PCB_PASTE_OPTIONS, {
+            "paste_same_net": paste_same_net, "paste_same_class": paste_same_class,
+            "paste_same_layer": paste_same_layer,
+            "paste_same_designator": paste_same_designator,
+            "repeat_count": repeat_count, "repeat_increment": repeat_increment,
+            "repeat_circular": repeat_circular,
+            "repeat_angle": None if repeat_angle is None else float(repeat_angle),
+            "repeat_rotate": repeat_rotate,
+            # Altium keeps the steps at 10000 to the mil (measured: 1000 mils
+            # read 10000000).
+            "repeat_x_mils": None if repeat_x_mils is None else float(repeat_x_mils) * 10000,
+            "repeat_y_mils": None if repeat_y_mils is None else float(repeat_y_mils) * 10000})
+        options = reply.get("options") if isinstance(reply, dict) else None
+        if isinstance(options, dict):
+            for key in ("repeat_x_mils", "repeat_y_mils"):
+                if isinstance(options.get(key), (int, float)):
+                    options[key] = options[key] / 10000
+        return reply
+
+
+    @mcp.tool()
+    async def pcb_gerber_options(
+        board_path: str,
+        units: Optional[int] = None,
+        decimals: Optional[int] = None,
+        sort_output: Optional[bool] = None,
+        software_arcs: Optional[bool] = None,
+        centre_on_film: Optional[bool] = None,
+        embed_apertures: Optional[bool] = None,
+        panelize: Optional[bool] = None,
+        g54: Optional[bool] = None,
+        relief_shapes_allowed: Optional[bool] = None,
+        flash_pads_only: Optional[bool] = None,
+        flash_all_fills: Optional[bool] = None,
+        plus_tolerance_mils: Optional[float] = None,
+        minus_tolerance_mils: Optional[float] = None,
+        film_x_mils: Optional[float] = None,
+        film_y_mils: Optional[float] = None,
+        border_mils: Optional[float] = None,
+        max_aperture_mils: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the Gerber setup saved in the exact active board: the
+        units and decimals, apertures, flashing, film size and border.
+
+        Call with nothing to read; every option set is read back.
+        proj_generate_fab_package writes the files.
+
+        Args:
+            board_path: Absolute path of the active PcbDoc.
+            units: Altium's number for the Gerber units (read it first).
+            decimals: Altium's number for the coordinate format.
+            sort_output: Sort the plot output.
+            software_arcs: Write arcs as short straight segments.
+            centre_on_film: Centre the plots on the film.
+            embed_apertures: Write the apertures into each file (RS-274X).
+            panelize: Plot the panel's layers.
+            g54: Write G54 before each aperture change.
+            relief_shapes_allowed: Allow relief apertures.
+            flash_pads_only: Flash pad shapes only.
+            flash_all_fills: Flash every fill.
+            plus_tolerance_mils / minus_tolerance_mils: Aperture match
+                tolerances.
+            film_x_mils / film_y_mils: Film size.
+            border_mils: Border around the plot.
+            max_aperture_mils: Largest aperture.
+
+        Returns:
+            ``board``, ``options`` (by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        values = {"units": units, "decimals": decimals, "sort_output": sort_output,
+                  "software_arcs": software_arcs, "centre_on_film": centre_on_film,
+                  "embed_apertures": embed_apertures, "panelize": panelize, "g54": g54,
+                  "relief_shapes_allowed": relief_shapes_allowed,
+                  "flash_pads_only": flash_pads_only, "flash_all_fills": flash_all_fills,
+                  "plus_tolerance_mils": plus_tolerance_mils,
+                  "minus_tolerance_mils": minus_tolerance_mils,
+                  "film_x_mils": film_x_mils, "film_y_mils": film_y_mils,
+                  "border_mils": border_mils, "max_aperture_mils": max_aperture_mils}
+        for key, value in values.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if value < 0:
+                    return {"ok": False, "reason": f"{key} is 0 or more"}
+                if key.endswith("_mils"):
+                    values[key] = float(value)
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        return await run_options("pcb.output_options", _GERBER_OPTIONS, values,
+                                 {"group": "gerber", "board_path": board_path})
+
+
+    @mcp.tool()
+    async def pcb_print_options(
+        board_path: str,
+        scale: Optional[float] = None,
+        scale_to_fit_page: Optional[bool] = None,
+        x_correction: Optional[float] = None,
+        y_correction: Optional[float] = None,
+        show_holes: Optional[bool] = None,
+        printer_fonts: Optional[bool] = None,
+        software_arcs: Optional[bool] = None,
+        pad_nets: Optional[bool] = None,
+        pad_numbers: Optional[bool] = None,
+        border_mils: Optional[float] = None,
+        composite_type: Optional[int] = None,
+        batch_type: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Read, or set, the print setup saved in the exact active board:
+        scale, fit to page, corrections, holes and pad labels.
+
+        Call with nothing to read; every option set is read back.
+        proj_export_pdf prints.
+
+        Args:
+            board_path: Absolute path of the active PcbDoc.
+            scale: Print scale (1 is full size).
+            scale_to_fit_page: Fit the board to the page instead.
+            x_correction / y_correction: Scale corrections for the
+                printer (1 is none).
+            show_holes: Draw the holes.
+            printer_fonts: Print text with the printer's fonts.
+            software_arcs: Draw arcs as short straight segments.
+            pad_nets: Print net names on pads.
+            pad_numbers: Print pad numbers.
+            border_mils: Border around the print.
+            composite_type / batch_type: Altium's numbers for how layers
+                are combined and split into pages (read them first).
+
+        Returns:
+            ``board``, ``options`` (by these names), ``changed``,
+            ``not_applied``, ``refused`` and ``unknown``.
+        """
+        values = {"scale": scale, "scale_to_fit_page": scale_to_fit_page,
+                  "x_correction": x_correction, "y_correction": y_correction,
+                  "show_holes": show_holes, "printer_fonts": printer_fonts,
+                  "software_arcs": software_arcs, "pad_nets": pad_nets,
+                  "pad_numbers": pad_numbers, "border_mils": border_mils,
+                  "composite_type": composite_type, "batch_type": batch_type}
+        for key in ("scale", "x_correction", "y_correction"):
+            if values[key] is not None:
+                if values[key] <= 0:
+                    return {"ok": False, "reason": f"{key} is more than 0"}
+                values[key] = float(values[key])
+        for key in ("border_mils", "composite_type", "batch_type"):
+            if values[key] is not None and values[key] < 0:
+                return {"ok": False, "reason": f"{key} is 0 or more"}
+        if border_mils is not None:
+            values["border_mils"] = float(border_mils)
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        return await run_options("pcb.output_options", _PRINT_OPTIONS, values,
+                                 {"group": "print", "board_path": board_path})

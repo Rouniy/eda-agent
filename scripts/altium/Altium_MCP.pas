@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.76';
+    SCRIPT_VERSION = '2026.10.27.77';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -32867,7 +32867,10 @@ End;
 { the paste opening as a percentage (PasteMaskUsePercent,                   }
 { PasteMaskPercent) or switched off (PasteMaskEnabled).                     }
 { Text ConvertedString is the text as shown, special strings resolved; it   }
-{ is read only.                                                              }
+{ is read only. A pad's DrillType is how its hole is made (0 drilled, 1     }
+{ punched, 2 laser, 3 plasma); IsVirtualPin and a part's FlippedOnLayer    }
+{ (its "flip on layer" option, not its side) are read only. A text's       }
+{ BorderSpaceType is Altium's number for how its inverted border is sized. }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
 Begin
     Result := 0;
@@ -32888,7 +32891,7 @@ Begin
             (PropName = 'InvertedTTTextBorder') Or
             (PropName = 'TTFInvertedTextJustify') Or
             (PropName = 'TTFOffsetFromInvertedRect') Or
-            (PropName = 'ConvertedString') Then Result := 3
+            (PropName = 'ConvertedString') Or (PropName = 'BorderSpaceType') Then Result := 3
     Else If (PropName = 'TextHeight') Or (PropName = 'TextWidth') Or
             (PropName = 'TextLineWidth') Or (PropName = 'TextGap') Or
             (PropName = 'TextPosition') Or (PropName = 'TextDimensionUnit') Or
@@ -32910,10 +32913,11 @@ Begin
             (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
             (PropName = 'PackageSpecificHash') Or (PropName = 'SourceDescription') Or
             (PropName = 'JumpersVisible') Or (PropName = 'ChannelOffset') Or
-            (PropName = 'GroupNum') Then Result := 6
+            (PropName = 'GroupNum') Or (PropName = 'FlippedOnLayer') Then Result := 6
     Else If (PropName = 'JumperID') Or (PropName = 'SwapID_Pad') Or
             (PropName = 'SwapID_Part') Or (PropName = 'SwappedPadName') Or
-            (PropName = 'OwnerPart_ID') Then Result := 7
+            (PropName = 'OwnerPart_ID') Or (PropName = 'DrillType') Or
+            (PropName = 'IsVirtualPin') Then Result := 7
     Else If (PropName = 'OverrideColor') Or (PropName = 'Texture') Or
             (PropName = 'TextureRotation') Then Result := 8
     Else If (PropName = 'IsPreRoute') Or (PropName = 'UserRouted') Then Result := 9;
@@ -33025,7 +33029,8 @@ Begin
         Else If PropName = 'InvertedTTTextBorder' Then Result := FloatToJsonStr(CoordToMilsF(Txt.InvertedTTTextBorder))
         Else If PropName = 'TTFInvertedTextJustify' Then Result := IntToStr(Txt.TTFInvertedTextJustify)
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Result := FloatToJsonStr(CoordToMilsF(Txt.TTFOffsetFromInvertedRect))
-        Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString;
+        Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString
+        Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType);
     End
     Else If Oid = eDimensionObject Then
     Begin
@@ -33079,7 +33084,8 @@ Begin
         Else If PropName = 'SourceDescription' Then Result := Comp.SourceDescription
         Else If PropName = 'JumpersVisible' Then Result := BoolToJsonStr(Comp.JumpersVisible)
         Else If PropName = 'ChannelOffset' Then Result := IntToStr(Comp.ChannelOffset)
-        Else If PropName = 'GroupNum' Then Result := IntToStr(Comp.GroupNum);
+        Else If PropName = 'GroupNum' Then Result := IntToStr(Comp.GroupNum)
+        Else If PropName = 'FlippedOnLayer' Then Result := BoolToJsonStr(Comp.FlippedOnLayer);
     End
     Else If ExtraPCBPropertyOwner(PropName) = 7 Then
     Begin
@@ -33088,7 +33094,9 @@ Begin
         Else If PropName = 'SwapID_Pad' Then Result := Pad.SwapID_Pad
         Else If PropName = 'SwapID_Part' Then Result := Pad.SwapID_Part
         Else If PropName = 'SwappedPadName' Then Result := Pad.SwappedPadName
-        Else If PropName = 'OwnerPart_ID' Then Result := IntToStr(Pad.OwnerPart_ID);
+        Else If PropName = 'OwnerPart_ID' Then Result := IntToStr(Pad.OwnerPart_ID)
+        Else If PropName = 'DrillType' Then Result := IntToStr(Pad.DrillType)
+        Else If PropName = 'IsVirtualPin' Then Result := BoolToJsonStr(Pad.IsVirtualPin);
     End
     Else If ExtraPCBPropertyOwner(PropName) = 8 Then
     Begin
@@ -33120,7 +33128,8 @@ Begin
     If Not ExtraPCBPropertyFits(Oid, PropName) Then Exit;
     Result := -1;
     If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
-       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Then Exit;
+       (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or
+       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
         And (LowerCase(Value) = 'unset') Then
@@ -33166,7 +33175,8 @@ Begin
         (PropName = 'JumperID') Or (PropName = 'TTFInvertedTextJustify') Or
         (PropName = 'ChannelOffset') Or (PropName = 'GroupNum') Or
         (PropName = 'OwnerPart_ID') Or (PropName = 'PasteMaskExpansionMode') Or
-        (PropName = 'SolderMaskExpansionMode');
+        (PropName = 'SolderMaskExpansionMode') Or (PropName = 'DrillType') Or
+        (PropName = 'BorderSpaceType');
     B := False;
     F := 0;
     N := 0;
@@ -33256,7 +33266,8 @@ Begin
         Else If PropName = 'UseInvertedRectangle' Then Txt.UseInvertedRectangle := B
         Else If PropName = 'InvertedTTTextBorder' Then Txt.InvertedTTTextBorder := MilsToCoordF(F)
         Else If PropName = 'TTFInvertedTextJustify' Then Txt.TTFInvertedTextJustify := N
-        Else If PropName = 'TTFOffsetFromInvertedRect' Then Txt.TTFOffsetFromInvertedRect := MilsToCoordF(F);
+        Else If PropName = 'TTFOffsetFromInvertedRect' Then Txt.TTFOffsetFromInvertedRect := MilsToCoordF(F)
+        Else If PropName = 'BorderSpaceType' Then Txt.BorderSpaceType := N;
     End
     Else If Owner = 4 Then
     Begin
@@ -33319,7 +33330,13 @@ Begin
         Else If PropName = 'SwapID_Pad' Then Pad.SwapID_Pad := Value
         Else If PropName = 'SwapID_Part' Then Pad.SwapID_Part := Value
         Else If PropName = 'SwappedPadName' Then Pad.SwappedPadName := Value
-        Else If PropName = 'OwnerPart_ID' Then Pad.OwnerPart_ID := N;
+        Else If PropName = 'OwnerPart_ID' Then Pad.OwnerPart_ID := N
+        Else If PropName = 'DrillType' Then
+        Begin
+            { Drilled, punched, laser or plasma: 0 to 3. }
+            If N > 3 Then Exit;
+            Pad.DrillType := N;
+        End;
     End
     Else If Owner = 8 Then
     Begin
@@ -35086,13 +35103,39 @@ Begin
         + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
         + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
         + 'TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '
-        + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts, MirrorFlag, '
-        + 'TopShapeName, BotXSize, BotYSize, Plated, HoleType, HoleWidth, HoleRotation, '
-        + 'SizeTop, SizeMid, SizeBottom, SolderMaskExpansion, SolderMaskBottomExpansion, '
-        + 'SolderMaskSeparate, SolderMaskManual, SolderMaskFromHoleEdge, IsTenting_Top, '
-        + 'IsTenting_Bottom, IsTestpoint_Top, IsTestpoint_Bottom, IsAssyTestpoint_Top, '
-        + 'IsAssyTestpoint_Bottom, BoundsLeft, BoundsBottom, BoundsRight, BoundsTop, '
-        + 'UnionIndex, Identifier';
+        + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts, MirrorFlag'
+        + ', TopShapeName, BotXSize, BotYSize, Plated, HoleType, HoleWidth, '
+        + 'HoleRotation, '
+        + 'SizeTop, SizeMid, SizeBottom, SolderMaskExpansion, '
+        + 'SolderMaskBottomExpansion, SolderMaskSeparate, SolderMaskManual, '
+        + 'SolderMaskFromHoleEdge, IsTenting_Top, IsTenting_Bottom, '
+        + 'IsTestpoint_Top, IsTestpoint_Bottom, IsAssyTestpoint_Top, '
+        + 'IsAssyTestpoint_Bottom, BoundsLeft, BoundsBottom, BoundsRight, '
+        + 'BoundsTop, UnionIndex, Identifier, Grid, TrackSize, MinTrack, '
+        + 'ArcApproximation, NeckWidthThreshold, IslandAreaThreshold, '
+        + 'PolyHatchStyle, PourOver, UseOctagons, PourIndex, Poured, '
+        + 'HolePositiveTolerance, HoleNegativeTolerance, IsCounterHole, '
+        + 'BarCodeKind, BarCodeRenderMode, BarCodeFullWidth, BarCodeFullHeight, '
+        + 'BarCodeXMargin, BarCodeYMargin, BarCodeMinWidth, BarCodeInverted, '
+        + 'BarCodeShowText, BarCodeFontName, Multiline, MultilineTextWidth, '
+        + 'MultilineTextHeight, MultilineTextAutoPosition, TextHeight, TextWidth, '
+        + 'TextLineWidth, TextGap, TextPosition, TextDimensionUnit, TextPrecision, '
+        + 'TextFormat, TextPrefix, TextSuffix, ArrowSize, ArrowLineWidth, '
+        + 'ArrowLength, ArrowPosition, ExtensionOffset, ExtensionLineWidth, '
+        + 'ExtensionPickGap, PolygonType, BorderWidth, AvoidObsticles, '
+        + 'ClipAcuteCorners, MitreCorners, IgnoreViolations, ArcPourMode, '
+        + 'EnablePinSwapping, EnablePartSwapping, IsBGA, LockStrings, '
+        + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
+        + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
+        + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
+        + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, '
+        + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
+        + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '
+        + 'GroupNum, SwappedPadName, OwnerPart_ID, OverrideColor, Texture, '
+        + 'TextureRotation, IsPreRoute, UserRouted, PasteMaskExpansionMode, '
+        + 'SolderMaskExpansionMode, PasteMaskUsePercent, PasteMaskPercent, '
+        + 'PasteMaskEnabled, DrillType, IsVirtualPin, FlippedOnLayer, '
+        + 'BorderSpaceType';
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;
@@ -36659,8 +36702,9 @@ End;
 { MORE RULE SETTINGS, by rule kind: Width (2) impedance limits and the      }
 { connected-copper check, Height (50) limits, Component Clearance           }
 { (24) vertical gap, distance display and check mode, Routing Corners (10)  }
-{ setbacks, Net Antennae (56) tolerance and Fanout Control (49) style,     }
-{ direction, BGA direction, BGA via mode and via grid. Each helper finds   }
+{ setbacks, Net Antennae (56) tolerance, Fanout Control (49) style,        }
+{ direction, BGA direction, BGA via mode and via grid, and Testpoint Style }
+{ sizes, grid, spacing and clearances. Each helper finds                   }
 { the rule through a typed local assigned straight from the iterator,      }
 { which is where DelphiScript narrows, writes what was asked and reads it  }
 { back. Lengths are mils; choices are Altium's numbers. Each returns JSON  }
@@ -36933,6 +36977,138 @@ Begin
         End;
     Finally
         Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ One length of a Testpoint Style rule: write it when asked and read it back. }
+{ Which is 0 min size, 1 max size, 2 preferred size, 3 min hole, 4 max hole, }
+{ 5 preferred hole, 6 grid, 7 grid tolerance, 8 min spacing, 9 clearance to }
+{ part bodies, 10 clearance to the board edge.                              }
+Function TestpointLength(R : IPCB_TestPointStyleRule; Which : Integer) : Integer;
+Begin
+    If Which = 0 Then Result := R.GetState_MinSize
+    Else If Which = 1 Then Result := R.GetState_MaxSize
+    Else If Which = 2 Then Result := R.GetState_PreferedSize
+    Else If Which = 3 Then Result := R.GetState_MinHoleSize
+    Else If Which = 4 Then Result := R.GetState_MaxHoleSize
+    Else If Which = 5 Then Result := R.GetState_PreferedHoleSize
+    Else If Which = 6 Then Result := R.GetState_TestpointGrid
+    Else If Which = 7 Then Result := R.GetState_GridTolerance
+    Else If Which = 8 Then Result := R.GetState_MinSpacing
+    Else If Which = 9 Then Result := R.GetState_CompBodyClearance
+    Else Result := R.GetState_BoardEdgeClearance;
+End;
+
+Procedure TestpointSetLength(R : IPCB_TestPointStyleRule; Which : Integer; V : Integer);
+Begin
+    If Which = 0 Then R.SetState_MinSize(V)
+    Else If Which = 1 Then R.SetState_MaxSize(V)
+    Else If Which = 2 Then R.SetState_PreferedSize(V)
+    Else If Which = 3 Then R.SetState_MinHoleSize(V)
+    Else If Which = 4 Then R.SetState_MaxHoleSize(V)
+    Else If Which = 5 Then R.SetState_PreferedHoleSize(V)
+    Else If Which = 6 Then R.SetState_TestpointGrid(V)
+    Else If Which = 7 Then R.SetState_GridTolerance(V)
+    Else If Which = 8 Then R.SetState_MinSpacing(V)
+    Else If Which = 9 Then R.SetState_CompBodyClearance(V)
+    Else R.SetState_BoardEdgeClearance(V);
+End;
+
+{ The parameter name of each length above, in order. }
+Function TestpointKeys(Dummy : Integer) : String;
+Begin
+    Result := 'testpoint_min_size_mils,testpoint_max_size_mils,testpoint_preferred_size_mils,'
+        + 'testpoint_min_hole_mils,testpoint_max_hole_mils,testpoint_preferred_hole_mils,'
+        + 'testpoint_grid_mils,testpoint_grid_tolerance_mils,testpoint_min_spacing_mils,'
+        + 'testpoint_body_clearance_mils,testpoint_edge_clearance_mils';
+End;
+
+{ True for a Testpoint Style rule: 43 Fabrication, 57 Assembly, both read }
+{ off a board's rules on AD 26.11.                                          }
+Function IsTestpointStyleKind(Kind : Integer) : Boolean;
+Begin
+    Result := (Kind = 43) Or (Kind = 57);
+End;
+
+{ A Testpoint Style rule: pad and hole sizes, the grid test points snap to, }
+{ spacing and clearances (mils), and whether a test point may sit under a  }
+{ part or must keep to the grid.                                           }
+Function RuleExtrasTestpoint(Board : IPCB_Board; RuleName : String; Params : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_TestPointStyleRule;
+    Keys, Key, ValStr, UnderS, GridS : String;
+    CommaPos, Which : Integer;
+Begin
+    Result := '';
+    UnderS := LowerCase(ExtractJsonValue(Params, 'testpoint_under_component'));
+    GridS := LowerCase(ExtractJsonValue(Params, 'testpoint_use_grid'));
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If IsTestpointStyleKind(R.RuleKind) And (R.Name = RuleName) Then
+            Begin
+                Keys := TestpointKeys(0);
+                Which := 0;
+                While Keys <> '' Do
+                Begin
+                    CommaPos := Pos(',', Keys);
+                    If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+                    Else Begin Key := Copy(Keys, 1, CommaPos - 1); Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+                    ValStr := ExtractJsonValue(Params, Key);
+                    If ValStr <> '' Then
+                    Begin
+                        TestpointSetLength(R, Which, MilsToCoordF(StrToFloatDef(ValStr, 0)));
+                        If Not RuleMilsTook(TestpointLength(R, Which), ValStr) Then
+                            Missed := Missed + '"' + Key + '",';
+                    End;
+                    If Result <> '' Then Result := Result + ',';
+                    Result := Result + '"' + Key + '":' + FloatToJsonStr(CoordToMilsF(TestpointLength(R, Which)));
+                    Inc(Which);
+                End;
+                If UnderS <> '' Then
+                Begin
+                    R.SetState_TestpointUnderComponent(UnderS = 'true');
+                    If R.GetState_TestpointUnderComponent <> (UnderS = 'true') Then
+                        Missed := Missed + '"testpoint_under_component",';
+                End;
+                If GridS <> '' Then
+                Begin
+                    R.SetState_UseGrid(GridS = 'true');
+                    If R.GetState_UseGrid <> (GridS = 'true') Then
+                        Missed := Missed + '"testpoint_use_grid",';
+                End;
+                Result := Result + ',"testpoint_under_component":' + BoolToJsonStr(R.GetState_TestpointUnderComponent)
+                    + ',"testpoint_use_grid":' + BoolToJsonStr(R.GetState_UseGrid);
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ True when Params asks for any Testpoint Style setting. }
+Function TestpointAsked(Params : String) : Boolean;
+Var
+    Keys, Key : String;
+    CommaPos : Integer;
+Begin
+    Result := (ExtractJsonValue(Params, 'testpoint_under_component') <> '')
+        Or (ExtractJsonValue(Params, 'testpoint_use_grid') <> '');
+    Keys := TestpointKeys(0);
+    While (Keys <> '') And (Not Result) Do
+    Begin
+        CommaPos := Pos(',', Keys);
+        If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+        Else Begin Key := Copy(Keys, 1, CommaPos - 1); Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+        If ExtractJsonValue(Params, Key) <> '' Then Result := True;
     End;
 End;
 
@@ -37555,6 +37731,8 @@ Begin
         And (Kind <> 2) Then XBad := 'width_*_impedance and check_connected_copper are for a Width rule';
     If ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> ''))
         And (Kind <> 49) Then XBad := 'fanout_* and bga_* are for a Fanout Control rule';
+    If TestpointAsked(Params) And (Not IsTestpointStyleKind(Kind)) Then
+        XBad := 'testpoint_* is for a Testpoint Style rule';
     If XBad <> '' Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WRONG_RULE_KIND', XBad + '; ' + RuleName + ' is kind ' + IntToStr(Kind));
@@ -37572,6 +37750,8 @@ Begin
         XReport := RuleExtrasAntennae(Board, RuleName, XAnt, XMissed);
     If (Kind = 49) And ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> '')) Then
         XReport := RuleExtrasFanout(Board, RuleName, XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XMissed);
+    If IsTestpointStyleKind(Kind) And TestpointAsked(Params) Then
+        XReport := RuleExtrasTestpoint(Board, RuleName, Params, XMissed);
     If XReport <> '' Then
     Begin
         Inc(UpdatedCount);
@@ -57412,65 +57592,11 @@ End;
 { Params: low_layer, high_layer (layer names, required).                     }
 {..............................................................................}
 
-{ One net's connection-line, loop-removal, colour and jumper settings, and  }
-{ whether it is in a differential pair, as JSON.                            }
-Function NetDisplayJson(Net : IPCB_Net) : String;
-Var
-    Shown, Loops, OwnColour, Jumpers, InPair : Boolean;
-Begin
-    Shown := False; Loops := False; OwnColour := False; Jumpers := False; InPair := False;
-    Try Shown := Net.ConnectsVisible; Except End;
-    Try Loops := Net.LoopRemoval; Except End;
-    Try OwnColour := Net.OverrideColorForDraw; Except End;
-    Try Jumpers := Net.JumpersVisible; Except End;
-    Try InPair := Net.InDifferentialPair; Except End;
-    Result := JsonObj(JsonStr('net', Net.Name) + ','
-        + JsonBool('connections_shown', Shown) + ','
-        + JsonBool('loop_removal', Loops) + ','
-        + JsonBool('use_net_color', OwnColour) + ','
-        + JsonBool('jumpers_shown', Jumpers) + ','
-        + JsonBool('in_differential_pair', InPair));
-End;
-
-{..............................................................................}
-{ PCB_NetDisplay - read, or set, whether nets show their connection lines    }
-{ (ShowNetConnects / HideNetConnects), whether loop removal applies to      }
-{ them (LoopRemoval), whether they draw in their own net colour            }
-{ (OverrideColorForDraw) and whether their jumpers show. Each net is read  }
-{ back.                                                                     }
-{ Params: nets (tab-separated, required), show_connections, loop_removal,   }
-{ use_net_color, show_jumpers ('true' / 'false'; empty = keep).             }
-{..............................................................................}
-
-{ The board's grids in mils as JSON members (no braces). }
-Function BoardGridsJson(Board : IPCB_Board) : String;
-Begin
-    Result := JsonRaw('snap_x', FloatToJsonStr(CoordToMilsF(Board.SnapGridSizeX))) + ','
-        + JsonRaw('snap_y', FloatToJsonStr(CoordToMilsF(Board.SnapGridSizeY))) + ','
-        + JsonRaw('component_x', FloatToJsonStr(CoordToMilsF(Board.ComponentGridSizeX))) + ','
-        + JsonRaw('component_y', FloatToJsonStr(CoordToMilsF(Board.ComponentGridSizeY))) + ','
-        + JsonRaw('track', FloatToJsonStr(CoordToMilsF(Board.TrackGridSize))) + ','
-        + JsonRaw('via', FloatToJsonStr(CoordToMilsF(Board.ViaGridSize))) + ','
-        + JsonRaw('visible', FloatToJsonStr(CoordToMilsF(Board.VisibleGridSize))) + ','
-        + JsonRaw('visible_big', FloatToJsonStr(CoordToMilsF(Board.BigVisibleGridSize))) + ','
-        + JsonBool('dot_grid', Board.DrawDotGrid);
-End;
-
-{..............................................................................}
-{ PCB_SetGrids - read, or set, the board's snap, track, via and visible     }
-{ grids (mils) and whether the visible grid is drawn as dots. Each value is  }
-{ read back; one that did not take is listed in not_applied. The component  }
-{ grid is read only: on AD 26.11 it follows the snap grid, and a value      }
-{ written to it read back as the snap grid (measured).                      }
-{ Params: snap_x, snap_y, track, via, visible, visible_big (mils, more than  }
-{ 0; empty = keep), dot_grid ('true'/'false').                               }
-{..............................................................................}
-
 { BOARD EDITOR PREFERENCES (Preferences > PCB Editor), Altium's own, kept for }
 { every board. Each is read as JSON text: true / false, or a number.         }
 { 'b' a switch, 'f' a number of 0 or more, 'n' a whole number of 0 or more  }
 { (Altium's own numbering for a choice), 'm' a length in mils, 'r' read     }
-{ only, '' not one of these. Undo levels are read only: a write did not    }
+{ only, 't' text, '' not one of these. Undo levels are read only: a write did not }
 { take (measured on AD 26.11, 33 read back as 50).                         }
 Function PcbOptionKind(Name : String) : String;
 Begin
@@ -57486,14 +57612,37 @@ Begin
        (Name = 'SnapToCentre') Or (Name = 'DuplicateDesignatorsAllowed') Or
        (Name = 'AutoPan') Or (Name = 'PlowThroughPolygons') Or
        (Name = 'AutoVia') Or (Name = 'LockPreRoutes') Or
-       (Name = 'DeleteDeadEnds') Or (Name = 'UseSmartTrackEnds') Then Result := 'b'
+       (Name = 'DeleteDeadEnds') Or (Name = 'UseSmartTrackEnds') Or
+       (Name = 'Paste_InSameClass') Or (Name = 'Paste_OnSameLayer') Or
+       (Name = 'Paste_InSameNet') Or (Name = 'Paste_HasSameDesignator') Or
+       (Name = 'RepeatRotateItem') Or (Name = 'RepeatCircular') Or
+       (Name = 'QuestionDelete') Or (Name = 'QuestionGlobalChange') Or
+       (Name = 'QuestionDrag') Or (Name = 'MustHoldShiftToSelect') Or
+       (Name = 'GlobalEditIncludeArcsWithTracks') Or (Name = 'NearestComponent') Or
+       (Name = 'DefaultPrimsPermanent') Or (Name = 'ConfirmSelectionMemoryClear') Or
+       (Name = 'ValidateOnLoad') Or (Name = 'DeleteUnconnectedComps') Or
+       (Name = 'DeleteUnconnectedPrims') Or (Name = 'CheckPatterns') Or
+       (Name = 'CheckComments') Or (Name = 'ShowInvisibleObjects') Or
+       (Name = 'UseTransparent') Or (Name = 'CleanRedraw') Or
+       (Name = 'RedrawLayerOnToggle') Then Result := 'b'
     Else If (Name = 'PlaneDrawMode') Or (Name = 'PadTypesDisplayMode') Or
        (Name = 'FromTosDisplayMode') Or (Name = 'LayerNameDisplayMode') Or
        (Name = 'DragMode') Or (Name = 'ComponentMoveKind') Or
-       (Name = 'InteractiveRouteMode') Or (Name = 'PlaceShoveDepth') Then Result := 'n'
+       (Name = 'InteractiveRouteMode') Or (Name = 'PlaceShoveDepth') Or
+       (Name = 'RepeatCountDefault') Or (Name = 'AutoPanMode') Or
+       (Name = 'AutoPanSmallStep') Or (Name = 'AutoPanLargeStep') Or
+       (Name = 'AutoPanSpeed') Or (Name = 'PolygonThreshold') Or
+       (Name = 'TextToRectSize') Or (Name = 'PadViaMinFontSize') Or
+       (Name = 'BoardAreaColor') Or (Name = 'BoardLineColor') Or
+       (Name = 'SheetAreaColor') Or (Name = 'SheetLineColor') Or
+       (Name = 'PadViaFontColor') Or (Name = 'PadViaFontBkColor') Then Result := 'n'
     Else If Name = 'DraftTrackThreshold' Then Result := 'm'
     Else If Name = 'UndoRedoStackSize' Then Result := 'r'
-    Else If Name = 'RotationStep' Then Result := 'f';
+    Else If (Name = 'RotationStep') Or
+       (Name = 'RepeatDegrees') Or (Name = 'RepeatX') Or
+       (Name = 'RepeatY') Then Result := 'f'
+    Else If (Name = 'RepeatInc') Or (Name = 'PadViaFontName') Or
+       (Name = 'DefaultTTFont') Then Result := 't';
 End;
 
 Function PcbOptionGet(Opts : IPCB_SystemOptions; Name : String) : String;
@@ -57531,7 +57680,50 @@ Begin
     Else If Name = 'PlaceShoveDepth' Then Result := IntToStr(Opts.PlaceShoveDepth)
     Else If Name = 'DraftTrackThreshold' Then Result := FloatToJsonStr(CoordToMilsF(Opts.DraftTrackThreshold))
     Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Opts.UndoRedoStackSize)
-    Else If Name = 'RotationStep' Then Result := FloatToJsonStr(Opts.RotationStep);
+    Else If Name = 'RotationStep' Then Result := FloatToJsonStr(Opts.RotationStep)
+    Else If Name = 'Paste_InSameClass' Then Result := BoolToJsonStr(Opts.Paste_InSameClass)
+    Else If Name = 'Paste_OnSameLayer' Then Result := BoolToJsonStr(Opts.Paste_OnSameLayer)
+    Else If Name = 'Paste_InSameNet' Then Result := BoolToJsonStr(Opts.Paste_InSameNet)
+    Else If Name = 'Paste_HasSameDesignator' Then Result := BoolToJsonStr(Opts.Paste_HasSameDesignator)
+    Else If Name = 'RepeatRotateItem' Then Result := BoolToJsonStr(Opts.RepeatRotateItem)
+    Else If Name = 'RepeatCircular' Then Result := BoolToJsonStr(Opts.RepeatCircular)
+    Else If Name = 'QuestionDelete' Then Result := BoolToJsonStr(Opts.QuestionDelete)
+    Else If Name = 'QuestionGlobalChange' Then Result := BoolToJsonStr(Opts.QuestionGlobalChange)
+    Else If Name = 'QuestionDrag' Then Result := BoolToJsonStr(Opts.QuestionDrag)
+    Else If Name = 'MustHoldShiftToSelect' Then Result := BoolToJsonStr(Opts.MustHoldShiftToSelect)
+    Else If Name = 'GlobalEditIncludeArcsWithTracks' Then Result := BoolToJsonStr(Opts.GlobalEditIncludeArcsWithTracks)
+    Else If Name = 'NearestComponent' Then Result := BoolToJsonStr(Opts.NearestComponent)
+    Else If Name = 'DefaultPrimsPermanent' Then Result := BoolToJsonStr(Opts.DefaultPrimsPermanent)
+    Else If Name = 'ConfirmSelectionMemoryClear' Then Result := BoolToJsonStr(Opts.ConfirmSelectionMemoryClear)
+    Else If Name = 'ValidateOnLoad' Then Result := BoolToJsonStr(Opts.ValidateOnLoad)
+    Else If Name = 'DeleteUnconnectedComps' Then Result := BoolToJsonStr(Opts.DeleteUnconnectedComps)
+    Else If Name = 'DeleteUnconnectedPrims' Then Result := BoolToJsonStr(Opts.DeleteUnconnectedPrims)
+    Else If Name = 'CheckPatterns' Then Result := BoolToJsonStr(Opts.CheckPatterns)
+    Else If Name = 'CheckComments' Then Result := BoolToJsonStr(Opts.CheckComments)
+    Else If Name = 'ShowInvisibleObjects' Then Result := BoolToJsonStr(Opts.ShowInvisibleObjects)
+    Else If Name = 'UseTransparent' Then Result := BoolToJsonStr(Opts.UseTransparent)
+    Else If Name = 'CleanRedraw' Then Result := BoolToJsonStr(Opts.CleanRedraw)
+    Else If Name = 'RedrawLayerOnToggle' Then Result := BoolToJsonStr(Opts.RedrawLayerOnToggle)
+    Else If Name = 'RepeatDegrees' Then Result := FloatToJsonStr(Opts.RepeatDegrees)
+    Else If Name = 'RepeatX' Then Result := FloatToJsonStr(Opts.RepeatX)
+    Else If Name = 'RepeatY' Then Result := FloatToJsonStr(Opts.RepeatY)
+    Else If Name = 'RepeatCountDefault' Then Result := IntToStr(Opts.RepeatCountDefault)
+    Else If Name = 'AutoPanMode' Then Result := IntToStr(Opts.AutoPanMode)
+    Else If Name = 'AutoPanSmallStep' Then Result := IntToStr(Opts.AutoPanSmallStep)
+    Else If Name = 'AutoPanLargeStep' Then Result := IntToStr(Opts.AutoPanLargeStep)
+    Else If Name = 'AutoPanSpeed' Then Result := IntToStr(Opts.AutoPanSpeed)
+    Else If Name = 'PolygonThreshold' Then Result := IntToStr(Opts.PolygonThreshold)
+    Else If Name = 'TextToRectSize' Then Result := IntToStr(Opts.TextToRectSize)
+    Else If Name = 'PadViaMinFontSize' Then Result := IntToStr(Opts.PadViaMinFontSize)
+    Else If Name = 'BoardAreaColor' Then Result := IntToStr(Opts.BoardAreaColor)
+    Else If Name = 'BoardLineColor' Then Result := IntToStr(Opts.BoardLineColor)
+    Else If Name = 'SheetAreaColor' Then Result := IntToStr(Opts.SheetAreaColor)
+    Else If Name = 'SheetLineColor' Then Result := IntToStr(Opts.SheetLineColor)
+    Else If Name = 'PadViaFontColor' Then Result := IntToStr(Opts.PadViaFontColor)
+    Else If Name = 'PadViaFontBkColor' Then Result := IntToStr(Opts.PadViaFontBkColor)
+    Else If Name = 'RepeatInc' Then Result := '"' + EscapeJsonString(Opts.RepeatInc) + '"'
+    Else If Name = 'PadViaFontName' Then Result := '"' + EscapeJsonString(Opts.PadViaFontName) + '"'
+    Else If Name = 'DefaultTTFont' Then Result := '"' + EscapeJsonString(Opts.DefaultTTFont) + '"';
 End;
 
 { Write one, as text from the caller; False when the value is not of the    }
@@ -57557,7 +57749,8 @@ Begin
     Begin
         If Not IsFloatStr(Value) Then Exit;
         F := StrToFloatDef(Value, -1);
-        If F < 0 Then Exit;
+        { A repeat step may run left or down. }
+        If (F < 0) And (Name <> 'RepeatX') And (Name <> 'RepeatY') Then Exit;
     End
     Else If Kind = 'n' Then
     Begin
@@ -57565,7 +57758,7 @@ Begin
         N := StrToInt(Value);
         If N < 0 Then Exit;
     End
-    Else Exit;
+    Else If Kind <> 't' Then Exit;
     If Name = 'ShowPadNets' Then Opts.ShowPadNets := B
     Else If Name = 'ShowPadNumbers' Then Opts.ShowPadNumbers := B
     Else If Name = 'ShowViaNets' Then Opts.ShowViaNets := B
@@ -57597,7 +57790,50 @@ Begin
     Else If Name = 'InteractiveRouteMode' Then Opts.InteractiveRouteMode := N
     Else If Name = 'PlaceShoveDepth' Then Opts.PlaceShoveDepth := N
     Else If Name = 'DraftTrackThreshold' Then Opts.DraftTrackThreshold := MilsToCoordF(F)
-    Else If Name = 'RotationStep' Then Opts.RotationStep := F;
+    Else If Name = 'RotationStep' Then Opts.RotationStep := F
+    Else If Name = 'Paste_InSameClass' Then Opts.Paste_InSameClass := B
+    Else If Name = 'Paste_OnSameLayer' Then Opts.Paste_OnSameLayer := B
+    Else If Name = 'Paste_InSameNet' Then Opts.Paste_InSameNet := B
+    Else If Name = 'Paste_HasSameDesignator' Then Opts.Paste_HasSameDesignator := B
+    Else If Name = 'RepeatRotateItem' Then Opts.RepeatRotateItem := B
+    Else If Name = 'RepeatCircular' Then Opts.RepeatCircular := B
+    Else If Name = 'QuestionDelete' Then Opts.QuestionDelete := B
+    Else If Name = 'QuestionGlobalChange' Then Opts.QuestionGlobalChange := B
+    Else If Name = 'QuestionDrag' Then Opts.QuestionDrag := B
+    Else If Name = 'MustHoldShiftToSelect' Then Opts.MustHoldShiftToSelect := B
+    Else If Name = 'GlobalEditIncludeArcsWithTracks' Then Opts.GlobalEditIncludeArcsWithTracks := B
+    Else If Name = 'NearestComponent' Then Opts.NearestComponent := B
+    Else If Name = 'DefaultPrimsPermanent' Then Opts.DefaultPrimsPermanent := B
+    Else If Name = 'ConfirmSelectionMemoryClear' Then Opts.ConfirmSelectionMemoryClear := B
+    Else If Name = 'ValidateOnLoad' Then Opts.ValidateOnLoad := B
+    Else If Name = 'DeleteUnconnectedComps' Then Opts.DeleteUnconnectedComps := B
+    Else If Name = 'DeleteUnconnectedPrims' Then Opts.DeleteUnconnectedPrims := B
+    Else If Name = 'CheckPatterns' Then Opts.CheckPatterns := B
+    Else If Name = 'CheckComments' Then Opts.CheckComments := B
+    Else If Name = 'ShowInvisibleObjects' Then Opts.ShowInvisibleObjects := B
+    Else If Name = 'UseTransparent' Then Opts.UseTransparent := B
+    Else If Name = 'CleanRedraw' Then Opts.CleanRedraw := B
+    Else If Name = 'RedrawLayerOnToggle' Then Opts.RedrawLayerOnToggle := B
+    Else If Name = 'RepeatDegrees' Then Opts.RepeatDegrees := F
+    Else If Name = 'RepeatX' Then Opts.RepeatX := F
+    Else If Name = 'RepeatY' Then Opts.RepeatY := F
+    Else If Name = 'RepeatCountDefault' Then Opts.RepeatCountDefault := N
+    Else If Name = 'AutoPanMode' Then Opts.AutoPanMode := N
+    Else If Name = 'AutoPanSmallStep' Then Opts.AutoPanSmallStep := N
+    Else If Name = 'AutoPanLargeStep' Then Opts.AutoPanLargeStep := N
+    Else If Name = 'AutoPanSpeed' Then Opts.AutoPanSpeed := N
+    Else If Name = 'PolygonThreshold' Then Opts.PolygonThreshold := N
+    Else If Name = 'TextToRectSize' Then Opts.TextToRectSize := N
+    Else If Name = 'PadViaMinFontSize' Then Opts.PadViaMinFontSize := N
+    Else If Name = 'BoardAreaColor' Then Opts.BoardAreaColor := N
+    Else If Name = 'BoardLineColor' Then Opts.BoardLineColor := N
+    Else If Name = 'SheetAreaColor' Then Opts.SheetAreaColor := N
+    Else If Name = 'SheetLineColor' Then Opts.SheetLineColor := N
+    Else If Name = 'PadViaFontColor' Then Opts.PadViaFontColor := N
+    Else If Name = 'PadViaFontBkColor' Then Opts.PadViaFontBkColor := N
+    Else If Name = 'RepeatInc' Then Opts.RepeatInc := Value
+    Else If Name = 'PadViaFontName' Then Opts.PadViaFontName := Value
+    Else If Name = 'DefaultTTFont' Then Opts.DefaultTTFont := Value;
     Result := True;
 End;
 
@@ -57661,6 +57897,8 @@ Begin
         Got := PcbOptionGet(Opts, Name);
         If (PcbOptionKind(Name) = 'f') Or (PcbOptionKind(Name) = 'm') Then
             Took := Abs(StrToFloatDef(Got, -1) - StrToFloatDef(Value, -2)) < 0.0001
+        Else If PcbOptionKind(Name) = 't' Then
+            Took := Got = '"' + EscapeJsonString(Value) + '"'
         Else
             Took := Got = LowerCase(Value);
         If Not Took Then
@@ -57747,6 +57985,273 @@ Begin
         + JsonBool('automatic_split_planes', Board.AutomaticSplitPlanes) + ','
         + JsonBool('changed', Changed) + ','
         + JsonRaw('not_applied', '[' + NotApplied + ']')));
+End;
+
+{ BOARD OUTPUT SETTINGS, kept in the board: the Gerber setup (group 'gerber', }
+{ Board.GerberOptions) and the print setup (group 'print',                   }
+{ Board.PrinterOptions). 'b' a switch, 'm' a length in mils of 0 or more,    }
+{ 'f' a number of 0 or more, 'n' a whole number of 0 or more (Altium's own   }
+{ numbering for a choice), '' not offered.                                   }
+Function OutputOptionKind(Group : String; Name : String) : String;
+Begin
+    Result := '';
+    If Group = 'gerber' Then
+    Begin
+        If (Name = 'SortOutput') Or (Name = 'UseSoftwareArcs') Or
+           (Name = 'CenterPhotoPlots') Or (Name = 'EmbedApertures') Or
+           (Name = 'Panelize') Or (Name = 'G54') Or
+           (Name = 'ReliefShapesAllowed') Or (Name = 'PadsFlashOnly') Or
+           (Name = 'FlashAllFills') Then Result := 'b'
+        Else If (Name = 'PlusTol') Or (Name = 'MinusTol') Or
+           (Name = 'FilmSizeX') Or (Name = 'FilmSizeY') Or
+           (Name = 'BorderSize') Or (Name = 'MaxAperSize') Then Result := 'm'
+        Else If (Name = 'GerberUnits') Or (Name = 'GerberDecs') Then Result := 'n';
+    End
+    Else If Group = 'print' Then
+    Begin
+        If (Name = 'ShowHoles') Or (Name = 'ScaleToFitPage') Or
+           (Name = 'UsePrinterFonts') Or (Name = 'UseSoftwareArcs') Or
+           (Name = 'PlotPadNets') Or (Name = 'PlotPadNumbers') Then Result := 'b'
+        Else If (Name = 'Scale') Or (Name = 'XCorrect') Or (Name = 'YCorrect') Then Result := 'f'
+        Else If Name = 'cBorderSize' Then Result := 'm'
+        Else If (Name = 'CompositeType') Or (Name = 'BatchType') Then Result := 'n';
+    End;
+End;
+
+Function GerberOptionGet(G : IPCB_GerberOptions; Name : String) : String;
+Begin
+    Result := '';
+    If Name = 'SortOutput' Then Result := BoolToJsonStr(G.SortOutput)
+    Else If Name = 'UseSoftwareArcs' Then Result := BoolToJsonStr(G.UseSoftwareArcs)
+    Else If Name = 'CenterPhotoPlots' Then Result := BoolToJsonStr(G.CenterPhotoPlots)
+    Else If Name = 'EmbedApertures' Then Result := BoolToJsonStr(G.EmbedApertures)
+    Else If Name = 'Panelize' Then Result := BoolToJsonStr(G.Panelize)
+    Else If Name = 'G54' Then Result := BoolToJsonStr(G.G54)
+    Else If Name = 'ReliefShapesAllowed' Then Result := BoolToJsonStr(G.ReliefShapesAllowed)
+    Else If Name = 'PadsFlashOnly' Then Result := BoolToJsonStr(G.PadsFlashOnly)
+    Else If Name = 'FlashAllFills' Then Result := BoolToJsonStr(G.FlashAllFills)
+    Else If Name = 'PlusTol' Then Result := FloatToJsonStr(CoordToMilsF(G.PlusTol))
+    Else If Name = 'MinusTol' Then Result := FloatToJsonStr(CoordToMilsF(G.MinusTol))
+    Else If Name = 'FilmSizeX' Then Result := FloatToJsonStr(CoordToMilsF(G.FilmSizeX))
+    Else If Name = 'FilmSizeY' Then Result := FloatToJsonStr(CoordToMilsF(G.FilmSizeY))
+    Else If Name = 'BorderSize' Then Result := FloatToJsonStr(CoordToMilsF(G.BorderSize))
+    Else If Name = 'MaxAperSize' Then Result := FloatToJsonStr(CoordToMilsF(G.MaxAperSize))
+    Else If Name = 'GerberUnits' Then Result := IntToStr(G.GerberUnits)
+    Else If Name = 'GerberDecs' Then Result := IntToStr(G.GerberDecs);
+End;
+
+Function PrintOptionGet(P : IPCB_PrinterOptions; Name : String) : String;
+Begin
+    Result := '';
+    If Name = 'ShowHoles' Then Result := BoolToJsonStr(P.ShowHoles)
+    Else If Name = 'ScaleToFitPage' Then Result := BoolToJsonStr(P.ScaleToFitPage)
+    Else If Name = 'UsePrinterFonts' Then Result := BoolToJsonStr(P.UsePrinterFonts)
+    Else If Name = 'UseSoftwareArcs' Then Result := BoolToJsonStr(P.UseSoftwareArcs)
+    Else If Name = 'PlotPadNets' Then Result := BoolToJsonStr(P.PlotPadNets)
+    Else If Name = 'PlotPadNumbers' Then Result := BoolToJsonStr(P.PlotPadNumbers)
+    Else If Name = 'Scale' Then Result := FloatToJsonStr(P.Scale)
+    Else If Name = 'XCorrect' Then Result := FloatToJsonStr(P.XCorrect)
+    Else If Name = 'YCorrect' Then Result := FloatToJsonStr(P.YCorrect)
+    Else If Name = 'cBorderSize' Then Result := FloatToJsonStr(CoordToMilsF(P.cBorderSize))
+    Else If Name = 'CompositeType' Then Result := IntToStr(P.CompositeType)
+    Else If Name = 'BatchType' Then Result := IntToStr(P.BatchType);
+End;
+
+{ Write one, as text from the caller; False when the value is not of the    }
+{ option's kind (nothing is written then).                                   }
+Function OutputOptionSet(G : IPCB_GerberOptions; P : IPCB_PrinterOptions; Group : String; Name : String; Value : String) : Boolean;
+Var
+    Kind : String;
+    B : Boolean;
+    F : Double;
+    N : Integer;
+Begin
+    Result := False;
+    Kind := OutputOptionKind(Group, Name);
+    B := False;
+    F := 0;
+    N := 0;
+    If Kind = 'b' Then
+    Begin
+        If LowerCase(Value) = 'true' Then B := True
+        Else If LowerCase(Value) <> 'false' Then Exit;
+    End
+    Else If (Kind = 'f') Or (Kind = 'm') Then
+    Begin
+        If Not IsFloatStr(Value) Then Exit;
+        F := StrToFloatDef(Value, -1);
+        If F < 0 Then Exit;
+    End
+    Else If Kind = 'n' Then
+    Begin
+        If Not IsIntStr(Value) Then Exit;
+        N := StrToInt(Value);
+        If N < 0 Then Exit;
+    End
+    Else Exit;
+    If Group = 'gerber' Then
+    Begin
+        If Name = 'SortOutput' Then G.SortOutput := B
+        Else If Name = 'UseSoftwareArcs' Then G.UseSoftwareArcs := B
+        Else If Name = 'CenterPhotoPlots' Then G.CenterPhotoPlots := B
+        Else If Name = 'EmbedApertures' Then G.EmbedApertures := B
+        Else If Name = 'Panelize' Then G.Panelize := B
+        Else If Name = 'G54' Then G.G54 := B
+        Else If Name = 'ReliefShapesAllowed' Then G.ReliefShapesAllowed := B
+        Else If Name = 'PadsFlashOnly' Then G.PadsFlashOnly := B
+        Else If Name = 'FlashAllFills' Then G.FlashAllFills := B
+        Else If Name = 'PlusTol' Then G.PlusTol := MilsToCoordF(F)
+        Else If Name = 'MinusTol' Then G.MinusTol := MilsToCoordF(F)
+        Else If Name = 'FilmSizeX' Then G.FilmSizeX := MilsToCoordF(F)
+        Else If Name = 'FilmSizeY' Then G.FilmSizeY := MilsToCoordF(F)
+        Else If Name = 'BorderSize' Then G.BorderSize := MilsToCoordF(F)
+        Else If Name = 'MaxAperSize' Then G.MaxAperSize := MilsToCoordF(F)
+        Else If Name = 'GerberUnits' Then G.GerberUnits := N
+        Else If Name = 'GerberDecs' Then G.GerberDecs := N;
+    End
+    Else
+    Begin
+        If Name = 'ShowHoles' Then P.ShowHoles := B
+        Else If Name = 'ScaleToFitPage' Then P.ScaleToFitPage := B
+        Else If Name = 'UsePrinterFonts' Then P.UsePrinterFonts := B
+        Else If Name = 'UseSoftwareArcs' Then P.UseSoftwareArcs := B
+        Else If Name = 'PlotPadNets' Then P.PlotPadNets := B
+        Else If Name = 'PlotPadNumbers' Then P.PlotPadNumbers := B
+        Else If Name = 'Scale' Then P.Scale := F
+        Else If Name = 'XCorrect' Then P.XCorrect := F
+        Else If Name = 'YCorrect' Then P.YCorrect := F
+        Else If Name = 'cBorderSize' Then P.cBorderSize := MilsToCoordF(F)
+        Else If Name = 'CompositeType' Then P.CompositeType := N
+        Else If Name = 'BatchType' Then P.BatchType := N;
+    End;
+    Result := True;
+End;
+
+{..............................................................................}
+{ PCB_OutputOptions - read, or set, the board's Gerber or print settings by   }
+{ name. Params: group ('gerber' or 'print'), names (comma-separated, to      }
+{ read), set ('Name=Value|Name=Value'). Every option set is read back: one   }
+{ that reads otherwise is in not_applied, a value of the wrong kind in       }
+{ refused, a name not offered in unknown.                                    }
+{..............................................................................}
+Function PCB_OutputOptions(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    G : IPCB_GerberOptions;
+    P : IPCB_PrinterOptions;
+    Group, Names, SetStr, Item, Name, Value, Items, NotApplied, Refused, Unknown, Got, Kind : String;
+    ExpectedPath : String;
+    CommaPos, PipePos, EqPos : Integer;
+    Changed, Took : Boolean;
+Begin
+    Group := LowerCase(ExtractJsonValue(Params, 'group'));
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Names := ExtractJsonValue(Params, 'names');
+    SetStr := ExtractJsonValue(Params, 'set');
+    If (Group <> 'gerber') And (Group <> 'print') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'group is gerber or print');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    If (ExpectedPath = '') Or (UpperCase(Board.FileName) <> UpperCase(ExpectedPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'An exact active board_path is required for board output options');
+        Exit;
+    End;
+    G := Nil;
+    P := Nil;
+    If Group = 'gerber' Then
+    Begin
+        Try G := Board.GerberOptions; Except G := Nil; End;
+    End
+    Else
+    Begin
+        Try P := Board.PrinterOptions; Except P := Nil; End;
+    End;
+    If (G = Nil) And (P = Nil) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_OPTIONS', 'Could not reach the board''s ' + Group + ' settings');
+        Exit;
+    End;
+    Items := ''; NotApplied := ''; Refused := ''; Unknown := '';
+    Changed := False;
+    While SetStr <> '' Do
+    Begin
+        PipePos := Pos('|', SetStr);
+        If PipePos = 0 Then Begin Item := SetStr; SetStr := ''; End
+        Else Begin Item := Copy(SetStr, 1, PipePos - 1); SetStr := Copy(SetStr, PipePos + 1, Length(SetStr)); End;
+        EqPos := Pos('=', Item);
+        If EqPos = 0 Then Continue;
+        Name := Trim(Copy(Item, 1, EqPos - 1));
+        Value := Trim(Copy(Item, EqPos + 1, Length(Item)));
+        Kind := OutputOptionKind(Group, Name);
+        If Kind = '' Then
+        Begin
+            If Unknown <> '' Then Unknown := Unknown + ',';
+            Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        If Not OutputOptionSet(G, P, Group, Name, Value) Then
+        Begin
+            If Refused <> '' Then Refused := Refused + ',';
+            Refused := Refused + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        Changed := True;
+        If Group = 'gerber' Then Got := GerberOptionGet(G, Name)
+        Else Got := PrintOptionGet(P, Name);
+        If (Kind = 'f') Or (Kind = 'm') Then
+            Took := Abs(StrToFloatDef(Got, -1) - StrToFloatDef(Value, -2)) < 0.01
+        Else
+            Took := Got = LowerCase(Value);
+        If Not Took Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"' + Name + '"';
+        End;
+        If Pos(',' + Name + ',', ',' + Names + ',') = 0 Then
+        Begin
+            If Names <> '' Then Names := Names + ',';
+            Names := Names + Name;
+        End;
+    End;
+    While Names <> '' Do
+    Begin
+        CommaPos := Pos(',', Names);
+        If CommaPos = 0 Then Begin Name := Names; Names := ''; End
+        Else Begin Name := Copy(Names, 1, CommaPos - 1); Names := Copy(Names, CommaPos + 1, Length(Names)); End;
+        Name := Trim(Name);
+        If Name = '' Then Continue;
+        If OutputOptionKind(Group, Name) = '' Then
+        Begin
+            If Pos('"' + Name + '"', Unknown) = 0 Then
+            Begin
+                If Unknown <> '' Then Unknown := Unknown + ',';
+                Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            End;
+            Continue;
+        End;
+        If Group = 'gerber' Then Got := GerberOptionGet(G, Name)
+        Else Got := PrintOptionGet(P, Name);
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + Name + '":' + Got;
+    End;
+    If Changed Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board', Board.FileName) + ','
+        + JsonStr('group', Group) + ','
+        + JsonRaw('options', '{' + Items + '}') + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonRaw('not_applied', '[' + NotApplied + ']') + ','
+        + JsonRaw('refused', '[' + Refused + ']') + ','
+        + JsonRaw('unknown', '[' + Unknown + ']')));
 End;
 
 {..............................................................................}
@@ -62991,6 +63496,7 @@ Begin
         'impedance_profile':    Result := PCB_ImpedanceProfile(Params, RequestId);
         'impedance_profile_layer': Result := PCB_ImpedanceProfileLayer(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
+        'output_options':          Result := PCB_OutputOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
@@ -71837,10 +72343,13 @@ Begin
        (Name = 'ExpandNetLabelsText') Or (Name = 'ExpandPortsName') Or
        (Name = 'ExpandSheetNumber') Or (Name = 'ExpandDocumentNumber') Or
        (Name = 'WatermarkReadOnlySheet') Or (Name = 'AlwaysDrag') Or
-       (Name = 'DisplayPrinterFonts') Then Result := 'b'
+       (Name = 'DisplayPrinterFonts') Or (Name = 'StringIncRemoveLeadingZero') Or
+       (Name = 'CtrlDbleClickGoesDown') Or (Name = 'ConfirmSelectionMemoryClear') Or
+       (Name = 'AllowDeviceSheetEditing') Or (Name = 'WatermarkDeviceSheet') Then Result := 'b'
     Else If (Name = 'HotSpotGridDistance') Or (Name = 'UndoRedoStackSize') Or
        (Name = 'PinNameMargin') Or (Name = 'PinNumberMargin') Or
-       (Name = 'MultiPartNamingMethod') Then Result := 'i'
+       (Name = 'MultiPartNamingMethod') Or (Name = 'CutterGridSizeMultiple') Or
+       (Name = 'CutterFixedLength') Or (Name = 'PhysicalViewDimLevel') Then Result := 'i'
     Else If (Name = 'StringIncA') Or (Name = 'StringIncB') Or
        (Name = 'DefaultPowerGndName') Or (Name = 'DefaultSignalGndName') Or
        (Name = 'DefaultEarthName') Or (Name = 'DefaultTemplateFileName') Then Result := 't';
@@ -71869,6 +72378,14 @@ Begin
     Else If Name = 'WatermarkReadOnlySheet' Then Result := BoolToJsonStr(Prefs.WatermarkReadOnlySheet)
     Else If Name = 'AlwaysDrag' Then Result := BoolToJsonStr(Prefs.AlwaysDrag)
     Else If Name = 'DisplayPrinterFonts' Then Result := BoolToJsonStr(Prefs.DisplayPrinterFonts)
+    Else If Name = 'StringIncRemoveLeadingZero' Then Result := BoolToJsonStr(Prefs.StringIncRemoveLeadingZero)
+    Else If Name = 'CtrlDbleClickGoesDown' Then Result := BoolToJsonStr(Prefs.CtrlDbleClickGoesDown)
+    Else If Name = 'ConfirmSelectionMemoryClear' Then Result := BoolToJsonStr(Prefs.ConfirmSelectionMemoryClear)
+    Else If Name = 'AllowDeviceSheetEditing' Then Result := BoolToJsonStr(Prefs.AllowDeviceSheetEditing)
+    Else If Name = 'WatermarkDeviceSheet' Then Result := BoolToJsonStr(Prefs.WatermarkDeviceSheet)
+    Else If Name = 'CutterGridSizeMultiple' Then Result := IntToStr(Prefs.CutterGridSizeMultiple)
+    Else If Name = 'CutterFixedLength' Then Result := IntToStr(Prefs.CutterFixedLength)
+    Else If Name = 'PhysicalViewDimLevel' Then Result := IntToStr(Prefs.PhysicalViewDimLevel)
     Else If Name = 'HotSpotGridDistance' Then Result := IntToStr(Prefs.HotSpotGridDistance)
     Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Prefs.UndoRedoStackSize)
     Else If Name = 'PinNameMargin' Then Result := IntToStr(Prefs.PinNameMargin)
@@ -71924,6 +72441,14 @@ Begin
     Else If Name = 'WatermarkReadOnlySheet' Then Prefs.WatermarkReadOnlySheet := B
     Else If Name = 'AlwaysDrag' Then Prefs.AlwaysDrag := B
     Else If Name = 'DisplayPrinterFonts' Then Prefs.DisplayPrinterFonts := B
+    Else If Name = 'StringIncRemoveLeadingZero' Then Prefs.StringIncRemoveLeadingZero := B
+    Else If Name = 'CtrlDbleClickGoesDown' Then Prefs.CtrlDbleClickGoesDown := B
+    Else If Name = 'ConfirmSelectionMemoryClear' Then Prefs.ConfirmSelectionMemoryClear := B
+    Else If Name = 'AllowDeviceSheetEditing' Then Prefs.AllowDeviceSheetEditing := B
+    Else If Name = 'WatermarkDeviceSheet' Then Prefs.WatermarkDeviceSheet := B
+    Else If Name = 'CutterGridSizeMultiple' Then Prefs.CutterGridSizeMultiple := N
+    Else If Name = 'CutterFixedLength' Then Prefs.CutterFixedLength := N
+    Else If Name = 'PhysicalViewDimLevel' Then Prefs.PhysicalViewDimLevel := N
     Else If Name = 'HotSpotGridDistance' Then Prefs.HotSpotGridDistance := N
     Else If Name = 'UndoRedoStackSize' Then Prefs.UndoRedoStackSize := N
     Else If Name = 'PinNameMargin' Then Prefs.PinNameMargin := N
@@ -72087,6 +72612,106 @@ Begin
         + JsonInt('wires_after', WiresAfter) + ','
         + JsonInt('vertices_before', VertsBefore) + ','
         + JsonInt('vertices_after', VertsAfter)));
+End;
+
+{..............................................................................}
+{ Gen_ReferenceZones - the border zone ('B3') each part, net label, port,     }
+{ power port, sheet symbol and off-sheet connector sits in on the active    }
+{ sheet, the way a printed drawing is read. The zone is Altium's own answer }
+{ (ISch_Document.ObjectReferenceZone); a sheet without zones answers ''.    }
+{ Params: kinds (comma-separated: component, net_label, port, power_port,  }
+{ sheet_symbol, cross_sheet; empty = all).                                 }
+{..............................................................................}
+Function Gen_ReferenceZones(Params : String; RequestId : String) : String;
+Var
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Comp : ISch_Component;
+    Lbl : ISch_NetLabel;
+    Port : ISch_Port;
+    Pwr : ISch_PowerObject;
+    Sym : ISch_SheetSymbol;
+    Kinds, Kind, Text, Zone, Items : String;
+    Oid, Count : Integer;
+Begin
+    Kinds := LowerCase(ExtractJsonValue(Params, 'kinds'));
+    If Kinds = '' Then Kinds := 'component,net_label,port,power_port,sheet_symbol,cross_sheet';
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    Items := '';
+    Count := 0;
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent, eNetLabel, ePort, ePowerObject,
+            eSheetSymbol, eCrossSheetConnector));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Oid := Obj.ObjectId;
+            Kind := '';
+            Text := '';
+            If Oid = eSchComponent Then
+            Begin
+                Comp := Obj;
+                Kind := 'component';
+                Try Text := Comp.Designator.Text; Except End;
+            End
+            Else If Oid = eNetLabel Then
+            Begin
+                Lbl := Obj;
+                Kind := 'net_label';
+                Text := Lbl.Text;
+            End
+            Else If Oid = ePort Then
+            Begin
+                Port := Obj;
+                Kind := 'port';
+                Text := Port.Name;
+            End
+            Else If Oid = ePowerObject Then
+            Begin
+                Pwr := Obj;
+                Kind := 'power_port';
+                Text := Pwr.Text;
+            End
+            Else If Oid = eCrossSheetConnector Then
+            Begin
+                Pwr := Obj;
+                Kind := 'cross_sheet';
+                Text := Pwr.Text;
+            End
+            Else If Oid = eSheetSymbol Then
+            Begin
+                Sym := Obj;
+                Kind := 'sheet_symbol';
+                Try Text := Sym.SheetName.Text; Except End;
+            End;
+            If (Kind <> '') And (Pos(',' + Kind + ',', ',' + Kinds + ',') > 0) Then
+            Begin
+                Zone := '';
+                Try Zone := SchDoc.ObjectReferenceZone(Obj); Except Zone := ''; End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonStr('kind', Kind) + ','
+                    + JsonStr('text', Text) + ','
+                    + JsonStr('zone', Zone) + ','
+                    + JsonRaw('x', FloatToJsonStr(CoordToMilsF(Obj.Location.X))) + ','
+                    + JsonRaw('y', FloatToJsonStr(CoordToMilsF(Obj.Location.Y))));
+                Inc(Count);
+            End;
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('sheet', SchDoc.DocumentName) + ','
+        + JsonInt('count', Count) + ','
+        + JsonRaw('objects', '[' + Items + ']')));
 End;
 
 {..............................................................................}
@@ -79541,6 +80166,7 @@ Begin
         'set_grid':         Result := Gen_SetGrid(Params, RequestId);
         'sch_editor_options': Result := Gen_SchEditorOptions(Params, RequestId);
         'optimize_wires':   Result := Gen_OptimizeWires(Params, RequestId);
+        'reference_zones':  Result := Gen_ReferenceZones(Params, RequestId);
         'set_sch_units':    Result := Gen_SetSchUnits(Params, RequestId);
         'place_image':      Result := Gen_PlaceImage(Params, RequestId);
         'replace_component': Result := Gen_ReplaceComponent(Params, RequestId);

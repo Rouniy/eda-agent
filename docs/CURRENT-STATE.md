@@ -2,6 +2,23 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Fresh `upstream/main` advanced to `40814badc695813157fd8c50d24feafc5a553fcd`
+while this session was running. The new commit is being merged as an
+explicit parent of `main`. Script `.77` (bundle Git blob
+`3348cbab59037ef324c9d76a87564c4909eea0c3`) is loaded in Altium
+26.11.1.5 with zero cast errors. On the disposable PcbDoc, exact-board
+Gerber and print setup reads returned units/decimals and scale/fit settings;
+a wrong board path was rejected. On the loaded schematic,
+`sch_reference_zones` returned 147 component/port locations and their
+native border zones. The disposable PCB was refocused after that read.
+The merge also brings Testpoint Style rule settings and paste-array
+preferences. The already reviewed exact-board net-display and grid
+commands remain in place; upstream's newly added colour/project sync and
+grid factor/unit extensions still need their existing preconditioned
+contracts reconciled before exposing those arguments. Expanded PCB editor
+preference arguments likewise remain to port. The owner PCB hash remains
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
 The current source candidate is script `.76` (bundle Git blob
 `8ddab41edc39cffabf14aac92a2e0d9f339fd61f`); Altium 26.11.1.5
 answered `application.ping` with `.76` and zero cast errors. The
@@ -23,10 +40,9 @@ Altium PID 29396, HTTP MCP 14701 and TCP relay 14700 are listening.
 `f339ee53e2643f1e222015028cb239b9fb9ede58` is the last reviewed
 feature/acceptance commit; later ledger commits may advance `main`.
 Use `git rev-parse main origin/main` for the live heads.
-The exact upstream synchronization point remains
-`9ee593ea0dce989bf3bfc97d0c982044ed41badb`: it is both the
-`upstream/main` tip fetched this day and `git merge-base main upstream/main`.
-There are zero newer upstream commits outside our history. The direct child
+The earlier upstream synchronization point was
+`9ee593ea0dce989bf3bfc97d0c982044ed41badb`; the fresh tip is
+`40814badc695813157fd8c50d24feafc5a553fcd`. The direct child
 fork `MOREmbedded/main` is `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`;
 its 33 divergent commits are Git ancestry, not a count of missing features.
 

@@ -1,5 +1,17 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Later upstream tip in this session
+
+`git fetch upstream main` advanced `upstream/main` from `9ee593e` to
+`40814badc695813157fd8c50d24feafc5a553fcd`, one new commit. An
+explicit merge into `Rouniy/main` is being completed with our exact-board
+guards retained. Its new Gerber/print settings, paste preferences,
+Testpoint Style fields and schematic border-zone reader are present in
+script `.77`. A read of both output groups on the isolated PcbDoc and a
+147-object schematic zone read passed in Altium 26.11.1.5. Net-colour
+sync, grid factor/unit controls and further PCB editor options still need
+adaptation to our existing preconditioned commands; see `TODO.md`.
+
 ## Current remote-tip check
 
 After `f339ee5` was pushed, `git fetch` kept `upstream/main` at
