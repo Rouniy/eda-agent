@@ -1,5 +1,14 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Legacy wrapper suite reconciliation
+
+The seven remaining stale calls in `test_added_altium_tools.py` were
+reconciled with exact-board and preflight wrappers. Obsolete direct-send
+assertions were removed where focused tests cover read, plan, write and
+identity guards. Native Pascal assertions with distinct coverage remain.
+The combined legacy and focused suites pass: 129 tests. This is source
+qualification; the shared Altium runtime still has the older loaded script.
+
 ## Fractional-mil annotation follow-up
 
 The residual decimal-mil audit found that `Proj_Annotate` converted

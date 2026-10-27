@@ -6,8 +6,9 @@
   Python and native Pascal. Script `.110` passes 17 related tests and
   Pascal lint/build. The old behavior would select all despite names.
 - [ ] Qualify the refusal against `.110` in Altium on a disposable board.
-- [ ] Finish updating seven remaining stale cases in
-  `test_added_altium_tools.py`; focused suites for the affected tools pass.
+- [x] Reconcile the seven remaining stale cases in
+  `test_added_altium_tools.py` with the exact-board/preflight wrappers.
+  The combined legacy and focused suites pass (129 tests).
 
 ## Exact-board net inventory, 2026-10-27
 

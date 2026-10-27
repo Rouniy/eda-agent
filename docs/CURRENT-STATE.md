@@ -6,9 +6,8 @@
 in both Python and Pascal. Previously Pascal ignored the names and
 deleted all xSignals. Source `.110` passes 17 related tests; Pascal
 lint/build scanned 12 units with zero errors or warnings. The legacy
-`test_added_altium_tools.py` still has seven stale wrapper-contract
-cases after eight were reconciled; dedicated suites for those tools
-pass. A live `eda-agent doctor --json` check found Altium responsive
+`test_added_altium_tools.py` and the focused suites for its migrated
+wrappers now pass together (129 tests). A live `eda-agent doctor --json` check found Altium responsive
 with loaded `.96` and source `.109` before this change. A subsequent
 open-document read listed 181 documents and zero reported modified
 flags, so `.110` has not been loaded or natively checked.
@@ -22,9 +21,8 @@ same path for its net inventory and rejects a mismatched reply before
 planning any colour write. Previously it read whichever PCB was current.
 Eight focused tests pass; Pascal lint/build scanned 12 units with zero
 errors or warnings. Native two-board acceptance awaits script `.109`.
-The broader legacy `test_added_altium_tools.py` has pre-existing calls
-without newly required `board_path` arguments and is not a qualification
-of this change.
+The broader legacy `test_added_altium_tools.py` has been reconciled with
+the exact-board wrapper contracts; native qualification is still pending.
 
 ## Fractional schematic placements, 2026-10-27
 
