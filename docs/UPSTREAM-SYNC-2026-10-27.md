@@ -172,6 +172,11 @@ The two-parent merge `f71a076` records that upstream point in history.
 `MOREmbedded/main` remains `032fb4b`; it is the only child fork returned by
 the GitHub API for `Rouniy/eda-agent`. The upstream fork network was checked
 again on October 27. `RHSvekon/main` equals the upstream tip and adds no code.
+The child fork of MOREmbedded is `slatyb/eda-agent` at `6197a5c`;
+its tip is an ancestor of `MOREmbedded/main` with zero additional commits.
+Fresh October 27 fetches left `upstream/main` at `9ee593e` and
+`MOREmbedded/main` at `032fb4b`, so the recorded upstream merge base remains
+current at this check.
 
 The `vanlong2109` branch `feat/dblib-placement` (`476d75e`) supplied
 bulk database-library placement; the repository already had a singular
