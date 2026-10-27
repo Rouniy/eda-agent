@@ -252,7 +252,7 @@ INTERACTION_OVERRIDES = {
     # Batch DRC runs without a dialog by default. allow_modal=True still
     # opens the Design Rule Checker and can block the bridge.
     "pcb_run_drc": SILENT,
-    "proj_export_pdf": SILENT,        # legacy refusal now; export contract may write later
+    "proj_export_pdf": READONLY,      # legacy entry point only returns a refusal
     "proj_export_schematic_pdf": SILENT,  # disposable project and PDF under _screens
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and
@@ -300,7 +300,7 @@ INTERACTION_OVERRIDES = {
     # "parts" category is offline, and offline falls back to READONLY,
     # which would advertise a tool that touches the filesystem as
     # read-only. Every other file-writing tool here (lib_easyeda_import,
-    # lib_extract_cse_zip, proj_export_pdf, pcb_render_svg) is SILENT,
+    # lib_extract_cse_zip, pcb_render_svg) is SILENT,
     # so match them. part_search never writes and stays readonly.
     "part_fetch": SILENT,
     # Writes the downloaded PDF and its sidecar into the workspace cache.

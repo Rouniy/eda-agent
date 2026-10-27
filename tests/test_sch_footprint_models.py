@@ -70,12 +70,14 @@ def test_placement_chooses_the_named_model_and_warns_on_a_miss():
 
 
 def test_the_component_properties_are_gated_to_components():
-    for name in ("GetSchProperty", "SetSchProperty"):
-        body = _body(name)
-        branch = body[body.index("(PropName = 'DisplayMode') Or"):]
-        branch = branch[:branch.index("Else If PropName = 'FontId'")] \
-            if "Else If PropName = 'FontId'" in branch else branch[:1500]
-        assert "eSchComponent" in branch
+    getter = _body("GetSchProperty")
+    read = getter[getter.index("Else If (PropName = 'DisplayMode') Or"):]
+    read = read[:read.index("Else If (PropName = 'Designator') Or")]
+    assert "If Obj.ObjectId = eSchComponent Then" in read
+    setter = _body("SetSchProperty")
+    write = setter[setter.index("Else If PropName = 'DisplayMode' Then"):]
+    write = write[:write.index("Else If PropName = 'FootprintPinMap' Then")]
+    assert "If Obj.ObjectId = eSchComponent Then" in write
     pre = _body("UnsupportedSchProperty")
     assert "(PropName = 'FootprintPinMap'))" in pre and "eSchComponent" in pre
     setter = _body("SetSchProperty")

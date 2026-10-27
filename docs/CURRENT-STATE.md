@@ -1,5 +1,14 @@
 # Current integration state / agent handoff
 
+## Footprint and export source checks, 2026-10-27
+
+The extended footprint/relink verification now passes 48 tests with one
+optional skip. Its older component-property test was updated to inspect
+the separate read and write guards actually used by `Generic.pas`.
+`proj_export_pdf` is classified read-only because its current handler only
+returns `PREVIEW_NOT_SILENT`; the working PDF exporter remains
+`proj_export_schematic_pdf`.
+
 ## Placed footprint name mirror, 2026-10-27
 
 Source `.104` adapts the `wizd/edev` model-name mirror: choosing an

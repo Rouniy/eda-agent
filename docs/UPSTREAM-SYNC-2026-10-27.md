@@ -1,5 +1,12 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Follow-up source verification
+
+The footprint/relink suites now pass 48 tests with one optional skip.
+One old test assumed read and write branches for `DisplayMode` had the
+same text; both are guarded by `eSchComponent` in the current source.
+The refusal-only `proj_export_pdf` handler now has read-only metadata.
+
 ## Placed footprint name mirror
 
 `wizd/edev` mirrors the selected PCBLIB ModelName onto the placed part's

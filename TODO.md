@@ -1,5 +1,12 @@
 # Fork integration TODO
 
+## Footprint and export source checks, 2026-10-27
+
+- [x] Recheck the two failures in the extended footprint suite. The
+  component property test used a stale identical-branch assumption;
+  `proj_export_pdf`'s metadata incorrectly labeled its refusal-only
+  handler as a writing operation. Updated both; 48 pass, one optional skip.
+
 ## Placed footprint name mirror, 2026-10-27
 
 - [x] Adapt `wizd/edev`'s `Footprint` parameter mirror when choosing or
