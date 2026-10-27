@@ -1217,6 +1217,24 @@ class AltiumBridge:
                            "after %s (last command %s)", command, last)
         return shown
 
+    def _with_outdated_note(self, command: str, data: Any) -> Any:
+        """Periodically flag replies from a server older than Altium's script."""
+        if command == "application.ping" or not isinstance(data, dict):
+            return data
+        if (not self._loop_script_version
+                or self._loop_script_version == STARTED_WITH_VERSION):
+            return data
+        now = time.monotonic()
+        if (self._outdated_noted_at
+                and now - self._outdated_noted_at < _OUTDATED_NOTE_EVERY_S):
+            return data
+        note = outdated_note(STARTED_WITH_VERSION, self._loop_script_version,
+                             bundled_script_version())
+        if not note:
+            return data
+        self._outdated_noted_at = now
+        return {**data, "server_outdated": note}
+
     def _withdraw_or_warn(self, request: CommandRequest,
                           exc: AltiumTimeoutError) -> None:
         """Withdraw a timed-out request if Altium has not read it yet."""
@@ -1288,6 +1306,9 @@ class AltiumBridge:
             logger.info("Command %s succeeded", command)
             self._clear_fault_if_any(workspace_dir)
             data = _with_envelope_notes(response.data, response)
+            if command == "application.ping" and isinstance(data, dict):
+                self._loop_script_version = str(data.get("script_version") or "")
+            data = self._with_outdated_note(command, data)
             if shown and isinstance(data, dict):
                 data = dict(data)
                 data["altium_window_shown_again"] = (
@@ -1462,10 +1483,19 @@ class AltiumBridge:
         if not _unpinned(command, params):
             self._session_doc = next_session_doc(
                 self._session_doc, command, params, response)
+        shown = self._reshow_hidden_frame(command, request.id)
         if response.success:
             self._clear_fault_if_any(workspace_dir)
-            return self._maybe_attach_detach_hint(
-                command, _with_envelope_notes(response.data, response))
+            data = _with_envelope_notes(response.data, response)
+            if command == "application.ping" and isinstance(data, dict):
+                self._loop_script_version = str(data.get("script_version") or "")
+            data = self._with_outdated_note(command, data)
+            if shown and isinstance(data, dict):
+                data = {**data, "altium_window_shown_again":
+                        "Altium's main window was hidden and has been shown "
+                        "again. bridge_trace.log has a FRAME_SHOWN line naming "
+                        "what ran before it."}
+            return self._maybe_attach_detach_hint(command, data)
         error = response.error or {}
         raise_for_code(
             error.get("code", "UNKNOWN_ERROR"),
@@ -1506,7 +1536,9 @@ class AltiumBridge:
         if timeout is None:
             timeout = self.config.poll_timeout
         self._ensure_keepalive()
-        return await self._execute_command_async(
+        _trace_log(self.config.workspace_dir,
+                   f"CALL cmd={command} tag={_SESSION_TAG}")
+        result = await self._execute_command_async(
             command,
             one_spelling(params or {}),
             timeout,
@@ -1514,8 +1546,7 @@ class AltiumBridge:
         )
         if _wants_board_in_view(command):
             try:
-                await loop.run_in_executor(
-                    _executor, self._execute_command,
+                await self._execute_command_async(
                     "generic.zoom", {"action": "board"}, 10.0)
             except Exception:  # a view nicety never fails the call it follows
                 pass

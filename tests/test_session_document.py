@@ -188,6 +188,31 @@ def test_async_commands_keep_their_session_document(wired, monkeypatch):
     assert result["session_document"]["restored"] == r"C:\A\a.PcbDoc"
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_a_newer_compiled_script_marks_subsequent_server_replies(
+        wired, monkeypatch, asynchronous):
+    import asyncio
+
+    bridge, box = wired
+    monkeypatch.setattr(ab, "STARTED_WITH_VERSION", "old")
+    monkeypatch.setattr(ab, "bundled_script_version", lambda: "new")
+    box.replies = [_reply(data={"script_version": "new"}),
+                   _reply(data={"nets": []})]
+    if asynchronous:
+        async def poll(request_id, timeout, max_extensions=None):
+            return box.replies.pop(0)
+        monkeypatch.setattr(bridge, "_poll_response_async", poll)
+
+        async def calls():
+            await bridge._execute_command_async("application.ping", {}, 5)
+            return await bridge._execute_command_async("pcb.get_nets", {}, 5)
+        result = asyncio.run(calls())
+    else:
+        bridge._execute_command("application.ping", {}, 5)
+        result = bridge._execute_command("pcb.get_nets", {}, 5)
+    assert "server_outdated" in result
+
+
 def test_the_public_tool_asks_for_what_is_really_in_front(monkeypatch):
     from eda_agent.tools import application as app_tools
 

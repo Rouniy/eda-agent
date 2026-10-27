@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## MOREmbedded bridge reply parity, 2026-10-27
+
+- [x] Restore stale-server reply warnings and the optional fit-board call
+  after async edits; add hidden-frame recovery to async replies. Forty-three
+  focused tests pass.
+- [ ] Verify those behaviors in a controlled native Altium session without
+  interrupting another client's active command.
+
 ## MOREmbedded ECO and UI recovery, 2026-10-27
 
 - [x] Check every copy of a repeated pad name after ECO and refuse to call

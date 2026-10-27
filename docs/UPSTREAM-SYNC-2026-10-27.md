@@ -1,5 +1,34 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Refreshed Git and function inventory
+
+After a fresh fetch, `upstream/main` is still
+`fbf72a78254cb0573fb75e71600f5850e38421a0`. That exact commit is the
+merge base with `Rouniy/main`, and `main..upstream/main` contains zero
+commits. `MOREmbedded/main` remains
+`032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`. The live fork verifier
+found 62/62 default tips and 117/117 branches matching cached refs.
+An AST scan of changed Python source in 111 cached fork refs found 21
+function names absent from `main` before the bridge port below. Most are
+equivalent methods with other names (the singular `lib_add_pin` and
+`lib_add_symbol_line` versus our batch writers, and the donor's
+`via_loop_inductance` versus `pcb_calc_via_inductance`). The donor's
+`_prjscr_is_ad25_safe` rejects headers present in this AD26 script project,
+so importing it would make this main-directory installation fail. Name
+coverage is a triage aid, not proof of behavioral parity.
+
+## MOREmbedded bridge reply and view recovery
+
+The donor's `_with_outdated_note` had been lost while the surrounding
+version tracking remained. Both sync and async native replies now refresh
+the compiled script version on ping and periodically warn when a long-lived
+Python server predates the compiled script. Async calls also restore a
+hidden Altium frame after a reply, as sync calls already did. The optional
+`EDA_AGENT_KEEP_BOARD_IN_VIEW` action was unreachable after the async
+refactor; it now fits the board after a successful edit when enabled.
+Forty-three restart, session-document and fit-view tests passed. This is
+Python bridge code; native acceptance is pending a controlled session.
+
 ## MOREmbedded ECO verification and hidden menu window
 
 The shared-file review found two MOREmbedded behaviors missing from `main`.
