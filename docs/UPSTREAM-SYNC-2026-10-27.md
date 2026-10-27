@@ -76,6 +76,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | Upstream `bb06837` (net display) | Read and batch-set four per-net display flags on an exact PcbDoc, with old-state preflight, dry-run plan and readback | Six related tests, Pascal lint/build, loaded `.18`; one-net and two-net disposable writes read back; missing net/wrong board refused |
 | Upstream `5797fc0` (board grids) | Read and set six board grids and dot mode on an exact PcbDoc, validating all values before writes with old-state preflight and readback | Three focused tests, Pascal lint/build, loaded `.19`; disposable changes read back, exact-path save/reload persisted snap X; broad Save All side effect recorded in CURRENT-STATE |
 | Local persistence fix after upstream grid port | Save one exact loaded document with an observed disk write, without Save All | Nine related tests, Pascal lint/build, loaded `.20`; disposable grid persisted after close/reopen; owner PcbDoc hash unchanged during this test |
+| Upstream drill layer pair family | Read pair spans/flags; set flags and add pairs with exact-board identity, count preflight, dry-run and readback | Three focused tests, Pascal lint/build, loaded `.21`; disposable pair flag changed and independently read back; duplicate span and wrong board refused; new TopLayer–MidLayer1 span added and independently read back on disposable three-layer board |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium

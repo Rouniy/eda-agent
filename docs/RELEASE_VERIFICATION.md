@@ -1954,3 +1954,15 @@ Not explained: `app_close_document` with `discard_changes` reported
 `discarded: false` after the stack edits, so Altium did not mark the
 board modified. The file on disk was unchanged, which is the outcome
 wanted here, but an API stack edit may not prompt a save on close.
+
+# Drill layer pairs, 2026-10-27
+
+Script `.21` on Altium 26.11.1.5 read one TopLayer–BottomLayer pair on a
+disposable two-layer board. `pcb_set_drill_pair` returned a dry-run plan,
+then changed `plot_drill_drawing` to true; `pcb_get_drill_pairs` read the
+new value. A duplicate pair and wrong-board request were refused. Source
+tests: `tests/test_pcb_drill_pairs.py` (3 passed); Pascal lint/build clean.
+After adding MidLayer1 to the disposable board, a new TopLayer–MidLayer1
+pair raised the count from one to two and an independent read returned both
+spans. The owner's board hash was unchanged in the first test; the second
+test never selected the owner for a write.

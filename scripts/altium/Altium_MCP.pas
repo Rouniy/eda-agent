@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.20';
+    SCRIPT_VERSION = '2026.10.27.21';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -36391,6 +36391,276 @@ Begin
 End;
 
 {..............................................................................}
+Function PCB_DrillPairJson(Pair : IPCB_DrillLayerPair; PairIdx : Integer) : String;
+Begin
+    Result := JsonObj(JsonInt('index', PairIdx) + ','
+        + JsonInt('low_layer_id', Pair.LowLayer) + ','
+        + JsonInt('high_layer_id', Pair.HighLayer) + ','
+        + JsonStr('low_layer', LayerDisplayName(Pair.LowLayer)) + ','
+        + JsonStr('high_layer', LayerDisplayName(Pair.HighLayer)) + ','
+        + JsonStr('description', Pair.Description) + ','
+        + JsonBool('backdrill', Pair.IsBackdrill) + ','
+        + JsonBool('plot_drill_drawing', Pair.PlotDrillDrawing) + ','
+        + JsonBool('plot_drill_guide', Pair.PlotDrillGuide));
+End;
+
+Function PCB_DrillPairsJson(Board : IPCB_Board; Var Returned, Unreadable : Integer) : String;
+Var
+    Pair : IPCB_DrillLayerPair;
+    Item : String;
+    I : Integer;
+Begin
+    Result := '';
+    Returned := 0;
+    Unreadable := 0;
+    For I := 0 To Board.DrillLayerPairsCount - 1 Do
+    Begin
+        Pair := Nil;
+        Try Pair := Board.LayerPair[I]; Except End;
+        If Pair = Nil Then
+        Begin
+            Inc(Unreadable);
+            Continue;
+        End;
+        Item := '';
+        Try Item := PCB_DrillPairJson(Pair, I); Except Inc(Unreadable); End;
+        If Item = '' Then Continue;
+        If Result <> '' Then Result := Result + ',';
+        Result := Result + Item;
+        Inc(Returned);
+    End;
+End;
+
+Function PCB_GetDrillPairs(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    ExpectedPath, Why, Items : String;
+    Returned, Unreadable : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path is required');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Items := PCB_DrillPairsJson(Board, Returned, Unreadable);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('count', Returned) + ','
+        + JsonInt('reported_count', Board.DrillLayerPairsCount) + ','
+        + JsonInt('unreadable_count', Unreadable) + ','
+        + JsonRaw('pairs', '[' + Items + ']')));
+End;
+
+Function PCB_SetDrillPair(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pair : IPCB_DrillLayerPair;
+    ExpectedPath, Why, BackStr, DrawStr, GuideStr, BeforeJson, AfterJson : String;
+    PairIdx, ExpectedCount, ExpectedLow, ExpectedHigh : Integer;
+    ExpectBack, ExpectDraw, ExpectGuide : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    PairIdx := StrToIntDef(ExtractJsonValue(Params, 'index'), -1);
+    ExpectedCount := StrToIntDef(ExtractJsonValue(Params, 'expected_count'), -1);
+    ExpectedLow := StrToIntDef(ExtractJsonValue(Params, 'expect_low_layer_id'), -1);
+    ExpectedHigh := StrToIntDef(ExtractJsonValue(Params, 'expect_high_layer_id'), -1);
+    BackStr := LowerCase(ExtractJsonValue(Params, 'backdrill'));
+    DrawStr := LowerCase(ExtractJsonValue(Params, 'plot_drill_drawing'));
+    GuideStr := LowerCase(ExtractJsonValue(Params, 'plot_drill_guide'));
+    If (ExpectedPath = '') Or (PairIdx < 0) Or (ExpectedCount < 0)
+       Or (ExpectedLow < 0) Or (ExpectedHigh < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path, index and expected pair identity/count are required');
+        Exit;
+    End;
+    If ((BackStr <> '') And (BackStr <> 'true') And (BackStr <> 'false'))
+       Or ((DrawStr <> '') And (DrawStr <> 'true') And (DrawStr <> 'false'))
+       Or ((GuideStr <> '') And (GuideStr <> 'true') And (GuideStr <> 'false')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'drill pair flags must be true or false');
+        Exit;
+    End;
+    If (BackStr = '') And (DrawStr = '') And (GuideStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'give at least one drill pair flag');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    If (Board.DrillLayerPairsCount <> ExpectedCount)
+       Or (PairIdx >= ExpectedCount) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'STALE_COUNT',
+            'drill pair count changed; read it again before writing');
+        Exit;
+    End;
+    Pair := Board.LayerPair[PairIdx];
+    If Pair = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PAIR', 'Drill pair is unavailable');
+        Exit;
+    End;
+    If (Pair.LowLayer <> ExpectedLow) Or (Pair.HighLayer <> ExpectedHigh) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'STALE_PAIR',
+            'drill pair layers changed; read again before writing');
+        Exit;
+    End;
+    ExpectBack := LowerCase(ExtractJsonValue(Params, 'expect_backdrill')) = 'true';
+    ExpectDraw := LowerCase(ExtractJsonValue(Params, 'expect_plot_drill_drawing')) = 'true';
+    ExpectGuide := LowerCase(ExtractJsonValue(Params, 'expect_plot_drill_guide')) = 'true';
+    If ((LowerCase(ExtractJsonValue(Params, 'expect_backdrill')) <> 'true')
+        And (LowerCase(ExtractJsonValue(Params, 'expect_backdrill')) <> 'false'))
+       Or ((LowerCase(ExtractJsonValue(Params, 'expect_plot_drill_drawing')) <> 'true')
+        And (LowerCase(ExtractJsonValue(Params, 'expect_plot_drill_drawing')) <> 'false'))
+       Or ((LowerCase(ExtractJsonValue(Params, 'expect_plot_drill_guide')) <> 'true')
+        And (LowerCase(ExtractJsonValue(Params, 'expect_plot_drill_guide')) <> 'false')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+            'all old drill pair flags are required');
+        Exit;
+    End;
+    If (Pair.IsBackdrill <> ExpectBack)
+       Or (Pair.PlotDrillDrawing <> ExpectDraw)
+       Or (Pair.PlotDrillGuide <> ExpectGuide) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'STALE_PAIR',
+            'drill pair flags changed; read again before writing');
+        Exit;
+    End;
+    BeforeJson := PCB_DrillPairJson(Pair, PairIdx);
+    PCBServer.PreProcess;
+    Try
+        If BackStr <> '' Then Pair.IsBackdrill := (BackStr = 'true');
+        If DrawStr <> '' Then Pair.PlotDrillDrawing := (DrawStr = 'true');
+        If GuideStr <> '' Then Pair.PlotDrillGuide := (GuideStr = 'true');
+    Finally
+        PCBServer.PostProcess;
+    End;
+    AfterJson := PCB_DrillPairJson(Pair, PairIdx);
+    If BeforeJson <> AfterJson Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('count', Board.DrillLayerPairsCount) + ','
+        + JsonBool('changed', BeforeJson <> AfterJson) + ','
+        + JsonRaw('before', BeforeJson) + ','
+        + JsonRaw('pair', AfterJson)));
+End;
+
+Function PCB_IsCopperLayerId(Layer : TLayer) : Boolean;
+Begin
+    Result := (Layer = eTopLayer) Or (Layer = eBottomLayer)
+        Or ((Layer >= eMidLayer1) And (Layer <= eMidLayer30))
+        Or ((Layer >= eInternalPlane1) And (Layer <= eInternalPlane16));
+End;
+
+Function PCB_AddDrillPair(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pair : IPCB_DrillLayerPair;
+    ExpectedPath, Why, LowStr, HighStr, Items : String;
+    LowLayer, HighLayer : TLayer;
+    ExpectedCount, Before, After, I, Returned, Unreadable : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    LowStr := ExtractJsonValue(Params, 'low_layer');
+    HighStr := ExtractJsonValue(Params, 'high_layer');
+    ExpectedCount := StrToIntDef(ExtractJsonValue(Params, 'expected_count'), -1);
+    If (ExpectedPath = '') Or (LowStr = '') Or (HighStr = '') Or (ExpectedCount < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path, low_layer, high_layer and expected_count are required');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Before := Board.DrillLayerPairsCount;
+    If Before <> ExpectedCount Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'STALE_COUNT',
+            'drill pair count changed; read again before writing');
+        Exit;
+    End;
+    LowLayer := ResolveLayerId(Board, LowStr);
+    HighLayer := ResolveLayerId(Board, HighStr);
+    If (LowLayer = eNoLayer) Or (HighLayer = eNoLayer) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+            'Unknown layer. ' + BoardLayerNamesHint(Board));
+        Exit;
+    End;
+    If (LowLayer = HighLayer) Or (Not PCB_IsCopperLayerId(LowLayer))
+       Or (Not PCB_IsCopperLayerId(HighLayer)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_LAYER',
+            'a drill pair requires two distinct copper layers');
+        Exit;
+    End;
+    For I := 0 To Before - 1 Do
+    Begin
+        Pair := Nil;
+        Try Pair := Board.LayerPair[I]; Except End;
+        If Pair = Nil Then Continue;
+        If ((Pair.LowLayer = LowLayer) And (Pair.HighLayer = HighLayer))
+           Or ((Pair.LowLayer = HighLayer) And (Pair.HighLayer = LowLayer)) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'ALREADY_EXISTS',
+                'the board already has this drill pair');
+            Exit;
+        End;
+    End;
+    PCBServer.PreProcess;
+    Try Board.AddLayerPair(LowLayer, HighLayer);
+    Finally PCBServer.PostProcess; End;
+    After := Board.DrillLayerPairsCount;
+    If After <> Before Then MarkDocDirtyByPath(Board.FileName);
+    Items := PCB_DrillPairsJson(Board, Returned, Unreadable);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('count_before', Before) + ','
+        + JsonInt('count_after', After) + ','
+        + JsonInt('returned_count', Returned) + ','
+        + JsonInt('unreadable_count', Unreadable) + ','
+        + JsonRaw('pairs', '[' + Items + ']')));
+End;
+
+{..............................................................................}
 { PCB_GetFabBoardFacts - one exact-board snapshot for fab package checks.    }
 { No outline rebuild and no capped object window.                          }
 {..............................................................................}
@@ -45826,6 +46096,9 @@ Begin
         'find_same_package':      Result := PCB_FindSamePackage(Params, RequestId);
         'net_display':            Result := PCB_NetDisplay(Params, RequestId);
         'set_grids':              Result := PCB_SetGrids(Params, RequestId);
+        'get_drill_pairs':        Result := PCB_GetDrillPairs(Params, RequestId);
+        'set_drill_pair':         Result := PCB_SetDrillPair(Params, RequestId);
+        'add_drill_pair':         Result := PCB_AddDrillPair(Params, RequestId);
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
         'rebuild_connectivity':    Result := PCB_RebuildConnectivity(Params, RequestId);

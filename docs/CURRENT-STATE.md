@@ -2,6 +2,19 @@
 
 ## Source integration, 2026-10-27
 
+The `.21` source ports drill layer pair read, flag setting and pair addition.
+Writes use exact PcbDoc identity and a full pair-count snapshot; flag writes
+also compare the old layer IDs and flags. Three focused tests pass, Pascal
+lint/build reports zero errors/warnings, and Altium 26.11.1.5 loaded `.21`
+with zero cast errors. On a disposable two-layer PcbDoc, the drawing flag
+changed from false to true and an independent read returned true. A duplicate
+pair and wrong-board read were refused. On the same disposable board with
+MidLayer1 added, a new TopLayer–MidLayer1 pair raised the count from one to
+two and an independent read returned both spans. The owner board was restored active and
+its SHA256 matched the baseline below. The disposable file remains at
+`workspace/native-acceptance/DrillPairs_20261027.PcbDoc`: automatic command
+review blocked its exact-path deletion, despite the test document being closed.
+
 The `.20` source adds `app_save_document(file_path)` after the grid-save
 investigation. Native code saves only the loaded document whose actual path
 equals the caller's absolute path; Python requires an observed disk mtime

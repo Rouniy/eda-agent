@@ -51,6 +51,29 @@ def _fab_board_facts(reply: dict[str, Any], expected_path: str) -> dict[str, Any
     return {key: reply[key] for key in ("copper_layers", "outline_mm", "hole_count")}
 
 
+def _drill_pairs_snapshot(reply: dict[str, Any], board_path: str) -> list[dict[str, Any]]:
+    """Refuse a partial drill-pair read before it can authorize a write."""
+    if not isinstance(reply, dict) or not isinstance(reply.get("board_path"), str):
+        raise ValueError("drill pair read lacks board identity")
+    if reply["board_path"].casefold() != board_path.casefold():
+        raise ValueError("drill pair read came from another board")
+    pairs = reply.get("pairs")
+    count = reply.get("count")
+    if (not isinstance(pairs, list) or type(count) is not int
+            or count < 0 or len(pairs) != count
+            or reply.get("reported_count") != count
+            or reply.get("unreadable_count") != 0):
+        raise ValueError("drill pair read is incomplete")
+    for i, pair in enumerate(pairs):
+        if (not isinstance(pair, dict) or pair.get("index") != i
+                or type(pair.get("low_layer_id")) is not int
+                or type(pair.get("high_layer_id")) is not int
+                or any(type(pair.get(field)) is not bool for field in
+                       ("backdrill", "plot_drill_drawing", "plot_drill_guide"))):
+            raise ValueError("drill pair entry is incomplete")
+    return pairs
+
+
 def _offset_pair_polyline(
     points: list[tuple[float, float]],
     center_offset: float,
@@ -7406,7 +7429,7 @@ def register_pcb_tools(mcp):
                            "loop_removal": "loop_removal",
                            "use_net_color": "use_net_color",
                            "show_jumpers": "jumpers_shown"}
-        if (not isinstance(result, dict)
+        if (not isinstance(result, dict) or result.get("ok") is False
                 or not isinstance(result.get("board_path"), str)
                 or result["board_path"].casefold() != board_path.casefold()
                 or result.get("before_bits") != bits
@@ -7496,6 +7519,138 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "board grid write was not fully verified",
                     "native_reply": result}
         result["save_required"] = bool(result.get("changed"))
+        return result
+
+    @mcp.tool()
+    async def pcb_get_drill_pairs(board_path: str) -> dict[str, Any]:
+        """Read all drill layer pairs, their spans and backdrill/plot flags."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.get_drill_pairs", {"board_path": board_path}, timeout=120.0,
+        )
+        try:
+            _drill_pairs_snapshot(reply, board_path)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_set_drill_pair(
+        board_path: str,
+        index: int,
+        backdrill: Optional[bool] = None,
+        plot_drill_drawing: Optional[bool] = None,
+        plot_drill_guide: Optional[bool] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Set one drill pair's flags with exact identity and old-state checks.
+
+        Returns a plan by default. A write requires dry_run=false and reads
+        the selected pair back. Saving the PcbDoc remains a separate step.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(index) is not int or index < 0:
+            return {"ok": False, "reason": "index must be non-negative"}
+        updates = {"backdrill": backdrill, "plot_drill_drawing": plot_drill_drawing,
+                   "plot_drill_guide": plot_drill_guide}
+        if not any(value is not None for value in updates.values()):
+            return {"ok": False, "reason": "give at least one drill pair flag"}
+        if any(type(value) is not bool for value in updates.values() if value is not None):
+            return {"ok": False, "reason": "drill pair flags must be booleans"}
+        bridge = get_bridge()
+        snapshot = await bridge.send_command_async(
+            "pcb.get_drill_pairs", {"board_path": board_path}, timeout=120.0,
+        )
+        try:
+            pairs = _drill_pairs_snapshot(snapshot, board_path)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": snapshot}
+        if index >= len(pairs):
+            return {"ok": False, "reason": "drill pair index is out of range"}
+        old = pairs[index]
+        changes = {key: value for key, value in updates.items() if value is not None}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "before": old, "would_set": changes}
+        params = {"board_path": board_path, "index": str(index),
+                  "expected_count": str(len(pairs)),
+                  "expect_low_layer_id": str(old["low_layer_id"]),
+                  "expect_high_layer_id": str(old["high_layer_id"])}
+        for key in updates:
+            params["expect_" + key] = "true" if old[key] else "false"
+        for key, value in changes.items():
+            params[key] = "true" if value else "false"
+        result = await bridge.send_command_async("pcb.set_drill_pair", params, timeout=120.0)
+        pair = result.get("pair") if isinstance(result, dict) else None
+        if (not isinstance(result, dict)
+                or not isinstance(result.get("board_path"), str)
+                or result["board_path"].casefold() != board_path.casefold()
+                or result.get("count") != len(pairs)
+                or not isinstance(pair, dict) or pair.get("index") != index
+                or pair.get("low_layer_id") != old["low_layer_id"]
+                or pair.get("high_layer_id") != old["high_layer_id"]
+                or any(pair.get(key) is not value for key, value in changes.items())):
+            return {"ok": False, "reason": "drill pair write was not fully verified",
+                    "native_reply": result}
+        result["save_required"] = bool(result.get("changed"))
+        return result
+
+    @mcp.tool()
+    async def pcb_add_drill_pair(
+        board_path: str,
+        low_layer: str,
+        high_layer: str,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Add a drill span between two copper layers on one exact PcbDoc."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if (not low_layer.strip() or not high_layer.strip()
+                or low_layer.strip().casefold() == high_layer.strip().casefold()):
+            return {"ok": False, "reason": "give two distinct copper layer names"}
+        bridge = get_bridge()
+        snapshot = await bridge.send_command_async(
+            "pcb.get_drill_pairs", {"board_path": board_path}, timeout=120.0,
+        )
+        try:
+            pairs = _drill_pairs_snapshot(snapshot, board_path)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": snapshot}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "count_before": len(pairs), "low_layer": low_layer.strip(),
+                    "high_layer": high_layer.strip()}
+        result = await bridge.send_command_async(
+            "pcb.add_drill_pair",
+            {"board_path": board_path, "low_layer": low_layer.strip(),
+             "high_layer": high_layer.strip(), "expected_count": str(len(pairs))},
+            timeout=120.0,
+        )
+        after = result.get("pairs") if isinstance(result, dict) else None
+        old_spans = {(p["low_layer_id"], p["high_layer_id"]) for p in pairs}
+        valid_after = isinstance(after, list) and len(after) == len(pairs) + 1
+        if valid_after:
+            for i, pair in enumerate(after):
+                if (not isinstance(pair, dict) or pair.get("index") != i
+                        or type(pair.get("low_layer_id")) is not int
+                        or type(pair.get("high_layer_id")) is not int):
+                    valid_after = False
+                    break
+        after_spans = {(p["low_layer_id"], p["high_layer_id"]) for p in after} if valid_after else set()
+        if (not isinstance(result, dict)
+                or not isinstance(result.get("board_path"), str)
+                or result["board_path"].casefold() != board_path.casefold()
+                or result.get("count_before") != len(pairs)
+                or result.get("count_after") != len(pairs) + 1
+                or result.get("returned_count") != len(pairs) + 1
+                or result.get("unreadable_count") != 0
+                or not valid_after or not old_spans.issubset(after_spans)
+                or len(after_spans - old_spans) != 1):
+            return {"ok": False, "reason": "new drill pair was not fully verified",
+                    "native_reply": result}
+        result["save_required"] = True
         return result
 
     @mcp.tool()
