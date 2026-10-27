@@ -3928,21 +3928,16 @@ End;
 Function ClassMembersJson(Cls : IObjectClass) : String;
 Var
     I : Integer;
-    Member : IDMObject;
     Name : String;
 Begin
     Result := '';
     For I := 0 To Cls.DM_MemberCount - 1 Do
     Begin
-        Member := Nil;
-        Try Member := Cls.DM_Members(I); Except End;
-        If Member = Nil Then Continue;
         Name := '';
-        Try Name := Member.DM_NetName; Except Name := ''; End;
-        If Name = '' Then
-        Begin
-            Try Name := Member.DM_PhysicalDesignator; Except Name := ''; End;
-        End;
+        { IObjectClass.DM_Members returns a WideString member name, not an
+          IDMObject. Calling DM_NetName on it raises a DelphiScript modal. }
+        Try Name := Cls.DM_Members(I); Except Name := ''; End;
+        If Name = '' Then Continue;
         If Result <> '' Then Result := Result + ',';
         Result := Result + '"' + EscapeJsonString(Name) + '"';
     End;
@@ -3959,14 +3954,14 @@ End;
 {..............................................................................}
 Function Proj_GetDeclaredDesignObjects(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, NetCls, CompCls, Pairs, Rooms, PosNet, NegNet, DocPath : String;
+    ProjectPath, NetCls, CompCls, Pairs, Rooms, PosNet, NegNet, DocPath, MemberName : String;
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
     Cls : IObjectClass;
     Pair : IDifferentialPair;
     Room : IRoom;
-    D, I, Sheets : Integer;
+    D, I, J, Sheets : Integer;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     Workspace := GetWorkspace;
@@ -4006,8 +4001,23 @@ Begin
             Pair := Doc.DM_DifferentialPairs(I);
             If Pair = Nil Then Continue;
             PosNet := ''; NegNet := '';
-            Try PosNet := Pair.DM_PositiveNet.DM_NetName; Except End;
-            Try NegNet := Pair.DM_NegativeNet.DM_NetName; Except End;
+            { IDifferentialPair inherits IObjectClass: members are names,
+              not INet objects. The old DM_PositiveNet.DM_NetName chain
+              raised a modal undeclared-identifier error in AD 26.11. }
+            For J := 0 To Pair.DM_MemberCount - 1 Do
+            Begin
+                MemberName := '';
+                Try MemberName := Pair.DM_Members(J); Except End;
+                If MemberName = '' Then Continue;
+                If UpperCase(Copy(MemberName, Length(MemberName) - 1, 2)) = '_P' Then
+                    PosNet := MemberName
+                Else If UpperCase(Copy(MemberName, Length(MemberName) - 1, 2)) = '_N' Then
+                    NegNet := MemberName
+                Else If PosNet = '' Then
+                    PosNet := MemberName
+                Else If NegNet = '' Then
+                    NegNet := MemberName;
+            End;
             If Pairs <> '' Then Pairs := Pairs + ',';
             Pairs := Pairs + JsonObj(JsonStr('name', Pair.DM_Name) + ','
                 + JsonStr('sheet', DocPath) + ','
@@ -4086,11 +4096,12 @@ End;
 Function NetContentsJson(Net : INet; WithPins : Boolean) : String;
 Var
     Item : INetItem;
-    Labels, Powers, Ports, Entries, Cross, Pins, Text : String;
-    I, PinCount : Integer;
+    Labels, Powers, Ports, Entries, Cross, Directives, Pins, Text : String;
+    I, PinCount, DirectiveCount : Integer;
     AutoGen : Boolean;
 Begin
-    Labels := ''; Powers := ''; Ports := ''; Entries := ''; Cross := ''; Pins := '';
+    Labels := ''; Powers := ''; Ports := ''; Entries := ''; Cross := '';
+    Directives := ''; Pins := '';
     For I := 0 To Net.DM_NetLabelCount - 1 Do
     Begin
         Item := Nil; Text := '';
@@ -4136,6 +4147,18 @@ Begin
         If Cross <> '' Then Cross := Cross + ',';
         Cross := Cross + NetNamingItemJson(Item, Text);
     End;
+    { The compiled net itself names its attached directives. This resolves
+      ambiguous nearby wires without guessing from a directive's graphic. }
+    DirectiveCount := 0;
+    Try DirectiveCount := Net.DM_DirectiveCount; Except End;
+    For I := 0 To DirectiveCount - 1 Do
+    Begin
+        Item := Nil;
+        Try Item := Net.DM_Directives(I); Except Item := Nil; End;
+        If Item = Nil Then Continue;
+        If Directives <> '' Then Directives := Directives + ',';
+        Directives := Directives + NetNamingItemJson(Item, '');
+    End;
     PinCount := 0;
     Try PinCount := Net.DM_PinCount; Except End;
     If WithPins Then
@@ -4161,7 +4184,8 @@ Begin
         + JsonRaw('power_objects', '[' + Powers + ']') + ','
         + JsonRaw('ports', '[' + Ports + ']') + ','
         + JsonRaw('sheet_entries', '[' + Entries + ']') + ','
-        + JsonRaw('off_sheet_connectors', '[' + Cross + ']'));
+        + JsonRaw('off_sheet_connectors', '[' + Cross + ']') + ','
+        + JsonRaw('directives', '[' + Directives + ']'));
     If WithPins Then
         Result := Copy(Result, 1, Length(Result) - 1) + ',' + JsonRaw('pins', '[' + Pins + ']') + '}';
 End;
