@@ -2,6 +2,10 @@
 
 ## Fork behavior audit, 2026-10-28
 
+- [x] Native-qualify upstream `sch_optimize_wires` on a new free
+  disposable SchDoc. Three touching collinear segments became one wire
+  with endpoints (1000,1000) and (2500,1000) mil; the single wire
+  persisted after save/close/reopen and a second optimize was a no-op.
 - [x] Native-qualify MOREmbedded `lib_set_symbol_parts` on a separate
   copied Spirit Level SchLib. `ADXL202E` changed from one part to two,
   persisted after save/close/reopen, then returned to one part with all

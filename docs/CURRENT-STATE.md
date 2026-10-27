@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Upstream wire optimizer QA, 2026-10-28
+
+Fresh fetches left `upstream/main` at `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`
+and `MOREmbedded/main` at `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+The former is still the exact upstream ancestor of our `main`.
+On a new free Temp SchDoc, `generic.place_wires` placed three contiguous
+collinear segments. `generic.optimize_wires` returned 3 to 1 wires and
+6 to 2 vertices. `generic.query_objects` read the resulting endpoints
+as `1000,1000;2500,1000` mil before and after save/close/reopen;
+a second optimize returned 1 to 1 wires. The test sheet was closed.
+
 ## MOREmbedded symbol part and display mode QA, 2026-10-28
 
 The integrated `library.set_symbol_parts` handler was exercised in Altium
