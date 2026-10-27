@@ -11,6 +11,9 @@ on:
       - "research/battery-ai-comsol-lab/**"
       - ".github/workflows/battery-research-lab.yml"
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
