@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.98';
+    SCRIPT_VERSION = '2026.10.27.99';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -907,6 +907,33 @@ Begin
             SaveWritten := SaveWritten + 1;
             ForgetDocEdited(Path);
         End;
+End;
+
+{ Membership edits need the project file written explicitly. The editor's
+  Modified flag can stay False after DM_AddSourceDocument, so force the
+  exact project's server document and report only an observed disk write. }
+Function SaveProjectFile(Project : IProject) : Boolean;
+Var
+    ProjDoc : IServerDocument;
+    Path : String;
+    AgeBefore, AgeAfter : Integer;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except End;
+    If (Path = '') Or (Not FileExists(Path)) Then Exit;
+    ProjDoc := Nil;
+    Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
+    If ProjDoc = Nil Then Exit;
+    AgeBefore := -1;
+    Try AgeBefore := FileAge(Path); Except End;
+    Try ProjDoc.SetModified(True); Except End;
+    Try ProjDoc.DoFileSave(''); Except Exit; End;
+    AgeAfter := -1;
+    Try AgeAfter := FileAge(Path); Except End;
+    Result := (AgeAfter >= 0) And (AgeAfter <> AgeBefore);
+    If Result Then ForgetDocEdited(Path);
 End;
 
 Procedure SaveProjectMembers(Project : IProject);

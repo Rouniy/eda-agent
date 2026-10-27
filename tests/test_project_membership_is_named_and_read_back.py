@@ -33,9 +33,11 @@ def test_a_named_project_is_found_before_anything_is_created():
 def test_the_document_goes_to_that_project_only():
     body = load(_ALT / "Application.pas", minimum=20)["App_CreateDocument"]
     start = body.index("Added := False;")
-    add = body[start:body.index("If Not Saved Then", start)]
+    add = body[start:body.index("Try Client.ShowDocument(ServerDoc);", start)]
     assert "Project.DM_AddSourceDocument(FilePath);" in add
     assert "DM_FocusedProject" not in add
+    assert "Project := OpenProjectAt(Workspace, ProjectPath);" in add
+    assert body.index("If Not Saved Then") < start
 
 
 def test_membership_is_read_back():
@@ -70,6 +72,17 @@ def test_every_membership_change_writes_the_project_file():
     assert "Proj_RemoveDocument(" in delete
     assert "WorkspaceManager:RemoveObjectFromProject" not in delete
     assert "WorkspaceManager:CloseObject" not in delete
+
+
+def test_project_file_save_helper_exists_before_project_commands():
+    """The call sites alone once passed while the helper was absent."""
+    source = (_ALT / "Main.pas").read_text(encoding="utf-8")
+    helper = load(_ALT / "Main.pas")["SaveProjectFile"]
+    assert source.index("Function SaveProjectFile(") < source.index(
+        "Procedure SaveProjectMembers(")
+    assert "Project.DM_ProjectFullPath" in helper
+    assert "ProjDoc.DoFileSave('')" in helper
+    assert "AgeAfter <> AgeBefore" in helper
 
 
 def test_the_file_check_reads_documentpath_lines():

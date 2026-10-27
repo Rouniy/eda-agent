@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Fork helper recovery, 2026-10-27
+
+A declaration-name comparison over 119 cached fork refs found 20 Python
+and 35 Pascal names absent from `main`. Most named helpers have equivalent
+implementations under other names, but three live call targets had no
+definitions: `ReadNoErcProp`, `WriteNoErcProp` and `SaveProjectFile`.
+Script source `.99` restores the guarded No ERC property helpers and an
+exact-project save helper that reports an observed project-file write.
+`app_create_document` now pins the chosen project path before creation,
+saves the project membership after adding the file and refuses an existing
+file path. Fifty-one related tests and Pascal lint/build passed. The shared
+Altium session still runs the earlier compiled script; native acceptance
+of `.99` is pending a controlled restart.
+
 ## Saved No ERC copies and project-scoped ERC, 2026-10-27
 
 Two separately opened project copies proved that deleting a No ERC at

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.98';
+    SCRIPT_VERSION = '2026.10.27.99';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -916,6 +916,33 @@ Begin
             SaveWritten := SaveWritten + 1;
             ForgetDocEdited(Path);
         End;
+End;
+
+{ Membership edits need the project file written explicitly. The editor's
+  Modified flag can stay False after DM_AddSourceDocument, so force the
+  exact project's server document and report only an observed disk write. }
+Function SaveProjectFile(Project : IProject) : Boolean;
+Var
+    ProjDoc : IServerDocument;
+    Path : String;
+    AgeBefore, AgeAfter : Integer;
+Begin
+    Result := False;
+    If Project = Nil Then Exit;
+    Path := '';
+    Try Path := Project.DM_ProjectFullPath; Except End;
+    If (Path = '') Or (Not FileExists(Path)) Then Exit;
+    ProjDoc := Nil;
+    Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
+    If ProjDoc = Nil Then Exit;
+    AgeBefore := -1;
+    Try AgeBefore := FileAge(Path); Except End;
+    Try ProjDoc.SetModified(True); Except End;
+    Try ProjDoc.DoFileSave(''); Except Exit; End;
+    AgeAfter := -1;
+    Try AgeAfter := FileAge(Path); Except End;
+    Result := (AgeAfter >= 0) And (AgeAfter <> AgeBefore);
+    If Result Then ForgetDocEdited(Path);
 End;
 
 Procedure SaveProjectMembers(Project : IProject);
@@ -5501,7 +5528,6 @@ Var
     Workspace : IWorkspace;
     Project : IProject;
     AddToProject, Saved, Added, Focused : Boolean;
-    I : Integer;
     ProjSaved : Boolean;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
@@ -5510,7 +5536,6 @@ Begin
     AddStr := ExtractJsonValue(Params, 'add_to_project');
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     AddToProject := (AddStr = '') Or (AddStr = 'true');
-    ProjectPath := ExtractJsonValue(Params, 'project_path');
 
     { THE PROJECT IS NAMED OR IT IS THE FOCUSED ONE, decided before anything }
     { is created. A temporary sheet went into whichever project had focus,   }
@@ -5532,6 +5557,9 @@ Begin
                 'No open project at ' + ProjectPath + '. Nothing was created.');
             Exit;
         End;
+        { Pin even an implicit focused selection to its exact path before
+          document creation can change the editor focus. }
+        If Project <> Nil Then ProjectPath := Project.DM_ProjectFullPath;
     End;
 
     If DocKind = '' Then
@@ -5557,6 +5585,13 @@ Begin
             'A document is already open at ' + FilePath +
             '. Focus it with app_set_active_document instead of creating it again,' +
             ' or close it first.');
+        Exit;
+    End;
+    If FileExists(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FILE_EXISTS',
+            'A file already exists at ' + FilePath
+            + '. Open it instead of creating over it.');
         Exit;
     End;
 
@@ -5597,7 +5632,20 @@ Begin
         Except Saved := False; End;
     End;
 
-    { Add to the focused project via IProject.DM_AddSourceDocument.            }
+    { A failed file save must not leave an in-memory project member behind. }
+    If Not Saved Then
+    Begin
+        If DirectoryExists(ExtractFilePath(FilePath)) Then
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document could not be saved to ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document was not saved: the folder does not exist: '
+                + ExtractFilePath(FilePath));
+        Exit;
+    End;
+
+    { Add to the pinned project via IProject.DM_AddSourceDocument.             }
     { The earlier RunProcess('WorkspaceManager:AddDocumentToProject') path     }
     { silently no-ops in some workspace states, DM_AddSourceDocument is the  }
     { documented project-side API and the approach that works reliably        }
@@ -5609,47 +5657,16 @@ Begin
         Workspace := GetWorkspace;
         If Workspace <> Nil Then
         Begin
-            Project := Nil;
-            If ProjectPath <> '' Then
-            Begin
-                For I := 0 To Workspace.DM_ProjectCount - 1 Do
-                Begin
-                    If Workspace.DM_Projects(I) <> Nil Then
-                    Begin
-                        If LowerCase(Workspace.DM_Projects(I).DM_ProjectFullPath) =
-                           LowerCase(ProjectPath) Then
-                        Begin
-                            Project := Workspace.DM_Projects(I);
-                            Break;
-                        End;
-                    End;
-                End;
-            End
-            Else
-                Project := Workspace.DM_FocusedProject;
+            Project := OpenProjectAt(Workspace, ProjectPath);
             If Project <> Nil Then
             Begin
                 Try
                     Project.DM_AddSourceDocument(FilePath);
                     Added := True;
                 Except Added := False; End;
+                If Added Then ProjSaved := SaveProjectFile(Project);
             End;
         End;
-    End;
-
-    { NOT SAVED IS NOT CREATED. It answered success with saved:false, which }
-    { is what a missing folder produces, and the next call went on as if   }
-    { the file were there.                                                 }
-    If Not Saved Then
-    Begin
-        If DirectoryExists(ExtractFilePath(FilePath)) Then
-            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
-                'The new document could not be saved to ' + FilePath)
-        Else
-            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
-                'The new document was not saved: the folder does not exist: '
-                + ExtractFilePath(FilePath));
-        Exit;
     End;
 
     { FOCUS THE NEW DOCUMENT. It stayed behind whatever was in front, and  }
@@ -66008,6 +66025,48 @@ Begin
         Comp.SchIterator_Destroy(ImplIter);
     End;
     If Result = Nil Then Result := FirstFp;
+End;
+
+{ No ERC properties live on ISch_NoERC only. A generic object read must
+  narrow to that type before touching them; a missing helper otherwise
+  becomes a modal DelphiScript undeclared-identifier failure. }
+Function ReadNoErcProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    N : ISch_NoERC;
+Begin
+    Result := '';
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eNoERC Then Exit;
+    N := Obj;
+    If PropName = 'SuppressAll' Then
+        Try Result := BoolToJsonStr(N.SuppressAll); Except End
+    Else If PropName = 'IsActive' Then
+        Try Result := BoolToJsonStr(N.IsActive); Except End
+    Else If PropName = 'ErrorKindSetToSuppress' Then
+        Try Result := N.StrErrorKindSetToSuppress; Except End
+    Else If PropName = 'ConnectionPairsToSuppress' Then
+        Try Result := N.StrConnectionPairsToSuppress; Except End
+    Else If PropName = 'SuppressableErrors' Then
+        Try Result := N.StrSuppressableErrors; Except End;
+End;
+
+Procedure WriteNoErcProp(Obj : ISch_GraphicalObject; PropName : String; Value : String);
+Var
+    N : ISch_NoERC;
+    B : Boolean;
+Begin
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eNoERC Then Exit;
+    N := Obj;
+    B := (LowerCase(Value) = 'true') Or (Value = '1');
+    If PropName = 'SuppressAll' Then
+        Try N.SuppressAll := B; Except End
+    Else If PropName = 'IsActive' Then
+        Try N.IsActive := B; Except End
+    Else If PropName = 'ErrorKindSetToSuppress' Then
+        Try N.StrErrorKindSetToSuppress := Value; Except End
+    Else If PropName = 'ConnectionPairsToSuppress' Then
+        Try N.StrConnectionPairsToSuppress := Value; Except End;
 End;
 
 { The PCBLIB model names a part carries, comma separated, for a hint. }

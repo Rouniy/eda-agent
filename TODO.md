@@ -1,5 +1,21 @@
 # Fork integration TODO
 
+## Lost helpers in fork reconciliation, 2026-10-27
+
+- [x] Restore `ReadNoErcProp`, `WriteNoErcProp` and `SaveProjectFile`,
+  whose live call sites survived earlier merges without their definitions.
+  Guard No ERC reads/writes by object type, verify a project-file disk
+  write, and pin `app_create_document` to its selected project. Source
+  `.99` passes 51 focused tests and Pascal lint/build.
+- [ ] Reload `.99` in Altium when the shared session can be restarted.
+  On disposable projects, verify No ERC property reads/writes and exact
+  document creation, save and reopen, including the project's persisted
+  member list. A source test cannot prove DelphiScript runtime behavior.
+- [ ] Continue behavior-level comparison of the remaining fork changes.
+  A 119-ref name scan found 20 Python and 35 Pascal names absent from
+  `main`; many are aliases or superseded helpers, and absence of a name
+  alone is not a feature gap.
+
 ## Project-scoped ERC and stale No ERC model, 2026-10-27
 
 - [x] Prove on separately saved project copies that the specified No ERC

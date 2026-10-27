@@ -1158,6 +1158,48 @@ Begin
     If Result = Nil Then Result := FirstFp;
 End;
 
+{ No ERC properties live on ISch_NoERC only. A generic object read must
+  narrow to that type before touching them; a missing helper otherwise
+  becomes a modal DelphiScript undeclared-identifier failure. }
+Function ReadNoErcProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    N : ISch_NoERC;
+Begin
+    Result := '';
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eNoERC Then Exit;
+    N := Obj;
+    If PropName = 'SuppressAll' Then
+        Try Result := BoolToJsonStr(N.SuppressAll); Except End
+    Else If PropName = 'IsActive' Then
+        Try Result := BoolToJsonStr(N.IsActive); Except End
+    Else If PropName = 'ErrorKindSetToSuppress' Then
+        Try Result := N.StrErrorKindSetToSuppress; Except End
+    Else If PropName = 'ConnectionPairsToSuppress' Then
+        Try Result := N.StrConnectionPairsToSuppress; Except End
+    Else If PropName = 'SuppressableErrors' Then
+        Try Result := N.StrSuppressableErrors; Except End;
+End;
+
+Procedure WriteNoErcProp(Obj : ISch_GraphicalObject; PropName : String; Value : String);
+Var
+    N : ISch_NoERC;
+    B : Boolean;
+Begin
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eNoERC Then Exit;
+    N := Obj;
+    B := (LowerCase(Value) = 'true') Or (Value = '1');
+    If PropName = 'SuppressAll' Then
+        Try N.SuppressAll := B; Except End
+    Else If PropName = 'IsActive' Then
+        Try N.IsActive := B; Except End
+    Else If PropName = 'ErrorKindSetToSuppress' Then
+        Try N.StrErrorKindSetToSuppress := Value; Except End
+    Else If PropName = 'ConnectionPairsToSuppress' Then
+        Try N.StrConnectionPairsToSuppress := Value; Except End;
+End;
+
 { The PCBLIB model names a part carries, comma separated, for a hint. }
 Function FootprintModelNames(Comp : ISch_Component) : String;
 Var

@@ -79,6 +79,22 @@ def test_the_mode_is_readable_and_writable_only_on_a_no_erc():
         assert "Obj.ObjectId = eNoERC" in body[i - 80:i], func
 
 
+def test_no_erc_property_helpers_are_declared_before_their_callers():
+    """A lost helper makes the live script raise a modal undeclared identifier."""
+    source = (_ALTIUM / "Generic.pas").read_text(encoding="utf-8")
+    gen = load(_ALTIUM / "Generic.pas")
+    for name in ("ReadNoErcProp", "WriteNoErcProp"):
+        assert name in gen
+        assert source.index(f"{name}(") < source.index("Function GetSchProperty(")
+    getter = gen["ReadNoErcProp"]
+    setter = gen["WriteNoErcProp"]
+    assert "If Obj.ObjectId <> eNoERC Then Exit;" in getter
+    assert "If Obj.ObjectId <> eNoERC Then Exit;" in setter
+    for field in ("SuppressAll", "IsActive", "ErrorKindSetToSuppress",
+                  "ConnectionPairsToSuppress"):
+        assert field in getter and field in setter
+
+
 def test_the_tool_sends_levels_and_saves(monkeypatch):
     from eda_agent.tools import project as mod
     calls = []

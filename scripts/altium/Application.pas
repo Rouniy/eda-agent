@@ -840,7 +840,6 @@ Var
     Workspace : IWorkspace;
     Project : IProject;
     AddToProject, Saved, Added, Focused : Boolean;
-    I : Integer;
     ProjSaved : Boolean;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
@@ -849,7 +848,6 @@ Begin
     AddStr := ExtractJsonValue(Params, 'add_to_project');
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     AddToProject := (AddStr = '') Or (AddStr = 'true');
-    ProjectPath := ExtractJsonValue(Params, 'project_path');
 
     { THE PROJECT IS NAMED OR IT IS THE FOCUSED ONE, decided before anything }
     { is created. A temporary sheet went into whichever project had focus,   }
@@ -871,6 +869,9 @@ Begin
                 'No open project at ' + ProjectPath + '. Nothing was created.');
             Exit;
         End;
+        { Pin even an implicit focused selection to its exact path before
+          document creation can change the editor focus. }
+        If Project <> Nil Then ProjectPath := Project.DM_ProjectFullPath;
     End;
 
     If DocKind = '' Then
@@ -896,6 +897,13 @@ Begin
             'A document is already open at ' + FilePath +
             '. Focus it with app_set_active_document instead of creating it again,' +
             ' or close it first.');
+        Exit;
+    End;
+    If FileExists(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FILE_EXISTS',
+            'A file already exists at ' + FilePath
+            + '. Open it instead of creating over it.');
         Exit;
     End;
 
@@ -936,7 +944,20 @@ Begin
         Except Saved := False; End;
     End;
 
-    { Add to the focused project via IProject.DM_AddSourceDocument.            }
+    { A failed file save must not leave an in-memory project member behind. }
+    If Not Saved Then
+    Begin
+        If DirectoryExists(ExtractFilePath(FilePath)) Then
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document could not be saved to ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document was not saved: the folder does not exist: '
+                + ExtractFilePath(FilePath));
+        Exit;
+    End;
+
+    { Add to the pinned project via IProject.DM_AddSourceDocument.             }
     { The earlier RunProcess('WorkspaceManager:AddDocumentToProject') path     }
     { silently no-ops in some workspace states, DM_AddSourceDocument is the  }
     { documented project-side API and the approach that works reliably        }
@@ -948,47 +969,16 @@ Begin
         Workspace := GetWorkspace;
         If Workspace <> Nil Then
         Begin
-            Project := Nil;
-            If ProjectPath <> '' Then
-            Begin
-                For I := 0 To Workspace.DM_ProjectCount - 1 Do
-                Begin
-                    If Workspace.DM_Projects(I) <> Nil Then
-                    Begin
-                        If LowerCase(Workspace.DM_Projects(I).DM_ProjectFullPath) =
-                           LowerCase(ProjectPath) Then
-                        Begin
-                            Project := Workspace.DM_Projects(I);
-                            Break;
-                        End;
-                    End;
-                End;
-            End
-            Else
-                Project := Workspace.DM_FocusedProject;
+            Project := OpenProjectAt(Workspace, ProjectPath);
             If Project <> Nil Then
             Begin
                 Try
                     Project.DM_AddSourceDocument(FilePath);
                     Added := True;
                 Except Added := False; End;
+                If Added Then ProjSaved := SaveProjectFile(Project);
             End;
         End;
-    End;
-
-    { NOT SAVED IS NOT CREATED. It answered success with saved:false, which }
-    { is what a missing folder produces, and the next call went on as if   }
-    { the file were there.                                                 }
-    If Not Saved Then
-    Begin
-        If DirectoryExists(ExtractFilePath(FilePath)) Then
-            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
-                'The new document could not be saved to ' + FilePath)
-        Else
-            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
-                'The new document was not saved: the folder does not exist: '
-                + ExtractFilePath(FilePath));
-        Exit;
     End;
 
     { FOCUS THE NEW DOCUMENT. It stayed behind whatever was in front, and  }

@@ -1,5 +1,18 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Recovered fork helpers
+
+The 119-ref name inventory exposed a real merge loss beneath the apparent
+tool coverage. `Generic.pas` still called the `mooreaa` No ERC property
+helpers and `Project.pas` still called `SaveProjectFile`, but their
+definitions were gone. Source `.99` restores all three in declaration
+order. It also pins `app_create_document` to its preselected project,
+refuses an existing file path and writes the project membership after a
+successful file save. The project save result now requires a changed disk
+timestamp; a same-second write can be conservatively reported unverified.
+Fifty-one related tests and Pascal lint/build passed. Native execution
+awaits a controlled Altium restart.
+
 ## Saved No ERC parity follow-up
 
 On two project copies, both named single-pin-net ERC rows stayed suppressed
