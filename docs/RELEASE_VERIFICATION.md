@@ -1,4 +1,9 @@
-# Release verification: 2026.10.27.12
+# Release verification: 2026.10.27.13
+
+The `.13` port AutoSize getter follows a native `.12` finding: direct
+placement reported false, while generic ePort query returned an empty
+AutoSize property. Lint/build and source tests pass; repeat the native read
+on the same disposable sheet after loading `.13`.
 
 The `.12` font/width/newline/Value cleanup has source tests and Pascal
 lint/build. Native acceptance requires a disposable sheet with an established

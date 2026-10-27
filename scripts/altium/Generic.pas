@@ -365,6 +365,7 @@ Begin
                 Or (((PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap'))
                     And (Obj.ObjectId <> eSchComponent))
                 Or (PropName = 'DisplayModeCount')
+                Or ((PropName = 'AutoSize') And (Obj.ObjectId <> ePort))
                 Or (PropName = 'ConnectedEnd') Then
             Begin
                 Result := PropName;
@@ -1175,12 +1176,15 @@ Begin
         End
         { Altium derives this from the port's wiring. It is read only: a
           scripted write appears to take but later returns to its value. }
-        Else If PropName = 'ConnectedEnd' Then
+        Else If (PropName = 'AutoSize') Or (PropName = 'ConnectedEnd') Then
         Begin
             If Obj.ObjectId = ePort Then
             Begin
                 PortObj := Obj;
-                Result := IntToStr(PortObj.ConnectedEnd);
+                If PropName = 'AutoSize' Then
+                    Result := BoolToJsonStr(PortObj.AutoSize)
+                Else
+                    Result := IntToStr(PortObj.ConnectedEnd);
             End
             Else
             Begin

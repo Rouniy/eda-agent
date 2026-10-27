@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.12';
+    SCRIPT_VERSION = '2026.10.27.13';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -45231,6 +45231,7 @@ Begin
                 Or (((PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap'))
                     And (Obj.ObjectId <> eSchComponent))
                 Or (PropName = 'DisplayModeCount')
+                Or ((PropName = 'AutoSize') And (Obj.ObjectId <> ePort))
                 Or (PropName = 'ConnectedEnd') Then
             Begin
                 Result := PropName;
@@ -46041,12 +46042,15 @@ Begin
         End
         { Altium derives this from the port's wiring. It is read only: a
           scripted write appears to take but later returns to its value. }
-        Else If PropName = 'ConnectedEnd' Then
+        Else If (PropName = 'AutoSize') Or (PropName = 'ConnectedEnd') Then
         Begin
             If Obj.ObjectId = ePort Then
             Begin
                 PortObj := Obj;
-                Result := IntToStr(PortObj.ConnectedEnd);
+                If PropName = 'AutoSize' Then
+                    Result := BoolToJsonStr(PortObj.AutoSize)
+                Else
+                    Result := IntToStr(PortObj.ConnectedEnd);
             End
             Else
             Begin

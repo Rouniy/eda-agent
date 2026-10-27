@@ -2,6 +2,17 @@
 
 ## Source integration, 2026-10-27
 
+The `.13` source adds the missing read-only generic `AutoSize` getter for
+ports and preflights writes on other object types. The earlier `.12` native
+check used the isolated `workspace/native-acceptance/PlacementStyle-20261027.SchDoc`
+with `add_to_project=false`: `sch_place_port` returned font 1, width 400 mil
+and AutoSize false; `obj_query` independently read font 1 and width 400.
+The AutoSize field was empty on that read, which led to this getter fix.
+`sch_place_text_frame` returned font 1 and a second query read
+`LINE_A`/`LINE_B` separated by CRLF. The test sheet is disposable and no
+working project CAD file was edited. Pascal lint/build and focused tests pass;
+`.13` reload and AutoSize readback are pending.
+
 The `.12` source ports the remaining `mooreaa` placement styling: new ports,
 power ports, text frames and sheet entries use an explicit `font_id` or infer
 one from the sheet; a positive port `width` disables AutoSize before writing
