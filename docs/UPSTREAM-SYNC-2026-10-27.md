@@ -889,3 +889,20 @@ been dropped from the sync response path and async request/response path;
 both paths now carry and update it. The focused 32-test suite passes,
 including a new async document-continuity check; Pascal lint/build found
 zero errors/warnings across 12 units.
+
+The later branch-level audit checked these independent fork commits against
+the current `main` source. Their implementation is already present, so no
+second copy of the feature was merged:
+
+| Fork branch / commit | Evidence in current `main` |
+| --- | --- |
+| `vincent-himpe/feature/primitive-net-write` (`8399eea`) | `PCBGeneric.pas` has `PCBSetNet` and accepts `Net`/`Net.Name` on copper primitives, updating net membership both ways. |
+| `vincent-himpe/feature/add-footprint-fills` (`bf31274`) | `lib_add_footprint_fills` is registered in `tools/library.py` and handled by the library script. |
+| `vincent-himpe/feature/keepout-restrictions` (`65e19b9`) | `PCBGeneric.pas` reads and writes the five `IsKeepoutFor*` restrictions on track, arc, fill, and region. |
+| `vincent-himpe/feature/region-name` (`c3adf7f`) | `pcb_place_region` accepts a name; `PCBGeneric.pas` reads and writes a region's `Name`. |
+| `yanivbi1/lib-set-3d-body` (`a54fa8c`) | `lib_set_3d_body` is registered in `tools/library.py`; its saved-model identity and native qualifications are described above. |
+| `malteheringorgatex/wsl-process-detection` (`d57df64`) | `bridge/process_manager.py` enumerates Windows processes from WSL via `tasklist.exe`, with an explicit unavailable-interop state. |
+
+This is a source-level equivalence check, not native acceptance of the
+currently bundled script `.106`. The live Altium session is still running
+`.96`; restarting it while other projects are open remains pending.
