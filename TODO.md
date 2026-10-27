@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Fork schematic free text, 2026-10-27
+
+- [x] Port `rabihnd/integration`'s `eLabel` free-text placement as
+  `sch_add_text` with exact sheet targeting and readback. Script `.111`
+  passes source tests and Pascal lint/build.
+- [ ] On a disposable SchDoc with `.111` loaded, place a rotated free-text
+  label, save/reopen, and verify its type, text, font and position.
+
 ## Fresh fork parity check, 2026-10-27
 
 - [x] Refresh all live fork refs: 62/62 default tips and 117/117 branch

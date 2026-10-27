@@ -8,9 +8,11 @@ a pass-through layer for object iteration, property access, and process executio
 """
 
 import difflib
+import math
 import re
+from pathlib import Path
 from typing import Any, Optional
-from ..bridge.payload import payload_safe
+from ..bridge.payload import payload_safe, unsendable_chars
 from ..bridge import get_bridge
 from ..safety import refuse_process, untrusted_text_note
 from .library import _mils
@@ -2185,6 +2187,54 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_add_text(
+        text: str, x: float, y: float, rotation: int = 0,
+        sheet_path: str = "", font_id: int = 0,
+    ) -> dict[str, Any]:
+        """Place a single-line, non-electrical eLabel on an exact SchDoc.
+
+        This is free text, unlike a net label or a bordered text frame.
+        Rotation is in degrees (0, 90, 180 or 270). Save separately.
+        """
+        if (not sheet_path or not Path(sheet_path).is_absolute()
+                or Path(sheet_path).suffix.casefold() != ".schdoc"):
+            return {"ok": False, "reason": "sheet_path must be an absolute SchDoc path"}
+        if not isinstance(text, str) or not text or "\n" in text or "\r" in text:
+            return {"ok": False, "reason": "text must be a nonempty single line"}
+        unsupported = unsendable_chars(text)
+        if unsupported:
+            return {"ok": False, "reason": f"text contains characters the bridge cannot carry: {unsupported!r}"}
+        if type(rotation) is not int or rotation not in (0, 90, 180, 270):
+            return {"ok": False, "reason": "rotation must be 0, 90, 180 or 270"}
+        if type(font_id) is not int or font_id < 0:
+            return {"ok": False, "reason": "font_id must be a nonnegative integer"}
+        if (type(x) not in (int, float) or type(y) not in (int, float)
+                or not math.isfinite(x) or not math.isfinite(y)):
+            return {"ok": False, "reason": "x and y must be finite mil coordinates"}
+        try:
+            x_mils, y_mils = _mils(x), _mils(y)
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "reason": "x and y must be finite mil coordinates"}
+        reply = await get_bridge().send_command_async(
+            "generic.place_free_text",
+            {"sheet_path": sheet_path, "text": text, "x": x_mils,
+             "y": y_mils, "rotation": rotation // 90, "font_id": font_id},
+        )
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        if (reply.get("placed") is not True
+                or str(reply.get("sheet_path", "")).casefold() != sheet_path.casefold()
+                or reply.get("text") != text
+                or reply.get("x") != float(x_mils)
+                or reply.get("y") != float(y_mils)
+                or reply.get("rotation") != rotation
+                or (font_id > 0 and reply.get("font_id") != font_id)):
+            return {"ok": False, "reason": "free text readback did not match",
+                    "native_reply": reply}
+        reply["save_required"] = True
+        return reply
+
+    @mcp.tool()
     async def sch_fix_port_crossrefs(
         sheet_path: str,
         dry_run: bool = True,
@@ -4240,8 +4290,8 @@ def register_generic_tools(mcp):
             {"attachments": "~~".join(op_strs)},
         )
 
-    # Schematic power ports, net labels, and free text are placed via the
-    # dedicated handlers place_power_port / place_net_label / place_note.
+    # Schematic power ports, net labels, free labels and text frames use
+    # distinct native handlers and primitive types.
 
 
 #: Power port styles the bridge draws (Utils.pas IsPowerPortStyle).

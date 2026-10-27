@@ -1,6 +1,13 @@
-# Release verification: 2026.10.27.94
+# Release verification: 2026.10.27.111
 
-Expect `altium_script_version` = `2026.10.27.94`.
+Expect `altium_script_version` = `2026.10.27.111` for the current source
+bundle. Source lint/build and focused tests pass. Native load,
+free-text placement and save/reopen acceptance are pending; the shared
+Altium session last reported loaded `.96`.
+
+## Previous native verification: 2026.10.27.94
+
+At that checkpoint, `altium_script_version` was `2026.10.27.94`.
 
 Script `.94` restores the typed `ClearanceGapMM` helper and the clearance
 gap collection in `PCB_GetDesignRulesForBoard`, both lost during an upstream

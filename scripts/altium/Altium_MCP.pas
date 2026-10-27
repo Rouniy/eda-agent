@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.110';
+    SCRIPT_VERSION = '2026.10.27.111';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -72363,6 +72363,65 @@ Begin
         '","x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + '}');
 End;
 
+{ Place a non-electrical free-text label on one exact loaded SchDoc. }
+Function Gen_PlaceFreeText(Params : String; RequestId : String) : String;
+Var
+    SheetPath, TextStr : String;
+    X, Y : Double;
+    Rotation, FontToUse : Integer;
+    SchDoc : ISch_Document;
+    Lbl : ISch_Label;
+    Loc : TLocation;
+Begin
+    SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    TextStr := ExtractJsonValue(Params, 'text');
+    X := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
+    Y := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
+    Rotation := StrToIntDef(ExtractJsonValue(Params, 'rotation'), -1);
+    If (SheetPath = '') Or (TextStr = '') Or (Rotation < 0) Or (Rotation > 3) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'sheet_path, text and orientation 0..3 are required');
+        Exit;
+    End;
+    SchDoc := Nil;
+    Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SHEET_NOT_LOADED',
+            'No SchDoc loaded at ' + SheetPath);
+        Exit;
+    End;
+    FontToUse := PlacementFontId(SchDoc, eLabel, Params);
+    Lbl := SchServer.SchObjectFactory(eLabel, eCreate_Default);
+    If Lbl = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+            'Failed to create free-text label');
+        Exit;
+    End;
+    Loc := Lbl.Location;
+    Loc.X := MilsToCoordF(X);
+    Loc.Y := MilsToCoordF(Y);
+    Lbl.Location := Loc;
+    Lbl.Text := TextStr;
+    Lbl.Orientation := Rotation;
+    If FontToUse > 0 Then Lbl.FontId := FontToUse;
+    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchDoc.RegisterSchObjectInContainer(Lbl);
+    SchRegisterObject(SchDoc, Lbl);
+    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchDoc.GraphicallyInvalidate;
+    MarkDocDirtyByPath(SchDoc.DocumentName);
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":true,"sheet_path":"' + EscapeJsonString(SchDoc.DocumentName)
+        + '","text":"' + EscapeJsonString(Lbl.Text) + '","x":'
+        + FloatToJsonStr(CoordToMilsF(Lbl.Location.X)) + ',"y":'
+        + FloatToJsonStr(CoordToMilsF(Lbl.Location.Y)) + ',"rotation":'
+        + IntToStr(Lbl.Orientation * 90) + ',"font_id":'
+        + IntToStr(Lbl.FontId) + '}');
+End;
+
 {..............................................................................}
 { Get pin world coordinates for a placed component on the active SchDoc.     }
 { Params: designator                                                          }
@@ -81663,6 +81722,7 @@ Begin
         'get_sch_component_pins': Result := Gen_GetSchComponentPins(Params, RequestId);
         'get_component_models': Result := Gen_GetComponentModels(Params, RequestId);
         'place_net_label':  Result := Gen_PlaceNetLabel(Params, RequestId);
+        'place_free_text':  Result := Gen_PlaceFreeText(Params, RequestId);
         'stub_pins':        Result := Gen_StubPins(Params, RequestId);
         'set_net_tie':      Result := Gen_SetNetTie(Params, RequestId);
         'place_port':       Result := Gen_PlacePort(Params, RequestId);

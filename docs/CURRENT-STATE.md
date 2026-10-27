@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Fork free-text primitive, 2026-10-27
+
+The `rabihnd/integration` branch's `sch_add_text` creates an `eLabel`.
+The earlier name-only audit mapped it to notes/text frames, which are
+different schematic primitive types. Source `.111` adds an exact-sheet
+`sch_add_text` handler using a native `ISch_Label`, font inference,
+document dirtying and readback. Python refuses malformed coordinates and
+mismatched-sheet replies. Source tests and Pascal lint/build pass; native
+save/reopen acceptance is pending until the shared Altium session can load
+the new script.
+
 ## Fresh fork audit after `1d093a2`, 2026-10-27
 
 At the start of this audit, `main` and `origin/main` pointed to `1d093a2`;

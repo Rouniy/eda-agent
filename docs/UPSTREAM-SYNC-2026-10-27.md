@@ -880,7 +880,8 @@ operations, subject to the behaviour-level review still in progress:
 | `pcb_move_component`, `pcb_place_track`, `pcb_place_component` | `pcb_move_components`, `pcb_place_tracks`, `pcb_place_components` with one item |
 | `sch_attach_spice_model`, `sch_attach_spice_primitive`, `sch_attach_spice_primitives`, `sch_get_simulation_readiness` | `sim_attach_model`, `sim_attach_primitives` with one item or batch, `sim_get_readiness` |
 | `lib_set_label_format` | `lib_set_label_formats` with one operation |
-| `sch_add_net_label`, `sch_add_text` | `sch_place_net_label`, `sch_place_note` or `sch_place_text_frame` |
+| `sch_add_net_label` | `sch_place_net_label` |
+| `sch_add_text` | `sch_add_text` now places a native `eLabel` on an exact SchDoc; notes and text frames remain separate object types |
 | `lib_diag_footprint`, `lib_screenshot_footprint` | `lib_get_footprint_primitives`/`lib_probe_footprint`, `app_screenshot` |
 | `lib_list_vault_libraries` | `lib_list_available_libraries` plus `lib_get_vault_name`; the fork's `is_vault` inference from `AvailableLibraryType` was not carried because that ordinal is a library type, not a reliable Workspace source |
 
