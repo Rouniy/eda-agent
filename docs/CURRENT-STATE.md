@@ -1,5 +1,14 @@
 # Current integration state / agent handoff
 
+## Fractional schematic placements, 2026-10-27
+
+Source `.108` carries decimal mils through `sch_place_wires`,
+`sch_place_dblib_component`, and `sch_place_text_frame`. The text-frame
+Pascal handler now keeps parsed corners and its corner-swap temporary as
+`Double` before `MilsToCoordF`; the wire and DbLib handlers already did so.
+Forty-three focused tests pass. Native save/reopen acceptance is pending
+until `.108` can be loaded in the shared Altium session.
+
 ## Fractional PCB batch placement, 2026-10-27
 
 Source `.107` preserves fractional-mil X/Y positions in

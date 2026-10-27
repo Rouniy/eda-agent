@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.107';
+    SCRIPT_VERSION = '2026.10.27.108';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -80312,7 +80312,8 @@ End;
 
 Function Gen_PlaceTextFrame(Params : String; RequestId : String) : String;
 Var
-    X1, Y1, X2, Y2, TmpI, FontToUse, GotFont : Integer;
+    X1, Y1, X2, Y2, TmpCoord : Double;
+    FontToUse, GotFont : Integer;
     SchDoc : ISch_Document;
     TF : ISch_TextFrame;
     TextStr, AlignStr : String;
@@ -80327,8 +80328,8 @@ Begin
     TextStr := StringReplace(TextStr, #13 + #10, #10, -1);
     TextStr := StringReplace(TextStr, #13, #10, -1);
     TextStr := StringReplace(TextStr, #10, #13 + #10, -1);
-    If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
-    If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
+    If X1 > X2 Then Begin TmpCoord := X1; X1 := X2; X2 := TmpCoord; End;
+    If Y1 > Y2 Then Begin TmpCoord := Y1; Y1 := Y2; Y2 := TmpCoord; End;
 
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then

@@ -32,7 +32,7 @@ def test_width_and_text_line_breaks_are_applied_in_native_order():
     assert port.index("SchPort.FontId := FontToUse") < port.index(
         "SchPort.AutoSize := False") < port.index("SchPort.Width := MilsToCoordF(WantWidth)")
     assert "GotAuto := SchPort.AutoSize" in port
-    assert "GotWidth := CoordToMils(SchPort.Width)" in port
+    assert "GotWidth := CoordToMilsF(SchPort.Width)" in port
     getter = _routine(_source(), "GetSchProperty")
     assert "Result := BoolToJsonStr(PortObj.AutoSize)" in getter
     assert "If Obj.ObjectId = ePort Then" in getter
@@ -68,3 +68,9 @@ async def test_port_and_text_frame_forward_requested_style(monkeypatch):
     await captured["sch_place_text_frame"](0, 0, 500, 200, "A\\nB", font_id=7)
     assert bridge.calls[-1][1]["text"] == "A\\nB"
     assert bridge.calls[-1][1]["font_id"] == "7"
+    await captured["sch_place_text_frame"](
+        0.125, 0.0625, 500.5, 200.0625, "note")
+    assert {key: bridge.calls[-1][1][key] for key in
+            ("x1", "y1", "x2", "y2")} == {
+                "x1": "0.125", "y1": "0.0625",
+                "x2": "500.5", "y2": "200.0625"}

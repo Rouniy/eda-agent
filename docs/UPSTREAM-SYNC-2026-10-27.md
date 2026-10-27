@@ -965,3 +965,10 @@ precision loss in our newer batch wrapper: Python cast X/Y to `int`, and
 `PCB_PlaceComponents` assigned parsed floats into integer locals. Script
 `.107` keeps the values as decimal mils through `MilsToCoordF`. Nineteen
 focused tests and Pascal lint/build pass; native placement is pending.
+
+A neighboring schematic placement audit found three more fractional-mil
+losses. `sch_place_wires` and `sch_place_dblib_component` cast caller
+coordinates to integers before the native handlers; `Gen_PlaceTextFrame`
+stored parsed floats and its corner-swap temporary in integers. Source
+`.108` preserves decimal mils to `MilsToCoordF`. Forty-three focused tests
+pass; native save/reopen checks remain pending.

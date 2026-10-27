@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Fractional schematic placements, 2026-10-27
+
+- [x] Preserve fractional mils in batch wires, DbLib component placement,
+  and text-frame corners. Source `.108` passes 43 focused tests, including
+  exact bridge parameter checks.
+- [ ] After loading `.108`, place each object on a disposable schematic,
+  save/reopen, and read back its native coordinates.
+
 ## Fractional PCB batch placement, 2026-10-27
 
 - [x] Preserve sub-mil X/Y coordinates through Python batch serialization

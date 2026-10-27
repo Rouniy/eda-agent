@@ -371,6 +371,13 @@ class TestPlaceWires:
         assert len(ops) == 3
         assert ops[0] == "x1=100;y1=200;x2=300;y2=200"
 
+        await tools["sch_place_wires"](wires=[
+            {"x1": 100.125, "y1": 200.0625,
+             "x2": 300.5, "y2": 200.0625},
+        ])
+        assert sent.params["wires"] == (
+            "x1=100.125;y1=200.0625;x2=300.5;y2=200.0625")
+
 
 class TestPlaceSchComponentsFromLibrary:
     @pytest.mark.asyncio

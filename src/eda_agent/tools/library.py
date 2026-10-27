@@ -4828,8 +4828,8 @@ def register_library_tools(mcp):
         library_path: str,
         table: str,
         key: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         rotation: int = 0,
         designator: Optional[str] = None,
         sheet_path: Optional[str] = None,
@@ -4875,7 +4875,7 @@ def register_library_tools(mcp):
             return {"success": False, "error": "part_id must be 1 or more"}
         params: dict[str, Any] = {
             "library_path": library_path, "table": table, "key": key,
-            "x": str(int(x)), "y": str(int(y)), "rotation": str(int(rotation)),
+            "x": _mils(x), "y": _mils(y), "rotation": str(int(rotation)),
         }
         if designator:
             params["designator"] = designator

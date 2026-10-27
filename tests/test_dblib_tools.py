@@ -287,6 +287,12 @@ async def test_record_and_place_send_what_the_handlers_read(monkeypatch):
         "x": "1000", "y": "2000", "rotation": "90", "designator": "U7",
         "sheet_path": r"C:\p\main.SchDoc"})
 
+    await tools["sch_place_dblib_component"](
+        library_path=DBLIB, table="Opamps", key="OP-0001",
+        x=1000.125, y=2000.0625)
+    assert bridge.calls[-1][1]["x"] == "1000.125"
+    assert bridge.calls[-1][1]["y"] == "2000.0625"
+
     n = len(bridge.calls)
     assert (await tools["sch_place_dblib_component"](
         library_path=DBLIB, table="Opamps", key="OP-0001", x=0, y=0,

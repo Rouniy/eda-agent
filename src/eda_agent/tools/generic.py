@@ -3303,10 +3303,10 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_text_frame(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
         text: str,
         align: str = "left",
         font_id: int = 0,
@@ -3329,10 +3329,10 @@ def register_generic_tools(mcp):
         return await bridge.send_command_async(
             "generic.place_text_frame",
             {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
+                "x1": _mils(x1),
+                "y1": _mils(y1),
+                "x2": _mils(x2),
+                "y2": _mils(y2),
                 "text": text,
                 "align": align,
                 "font_id": str(int(font_id)),
@@ -3838,7 +3838,7 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_place_wires(
-        wires: list[dict[str, int]],
+        wires: list[dict[str, float]],
     ) -> dict[str, Any]:
         """Place MANY wire segments on the active schematic in ONE call.
 
@@ -3865,8 +3865,8 @@ def register_generic_tools(mcp):
         op_strs: list[str] = []
         for w in wires:
             op_strs.append(
-                f"x1={int(w.get('x1', 0))};y1={int(w.get('y1', 0))};"
-                f"x2={int(w.get('x2', 0))};y2={int(w.get('y2', 0))}"
+                f"x1={_mils(w.get('x1', 0))};y1={_mils(w.get('y1', 0))};"
+                f"x2={_mils(w.get('x2', 0))};y2={_mils(w.get('y2', 0))}"
             )
         if not op_strs:
             return {"error": "No wires provided", "placed": 0}
