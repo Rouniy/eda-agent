@@ -507,7 +507,7 @@ def register_design_tools(mcp) -> None:
         - ``return_via_audit``: signal vias with no ground or plane via
           within ``max_distance_mils``.
         - ``plane_region_audit``: pour and plane copper broken into islands.
-        - ``rotation_audit``: two-pad parts whose airline would
+        - ``rotation_audit``: parts whose airline would
           be shorter at another right angle. Advisory.
         - ``loop_audit``: circuit loops (switching hot loop, gate drive,
           bootstrap, decoupling, crystal, feedback, Kelvin) measured on the

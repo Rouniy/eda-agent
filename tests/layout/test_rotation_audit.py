@@ -104,3 +104,68 @@ def test_rotation_audit_is_a_registered_advisory_check():
     check = run_audits(_board(180), ["rotation_audit"])["checks"]["rotation_audit"]
     assert check["pass"] is True and check["advisory"] is True
     assert check["counts"] == {"checked": 1, "suggestions": 1, "skipped": 0}
+
+
+def test_multi_pad_part_moves_all_pads_on_a_net_together():
+    board = LayoutBoard(
+        name="multi",
+        components=[Component("LEFT", x=-200), Component("RIGHT", x=200),
+                    Component("U3", rotation=180)],
+        pads=[Pad("LEFT", "1", -200, 0, net="A"),
+              Pad("RIGHT", "1", 200, 0, net="B"),
+              Pad("U3", "1", 30, 0, net="A"),
+              Pad("U3", "2", 40, 0, net="A"),
+              Pad("U3", "3", -30, 0, net="B")],
+    )
+    found = suggest_rotations(board)
+    assert found["checked"] == 1
+    (suggestion,) = found["suggestions"]
+    assert suggestion["suggested_rotation"] == 0
+    assert suggestion["improvement_mils"] == pytest.approx(130.0)
+    assert {term["net"] for term in suggestion["current_pads"]} == {"A", "B"}
+    assert next(term for term in suggestion["current_pads"] if term["net"] == "A")["pad"] == "*"
+
+
+def test_two_pads_on_one_net_are_scored_as_one_net():
+    board = LayoutBoard(
+        name="shared-net",
+        components=[Component("LEFT", x=-200), Component("R1")],
+        pads=[Pad("LEFT", "1", -200, 0, net="A"),
+              Pad("R1", "1", -20, 0, net="A"),
+              Pad("R1", "2", 40, 0, net="A")],
+    )
+    (suggestion,) = suggest_rotations(board, min_improvement_mils=1)["suggestions"]
+    assert suggestion["suggested_rotation"] == 180
+    assert suggestion["improvement_mils"] == pytest.approx(20.0)
+    assert len(suggestion["current_pads"]) == 1
+
+
+def test_a_courtyard_collision_blocks_the_best_turn():
+    board = _board(90)
+    part = next(c for c in board.components if c.ref == "R1")
+    part.courtyard = [(-10, -40), (10, -40), (10, 40), (-10, 40)]
+    part.courtyard_source = "courtyard"
+    board.components.append(Component(
+        "BLOCK", x=30, courtyard=[(20, -10), (40, -10),
+                                  (40, 10), (20, 10)],
+        courtyard_source="courtyard"))
+    found = suggest_rotations(board)
+    assert found["suggestions"] == []
+    (blocked,) = found["blocked"]
+    assert blocked["designator"] == "R1"
+    assert blocked["suggested_rotation"] == 0
+    assert blocked["collides_with"] == "BLOCK"
+    assert blocked["courtyard_checked"] is True
+
+
+def test_opposite_side_courtyard_does_not_block_turn():
+    board = _board(90)
+    part = next(c for c in board.components if c.ref == "R1")
+    part.courtyard = [(-10, -40), (10, -40), (10, 40), (-10, 40)]
+    part.courtyard_source = "courtyard"
+    board.components.append(Component(
+        "BACK", x=30, side=BOTTOM,
+        courtyard=[(20, -10), (40, -10), (40, 10), (20, 10)],
+        courtyard_source="courtyard"))
+    (suggestion,) = suggest_rotations(board)["suggestions"]
+    assert suggestion["suggested_rotation"] == 0

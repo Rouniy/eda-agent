@@ -1,5 +1,21 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## MOREmbedded rotation audit integration
+
+Compared `MOREmbedded/main`'s multi-pad `rotation_audit` with the fork's
+existing two-pad advisory. The current audit now scores each connected net
+once while rotating all of a component's pads together, recognizes power,
+ground and explicit plane nets for nearest-return scoring, skips locked
+parts, and records candidate turns blocked by a known courtyard or 3D body.
+Courtyard collisions are checked only between parts on the same board side,
+matching `placement_audit`; the donor checked both sides together. The
+existing `suggest_rotations` response, two-pad per-pad terms and advisory
+`counts` remain compatible, with `blocked` and `courtyard_checked` added.
+The audit is offline geometry advice; native board placement still needs a
+DRC before applying a suggested turn. Thirty-nine rotation, placer, model
+and autoplace tests passed, including shared-net scoring, multi-pad nets,
+blocked turns and opposite-side courtyards.
+
 ## Upstream `fbf72a7` integration
 
 The fresh `upstream/main` tip is

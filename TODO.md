@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## MOREmbedded rotation audit, 2026-10-27
+
+- [x] Integrate multi-pad per-net scoring and courtyard collision reporting
+  into the existing advisory. The port also avoids double-counting two pads
+  of one net and ignores courtyards on the opposite board side; 39 focused
+  tests pass.
+- [ ] Compare this advisory on a disposable Altium board against real
+  rotations and its placement DRC before using a suggestion to move parts.
+
 ## MOREmbedded updater parity, 2026-10-27
 
 - [x] Port the child fork's four-layer update diagnostic as a read-only

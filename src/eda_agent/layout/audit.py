@@ -18,7 +18,7 @@ mils, so a gate can name a number and the harness can read it back:
 * ``return_via_audit``: signal vias with no ground or plane via near;
 * ``plane_region_audit``: pour and plane copper that has broken into
   islands;
-* ``rotation_audit``: two-pad parts that would connect shorter at another
+* ``rotation_audit``: parts that would connect shorter at another
   right-angle rotation (advisory).
 
 Nothing here measures distance or connectivity in a second way. Clearance
