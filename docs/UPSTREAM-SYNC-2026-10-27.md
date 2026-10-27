@@ -1,5 +1,17 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 upstream main advance
+
+`upstream/main` advanced from `f3bd57f` to `ee7589c`. The latter is merged
+by ancestry into our `main`. Its `sim_get_probes` change uses the counted
+`ProjectSheet` lookup so the reply reports sheets seen and skipped; its
+layout regression test compares the courtyard point by point for pytest
+9.2 compatibility. The merge kept our broader Pascal implementation and
+bumped the bundled script to `2026.10.28.114`. Thirty-six focused tests
+passed and `scripts/altium/build.py` linted all 12 units with zero errors
+or warnings. Native reload and probe-list acceptance are recorded
+separately once complete.
+
 ## 2026-10-28 MOREmbedded package-audit routing
 
 Native script `.113` ran `lib_audit_footprint_vs_package` for

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.113';
+    SCRIPT_VERSION = '2026.10.28.114';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -75531,8 +75531,8 @@ Begin
         If Doc = Nil Then Continue;
         If Doc.DM_DocumentKind <> 'SCH' Then Continue;
         SheetPath := Doc.DM_FullPath;
-        SchDoc := Nil;
-        Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        { Counted, so the reply also says how many sheets were not read. }
+        SchDoc := ProjectSheet(SheetPath);
         If SchDoc = Nil Then
         Begin
             If NotLoaded <> '' Then NotLoaded := NotLoaded + ',';

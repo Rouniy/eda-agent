@@ -1,6 +1,6 @@
-# Release verification: 2026.10.28.113
+# Release verification: 2026.10.28.114
 
-Current source and loaded Altium script are `2026.10.28.113`. Pascal
+Previous live Altium script was `2026.10.28.113`. Its Pascal
 lint/build scanned 12 units with zero errors or warnings. Twelve
 schematic property/style tests passed. On a disposable SchDoc, the
 text-frame placement reply and `obj_query` returned exact fractional
@@ -18,7 +18,8 @@ installed example libraries open. While one library was focused,
 `lib_render_footprint` targeted a footprint in the other and returned
 its Assembly, Courtyard, 3D Body and Center roles with counts 4/4/4/2.
 The focused library had no such layer kinds. Both were closed without
-edits. Native package-audit acceptance remains separate.
+edits. The package-audit multi-library routing was subsequently checked
+live on `.113`; full independent package signoff remains separate.
 
 ## Previous native verification: 2026.10.27.112
 
