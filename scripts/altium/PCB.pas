@@ -20215,6 +20215,98 @@ Begin
         + JsonRaw('layers', '[' + Items + ']')));
 End;
 
+Function PCB_DielectricState(DL : IPCB_DielectricLayer) : String;
+Begin
+    Result := JsonObj(JsonInt('dielectric_type', DL.DielectricType) + ','
+        + JsonStr('material', DL.DielectricMaterial) + ','
+        + JsonRaw('constant', FloatToJsonStr(DL.DielectricConstant)) + ','
+        + JsonRaw('loss_tangent', FloatToJsonStr(DL.DielectricLossTangent)) + ','
+        + JsonRaw('thickness_mils', FloatToJsonStr(CoordToMilsF(DL.DielectricHeight))) + ','
+        + JsonBool('stiffener', DL.IsStiffener));
+End;
+
+Function PCB_SetDielectric(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    MLS : IPCB_MasterLayerStack;
+    L : IPCB_LayerObject;
+    DL : IPCB_DielectricLayer;
+    ExpectedPath, LayerName, Why, KindKey : String;
+    TypeS, MatS, ConstS, TanS, ThickS, StiffS : String;
+    BeforeJson, AfterJson : String;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    LayerName := Trim(ExtractJsonValue(Params, 'layer'));
+    TypeS := ExtractJsonValue(Params, 'dielectric_type');
+    MatS := ExtractJsonValue(Params, 'material');
+    ConstS := ExtractJsonValue(Params, 'constant');
+    TanS := ExtractJsonValue(Params, 'loss_tangent');
+    ThickS := ExtractJsonValue(Params, 'thickness_mils');
+    StiffS := LowerCase(ExtractJsonValue(Params, 'stiffener'));
+    If StiffS <> '' Then
+    Begin Result := BuildErrorResponse(RequestId, 'UNSUPPORTED_PERSISTENCE',
+        'Altium 26.11 did not persist IsStiffener after save/reopen'); Exit; End;
+    If (ExpectedPath = '') Or (LayerName = '') Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path and layer required'); Exit; End;
+    If (TypeS = '') And (MatS = '') And (ConstS = '') And (TanS = '')
+       And (ThickS = '') And (StiffS = '') Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'no dielectric update'); Exit; End;
+    If ((TypeS <> '') And ((Not IsIntStr(TypeS)) Or (StrToIntDef(TypeS, -1) < 0)))
+       Or ((ConstS <> '') And ((Not IsFloatStr(ConstS)) Or (StrToFloatDef(ConstS, 0) < 1)))
+       Or ((TanS <> '') And ((Not IsFloatStr(TanS)) Or (StrToFloatDef(TanS, -1) < 0)))
+       Or ((ThickS <> '') And ((Not IsFloatStr(ThickS)) Or (StrToFloatDef(ThickS, 0) <= 0)))
+       Or ((StiffS <> '') And (StiffS <> 'true') And (StiffS <> 'false')) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'invalid dielectric value'); Exit; End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    MLS := Board.MasterLayerStack;
+    If MLS = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_STACK', 'No master layer stack'); Exit; End;
+    L := MLS.First(eLayerClass_Physical);
+    While L <> Nil Do
+    Begin
+        If UpperCase(L.Name) = UpperCase(LayerName) Then Break;
+        L := MLS.Next(eLayerClass_Physical, L);
+    End;
+    If L = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_LAYER', LayerName); Exit; End;
+    KindKey := '|' + L.Name + '|';
+    If (Pos(KindKey, PCB_StackClassNames(MLS, eLayerClass_Dielectric)) = 0)
+       And (Pos(KindKey, PCB_StackClassNames(MLS, eLayerClass_SolderMask)) = 0) Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_DIELECTRIC', LayerName); Exit; End;
+    DL := L;
+    BeforeJson := PCB_DielectricState(DL);
+    If (ExtractJsonValue(Params, 'expect_dielectric_type') <> IntToStr(DL.DielectricType))
+       Or (ExtractJsonValue(Params, 'expect_material') <> DL.DielectricMaterial)
+       Or (Abs(StrToFloatDef(ExtractJsonValue(Params, 'expect_constant'), -1) - DL.DielectricConstant) > 0.0001)
+       Or (Abs(StrToFloatDef(ExtractJsonValue(Params, 'expect_loss_tangent'), -1) - DL.DielectricLossTangent) > 0.0001)
+       Or (Abs(StrToFloatDef(ExtractJsonValue(Params, 'expect_thickness_mils'), -1) - CoordToMilsF(DL.DielectricHeight)) > 0.001)
+       Or ((LowerCase(ExtractJsonValue(Params, 'expect_stiffener')) = 'true') <> DL.IsStiffener)
+       Or ((LowerCase(ExtractJsonValue(Params, 'expect_stiffener')) <> 'true')
+           And (LowerCase(ExtractJsonValue(Params, 'expect_stiffener')) <> 'false')) Then
+    Begin Result := BuildErrorResponse(RequestId, 'STALE_LAYER', 'dielectric changed; read again'); Exit; End;
+    PCBServer.PreProcess;
+    Try
+        If TypeS <> '' Then DL.DielectricType := StrToInt(TypeS);
+        If MatS <> '' Then DL.DielectricMaterial := MatS;
+        If ConstS <> '' Then DL.DielectricConstant := StrToFloatDef(ConstS, 1);
+        If TanS <> '' Then DL.DielectricLossTangent := StrToFloatDef(TanS, 0);
+        If ThickS <> '' Then DL.DielectricHeight := MilsToCoordF(StrToFloatDef(ThickS, 0));
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    AfterJson := PCB_DielectricState(DL);
+    If BeforeJson <> AfterJson Then MarkDocDirtyByPath(Board.FileName);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonStr('layer', L.Name) + ','
+        + JsonBool('changed', BeforeJson <> AfterJson) + ','
+        + JsonRaw('before', BeforeJson) + ','
+        + JsonRaw('after', AfterJson)));
+End;
+
 Function PCB_ViaStructureJson(Via : IPCB_Via) : String;
 Var
     VS : IPCB_ViaStructure;
@@ -20644,6 +20736,7 @@ Begin
         'pair_impedance_rule':   Result := PCB_PairImpedanceRule(Params, RequestId);
         'via_structures':       Result := PCB_ViaStructures(Params, RequestId);
         'physical_stack':       Result := PCB_PhysicalStack(Params, RequestId);
+        'set_dielectric':       Result := PCB_SetDielectric(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);

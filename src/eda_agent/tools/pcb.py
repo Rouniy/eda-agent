@@ -4366,6 +4366,91 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_set_dielectric(
+        board_path: str,
+        layer: str,
+        dielectric_type: Optional[int] = None,
+        material: Optional[str] = None,
+        constant: Optional[float] = None,
+        loss_tangent: Optional[float] = None,
+        thickness_mils: Optional[float] = None,
+        stiffener: Optional[bool] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Plan or set a named dielectric or solder-mask layer.
+
+        Requires an exact board path and old values. Save the PcbDoc
+        separately after checking the result.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not layer.strip():
+            return {"ok": False, "reason": "layer is required"}
+        updates = {"dielectric_type": dielectric_type, "material": material,
+                   "constant": constant, "loss_tangent": loss_tangent,
+                   "thickness_mils": thickness_mils, "stiffener": stiffener}
+        updates = {key: value for key, value in updates.items() if value is not None}
+        if not updates:
+            return {"ok": False, "reason": "give at least one dielectric setting"}
+        if "stiffener" in updates:
+            return {"ok": False, "reason":
+                    "Altium 26.11 did not persist the stiffener flag after save/reopen"}
+        if ("dielectric_type" in updates and
+                (type(dielectric_type) is not int or dielectric_type < 0)):
+            return {"ok": False, "reason": "dielectric_type must be a nonnegative integer"}
+        if "material" in updates and (not isinstance(material, str) or not material.strip()):
+            return {"ok": False, "reason": "material must be nonempty"}
+        for key, minimum in (("constant", 1), ("loss_tangent", 0),
+                             ("thickness_mils", 0)):
+            if key in updates:
+                value = updates[key]
+                if (type(value) not in (int, float) or not math.isfinite(value)
+                        or value < minimum or (key == "thickness_mils" and value == 0)):
+                    return {"ok": False, "reason": f"invalid {key}"}
+        before_stack = await pcb_physical_stack(board_path)
+        if not isinstance(before_stack.get("layers"), list):
+            return {"ok": False, "reason": "could not read exact-board physical stack",
+                    "native_reply": before_stack}
+        matches = [item for item in before_stack["layers"]
+                   if item.get("name", "").casefold() == layer.strip().casefold()]
+        if len(matches) != 1 or matches[0].get("kind") not in ("dielectric", "solder_mask"):
+            return {"ok": False, "reason": "named dielectric or solder mask layer not found"}
+        old = {key: matches[0][key] for key in
+               ("dielectric_type", "material", "constant", "loss_tangent",
+                "thickness_mils", "stiffener")}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "layer": matches[0]["name"], "before": old, "would_set": updates}
+        params = {"board_path": board_path, "layer": matches[0]["name"]}
+        for key, value in old.items():
+            params[f"expect_{key}"] = ("true" if value else "false") if key == "stiffener" else str(value)
+        for key, value in updates.items():
+            params[key] = ("true" if value else "false") if key == "stiffener" else str(value)
+        reply = await get_bridge().send_command_async("pcb.set_dielectric", params,
+                                                       timeout=120.0)
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        after_stack = await pcb_physical_stack(board_path)
+        if not isinstance(after_stack.get("layers"), list):
+            return {"ok": False, "reason": "could not verify dielectric readback",
+                    "native_reply": reply}
+        after = next((item for item in after_stack["layers"]
+                      if item.get("name", "").casefold() == layer.strip().casefold()), None)
+        if after is None:
+            return {"ok": False, "reason": "dielectric vanished after write",
+                    "native_reply": reply}
+        for key, value in updates.items():
+            actual = after.get(key)
+            matched = (math.isclose(actual, value, abs_tol=0.01) if key in
+                       ("constant", "loss_tangent", "thickness_mils") and
+                       isinstance(actual, (int, float)) else actual == value)
+            if not matched:
+                return {"ok": False, "reason": f"{key} did not read back",
+                        "after": after, "native_reply": reply}
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
+
+    @mcp.tool()
     async def pcb_get_impedance_profiles() -> dict[str, Any]:
         """Read Altium's own layer-stack impedance profiles for the open board.
 

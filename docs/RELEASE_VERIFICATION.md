@@ -2043,3 +2043,15 @@ owner's PcbDoc, from Top Paste to Bottom Paste, including four copper
 layers, three dielectrics and both solder masks. The total Z span was
 70.0078 mils. A different absolute PcbDoc path was refused. Two focused
 tests and Pascal lint/build passed. This was a read-only check.
+
+# Dielectric layer edit, 2026-10-27
+
+On an isolated copy of the owner's PcbDoc, script `.31` changed
+`Dielectric 1` material from `PP` to `PP_TEST`, Dk from 4.74 to 4.8,
+Df from 0.02 to 0.025 and thickness from 7.7165 to 7.8 mil.
+Exact save, close and reopen preserved all four. A second exact save
+and reopen preserved a type change from 2 to 1. Setting `IsStiffener`
+to true read back immediately but reopened as false. Script `.32`
+therefore refuses that field in both the Python tool and native handler;
+the native refusal was observed. Four related tests and Pascal lint/build
+passed. The owner PcbDoc was restored active and was not saved.
