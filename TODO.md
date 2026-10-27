@@ -1,5 +1,19 @@
 # Fork integration TODO
 
+## Upstream `fbf72a7` source merge, 2026-10-27
+
+- [x] Reconcile the four new upstream commits after `40814ba` into the
+  source tree, preserving the fork's exact-board and paste safety checks.
+  The merge contains decimal-mil, filtered-walk, via-mask, via-delete,
+  deferred-pour and 3D-body identifier improvements. Focused source tests
+  and Pascal lint/build pass; see the dated sync ledger.
+- [ ] Load script `.93` in Altium and run native reads and guarded writes
+  against disposable designs for the newly merged paths. Verify persisted
+  geometry after exact save/reopen, especially decimal schematic placement,
+  via mask state, deferred pours and footprint body selection.
+- [ ] Reconcile legacy `test_added_altium_tools.py` cases that still call
+  unscoped upstream API wrappers without this fork's required board path.
+
 ## Refreshed after `.68`, 2026-10-27
 
 - [x] Restore per-unit stamps, script-install stamping and the session

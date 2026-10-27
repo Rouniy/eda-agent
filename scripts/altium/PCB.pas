@@ -2383,7 +2383,7 @@ End;
 Function BuildViolationJson(Violation : IPCB_Violation) : String;
 Var
     RuleName, P1Desc, P2Desc, P1Net, P2Net, P1Type, P2Type : String;
-    P1X, P1Y, P2X, P2Y, VX, VY : Integer;
+    P1X, P1Y, P2X, P2Y, VX, VY : Double;
     P1Layer, P2Layer, VLayer : String;
     BBox : TCoordRect;
     Prim : IPCB_Primitive;
@@ -2399,12 +2399,12 @@ Begin
     VX := 0; VY := 0; VLayer := '';
     Try
         BBox := Violation.BoundingRectangle;
-        VX := CoordToMils((BBox.Left + BBox.Right) Div 2);
-        VY := CoordToMils((BBox.Bottom + BBox.Top) Div 2);
+        VX := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
+        VY := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
     Except End;
     Try VLayer := GetLayerString(Violation.Layer); Except End;
-    Result := Result + ',"x_mils":' + IntToStr(VX);
-    Result := Result + ',"y_mils":' + IntToStr(VY);
+    Result := Result + ',"x_mils":' + FloatToJsonStr(VX);
+    Result := Result + ',"y_mils":' + FloatToJsonStr(VY);
     Result := Result + ',"layer":"' + EscapeJsonString(VLayer) + '"';
 
     P1Desc := ''; P1Net := ''; P1Type := ''; P1X := 0; P1Y := 0; P1Layer := '';
@@ -2417,8 +2417,8 @@ Begin
             Try P1Type := IntToStr(Prim.ObjectId); Except End;
             Try
                 BBox := Prim.BoundingRectangle;
-                P1X := CoordToMils((BBox.Left + BBox.Right) Div 2);
-                P1Y := CoordToMils((BBox.Bottom + BBox.Top) Div 2);
+                P1X := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
+                P1Y := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
             Except End;
             Try P1Layer := GetLayerString(Prim.Layer); Except End;
         End;
@@ -2428,8 +2428,8 @@ Begin
         JsonStr('type', P1Type) + ',' +
         JsonStr('net', P1Net) + ',' +
         JsonStr('layer', P1Layer) + ',' +
-        JsonInt('x_mils', P1X) + ',' +
-        JsonInt('y_mils', P1Y)
+        JsonFloat('x_mils', P1X) + ',' +
+        JsonFloat('y_mils', P1Y)
     );
 
     P2Desc := ''; P2Net := ''; P2Type := ''; P2X := 0; P2Y := 0; P2Layer := '';
@@ -2442,8 +2442,8 @@ Begin
             Try P2Type := IntToStr(Prim.ObjectId); Except End;
             Try
                 BBox := Prim.BoundingRectangle;
-                P2X := CoordToMils((BBox.Left + BBox.Right) Div 2);
-                P2Y := CoordToMils((BBox.Bottom + BBox.Top) Div 2);
+                P2X := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
+                P2Y := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
             Except End;
             Try P2Layer := GetLayerString(Prim.Layer); Except End;
         End;
@@ -2453,8 +2453,8 @@ Begin
         JsonStr('type', P2Type) + ',' +
         JsonStr('net', P2Net) + ',' +
         JsonStr('layer', P2Layer) + ',' +
-        JsonInt('x_mils', P2X) + ',' +
-        JsonInt('y_mils', P2Y)
+        JsonFloat('x_mils', P2X) + ',' +
+        JsonFloat('y_mils', P2Y)
     );
     Result := Result + '}';
 End;
@@ -2697,7 +2697,8 @@ Var
     JsonItems, Designator, Footprint, LayerStr : String;
     CommentStr, SrcDesignator, SrcUniqueId, UniqueIdStr : String;
     First : Boolean;
-    Count, HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Integer;
+    Count : Integer;
+    HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Double;
 Begin
     JsonItems := '';
     First := True;
@@ -2721,7 +2722,7 @@ Begin
         Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
         Try SrcUniqueId := Comp.SourceUniqueId; Except SrcUniqueId := ''; End;
         Try UniqueIdStr := Comp.UniqueId; Except UniqueIdStr := ''; End;
-        Try HeightMils := CoordToMils(Comp.Height); Except HeightMils := 0; End;
+        Try HeightMils := CoordToMilsF(Comp.Height); Except HeightMils := 0; End;
 
         { Do not walk footprint children here. Some imported footprints make
           GroupIterator crash ScriptingSystem outright. The component's own
@@ -2733,10 +2734,10 @@ Begin
         BBoxW := 0; BBoxH := 0;
         Try
             BBox := Comp.BoundingRectangle;
-            BBoxX1 := CoordToMils(BBox.X1);
-            BBoxY1 := CoordToMils(BBox.Y1);
-            BBoxX2 := CoordToMils(BBox.X2);
-            BBoxY2 := CoordToMils(BBox.Y2);
+            BBoxX1 := CoordToMilsF(BBox.X1);
+            BBoxY1 := CoordToMilsF(BBox.Y1);
+            BBoxX2 := CoordToMilsF(BBox.X2);
+            BBoxY2 := CoordToMilsF(BBox.Y2);
             BBoxW := BBoxX2 - BBoxX1;
             BBoxH := BBoxY2 - BBoxY1;
         Except End;
@@ -2751,16 +2752,16 @@ Begin
             + '"source_designator":"' + EscapeJsonString(SrcDesignator) + '",'
             + '"source_unique_id":"' + EscapeJsonString(SrcUniqueId) + '",'
             + '"unique_id":"' + EscapeJsonString(UniqueIdStr) + '",'
-            + '"height_mils":' + IntToStr(HeightMils) + ','
-            + '"bbox":{"x1":' + IntToStr(BBoxX1) + ',"y1":' + IntToStr(BBoxY1)
-            + ',"x2":' + IntToStr(BBoxX2) + ',"y2":' + IntToStr(BBoxY2)
-            + ',"width":' + IntToStr(BBoxW) + ',"height":' + IntToStr(BBoxH) + '},'
-            + '"placement_bbox":{"x1":' + IntToStr(BBoxX1)
-            + ',"y1":' + IntToStr(BBoxY1)
-            + ',"x2":' + IntToStr(BBoxX2)
-            + ',"y2":' + IntToStr(BBoxY2)
-            + ',"width":' + IntToStr(BBoxW)
-            + ',"height":' + IntToStr(BBoxH) + '},'
+            + '"height_mils":' + FloatToJsonStr(HeightMils) + ','
+            + '"bbox":{"x1":' + FloatToJsonStr(BBoxX1) + ',"y1":' + FloatToJsonStr(BBoxY1)
+            + ',"x2":' + FloatToJsonStr(BBoxX2) + ',"y2":' + FloatToJsonStr(BBoxY2)
+            + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '},'
+            + '"placement_bbox":{"x1":' + FloatToJsonStr(BBoxX1)
+            + ',"y1":' + FloatToJsonStr(BBoxY1)
+            + ',"x2":' + FloatToJsonStr(BBoxX2)
+            + ',"y2":' + FloatToJsonStr(BBoxY2)
+            + ',"width":' + FloatToJsonStr(BBoxW)
+            + ',"height":' + FloatToJsonStr(BBoxH) + '},'
             + '"placement_bbox_fallback":true}';
         Inc(Count);
         Comp := Iterator.NextPCBObject;
@@ -5415,17 +5416,15 @@ Begin
             If Obj.ObjectId = eTrackObject Then
             Begin
                 Track := Obj;
-                { CoordToMils rounds to integer mils. Summing many short
-                  segments would accumulate that quantization error. }
-                DX := Track.x2 / 10000.0 - Track.x1 / 10000.0;
-                DY := Track.y2 / 10000.0 - Track.y1 / 10000.0;
+                DX := CoordToMilsF(Track.x2) - CoordToMilsF(Track.x1);
+                DY := CoordToMilsF(Track.y2) - CoordToMilsF(Track.y1);
                 SegLen := Sqrt(DX * DX + DY * DY);
             End
             Else If Obj.ObjectId = eArcObject Then
             Begin
                 Arc := Obj;
                 Try
-                    RadiusMils := Arc.Radius / 10000.0;
+                    RadiusMils := CoordToMilsF(Arc.Radius);
                     ArcAngle := Arc.EndAngle - Arc.StartAngle;
                     If ArcAngle < 0 Then ArcAngle := ArcAngle + 360;
                     SegLen := RadiusMils * ArcAngle * 3.14159265358979 / 180.0;
@@ -8232,7 +8231,7 @@ Var
     Model : IPCB_Model;
     ModelPath, LayerStr, Why : String;
     BodyLayer : TLayer;
-    Standoff, CurX, CurY : Integer;
+    Standoff, CurX, CurY : Double;
     BodyX, BodyY : Double;
     DidStandoff, DidMove : Boolean;
     ReadBackX, ReadBackY : Double;
@@ -8264,7 +8263,7 @@ Begin
 
     BodyX := StrToFloatDef(ExtractJsonValue(Params, 'x'), 0);
     BodyY := StrToFloatDef(ExtractJsonValue(Params, 'y'), 0);
-    Standoff := Round(StrToFloatDef(ExtractJsonValue(Params, 'standoff_height'), 0));
+    Standoff := StrToFloatDef(ExtractJsonValue(Params, 'standoff_height'), 0);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopLayer';
     { Checked against the board before anything is made: the layer was   }
@@ -8333,8 +8332,8 @@ Begin
           The delta is computed from where the factory actually put the
           body rather than assuming it starts at the origin. }
         Try
-            CurX := CoordToMils(Body.x);
-            CurY := CoordToMils(Body.y);
+            CurX := CoordToMilsF(Body.x);
+            CurY := CoordToMilsF(Body.y);
         Except
             CurX := 0;
             CurY := 0;
@@ -8357,7 +8356,7 @@ Begin
 
         If Standoff <> 0 Then
             Try
-                Body.StandoffHeight := MilsToCoord(Standoff);
+                Body.StandoffHeight := MilsToCoordF(Standoff);
                 DidStandoff := True;
             Except End;
     Finally
@@ -8389,7 +8388,7 @@ Begin
             JsonFloat('x', ReadBackX) + ',' +
             JsonFloat('y', ReadBackY) + ',' +
             JsonStr('layer', LayerStr) + ',' +
-            JsonInt('standoff_height', Standoff) + ',' +
+            JsonFloat('standoff_height', Standoff) + ',' +
             JsonBool('standoff_applied', DidStandoff) + ',' +
             JsonBool('moved', DidMove) + ',' +
             JsonBool('rotation_applied', False) + ',' +
@@ -10743,7 +10742,7 @@ Var
     ArcObj : IPCB_Arc;
     ViaObj : IPCB_Via;
     XStr, YStr, LayerStr, ObjTypeStr : String;
-    TargetX, TargetY : Integer;
+    TargetX, TargetY : Double;
     TargetLayer : TLayer;
     ObjFilter : TObjectId;
     Found, ConnRebuilt : Boolean;
@@ -10751,7 +10750,7 @@ Var
     Dist, BestDist, Px, Py : Double;
     Ties : Integer;
     BRect : TCoordRect;
-    Why, NetName : String;
+    Why, NetName, FoundLayer : String;
 Begin
     { This DELETES, so it may not wander to find a board. See
       GetPCBBoardForMutation: the wandering lookup opens the first board
@@ -10778,11 +10777,14 @@ Begin
 
     If ObjTypeStr = '' Then ObjTypeStr := 'track';
 
-    TargetX := StrToIntDef(XStr, 0);
-    TargetY := StrToIntDef(YStr, 0);
+    TargetX := StrToFloatDef(XStr, 0);
+    TargetY := StrToFloatDef(YStr, 0);
 
-    If LayerStr = '' Then TargetLayer := eTopLayer
-    Else TargetLayer := ResolveLayerId(Board, LayerStr);
+    { No layer means every layer: a through via, a through-hole pad and a }
+    { part sit on the multi-layer, so a walk of the top layer alone never   }
+    { found them. The reply names the layer of what was deleted.           }
+    TargetLayer := eTopLayer;
+    If LayerStr <> '' Then TargetLayer := ResolveLayerId(Board, LayerStr);
     If TargetLayer = eNoLayer Then
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
@@ -10824,7 +10826,10 @@ Begin
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ObjFilter));
-    Iterator.AddFilter_LayerSet(MkSet(TargetLayer));
+    If LayerStr = '' Then
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers)
+    Else
+        Iterator.AddFilter_LayerSet(MkSet(TargetLayer));
     Iterator.AddFilter_Method(eProcessAll);
 
     Px := TargetX * 1.0;
@@ -10883,13 +10888,15 @@ Begin
     If (Not Found) Or (BestDist > 100) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
-            'No ' + ObjTypeStr + ' found within 100 mils of (' + IntToStr(TargetX) + ',' + IntToStr(TargetY) + ')');
+            'No ' + ObjTypeStr + ' found within 100 mils of (' + FloatToJsonStr(TargetX) + ',' + FloatToJsonStr(TargetY) + ')');
         Exit;
     End;
 
     { Described BEFORE it goes, so the caller can check it was the one meant. }
     NetName := '';
     Try If FoundObj.Net <> Nil Then NetName := FoundObj.Net.Name; Except End;
+    FoundLayer := '';
+    Try FoundLayer := Layer2String(FoundObj.Layer); Except End;
     BRect := FoundObj.BoundingRectangle;
 
     PCBServer.PreProcess;
@@ -10910,6 +10917,7 @@ Begin
         + '"object_type":"' + EscapeJsonString(ObjTypeStr) + '",'
         + '"distance_mils":' + FloatToJsonStr(BestDist) + ','
         + '"net":"' + EscapeJsonString(NetName) + '",'
+        + '"layer":"' + EscapeJsonString(FoundLayer) + '",'
         + '"bbox_mils":[' + FloatToJsonStr(BRect.Left / 10000.0) + ','
         + FloatToJsonStr(BRect.Bottom / 10000.0) + ','
         + FloatToJsonStr(BRect.Right / 10000.0) + ','
@@ -12379,11 +12387,11 @@ Var
     FilterNet, FilterDesig, OffsetStr, LimitStr : String;
     JsonItems, PadName, NetName, LayerStr, CompDesig, ShapeStr : String;
     PadCache : TPadCache;
-    SolderMask, PasteMask, PasteMode : Integer;
+    SolderMask, SolderMaskBottom, PasteMask : Double;
+    PasteMode : Integer;
     First, Emit, PasteEnabled, TopPasteEnabled, BottomPasteEnabled : Boolean;
     Count, Matched, Scanned, OffsetVal, LimitVal : Integer;
     MaskSeparateFlag : Boolean;
-    SolderMaskBottom : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -12486,11 +12494,11 @@ Begin
             MaskSeparateFlag := PadCache.UseSeparateExpansions;
             If PadCache.SolderMaskExpansionValid = eCacheManual Then
             Begin
-                SolderMask := CoordToMils(PadCache.SolderMaskExpansion);
-                SolderMaskBottom := CoordToMils(PadCache.SolderMaskBottomExpansion);
+                SolderMask := CoordToMilsF(PadCache.SolderMaskExpansion);
+                SolderMaskBottom := CoordToMilsF(PadCache.SolderMaskBottomExpansion);
             End;
             If PadCache.PasteMaskExpansionValid = eCacheManual Then
-                PasteMask := CoordToMils(PadCache.PasteMaskExpansion);
+                PasteMask := CoordToMilsF(PadCache.PasteMaskExpansion);
         Except End;
         Try PasteEnabled := Pad.PasteMaskEnabled; Except End;
         Try PasteMode := Pad.PasteMaskExpansionMode; Except End;
@@ -12509,10 +12517,10 @@ Begin
             + '"hole_size":' + FloatToJsonStr(CoordToMilsF(Pad.HoleSize)) + ','
             + '"rotation":' + FloatToJsonStr(Pad.Rotation) + ','
             + '"is_smd":' + BoolToJsonStr(Pad.IsSurfaceMount) + ','
-            + '"solder_mask_expansion":' + IntToStr(SolderMask) + ','
-            + '"solder_mask_bottom_expansion":' + IntToStr(SolderMaskBottom) + ','
+            + '"solder_mask_expansion":' + FloatToJsonStr(SolderMask) + ','
+            + '"solder_mask_bottom_expansion":' + FloatToJsonStr(SolderMaskBottom) + ','
             + '"solder_mask_separate":' + BoolToJsonStr(MaskSeparateFlag) + ','
-            + '"paste_mask_expansion":' + IntToStr(PasteMask) + ','
+            + '"paste_mask_expansion":' + FloatToJsonStr(PasteMask) + ','
             + '"paste_mask_enabled":' + BoolToJsonStr(PasteEnabled) + ','
             + '"top_paste_enabled":' + BoolToJsonStr(TopPasteEnabled) + ','
             + '"bottom_paste_enabled":' + BoolToJsonStr(BottomPasteEnabled) + ','
@@ -13430,8 +13438,8 @@ Begin
         Begin
             Inc(TrackCount);
             TrkObj := Obj;
-            DX := CoordToMils(TrkObj.X2) - CoordToMils(TrkObj.X1);
-            DY := CoordToMils(TrkObj.Y2) - CoordToMils(TrkObj.Y1);
+            DX := CoordToMilsF(TrkObj.X2) - CoordToMilsF(TrkObj.X1);
+            DY := CoordToMilsF(TrkObj.Y2) - CoordToMilsF(TrkObj.Y1);
             TotalTraceLen := TotalTraceLen + Sqrt(DX * DX + DY * DY);
         End
         Else If Obj.ObjectId = eViaObject Then Inc(ViaCount)
@@ -13454,8 +13462,8 @@ Begin
         If Outline <> Nil Then
         Begin
             BR := Outline.BoundingRectangle;
-            BoardWidth := CoordToMils(BR.Right) - CoordToMils(BR.Left);
-            BoardHeight := CoordToMils(BR.Top) - CoordToMils(BR.Bottom);
+            BoardWidth := CoordToMilsF(BR.Right) - CoordToMilsF(BR.Left);
+            BoardHeight := CoordToMilsF(BR.Top) - CoordToMilsF(BR.Bottom);
             BoardArea := BoardWidth * BoardHeight;
         End;
     Except End;
@@ -13787,9 +13795,24 @@ Begin
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + '}');
 End;
 
+{ Altium's own repour preference as a name: 'never', 'threshold' or         }
+{ 'always' ('' when unreadable), reported beside what the placer did.     }
+Function RepourModeName(Dummy : Integer) : String;
+Var
+    Mode : Integer;
+Begin
+    Result := '';
+    Mode := -1;
+    Try Mode := PCBServer.SystemOptions.PolygonRepour; Except Mode := -1; End;
+    If Mode = 0 Then Result := 'never'
+    Else If Mode = 1 Then Result := 'threshold'
+    Else If Mode = 2 Then Result := 'always';
+End;
+
 {..............................................................................}
 { PCB_PlacePolygonRect - Drop a copper polygon pour on a rectangular area     }
-{ Params: x1,y1,x2,y2 in mils, net=<name>, layer=<layer>, pour_over=<bool>   }
+{ Params: x1,y1,x2,y2 in mils, net=<name>, layer=<layer>, pour_over=<bool>,  }
+{ pour=<bool> (false places the outline unpoured).                           }
 {..............................................................................}
 
 Function PCB_PlacePolygonRect(Params : String; RequestId : String) : String;
@@ -13802,6 +13825,8 @@ Var
     FoundNet : IPCB_Net;
     Seg : TPolySegment;
     TargetLayer : TLayer;
+    Skipped, CopperExact : Boolean;
+    CopperSqMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -13887,7 +13912,16 @@ Begin
         Board.AddPCBObject(Polygon);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Polygon.I_ObjectAddress);
-        Polygon.Rebuild;
+        { pour = false skips the pour, for a caller who sets the hatch, grid }
+        { or thresholds next and pours once, with pcb_repour_polygons. On AD }
+        { 26.11 Altium poured the new polygon anyway, even with its repour   }
+        { preference at never, so the reply says what copper is there.       }
+        Skipped := LowerCase(ExtractJsonValue(Params, 'pour')) = 'false';
+        If Not Skipped Then Polygon.Rebuild;
+        { Altium names a pour when it pours it; one left without a name is  }
+        { given its default name, so it can be poured later by name. Set    }
+        { before the polygon joined the board, the name stayed empty.       }
+        Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except End;
     Finally
         PCBServer.PostProcess;
     End;
@@ -13898,6 +13932,11 @@ Begin
         '{"placed":true,'
         + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
         + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
+        + '"remove_dead":' + BoolToJsonStr(Polygon.RemoveDead) + ','
+        + '"pour_skipped":' + BoolToJsonStr(Skipped) + ','
+        + '"poured":' + BoolToJsonStr(PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0) + ','
+        + '"repour_mode":"' + RepourModeName(0) + '",'
+        + '"name":"' + EscapeJsonString(Polygon.Name) + '",'
         + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
@@ -14064,7 +14103,7 @@ End;
 { follows a round or flanged board exactly. The edge distance comes from the  }
 { keep-out outline (PCB_KeepoutBoardOutline), which the Python tool draws     }
 { first.                                                                        }
-{ Params: net, layer, pour_over, remove_dead (as PCB_PlacePolygonRect).        }
+{ Params: net, layer, pour_over, remove_dead, pour (as PCB_PlacePolygonRect). }
 {..............................................................................}
 
 Function PCB_PlacePolygonBoard(Params : String; RequestId : String) : String;
@@ -14077,6 +14116,8 @@ Var
     FoundNet : IPCB_Net;
     TargetLayer : TLayer;
     I, N : Integer;
+    Skipped, CopperExact : Boolean;
+    CopperSqMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -14154,7 +14195,16 @@ Begin
         Board.AddPCBObject(Polygon);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Polygon.I_ObjectAddress);
-        Polygon.Rebuild;
+        { pour = false skips the pour, for a caller who sets the hatch, grid }
+        { or thresholds next and pours once, with pcb_repour_polygons. On AD }
+        { 26.11 Altium poured the new polygon anyway, even with its repour   }
+        { preference at never, so the reply says what copper is there.       }
+        Skipped := LowerCase(ExtractJsonValue(Params, 'pour')) = 'false';
+        If Not Skipped Then Polygon.Rebuild;
+        { Altium names a pour when it pours it; one left without a name is  }
+        { given its default name, so it can be poured later by name. Set    }
+        { before the polygon joined the board, the name stayed empty.       }
+        Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except End;
     Finally
         PCBServer.PostProcess;
     End;
@@ -14162,6 +14212,10 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"vertices":' + IntToStr(N)
         + ',"remove_dead":' + BoolToJsonStr(Polygon.RemoveDead)
+        + ',"pour_skipped":' + BoolToJsonStr(Skipped)
+        + ',"poured":' + BoolToJsonStr(PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0)
+        + ',"repour_mode":"' + RepourModeName(0) + '"'
+        + ',"name":"' + EscapeJsonString(Polygon.Name) + '"'
         + ',"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '"'
         + ',"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
@@ -14230,6 +14284,9 @@ Begin
     PlacedCount := 0;
     PCBServer.PreProcess;
     Try
+        { Positions are X1 + n * Pitch, not a running sum, so a decimal pitch }
+        { does not drift; the 1e-6 mil slack keeps the last column when the  }
+        { span is an exact multiple of the pitch.                           }
         Ny := 0;
         Iy := Y1;
         While Iy <= Y2 + 0.000001 Do
@@ -15443,8 +15500,8 @@ Begin
             { A bottom-side component is flipped after this transaction has
               committed, so Altium mirrors its grouped primitives. }
             Comp.Layer := eTopLayer;
-            Comp.x := MilsToCoord(X);
-            Comp.y := MilsToCoord(Y);
+            Comp.x := MilsToCoordF(X);
+            Comp.y := MilsToCoordF(Y);
             Comp.Rotation := Rotation;
             CenterX := 0; CenterY := 0; CenterCount := 0;
             GrpIter := Comp.GroupIterator_Create;
@@ -15460,8 +15517,8 @@ Begin
             Comp.GroupIterator_Destroy(GrpIter);
             If CenterCount > 0 Then
             Begin
-                DX := MilsToCoord(X) - (CenterX Div CenterCount);
-                DY := MilsToCoord(Y) - (CenterY Div CenterCount);
+                DX := MilsToCoordF(X) - (CenterX Div CenterCount);
+                DY := MilsToCoordF(Y) - (CenterY Div CenterCount);
                 GrpIter := Comp.GroupIterator_Create;
                 GrpIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
                     eArcObject, eFillObject, eRegionObject, eComponentBodyObject));
@@ -16140,7 +16197,7 @@ Function PCB_PlaceAngularDimension(Params : String; RequestId : String) : String
 Var
     Board : IPCB_Board;
     Dim : IPCB_Dimension;
-    X1, Y1, X2, Y2 : Integer;
+    X1, Y1, X2, Y2 : Double;
     Cx, Cy, Radius : Double;
     LayerStr : String;
     TargetLayer : TLayer;
@@ -16154,10 +16211,10 @@ Begin
 
     Cx := StrToFloatDef(ExtractJsonValue(Params, 'center_x'), 0);
     Cy := StrToFloatDef(ExtractJsonValue(Params, 'center_y'), 0);
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
     Radius := StrToFloatDef(ExtractJsonValue(Params, 'radius'), 100);
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then LayerStr := 'TopOverlay';
@@ -17058,8 +17115,8 @@ Function PCB_GetDifferentialPairsForBoard(Board : IPCB_Board; RequestId : String
                     If Prim.ObjectId = eTrackObject Then
                     Begin
                         Track := Prim;
-                        Dx := CoordToMils(Track.X2 - Track.X1);
-                        Dy := CoordToMils(Track.Y2 - Track.Y1);
+                        Dx := CoordToMilsF(Track.X2 - Track.X1);
+                        Dy := CoordToMilsF(Track.Y2 - Track.Y1);
                         Total := Total + Sqrt(Dx * Dx + Dy * Dy);
                     End
                     Else If Prim.ObjectId = eArcObject Then
@@ -17068,7 +17125,7 @@ Function PCB_GetDifferentialPairsForBoard(Board : IPCB_Board; RequestId : String
                         SweepDeg := Abs(Arc.EndAngle - Arc.StartAngle);
                         If SweepDeg > 360 Then SweepDeg := SweepDeg - 360;
                         Total := Total + (SweepDeg / 360.0) * 2.0 * 3.14159265358979 *
-                                          CoordToMils(Arc.Radius);
+                                          CoordToMilsF(Arc.Radius);
                     End;
                 Except End;
                 Prim := GrIter.NextPCBObject;
@@ -19357,10 +19414,11 @@ Var
     Board : IPCB_Board;
     Net : IPCB_Net;
     NetName, LayerStr : String;
-    AddLen, Bumps, I : Integer;
+    Bumps, I : Integer;
+    AddLen, BeforeLen, AfterLen : Double;
     X0, Y0, Amp, WidthMils : Double;
     Layer : TLayer;
-    BeforeLen, AfterLen, AmpC, WidthC, X, Step : Integer;
+    AmpC, WidthC, X, Step : Integer;
     Trk : IPCB_Track;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -19383,7 +19441,7 @@ Begin
         Exit;
     End;
 
-    AddLen := StrToIntDef(ExtractJsonValue(Params, 'add_length_mils'), 0);
+    AddLen := StrToFloatDef(ExtractJsonValue(Params, 'add_length_mils'), 0);
     X0 := StrToFloatDef(ExtractJsonValue(Params, 'x_mils'), 0);
     Y0 := StrToFloatDef(ExtractJsonValue(Params, 'y_mils'), 0);
     Amp := StrToFloatDef(ExtractJsonValue(Params, 'amplitude_mils'), 40);
@@ -19414,7 +19472,7 @@ Begin
     Step := MilsToCoordF(Amp);            { horizontal pitch per bump leg }
     X := MilsToCoordF(X0);
 
-    BeforeLen := CoordToMils(Net.RoutedLength);
+    BeforeLen := CoordToMilsF(Net.RoutedLength);
 
     PCBServer.PreProcess;
     Try
@@ -19452,15 +19510,15 @@ Begin
 
     ResetParameters;
     RunProcess('PCB:UpdateConnectivity');
-    AfterLen := CoordToMils(Net.RoutedLength);
+    AfterLen := CoordToMilsF(Net.RoutedLength);
     MarkDocDirtyByPath(Board.FileName);
 
     Result := BuildSuccessResponse(RequestId,
         '{"net":"' + EscapeJsonString(NetName) + '",'
         + '"bumps":' + IntToStr(Bumps) + ','
-        + '"length_before_mils":' + IntToStr(BeforeLen) + ','
-        + '"length_after_mils":' + IntToStr(AfterLen) + ','
-        + '"added_mils":' + IntToStr(AfterLen - BeforeLen) + ','
+        + '"length_before_mils":' + FloatToJsonStr(BeforeLen) + ','
+        + '"length_after_mils":' + FloatToJsonStr(AfterLen) + ','
+        + '"added_mils":' + FloatToJsonStr(AfterLen - BeforeLen) + ','
         + '"drc_checked":false}');
 End;
 
@@ -20416,7 +20474,8 @@ Var
     MoveEnd : Integer;
     fx, fy, mx, my, tx, ty : Double;
     dxv, dyv, len2, t, nx, ny : Double;
-    NewMx, NewMy, OldMxMils, OldMyMils : Integer;
+    NewMx, NewMy : Integer;
+    OldMxMils, OldMyMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -20479,8 +20538,8 @@ Begin
     Begin
         mx := Best.x2; my := Best.y2; fx := Best.x1; fy := Best.y1;
     End;
-    OldMxMils := CoordToMils(Round(mx));
-    OldMyMils := CoordToMils(Round(my));
+    OldMxMils := CoordToMilsF(Round(mx));
+    OldMyMils := CoordToMilsF(Round(my));
 
     dxv := mx - fx; dyv := my - fy;
     len2 := dxv * dxv + dyv * dyv;
@@ -20511,7 +20570,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"moved_end":' + IntToStr(MoveEnd)
-        + ',"old_x":' + IntToStr(OldMxMils) + ',"old_y":' + IntToStr(OldMyMils)
+        + ',"old_x":' + FloatToJsonStr(OldMxMils) + ',"old_y":' + FloatToJsonStr(OldMyMils)
         + ',"new_x":' + FloatToJsonStr(CoordToMilsF(NewMx)) + ',"new_y":' + FloatToJsonStr(CoordToMilsF(NewMy))
         + ',"layer":"' + EscapeJsonString(GetLayerString(Best.Layer)) + '"}');
 End;

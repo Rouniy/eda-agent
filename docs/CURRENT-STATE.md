@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## New upstream source merge, 2026-10-27
+
+The current source candidate is script `.93`. It reconciles upstream
+`fbf72a78254cb0573fb75e71600f5850e38421a0` with our exact-board
+contracts and earlier fork ports. The previous exact merge point was
+`40814badc695813157fd8c50d24feafc5a553fcd`; see the dated upstream
+sync ledger for the feature list and focused checks. Pascal lint/build and
+87 focused tests passed. The loaded Altium script may still be `.92` until
+the main script project is reloaded; source compilation is not proof of a
+native command result. `MOREmbedded/main` remains `032fb4b`.
+
 ## Refreshed handoff, 2026-10-27
 
 Script `.90` is now loaded after an Altium restart. The former `.89`

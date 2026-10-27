@@ -5972,7 +5972,7 @@ Begin
     End;
 
     { MCP factory path requires InsertVertex/SetState indices 1 and 2. }
-    Wire.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+    Wire.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
     Wire.InsertVertex := 1;
     Wire.SetState_Vertex(1, Point(MilsToCoordF(X1), MilsToCoordF(Y1)));
     Wire.InsertVertex := 2;
@@ -6345,7 +6345,10 @@ Var
     Sym : ISch_SheetSymbol;
     Entry : ISch_SheetEntry;
     SheetNameStr, EntryName, IOStr, SideStr, ThisName : String;
-    DistFromTop, WantSide, GotSide, GotDist, GotX, GotY : Integer;
+    WantSide, GotSide : Integer;
+    GotX, GotY : Double;
+    GotDist : Double;
+    DistFromTop : Double;
     FontToUse, GotFont : Integer;
     Found, Placed : Boolean;
 Begin
@@ -6421,7 +6424,7 @@ Begin
       rounds every entry onto the same point after save/reload. }
     { Set again after attaching to the sheet-symbol container below.  AD 26
       resets this field to zero while an ownerless entry is adopted. }
-    Entry.DistanceFromTop := MilsToCoord(DistFromTop);
+    Entry.DistanceFromTop := MilsToCoordF(DistFromTop);
 
     If IOStr = 'input' Then Entry.IOType := ePortInput
     Else If IOStr = 'output' Then Entry.IOType := ePortOutput
@@ -6454,7 +6457,7 @@ Begin
     Sym.AddAndPositionSchObject(Entry);
 
     Try Entry.Side := WantSide; Except End;
-    Try Entry.DistanceFromTop := MilsToCoord(DistFromTop); Except End;
+    Try Entry.DistanceFromTop := MilsToCoordF(DistFromTop); Except End;
     If FontToUse > 0 Then
     Begin
         Try Entry.TextFontID := FontToUse; Except End;
@@ -6470,14 +6473,14 @@ Begin
     GotSide := -1;
     GotDist := -1;
     Try GotSide := Entry.Side; Except End;
-    Try GotDist := CoordToMils(Entry.DistanceFromTop); Except End;
+    Try GotDist := CoordToMilsF(Entry.DistanceFromTop); Except End;
     GotFont := 0;
     Try GotFont := Entry.TextFontID; Except End;
     GotX := 0;
     GotY := 0;
     Try
-        GotX := CoordToMils(Entry.Location.X);
-        GotY := CoordToMils(Entry.Location.Y);
+        GotX := CoordToMilsF(Entry.Location.X);
+        GotY := CoordToMilsF(Entry.Location.Y);
     Except End;
 
     Placed := (GotSide = WantSide) And (Abs(GotDist - DistFromTop) < 0.0001);
@@ -6500,10 +6503,10 @@ Begin
             JsonStr('requested_side', SideStr) + ',' +
             JsonFloat('requested_distance_from_top', DistFromTop) + ',' +
             JsonInt('actual_side', GotSide) + ',' +
-            JsonInt('actual_distance_from_top', GotDist) + ',' +
+            JsonFloat('actual_distance_from_top', GotDist) + ',' +
             JsonInt('font_id', GotFont) + ',' +
-            JsonInt('x', GotX) + ',' +
-            JsonInt('y', GotY) + ',' +
+            JsonFloat('x', GotX) + ',' +
+            JsonFloat('y', GotY) + ',' +
             JsonStr('note', 'x and y are read back from the placed entry. '
                 + 'If positioned_as_asked is false the entry exists but sits '
                 + 'where Altium put it; obj_modify on eSheetEntry can set '
@@ -6626,8 +6629,8 @@ Begin
         Else If StyleStr = 'CUSTOM' Then
         Begin
             SchDoc.UseCustomSheet := True;
-            If CustomW > 0 Then SchDoc.CustomX := MilsToCoord(CustomW);
-            If CustomH > 0 Then SchDoc.CustomY := MilsToCoord(CustomH);
+            If CustomW > 0 Then SchDoc.CustomX := MilsToCoordF(CustomW);
+            If CustomH > 0 Then SchDoc.CustomY := MilsToCoordF(CustomH);
         End
         Else
         Begin
@@ -7141,7 +7144,8 @@ Var
     Param : ISch_BasicContainer;
     JsonItems, ChildJson, PName, PValue, DirName : String;
     First, FirstChild : Boolean;
-    Count, X, Y : Integer;
+    Count : Integer;
+    X, Y : Double;
 Begin
     SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -7166,8 +7170,8 @@ Begin
             DirName := '';
             X := 0; Y := 0;
             Try DirName := ParamSet.Name; Except End;
-            Try X := CoordToMils(ParamSet.Location.X); Except End;
-            Try Y := CoordToMils(ParamSet.Location.Y); Except End;
+            Try X := CoordToMilsF(ParamSet.Location.X); Except End;
+            Try Y := CoordToMilsF(ParamSet.Location.Y); Except End;
 
             ChildJson := '';
             FirstChild := True;
@@ -7191,7 +7195,7 @@ Begin
             Except End;
 
             JsonItems := JsonItems + '{"name":"' + EscapeJsonString(DirName) + '",'
-                + '"x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+                + '"x":' + FloatToJsonStr(X) + ',"y":' + FloatToJsonStr(Y) + ','
                 + '"parameters":[' + ChildJson + ']}';
             Inc(Count);
             ParamSet := OuterIter.NextSchObject;
@@ -7772,8 +7776,8 @@ End;
 Function Gen_PlacePort(Params : String; RequestId : String) : String;
 Var
     Name, StyleStr, IOTypeStr, SheetPath : String;
-    X, Y, SepPos, FontToUse, GotFont, GotWidth : Integer;
-    WantWidth : Double;
+    SepPos, FontToUse, GotFont : Integer;
+    X, Y, WantWidth, GotWidth : Double;
     GotAuto : Boolean;
     SchDoc : ISch_Document;
     SchPort : ISch_Port;
@@ -7858,7 +7862,7 @@ Begin
     GotWidth := 0;
     GotAuto := True;
     Try GotFont := SchPort.FontId; Except End;
-    Try GotWidth := CoordToMils(SchPort.Width); Except End;
+    Try GotWidth := CoordToMilsF(SchPort.Width); Except End;
     Try GotAuto := SchPort.AutoSize; Except End;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
@@ -7872,7 +7876,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"name":"' + EscapeJsonString(Name) +
         '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
-        + JsonInt('font_id', GotFont) + ',' + JsonInt('width', GotWidth) + ','
+        + JsonInt('font_id', GotFont) + ',' + JsonFloat('width', GotWidth) + ','
         + JsonBool('auto_size', GotAuto) + '}');
 End;
 
@@ -12269,7 +12273,7 @@ Begin
             End;
 
             { MCP factory path requires InsertVertex/SetState indices 1 and 2. }
-            Wire.Location := Point(MilsToCoord(X1), MilsToCoord(Y1));
+            Wire.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
             Wire.InsertVertex := 1;
             Wire.SetState_Vertex(1, Point(MilsToCoordF(X1), MilsToCoordF(Y1)));
             Wire.InsertVertex := 2;

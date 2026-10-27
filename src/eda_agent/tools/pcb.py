@@ -32,7 +32,7 @@ from ..placement import (
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from .editor_options import run_options
-from .library import _angle_text, _edge_arc
+from .library import _angle_text, _edge_arc, _mils
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 
@@ -394,6 +394,49 @@ def derive_netlist_build(
         "components": sorted(components),
     }
 
+
+def _encode_bindings_param(bindings: list[dict[str, Any]]) -> str:
+    """Encode binding dicts into the ``~~``-op / ``;``-field wire grammar
+    the Pascal ``NextBatchOp``/``GetBatchField`` helpers parse. Entries
+    missing designator/pin/net are dropped (the caller reports counts)."""
+    ops: list[str] = []
+    for b in bindings:
+        desig = str(b.get("designator", "")).strip()
+        pin = str(b.get("pin", "")).strip()
+        net = str(b.get("net", "")).strip()
+        if not desig or not pin or not net:
+            continue
+        ops.append(f"designator={desig};pin={pin};net={net}")
+    return "~~".join(ops)
+
+
+#: The signature defaults of pcb_calc_termination's unit-suffixed
+#: arguments, kept here so the alias handling can tell "the caller did
+#: not pass this" from "the caller passed exactly the default". Without
+#: that distinction a conflicting alias cannot be detected at all, and
+#: the choice is between silently preferring one value and refusing
+#: every call that supplies a terse spelling.
+_TERMINATION_DEFAULTS = {
+    "z0_ohms": 50.0,
+    "dielectric_constant": 4.2,
+    "driver_impedance_ohms": 0.0,
+    "dielectric_height_mils": 0.0,
+}
+
+
+# ---------------------------------------------------------------------------
+# Rule scope queries.
+#
+# A scope reaches Altium as Scope1Expression / Scope2Expression, assigned
+# as a property: it is never written into script text, so there is nothing
+# to escape. Altium's own query engine compiles it. Its precedence puts
+# And, Or, Xor and Not ABOVE the comparisons (Query Language Reference
+# TR0110, "Brackets and Order of Precedence"), so "IsPad AND HoleSize > 3"
+# reads as "(IsPad AND HoleSize) > 3". Reported: that scope raised
+# "; expected at Line:2, Char:76. Continue execution?" on every call, the
+# rule was created anyway, and the Rules editor later said some rules had
+# incorrect definitions. && and || bind after the comparisons.
+# ---------------------------------------------------------------------------
 
 _SCOPE_TOKEN = re.compile(
     r"'(?:''|[^'])*'|&&|\|\||<>|<=|>=|[=<>()]|[A-Za-z_][A-Za-z0-9_.]*|\S")
@@ -1964,10 +2007,10 @@ def register_pcb_tools(mcp):
                         "fragment could move another component, so the "
                         "call is refused", "moves_applied": 0}
             x_str = (
-                str(round(m["x"])) if "x" in m and m["x"] is not None else ""
+                _mils(m["x"]) if "x" in m and m["x"] is not None else ""
             )
             y_str = (
-                str(round(m["y"])) if "y" in m and m["y"] is not None else ""
+                _mils(m["y"]) if "y" in m and m["y"] is not None else ""
             )
             rot_str = (
                 str(m["rotation"])
@@ -2105,8 +2148,8 @@ def register_pcb_tools(mcp):
             desig = str(p.get("designator", "")).strip()
             if not desig:
                 continue
-            x_str = str(round(p["x"])) if p.get("x") is not None else ""
-            y_str = str(round(p["y"])) if p.get("y") is not None else ""
+            x_str = _mils(p["x"]) if p.get("x") is not None else ""
+            y_str = _mils(p["y"]) if p.get("y") is not None else ""
             rot_str = str(p["rotation"]) if p.get("rotation") is not None else ""
             layer = p.get("layer")
             if not layer and p.get("side") is not None:
@@ -2227,12 +2270,12 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_tune_length(
         net: str,
-        add_length_mils: int,
-        x_mils: int,
-        y_mils: int,
+        add_length_mils: float,
+        x_mils: float,
+        y_mils: float,
         layer: str = "TopLayer",
-        amplitude_mils: int = 40,
-        width_mils: int = 6,
+        amplitude_mils: float = 40,
+        width_mils: float = 6,
     ) -> dict[str, Any]:
         """Add approximate routed length to a net with a square serpentine.
 
@@ -4550,8 +4593,8 @@ def register_pcb_tools(mcp):
     async def pcb_add_testpoints_for_net_class(
         net_class: str,
         type: str = "smd",
-        pad_size_mils: int = 40,
-        hole_size_mils: int = 20,
+        pad_size_mils: float = 40,
+        hole_size_mils: float = 20,
         fab_top: bool = False,
         fab_bottom: bool = False,
         assy_top: bool = True,
@@ -4590,8 +4633,8 @@ def register_pcb_tools(mcp):
             {
                 "net_class": net_class,
                 "type": type,
-                "pad_size_mils": str(round(pad_size_mils)),
-                "hole_size_mils": str(round(hole_size_mils)),
+                "pad_size_mils": _mils(pad_size_mils),
+                "hole_size_mils": _mils(hole_size_mils),
                 "fab_top": "true" if fab_top else "false",
                 "fab_bottom": "true" if fab_bottom else "false",
                 "assy_top": "true" if assy_top else "false",
@@ -5129,10 +5172,10 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_check_placement_collision(
         designator: str,
-        x: int,
-        y: int,
+        x: float,
+        y: float,
         rotation: Optional[float] = None,
-        margin_mils: int = 0,
+        margin_mils: float = 0,
     ) -> dict[str, Any]:
         """Check, without moving it, whether a component at (x, y[,
         rotation]) would overlap another component on the same side.
@@ -5192,9 +5235,9 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         params: dict[str, Any] = {
             "designator": designator,
-            "x": str(round(x)),
-            "y": str(round(y)),
-            "margin_mils": str(round(margin_mils)),
+            "x": _mils(x),
+            "y": _mils(y),
+            "margin_mils": _mils(margin_mils),
         }
         if rotation is not None:
             params["rotation"] = str(rotation)
@@ -6640,6 +6683,7 @@ def register_pcb_tools(mcp):
         layer: str = "TopLayer",
         pour_over: bool = True,
         remove_dead: bool = True,
+        pour: bool = True,
     ) -> dict[str, Any]:
         """Drop a copper polygon pour on a rectangular area.
 
@@ -6664,9 +6708,17 @@ def register_pcb_tools(mcp):
             pour_over: Pour over same-net objects (default True)
             remove_dead: Remove copper islands joined to nothing
                 (default True).
+            pour: Pour it now (default True). False skips the pour, so
+                its hatch, grid or thresholds can be set first and it is
+                poured once, with pcb_repour_polygons by the ``name`` in
+                the reply; on a dense board a pour can take seconds to
+                minutes. Some builds pour a new polygon anyway (AD 26.11
+                did, whatever pcb_polygon_repour_mode said): ``poured``
+                reports the copper that is there.
 
         Returns:
-            Dictionary confirming the polygon placement
+            Dictionary confirming the polygon placement, with
+            ``pour_skipped``, ``poured``, ``repour_mode`` and ``name``.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -6680,6 +6732,7 @@ def register_pcb_tools(mcp):
                 "layer": layer,
                 "pour_over": "true" if pour_over else "false",
                 "remove_dead": "true" if remove_dead else "false",
+                "pour": "true" if pour else "false",
             },
         )
         return result
@@ -6715,6 +6768,7 @@ def register_pcb_tools(mcp):
         edge_clearance_mils: int = 10,
         pour_over: bool = True,
         remove_dead: bool = True,
+        pour: bool = True,
     ) -> dict[str, Any]:
         """Pour copper over the whole board shape, following its outline.
 
@@ -6733,10 +6787,17 @@ def register_pcb_tools(mcp):
             pour_over: Pour over same-net objects (default True).
             remove_dead: Remove copper islands joined to nothing
                 (default True).
+            pour: Pour it now (default True); False skips the pour, to
+                pour once with pcb_repour_polygons (by the ``name`` in the
+                reply) after its settings are made. Some builds pour a new
+                polygon anyway (AD 26.11 did): ``poured`` reports the
+                copper that is there.
 
         Returns:
-            The pour (``vertices``, ``layer``, ``net``, ``remove_dead``)
-            and ``keepout`` (what the keep-out outline added).
+            The pour (``vertices``, ``name``, ``layer``, ``net``,
+            ``remove_dead``, ``pour_skipped``, ``poured``,
+            ``repour_mode``) and ``keepout`` (what the keep-out outline
+            added).
         """
         bridge = get_bridge()
         keepout: Any = None
@@ -6751,7 +6812,8 @@ def register_pcb_tools(mcp):
             "pcb.place_polygon_board",
             {"net": net, "layer": layer,
              "pour_over": "true" if pour_over else "false",
-             "remove_dead": "true" if remove_dead else "false"})
+             "remove_dead": "true" if remove_dead else "false",
+             "pour": "true" if pour else "false"})
         if isinstance(result, dict):
             result["keepout"] = keepout
         return result
@@ -7917,9 +7979,9 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_delete_object(
-        x: int,
-        y: int,
-        layer: str = "TopLayer",
+        x: float,
+        y: float,
+        layer: str = "",
         object_type: str = "track",
     ) -> dict[str, Any]:
         """Delete a PCB object closest to specific coordinates on a layer.
@@ -7934,7 +7996,9 @@ def register_pcb_tools(mcp):
         Args:
             x: Target X position in mils
             y: Target Y position in mils
-            layer: PCB layer name (default "TopLayer")
+            layer: PCB layer name to search; empty searches every layer,
+                which is where a through via, a through-hole pad or a part
+                is found (they sit on the multi-layer).
             object_type: Type of object to delete. Options:
                 "track" - Track segment
                 "via" - Via
@@ -7953,14 +8017,14 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with deleted status, object_type, distance_mils,
-            the deleted object's net and bbox_mils, and others_as_close:
+            the deleted object's net, layer and bbox_mils, and others_as_close:
             how many other objects were exactly as near, so a pick among
             equals is visible.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.delete_object",
-            {"x": str(x), "y": str(y), "layer": layer, "object_type": object_type},
+            {"x": _mils(x), "y": _mils(y), "layer": layer, "object_type": object_type},
         )
         return result
 
@@ -8341,10 +8405,10 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         params: dict[str, Any] = {
             "model_path": model_path,
-            "x": str(int(round(x))),
-            "y": str(int(round(y))),
+            "x": _mils(x),
+            "y": _mils(y),
             "layer": layer,
-            "standoff_height": str(standoff_height),
+            "standoff_height": _mils(standoff_height),
         }
         return await bridge.send_command_async("pcb.place_3d_body", params)
 
@@ -9155,13 +9219,13 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_angular_dimension(
-        center_x: int,
-        center_y: int,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        radius: int = 100,
+        center_x: float,
+        center_y: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        radius: float = 100,
         layer: str = "TopOverlay",
     ) -> dict[str, Any]:
         """Place an angular dimension (angle between two reference directions).
@@ -9180,13 +9244,13 @@ def register_pcb_tools(mcp):
         result = await bridge.send_command_async(
             "pcb.place_angular_dimension",
             {
-                "center_x": str(center_x),
-                "center_y": str(center_y),
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
-                "radius": str(radius),
+                "center_x": _mils(center_x),
+                "center_y": _mils(center_y),
+                "x1": _mils(x1),
+                "y1": _mils(y1),
+                "x2": _mils(x2),
+                "y2": _mils(y2),
+                "radius": _mils(radius),
                 "layer": layer,
             },
         )

@@ -818,6 +818,15 @@ def _edge_arc(x1: float, y1: float, x2: float, y2: float,
     return cx, cy, radius, end, start
 
 
+def _mils(value: Any) -> str:
+    """A length in mils for the wire: whole numbers as integers, the rest
+    to 1e-4 mil, which is one Altium internal unit."""
+    v = float(value)
+    if v.is_integer():
+        return str(int(v))
+    return f"{v:.4f}".rstrip("0").rstrip(".")
+
+
 def _angle_text(deg: float) -> str:
     """An angle for the wire: ten decimals, trailing zeros dropped, and a
     value that rounds to 360 sent as 0."""
@@ -3102,7 +3111,8 @@ def register_library_tools(mcp):
             stack_mode: "simple" (one diameter on every layer) or
                 "top-middle-bottom", written before the sizes.
             tenting_top, tenting_bottom: Solder mask tenting on each side.
-            mask_expansion: Top solder mask expansion (manual).
+            mask_expansion: Solder mask expansion (manual), both sides
+                unless ``mask_bottom_expansion`` is also given.
             mask_bottom_expansion: Bottom solder mask expansion (manual).
             mask_separate: Separate (True) or linked (False) mask expansions.
             mask_manual: True keeps the mask as written; False hands it
@@ -6485,6 +6495,7 @@ def register_library_tools(mcp):
         library_path: str = "",
         include_pads: bool = False,
         confirm: bool = False,
+        identifier: str = "",
     ) -> dict[str, Any]:
         """Delete primitives inside ONE footprint of a PCB library.
 
@@ -6505,6 +6516,11 @@ def register_library_tools(mcp):
             include_pads: Allow pads to be removed.
             confirm: Required True; check first with
                 ``lib_probe_footprint``.
+            identifier: 3D bodies whose Identifier starts with this (one
+                prefix takes every suffix a tool wrote); implies
+                object_type "body". Bodies built by a tool can be taken
+                away without the footprint's own STEP model, which sits
+                on the same layer.
 
         Returns:
             ``library``, ``footprint``, ``matched``, ``removed``,
@@ -6515,10 +6531,12 @@ def register_library_tools(mcp):
         """
         if not footprint_name.strip():
             return {"ok": False, "reason": "footprint_name is required"}
-        if not object_type.strip() and not layer.strip():
+        if not object_type.strip() and not layer.strip() and not identifier.strip():
             return {"ok": False, "reason": (
-                "give object_type or layer. Emptying a whole footprint is "
-                "not something to reach by leaving both filters off")}
+                "give object_type, layer or identifier. Emptying a whole "
+                "footprint is not something to reach by leaving them off")}
+        if identifier.strip() and object_type.strip() not in ("", "body"):
+            return {"ok": False, "reason": "identifier picks 3D bodies; object_type is body"}
 
         params: dict[str, Any] = {"footprint_name": footprint_name}
         if object_type.strip():
@@ -6531,6 +6549,8 @@ def register_library_tools(mcp):
             params["include_pads"] = "true"
         if confirm:
             params["confirm"] = "true"
+        if identifier.strip():
+            params["identifier"] = identifier.strip()
 
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -7748,6 +7768,69 @@ def register_library_tools(mcp):
                     body["step_solids"] = (_step_solid_count(body["model_file"])
                                            if body.get("model_file") else None)
         return reply
+    @mcp.tool()
+    async def lib_select_footprint_primitives(
+        footprint_name: str,
+        objects: list[dict[str, Any]],
+        clear: bool = True,
+    ) -> dict[str, Any]:
+        """Select primitives of one PcbLib footprint in the editor, for an
+        editor command that acts on the selection (obj_run_process with
+        PCB:CustomPadShape to merge a pad and a region into a custom pad,
+        PCB:Clear, ...). obj_select acts on a board, not a footprint.
+
+        Several sets select together in one call; with ``clear=False`` a
+        later call adds to the selection. Pad names are not unique (an
+        SMD "12" and a thru-hole "12" can share a footprint), so narrow by
+        layer or box and check the reply before running the command.
+
+        Args:
+            footprint_name: The footprint, made current if it is not.
+            objects: One or more filter sets; an object matching ANY set is
+                selected. Each set has any of ``object_type`` ("pad",
+                "region", "track", ...), ``layer`` ("TopLayer",
+                "MultiLayer", ...), ``name`` (a pad's designator or a
+                region's Name), ``box`` ([x1, y1, x2, y2] in mm from the
+                footprint origin, the box lib_get_footprint_primitives
+                gives a region, fill or text; matched within 0.001 mm)
+                and ``identifier`` (3D bodies whose Identifier starts with
+                it, as lib_get_footprint_primitives reports in
+                ``body_models``).
+            clear: Deselect everything else first (default True).
+
+        Returns:
+            {selected (how many matched), layers (theirs), selected_total
+            (everything the editor now holds selected)}
+        """
+        sets: list[str] = []
+        for i, spec in enumerate(objects or []):
+            if not isinstance(spec, dict):
+                return {"ok": False, "reason": f"set {i} is not an object"}
+            fields: list[str] = []
+            for key in ("object_type", "layer", "name", "identifier"):
+                value = str(spec.get(key) or "").strip()
+                if value:
+                    fields.append(f"{key}={payload_safe(value)}")
+            box = spec.get("box")
+            if box is not None:
+                try:
+                    x1, y1, x2, y2 = (float(v) for v in box)
+                except (TypeError, ValueError):
+                    return {"ok": False,
+                            "reason": f"set {i}: box is [x1, y1, x2, y2] in mm"}
+                fields.append("box=" + ",".join(
+                    format_length(v) for v in (x1, y1, x2, y2)))
+            if not fields:
+                return {"ok": False, "reason": f"set {i} has no filter; it "
+                        "would select the whole footprint"}
+            sets.append(";".join(fields))
+        if not sets:
+            return {"ok": False, "reason": "objects needs at least one set"}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "library.select_footprint_primitives",
+            {"footprint_name": footprint_name, "objects": "~~".join(sets),
+             "clear": "true" if clear else "false"})
 
     @mcp.tool()
     async def lib_extract_embedded_models(
@@ -8564,64 +8647,3 @@ def register_library_tools(mcp):
             / Path(zip_path).stem
         )
         return extract_cse_zip(zip_path, dest)
-
-    @mcp.tool()
-    async def lib_select_footprint_primitives(
-        footprint_name: str,
-        objects: list[dict[str, Any]],
-        clear: bool = True,
-    ) -> dict[str, Any]:
-        """Select primitives of one PcbLib footprint in the editor, for an
-        editor command that acts on the selection (obj_run_process with
-        PCB:CustomPadShape to merge a pad and a region into a custom pad,
-        PCB:Clear, ...). obj_select acts on a board, not a footprint.
-
-        Several sets select together in one call; with ``clear=False`` a
-        later call adds to the selection. Pad names are not unique (an
-        SMD "12" and a thru-hole "12" can share a footprint), so narrow by
-        layer or box and check the reply before running the command.
-
-        Args:
-            footprint_name: The footprint, made current if it is not.
-            objects: One or more filter sets; an object matching ANY set is
-                selected. Each set has any of ``object_type`` ("pad",
-                "region", "track", ...), ``layer`` ("TopLayer",
-                "MultiLayer", ...), ``name`` (a pad's designator or a
-                region's Name) and ``box`` ([x1, y1, x2, y2] in mm from the
-                footprint origin, the box lib_get_footprint_primitives
-                gives a region, fill or text; matched within 0.001 mm).
-            clear: Deselect everything else first (default True).
-
-        Returns:
-            {selected (how many matched), layers (theirs), selected_total
-            (everything the editor now holds selected)}
-        """
-        sets: list[str] = []
-        for i, spec in enumerate(objects or []):
-            if not isinstance(spec, dict):
-                return {"ok": False, "reason": f"set {i} is not an object"}
-            fields: list[str] = []
-            for key in ("object_type", "layer", "name"):
-                value = str(spec.get(key) or "").strip()
-                if value:
-                    fields.append(f"{key}={payload_safe(value)}")
-            box = spec.get("box")
-            if box is not None:
-                try:
-                    x1, y1, x2, y2 = (float(v) for v in box)
-                except (TypeError, ValueError):
-                    return {"ok": False,
-                            "reason": f"set {i}: box is [x1, y1, x2, y2] in mm"}
-                fields.append("box=" + ",".join(
-                    format_length(v) for v in (x1, y1, x2, y2)))
-            if not fields:
-                return {"ok": False, "reason": f"set {i} has no filter; it "
-                        "would select the whole footprint"}
-            sets.append(";".join(fields))
-        if not sets:
-            return {"ok": False, "reason": "objects needs at least one set"}
-        bridge = get_bridge()
-        return await bridge.send_command_async(
-            "library.select_footprint_primitives",
-            {"footprint_name": footprint_name, "objects": "~~".join(sets),
-             "clear": "true" if clear else "false"})

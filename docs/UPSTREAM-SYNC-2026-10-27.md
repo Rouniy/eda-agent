@@ -1,5 +1,31 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Upstream `fbf72a7` integration
+
+The fresh `upstream/main` tip is
+`fbf72a78254cb0573fb75e71600f5850e38421a0`, four commits after the
+previous merged tip `40814badc695813157fd8c50d24feafc5a553fcd`.
+`MOREmbedded/main` remains
+`032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+
+The upstream merge brings two-sided mask expansion for a lone via value,
+filtered object walks, remaining decimal-mil conversions, deletion of vias
+on any layer, optional deferred polygon pours, and footprint-body selection
+by identifier. The merge retained our exact-board contracts, component
+source IDs, paste-disabled guard, fractional placement, and selected
+project controls. A conflicting duplicate footprint-selection handler was
+removed: the retained handler filters its iterator by supported primitive
+kinds and supports body identifiers. The old duplicated Python wrapper was
+also removed. Script source is `.93`; native loading and write acceptance of
+these newly merged commands are still pending.
+
+Pascal lint/build scanned 12 units with zero errors or warnings. Focused
+upstream tests passed 19/19 for decimal mils, filtered walks and via masks;
+four current-tip behavior tests and 64 adjacent fork tests also passed.
+The broad older `test_added_altium_tools.py` contains assertions for the
+unscoped upstream API (for example calls without our required `board_path`),
+so it is not a valid whole-file gate for this fork until reconciled.
+
 ## Later upstream tip in this session
 
 The fork tool-name scan also exposed a real feature removed from our
