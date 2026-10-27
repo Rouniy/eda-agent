@@ -2083,11 +2083,10 @@ Begin
 
     IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
     Saved := False;
-    If IsMutating Then
+    If IsMutating And ((TotalMatched > 0) Or (Mode = 'create')) Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(DocPath);
-        Saved := True;
     End;
 
     If Mode = 'query' Then
@@ -2102,6 +2101,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -2146,11 +2146,10 @@ Begin
 
     IsMutating := (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create');
     Saved := False;
-    If IsMutating Then
+    If IsMutating And ((TotalMatched > 0) Or (Mode = 'create')) Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(DocPath);
-        Saved := True;
     End;
 
     If Mode = 'query' Then
@@ -2165,6 +2164,7 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;

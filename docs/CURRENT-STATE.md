@@ -1,5 +1,15 @@
 # Current integration state / agent handoff
 
+## Source integration, 2026-10-27
+
+The `main` source now includes SDK coverage and NPI phase gates from
+`MOREmbedded/main`, a periodic datasheet reminder from upstream, and a
+schematic generic edit response that no longer calls a dirty document saved.
+The reviewed upstream and fork tips, true merge bases and remaining merge
+work are recorded in `docs/UPSTREAM-SYNC-2026-10-27.md`. The new script
+source version is `2026.10.27.1`; deployment status is recorded below after
+the bridge is reloaded. Native acceptance of new write paths remains open.
+
 ## Source integration and runtime, 2026-10-26
 
 `Rouniy/eda-agent/main` is the source of truth. The source script is now

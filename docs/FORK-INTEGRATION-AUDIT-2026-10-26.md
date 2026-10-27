@@ -1,5 +1,8 @@
 # Fork integration audit — 2026-10-26
 
+The newer fetched tips and current reviewed-through checkpoint are in
+`UPSTREAM-SYNC-2026-10-27.md`.
+
 ## Recheck of MOREmbedded/main at b48f970
 
 The direct fork was fetched again from `https://github.com/MOREmbedded/eda-agent.git`

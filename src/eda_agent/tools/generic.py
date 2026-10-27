@@ -479,7 +479,9 @@ def register_generic_tools(mcp):
             filter: Pipe-separated property=value conditions (AND logic)
 
         Returns:
-            Dictionary with "matched" count and "sheets_processed"
+            Dictionary with "matched" count and "sheets_processed".
+            A single schematic sheet also reports "modified" for a matched
+            write and "saved" false; call app_save_all to persist the edit.
 
         Example - rename a net across all sheets (one value fits all matches):
             obj_modify(
