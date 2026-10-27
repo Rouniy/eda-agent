@@ -10,8 +10,10 @@ with a 0.2999994 mm gap. A native batch DRC on the betrusted DVT1 board
 reported P10U-5 against its KeepOutLayer track at x=4049.0409 mil with
 0.15 mm clearance; a second batch run on PVT2 showed zero violations for
 `Clearance_KO_pad` (priority 1, 0 mm). The first Altium process hung while
-closing DVT1 and was restarted; PVT2 closed normally. Neither board was
-saved. Pascal lint found no errors or warnings.
+closing DVT1 and was restarted. PVT2 returned `closed=true`, then Altium
+hung while returning to its home project and was restarted. Neither board
+was saved. Final `app_ping` matched `.94`. Pascal lint found no errors or
+warnings.
 
 The EasyEDA backend restores the `4pplet` automatic two-pass DesignPlan
 emitter without changing the hand-template route. Seven focused tests passed:
