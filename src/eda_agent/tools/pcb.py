@@ -4940,6 +4940,115 @@ def register_pcb_tools(mcp):
         }
 
     @mcp.tool()
+    async def pcb_order_copper_layer(
+        board_path: str,
+        action: str = "list",
+        layer: str = "",
+        above: str = "",
+        below: str = "",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """List, insert or move a copper layer relative to another layer.
+
+        Insert accepts a free MidLayer1..30 or InternalPlane1..16 ID.
+        Move accepts an existing layer. Changes require an exact board path
+        and the complete old copper order; saving is separate.
+        """
+        import re
+
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        action = action.strip().lower()
+        layer, above, below = layer.strip(), above.strip(), below.strip()
+        if action not in ("list", "insert", "move"):
+            return {"ok": False, "reason": "action must be list, insert or move"}
+        if action != "list" and not layer:
+            return {"ok": False, "reason": "layer is required"}
+        if above and below or action == "move" and not (above or below):
+            return {"ok": False, "reason": "give exactly one above or below reference for move"}
+        if action == "insert" and not re.fullmatch(
+                r"(?i)(?:MidLayer(?:[1-9]|[12][0-9]|30)|InternalPlane(?:[1-9]|1[0-6]))",
+                layer):
+            return {"ok": False, "reason": "insert layer must be MidLayer1..30 or InternalPlane1..16"}
+        bridge = get_bridge()
+        base = {"board_path": board_path, "action": "list"}
+
+        async def read_order() -> dict[str, Any]:
+            result = await bridge.send_command_async("pcb.order_copper_layer", base,
+                                                     timeout=120.0)
+            if (not isinstance(result, dict)
+                    or str(result.get("board_path", "")).casefold() != board_path.casefold()
+                    or type(result.get("count")) is not int
+                    or not isinstance(result.get("order"), list)
+                    or not isinstance(result.get("canonical_order"), list)
+                    or len(result["order"]) != result["count"]
+                    or len(result["canonical_order"]) != result["count"]
+                    or not isinstance(result.get("order_token"), str)):
+                return {"ok": False, "reason": "incomplete or wrong-board copper order",
+                        "native_reply": result}
+            return result
+
+        before = await read_order()
+        if "order" not in before:
+            return before
+        if action == "list":
+            return before
+        names = [name.casefold() for name in before["order"]]
+        canonical = [name.casefold() for name in before["canonical_order"]]
+        target = layer.casefold()
+        reference = (above or below).casefold()
+        if action == "insert" and target in canonical:
+            return {"ok": False, "reason": "layer ID already in stack under an existing name"}
+        if action == "move" and target not in names:
+            return {"ok": False, "reason": "layer not in stack"}
+        if reference and (reference not in names or reference == target):
+            return {"ok": False, "reason": "reference layer missing or same as target"}
+        if action == "move":
+            distance = names.index(target) - names.index(reference)
+            if distance == (-1 if above else 1):
+                return {"ok": True, "board_path": board_path, "action": action,
+                        "changed": False, "save_required": False,
+                        "order_before": before["order"], "order_after": before["order"]}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "action": action, "layer": layer, "above": above, "below": below,
+                    "order_before": before["order"]}
+        params = {"board_path": board_path, "action": action, "layer": layer,
+                  "expect_order": before["order_token"]}
+        if above:
+            params["above"] = above
+        if below:
+            params["below"] = below
+        reply = await bridge.send_command_async("pcb.order_copper_layer", params,
+                                                timeout=120.0)
+        if (not isinstance(reply, dict)
+                or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or not isinstance(reply.get("order_after"), list)
+                or reply.get("order_before") != before["order"]):
+            return {"ok": False, "reason": "native copper-order reply failed",
+                    "native_reply": reply}
+        after = await read_order()
+        if "order" not in after or after["order"] != reply["order_after"]:
+            return {"ok": False, "reason": "independent copper-order readback failed",
+                    "native_reply": reply, "after": after}
+        expected_count = before["count"] + (1 if action == "insert" else 0)
+        order = [name.casefold() for name in after["order"]]
+        result_name = str(reply.get("target_name", "")).casefold()
+        if after["count"] != expected_count or order.count(result_name) != 1:
+            return {"ok": False, "reason": "target layer count/readback failed",
+                    "after": after}
+        if reference:
+            ref_name = str(reply.get("reference_name", "")).casefold()
+            if ref_name not in order or ref_name != reference:
+                return {"ok": False, "reason": "reference identity changed", "after": after}
+            distance = order.index(result_name) - order.index(ref_name)
+            if distance != (-1 if above else 1):
+                return {"ok": False, "reason": "requested layer position did not take",
+                        "after": after}
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
+
+    @mcp.tool()
     async def pcb_add_layer(layer: str) -> dict[str, Any]:
         """Insert a copper layer into the PCB layer stack.
 

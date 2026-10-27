@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.35';
+    SCRIPT_VERSION = '2026.10.27.38';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -32539,6 +32539,158 @@ Begin
     Result := PCB_GetLayerStackupForBoard(Board, RequestId);
 End;
 
+Function PCB_CopperOrderJson(Stack : IPCB_LayerStack_V7) : String;
+Var
+    L : IPCB_LayerObject_V7;
+    Items : String;
+Begin
+    Items := '';
+    L := Stack.FirstLayer;
+    While L <> Nil Do
+    Begin
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + EscapeJsonString(L.Name) + '"';
+        L := Stack.NextLayer(L);
+    End;
+    Result := '[' + Items + ']';
+End;
+
+Function PCB_CopperCanonicalJson(Stack : IPCB_LayerStack_V7) : String;
+Var
+    L : IPCB_LayerObject_V7;
+    Items : String;
+Begin
+    Items := '';
+    L := Stack.FirstLayer;
+    While L <> Nil Do
+    Begin
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + EscapeJsonString(GetLayerString(L.LayerID)) + '"';
+        L := Stack.NextLayer(L);
+    End;
+    Result := '[' + Items + ']';
+End;
+
+Function PCB_OrderCopperLayer(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Stack : IPCB_LayerStack_V7;
+    L, RefObj, TargetObj : IPCB_LayerObject_V7;
+    ExpectedPath, Why, Action, LayerName, AboveName, BelowName : String;
+    RefName, Position : String;
+    BeforeOrder, AfterOrder : String;
+    TargetId, RefId : TLayer;
+    Present : Boolean;
+    BeforeCount, AfterCount : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Action := LowerCase(ExtractJsonValue(Params, 'action'));
+    LayerName := Trim(ExtractJsonValue(Params, 'layer'));
+    AboveName := Trim(ExtractJsonValue(Params, 'above'));
+    BelowName := Trim(ExtractJsonValue(Params, 'below'));
+    If (ExpectedPath = '') Or
+       ((Action <> 'list') And (Action <> 'insert') And (Action <> 'move')) Or
+       ((Action <> 'list') And (LayerName = '')) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'board_path, action and layer required'); Exit; End;
+    If ((AboveName <> '') And (BelowName <> '')) Or
+       ((Action = 'move') And (AboveName = '') And (BelowName = '')) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'give exactly one reference for move'); Exit; End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    Stack := Board.LayerStack_V7;
+    If Stack = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_STACK', 'No copper layer stack'); Exit; End;
+    BeforeOrder := PCB_CopperOrderJson(Stack);
+    If Action = 'list' Then
+    Begin
+        BeforeCount := 0;
+        L := Stack.FirstLayer;
+        While L <> Nil Do Begin Inc(BeforeCount); L := Stack.NextLayer(L); End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('board_path', Board.FileName) + ','
+            + JsonInt('count', BeforeCount) + ','
+            + JsonStr('order_token', BeforeOrder) + ','
+            + JsonRaw('canonical_order', PCB_CopperCanonicalJson(Stack)) + ','
+            + JsonRaw('order', BeforeOrder)));
+        Exit;
+    End;
+    TargetId := ResolveLayerId(Board, LayerName);
+    If Not (((TargetId >= eMidLayer1) And (TargetId <= eMidLayer30)) Or
+            ((TargetId >= eInternalPlane1) And (TargetId <= eInternalPlane16))) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_LAYER', 'target must be MidLayer1..30 or InternalPlane1..16'); Exit; End;
+    If ExtractJsonValue(Params, 'expect_order') <> BeforeOrder Then
+    Begin Result := BuildErrorResponse(RequestId, 'STALE_STACK', 'copper layer order changed'); Exit; End;
+    Present := False;
+    BeforeCount := 0;
+    L := Stack.FirstLayer;
+    While L <> Nil Do
+    Begin
+        Inc(BeforeCount);
+        If L.LayerID = TargetId Then Present := True;
+        L := Stack.NextLayer(L);
+    End;
+    If (Action = 'insert') And Present Then
+    Begin Result := BuildErrorResponse(RequestId, 'ALREADY_IN_STACK', LayerName); Exit; End;
+    If (Action = 'move') And (Not Present) Then
+    Begin Result := BuildErrorResponse(RequestId, 'NOT_IN_STACK', LayerName); Exit; End;
+    RefObj := Nil;
+    If (AboveName <> '') Or (BelowName <> '') Then
+    Begin
+        RefId := ResolveLayerIdInStack(Stack, AboveName + BelowName);
+        If RefId = eNoLayer Then
+        Begin Result := BuildErrorResponse(RequestId, 'NO_REFERENCE', AboveName + BelowName); Exit; End;
+        If RefId = TargetId Then
+        Begin Result := BuildErrorResponse(RequestId, 'BAD_REFERENCE', 'target cannot reference itself'); Exit; End;
+        L := Stack.FirstLayer;
+        While L <> Nil Do
+        Begin
+            If L.LayerID = RefId Then Begin RefObj := L; Break; End;
+            L := Stack.NextLayer(L);
+        End;
+        If RefObj = Nil Then
+        Begin Result := BuildErrorResponse(RequestId, 'NO_REFERENCE', AboveName + BelowName); Exit; End;
+    End;
+    PCBServer.PreProcess;
+    Try
+        TargetObj := Stack.LayerObject_V7[TargetId];
+        If TargetObj = Nil Then
+        Begin Result := BuildErrorResponse(RequestId, 'NOT_INSERTED', LayerName); Exit; End;
+        If Action = 'move' Then Stack.RemoveFromStack(TargetObj);
+        If (Action = 'insert') And (RefObj = Nil) Then Stack.InsertLayer(TargetId);
+        If RefObj <> Nil Then
+        Begin
+            RefObj := Stack.LayerObject_V7[RefId];
+            If AboveName <> '' Then Stack.InsertInStackAbove(RefObj, TargetObj)
+            Else Stack.InsertInStackBelow(RefObj, TargetObj);
+        End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PCBServer.PostProcess;
+    End;
+    AfterOrder := PCB_CopperOrderJson(Stack);
+    AfterCount := 0;
+    L := Stack.FirstLayer;
+    While L <> Nil Do Begin Inc(AfterCount); L := Stack.NextLayer(L); End;
+    If BeforeOrder <> AfterOrder Then MarkDocDirtyByPath(Board.FileName);
+    RefName := AboveName;
+    Position := 'above';
+    If BelowName <> '' Then Begin RefName := BelowName; Position := 'below'; End;
+    If RefName = '' Then Position := '';
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonStr('action', Action) + ','
+        + JsonStr('target_name', TargetObj.Name) + ','
+        + JsonStr('reference_name', RefName) + ','
+        + JsonStr('position', Position) + ','
+        + JsonInt('count_before', BeforeCount) + ','
+        + JsonInt('count_after', AfterCount) + ','
+        + JsonBool('changed', BeforeOrder <> AfterOrder) + ','
+        + JsonRaw('order_before', BeforeOrder) + ','
+        + JsonRaw('order_after', AfterOrder)));
+End;
+
 {..............................................................................}
 { PCB_AddLayer - Insert a copper layer (MidLayer1..30 / InternalPlane1..16)   }
 { into the stack via IPCB_LayerStack.InsertLayer.                             }
@@ -48211,6 +48363,7 @@ Begin
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
         'add_layer':               Result := PCB_AddLayer(Params, RequestId);
+        'order_copper_layer':      Result := PCB_OrderCopperLayer(Params, RequestId);
         'remove_layer':            Result := PCB_RemoveLayer(Params, RequestId);
         'modify_layer':            Result := PCB_ModifyLayer(Params, RequestId);
         'set_plane_net':           Result := PCB_SetPlaneNet(Params, RequestId);

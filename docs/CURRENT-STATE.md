@@ -2,6 +2,18 @@
 
 ## Latest native integration, 2026-10-27
 
+Script `.38` on Altium 26.11.1.5 added exact-board copper order listing,
+relative insertion and movement. The list includes visible names and
+canonical layer IDs, so a renamed `MidLayer1` is not mistaken for a free
+ID. On an isolated PcbDoc copy, `MidLayer3` was inserted above `Int2`
+and then moved below it; both orders survived exact save, close and
+reopen. The moved layer was empty; moving populated copper layers still
+needs native acceptance. Five focused tests and Pascal lint/build pass.
+Generated bundle SHA256:
+`CFF54CA6E92A2844C55A6AA433E7CA625C3E3C3B33AD3C934EEBA7F8DCAE3B9A`.
+The owner PcbDoc was restored active and retained SHA256
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
 Script `.35` on Altium 26.11.1.5 added an exact-board stack-style edit with
 old-style/layer-count preconditions and a default dry-run plan. On an
 isolated PcbDoc copy, style 0 changed to 1 and remained 1 after exact

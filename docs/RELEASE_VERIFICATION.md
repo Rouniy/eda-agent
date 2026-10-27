@@ -2085,3 +2085,13 @@ isolated PcbDoc copy. An exact save, close and reopen retained style 1,
 the 13 physical layers and 70.0078-mil Z span. A wrong-board write was
 refused. Four related tests and Pascal lint/build passed; the owner's
 PcbDoc SHA256 stayed unchanged.
+
+# Relative copper-layer order, 2026-10-27
+
+Script `.38` on Altium 26.11.1.5 read both visible copper names and
+canonical IDs. `Int1` was shown as `MidLayer1`, so inserting that ID was
+refused before a write. On an isolated PcbDoc copy, `MidLayer3` was
+inserted above `Int2` and persisted after exact save/reopen. The empty
+new layer was then moved below `Int2` and that order also persisted.
+Five focused tests and Pascal lint/build passed. The owner's PcbDoc
+SHA256 stayed unchanged. Movement of a populated layer was not tested.
