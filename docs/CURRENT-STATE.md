@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Fresh sync and service check, 2026-10-28
+
+After a fresh fetch, `upstream/main` and the exact `main` merge base
+are both `f3bd57ff87b915d5cfe72579fa501bfea85c3511`; zero
+upstream commits are outside `main`. All 109 branches exposed by the
+61 live GitHub forks matched local cache refs after refreshing our own
+fork's `main` and `agent/sync-upstream-d6823d5` refs. That agent branch
+is already an ancestor of `main`. The built-in live verifier, which
+also includes upstream, reported 62/62 default tips and 117/117
+branch tips matched. The HTTP/MCP process was restarted
+from the corrected Python source on 14701; TCP 14700 stayed listening,
+and Altium still answered `.112` with zero cast errors.
+
 ## Native simulation reads on `.112`, 2026-10-27
 
 An isolated copy of Altium's installed Simulation Quick Start project

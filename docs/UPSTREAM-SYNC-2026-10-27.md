@@ -1,5 +1,30 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 continuation: native simulation and live fork tips
+
+The merged `.112` runtime placed a voltage probe on the `out` wire of
+an isolated Altium Simulation Quick Start copy. The probe survived exact
+save/reopen with `SimulationProbe=V`; a sheet run saved numeric SDF
+results. An op-only request nevertheless ran op, DC, transient and AC,
+and reopening with an op-only saved setup did not change this. The
+Python tool now reports that observed limitation. Its focused 53-test
+simulation suite passes, and the HTTP/MCP process was restarted from
+`main` so its live descriptions match the corrected code.
+
+Fresh `git fetch` found `upstream/main` still at
+`f3bd57ff87b915d5cfe72579fa501bfea85c3511`, the exact merge base
+of `main`, with zero upstream commits to import. GitHub's fork listing
+returned 61 forks. `git ls-remote --heads` checked all 109 live branch
+tips: 60 external forks' 107 branches already matched the cached refs.
+The two differing refs belonged to our own fork: `main` had advanced,
+and `agent/sync-upstream-d6823d5` was not cached. The latter is already
+an ancestor of `main` (`main..branch=0`). Both own-fork cache refs were
+updated to their live tips, giving 109/109 matching branch refs. The
+MOREmbedded default branch remains `032fb4b`.
+The repository's `fork-status --verify-fork-branches` includes upstream
+alongside those forks and independently reported 62/62 default tips
+and 117/117 branch tips matching local refs.
+
 ## Native fork free-text acceptance on `.112`
 
 The merged runtime placed `sch_add_text` as one `eLabel` on a disposable
@@ -7,8 +32,8 @@ free SchDoc at 125.125, 200.25 mil with 90-degree orientation. Exact
 save, close and reopen preserved its text and geometry. Altium's font
 table normalised `FontId` 1 to 2; both records are Times New Roman 10,
 and ID 2 carries the 90-degree rotation. An unloaded exact sheet was
-refused. The QA file was closed and deleted. This closes the free-text
-native acceptance item; merged simulation behavior remains untested here.
+refused. The QA file was closed and deleted. The later simulation check
+is recorded above.
 
 ## Live merged bundle `.112`
 
@@ -16,8 +41,7 @@ Altium 26.11.1.5 was restarted after the source merge. The loaded main
 script project now answers `application.ping` with `.112` and zero cast
 errors. The restarted HTTP/MCP server on 14701 lists 757 tools, including
 the fork's exact-sheet `sch_add_text` and upstream's `sim_get_setup`.
-TCP 14700 remains listening. Native behavior of those new operations on
-disposable documents remains to be qualified.
+TCP 14700 remains listening. Subsequent native checks are recorded above.
 
 ## Vincent decimal helper reconciliation
 
@@ -42,7 +66,7 @@ main fork already contained `.111` and its exact-sheet free-text handler.
 The main fork's selected-project flags remain in `Main.pas`.
 Upstream's scratch-project Altium acceptance is recorded in the merged
 release verification; local source tests and Pascal lint/build pass.
-Native acceptance of this exact merged bundle remains pending.
+Native acceptance of this exact merged bundle is recorded above.
 
 ## Fresh live inventory after `1d093a2`
 
