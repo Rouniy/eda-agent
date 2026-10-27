@@ -8269,6 +8269,37 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_get_polygon_outline(
+        index: int,
+        expected_name: str = "",
+        expected_layer: str = "",
+        board_path: str = "",
+    ) -> dict[str, Any]:
+        """Read one polygon's saved outline, including line and arc segments.
+
+        Use the index from ``pcb_get_polygons``. Supply its name and layer
+        to guard against polygon reordering. Arc rows include centre,
+        radius and angles in mils/degrees. ``closing`` is the extra saved
+        vertex and ``closed`` checks that it matches the first vertex.
+        This reads the polygon outline, not the tessellated poured copper.
+        """
+        if type(index) is not int or index < 0:
+            return {"success": False, "error": "index must be nonnegative"}
+        if board_path and (not Path(board_path).is_absolute()
+                           or Path(board_path).suffix.casefold() != ".pcbdoc"):
+            return {"success": False,
+                    "error": "board_path must be an absolute PcbDoc path"}
+        params: dict[str, Any] = {"index": index}
+        if expected_name:
+            params["expected_name"] = expected_name
+        if expected_layer:
+            params["expected_layer"] = expected_layer
+        if board_path:
+            params["board_path"] = board_path
+        return await get_bridge().send_command_async(
+            "pcb.get_polygon_outline", params)
+
+    @mcp.tool()
     async def pcb_grow_pour(
         board_path: str, index: int, expected_name: str, expected_layer: str,
         distance_mils: float, expected_bounds: Optional[dict[str, float]] = None,

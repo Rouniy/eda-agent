@@ -12,8 +12,9 @@
 - [x] Explicitly repour the new arched-board GND polygon on a disposable
   copy: one rebuilt, two skipped, zero failed, and five copper pieces
   before and after.
-- [ ] Independently inspect the poured polygon's arc geometry. The
-  current `pcb_get_polygons` reports vertex count but no segment data.
+- [x] Independently inspect the saved polygon's arc geometry. New
+  `pcb_get_polygon_outline` under script `.117` read the same four
+  segments as the board: three lines and a 500-mil half-circle arc.
 
 - [x] Compare the offline SchLib reader to the same native library:
   39 primary names match; Altium's 40th row is the `ADXL210` alias.

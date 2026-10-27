@@ -22,9 +22,13 @@ An explicit `pcb_repour_polygons(names=["Top Layer-GND 1"],
 board_path=<that copy>)` rebuilt exactly one polygon, skipped the other
 two and failed none. It reported five copper pieces and
 68.7101666882369 mm² both before and after. The copy was saved and
-closed after the repour. The current polygon read reports vertex count
-but not segment kinds or arc centres, so independent arc readback is
-still pending.
+closed after the repour. Script `.117` adds `pcb_get_polygon_outline`,
+which reads the saved segment records. On the reopened copy it read
+four closed segments matching the board outline exactly: three lines
+and a half-circle arc starting at (8000.125, 7500.375) mil, centred at
+(7500.125, 7500.375) mil, radius 500 mil, angles 0..180 degrees. Native
+Pascal lint passed all 12 units without warnings; Altium reloaded `.117`
+and returned this result from the active script project.
 The supervised HTTP MCP child on 14701 was restarted from this `main`
 checkout after the Python edit. A new MCP session listed 757 tools,
 the keep-out width schema is numeric, and `app_ping` reported loaded

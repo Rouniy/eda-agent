@@ -12950,6 +12950,109 @@ End;
 { PCB_GetPolygons - Get all polygon pours with layer, net, hatching, etc.    }
 {..............................................................................}
 
+{ Read one pour's saved outline segments, including true arc parameters.      }
+Function PCB_GetPolygonOutline(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iterator : IPCB_BoardIterator;
+    Polygon : IPCB_Polygon;
+    Seg : TPolySegment;
+    IndexStr, ExpectedName, ExpectedLayer, BoardPath : String;
+    JsonItems, KindStr, NetName, LayerStr, PolyName, ClosedStr : String;
+    Wanted, Seen, I, N : Integer;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    If (BoardPath <> '') And (LowerCase(Board.FileName) <> LowerCase(BoardPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_BOARD', 'Active PCB is not board_path');
+        Exit;
+    End;
+    IndexStr := ExtractJsonValue(Params, 'index');
+    Wanted := StrToIntDef(IndexStr, -1);
+    If Wanted < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_INDEX', 'index must be nonnegative');
+        Exit;
+    End;
+    ExpectedName := ExtractJsonValue(Params, 'expected_name');
+    ExpectedLayer := ExtractJsonValue(Params, 'expected_layer');
+    Iterator := Board.BoardIterator_Create;
+    Iterator.AddFilter_ObjectSet(MkSet(ePolyObject));
+    Iterator.AddFilter_LayerSet(AllLayers);
+    Iterator.AddFilter_Method(eProcessAll);
+    Seen := 0;
+    Polygon := Iterator.FirstPCBObject;
+    While (Polygon <> Nil) And (Seen < Wanted) Do
+    Begin
+        Inc(Seen);
+        Polygon := Iterator.NextPCBObject;
+    End;
+    If Polygon = Nil Then
+    Begin
+        Board.BoardIterator_Destroy(Iterator);
+        Result := BuildErrorResponse(RequestId, 'POLYGON_NOT_FOUND', 'No polygon at index');
+        Exit;
+    End;
+    Try LayerStr := GetLayerString(Polygon.Layer); Except LayerStr := 'Unknown'; End;
+    If ((ExpectedName <> '') And (LowerCase(Polygon.Name) <> LowerCase(ExpectedName)))
+        Or ((ExpectedLayer <> '') And (LowerCase(LayerStr) <> LowerCase(ExpectedLayer))) Then
+    Begin
+        Board.BoardIterator_Destroy(Iterator);
+        Result := BuildErrorResponse(RequestId, 'POLYGON_CHANGED', 'Polygon name or layer differs from selector');
+        Exit;
+    End;
+    NetName := '';
+    Try If Polygon.Net <> Nil Then NetName := Polygon.Net.Name; Except End;
+    PolyName := Polygon.Name;
+    N := Polygon.PointCount;
+    If N < 3 Then
+    Begin
+        Board.BoardIterator_Destroy(Iterator);
+        Result := BuildErrorResponse(RequestId, 'BAD_POLYGON', 'Polygon has fewer than three points');
+        Exit;
+    End;
+    JsonItems := '';
+    For I := 0 To N - 1 Do
+    Begin
+        If I > 0 Then JsonItems := JsonItems + ',';
+        Seg := Polygon.Segments[I];
+        If Seg.Kind = ePolySegmentLine Then KindStr := 'line' Else KindStr := 'arc';
+        JsonItems := JsonItems + '{"index":' + IntToStr(I)
+            + ',"kind":"' + KindStr + '"'
+            + ',"x":' + FloatToJsonStr(CoordToMilsF(Seg.vx))
+            + ',"y":' + FloatToJsonStr(CoordToMilsF(Seg.vy));
+        If Seg.Kind <> ePolySegmentLine Then
+            JsonItems := JsonItems
+                + ',"cx":' + FloatToJsonStr(CoordToMilsF(Seg.cx))
+                + ',"cy":' + FloatToJsonStr(CoordToMilsF(Seg.cy))
+                + ',"radius":' + FloatToJsonStr(CoordToMilsF(Seg.Radius))
+                + ',"angle1":' + FloatToJsonStr(Seg.Angle1)
+                + ',"angle2":' + FloatToJsonStr(Seg.Angle2);
+        JsonItems := JsonItems + '}';
+    End;
+    Seg := Polygon.Segments[N];
+    If (N > 0) And (Seg.vx = Polygon.Segments[0].vx)
+        And (Seg.vy = Polygon.Segments[0].vy) Then ClosedStr := 'true'
+    Else ClosedStr := 'false';
+    Board.BoardIterator_Destroy(Iterator);
+    Result := BuildSuccessResponse(RequestId,
+        '{"index":' + IntToStr(Wanted)
+        + ',"name":"' + EscapeJsonString(PolyName) + '"'
+        + ',"layer":"' + EscapeJsonString(LayerStr) + '"'
+        + ',"net":"' + EscapeJsonString(NetName) + '"'
+        + ',"point_count":' + IntToStr(N)
+        + ',"vertices":[' + JsonItems + ']'
+        + ',"closing":{"x":' + FloatToJsonStr(CoordToMilsF(Seg.vx))
+        + ',"y":' + FloatToJsonStr(CoordToMilsF(Seg.vy)) + '}'
+        + ',"closed":' + ClosedStr + '}');
+End;
+
 { Core body shared with the selection-scoped profile (see PCB_GetComponents). }
 Function PCB_GetPolygonsForBoard(Board : IPCB_Board; RequestId : String) : String;
 Var
@@ -28255,6 +28358,7 @@ Begin
         'get_layer_display':       Result := PCB_GetLayerDisplay(Params, RequestId);
         'set_layer_color':         Result := PCB_SetLayerColor(Params, RequestId);
         'get_board_outline':       Result := PCB_GetBoardOutline(Params, RequestId);
+        'get_polygon_outline':     Result := PCB_GetPolygonOutline(Params, RequestId);
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
         'select_component':        Result := PCB_SelectComponent(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
