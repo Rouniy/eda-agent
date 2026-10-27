@@ -1,5 +1,18 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 MOREmbedded package-audit routing
+
+Native script `.113` ran `lib_audit_footprint_vs_package` for
+`FP-53261-0771-MFG` in inactive `PCB1.PcbLib` while
+`Spirit_Level_Project.PcbLib` was focused. The audit resolved the exact
+target library path, read 21 tracks, one arc and one text, and had no
+wrong-library note. Both libraries were closed without edits. A diagnostic
+custom package based on [Molex drawing 532610001-SD, sheet 2](https://www.molex.com/content/dam/molex/molex-dot-com/products/automated/en-us/salesdrawingpdf/532/53261/532610371_sd.pdf)
+found seven 0.8 mm signal pads versus 0.6 mm recommended land width.
+Pad-centre offsets in this diagnostic came provisionally from the footprint;
+the native run proves correct multi-library routing and width comparison,
+not an independent package signoff. Full drawing transcription remains open.
+
 ## 2026-10-28 MOREmbedded two-library read
 
 The adapted `lib_render_footprint` path was checked live on script
@@ -8,9 +21,7 @@ but the render targeted `FP-51021-0700-MFG` from inactive `PCB1.PcbLib`.
 The target's Mechanical5/2/3/16 kinds became Assembly, 3D Body,
 Courtyard and Center roles (four/four/four/two primitives). The
 focused library had no such kinds. Both libraries were closed without
-edits. The package-audit path uses the same exact `library_path` in
-source tests but still needs a real vendor drawing for native
-acceptance; no synthetic dimensions were treated as package evidence.
+edits. The package-audit path was subsequently checked live as above.
 
 ## 2026-10-28 fractional PCB batch placement
 

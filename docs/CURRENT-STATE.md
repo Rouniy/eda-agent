@@ -1,5 +1,24 @@
 # Current integration state / agent handoff
 
+## MOREmbedded package-audit path, 2026-10-28
+
+With `Spirit_Level_Project.PcbLib` focused, `lib_audit_footprint_vs_package`
+targeted `FP-53261-0771-MFG` in the inactive `PCB1.PcbLib` by its exact
+`library_path`. Native script `.113` read nine pads, 21 tracks, one arc and
+one text from the target; the audit returned that target path and no
+wrong-library layer note. Both PcbLibs were closed without edits. This
+accepts the multi-library routing of the audit path.
+
+The diagnostic `custom` PackageSpec used the 7-circuit 1.25 mm pitch and
+recommended 0.6 by 1.6 mm signal lands and 2.1 by 3.0 mm hold lands from
+[Molex drawing 532610001-SD, sheet 2](https://www.molex.com/content/dam/molex/molex-dot-com/products/automated/en-us/salesdrawingpdf/532/53261/532610371_sd.pdf).
+Its pad-centre offsets were provisionally registered from the Altium
+footprint, so position checks are *not* independent vendor verification.
+The audit found seven signal pads 0.8 mm wide against the drawing's 0.6 mm
+recommendation, plus courtyard and assembly warnings. Do not treat this
+diagnostic as footprint signoff; independently transcribe and verify all
+pad centres and body dimensions from the drawing before that claim.
+
 ## MOREmbedded multi-library render check, 2026-10-28
 
 Two installed Altium example PcbLibs were opened read only.
@@ -10,9 +29,9 @@ Two installed Altium example PcbLibs were opened read only.
 `Courtyard Top` (Mechanical3) and `Component Center Top`
 (Mechanical16); the focused library had none of those kinds. The render
 reported roles with counts 4/4/4/2, no wrong-library note, and an SVG.
-Both PcbLibs were closed without edits. This qualifies the render half
-of the MOREmbedded layer-path adaptation; package audit still needs a
-real vendor package drawing for native acceptance.
+Both PcbLibs were closed without edits. This qualifies the render path
+of the MOREmbedded layer-path adaptation; the package-audit routing check
+is recorded above.
 
 ## Native fractional PCB placement on `.113`, 2026-10-28
 
