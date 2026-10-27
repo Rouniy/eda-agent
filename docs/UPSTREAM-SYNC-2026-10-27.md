@@ -247,7 +247,7 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 | Upstream `0a9ccd4`, `bb06837` | Remaining net naming, project libraries, pin and pad properties, shared packages; native write acceptance for xSignals and unhashed package comparison | Split read and write paths; verify per-document targeting and property readback |
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Find a persistent Altium API for numeric differential-pair impedance rule fields, plus broader project STEP export; placed-component STEP export, editor preferences, pours-at-point, board options and per-net jumper display are now present | Keep numeric writes disabled until exact save/reopen proves they survive; port other families with source tests, script build and disposable-board native checks |
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
-| MOREmbedded `84b682c`, upstream `5db72f2` | Further qualify 3D-body layer changes, multi-body STEP edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
+| MOREmbedded `84b682c`, upstream `5db72f2` | Multi-body STEP layer and Z-offset edits are now qualified on one disposable PcbLib; further qualify bulk edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
 | MOREmbedded `pcb_check_fab_output` | A >5000-drilled-pad board and revision provenance of external packages | Real Altium GerberX2/NC Drill package now parsed and compared to its production-review PcbDoc; copper and hole counts match, exported Profile is larger than the live board. Keep that mismatch visible; a package manifest/revision proof is still needed for sign-off. |
 | `mooreaa` `dc36b7e` through `fc22136` | Remaining relink paths and native acceptance of placement/parameter ports | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
@@ -491,3 +491,15 @@ disposable PcbLib copy, adding `LTC3895EFE.STEP` to the SOIC footprint
 preserved the older SOIC body, Mechanical13 layer, (1, -1) mm centre,
 90-degree Z rotation and 10-mil model Z offset after exact save/reopen.
 No owner design was written.
+
+The MOREmbedded multi-body STEP edit candidate is qualified on script
+`.88`. The earlier Python guard compared a saved basename with a field
+missing from `library.set_3d_body`'s snapshot; the native guard compared
+that basename with the live model's full path and could change the layer
+while skipping the Z offset. Python now obtains the exact footprint's live
+body models, and Pascal checks saved/live model identity before any write.
+On a disposable two-body footprint, only body 2 moved from Mechanical13
+to Mechanical15 and its saved Z offset from 10 to 19.685 mil; the first
+body and 90-degree rotation survived save/reopen. A wrong saved model name
+was refused with neither body's layer changed. Other body types and
+multi-body bulk edits remain unqualified.

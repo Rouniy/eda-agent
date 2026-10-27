@@ -38,7 +38,7 @@ def _tool(monkeypatch, replies):
 
 def _body():
     return {"index": 1, "layer": "Mechanical1", "step": True,
-            "model_file": "part.step", "standoff_height_mils": 0.0,
+            "standoff_height_mils": 0.0,
             "overall_height_mils": 100.0, "opacity": 1.0}
 
 
@@ -46,6 +46,12 @@ def _read(path):
     return {"library": str(path), "footprint": "PART", "bodies": 1,
             "changed": 0, "before": [_body()], "after": [_body()],
             "skipped": [], "model_z_offset_written": []}
+
+
+def _live(path):
+    return {"library_path": str(path), "name": "PART", "bodies": 1,
+            "body_models": [{"layer": "Mechanical1", "model_type": 1,
+                             "model_file": str(path.parent / "part.step")}]}
 
 
 def test_saved_body_parser_preserves_model_name_rotation_and_offset():
@@ -77,17 +83,49 @@ def test_step_standoff_preserves_rotation_and_checks_result(tmp_path, monkeypatc
               "rotation_deg": [90, 0, 270], "model_z_offset_mils": 0.0}]
     monkeypatch.setattr(altium_pcblib, "read_pcblib_saved_body_models", lambda *a: saved)
     good = {**_read(path), "changed": 1, "model_z_offset_written": [1]}
-    tool, bridge = _tool(monkeypatch, [_read(path), good])
+    tool, bridge = _tool(monkeypatch, [_read(path), _live(path), good])
     result = asyncio.run(tool("PART", str(path), standoff_height=10, dry_run=False))
     assert result["save_required"] is True
-    params = bridge.calls[1][1]
+    assert bridge.calls[1][0] == "library.get_footprint_primitives"
+    params = bridge.calls[2][1]
     assert params["expected_count"] == "1"
     assert params["saved_models"] == "part.step|1|90|0|270"
-    tool, _ = _tool(monkeypatch, [_read(path), {**good, "model_z_offset_written": []}])
+    tool, _ = _tool(monkeypatch, [_read(path), _live(path),
+                              {**good, "model_z_offset_written": []}])
     assert asyncio.run(tool("PART", str(path), standoff_height=10,
                             dry_run=False))["ok"] is False
     saved[0]["model_file"] = "another.step"
-    tool, bridge = _tool(monkeypatch, [_read(path)])
+    tool, bridge = _tool(monkeypatch, [_read(path), _live(path)])
     assert asyncio.run(tool("PART", str(path), standoff_height=10,
                             dry_run=False))["ok"] is False
-    assert len(bridge.calls) == 1
+    assert len(bridge.calls) == 2
+
+
+def test_second_step_body_matches_full_live_path_without_editing_first(tmp_path, monkeypatch):
+    path = tmp_path / "multi.PcbLib"
+    path.touch()
+    first = {"index": 1, "layer": "Mechanical13", "step": False,
+             "standoff_height_mils": 0.0, "overall_height_mils": 1.0,
+             "opacity": 1.0}
+    second = {**_body(), "index": 2, "layer": "Mechanical13"}
+    before = {"library": str(path), "footprint": "PART", "bodies": 2,
+              "changed": 0, "before": [first, second]}
+    live = {"library_path": str(path), "name": "PART", "bodies": 2,
+            "body_models": [{"layer": "Mechanical13", "model_type": 2,
+                             "model_file": ""},
+                            {"layer": "Mechanical13", "model_type": 1,
+                             "model_file": str(path.parent / "part.step")}]}
+    after = {"library": str(path), "footprint": "PART", "bodies": 2,
+             "changed": 1, "skipped": [], "model_z_offset_written": [2],
+             "after": [{**second, "layer": "Mechanical15"}]}
+    saved = [{"model_file": "", "model_type": 2, "rotation_deg": [0, 0, 0]},
+             {"model_file": "part.step", "model_type": 1,
+              "rotation_deg": [0, 0, 90]}]
+    monkeypatch.setattr(altium_pcblib, "read_pcblib_saved_body_models", lambda *a: saved)
+    tool, bridge = _tool(monkeypatch, [before, live, after])
+    result = asyncio.run(tool("PART", str(path), body_index=2,
+                              standoff_height=10, layer="Mechanical15",
+                              dry_run=False))
+    assert result["save_required"] is True
+    assert bridge.calls[2][1]["body_index"] == "2"
+    assert bridge.calls[2][1]["saved_models"] == "||0|0|0|part.step|1|0|0|90"

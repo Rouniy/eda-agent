@@ -2,6 +2,17 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Script `.88` fixes STEP standoff editing for multi-body footprints.
+`lib_set_3d_body` now matches a saved model name against the basename of
+the live model's full path; the native handler checks that identity before
+changing any property, so a stale record cannot leave a partial layer edit.
+On disposable `TEST PAD` with an extruded body and a STEP body, only body 2
+changed Mechanical13 to Mechanical15 and model Z offset from 10 to
+19.685 mil. Both bodies, the unchanged first layer and the STEP's 90-degree
+rotation survived exact save/reopen. A deliberately wrong model name was
+refused before the layer changed. Nine related Python tests and Pascal
+lint/build passed; Altium 26.11.1.5 loaded `.88` with zero cast errors.
+
 Script `.87` adds `lib_add_3d_body`, adapting the `rabihnd/integration`
 STEP-body feature to an exact PcbLib and footprint, a default dry run, an
 old-body-count precondition and native readback. The selected footprint is

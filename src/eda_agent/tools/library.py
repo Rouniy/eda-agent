@@ -7443,6 +7443,18 @@ def register_library_tools(mcp):
             params["body_index"] = str(body_index)
         if "standoff_height" in updates and any(b.get("step") for b in selected):
             from ..fileio.altium_pcblib import read_pcblib_saved_body_models
+            live = await bridge.send_command_async(
+                "library.get_footprint_primitives", base, timeout=120.0)
+            live_bodies = live.get("body_models") if isinstance(live, dict) else None
+            if (not isinstance(live, dict)
+                    or str(live.get("library_path", "")).casefold() != str(path).casefold()
+                    or live.get("name") != footprint_name.strip()
+                    or not isinstance(live_bodies, list) or len(live_bodies) != count
+                    or live.get("bodies") != count
+                    or any(bool(item.get("model_type") == 1) != bool(body.get("step"))
+                           or item.get("layer") != body.get("layer")
+                           for item, body in zip(live_bodies, bodies))):
+                return {"ok": False, "reason": "live STEP body identities are unavailable"}
             try:
                 saved = read_pcblib_saved_body_models(path, footprint_name.strip())
             except (OSError, ValueError):
@@ -7453,9 +7465,10 @@ def register_library_tools(mcp):
                 if not body.get("step"):
                     continue
                 record = saved[body["index"] - 1]
+                live_model = Path(str(live_bodies[body["index"] - 1].get("model_file", ""))).name
                 if (record.get("model_type") != 1
                         or not record.get("model_file")
-                        or record["model_file"].casefold() != str(body.get("model_file", "")).casefold()
+                        or record["model_file"].casefold() != live_model.casefold()
                         or len(record.get("rotation_deg", [])) != 3
                         or "|" in record["model_file"]):
                     return {"ok": False, "reason": "STEP model identity or saved rotation is unavailable"}
@@ -7489,6 +7502,9 @@ def register_library_tools(mcp):
                     not math.isclose(current.get("opacity", float("nan")),
                                      float(updates["opacity"]), abs_tol=0.001)):
                 return {"ok": False, "reason": "opacity did not read back",
+                        "native_reply": reply}
+            if "layer" in updates and current.get("layer") != updates["layer"]:
+                return {"ok": False, "reason": "body layer did not read back",
                         "native_reply": reply}
             if ("standoff_height" in updates and not current.get("step") and
                     not math.isclose(current.get("standoff_height_mils", float("nan")),

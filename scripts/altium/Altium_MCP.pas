@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.87';
+    SCRIPT_VERSION = '2026.10.27.88';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -28552,6 +28552,51 @@ Begin
     End;
     If SavedCount <> Total Then SavedStr := '';
 
+    { Verify every selected STEP identity before any layer/opacity/height }
+    { write. A mismatched saved record must not leave a partial edit.    }
+    If (StandoffStr <> '') And Writing Then
+    Begin
+        Nth := 0;
+        Seen := #9;
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+            Body := GrpIter.FirstPCBObject;
+            While Body <> Nil Do
+            Begin
+                Addr := IntToStr(Body.I_ObjectAddress);
+                If Pos(#9 + Addr + #9, Seen) = 0 Then
+                Begin
+                    Seen := Seen + Addr + #9;
+                    Inc(Nth);
+                    If (WantIndex = 0) Or (WantIndex = Nth) Then
+                    Begin
+                        Model := StepModelOf(Body);
+                        If Model <> Nil Then
+                        Begin
+                            ModelFile := '';
+                            Try ModelFile := Model.FileName; Except End;
+                            SavedFile := PipeField(SavedStr, (Nth - 1) * 5);
+                            If (SavedStr = '') Or (SavedFile = '') Or
+                                (PipeField(SavedStr, (Nth - 1) * 5 + 1) <> '1') Or
+                                (UpperCase(SavedFile) <>
+                                    UpperCase(ExtractFileName(ModelFile))) Then
+                            Begin
+                                Result := BuildErrorResponse(RequestId,
+                                    'SAVED_MODEL_MISMATCH',
+                                    'STEP body does not match the saved model record; no body was changed');
+                                Exit;
+                            End;
+                        End;
+                    End;
+                End;
+                Body := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+    End;
+
     Before := '';
     After := '';
     Skipped := '';
@@ -28601,7 +28646,8 @@ Begin
                                         + 'this body: save the library, then retry'));
                                 End
                                 Else If (PipeField(SavedStr, (Nth - 1) * 5 + 1) <> '1')
-                                    Or (UpperCase(SavedFile) <> UpperCase(ModelFile)) Then
+                                    Or (UpperCase(SavedFile) <>
+                                        UpperCase(ExtractFileName(ModelFile))) Then
                                 Begin
                                     If Skipped <> '' Then Skipped := Skipped + ',';
                                     Skipped := Skipped + JsonObj(JsonInt('index', Nth) + ','
