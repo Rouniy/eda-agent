@@ -1,9 +1,10 @@
 # Release verification: 2026.10.27.112
 
 Expect `altium_script_version` = `2026.10.27.112` for the current source
-bundle. Source lint/build and focused tests pass. Native load,
-free-text placement and save/reopen acceptance are pending; the shared
-Altium session last reported loaded `.96`.
+bundle. Source lint/build and focused tests pass. The restarted Altium
+26.11.1.5 session reports `.112` with zero cast errors, and HTTP/MCP
+14701 lists the new tools. Free-text placement/save-reopen and merged
+simulation behavior still need native acceptance on disposable documents.
 
 ## Previous native verification: 2026.10.27.94
 

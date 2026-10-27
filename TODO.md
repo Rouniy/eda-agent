@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## Live `.112` runtime, 2026-10-27
+
+- [x] Restart Altium with the main script project, confirm `app_ping`
+  reports `.112` with zero cast errors, and restart the HTTP/MCP process
+  on 14701. A client listed 757 tools; TCP 14700 stayed live.
+- [ ] Run native save/reopen acceptance of the new free-text `eLabel`
+  handler and disposable-project acceptance of upstream's simulation
+  probe, setup and sheet-run changes.
+
 ## Combined fork decimal guard, 2026-10-27
 
 - [x] Remove a duplicate `_mils` definition that bypassed the finite
@@ -11,8 +20,8 @@
 - [x] Merge upstream `f3bd57f` as a true parent, preserving local script
   flags and free-text placement. Source `.112` passes Pascal lint/build
   and the focused simulation/bridge suite.
-- [ ] Load `.112` when the shared Altium session can safely restart, then
-  verify its voltage probe and sheet-run behavior on a disposable copy.
+- [x] Load `.112` after restarting the shared Altium session; probe and
+  sheet-run behavior still need disposable-copy verification above.
 
 ## Fork schematic free text, 2026-10-27
 

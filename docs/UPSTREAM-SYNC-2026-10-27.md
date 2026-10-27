@@ -1,5 +1,14 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Live merged bundle `.112`
+
+Altium 26.11.1.5 was restarted after the source merge. The loaded main
+script project now answers `application.ping` with `.112` and zero cast
+errors. The restarted HTTP/MCP server on 14701 lists 757 tools, including
+the fork's exact-sheet `sch_add_text` and upstream's `sim_get_setup`.
+TCP 14700 remains listening. Native behavior of those new operations on
+disposable documents remains to be qualified.
+
 ## Vincent decimal helper reconciliation
 
 The `vincent-himpe` decimal-mil source carried a second module-level

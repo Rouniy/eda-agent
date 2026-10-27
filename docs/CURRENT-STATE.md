@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Live `.112` runtime after restart, 2026-10-27
+
+The user-authorized Altium restart replaced the `.96` VM with source
+`2026.10.27.112` from the main `Altium_API.PrjScr`. Before restart,
+`application.get_open_documents` listed 181 project documents, but only
+`PCB.pas` had `loaded=true` and none reported modified. Altium restarted
+as PID 25392; the main-directory `start-altium-bridge.ps1` launched its
+polling loop. `application.ping` returned `.112` and `cast_errors=0`.
+The Streamable HTTP MCP service on 14701 was restarted as PID 18400; a
+real MCP client listed 757 tools and found `sch_add_text` and
+`sim_get_setup`. The TCP relay on 14700 remained listening. This proves
+load and reachability, not native save/reopen behavior of the new tools.
+
 ## Combined fork decimal guard, 2026-10-27
 
 `library.py` accidentally defined `_mils` twice. The later definition
