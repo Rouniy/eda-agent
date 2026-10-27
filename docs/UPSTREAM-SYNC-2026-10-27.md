@@ -1,5 +1,16 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Schematic source-library cleanup
+
+The `wizd/edev` clear command also unpinned every PCBLIB model's datafile
+Location. Source `.105` adds that as an explicit option to the existing
+`sch_clear_source_library` tool, shares the clearing helper with
+`sch_relink_components(footprint_library="Any")`, and counts successful
+link clears and failed readbacks. It also refuses an unloaded exact sheet
+instead of falling through to the focused sheet. Twenty-four related tests
+and Pascal lint/build passed. Native verification awaits a controlled
+Altium reload.
+
 ## Follow-up source verification
 
 The footprint/relink suites now pass 48 tests with one optional skip.

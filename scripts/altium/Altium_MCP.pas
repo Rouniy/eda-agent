@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.104';
+    SCRIPT_VERSION = '2026.10.27.105';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -80386,6 +80386,67 @@ Begin
         + JsonInt('font_id', GotFont) + '}');
 End;
 
+{ Clear the datafile Locations of every PCBLIB model on one placed part. }
+{ Return the number actually cleared and report a failed readback.       }
+Function ClearSchFootprintLibraryOnComp(Comp : ISch_Component;
+    Var Cleared : Integer) : Boolean;
+Var
+    ImplIter : ISch_Iterator;
+    Impl : ISch_Implementation;
+    Link : ISch_ModelDatafileLink;
+    ModelType, Before, After : String;
+    J, LinkCount : Integer;
+    UsingCompLib : Boolean;
+Begin
+    Cleared := 0;
+    Result := False;
+    If Comp = Nil Then Exit;
+    ImplIter := Comp.SchIterator_Create;
+    If ImplIter = Nil Then Exit;
+    Result := True;
+    Try
+        ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+        Impl := ImplIter.FirstSchObject;
+        While Impl <> Nil Do
+        Begin
+            ModelType := '';
+            Try ModelType := Impl.ModelType; Except Result := False; End;
+            If UpperCase(ModelType) = 'PCBLIB' Then
+            Begin
+                SchBeginModify(Impl);
+                Try Impl.UseComponentLibrary := False; Except Result := False; End;
+                UsingCompLib := True;
+                Try UsingCompLib := Impl.UseComponentLibrary; Except Result := False; End;
+                If UsingCompLib Then Result := False;
+                LinkCount := 0;
+                Try LinkCount := Impl.DatafileLinkCount; Except Result := False; End;
+                For J := 0 To LinkCount - 1 Do
+                Begin
+                    Link := Nil;
+                    Try Link := Impl.DatafileLink[J]; Except Result := False; End;
+                    If Link = Nil Then Result := False
+                    Else
+                    Begin
+                        Before := '';
+                        Try Before := Link.Location; Except Result := False; End;
+                        If Before <> '' Then
+                        Begin
+                            Try Link.Location := ''; Except Result := False; End;
+                            After := '#unread';
+                            Try After := Link.Location; Except Result := False; End;
+                            If After = '' Then Inc(Cleared) Else Result := False;
+                        End;
+                    End;
+                End;
+                SchEndModify(Impl);
+            End;
+            Impl := ImplIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(ImplIter);
+    End;
+End;
+
 {..............................................................................}
 { Gen_ClearSchSourceLibrary - schematic mirror of the PCB-side                }
 { clear_source_footprint_library: unpin placed components from a stale        }
@@ -80398,7 +80459,8 @@ End;
 { parameter of that name.                                                      }
 { Params: sheet_path (optional, focused doc default),                          }
 {         designators (optional comma list; empty = every component),          }
-{         clear_source_library=true, sync_design_item_id=true.                 }
+{         clear_source_library=true, sync_design_item_id=true,                 }
+{         clear_footprint_library=false.                                       }
 Function Gen_ClearSchSourceLibrary(Params : String; RequestId : String) : String;
 Var
     SheetPath, DesigCsv, FlagStr, Desig, LibRef : String;
@@ -80407,8 +80469,8 @@ Var
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
     DesigList : TStringList;
-    ClearSrc, SyncId, WantAll : Boolean;
-    Total, ClearedSrc, Synced : Integer;
+    ClearSrc, SyncId, ClearFp, WantAll, FpOk : Boolean;
+    Total, ClearedSrc, Synced, ClearedFp, FailedFp, FpCount : Integer;
     SrvDoc : IServerDocument;
 Begin
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
@@ -80417,11 +80479,21 @@ Begin
     ClearSrc := Not ((FlagStr = 'false') Or (FlagStr = 'False') Or (FlagStr = '0'));
     FlagStr := ExtractJsonValue(Params, 'sync_design_item_id');
     SyncId := Not ((FlagStr = 'false') Or (FlagStr = 'False') Or (FlagStr = '0'));
+    FlagStr := LowerCase(ExtractJsonValue(Params, 'clear_footprint_library'));
+    ClearFp := (FlagStr = 'true') Or (FlagStr = '1');
 
     SchDoc := Nil;
     If SheetPath <> '' Then
+    Begin
         Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
-    If SchDoc = Nil Then
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_NOT_OPEN',
+                'No loaded schematic document at ' + SheetPath);
+            Exit;
+        End;
+    End
+    Else
         SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
     Begin
@@ -80438,6 +80510,8 @@ Begin
         Total := 0;
         ClearedSrc := 0;
         Synced := 0;
+        ClearedFp := 0;
+        FailedFp := 0;
 
         SchServer.ProcessControl.PreProcess(SchDoc, '');
         Try
@@ -80478,6 +80552,12 @@ Begin
                                 End;
                             Except End;
                         End;
+                        If ClearFp Then
+                        Begin
+                            FpOk := ClearSchFootprintLibraryOnComp(Comp, FpCount);
+                            ClearedFp := ClearedFp + FpCount;
+                            If Not FpOk Then Inc(FailedFp);
+                        End;
                     End;
                     Obj := Iterator.NextSchObject;
                 End;
@@ -80500,7 +80580,9 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"total":' + IntToStr(Total) +
         ',"cleared_source_library":' + IntToStr(ClearedSrc) +
-        ',"synced_design_item_id":' + IntToStr(Synced) + '}');
+        ',"synced_design_item_id":' + IntToStr(Synced) +
+        ',"cleared_footprint_library":' + IntToStr(ClearedFp) +
+        ',"failed_footprint_library":' + IntToStr(FailedFp) + '}');
 End;
 
 
@@ -80573,50 +80655,15 @@ End;
 Function SetPlacedFootprintLibrary(Comp : ISch_Component; LibName : String) : Boolean;
 Var
     Impl : ISch_Implementation;
-    ImplIter : ISch_Iterator;
     Link : ISch_ModelDatafileLink;
-    J, LinkCount : Integer;
-    Back, ModelType : String;
+    J, LinkCount, Cleared : Integer;
+    Back : String;
 Begin
     Result := False;
     If Comp = Nil Then Exit;
     If (LibName = '*') Or SameText(LibName, 'Any') Then
     Begin
-        ImplIter := Comp.SchIterator_Create;
-        If ImplIter = Nil Then Exit;
-        Result := True;
-        Try
-            ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
-            Impl := ImplIter.FirstSchObject;
-            While Impl <> Nil Do
-            Begin
-                ModelType := '';
-                Try ModelType := Impl.ModelType; Except End;
-                If UpperCase(ModelType) = 'PCBLIB' Then
-                Begin
-                    SchBeginModify(Impl);
-                    Try Impl.UseComponentLibrary := False; Except Result := False; End;
-                    LinkCount := 0;
-                    Try LinkCount := Impl.DatafileLinkCount; Except Result := False; End;
-                    For J := 0 To LinkCount - 1 Do
-                    Begin
-                        Link := Nil;
-                        Try Link := Impl.DatafileLink[J]; Except Result := False; End;
-                        If Link <> Nil Then
-                        Begin
-                            Try Link.Location := ''; Except Result := False; End;
-                            Back := '#unread';
-                            Try Back := Link.Location; Except Result := False; End;
-                            If Back <> '' Then Result := False;
-                        End;
-                    End;
-                    SchEndModify(Impl);
-                End;
-                Impl := ImplIter.NextSchObject;
-            End;
-        Finally
-            Comp.SchIterator_Destroy(ImplIter);
-        End;
+        Result := ClearSchFootprintLibraryOnComp(Comp, Cleared);
         Exit;
     End;
     Impl := CurrentFootprintImpl(Comp);

@@ -74,11 +74,14 @@ def test_a_part_with_no_footprint_model_gets_one():
 
 
 def test_footprint_library_can_be_unpinned_or_linked_when_missing():
-    body = load(_GENERIC)["SetPlacedFootprintLibrary"]
+    source = load(_GENERIC)
+    body = source["SetPlacedFootprintLibrary"]
     assert "SameText(LibName, 'Any')" in body
     assert "LibName = '*'" in body
-    assert "If UpperCase(ModelType) = 'PCBLIB' Then" in body
-    assert "Link.Location := '';" in body
+    assert "ClearSchFootprintLibraryOnComp(Comp, Cleared)" in body
+    helper = source["ClearSchFootprintLibraryOnComp"]
+    assert "If UpperCase(ModelType) = 'PCBLIB' Then" in helper
+    assert "Link.Location := '';" in helper
     assert "Impl.AddDataFileLink(Impl.ModelName, LibName, 'PCBLib')" in body
 
 
@@ -88,6 +91,32 @@ def test_relink_forwards_explicit_any_to_native(monkeypatch):
                 footprint_library="Any")
     assert out["success"]
     assert dict(bridge.sent)["generic.relink_components"]["footprint_library"] == "Any"
+
+
+def test_clear_source_library_can_clear_every_pinned_footprint(monkeypatch):
+    bridge = _Bridge()
+    monkeypatch.setattr(generic_tools, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    generic_tools.register_generic_tools(mcp)
+    asyncio.run(mcp.tools["sch_clear_source_library"](
+        sheet_path=r"C:\\checks\\copy\\Main.SchDoc", designators=["U1"],
+        clear_footprint_library=True))
+    [(command, params)] = bridge.sent
+    assert command == "generic.clear_sch_source_library"
+    assert params["clear_footprint_library"] == "true"
+    assert params["sheet_path"] == r"C:\\checks\\copy\\Main.SchDoc"
+    source = load(_GENERIC)
+    body = source["Gen_ClearSchSourceLibrary"]
+    assert "ClearSchFootprintLibraryOnComp(Comp, FpCount)" in body
+    assert "'SHEET_NOT_OPEN'" in body
+    assert body.index("'SHEET_NOT_OPEN'") < body.index(
+        "SchDoc := SchServer.GetCurrentSchDocument")
+    helper = source["ClearSchFootprintLibraryOnComp"]
+    assert "If UpperCase(ModelType) = 'PCBLIB' Then" in helper
+    assert "Link.Location := '';" in helper
+    assert "If After = '' Then Inc(Cleared)" in helper
+    assert "Result := ClearSchFootprintLibraryOnComp(Comp, Cleared)" in source[
+        "SetPlacedFootprintLibrary"]
 
 
 def test_the_command_is_routed():

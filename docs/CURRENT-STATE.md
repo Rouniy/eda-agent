@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Schematic source-library cleanup, 2026-10-27
+
+Source `.105` adapts `wizd/edev`'s optional footprint-library cleanup to
+`sch_clear_source_library`. With `clear_footprint_library=true`, the
+command clears datafile Locations across every PCBLIB model of each
+matched placed part, counts confirmed clears and reports failed readbacks.
+The default stays false for existing callers. An explicitly named sheet
+that is not loaded now returns `SHEET_NOT_OPEN` instead of silently
+editing the focused sheet. Twenty-four related tests passed; Pascal
+lint/build found zero errors or warnings. Native save/reopen acceptance
+remains pending.
+
 ## Footprint and export source checks, 2026-10-27
 
 The extended footprint/relink verification now passes 48 tests with one

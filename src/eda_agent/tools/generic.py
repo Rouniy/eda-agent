@@ -3156,6 +3156,7 @@ def register_generic_tools(mcp):
         designators: Optional[list[str]] = None,
         clear_source_library: bool = True,
         sync_design_item_id: bool = True,
+        clear_footprint_library: bool = False,
     ) -> dict[str, Any]:
         """Unpin placed schematic components from a stale source library.
 
@@ -3169,7 +3170,10 @@ def register_generic_tools(mcp):
 
         DesignItemId is a property, not a parameter: writing it as a
         parameter only adds a stray one. For one part use ``obj_modify``
-        with property ``DesignItemId``.
+        with property ``DesignItemId``. An optional third action clears
+        the pinned PcbLib Location from every footprint model on each
+        matched part, so a stale footprint library does not survive the
+        source-library repair.
 
         Args:
             sheet_path: absolute .SchDoc path; empty = the focused
@@ -3181,16 +3185,21 @@ def register_generic_tools(mcp):
             clear_source_library: clear ``SourceLibraryName``.
             sync_design_item_id: set ``DesignItemId`` = LibReference
                 where they differ.
+            clear_footprint_library: clear every PCBLIB model's pinned
+                datafile Location. Defaults to False for existing callers.
 
         Returns:
             {"total": inspected, "cleared_source_library": n,
-             "synced_design_item_id": n}.
+             "synced_design_item_id": n,
+             "cleared_footprint_library": n,
+             "failed_footprint_library": n}.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
             "sheet_path": sheet_path,
             "clear_source_library": "true" if clear_source_library else "false",
             "sync_design_item_id": "true" if sync_design_item_id else "false",
+            "clear_footprint_library": "true" if clear_footprint_library else "false",
         }
         if designators:
             # The list rides a comma-separated field; a designator

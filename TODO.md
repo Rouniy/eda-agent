@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## Schematic source-library cleanup, 2026-10-27
+
+- [x] Port `wizd/edev`'s footprint-library clearing into the existing
+  `sch_clear_source_library` tool as an explicit option. Count confirmed
+  link clears and refuse an unloaded exact sheet before any edit. Source
+  `.105` passes 24 related tests and Pascal lint/build.
+- [ ] On a disposable multi-model placed part, save/reopen after clearing
+  both source and footprint library links; verify the PCB model search and
+  compiled ECO state.
+
 ## Footprint and export source checks, 2026-10-27
 
 - [x] Recheck the two failures in the extended footprint suite. The
