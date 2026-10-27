@@ -6,6 +6,17 @@
   disposable SchDoc. Three touching collinear segments became one wire
   with endpoints (1000,1000) and (2500,1000) mil; the single wire
   persisted after save/close/reopen and a second optimize was a no-op.
+- [x] Native-qualify the upstream percentage paste opening on a free
+  disposable PcbDoc. A pad needs `PasteMaskExpansionMode=2` (manual)
+  before `PasteMaskUsePercent=true` and `PasteMaskPercent=45` read back;
+  all three persisted after exact save/close/reopen. Mode 1 returned
+  false/zero for percent despite a successful write reply. Public
+  generic writes now explain the mode requirement.
+- [ ] Find a persistent implementation for upstream `IsPreRoute` writes.
+  Script `.120` read true immediately on netless and netted tracks, but
+  both reopened as false after exact save. `UserRouted=false` did not
+  change that outcome. Public generic replies now warn that this native
+  property did not persist in AD 26.11; do not claim pre-route lock-in.
 - [x] Native-qualify four rule-setting classes from upstream `172d254`
   on a new free PcbDoc. Height 10/900/450 mil, component vertical gap
   12.5 mil, routing corner setbacks 75.5/125.5 mil, and antenna
@@ -615,8 +626,9 @@
 
 ## Upstream layer-stack remainder, 2026-10-27
 
-- Complete the remaining `172d254` pre-route and paste-opening review.
-  Four rule-setting classes and wire tidy passed native save/reopen QA.
+- Complete the remaining `172d254` pre-route persistence review.
+  Four rule-setting classes, wire tidy, and percentage paste openings
+  passed native save/reopen QA.
   Pour growth is ported and persisted on an isolated PcbDoc; repour and
   final copper acceptance remain separate.
 - Test `pcb_plane_connections` on a disposable PcbDoc with a real internal

@@ -59,6 +59,25 @@ DBLIB_PLACEMENT_KEYS = frozenset({
 _ERC_PROJECT_PATH_SCRIPT_VERSION = "2026.10.19.1"
 
 
+def _pcb_write_notes(object_type: str, assignments: str) -> list[str]:
+    """Surface two native properties whose live state can mislead callers."""
+    keys = {part.split("=", 1)[0].strip() for part in assignments.split("|")
+            if "=" in part}
+    notes: list[str] = []
+    if object_type in ("eTrackObject", "eArcObject", "eViaObject") and "IsPreRoute" in keys:
+        notes.append("IsPreRoute read back in memory but reverted after save/reopen "
+                     "on AD 26.11, even for a netted track; verify persistence "
+                     "before relying on it for an autorouter run.")
+    if object_type == "ePadObject" and keys.intersection(
+            {"PasteMaskUsePercent", "PasteMaskPercent"}):
+        notes.append("A pad's percentage paste opening requires "
+                     "PasteMaskExpansionMode=2 (Manual Expansion) and "
+                     "PasteMaskEnabled=true. With mode 1 the percent can read "
+                     "back as zero even after a reported write; query the "
+                     "pad and save/reopen to verify it.")
+    return notes
+
+
 async def _erc_script_ready(bridge) -> dict[str, Any] | None:
     """Avoid silently running a project_path request on an older script."""
     ping = await bridge.send_command_async("application.ping")
@@ -659,8 +678,9 @@ def register_generic_tools(mcp):
                 OwnerPart_ID; on pads and vias PasteMaskExpansionMode and
                 SolderMaskExpansionMode (Altium's numbers: from the rule or
                 manual), PasteMaskUsePercent, PasteMaskPercent and
-                PasteMaskEnabled; on tracks, arcs and vias IsPreRoute
-                (the autorouter keeps it) and UserRouted; on a pour DrawRemovedNecks,
+                PasteMaskEnabled (percentage openings require expansion
+                mode 2); on tracks, arcs and vias IsPreRoute (observed to
+                revert after save/reopen on AD 26.11) and UserRouted; on a pour DrawRemovedNecks,
                 DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
                 AutoGenerateName; on board text Inverted,
                 UseInvertedRectangle, InvertedTTTextBorder,
@@ -748,6 +768,9 @@ def register_generic_tools(mcp):
         hint = BulkHintTracker.record_and_hint("obj_modify")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
+        notes = _pcb_write_notes(object_type, set)
+        if notes and isinstance(result, dict):
+            result["_native_write_notes"] = notes
         return result
 
     @mcp.tool()
@@ -1238,6 +1261,12 @@ def register_generic_tools(mcp):
             "generic.batch_modify",
             {"operations": "~~".join(op_strings)},
         )
+        notes = []
+        for op in operations:
+            notes.extend(_pcb_write_notes(op.get("object_type", ""),
+                                          op.get("set", "")))
+        if notes and isinstance(result, dict):
+            result["_native_write_notes"] = list(dict.fromkeys(notes))
         return result
 
     @mcp.tool()

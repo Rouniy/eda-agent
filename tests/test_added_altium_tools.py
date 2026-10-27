@@ -939,6 +939,18 @@ def test_pre_route_and_paste_settings_are_typed():
             in put)
 
 
+def test_generic_modify_reports_native_persistence_limits(monkeypatch):
+    tools, bridge = _tools(generic, "register_generic_tools", monkeypatch)
+    track = asyncio.run(tools["obj_modify"](
+        object_type="eTrackObject", set="IsPreRoute=true"))
+    assert "reverted after save/reopen" in track["_native_write_notes"][0]
+    pad = asyncio.run(tools["obj_modify"](
+        object_type="ePadObject", set="PasteMaskUsePercent=true|PasteMaskPercent=50"))
+    assert "PasteMaskExpansionMode=2" in pad["_native_write_notes"][0]
+    assert [name for name, _ in bridge.sent] == [
+        "generic.modify_objects", "generic.modify_objects"]
+
+
 def test_compile_mask_stays_out():
     # Measured on AD 26.11: a part's compile mask read back unset after it
     # was written.

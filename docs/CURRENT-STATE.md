@@ -1,5 +1,26 @@
 # Current integration state / agent handoff
 
+## Upstream pre-route and paste opening QA, 2026-10-28
+
+On a new free Temp PcbDoc, `generic.modify_objects` set `IsPreRoute=true`
+on a track and `generic.query_objects` read true immediately. After exact
+save/close/reopen it read false. A second experiment set
+`UserRouted=false` first; the pre-route flag still reverted. A track
+assigned to the new `QA_NET` also reverted to false after save/reopen.
+This native setter is usable only as an in-memory state in the tested
+AD 26.11 path; its persistent implementation remains open. Both
+`obj_modify` and `obj_batch_modify` now attach a persistence warning
+when the property is written.
+
+For a standalone SMD pad, writing `PasteMaskUsePercent=true` and
+`PasteMaskPercent=50` while `PasteMaskExpansionMode=1` returned a success
+but read false/zero. Setting mode 2 exposed those values. A second pad
+received `PasteMaskExpansionMode=2|PasteMaskUsePercent=true|PasteMaskPercent=45`
+in one `generic.modify_objects` call; all three values, and
+`PasteMaskEnabled=true`, persisted after exact save/close/reopen.
+The public wrappers and guidance now name mode 2 and advise readback.
+The QA board was closed. The 105 focused added-tool tests passed.
+
 ## Upstream rule-setting QA and empty-write guard, 2026-10-28
 
 On a new free Temp PcbDoc, `pcb.set_rule_properties` wrote Height

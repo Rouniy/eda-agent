@@ -1043,9 +1043,10 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "backends": ("altium",),
         "use": ["obj_query", "obj_modify"],
         "avoid": [],
-        "note": ("obj_modify IsPreRoute on tracks, arcs and vias; on pads "
-                 "PasteMaskUsePercent with PasteMaskPercent, and the mask "
-                 "modes (Altium's numbers: rule or manual)."),
+        "note": ("A pad percentage opening needs PasteMaskExpansionMode=2 "
+                 "(Manual Expansion), PasteMaskUsePercent=true and "
+                 "PasteMaskEnabled=true; read back after saving. IsPreRoute "
+                 "reverted after save/reopen on AD 26.11 in native QA."),
     },
     {
         "task": "Set up a rigid-flex board: split it into regions, give each a layer stack, add bend lines",
