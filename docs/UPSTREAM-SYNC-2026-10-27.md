@@ -37,6 +37,21 @@ at 5000 without a completeness check. The NPI DFM criterion is therefore
 manual until an exact-board, complete comparison exists; it cannot claim an
 automatic pass from the current partial reads.
 
+## Next integration blocks
+
+| Source | Remaining block | Integration check |
+| --- | --- | --- |
+| Upstream `0a9ccd4`, `bb06837` | xSignals, net naming/display, project libraries, pin and pad properties, shared packages | Split read and write paths; verify per-document targeting and property readback |
+| Upstream `5797fc0`, `bff741b`, `ce53d6e` | Board grids/options, editor preferences, jumpers, routing preferences, pours at a point, pair impedance, STEP export | Port one tool family at a time with source tests, script build and disposable-board native checks |
+| Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
+| MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
+| Upstream `ed4ef59` | Build integrated libraries and extract embedded STEP files | Verify generated artifacts and model bytes in an isolated output directory |
+| MOREmbedded `pcb_check_fab_output` | Compare exported fab package with one exact board | Eliminate the 5000-pad cap and reject incomplete/mismatched reads |
+
+The previous audit has the other fork branches and older upstream work. This
+table tracks next implementation batches, not a claim that the listed source
+commits are absent in full: some of their smaller changes are already here.
+
 The older port-by-feature history and outstanding items remain in
 `FORK-INTEGRATION-AUDIT-2026-10-26.md`. In particular, the new upstream
 commits from `0a9ccd4` through `ce53d6e` add many project and PCB tools
