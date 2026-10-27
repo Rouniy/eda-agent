@@ -1891,7 +1891,8 @@ Var
     SchObj : ISch_GraphicalObject;
     Comp : ISch_Component;
     Loc : TLocation;
-    I, Checked, Violations, GridMils, XMils, YMils, Dx, Dy : Integer;
+    I, Checked, Violations : Integer;
+    GridMils, XMils, YMils, Dx, Dy : Double;
     GridStr, Designator, SheetName, DocKind, ItemsJson, EntryJson : String;
     First : Boolean;
 Begin
@@ -1909,7 +1910,7 @@ Begin
     End;
 
     GridStr := ExtractJsonValue(Params, 'grid_mils');
-    GridMils := StrToIntDef(GridStr, 100);
+    GridMils := StrToFloatDef(GridStr, 100);
     If GridMils <= 0 Then GridMils := 100;
 
     Checked := 0;
@@ -1943,15 +1944,15 @@ Begin
                     Comp := SchObj;
                     Inc(Checked);
                     Loc := Comp.Location;
-                    XMils := CoordToMils(Loc.X);
-                    YMils := CoordToMils(Loc.Y);
-                    Dx := XMils Mod GridMils;
-                    Dy := YMils Mod GridMils;
-                    { Mod can be negative on Pascal for negative coords; }
-                    { take absolute. Components at negative coords (off }
-                    { sheet origin) get treated symmetrically.            }
-                    If Dx < 0 Then Dx := -Dx;
-                    If Dy < 0 Then Dy := -Dy;
+                    XMils := CoordToMilsF(Loc.X);
+                    YMils := CoordToMilsF(Loc.Y);
+                    Dx := Abs(XMils - Trunc(XMils / GridMils) * GridMils);
+                    Dy := Abs(YMils - Trunc(YMils / GridMils) * GridMils);
+                    { Ignore floating-point noise below half an internal unit. }
+                    If (Dx < 0.00005) Or (GridMils - Dx < 0.00005) Then Dx := 0;
+                    If (Dy < 0.00005) Or (GridMils - Dy < 0.00005) Then Dy := 0;
+                    Dx := Round(Dx * 10000) / 10000;
+                    Dy := Round(Dy * 10000) / 10000;
                     If (Dx <> 0) Or (Dy <> 0) Then
                     Begin
                         Inc(Violations);
@@ -1962,10 +1963,10 @@ Begin
                         EntryJson :=
                             JsonStr('designator', Designator) + ',' +
                             JsonStr('sheet', SheetName) + ',' +
-                            JsonStr('at', '(' + IntToStr(XMils) + ',' +
-                                          IntToStr(YMils) + ')') + ',' +
-                            JsonInt('dx', Dx) + ',' +
-                            JsonInt('dy', Dy);
+                            JsonStr('at', '(' + FloatToJsonStr(XMils) + ',' +
+                                          FloatToJsonStr(YMils) + ')') + ',' +
+                            JsonFloat('dx', Dx) + ',' +
+                            JsonFloat('dy', Dy);
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 Except End;
@@ -1980,7 +1981,7 @@ Begin
         JsonObj(
             JsonInt('checked', Checked) + ',' +
             JsonInt('violations', Violations) + ',' +
-            JsonInt('grid_mils', GridMils) + ',' +
+            JsonFloat('grid_mils', GridMils) + ',' +
             JsonRaw('items', '[' + ItemsJson + ']')
         ));
 End;

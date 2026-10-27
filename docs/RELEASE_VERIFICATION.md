@@ -3530,3 +3530,18 @@ schematic path with two placed components, `unknown_count=0`,
 query; the source sheet was not saved or changed. Pascal lint/build reported
 12 files and zero errors or warnings; the selected Python regression suite
 reported 37 passed and one skipped.
+
+## Fractional-mil leftovers (2026-10-27)
+
+Adapted additional paths from `vincent-himpe/fix/decimal-mils-leftovers`:
+PCB snap-grid context reads, schematic off-grid audits, stub-wire lengths,
+Workspace component positions, and library label positions. The corresponding
+Python wrappers now retain four decimal places of a mil where Altium's
+coordinate API supports them. On live Altium 26.11.1.5, script `.63` answered
+`audit.find_off_grid_components` with `grid_mils=12.5`, then with
+`grid_mils=0.3`: the latter found 135 violations among 147 inspected
+components. Altium reported one of two project sheets skipped because it
+was not loaded, so the count is limited to the read sheet. Script `.64`
+rounds reported dx/dy to the editor's 0.0001-mil resolution. After reloading
+`.64`, the same native query again found 135 violations; the first two
+offsets read back as 0.1 and 0.2 mil with no floating-point tail.

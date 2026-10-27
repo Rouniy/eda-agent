@@ -12646,7 +12646,8 @@ Var
     PlaceStr, Op, Remaining, PlacementParams, FailedItems, SheetPath : String;
     WorkspaceGuid, ItemGuid, RevisionGuid, ItemRevisionId : String;
     ResponseBody : String;
-    X, Y, Rotation, OrientationVal : Integer;
+    X, Y : Double;
+    Rotation, OrientationVal : Integer;
     OpCount, Placed, Failed : Integer;
     SchDoc : ISch_Document;
     ManagedWorkspace : IDXPWorkSpace;
@@ -12706,8 +12707,8 @@ Begin
         ItemGuid := GetBatchField(Op, 'item_guid');
         RevisionGuid := GetBatchField(Op, 'revision_guid');
         ItemRevisionId := GetBatchField(Op, 'item_revision_id');
-        X := StrToIntDef(GetBatchField(Op, 'x'), 0);
-        Y := StrToIntDef(GetBatchField(Op, 'y'), 0);
+        X := StrToFloatDef(GetBatchField(Op, 'x'), 0);
+        Y := StrToFloatDef(GetBatchField(Op, 'y'), 0);
         Rotation := StrToIntDef(GetBatchField(Op, 'rotation'), 0);
 
         If (WorkspaceGuid = '') Or (ItemGuid = '') Or (RevisionGuid = '') Then
@@ -12727,8 +12728,8 @@ Begin
         Else If Rotation = 270 Then OrientationVal := 3;
         PlacementParams :=
             'Orientation=' + IntToStr(OrientationVal)
-            + '|Location.X=' + IntToStr(MilsToCoord(X))
-            + '|Location.Y=' + IntToStr(MilsToCoord(Y));
+            + '|Location.X=' + IntToStr(MilsToCoordF(X))
+            + '|Location.Y=' + IntToStr(MilsToCoordF(Y));
 
         PlacedOne := False;
         Try
@@ -15737,11 +15738,13 @@ Var
     SchDoc : ISch_Document;
     PinsStr, RecStr, Remaining, Token : String;
     Desig, PinNum, Lbl : String;
-    PipePos, CommaPos, FieldIdx, StubLen, Stubbed, Failed : Integer;
+    PipePos, CommaPos, FieldIdx, Stubbed, Failed : Integer;
+    StubLen : Double;
     Iter, PinIter : ISch_Iterator;
     Comp : ISch_Component;
     Pin : ISch_Pin;
-    PX, PY, EX, EY, Orient : Integer;
+    PX, PY, EX, EY : Double;
+    Orient : Integer;
     Found : Boolean;
     Wire : ISch_Wire;
     NetLabel : ISch_NetLabel;
@@ -15761,7 +15764,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pins parameter required');
         Exit;
     End;
-    StubLen := StrToIntDef(ExtractJsonValue(Params, 'stub_length_mils'), 100);
+    StubLen := StrToFloatDef(ExtractJsonValue(Params, 'stub_length_mils'), 100);
 
     Stubbed := 0;
     Failed := 0;
@@ -15812,8 +15815,8 @@ Begin
                             Begin
                                 If (Pin.Designator = PinNum) And PinShownOn(Comp, Pin) Then
                                 Begin
-                                    Try PX := CoordToMils(Pin.Location.X); Except End;
-                                    Try PY := CoordToMils(Pin.Location.Y); Except End;
+                                    Try PX := CoordToMilsF(Pin.Location.X); Except End;
+                                    Try PY := CoordToMilsF(Pin.Location.Y); Except End;
                                     Try Orient := Pin.Orientation; Except End;
                                     Found := True;
                                 End;
@@ -15840,11 +15843,11 @@ Begin
             Wire := SchServer.SchObjectFactory(eWire, eCreate_Default);
             If Wire <> Nil Then
             Begin
-                Wire.Location := Point(MilsToCoord(PX), MilsToCoord(PY));
+                Wire.Location := Point(MilsToCoordF(PX), MilsToCoordF(PY));
                 Wire.InsertVertex := 1;
-                Wire.SetState_Vertex(1, Point(MilsToCoord(PX), MilsToCoord(PY)));
+                Wire.SetState_Vertex(1, Point(MilsToCoordF(PX), MilsToCoordF(PY)));
                 Wire.InsertVertex := 2;
-                Wire.SetState_Vertex(2, Point(MilsToCoord(EX), MilsToCoord(EY)));
+                Wire.SetState_Vertex(2, Point(MilsToCoordF(EX), MilsToCoordF(EY)));
                 SchDoc.RegisterSchObjectInContainer(Wire);
                 SchRegisterObject(SchDoc, Wire);
             End;
@@ -15854,7 +15857,7 @@ Begin
             If NetLabel <> Nil Then
             Begin
                 NetLabel.Text := Lbl;
-                NetLabel.Location := Point(MilsToCoord(EX), MilsToCoord(EY));
+                NetLabel.Location := Point(MilsToCoordF(EX), MilsToCoordF(EY));
                 If StyleFound Then
                 Begin
                     Try NetLabel.FontId := InfFont; Except End;

@@ -13,6 +13,7 @@ from typing import Any, Optional
 from ..bridge.payload import payload_safe
 from ..bridge import get_bridge
 from ..safety import refuse_process, untrusted_text_note
+from .library import _mils
 from .pin_hints import pin_location_hint
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
@@ -1633,7 +1634,7 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def sch_stub_pins(
-        stub_length_mils: int = 100,
+        stub_length_mils: float = 100,
         only_designators: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Draw a short wire stub + net label on every unconnected schematic pin.
@@ -1675,7 +1676,7 @@ def register_generic_tools(mcp):
 
         result = await bridge.send_command_async(
             "generic.stub_pins",
-            {"pins": "|".join(records), "stub_length_mils": str(stub_length_mils)},
+            {"pins": "|".join(records), "stub_length_mils": _mils(stub_length_mils)},
             timeout=120.0,
         )
         if isinstance(result, dict):
@@ -4063,7 +4064,7 @@ def register_generic_tools(mcp):
                             "reason": f"placement {index} has invalid {key}", "placed": 0}
                 guids[key] = value.strip("{}")
             try:
-                x, y = int(placement.get("x", 0)), int(placement.get("y", 0))
+                x, y = _mils(placement.get("x", 0)), _mils(placement.get("y", 0))
                 rotation = int(placement.get("rotation", 0))
             except (TypeError, ValueError, OverflowError):
                 return {"error": "INVALID_WORKSPACE_PLACEMENT",

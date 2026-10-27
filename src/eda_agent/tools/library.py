@@ -4,6 +4,7 @@
 
 import asyncio
 import math
+import math
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -22,6 +23,16 @@ from ..config import get_config
 from ..units import MM_PER_MIL, format_length, length_in, normalise_units
 from ..atomicfile import replace_with_retry
 from .. import profile as _profile_module
+
+
+def _mils(value: Any) -> str:
+    """Format a mil length to Altium's 1e-4 mil coordinate resolution."""
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("mil length must be finite")
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.4f}".rstrip("0").rstrip(".")
 
 
 def _pad_geometry_problem(reply: Any) -> str:
@@ -4968,7 +4979,7 @@ def register_library_tools(mcp):
                 style_set = True
             for axis in ("x", "y"):
                 if op.get(axis) is not None:
-                    parts.append(f"{axis}={int(round(float(op[axis])))}")
+                    parts.append(f"{axis}={_mils(op[axis])}")
                     style_set = True
             if op.get("text") is not None:
                 text = str(op["text"])

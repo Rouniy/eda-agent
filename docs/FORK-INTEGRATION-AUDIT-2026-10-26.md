@@ -22,6 +22,13 @@ counts because several changes were ported with edited patches.
 | Already present after the upstream ancestry merge | `74d745d` forces Altium's native maroon net-label colour; our compiled electrical-label path already uses it | Keep the electrical-index behaviour; the old held label in this dated audit was stale |
 | Held for review | Upstream removal of the main DesignPlan layout engine | Preserve both layout paths |
 
+On 2026-10-27, `vincent-himpe/fix/decimal-mils-leftovers` yielded another
+adapted tranche: snap-grid reads, schematic off-grid audit, stub-wire length,
+Workspace part coordinates, and library label coordinates. The main branch
+already carried the region true-arc work from that fork's other branch.
+Script `.64` passed a live fractional-grid audit; remaining length handlers
+in the source candidate still need line-by-line reconciliation.
+
 `be21eb3` bottom-side placement is now an exact-board adapted port in
 `main`. On 2026-10-27 it passed a native mirror and rotation check on an
 isolated PcbDoc, including exact save/reopen. See

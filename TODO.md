@@ -1,6 +1,6 @@
 # Fork integration TODO
 
-## Refreshed after `.62`, 2026-10-27
+## Refreshed after `.64`, 2026-10-27
 
 - [x] Establish an exact upstream merge point: `9ee593e` is an ancestor
   of our current `main`, and there are zero upstream commits behind it.
@@ -16,6 +16,11 @@
 - [x] Port useful generic DbLib reads from `andrzej-sikora-elte/elte`.
   Script `.62` returned flags and current footprint models from two
   placed parts on a live DCDC schematic without property diagnostics.
+- [x] Port another decimal-mil tranche from `vincent-himpe`:
+  snap-grid context reads, off-grid audits, stub lengths, Workspace placement
+  and library label coordinates. The 0.3-mil audit passed a live read on
+  the loaded DCDC sheet with script `.64`; other write paths still need
+  disposable-document acceptance.
 - Continue native acceptance of the already integrated multipart,
   rigid-flex, library and manufacturing paths listed below. A Git-divergent
   fork commit alone is not evidence that its feature is absent.
@@ -26,7 +31,7 @@
   reconcile legacy upstream tests that assume implicit active-board writes
   with the exact-board contracts retained here. The broad suite previously
   reached 7419 passing tests; focused fixes after that run passed.
-- Continue native checks on disposable Altium documents using script `.62`.
+- Continue native checks on disposable Altium documents using script `.64`.
   Bottom-side component placement and flip readback passed on an isolated
   PcbDoc; other operations in this section retain their own acceptance gaps.
 - Keep reviewing the latest MOREmbedded tip `032fb4b` for behavior that

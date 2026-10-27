@@ -12,14 +12,17 @@ There are zero newer upstream commits outside our history. The direct child
 fork `MOREmbedded/main` is `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`;
 its 33 divergent commits are Git ancestry, not a count of missing features.
 
-Script source and generated bundle are `.62`; see `git hash-object
+Script source and generated bundle are `.64`; see `git hash-object
 scripts/altium/Altium_MCP.pas` for the current exact bundle identity.
 Via tenting with an exact-board plan persisted on an isolated PcbDoc after
 save, close and reopen in Altium 26.11.1.5. The loaded script answered
-`application.ping` as `.62` after the latest restart. An exact-document,
+`application.ping` as `.64` after the latest restart. An exact-document,
 read-only `generic.query_objects` call returned live DbLib flags and current
 footprint model names for R13 and U4 with no property diagnostics. Altium,
 HTTP MCP port 14701 and TCP relay port 14700 are running at this handoff.
+The latest read-only native audit accepted a 0.3-mil schematic grid and
+reported 135 off-grid objects among 147 inspected components, with one
+unloaded project sheet explicitly excluded from those counts.
 
 On this date GitHub listed 61 direct forks of `salitronic/eda-agent` and
 one child fork of `Rouniy/eda-agent` (`MOREmbedded`). `git ls-remote`
