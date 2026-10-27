@@ -63,6 +63,44 @@ def test_altium_fab_extensions_are_classified(package):
     assert "copper" in summary["layer_map"].lower()
 
 
+def test_nested_altium_export_ignores_repeated_via_type_drills(tmp_path):
+    """Altium writes a base plated file plus a duplicate per via type."""
+    gerber = tmp_path / "GerberX2"
+    drill = tmp_path / "NC Drill"
+    gerber.mkdir()
+    drill.mkdir()
+    for side in ("Top", "Bot"):
+        (gerber / f"Board_Copper_Signal_{side}.gbr").write_text(COPPER)
+    (gerber / "Board_Profile.gbr").write_text(OUTLINE)
+    (drill / "Board-RoundHoles-Plated.TXT").write_text(DRILL)
+    (drill / "Board-RoundHoles_Type_7-Plated.TXT").write_text(DRILL)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = summarise_package(tmp_path)
+    assert result["ok"] is True
+    assert result["copper_layers"] == 2
+    assert result["drills"]["hits"] == 2
+    assert len(result["ignored_duplicate_drill_files"]) == 1
+
+
+def test_nested_altium_export_refuses_unaccounted_subtype_drills(tmp_path):
+    gerber = tmp_path / "GerberX2"
+    drill = tmp_path / "NC Drill"
+    gerber.mkdir()
+    drill.mkdir()
+    for side in ("Top", "Bot"):
+        (gerber / f"Board_Copper_Signal_{side}.gbr").write_text(COPPER)
+    (gerber / "Board_Profile.gbr").write_text(OUTLINE)
+    (drill / "Board-RoundHoles-Plated.TXT").write_text(DRILL)
+    (drill / "Board-RoundHoles_Type_7-Plated.TXT").write_text(
+        DRILL.replace("X10.0Y5.0", "X11.0Y5.0"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = summarise_package(tmp_path)
+    assert result["ok"] is False
+    assert "absent from base" in result["reason"]
+
+
 def test_drill_hits_and_sizes_are_read(package):
     drills = summarise_package(package)["drills"]
     assert drills["hits"] == 2

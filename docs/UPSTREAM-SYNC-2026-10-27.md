@@ -119,8 +119,8 @@ The fork's `pcb_check_fab_output` was rewritten in `.14`: a single native
 exact-board snapshot counts all drilled pads and vias, checks copper layers
 and outline size, and the Python comparison refuses missing checks. The
 native snapshot and wrong-path refusal passed on a disposable board. A real
-exported package and a board with more than 5000 drilled pads have not yet
-been checked end to end, so NPI DFM remains pending that acceptance.
+exported package has since been compared below, revealing an outline
+mismatch. A board with more than 5000 drilled holes has not yet been checked.
 
 ## Next integration blocks
 
@@ -131,7 +131,7 @@ been checked end to end, so NPI DFM remains pending that acceptance.
 | Upstream `184301d` | Schematic property test dependency fix | Carry with the related property chain tests |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Further qualify 3D-body layer changes, multi-body STEP edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews and natively qualify the restored footprint reader and model association | Verify against a disposable PcbLib and an isolated output directory |
-| MOREmbedded `pcb_check_fab_output` | Native acceptance on an exported package and a >5000-drilled-pad board | Confirm Gerber/Excellon comparison from the same design revision |
+| MOREmbedded `pcb_check_fab_output` | A >5000-drilled-pad board and revision provenance of external packages | Real Altium GerberX2/NC Drill package now parsed and compared to its production-review PcbDoc; copper and hole counts match, exported Profile is larger than the live board. Keep that mismatch visible; a package manifest/revision proof is still needed for sign-off. |
 | `mooreaa` `dc36b7e` through `fc22136` | Remaining relink paths and native acceptance of placement/parameter ports | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This
@@ -142,6 +142,23 @@ The older port-by-feature history and outstanding items remain in
 `FORK-INTEGRATION-AUDIT-2026-10-26.md`. In particular, the new upstream
 commits from `0a9ccd4` through `ce53d6e` add many project and PCB tools
 that still need a dependency and native-behaviour review.
+
+## Real fab-package acceptance
+
+The MOREmbedded-derived fab checker was run on the production-review
+`modem-stm32-2trx-lr2021` package. Altium exports nested `GerberX2` and
+`NC Drill` directories. The plated `RoundHoles_Type_7` file repeats all
+991 vias already in `RoundHoles-Plated`; the parser now verifies that
+subset and ignores it instead of double-counting. It excludes edge-routing
+tool moves from drilled-hole counts and refuses a subtype with holes absent
+from the base set. The resulting package has eight copper layers and 1053
+drilled holes, matching a single native snapshot of the exact PcbDoc
+(62 drilled pads and 991 vias). The exported Profile measures
+107.9755 × 43.9757 mm after stroke correction, while the board reports
+90.0002 × 40.0000 mm. The tool therefore returns `passed=false` with two
+outline errors. The corresponding PANEL PcbDoc is 231 × 180 mm and does
+not explain this package. No design file was modified. Twenty-five focused
+Gerber/fab tests pass; a >5000-hole board remains untested.
 
 ## October 27 integration merge
 

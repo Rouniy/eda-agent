@@ -32,6 +32,7 @@ the files rather than as a traceback from inside a parser.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 #: Severity names, matching the rest of the audit surface.
@@ -43,6 +44,73 @@ INFO = "info"
 #: worth saying so. Gerber coordinates are exact; this absorbs the
 #: rounding an exporter does, not a real size difference.
 _OUTLINE_TOL_MM = 0.05
+
+
+def _altium_fabrication_files(directory: Path):
+    """Select one Altium GerberX2 + NC Drill package without duplicate drills.
+
+    Altium writes the complete plated drill set and a second file per via
+    type. The type file is a subset of the complete one, so counting both
+    silently doubles vias. A type file with any new holes is refused.
+    """
+    gerber = directory / "GerberX2"
+    drill = directory / "NC Drill"
+    if not (gerber.is_dir() and drill.is_dir()):
+        return None
+    tops = list(gerber.glob("*_Copper_Signal_Top.gbr"))
+    if len(tops) != 1:
+        raise ValueError("GerberX2 must contain exactly one top copper file")
+    name = tops[0].name.removesuffix("_Copper_Signal_Top.gbr")
+    copper = sorted(gerber.glob(f"{name}_Copper_Signal_*.gbr"))
+    if len(copper) < 2 or not (gerber / f"{name}_Copper_Signal_Bot.gbr").is_file():
+        raise ValueError("GerberX2 needs both top and bottom copper")
+    profile = gerber / f"{name}_Profile.gbr"
+    if not profile.is_file():
+        raise ValueError("GerberX2 has no matching board Profile")
+    base_drills = sorted(p for p in drill.glob(f"{name}-*Holes*.TXT")
+                         if "_Type_" not in p.stem)
+    if not base_drills:
+        raise ValueError("NC Drill has no base RoundHoles/SlotHoles files")
+    files = [*copper, profile, *base_drills]
+    overrides: dict[str, str] = {}
+    for path in copper:
+        suffix = path.stem.removeprefix(f"{name}_Copper_Signal_")
+        if suffix == "Top":
+            layer = "top copper"
+        elif suffix == "Bot":
+            layer = "bottom copper"
+        elif suffix.isdecimal():
+            layer = f"inner_{int(suffix):02d} copper"
+        else:
+            raise ValueError(f"unrecognised copper layer: {path.name}")
+        overrides[re.escape(path.name)] = layer
+    overrides[re.escape(profile.name)] = "mechanical outline"
+    for path in base_drills:
+        if "NonPlated" in path.name:
+            layer = "drill nonplated"
+        elif "Plated" in path.name:
+            layer = "drill plated"
+        else:
+            raise ValueError(f"unclassified drill file: {path.name}")
+        overrides[re.escape(path.name)] = layer
+
+    from gerbonara.excellon import ExcellonFile
+
+    def holes(path: Path) -> set[tuple[float, float, float]]:
+        parsed = ExcellonFile.open(path)
+        return {(round(float(obj.x), 4), round(float(obj.y), 4),
+                 round(float(obj.aperture.diameter), 4))
+                for obj in parsed.objects if hasattr(obj, "x") and hasattr(obj, "y")}
+
+    ignored = []
+    for subtype in sorted(drill.glob(f"{name}-*Holes_Type_*.TXT")):
+        matched = [base for base in base_drills
+                   if ("NonPlated" in base.name) == ("NonPlated" in subtype.name)]
+        union = set().union(*(holes(base) for base in matched))
+        if not holes(subtype) <= union:
+            raise ValueError(f"drill subtype contains holes absent from base files: {subtype.name}")
+        ignored.append(subtype.relative_to(directory).as_posix())
+    return files, overrides, ignored, name
 
 
 def _finding(severity: str, check: str, message: str,
@@ -67,8 +135,8 @@ def summarise_package(directory: str | Path,
     if not directory.is_dir():
         return {"ok": False, "reason": f"not a directory: {directory}"}
 
-    files = sorted(p.name for p in directory.iterdir() if p.is_file())
-    if not files:
+    visible = sorted(p.name for p in directory.iterdir() if p.is_file())
+    if not visible and not any(directory.iterdir()):
         return {"ok": False, "reason": f"no files in {directory}"}
 
     try:
@@ -80,12 +148,22 @@ def summarise_package(directory: str | Path,
                 "(needs Python 3.12 or newer)."}
 
     try:
-        stack = LayerStack.open_dir(directory, board_name=board_name)
+        selected = _altium_fabrication_files(directory)
+        if selected is None:
+            files = visible
+            stack = LayerStack.open_dir(directory, board_name=board_name)
+            ignored = []
+        else:
+            paths, overrides, ignored, inferred_name = selected
+            files = [p.relative_to(directory).as_posix() for p in paths]
+            stack = LayerStack.from_files(
+                paths, board_name=inferred_name, original_path=directory,
+                overrides=overrides, autoguess=False)
     except Exception as exc:  # noqa: BLE001 - upstream parser, any failure
         return {"ok": False, "reason":
                 f"could not read the fab package in {directory}: "
                 f"{type(exc).__name__}: {exc}",
-                "files": files}
+                "files": visible}
 
     try:
         copper = list(stack.copper_layers)
@@ -104,6 +182,7 @@ def summarise_package(directory: str | Path,
         "ok": True,
         "directory": str(directory),
         "files": files,
+        "ignored_duplicate_drill_files": ignored,
         "layer_map": layer_map,
         "copper_layers": len(copper),
         "outline_mm": outline,
@@ -176,12 +255,9 @@ def _drill_summary(drill_layers) -> dict[str, Any]:
     sizes: set[float] = set()
     plating: set[str] = set()
     for layer in drill_layers:
-        try:
-            total += sum(layer.hit_count().values())
-            sizes.update(round(float(d), 4) for d in layer.drill_sizes())
-            plating.add(str(layer.plating_type))
-        except Exception:  # noqa: BLE001
-            continue
+        total += sum(layer.hit_count().values())
+        sizes.update(round(float(d), 4) for d in layer.drill_sizes())
+        plating.add(str(layer.plating_type))
     return {"files": len(drill_layers), "hits": total,
             "sizes_mm": sorted(sizes),
             "smallest_mm": min(sizes) if sizes else None,

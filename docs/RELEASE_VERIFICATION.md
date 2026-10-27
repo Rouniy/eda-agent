@@ -3372,3 +3372,22 @@ The scratch copy is at
 `C:\Users\Alex\AppData\Local\Temp\eda-agent-recenter-20261027.PcbDoc`;
 command policy rejected its removal after the test. Larger bulk writes and
 footprints with unsupported grouped primitive kinds remain unverified.
+
+# Altium nested fab-package readback, 2026-10-27
+
+The MOREmbedded-derived `pcb_check_fab_output` was exercised on the
+production-review `modem-stm32-2trx-lr2021` export. The reader now selects
+copper/Profile from `GerberX2` and plated/nonplated/slot drills from
+`NC Drill`, and verifies that the 991-hole Type_7 file is a subset of the
+base plated drill file before omitting it. The package and exact live board
+both reported eight copper layers and 1053 holes (62 drilled pads plus
+991 vias). The package Profile measured 107.9755 × 43.9757 mm; the board
+reported 90.0002 × 40.0000 mm. The checker reported `passed=false` with
+two outline errors, so this package must not be represented as a match.
+The PANEL PcbDoc measured 231 × 180 mm and was also not the source of
+that Profile size. The documents were closed without modification. Twenty-five
+focused Gerber/fab tests passed. Revision provenance and a board with more
+than 5000 drilled holes remain to verify.
+The same call through the restarted HTTP MCP on port 14701 returned all
+three required checks and the same two outline errors; Altium's loaded
+DelphiScript stayed at `.53` because this patch changed only Python.
