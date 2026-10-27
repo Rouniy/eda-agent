@@ -1,5 +1,27 @@
 # Current integration state / agent handoff
 
+## Structured schematic refusal details, 2026-10-28
+
+Script `.118` fixes three `BuildErrorResponseDetailed` call sites in
+`Generic.pas`: they had passed a bare `"candidates":...` or
+`"symbols":...` field where the response builder requires a complete
+JSON object. A native `generic.set_component_unique_id` refusal on a
+disposable two-sheet project previously caused an unparseable response
+file twice. After rebuilding and reloading `.118`, the same call
+returned `WRITE_REFUSED` with structured `details.symbols` containing
+the actual location (5000, 2000) mil and unchanged UniqueId `XUEYHPIV`.
+The bridge stayed responsive. The generated monolithic script was
+rebuilt from the 12 units; lint reported zero errors or warnings.
+
+The attempted native multipart fixture was not a valid shared package:
+Altium gave its two placed parts different UniqueIds, and also reminted
+a replicated same-sheet part. The safe designator batch correctly
+refused the two `UQA1` symbols with distinct UniqueIds before a write.
+The disposable project was closed without saving; native multipart
+acceptance remains open. A separate close-with-discard call on another
+scratch copy left previously added symbols visible after reopening;
+whether this was editor cache or a disk write is not yet established.
+
 ## Collision-checked project designator batch, 2026-10-28
 
 `sch_batch_rename_designators` is an additional path for a use case the

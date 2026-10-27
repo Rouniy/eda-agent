@@ -56,6 +56,16 @@
   and under an intentionally failed native second phase. The Python
   path cannot make multiple bridge calls atomic against other clients;
   a native single-command transaction would close that remaining race.
+- [x] Fix malformed JSON on schematic ambiguity and UniqueId refusal
+  paths. Script `.118` returns structured `WRITE_REFUSED` details on a
+  native rejected UniqueId write; the same call had produced an
+  unparseable response before the fix.
+- [ ] Establish a real shared-UniqueId multipart fixture in Altium.
+  Placing parts separately and replicating a part both caused Altium to
+  mint distinct IDs; the current safe batch refused duplicate `UQA1`.
+- [ ] Investigate why closing a disposable SchDoc with discard left
+  unsaved placed symbols visible after reopening; compare file hashes
+  to distinguish editor cache from an unexpected disk write.
 - [x] Qualify `vincent-himpe`'s fractional circular board outline in
   Altium `.115`: exact centre and radius were returned as four closed
   quarter arcs and persisted after save/close/reopen on a disposable

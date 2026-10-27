@@ -7716,7 +7716,7 @@ Begin
         + ' on this sheet, which is normal for a multi-part device. Pass '
         + 'location_x and location_y to choose one. The candidates, with '
         + 'their locations and current part ids, are in the details.',
-        '"candidates":' + SchComponentCandidates(SchDoc, Designator));
+        '{"candidates":' + SchComponentCandidates(SchDoc, Designator) + '}');
 End;
 
 Function Gen_GetSchComponentPins(Params : String; RequestId : String) : String;
@@ -10169,7 +10169,7 @@ Begin
     Begin
         Result := BuildErrorResponseDetailed(RequestId, 'NOT_FOUND',
             'No symbol designated ' + Designator + ' at that location.',
-            '"candidates":' + SchComponentCandidates(SchDoc, Designator));
+            '{"candidates":' + SchComponentCandidates(SchDoc, Designator) + '}');
         Exit;
     End;
 
@@ -10304,7 +10304,7 @@ Begin
             + ' symbols designated ' + Designator + '. Altium mints '
             + 'UniqueIds itself and kept its own on the rest, so those '
             + 'sub-parts still belong to separate packages.',
-            '"symbols":' + Details);
+            '{"symbols":' + Details + '}');
         Exit;
     End;
 
