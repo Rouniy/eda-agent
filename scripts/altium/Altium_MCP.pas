@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.88';
+    SCRIPT_VERSION = '2026.10.27.89';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -64735,6 +64735,81 @@ Begin
         Or (Obj.ObjectId = eParameter);
 End;
 
+{ Typed pin text settings, retained from the issue #77 property handler.
+  The generic schematic interface does not expose these members. A merge
+  removed these helpers while retaining their call sites, causing a modal
+  undeclared-identifier error. }
+Function IsSchPinProp(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'ShowName') Or (PropName = 'ShowDesignator') Or
+        (PropName = 'Name_FontMode') Or (PropName = 'Name_CustomFontID') Or
+        (PropName = 'Name_CustomColor') Or (PropName = 'Designator_FontMode') Or
+        (PropName = 'Designator_CustomFontID') Or
+        (PropName = 'Designator_CustomColor');
+End;
+
+Function ReadSchPinProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    Pin : ISch_Pin;
+Begin
+    Result := '';
+    If (Obj = Nil) Or (Obj.ObjectId <> ePin) Then Exit;
+    Pin := Obj;
+    Try
+        If PropName = 'ShowName' Then Result := BoolToJsonStr(Pin.ShowName)
+        Else If PropName = 'ShowDesignator' Then Result := BoolToJsonStr(Pin.ShowDesignator)
+        Else If PropName = 'Name_FontMode' Then Result := IntToStr(Pin.Name_FontMode)
+        Else If PropName = 'Name_CustomFontID' Then Result := IntToStr(Pin.Name_CustomFontID)
+        Else If PropName = 'Name_CustomColor' Then Result := IntToStr(Pin.Name_CustomColor)
+        Else If PropName = 'Designator_FontMode' Then Result := IntToStr(Pin.Designator_FontMode)
+        Else If PropName = 'Designator_CustomFontID' Then Result := IntToStr(Pin.Designator_CustomFontID)
+        Else If PropName = 'Designator_CustomColor' Then Result := IntToStr(Pin.Designator_CustomColor)
+        Else If PropName = 'Description' Then Result := Pin.Description;
+    Except
+        Result := '';
+    End;
+End;
+
+Function WriteSchPinProp(Obj : ISch_GraphicalObject; PropName, Value : String) : Boolean;
+Var
+    Pin : ISch_Pin;
+    Flag : Boolean;
+    Num : Integer;
+Begin
+    Result := False;
+    If (Obj = Nil) Or (Obj.ObjectId <> ePin) Then Exit;
+    If (PropName = 'ShowName') Or (PropName = 'ShowDesignator') Then
+    Begin
+        If (LowerCase(Value) <> 'true') And (LowerCase(Value) <> 'false') Then Exit;
+        Flag := LowerCase(Value) = 'true';
+    End
+    Else If PropName <> 'Description' Then
+    Begin
+        If Not IsSchPinProp(PropName) Or Not IsIntStr(Value) Then Exit;
+        Num := StrToInt(Value);
+        If Num < 0 Then Exit;
+    End;
+    Pin := Obj;
+    Try
+        If PropName = 'ShowName' Then Pin.ShowName := Flag
+        Else If PropName = 'ShowDesignator' Then Pin.ShowDesignator := Flag
+        Else If PropName = 'Name_FontMode' Then Pin.Name_FontMode := Num
+        Else If PropName = 'Name_CustomFontID' Then Pin.Name_CustomFontID := Num
+        Else If PropName = 'Name_CustomColor' Then Pin.Name_CustomColor := Num
+        Else If PropName = 'Designator_FontMode' Then Pin.Designator_FontMode := Num
+        Else If PropName = 'Designator_CustomFontID' Then Pin.Designator_CustomFontID := Num
+        Else If PropName = 'Designator_CustomColor' Then Pin.Designator_CustomColor := Num
+        Else If PropName = 'Description' Then Pin.Description := Value
+        Else Exit;
+        If (PropName = 'ShowName') Or (PropName = 'ShowDesignator') Then
+            Result := LowerCase(ReadSchPinProp(Obj, PropName)) = LowerCase(Value)
+        Else
+            Result := ReadSchPinProp(Obj, PropName) = Value;
+    Except
+        Result := False;
+    End;
+End;
+
 { IsHidden belongs to pins and to the complex text types (parameters,
   designators, sheet names, sheet file names) and to nothing else in
   Altium's interface, so this is an ALLOWLIST: the set is short and fixed.
@@ -66285,7 +66360,9 @@ Begin
              Or (UpperCase(PropName) = 'VERTICES') Then
             Result := GetSchVertexProperty(Obj, PropName)
 
-        // Pin text settings (issue #77)
+        // Pin text settings and description (issue #77)
+        Else If (PropName = 'Description') And (Obj.ObjectId = ePin) Then
+            Result := ReadSchPinProp(Obj, PropName)
         Else If IsSchPinProp(PropName) Then
         Begin
             If Obj.ObjectId = ePin Then
@@ -66360,6 +66437,8 @@ Begin
         Begin
             WroteOK := SchSetExtra(Obj, PropName, Value);
         End
+        Else If IsSchPinProp(PropName) Then
+            WroteOK := WriteSchPinProp(Obj, PropName, Value)
         // Coordinates (expected in mils). `Obj.Location` returns a copy of
         // the TLocation record via the GetState_Location reader; writing
         // directly to `.X` / `.Y` on that copy is silently discarded. Read

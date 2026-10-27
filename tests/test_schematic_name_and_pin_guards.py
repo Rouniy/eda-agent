@@ -45,6 +45,7 @@ def test_name_reads_and_writes_both_check_the_allowlist():
 
 
 def test_a_pin_description_is_the_pins_own_field():
+    assert "Function IsSchPinProp(" in _gen("IsSchPinProp")
     text = _decommented(_src("Generic.pas"))
     at = text.index("(PropName = 'ComponentDescription') Or (PropName = 'Description')")
     branch = text[at:at + 600]
@@ -52,8 +53,8 @@ def test_a_pin_description_is_the_pins_own_field():
     assert branch.index("Obj.ObjectId = eSchComponent") < component
     assert "WriteSchPinProp(Obj, 'Description', Value)" in branch
     assert "Obj.ObjectId = ePin" in branch
-    assert "P.Description := Value" in _gen("WriteSchPinProp")
-    assert "P.Description" in _gen("ReadSchPinProp")
+    assert "Pin.Description := Value" in _gen("WriteSchPinProp")
+    assert "Pin.Description" in _gen("ReadSchPinProp")
 
 
 def test_bare_and_altium_ellipse_names_both_resolve():
@@ -68,9 +69,9 @@ def test_the_schlib_toggle_prefers_the_symbol_on_screen():
     assert lib.index("CurrentSchComponent") < lib.index("LastCreatedLibComponent")
 
 
-def test_a_schlib_component_query_uses_the_library_iterator():
+def test_a_schlib_component_query_uses_the_selected_component_iterator():
     body = _decommented(_src("Generic.pas"))
-    assert "SchLibDoc.SchLibIterator_Create" in body
+    assert "LibComp.SchIterator_Create" in body
 
 
 def test_set_grid_sends_the_switches_only_when_given(monkeypatch):

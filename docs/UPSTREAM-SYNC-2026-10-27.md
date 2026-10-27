@@ -249,7 +249,7 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 | MOREmbedded `84b682c`, upstream `5db72f2` | Multi-body STEP layer and Z-offset edits are now qualified on one disposable PcbLib; further qualify bulk edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
 | MOREmbedded `pcb_check_fab_output` | A >5000-drilled-pad board and revision provenance of external packages | Real Altium GerberX2/NC Drill package now parsed and compared to its production-review PcbDoc; copper and hole counts match, exported Profile is larger than the live board. Keep that mismatch visible; a package manifest/revision proof is still needed for sign-off. |
-| `mooreaa` `dc36b7e` through `fc22136` | Remaining relink paths and native acceptance of placement/parameter ports | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
+| `mooreaa` `dc36b7e` through `fc22136` | Remaining relink paths and parameter-port acceptance; multipart placement and pin-property read/write are now natively checked | Use final corrected handlers; verify remaining exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This
 table tracks next implementation batches, not a claim that the listed source
@@ -523,3 +523,19 @@ candidate. It is already an ancestor of `main`; its `SchExtraOwner` and
 `SchExtraFits` test dependencies are present. The focused test file passed
 9 cases with 1 optional Free Pascal case skipped. Six source/qualification
 groups remain in that table, not a count of individual missing features.
+
+Script `.89` restored the pin-property helpers lost in an earlier merge.
+The retained `generic.query_objects` call sites raised Altium's modal
+`Undeclared identifier: IsSchPinProp` when a schematic object was read.
+After rebuilding and reloading the main script, two parts of the three-part
+`EDA_AGENT_QA_TRIPLE` were placed on the disposable
+`eda-agent-create-object-20261027.SchDoc`. An exact-path query returned
+`CurrentPartID` 1 and 2, `PartCount` 3, the same `U_QA1` designator, and
+the requested 1000/2000-mil positions. Both parts survived exact save,
+close and reopen. On the disposable SchLib, pin `CMP-001-2897-1:1`
+returned its typed text properties; setting `ShowName=true` survived exact
+save, close and reopen. The multipart QA symbol itself has no pins, so pin
+properties were checked on that separate symbol. Pascal lint/build passed
+12 files with zero errors/warnings; the focused suite passed 17 cases with
+one optional case skipped. Remaining `mooreaa` relink and parameter paths
+still need native acceptance.
