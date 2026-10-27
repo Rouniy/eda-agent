@@ -11,7 +11,9 @@
 - [x] Native-qualify the MOREmbedded integrated-library build path on
   copied Altium example libraries. Script `.115` compiled a LibPkg with
   exact SchLib and PcbLib members into a 123,392-byte IntLib containing
-  both library streams; the QA project closed. Installation of that
+  both library streams; a second build of the existing package kept
+  exactly two members and refreshed the IntLib. The QA project closed.
+  Installation of that
   IntLib into Altium's global library list was not part of this check.
 
 - [x] Run the 11 `vincent-himpe` decimal-length tests against `main`;

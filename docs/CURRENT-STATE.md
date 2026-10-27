@@ -25,7 +25,11 @@ Altium's `project.compile` returned success and wrote a fresh
 The OLE container has `SchLib/0.schlib` and `PCBLib/0.pcblib` streams,
 not merely a nonempty placeholder. The exact LibPkg closed successfully
 with no other project closed. Its isolated outputs remain in Temp; the
-installed source libraries were only copied.
+installed source libraries were only copied. Re-running the same tool
+against the existing package returned `created=false`, compiled a fresh
+123,392-byte IntLib, and `project.get_documents` still listed exactly
+the same two members rather than duplicate entries. The package closed
+again successfully.
 
 ## Hosted Actions on the fork, 2026-10-28
 
