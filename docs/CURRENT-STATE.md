@@ -5,8 +5,9 @@
 The `.5` source guards `Obj.FontId` in the generic schematic reader and
 writer by object type. Sheet and harness entries use typed `TextFontId`.
 This ports the `mooreaa` AD25 crash fix as refined by the latest upstream.
-Focused tests and Pascal lint/build pass. A native entry read on a disposable
-sheet and `.5` runtime reload remain pending.
+Focused tests and Pascal lint/build pass. Altium reloaded `.5` from `main`;
+restart status reported `running`, script `.5`, Altium `26.11.1.5` and zero
+cast errors. A native entry read on a disposable sheet remains pending.
 
 The `.4` source adds `pcb_pours_at` and `pcb_board_options` from upstream
 `ce53d6e`. The first reports the actual board file and accepts an expected
