@@ -6,6 +6,7 @@ built on the live reads."""
 from __future__ import annotations
 
 import struct
+import asyncio
 import zlib
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 
 from eda_agent.design.footprint_compare import compare_footprints
 from eda_agent.fileio import altium_pcblib
+from eda_agent.tools import library as library_tools
 from eda_agent.fileio.altium_libpkg import render_libpkg, write_libpkg
 from eda_agent.library_backup import backup_library, list_backups, restore_backup
 from eda_agent.render.footprint_svg import layer_kind, render_footprint_svg
@@ -102,6 +104,40 @@ def test_extraction_refuses_model_with_mismatched_checksum(tmp_path, monkeypatch
 def test_unsafe_model_names_become_safe_filenames():
     assert altium_pcblib._safe_filename("body/odd:name", 1) == "body_odd_name.step"
     assert altium_pcblib._safe_filename("", 3) == "model_3.step"
+
+
+def test_footprint_model_extraction_filters_by_live_body(tmp_path, monkeypatch):
+    monkeypatch.setattr(altium_pcblib, "_open_pcblib", lambda path: _two_models())
+
+    class Bridge:
+        async def send_command_async(self, command, params):
+            assert command == "library.get_footprint_primitives"
+            assert params["footprint_name"] == "RES_0603"
+            return {"body_models": [{"has_model": True,
+                                     "model_file": r"C:\parts\0603.stp"}]}
+
+    class MCP:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self, *args, **kwargs):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return register
+
+    monkeypatch.setattr(library_tools, "get_bridge", Bridge)
+    mcp = MCP()
+    library_tools.register_library_tools(mcp)
+    extract = mcp.tools["lib_extract_step_models"]
+    out = asyncio.run(extract("x.PcbLib", str(tmp_path), footprint_name="RES_0603"))
+    assert out["footprint_name"] == "RES_0603"
+    assert [model["name"] for model in out["models"]] == ["0603.stp"]
+    assert len(out["written"]) == 1 and out["failed"] == []
+    no_match = asyncio.run(extract("x.PcbLib", str(tmp_path),
+                                   model_names=["unrelated.step"],
+                                   footprint_name="RES_0603"))
+    assert not no_match["ok"]
 
 
 # --- LibPkg -----------------------------------------------------------------

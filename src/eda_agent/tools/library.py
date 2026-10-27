@@ -2306,6 +2306,7 @@ def register_library_tools(mcp):
         model_names: Optional[list[str]] = None,
         overwrite: bool = False,
         list_only: bool = False,
+        footprint_name: str = "",
     ) -> dict[str, Any]:
         """List or extract the STEP models embedded in a .PcbLib, WITHOUT
         Altium running.
@@ -2322,6 +2323,8 @@ def register_library_tools(mcp):
             out_dir: where to write; default
                 ``<workspace>/step_models/<library name>``.
             model_names: only these model names (case-insensitive).
+            footprint_name: only models attached to this footprint. This
+                requires a live Altium bridge and the saved PcbLib on disk.
             overwrite: replace files already in ``out_dir``.
             list_only: report the models and write nothing.
 
@@ -2332,20 +2335,47 @@ def register_library_tools(mcp):
             extracting.
         """
         from ..fileio.altium_pcblib import extract_pcblib_models, read_pcblib_models
+        from ..bridge.exceptions import AltiumCommandError
 
         try:
             models = await asyncio.to_thread(read_pcblib_models, library_path)
+            selected_names = model_names
+            if footprint_name:
+                primitives = await get_bridge().send_command_async(
+                    "library.get_footprint_primitives",
+                    {"footprint_name": footprint_name,
+                     "library_path": library_path})
+                if not isinstance(primitives, dict) or not isinstance(
+                        primitives.get("body_models"), list):
+                    return {"ok": False, "reason": "could not identify the "
+                            "footprint's 3D models", "primitives": primitives}
+                attached = {re.split(r"[\\/]", str(body.get("model_file") or ""))[-1].lower()
+                            for body in primitives["body_models"]
+                            if isinstance(body, dict) and body.get("has_model")
+                            and body.get("model_file")}
+                if not attached:
+                    return {"ok": False, "reason": "footprint has no named 3D models",
+                            "footprint_name": footprint_name}
+                selected_names = sorted(attached & {name.lower() for name in model_names}
+                                        if model_names else attached)
+                if not selected_names:
+                    return {"ok": False, "reason": "none of the requested models "
+                            "belong to this footprint", "footprint_name": footprint_name}
+                models = [model for model in models
+                          if model["name"].lower() in selected_names]
             out: dict[str, Any] = {"ok": True, "library_path": library_path,
                                    "model_count": len(models), "models": models}
+            if footprint_name:
+                out["footprint_name"] = footprint_name
             if list_only:
                 return out
             target = Path(out_dir) if out_dir else (
                 Path(get_config().workspace_dir) / "step_models" / Path(library_path).stem)
             out["out_dir"] = str(target)
             out.update(await asyncio.to_thread(
-                extract_pcblib_models, library_path, target, model_names, overwrite))
+                extract_pcblib_models, library_path, target, selected_names, overwrite))
             return out
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, AltiumCommandError) as exc:
             return {"ok": False, "reason": str(exc)}
 
     @mcp.tool()
@@ -5601,7 +5631,8 @@ def register_library_tools(mcp):
 
         Returns:
             {name, library_path, height_mm, bodies (a count),
-            body_layers (the layer of each body), tracks
+            body_layers (the layer of each body), body_models (source file,
+            model type, rotation, overall height and standoff), tracks
             [{layer, layer_id, x1, y1, x2, y2, width}], arcs [{layer,
             layer_id, xc, yc, r, start, end, width}], regions and fills
             [{layer, layer_id, x1, y1, x2, y2, area and arc_edges

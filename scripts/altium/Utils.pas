@@ -2092,3 +2092,24 @@ Begin
     Else
         Result := Result + ',"success":true';
 End;
+
+
+Function LayerDisplayName(Layer : TLayer) : String;
+Var
+    Base, Back : TLayer;
+    N : Integer;
+Begin
+    Result := GetLayerString(Layer);
+    If Result <> 'Unknown' Then Exit;
+    Try
+        Base := LayerUtils.MechanicalLayer(17);
+        N := 17 + (Layer - Base);
+        If (N >= 17) And (N <= 1024) Then
+        Begin
+            Back := LayerUtils.MechanicalLayer(N);
+            If Back = Layer Then Result := 'Mechanical' + IntToStr(N);
+        End;
+    Except
+        Result := 'Unknown';
+    End;
+End;

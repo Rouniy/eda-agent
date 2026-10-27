@@ -2,6 +2,12 @@
 
 ## Source integration, 2026-10-27
 
+The `.3` source now restores the native footprint-primitives reader that was
+missing behind the registered Python tool. It includes live 3D body metadata
+and a focused-library identity check; embedded STEP extraction can filter by
+the model files attached to a named footprint. Pascal lint/build and focused
+source tests pass. Native read acceptance and `.3` runtime reload are pending.
+
 The `ed4ef59` library block is partially integrated: embedded model extraction
 now checks Altium's stored checksum before writing the original bytes, and
 `lib_build_integrated_library` can create/open, populate, save and compile an
