@@ -57,6 +57,21 @@ def test_stitch_grid_keeps_fractional_endpoints_without_drift():
 
 
 @pytest.mark.asyncio
+async def test_component_grid_and_distribution_keep_fractional_mils(monkeypatch):
+    bridge = RecBridge()
+    tools = _pcb(monkeypatch, bridge)
+    await tools["pcb_snap_to_grid"]("R13", grid_size=39.37)
+    await tools["pcb_distribute_components"](
+        "R13,R14", start=1200.125, end=1300.375)
+    assert bridge.calls == [
+        ("pcb.snap_to_grid", {"designator": "R13", "grid_size": "39.37"}),
+        ("pcb.distribute_components", {
+            "designators": "R13,R14", "axis": "x",
+            "start": "1200.125", "end": "1300.375"}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_stitching_vias_preserves_fractional_mils(monkeypatch):
     bridge = RecBridge()
     tools = _pcb(monkeypatch, bridge)

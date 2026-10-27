@@ -7315,7 +7315,7 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_snap_to_grid(
         designator: str,
-        grid_size: int = 50,
+        grid_size: float = 50,
     ) -> dict[str, Any]:
         """Snap a component to the nearest grid point.
 
@@ -7332,7 +7332,7 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.snap_to_grid",
-            {"designator": designator, "grid_size": str(grid_size)},
+            {"designator": designator, "grid_size": _mils(grid_size)},
         )
         return result
 
@@ -9087,8 +9087,8 @@ def register_pcb_tools(mcp):
     async def pcb_distribute_components(
         designators: str,
         axis: str = "x",
-        start: int = 0,
-        end: int = 1000,
+        start: float = 0,
+        end: float = 1000,
     ) -> dict[str, Any]:
         """Evenly space components along an axis.
 
@@ -9113,8 +9113,8 @@ def register_pcb_tools(mcp):
             {
                 "designators": designators,
                 "axis": axis,
-                "start": str(start),
-                "end": str(end),
+                "start": _mils(start),
+                "end": _mils(end),
             },
         )
         return result

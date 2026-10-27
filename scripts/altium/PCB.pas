@@ -9868,7 +9868,8 @@ Var
     Board : IPCB_Board;
     DesStr, AlignStr, Remaining, OneDesig : String;
     Comp : IPCB_Component;
-    CommaPos, I, CX, CY : Integer;
+    CommaPos, I : Integer;
+    CX, CY : Double;
     { Heap-allocated list of resolved designators. The original code held }
     { IPCB_Component pointers in `Array[0..99] Of IPCB_Component`, which  }
     { is a fixed-size local array of a managed type - that triggers the   }
@@ -9876,7 +9877,7 @@ Var
     { [[delphiscript_fixed_string_array_bug]]. The fix walks twice:        }
     { first pass to validate + measure bounds, second pass to apply.      }
     Resolved : TStringList;
-    MinX, MaxX, MinY, MaxY, CenterX, CenterY : Integer;
+    MinX, MaxX, MinY, MaxY, CenterX, CenterY : Double;
     DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -9929,23 +9930,23 @@ Begin
 
         { First pass: bounding extents. }
         Comp := Board.GetPcbComponentByRefDes(Resolved[0]);
-        MinX := CoordToMils(Comp.x);
+        MinX := CoordToMilsF(Comp.x);
         MaxX := MinX;
-        MinY := CoordToMils(Comp.y);
+        MinY := CoordToMilsF(Comp.y);
         MaxY := MinY;
         For I := 1 To Resolved.Count - 1 Do
         Begin
             Comp := Board.GetPcbComponentByRefDes(Resolved[I]);
             If Comp = Nil Then Continue;
-            CX := CoordToMils(Comp.x);
-            CY := CoordToMils(Comp.y);
+            CX := CoordToMilsF(Comp.x);
+            CY := CoordToMilsF(Comp.y);
             If CX < MinX Then MinX := CX;
             If CX > MaxX Then MaxX := CX;
             If CY < MinY Then MinY := CY;
             If CY > MaxY Then MaxY := CY;
         End;
-        CenterX := (MinX + MaxX) Div 2;
-        CenterY := (MinY + MaxY) Div 2;
+        CenterX := (MinX + MaxX) / 2;
+        CenterY := (MinY + MaxY) / 2;
 
         { Second pass: apply alignment. }
         PCBServer.PreProcess;
@@ -9964,17 +9965,17 @@ Begin
                 DeltaX := 0;
                 DeltaY := 0;
                 If AlignStr = 'left' Then
-                    DeltaX := MilsToCoord(MinX) - Comp.x
+                    DeltaX := MilsToCoordF(MinX) - Comp.x
                 Else If AlignStr = 'right' Then
-                    DeltaX := MilsToCoord(MaxX) - Comp.x
+                    DeltaX := MilsToCoordF(MaxX) - Comp.x
                 Else If AlignStr = 'top' Then
-                    DeltaY := MilsToCoord(MaxY) - Comp.y
+                    DeltaY := MilsToCoordF(MaxY) - Comp.y
                 Else If AlignStr = 'bottom' Then
-                    DeltaY := MilsToCoord(MinY) - Comp.y
+                    DeltaY := MilsToCoordF(MinY) - Comp.y
                 Else If AlignStr = 'center_x' Then
-                    DeltaX := MilsToCoord(CenterX) - Comp.x
+                    DeltaX := MilsToCoordF(CenterX) - Comp.x
                 Else If AlignStr = 'center_y' Then
-                    DeltaY := MilsToCoord(CenterY) - Comp.y;
+                    DeltaY := MilsToCoordF(CenterY) - Comp.y;
                 If (DeltaX <> 0) Or (DeltaY <> 0) Then
                     Comp.MoveByXY(DeltaX, DeltaY);
 
@@ -10113,7 +10114,7 @@ Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
     DesStr, GridStr : String;
-    GridSize, OldX, OldY, NewX, NewY : Integer;
+    GridSize, OldX, OldY, NewX, NewY : Double;
     DeltaX, DeltaY : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -10132,7 +10133,7 @@ Begin
         Exit;
     End;
 
-    GridSize := StrToIntDef(GridStr, 50);
+    GridSize := StrToFloatDef(GridStr, 50);
     If GridSize <= 0 Then GridSize := 50;
 
     Comp := Board.GetPcbComponentByRefDes(DesStr);
@@ -10142,8 +10143,8 @@ Begin
         Exit;
     End;
 
-    OldX := CoordToMils(Comp.x);
-    OldY := CoordToMils(Comp.y);
+    OldX := CoordToMilsF(Comp.x);
+    OldY := CoordToMilsF(Comp.y);
 
     // Snap to nearest grid point using rounding
     NewX := Round(OldX / GridSize) * GridSize;
@@ -10155,8 +10156,8 @@ Begin
             PCBM_BeginModify, c_NoEventData);
 
         { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents. }
-        DeltaX := MilsToCoord(NewX) - Comp.x;
-        DeltaY := MilsToCoord(NewY) - Comp.y;
+        DeltaX := MilsToCoordF(NewX) - Comp.x;
+        DeltaY := MilsToCoordF(NewY) - Comp.y;
         If (DeltaX <> 0) Or (DeltaY <> 0) Then
             Comp.MoveByXY(DeltaX, DeltaY);
 
@@ -10170,11 +10171,11 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesStr) + '",'
-        + '"old_x":' + IntToStr(OldX) + ','
-        + '"old_y":' + IntToStr(OldY) + ','
-        + '"new_x":' + IntToStr(NewX) + ','
-        + '"new_y":' + IntToStr(NewY) + ','
-        + '"grid_size":' + IntToStr(GridSize) + '}');
+        + '"old_x":' + FloatToJsonStr(OldX) + ','
+        + '"old_y":' + FloatToJsonStr(OldY) + ','
+        + '"new_x":' + FloatToJsonStr(NewX) + ','
+        + '"new_y":' + FloatToJsonStr(NewY) + ','
+        + '"grid_size":' + FloatToJsonStr(GridSize) + '}');
 End;
 
 {..............................................................................}
@@ -14477,9 +14478,8 @@ Var
     Board : IPCB_Board;
     DesStr, AxisStr, StartStr, EndStr, Remaining, DesName : String;
     AxisX : Boolean;
-    StartVal, EndVal, CommaPos, Count, I : Integer;
-    Step : Double;
-    NewPos : Integer;
+    CommaPos, Count, I : Integer;
+    StartVal, EndVal, Step, NewPos : Double;
     CompList : TInterfaceList;
     Comp : IPCB_Component;
     Iterator : IPCB_BoardIterator;
@@ -14509,8 +14509,8 @@ Begin
     End;
     If AxisStr = '' Then AxisStr := 'x';
     AxisX := (AxisStr = 'x');
-    StartVal := StrToIntDef(StartStr, 0);
-    EndVal := StrToIntDef(EndStr, 0);
+    StartVal := StrToFloatDef(StartStr, 0);
+    EndVal := StrToFloatDef(EndStr, 0);
 
     { Collect components that match the comma list, preserving list order. }
     CompList := CreateObject(TInterfaceList);
@@ -14567,19 +14567,19 @@ Begin
         Begin
             Comp := CompList.Items[I];
             If Comp = Nil Then Continue;
-            NewPos := StartVal + Round(Step * I);
+            NewPos := StartVal + Step * I;
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
             { MOVED, NOT ASSIGNED: see PCB_BatchMoveComponents. }
             If AxisX Then
             Begin
-                DeltaX := MilsToCoord(NewPos) - Comp.x;
+                DeltaX := MilsToCoordF(NewPos) - Comp.x;
                 DeltaY := 0;
             End
             Else
             Begin
                 DeltaX := 0;
-                DeltaY := MilsToCoord(NewPos) - Comp.y;
+                DeltaY := MilsToCoordF(NewPos) - Comp.y;
             End;
             If (DeltaX <> 0) Or (DeltaY <> 0) Then
                 Comp.MoveByXY(DeltaX, DeltaY);
@@ -14595,7 +14595,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"distributed":' + IntToStr(Count) + ','
         + '"axis":"' + EscapeJsonString(AxisStr) + '",'
-        + '"start":' + IntToStr(StartVal) + ',"end":' + IntToStr(EndVal) + '}');
+        + '"start":' + FloatToJsonStr(StartVal) + ',"end":' + FloatToJsonStr(EndVal) + '}');
 End;
 
 {..............................................................................}

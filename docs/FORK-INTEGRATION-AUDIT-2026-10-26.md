@@ -38,6 +38,12 @@ The `.66` follow-up adapted decimal via-array inputs and an index-based
 pitch loop, then accepted the four resulting vias on a disposable board
 after exact save/reopen. The existing stitching-via wrapper's fractional
 format and outline-grid calculation were also corrected.
+The `.68` follow-up adapts PCB align, snap and distribute. All three
+persisted fractional component coordinates on the disposable board.
+The same expanded fork audit now reports 28 `CoordToMils` function hits,
+24 computed `MilsToCoord` hits, 9 integer-read length parameters, and
+14 whole-mil reply hits; categories overlap. Paste-grid integer arithmetic
+and the symbol-polygon/sheet-entry precision gate also remain open.
 
 `be21eb3` bottom-side placement is now an exact-board adapted port in
 `main`. On 2026-10-27 it passed a native mirror and rotation check on an

@@ -3579,3 +3579,20 @@ returned the same four coordinates. The owner source PcbDoc retained
 SHA-256 `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
 Pascal lint/build passed 12 files with zero errors/warnings; 31 selected
 Python tests and the fork's via-array source gate passed.
+
+## Fractional PCB alignment and distribution (2026-10-27)
+
+Script `.68` adapts `vincent-himpe/fix/decimal-mils-leftovers` for
+`pcb_align_components`, `pcb_snap_to_grid`, and
+`pcb_distribute_components`. The Python grid/distribution parameters accept
+fractional mils; the DelphiScript path reads current component positions
+without integer rounding, moves the component with `MoveByXY`, and reports
+the decimal values. On the disposable via-array PcbDoc, aligning R62 and
+R13 left put both at x=3242.0074 mil. Distribution set R13 to 3100.125
+and R14 to 3200.375 mil. Snapping R62 to a 39.37-mil grid returned
+(3228.34, 1299.21) mil. The first `.67` distribution reply rounded its
+start/end fields despite placing at the requested coordinates; `.68` fixed
+the reply. Exact save, close, reopen and component readback preserved all
+three final coordinates. The owner board SHA-256 remained
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+Pascal lint/build passed; 32 selected Python tests passed.
