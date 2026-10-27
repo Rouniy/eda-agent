@@ -23,6 +23,13 @@ class _Bridge:
 
     async def send_command_async(self, command, params=None, timeout=None):
         self.calls.append((command, params or {}))
+        if command == "library.create_symbol":
+            return {"success": True, "verified": True,
+                    "part_count": int(params["part_count"])}
+        if command == "library.add_pins":
+            return {"added": len(params["pins"].split("~~")), "failed": 0}
+        if command == "library.set_active_part":
+            return {"part_id": params["part_id"], "component": "DUAL_AMP"}
         return {"success": True, "command": command}
 
 
@@ -90,6 +97,7 @@ async def test_multipart_symbol_assigns_parts_and_shared_pins(monkeypatch):
     )
 
     assert result["part_count"] == 2
+    assert result["ok"] is True
     assert bridge.calls[0][1]["part_count"] == "2"
     pins = bridge.calls[1][1]["pins"]
     assert "owner_part_id=1" in pins
@@ -114,3 +122,49 @@ async def test_multipart_validates_before_mutating(monkeypatch):
     result = await mcp.tools["lib_create_multipart_symbol"]("BAD", parts=[{}])
     assert result == {"ok": False, "reason": "part 1 has no pins"}
     assert bridge.calls == []
+
+
+@pytest.mark.asyncio
+async def test_multipart_stops_when_native_create_fails(monkeypatch):
+    from eda_agent.tools import library
+
+    bridge = _Bridge()
+
+    async def failed_create(command, params=None, timeout=None):
+        bridge.calls.append((command, params or {}))
+        return {"success": False, "reason": "symbol did not resolve"}
+
+    bridge.send_command_async = failed_create
+    monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    library.register_library_tools(mcp)
+    result = await mcp.tools["lib_create_multipart_symbol"](
+        "DUAL_AMP", parts=[{"left_pins": [{"designator": "1", "name": "IN"}]}])
+    assert result["stage"] == "create_symbol"
+    assert result["ok"] is False
+    assert [c[0] for c in bridge.calls] == ["library.create_symbol"]
+
+
+@pytest.mark.asyncio
+async def test_multipart_stops_before_drawing_when_pins_fail(monkeypatch):
+    from eda_agent.tools import library
+
+    bridge = _Bridge()
+    original = bridge.send_command_async
+
+    async def partial_pins(command, params=None, timeout=None):
+        if command == "library.add_pins":
+            bridge.calls.append((command, params or {}))
+            return {"added": 0, "failed": 1}
+        return await original(command, params, timeout)
+
+    bridge.send_command_async = partial_pins
+    monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    library.register_library_tools(mcp)
+    result = await mcp.tools["lib_create_multipart_symbol"](
+        "DUAL_AMP", parts=[{"left_pins": [{"designator": "1", "name": "IN"}]}])
+    assert result["stage"] == "add_pins"
+    assert result["ok"] is False
+    assert [c[0] for c in bridge.calls] == [
+        "library.create_symbol", "library.add_pins"]

@@ -3430,3 +3430,15 @@ one rename. After exact save and reopen, the old name was absent and the new
 name appeared once with one part. The source library SHA-256 remained
 `62CD36DBA4B4372CCF5CF01077550464D5BC27D6E33B4D02D8E2ED6D2BB4B45B`.
 Nineteen focused tests and Pascal lint/build passed.
+
+## Multipart SchLib symbol acceptance (2026-10-27)
+
+On Altium 26.11.1.5 with script `.56`, the composite
+`lib_create_multipart_symbol` tool created two- and three-part symbols in
+the isolated `eda-agent-multipart-20261027.SchLib`. The three-part symbol
+had seven pins: two owned by each part and one shared supply pin owned by
+part 0. Its three body rectangles were owned by parts 1, 2 and 3. Exact
+save, close and reopen retained `part_count=3`, `parts_with_pins=3` and
+`pin_count=7`. The tool now checks the native result at each step and can
+focus an explicit absolute SchLib path before writing. The source library
+was not used for these writes.

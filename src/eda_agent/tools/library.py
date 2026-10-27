@@ -1566,6 +1566,7 @@ def register_library_tools(mcp):
         shared_pins: Optional[list[dict[str, Any]]] = None,
         designator_prefix: str = "U",
         description: str = "",
+        library_path: str = "",
     ) -> dict[str, Any]:
         """Create a complete multipart SchLib symbol in one MCP call.
 
@@ -1574,6 +1575,9 @@ def register_library_tools(mcp):
         ``shared_pins`` are added with OwnerPartId 0 and therefore appear on
         every part (normally supply pins). Every part receives its own body
         rectangle and becomes independently visible in Altium.
+        Pass ``library_path`` to focus and verify the exact open SchLib
+        before any write. A failed step stops the sequence and reports
+        the symbol as partial; it is never reported as complete.
         """
         from eda_agent.design.symbol_gen import generate_ic_symbol
 
@@ -1603,6 +1607,23 @@ def register_library_tools(mcp):
                 }
 
         bridge = get_bridge()
+        if library_path:
+            import ntpath
+
+            if not ntpath.isabs(library_path):
+                return {"ok": False, "reason": "library_path must be absolute"}
+            focused = await bridge.send_command_async(
+                "application.set_active_document", {"file_path": library_path})
+            active = await bridge.send_command_async(
+                "application.get_active_document", {})
+            actual = str(active.get("file_path", "")) if isinstance(active, dict) else ""
+            if (not isinstance(focused, dict) or
+                    focused.get("success") is False or
+                    ntpath.normcase(ntpath.normpath(actual)) !=
+                    ntpath.normcase(ntpath.normpath(library_path)) or
+                    str(active.get("document_kind", "")).upper() != "SCHLIB"):
+                return {"ok": False, "reason": "target SchLib did not become active",
+                        "library_path": library_path, "active": active}
         created = await bridge.send_command_async(
             "library.create_symbol",
             {
@@ -1612,6 +1633,13 @@ def register_library_tools(mcp):
                 "part_count": str(len(parts)),
             },
         )
+        if (not isinstance(created, dict) or
+                created.get("success") is not True or
+                created.get("verified") is not True or
+                created.get("part_count") != len(parts)):
+            return {"ok": False, "partial": bool(isinstance(created, dict) and
+                                                 created.get("success")),
+                    "stage": "create_symbol", "symbol": name, "create": created}
 
         pin_ops: list[str] = []
         part_summary: list[dict[str, Any]] = []
@@ -1653,24 +1681,47 @@ def register_library_tools(mcp):
         pins_result = await bridge.send_command_async(
             "library.add_pins", {"pins": "~~".join(pin_ops)}
         )
+        if (not isinstance(pins_result, dict) or
+                pins_result.get("added") != len(pin_ops) or
+                pins_result.get("failed") != 0):
+            return {"ok": False, "partial": True, "stage": "add_pins",
+                    "symbol": name, "expected_pins": len(pin_ops),
+                    "pins_result": pins_result, "create": created}
         rectangles = []
         for part_id, geom in enumerate(geometries, 1):
-            await bridge.send_command_async(
+            selected = await bridge.send_command_async(
                 "library.set_active_part", {"part_id": part_id}
             )
+            if (not isinstance(selected, dict) or
+                    selected.get("part_id") != part_id or
+                    selected.get("component") != name):
+                return {"ok": False, "partial": True, "stage": "set_active_part",
+                        "part_id": part_id, "symbol": name,
+                        "selection": selected, "rectangle_results": rectangles}
             body = geom.body
-            rectangles.append(await bridge.send_command_async(
+            rectangle = await bridge.send_command_async(
                 "library.add_symbol_rectangle",
                 {
                     "x1": body["x1"], "y1": body["y1"],
                     "x2": body["x2"], "y2": body["y2"],
                     "fill_color": 8454143, "border_color": 0,
                 },
-            ))
-        await bridge.send_command_async(
+            )
+            rectangles.append(rectangle)
+            if not isinstance(rectangle, dict) or rectangle.get("success") is not True:
+                return {"ok": False, "partial": True,
+                        "stage": "add_symbol_rectangle", "part_id": part_id,
+                        "symbol": name, "rectangle_results": rectangles}
+        selected = await bridge.send_command_async(
             "library.set_active_part", {"part_id": 1}
         )
+        if (not isinstance(selected, dict) or selected.get("part_id") != 1 or
+                selected.get("component") != name):
+            return {"ok": False, "partial": True, "stage": "restore_active_part",
+                    "symbol": name, "selection": selected,
+                    "rectangle_results": rectangles}
         return {
+            "ok": True,
             "symbol": name,
             "part_count": len(parts),
             "shared_pin_count": len(shared_pins or []),

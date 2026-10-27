@@ -306,3 +306,14 @@ The same isolated library verified the existing batch-rename collision
 guard: one occupied-name row failed, the next row renamed successfully,
 and the result survived exact save/reopen. The source SchLib hash stayed
 `62CD36DBA4B4372CCF5CF01077550464D5BC27D6E33B4D02D8E2ED6D2BB4B45B`.
+
+The `rabihnd/integration` multipart composition workflow was accepted on
+Altium 26.11.1.5 with both two- and three-part symbols in that disposable
+SchLib. A three-part symbol had seven pins, including one shared pin with
+`OwnerPartId=0`, and one body rectangle on each of parts 1, 2 and 3. The
+part count, pins and rectangles survived exact save, close and reopen. The
+Python tool now accepts an optional absolute `library_path` to verify the
+focused SchLib before writing and stops with an explicit partial result if
+native creation, pin addition, part selection or body drawing fails. The
+native `create_symbol` reply must confirm the requested count before pins
+are added, preventing writes to a previously selected symbol on failure.
