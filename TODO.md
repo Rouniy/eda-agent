@@ -2,6 +2,11 @@
 
 ## Fork behavior audit, 2026-10-28
 
+- [x] Compare the offline SchLib reader to the same native library:
+  39 primary names match; Altium's 40th row is the `ADXL210` alias.
+  Normalize saved header-key casing so library reference, description
+  and alias metadata are no longer lost on this Altium-generated file.
+
 - [x] Compare native and offline PcbLib footprint names on the same
   copied library. Fix a sanitized OLE storage name (`SO-G5_P.95`)
   leaking as the footprint name instead of its `PATTERN` (`SO-G5/P.95`).

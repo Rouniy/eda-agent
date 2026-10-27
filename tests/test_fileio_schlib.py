@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,29 @@ def test_clean_library_part_no_findings():
         {"name": "OPA1", "lib_reference": "OPA1", "description": "op-amp"},
     ])
     assert findings == []
+
+
+def test_saved_header_casing_and_alias_are_read_from_component(monkeypatch):
+    import olefile
+
+    class FakeOle:
+        def listdir(self):
+            return [["SO_G5", "Data"]]
+
+        def openstream(self, path):
+            body = (b"|RECORD=1|LIBREFERENCE=SO/G5|"
+                    b"COMPONENTDESCRIPTION=Op amp|ALIASLIST=SO/G5A\x00")
+            return io.BytesIO(len(body).to_bytes(4, "little") + body)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(olefile, "isOleFile", lambda path: True)
+    monkeypatch.setattr(olefile, "OleFileIO", lambda path: FakeOle())
+    row, = read_schlib_components("unused.SchLib")
+    assert row == {"name": "SO/G5", "storage_name": "SO_G5",
+                   "lib_reference": "SO/G5", "description": "Op amp",
+                   "alias_list": "SO/G5A"}
 
 
 def test_bad_library_file_raises(tmp_path):

@@ -22,8 +22,8 @@ _NON_COMPONENT_STREAMS = {"Storage", "FileHeader"}
 
 
 def read_schlib_components(path: str | Path) -> list[dict[str, Any]]:
-    """Return each library component's header ``{name, lib_reference,
-    description}``.
+    """Return each library component's header ``{name, storage_name,
+    lib_reference, description, alias_list}``.
 
     Enumerates the per-component storages and parses the first (ASCII)
     record of each ``Data`` stream. Raises ValueError if the file is not a
@@ -42,13 +42,16 @@ def read_schlib_components(path: str | Path) -> list[dict[str, Any]]:
             and entry[0] not in _NON_COMPONENT_STREAMS
         )
         out: list[dict[str, Any]] = []
-        for name in comp_storages:
-            data = ole.openstream([name, "Data"]).read()
+        for storage_name in comp_storages:
+            data = ole.openstream([storage_name, "Data"]).read()
             hdr = _parse_first_record(data)
+            lib_reference = hdr.get("LIBREFERENCE", "")
             out.append({
-                "name": name,
-                "lib_reference": hdr.get("LibReference", ""),
-                "description": hdr.get("ComponentDescription", ""),
+                "name": lib_reference or storage_name,
+                "storage_name": storage_name,
+                "lib_reference": lib_reference,
+                "description": hdr.get("COMPONENTDESCRIPTION", ""),
+                "alias_list": hdr.get("ALIASLIST", ""),
             })
         return out
     finally:
@@ -65,5 +68,5 @@ def _parse_first_record(data: bytes) -> dict[str, str]:
     for part in text.split("|"):
         if "=" in part:
             key, value = part.split("=", 1)
-            fields[key] = value
+            fields[key.upper()] = value
     return fields

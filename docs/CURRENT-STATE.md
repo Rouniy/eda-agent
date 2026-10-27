@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Offline SchLib header and alias parity, 2026-10-28
+
+On the same disposable Spirit Level library copy, Altium listed 40
+component rows: 39 primary symbols and the `ADXL210` alias of
+`ADXL202E`. The offline SchLib reader found the 39 storages, but
+initially returned empty `lib_reference` and `description` because this
+file stores header keys as `LIBREFERENCE` and
+`COMPONENTDESCRIPTION`. The reader now folds header keys to uppercase,
+uses the stored library reference as the canonical name, exposes the
+OLE `storage_name`, and returns raw `ALIASLIST`. The offline 39 primary
+names and alias now match the native list; `ADXL202E` reads its actual
+description. Focused SchLib/provider/PcbLib tests: 16 passed and six
+local-fixture skips. The copied SchLib was closed without saving.
+
 ## Offline PcbLib footprint identity parity, 2026-10-28
 
 Comparing the native 33-footprint list from the copied Spirit Level
