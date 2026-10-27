@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## mooreaa template Value fix, 2026-10-28
+
+Running the fork's 22 placement-cleanup source checks against current
+`main` exposed one real regression: `sch_draw_template` sent a plan value
+as `Comment`, while the native `Value` key intentionally updates both
+`Comp.Comment.Text` and the existing component Value parameter. The
+template drawer now emits `Value`. The other two fork-test failures were
+source-shape assumptions superseded by our query-only live-pin filter
+and fractional-width serialization. The template, multipart and cross-
+validation suites pass: 42 passed, 19 optional skips. Native end-to-end
+save/reopen acceptance remains pending.
+
 ## Exact-project PCB net-colour plan, 2026-10-28
 
 The installed Mini PC SODIMM example project and board were copied to

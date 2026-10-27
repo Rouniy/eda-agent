@@ -448,7 +448,9 @@ def register_sch_template_tools(mcp):
             stamped.add(ref)
             fields = dict(plan_stamps.get(ref, {}))
             if str(p.get("value", "")).strip():
-                fields["Comment"] = str(p["value"])
+                # Native Value updates both the displayed Comment and the
+                # component's Value parameter. Comment alone leaves *K.
+                fields["Value"] = str(p["value"])
             if fields:
                 stamps.append(";".join([f"designator={payload_safe(ref)}"] + [
                     f"{k}={payload_safe(v)}" for k, v in fields.items()]))

@@ -1,5 +1,17 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 mooreaa behavioral test reconciliation
+
+The fork's original `test_placement_cleanup.py` was run against our main:
+19 checks passed and three failed. Two failures asserted old source
+spellings; the current live-pin filter is deliberately query-only and
+port width keeps fractional mils. The third revealed that
+`sch_draw_template` had missed the fork's `Value` stamp and still sent
+`Comment`; our native handler uses `Value` to update both Comment and
+the component Value parameter. The adapted fix is in our Python tool.
+Forty-two related tests pass with 19 optional skips. Native end-to-end
+acceptance is still pending.
+
 ## 2026-10-28 optional battery lab branch
 
 The self-contained `research/battery-ai-comsol-lab` tree and its scoped

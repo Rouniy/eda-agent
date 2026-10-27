@@ -1,5 +1,16 @@
 # Fork integration TODO
 
+## mooreaa template value reconciliation, 2026-10-28
+
+- [x] Run the fork's placement-cleanup source tests against `main`.
+  The live-pin filtering and decimal-width cases already have adapted
+  implementations. `sch_draw_template` still stamped `Comment` instead of
+  `Value`, which leaves the component's Value parameter stale. It now
+  sends `Value`; the native handler updates both the visible Comment and
+  the Value parameter. Forty-two related tests pass (19 optional skips).
+- [ ] Verify a disposable `sch_draw_template` placement and its Comment
+  and Value readback in Altium after restarting the Python MCP service.
+
 ## Battery research branch, 2026-10-28
 
 - [x] Import the standalone PyBaMM/COMSOL research lab from
