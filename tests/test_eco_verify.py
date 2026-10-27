@@ -128,10 +128,31 @@ def test_pin_without_a_pad_and_pad_without_a_pin():
     assert rep["pads_not_in_schematic"][0]["pin"] == "5"
 
 
-def test_empty_inputs_are_complete_not_crashing():
+def test_empty_inputs_are_inconclusive_not_crashing():
     rep = verify_eco([], [])
-    assert rep["complete"] is True
+    assert rep["complete"] is False
+    assert rep["nothing_compared"] is True
     assert rep["pads_unbound_count"] == 0
+
+
+def test_each_physical_copy_of_a_pad_is_checked():
+    rep = verify_eco(
+        [_comp("U1", [("EP", "GND")])],
+        [_pad("U1", "EP", "GND"), _pad("U1", "EP", ""),
+         _pad("U1", "EP", "OTHER")],
+    )
+    assert rep["pcb_pads_checked"] == 3
+    assert rep["pads_unbound_count"] == 1
+    assert rep["pads_mismatched_count"] == 1
+    assert rep["complete"] is False
+
+
+def test_empty_board_or_schematic_cannot_claim_a_complete_eco():
+    for components, pads in (([], [_pad("U1", "1", "GND")]),
+                             ([_comp("U1", [("1", "GND")])], [])):
+        rep = verify_eco(components, pads)
+        assert rep["nothing_compared"] is True
+        assert rep["complete"] is False
 
 
 # ---------------------------------------------------------------------------

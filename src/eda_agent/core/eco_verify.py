@@ -14,6 +14,11 @@ disagree with the schematic, and which exist on only one side. Keeping it
 free of Altium means the comparison itself is unit-testable, and only the
 two data fetches remain live-dependent.
 
+Repeated pad names on one component are common for split thermal pads.
+Every physical copy must be checked; an unbound copy cannot be hidden by
+a later bound copy in the board response. An empty schematic or board
+read is inconclusive, not a successful ECO.
+
 Matching rules, and why:
 
 * Pins are matched to pads by ``(designator, pin)`` with both sides
@@ -69,7 +74,7 @@ def netlist_pin_map(components: Iterable[dict[str, Any]]
 
 def pad_net_map(pads: Iterable[dict[str, Any]]
                 ) -> dict[tuple[str, str], str]:
-    """(designator, pad) -> net, from ``pcb_get_pad_properties``.
+    """Legacy single-net map; use ``board_pad_nets`` to retain pad copies.
 
     Pads with no parent component are free pads (fiducials, tooling,
     stitching) and are dropped: they have no schematic counterpart, so
@@ -87,9 +92,23 @@ def pad_net_map(pads: Iterable[dict[str, Any]]
     return out
 
 
+def board_pad_nets(pads: Iterable[dict[str, Any]]
+                   ) -> dict[tuple[str, str], list[str]]:
+    """Keep every physical pad copy for each component and pad name."""
+    out: dict[tuple[str, str], list[str]] = {}
+    for pad in pads or []:
+        if not isinstance(pad, dict):
+            continue
+        comp = _clean(pad.get("component"))
+        name = _clean(pad.get("name"))
+        if comp and name:
+            out.setdefault(_key(comp, name), []).append(_clean(pad.get("net")))
+    return out
+
+
 def compare_netlist_to_pads(
     netlist_pins: dict[tuple[str, str], str],
-    pad_nets: dict[tuple[str, str], str],
+    pad_nets: dict[tuple[str, str], str | list[str]],
     *,
     limit: int = 200,
 ) -> dict[str, Any]:
@@ -97,7 +116,7 @@ def compare_netlist_to_pads(
 
     Args:
         netlist_pins: ``(designator, pin) -> net`` from the schematic.
-        pad_nets: ``(designator, pad) -> net`` from the board.
+        pad_nets: ``(designator, pad) -> net or [net per physical copy]``.
         limit: Cap on each reported list. The counts are always the true
             totals and each list carries its own ``*_truncated`` flag, so
             a capped list can never be mistaken for a complete one.
@@ -125,20 +144,22 @@ def compare_netlist_to_pads(
             missing_pad.append(
                 {"designator": desig, "pin": pin, "net": sch_net})
             continue
-        pcb_net = pad_nets[(desig, pin)]
-        if not pcb_net:
-            unbound.append(
-                {"designator": desig, "pin": pin, "expected_net": sch_net})
-        elif pcb_net != sch_net:
-            mismatched.append({
-                "designator": desig, "pin": pin,
-                "schematic_net": sch_net, "pcb_net": pcb_net,
-            })
+        copies = pad_nets[(desig, pin)]
+        for pcb_net in copies if isinstance(copies, list) else [copies]:
+            if not pcb_net:
+                unbound.append(
+                    {"designator": desig, "pin": pin, "expected_net": sch_net})
+            elif pcb_net != sch_net:
+                mismatched.append({
+                    "designator": desig, "pin": pin,
+                    "schematic_net": sch_net, "pcb_net": pcb_net,
+                })
 
     extra = [
         {"designator": d, "pin": p, "net": n}
-        for (d, p), n in sorted(pad_nets.items())
+        for (d, p), copies in sorted(pad_nets.items())
         if (d, p) not in netlist_pins
+        for n in (copies if isinstance(copies, list) else [copies])
     ]
 
     # Per-component rollup: "U15 has 10 unbound pads" is the actionable
@@ -148,10 +169,13 @@ def compare_netlist_to_pads(
         by_component[row["designator"]] = (
             by_component.get(row["designator"], 0) + 1)
 
+    nothing_compared = not netlist_pins or not pad_nets
     return {
-        "complete": not unbound and not mismatched and not missing_pad,
+        "complete": not (nothing_compared or unbound or mismatched or missing_pad),
+        "nothing_compared": nothing_compared,
         "schematic_pins_checked": len(netlist_pins),
-        "pcb_pads_checked": len(pad_nets),
+        "pcb_pads_checked": sum(len(v) if isinstance(v, list) else 1
+                                for v in pad_nets.values()),
         "pins_unconnected_in_schematic": unconnected,
         "pads_unbound_count": len(unbound),
         "pads_unbound": unbound[:limit],
@@ -175,4 +199,4 @@ def verify_eco(components: Iterable[dict[str, Any]],
                limit: int = 200) -> dict[str, Any]:
     """Convenience wrapper: raw handler payloads in, comparison out."""
     return compare_netlist_to_pads(
-        netlist_pin_map(components), pad_net_map(pads), limit=limit)
+        netlist_pin_map(components), board_pad_nets(pads), limit=limit)

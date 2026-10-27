@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## MOREmbedded ECO and UI recovery, 2026-10-27
+
+- [x] Check every copy of a repeated pad name after ECO and refuse to call
+  an empty schematic/board comparison complete. Restore the menu's
+  hidden-window helper. Thirty-two focused tests pass.
+- [ ] Native-check the repeated-pad ECO case and hidden-window menu
+  recovery on a disposable Altium session.
+
 ## MOREmbedded rotation audit, 2026-10-27
 
 - [x] Integrate multi-pad per-net scoring and courtyard collision reporting

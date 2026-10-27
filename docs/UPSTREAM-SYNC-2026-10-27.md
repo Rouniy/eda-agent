@@ -1,5 +1,18 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## MOREmbedded ECO verification and hidden menu window
+
+The shared-file review found two MOREmbedded behaviors missing from `main`.
+`verify_eco` now compares every physical copy of a repeated pad name,
+including split thermal pads, so a later bound copy cannot conceal an
+unbound or mismatched one. If either the compiled pin list or board pad
+list is empty, it reports `nothing_compared=true` and `complete=false`.
+The existing report field names and direct single-net comparison inputs
+remain accepted. The menu's existing hidden-frame recovery called
+`windows.show_without_focus`, which had been dropped in a merge; the
+wrapper is restored. Thirty-two ECO, project-sync and hidden-window tests
+passed. Native ECO and hidden-frame acceptance remains pending.
+
 ## MOREmbedded rotation audit integration
 
 Compared `MOREmbedded/main`'s multi-pad `rotation_audit` with the fork's
