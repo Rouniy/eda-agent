@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Multipart graphic ownership, 2026-10-27
+
+Source `.102` exposes optional `owner_part_id` on the public
+`lib_add_symbol_rectangle` and `lib_add_symbol_arc` tools. The native
+rectangle handler already read it; the arc handler now does too. Explicit
+0 shares the graphic across all parts, while omission uses the current
+part. Polygon and batch line writers use the same validation, refusing a
+negative or fractional owner before a bridge command. Seventy-seven
+related tests and Pascal lint/build passed. Native save/reopen acceptance
+on a disposable multipart SchLib is pending.
+
 ## Schematic object type names, 2026-10-27
 
 Source `.101` restores five schematic graphic names in `SchTypeName`

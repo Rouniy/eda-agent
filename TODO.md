@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Multipart graphic ownership, 2026-10-27
+
+- [x] Expose explicit `owner_part_id` for rectangle and arc creation;
+  keep 0 as the shared-part value and reject invalid owners before IPC.
+  Source `.102` passes 77 related tests and Pascal lint/build.
+- [ ] In a disposable multipart SchLib, verify a rectangle, arc,
+  polygon and line assigned to part 2 and shared part 0 after save/reopen.
+
 ## Schematic object type names, 2026-10-27
 
 - [x] Restore upstream/MOREmbedded's five `SchTypeName` graphic names

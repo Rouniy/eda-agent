@@ -255,6 +255,35 @@ def test_symbol_lines_reject_invalid_part_before_writing(monkeypatch):
     assert bridge.sent == []
 
 
+@pytest.mark.parametrize("tool_name, native_handler, args", [
+    ("lib_add_symbol_rectangle", "Lib_AddSymbolRectangle",
+     {"x1": 0, "y1": 0, "x2": 100, "y2": 100}),
+    ("lib_add_symbol_arc", "Lib_AddSymbolArc",
+     {"x_center": 0, "y_center": 0, "radius": 50}),
+    ("lib_add_symbol_polygon", "Lib_AddSymbolPolygon",
+     {"vertices": "0,0,100,0,100,100"}),
+])
+def test_symbol_shapes_keep_explicit_multipart_owner(
+        monkeypatch, tool_name, native_handler, args):
+    tools, bridge = _tools(monkeypatch)
+    asyncio.run(tools[tool_name](**args, owner_part_id=0))
+    [(command, params)] = bridge.sent
+    assert command.startswith("library.add_symbol_")
+    assert params["owner_part_id"] == 0
+    lib = load(Path(__file__).resolve().parents[1] / "scripts" / "altium"
+               / "Library.pas")
+    assert "SetOwnerPartFrom(" in lib[native_handler]
+
+
+@pytest.mark.parametrize("owner", [-1, 1.5, True])
+def test_symbol_shapes_reject_invalid_owner_before_writing(monkeypatch, owner):
+    tools, bridge = _tools(monkeypatch)
+    result = asyncio.run(tools["lib_add_symbol_rectangle"](
+        0, 0, 100, 100, owner_part_id=owner))
+    assert result["ok"] is False
+    assert bridge.sent == []
+
+
 def test_audit_flags_an_amplifier_drawn_as_a_box():
     from eda_agent.tools.library import _standard_symbol_warnings
 

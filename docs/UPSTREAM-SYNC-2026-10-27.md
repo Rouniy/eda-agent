@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Multipart graphic ownership follow-up
+
+After restoring line ownership, an interface review found that
+`lib_add_symbol_rectangle` did not expose the `owner_part_id` its native
+handler already accepted. Source `.102` exposes it and also carries the
+field through `lib_add_symbol_arc`, whose native handler now uses the
+same part-aware helper. Polygon and batch line writers share nonnegative
+owner validation. Seventy-seven related tests and Pascal lint/build pass;
+native multipart-library acceptance remains pending.
+
 ## Schematic frame type names
 
 Current upstream and `MOREmbedded/main` both map schematic polygons, arcs,

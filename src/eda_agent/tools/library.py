@@ -1011,6 +1011,19 @@ def _pins_payload(pins: list[dict[str, Any]]) -> tuple[str, int]:
     return "~~".join(op_strs), skipped_invalid
 
 
+def _nonnegative_owner_part(value: Any) -> int:
+    """Encode an explicit multipart owner without silently changing its part."""
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError("owner_part_id must be a nonnegative integer")
+    try:
+        owner = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("owner_part_id must be a nonnegative integer") from exc
+    if owner < 0:
+        raise ValueError("owner_part_id must be a nonnegative integer")
+    return owner
+
+
 def _safe_filename(name: str, fallback: str = "part") -> str:
     """Thin alias for the shared importer helper.
 
@@ -2040,6 +2053,7 @@ def register_library_tools(mcp):
         border_color: int = 0,
         line_width: Optional[int] = None,
         is_solid: Optional[bool] = None,
+        owner_part_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Add a rectangle to the current symbol body.
 
@@ -2061,6 +2075,8 @@ def register_library_tools(mcp):
                 for Altium's default.
             is_solid: Fill (True) or outline only (False); omit and a
                 fill colour makes it solid.
+            owner_part_id: 1..N selects a sub-part; 0 shares the rectangle
+                across all parts. Omit for the current part.
 
         Returns:
             Dictionary confirming rectangle addition, with the style it
@@ -2081,6 +2097,11 @@ def register_library_tools(mcp):
             params["line_width"] = int(line_width)
         if is_solid is not None:
             params["is_solid"] = "true" if is_solid else "false"
+        if owner_part_id is not None:
+            try:
+                params["owner_part_id"] = _nonnegative_owner_part(owner_part_id)
+            except ValueError as exc:
+                return {"ok": False, "reason": str(exc)}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "library.add_symbol_rectangle", params)
@@ -2176,11 +2197,9 @@ def register_library_tools(mcp):
                 fields.append(f"color={int(line['color'])}")
             if line.get("owner_part_id") is not None:
                 try:
-                    owner_part_id = int(line["owner_part_id"])
-                except (TypeError, ValueError):
-                    return {"ok": False, "reason": "owner_part_id must be a nonnegative integer"}
-                if owner_part_id < 0:
-                    return {"ok": False, "reason": "owner_part_id must be a nonnegative integer"}
+                    owner_part_id = _nonnegative_owner_part(line["owner_part_id"])
+                except ValueError as exc:
+                    return {"ok": False, "reason": str(exc)}
                 fields.append(f"owner_part_id={owner_part_id}")
             op_strs.append(";".join(fields))
         if not op_strs:
@@ -5511,6 +5530,7 @@ def register_library_tools(mcp):
         width: int = 1,
         grid: int = 25,
         color: Optional[int] = None,
+        owner_part_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Add an arc to the current library symbol.
 
@@ -5526,6 +5546,8 @@ def register_library_tools(mcp):
                 25 (e.g. inductor coils). Pass 100 for coarse, 0/1 for none.
             color: line colour (Altium colour integer); omit for the
                 default.
+            owner_part_id: 1..N selects a sub-part; 0 shares the arc
+                across all parts. Omit for the current part.
 
         Returns:
             Dictionary confirming arc addition, with ``color`` and
@@ -5541,6 +5563,11 @@ def register_library_tools(mcp):
         }
         if color is not None:
             params["color"] = int(color)
+        if owner_part_id is not None:
+            try:
+                params["owner_part_id"] = _nonnegative_owner_part(owner_part_id)
+            except ValueError as exc:
+                return {"ok": False, "reason": str(exc)}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "library.add_symbol_arc", params)
@@ -5596,7 +5623,10 @@ def register_library_tools(mcp):
         if fill_color is not None:
             params["fill_color"] = int(fill_color)
         if owner_part_id is not None:
-            params["owner_part_id"] = int(owner_part_id)
+            try:
+                params["owner_part_id"] = _nonnegative_owner_part(owner_part_id)
+            except ValueError as exc:
+                return {"ok": False, "reason": str(exc)}
         if color is not None:
             params["color"] = int(color)
         if line_width is not None:
