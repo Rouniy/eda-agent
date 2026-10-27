@@ -2,6 +2,18 @@
 
 ## Source integration, 2026-10-27
 
+The `.24` source ports MOREmbedded's complete-footprint quarter-turns.
+`lib_rotate_footprint` focuses an exact existing PcbLib, plans the object
+counts by default, refuses unsupported primitives unless explicitly allowed,
+and leaves saving to `app_save_document`. Three focused tests pass; Pascal
+lint/build is clean and Altium 26.11.1.5 loaded `.24`. On the isolated
+`BodyEdit_20261027.PcbLib` copy, AD_FE38's 580 objects rotated 90 degrees:
+32 pads, 493 tracks, three arcs, 38 regions, 12 vias, one text and one 3D
+body. Native pad verification found zero mismatches. After exact save and
+close/reopen, pads 14, 38 and 10 retained their rotated coordinates and
+90-degree rotations; the saved STEP model retained its 10-mil Z offset and
+rotated about Z with the body. Owner PcbLib and PcbDoc hashes were unchanged.
+
 The `.23` source ports MOREmbedded's `lib_set_3d_body`. It reads saved STEP
 rotations from the exact PcbLib so a model Z-offset edit can retain them;
 the tool requires an existing absolute library path, checks the live body

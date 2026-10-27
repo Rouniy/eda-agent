@@ -1986,3 +1986,15 @@ still 90/0/360 degrees. A separate overall-height write to 50 mil read
 back and was discarded when the copy closed. Owner library and board
 hashes were unchanged. Three focused source tests and Pascal lint/build
 passed. Layer changes and multi-body STEP edits remain to be qualified.
+
+# Complete-footprint rotation, 2026-10-27
+
+Script `.24` on Altium 26.11.1.5 rotated AD_FE38 in an isolated PcbLib
+copy by 90 degrees. Dry run counted 580 supported primitives and no
+unsupported ones. Write turned all 580 with zero pad mismatches. Pad 14
+moved from (-2.77499826, -1.99890634) mm to (1.99890634, -2.77499826)
+mm and from 0 to 90 degrees; pads 38 and 10 also read back at their
+expected locations after exact save and reopen. The STEP model retained
+its 10-mil Z offset and rotated about Z with the body. Owner library and
+board hashes were unchanged. Three focused tests and Pascal lint/build
+passed.

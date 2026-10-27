@@ -5610,6 +5610,73 @@ def register_library_tools(mcp):
             "library.set_pad_properties", _with_units(params, units))
 
     @mcp.tool()
+    async def lib_rotate_footprint(
+        library_path: str,
+        footprint: str,
+        angle: int,
+        dry_run: bool = True,
+        show: bool = False,
+        allow_unturned: bool = False,
+    ) -> dict[str, Any]:
+        """Rotate all supported primitives of one footprint about its origin.
+
+        Only quarter turns are supported. A dry-run count is returned by
+        default. The library is never saved by this tool; use
+        app_save_document on the exact PcbLib after inspection.
+        """
+        path = Path(library_path)
+        if not path.is_absolute() or path.suffix.casefold() != ".pcblib" or not path.is_file():
+            return {"ok": False, "reason": "library_path must be an existing absolute PcbLib"}
+        if not footprint.strip():
+            return {"ok": False, "reason": "footprint is required"}
+        if type(angle) is not int or angle not in (90, 180, 270, -90):
+            return {"ok": False, "reason": "angle must be 90, 180, 270 or -90 degrees"}
+        bridge = get_bridge()
+        opened = await bridge.send_command_async(
+            "application.open_document", {"file_path": str(path), "kind": "PCBLIB"},
+            timeout=120.0,
+        )
+        if not isinstance(opened, dict) or opened.get("success") is not True:
+            return {"ok": False, "reason": "PcbLib could not be opened and focused",
+                    "native_reply": opened}
+        params = {"library_path": str(path), "footprint": footprint.strip(),
+                  "angle": str(angle), "dry_run": "true", "show": "false"}
+        plan = await bridge.send_command_async("library.rotate_footprint", params, timeout=120.0)
+        kinds = plan.get("kinds") if isinstance(plan, dict) else None
+        if (not isinstance(plan, dict)
+                or str(plan.get("library_path", "")).casefold() != str(path).casefold()
+                or str(plan.get("footprint", "")).casefold() != footprint.strip().casefold()
+                or plan.get("angle") != angle % 360 or plan.get("dry_run") is not True
+                or not isinstance(kinds, dict)
+                or any(type(value) is not int or value < 0 for value in kinds.values())
+                or type(plan.get("not_turned")) is not int
+                or type(plan.get("bodies_with_models")) is not int):
+            return {"ok": False, "reason": "footprint rotation plan is incomplete",
+                    "native_reply": plan}
+        if dry_run:
+            return plan
+        if plan["not_turned"] and not allow_unturned:
+            return {"ok": False, "reason": "footprint has primitives this tool cannot rotate",
+                    "plan": plan}
+        params["dry_run"] = "false"
+        params["show"] = "true" if show else "false"
+        reply = await bridge.send_command_async("library.rotate_footprint", params, timeout=120.0)
+        expected = sum(kinds.values())
+        if (not isinstance(reply, dict)
+                or str(reply.get("library_path", "")).casefold() != str(path).casefold()
+                or str(reply.get("footprint", "")).casefold() != footprint.strip().casefold()
+                or reply.get("angle") != angle % 360 or reply.get("dry_run") is not False
+                or reply.get("kinds") != kinds
+                or reply.get("not_turned") != plan["not_turned"]
+                or reply.get("turned") != expected
+                or reply.get("mismatches") != 0
+                or reply.get("pad_mismatches") != []):
+            return {"ok": False, "reason": "footprint rotation needs inspection",
+                    "save_required": True, "native_reply": reply}
+        reply["save_required"] = True
+        return reply
+
+    @mcp.tool()
     async def lib_set_3d_body(
         footprint_name: str,
         library_path: str,
