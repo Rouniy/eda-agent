@@ -1,4 +1,9 @@
-# Release verification: 2026.10.27.2
+# Release verification: 2026.10.27.3
+
+The `.3` footprint-primitives handler has passed Pascal lint/build and a
+no-target native dispatch check (`footprint_name is required`) on Altium
+26.11.1.5. Its iterator and 3D body fields still need a read against a
+disposable PcbLib before they can be called natively accepted.
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
