@@ -364,3 +364,14 @@ read returned 0.254 mm from the saved STEP record; conversion to the
 land-pattern model used `z0=0.254`, `z1=1.20000014` mm. The saved
 PcbLib SHA-256 was identical before and after this read:
 `F4A08E82AC6807564893AB0C692D42D9DAAE69128416A1F311663EF125E16EDC`.
+
+The `MOREmbedded/be21eb3` bottom-placement fix had already been adapted
+in `pcb_place_components`: bottom requests land on top first, then flip
+on the exact reported board path in a separate transaction. A native
+check on an isolated copy of `DC-DCmodule_DT11328.PcbDoc` placed the same
+three-pad SOT-23 at 0 degrees on both sides. After exact save/reopen,
+`EDA_QA_TOP` was on TopLayer and `EDA_QA_BOTTOM` on BottomLayer, both at
+0 degrees. Their pad triangles had equal-magnitude, opposite-sign
+orientation cross products (about +5890 and -5890 square mils), proving
+mirror geometry rather than a layer flag alone. The source board SHA-256
+remained `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.

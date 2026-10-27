@@ -3480,3 +3480,16 @@ library to its saved body records. The land-pattern model then reports
 `z0=0.254` and `z1=1.20000014` mm. The PcbLib SHA-256 remained
 `F4A08E82AC6807564893AB0C692D42D9DAAE69128416A1F311663EF125E16EDC`
 through the read.
+
+## Bottom-side footprint placement (2026-10-27)
+
+With script `.58`, `pcb_place_components` placed the same asymmetric
+three-pad SOT-23 on TopLayer and BottomLayer in isolated
+`PlacementBottom_20261027.PcbDoc`, both requested at 0 degrees. The
+bottom placement's follow-up flip used the exact returned board path.
+After exact save, close and reopen, both components retained the
+requested layer and rotation. The pad triangle's orientation cross
+product was about +5890 square mils on top and -5890 on bottom;
+the pad geometry was mirrored, not merely assigned a bottom-layer flag.
+The source board SHA-256 remained
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.

@@ -16,7 +16,12 @@ counts because several changes were ported with edited patches.
 | Integrated during this recheck | Withdraw timed-out requests, batch PCB DRC, direct Altium 365 API, standard schematic symbols and library save tracking, schematic templates alongside DesignPlan, duplicate footprint guard, installed menu and dialog translations, localized dashboard, PCB coordinate zoom, mask-sliver and silk rule gaps, offline SPICE deck export for ngspice and LTspice, generic PCB keepout restrictions, decimal-mil rectangle corners for board outlines and polygon pours | `9206588` through `541d2ce`; focused tests and Pascal lint pass; native execution still pending |
 | Already present before this recheck | Advisory two-pad rotation, bottom-side rotation scoring, offline fab package inspection, CLI script-folder discovery, performance report, DelphiScript routine checks | Earlier audit below; `2cabd7b` needs no second copy |
 | Next source candidates | Remaining decimal-mil geometry handlers; STEP/3D model editing; integrated libraries; multi-part schematic template support; ERC and project membership; session document isolation; update flow | Require conflict resolution, tests and in some cases disposable-board native acceptance |
-| Held for rewrite or evidence | `be21eb3` bottom-side placement can flip a similarly named component on another open board after a failed placement; `bf9e08c` per-via tenting writes a pad cache that faulted the current repo's AD 26.10 session; `74d745d` forces one net-label colour; upstream removal of the main DesignPlan layout engine | Do not copy those patches literally; preserve exact-board targeting and both layout paths; qualify the via cache on the installed Altium build before exposing the write |
+| Held for rewrite or evidence | `bf9e08c` per-via tenting writes a pad cache that faulted the current repo's AD 26.10 session; `74d745d` forces one net-label colour; upstream removal of the main DesignPlan layout engine | Qualify the via cache on the installed Altium build before exposing the write; preserve both layout paths |
+
+`be21eb3` bottom-side placement is now an exact-board adapted port in
+`main`. On 2026-10-27 it passed a native mirror and rotation check on an
+isolated PcbDoc, including exact save/reopen. See
+`UPSTREAM-SYNC-2026-10-27.md` for the pad-orientation evidence.
 
 The hung Altium worker was terminated and restarted at the owner's later
 request. The current source also accepts fractional mils end to end for
