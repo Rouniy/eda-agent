@@ -3418,3 +3418,15 @@ creating an `eLabel` with unsupported `IsHidden` returned
 `UNSUPPORTED_PROPERTY` and left zero matching objects. A valid label at
 100,100 mil persisted after save, close and reopen. The source SchDoc
 SHA-256 stayed `59E937628D564566E7F3BFBFFE4675FD02B5CCEFE83D69687F1C30EF88BABA2F`.
+
+## Exact SchLib inventory and batch rename acceptance (2026-10-27)
+
+Script `.56` loaded in Altium 26.11.1.5. The fast inventory of an isolated
+70-component SchLib reported part count 2 for each row; the exact open-library
+mode reported 1, matching `lib_get_component_details`. The exact mode marks
+those rows `part_count_exact=true`; the fast mode marks them false. A batch
+with an occupied target name and then a free name returned one failure and
+one rename. After exact save and reopen, the old name was absent and the new
+name appeared once with one part. The source library SHA-256 remained
+`62CD36DBA4B4372CCF5CF01077550464D5BC27D6E33B4D02D8E2ED6D2BB4B45B`.
+Nineteen focused tests and Pascal lint/build passed.

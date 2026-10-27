@@ -4222,18 +4222,23 @@ def register_library_tools(mcp):
         library_path: Optional[str] = None,
         with_parameters: bool = False,
         with_designator: bool = False,
+        accurate_part_counts: bool = False,
     ) -> dict[str, Any]:
         """List the components in a library: name, alias_name, part_count,
-        description, fast. ``part_count`` here can read one high; use
-        lib_get_component_details when it matters.
+        description, fast. The on-disk reader can report part_count one
+        high. Set ``accurate_part_counts`` to inspect every symbol in an
+        already-open library; each row states ``part_count_exact``.
 
         Args:
             library_path: Library path (default: the active library).
             with_parameters: Add each component's parameters (slow on
-                large libraries; for one symbol use
+                large libraries; requires that library open; for one symbol use
                 lib_get_component_details).
             with_designator: Add each default designator ("U?"); also
-                loads every symbol, so slow on large libraries.
+                loads every symbol from the open library, so slow on large
+                libraries.
+            accurate_part_counts: Read each live component's PartCount.
+                Requires the requested library to be open in Altium.
 
         Returns:
             ``count`` and ``components`` [{index, name, alias_name,
@@ -4255,6 +4260,8 @@ def register_library_tools(mcp):
             params["with_parameters"] = "true"
         if with_designator:
             params["with_designator"] = "true"
+        if accurate_part_counts:
+            params["accurate_part_counts"] = "true"
         result = await bridge.send_command_async("library.get_components", params)
         if isinstance(result, dict):
             return tag_response(

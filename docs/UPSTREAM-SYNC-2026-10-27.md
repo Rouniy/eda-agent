@@ -292,3 +292,17 @@ left zero matching labels. A valid label on an isolated copy of
 `Title.SchDoc` was present at 100,100 mil after exact save and reopen;
 the source SHA-256 remained unchanged. This qualifies the document path;
 library-component creation still needs a separate native test.
+
+A `rabihnd/integration` multipart-library review also exposed the same
+off-by-one `ICompInfoReader.PartCount` in the fast `lib_get_components`
+inventory. On an isolated 70-component SchLib, all 70 disk-reader counts
+were one above the live `ISch_Component.PartCount`. The new optional
+`accurate_part_counts=true` reads each live component from the exact open
+library and marks every row with `part_count_exact`. Parameter and default
+designator reads now require that exact library instead of silently mixing
+one file's inventory with another active library's symbol data. The fast
+default remains available and explicitly marks its counts approximate.
+The same isolated library verified the existing batch-rename collision
+guard: one occupied-name row failed, the next row renamed successfully,
+and the result survived exact save/reopen. The source SchLib hash stayed
+`62CD36DBA4B4372CCF5CF01077550464D5BC27D6E33B4D02D8E2ED6D2BB4B45B`.

@@ -72,3 +72,25 @@ def test_batch_rename_reports_failures_and_rejects_collisions():
 def test_component_details_prefers_live_part_count():
     assert "Try PartCount := Component.PartCount; Except End;" in LIBRARY
 
+
+@pytest.mark.asyncio
+async def test_component_inventory_can_request_exact_part_counts(monkeypatch):
+    from eda_agent.tools import library
+
+    bridge = _Bridge()
+    monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    library.register_library_tools(mcp)
+    await mcp.tools["lib_get_components"](
+        library_path=r"C:\lib\parts.SchLib", accurate_part_counts=True)
+    assert bridge.calls[-1] == (
+        "library.get_components",
+        {"library_path": r"C:\lib\parts.SchLib",
+         "accurate_part_counts": "true"},
+    )
+    inventory = LIBRARY.split("Function Lib_GetComponents(", 1)[1].split(
+        "{ Lib_Search", 1)[0]
+    assert "SchServer.GetSchDocumentByPath(LibPath)" in inventory
+    assert "LIVE_LIBRARY_REQUIRED" in inventory
+    assert "PartCount := Component.PartCount" in inventory
+

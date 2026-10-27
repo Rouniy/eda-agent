@@ -6108,8 +6108,8 @@ Var
     LiveLib : ISch_Lib;
     LiveIter : ISch_Iterator;
     LiveComp : ISch_Component;
-    CompNum, I, Tab : Integer;
-    First, WithParams, WithDesignator : Boolean;
+    CompNum, I, Tab, PartCount : Integer;
+    First, WithParams, WithDesignator, ExactParts : Boolean;
 Begin
     // Get library path from parameter or active document
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -6130,6 +6130,7 @@ Begin
     // payload stays small -- intended for library-wide designator audits.
     WithDesigStr := ExtractJsonValue(Params, 'with_designator');
     WithDesignator := (WithDesigStr = 'true') Or (WithDesigStr = 'True') Or (WithDesigStr = '1');
+    ExactParts := ExtractJsonValue(Params, 'accurate_part_counts') = 'true';
 
     If LibPath = '' Then
     Begin
@@ -6191,11 +6192,22 @@ Begin
     LibReader.ReadAllComponentInfo;
     CompNum := LibReader.NumComponentInfos;
 
-    // Only navigate to live components when the caller asked for parameters,
-    // otherwise we skip GetState_SchComponentByLibRef entirely.
-    SchLib := Nil;
-    If WithParams Or WithDesignator Then
-        SchLib := SchServer.GetCurrentSchDocument;
+    { The live component is required for exact PartCount and for optional
+      parameters/designator. Resolve by the requested path: using the
+      current document here mixed file metadata with ANOTHER active SchLib. }
+    LiveLib := Nil;
+    Try LiveLib := SchServer.GetSchDocumentByPath(LibPath); Except LiveLib := Nil; End;
+    If WithParams Or WithDesignator Or ExactParts Then
+    Begin
+        If (LiveLib = Nil) Or (LiveLib.ObjectId <> eSchLib) Then
+        Begin
+            SchServer.DestroyCompInfoReader(LibReader);
+            Result := BuildErrorResponse(RequestId, 'LIVE_LIBRARY_REQUIRED',
+                'Open the requested .SchLib for parameters, designators or exact part counts');
+            Exit;
+        End;
+    End;
+    SchLib := LiveLib;
 
     Data := '[';
     First := True;
@@ -6214,7 +6226,17 @@ Begin
         Data := Data + '{"index":' + IntToStr(I) +
             ',"name":"' + EscapeJsonString(CompName) + '"';
         Try Data := Data + ',"alias_name":"' + EscapeJsonString(CompInfo.AliasName) + '"'; Except End;
-        Try Data := Data + ',"part_count":' + IntToStr(CompInfo.PartCount); Except End;
+        PartCount := 0;
+        Try PartCount := CompInfo.PartCount; Except End;
+        Component := Nil;
+        If (WithParams Or WithDesignator Or ExactParts) And (LiveLib <> Nil) Then
+            Component := LookupLibComponent(LiveLib, CompName);
+        If Component <> Nil Then
+        Begin
+            Try PartCount := Component.PartCount; Except End;
+        End;
+        Data := Data + ',"part_count":' + IntToStr(PartCount)
+            + ',"part_count_exact":' + BoolToJsonStr(Component <> Nil);
         Data := Data + ',"description":"' + EscapeJsonString(CompInfo.Description) + '"';
 
         // Slow path, opt-in via with_parameters=true.
@@ -6232,7 +6254,6 @@ Begin
             DefDesig := '';
             If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
             Begin
-                Component := LookupLibComponent(SchLib, CompName);
                 If (Component <> Nil) And WithDesignator Then
                     Try DefDesig := Component.Designator.Text; Except End;
                 If (Component <> Nil) And WithParams Then
