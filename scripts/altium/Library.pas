@@ -1499,6 +1499,348 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create footprint');
 End;
 
+{ Custom pad-list footprint, adapted from rabihnd/integration. All pads and
+  outlines are built while the same IPCB_LibComponent reference is held. }
+Function Lib_CustomTrack(Footprint : IPCB_LibComponent; Layer : TLayer;
+    X1, Y1, X2, Y2, OrgX, OrgY : Double) : Boolean;
+Var
+    Track : IPCB_Track;
+Begin
+    Result := False;
+    Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
+    If Track = Nil Then Exit;
+    Track.Layer := Layer;
+    Track.X1 := MMsToCoord(OrgX + X1);
+    Track.Y1 := MMsToCoord(OrgY + Y1);
+    Track.X2 := MMsToCoord(OrgX + X2);
+    Track.Y2 := MMsToCoord(OrgY + Y2);
+    Track.Width := MMsToCoord(0.1);
+    Footprint.AddPCBObject(Track);
+    PCBServer.SendMessageToRobots(Track.I_ObjectAddress, c_Broadcast,
+        PCBM_BoardRegisteration, c_NoEventData);
+    Result := True;
+End;
+
+Function Lib_CreatePCBFootprint(Params : String; RequestId : String) : String;
+Var
+    PcbLib : IPCB_Library;
+    Footprint, Existing : IPCB_LibComponent;
+    Iter : IPCB_LibraryIterator;
+    Pad : IPCB_Pad;
+    Pin1Arc : IPCB_Arc;
+    DesigText : IPCB_Text;
+    Fields, PadNames : TStringList;
+    Name, LibPath, PadsText, Rest, Item, Field, ShapeText : String;
+    Description, ApplyText, CountText : String;
+    I, J, StartAt, Sep, Count, ExpectedCount, PadCount : Integer;
+    XMM, YMM, WMM, HMM, MinX, MaxX, MinY, MaxY : Double;
+    BodyX, BodyY, Excess, BX1, BX2, BY1, BY2, Chamfer : Double;
+    OrgX, OrgY : Double;
+    Created, RolledBack, AllAdded : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    Name := Trim(ExtractJsonValue(Params, 'name'));
+    Description := ExtractJsonValue(Params, 'description');
+    PadsText := ExtractJsonValue(Params, 'pads');
+    ApplyText := LowerCase(ExtractJsonValue(Params, 'apply'));
+    CountText := ExtractJsonValue(Params, 'expected_count');
+    If (LibPath = '') Or (Name = '') Or (PadsText = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'library_path, name and pads are required');
+        Exit;
+    End;
+    If (ApplyText <> '') And (ApplyText <> 'true') And (ApplyText <> 'false') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'apply must be true or false');
+        Exit;
+    End;
+    If (ApplyText = 'true') And (Not IsIntStr(CountText)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+            'expected_count from the dry run is required');
+        Exit;
+    End;
+    If (Not IsFloatStr(ExtractJsonValue(Params, 'body_x_mm'))) Or
+       (Not IsFloatStr(ExtractJsonValue(Params, 'body_y_mm'))) Or
+       (Not IsFloatStr(ExtractJsonValue(Params, 'courtyard_excess_mm'))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'body and courtyard dimensions must be numbers');
+        Exit;
+    End;
+    BodyX := StrToFloatDef(ExtractJsonValue(Params, 'body_x_mm'), -1);
+    BodyY := StrToFloatDef(ExtractJsonValue(Params, 'body_y_mm'), -1);
+    Excess := StrToFloatDef(ExtractJsonValue(Params, 'courtyard_excess_mm'), -1);
+    If (BodyX < 0) Or (BodyY < 0) Or ((BodyX = 0) <> (BodyY = 0)) Or (Excess < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'body dimensions must both be positive or zero; courtyard excess must be nonnegative');
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+    If UpperCase(PcbLib.Board.FileName) <> UpperCase(LibPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_LIBRARY',
+            'Focused PCB library differs from library_path');
+        Exit;
+    End;
+    Count := 0;
+    Iter := PcbLib.LibraryIterator_Create;
+    Try
+        Existing := Iter.FirstPCBObject;
+        While Existing <> Nil Do
+        Begin
+            Inc(Count);
+            If UpperCase(Existing.Name) = UpperCase(Name) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NAME_EXISTS',
+                    'Footprint already exists: ' + Name);
+                Exit;
+            End;
+            Existing := Iter.NextPCBObject;
+        End;
+    Finally
+        PcbLib.LibraryIterator_Destroy(Iter);
+    End;
+    If ApplyText = 'true' Then
+    Begin
+        ExpectedCount := StrToIntDef(CountText, -1);
+        If ExpectedCount <> Count Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+                'Footprint count changed since dry run');
+            Exit;
+        End;
+    End;
+    Fields := TStringList.Create;
+    PadNames := TStringList.Create;
+    PadCount := 0;
+    MinX := 1.0E9; MinY := 1.0E9; MaxX := -1.0E9; MaxY := -1.0E9;
+    Try
+        Rest := PadsText;
+        While Rest <> '' Do
+        Begin
+            Sep := Pos('~~', Rest);
+            If Sep = 0 Then Begin Item := Rest; Rest := ''; End
+            Else Begin Item := Copy(Rest, 1, Sep - 1);
+                Rest := Copy(Rest, Sep + 2, Length(Rest)); End;
+            Fields.Free;
+            Fields := TStringList.Create;
+            StartAt := 1;
+            For I := 1 To Length(Item) + 1 Do
+                If (I > Length(Item)) Or (Item[I] = '|') Then
+                Begin
+                    Field := Copy(Item, StartAt, I - StartAt);
+                    Fields.Add(Field);
+                    StartAt := I + 1;
+                End;
+            If Fields.Count <> 6 Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PAD', 'Each pad requires six fields');
+                Exit;
+            End;
+            If (Trim(Fields[0]) = '') Or (PadNames.IndexOf(UpperCase(Fields[0])) >= 0) Or
+               (Not IsFloatStr(Fields[1])) Or (Not IsFloatStr(Fields[2])) Or
+               (Not IsFloatStr(Fields[3])) Or (Not IsFloatStr(Fields[4])) Or
+               ((Fields[5] <> 'Round') And (Fields[5] <> 'Rect') And (Fields[5] <> 'Oval')) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PAD',
+                    'Pad name, dimensions, shape or uniqueness is invalid');
+                Exit;
+            End;
+            PadNames.Add(UpperCase(Fields[0]));
+            XMM := StrToFloatDef(Fields[1], 0); YMM := StrToFloatDef(Fields[2], 0);
+            WMM := StrToFloatDef(Fields[3], 0); HMM := StrToFloatDef(Fields[4], 0);
+            If (WMM <= 0) Or (HMM <= 0) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PAD', 'Pad sizes must be positive');
+                Exit;
+            End;
+            If XMM - WMM/2 < MinX Then MinX := XMM - WMM/2;
+            If XMM + WMM/2 > MaxX Then MaxX := XMM + WMM/2;
+            If YMM - HMM/2 < MinY Then MinY := YMM - HMM/2;
+            If YMM + HMM/2 > MaxY Then MaxY := YMM + HMM/2;
+            Inc(PadCount);
+        End;
+        If PadCount = 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PAD', 'At least one pad is required');
+            Exit;
+        End;
+        If BodyX > 0 Then
+        Begin
+            BX1 := -BodyX/2; BX2 := BodyX/2;
+            BY1 := -BodyY/2; BY2 := BodyY/2;
+        End
+        Else
+        Begin
+            BX1 := MinX - 0.25; BX2 := MaxX + 0.25;
+            BY1 := MinY - 0.25; BY2 := MaxY + 0.25;
+        End;
+        Chamfer := 0.5;
+        If Chamfer > (BX2 - BX1)/4 Then Chamfer := (BX2 - BX1)/4;
+        If Chamfer > (BY2 - BY1)/4 Then Chamfer := (BY2 - BY1)/4;
+        If ApplyText <> 'true' Then
+        Begin
+            Result := BuildSuccessResponse(RequestId, JsonObj(
+                JsonStr('library_path', PcbLib.Board.FileName) + ','
+                + JsonStr('name', Name) + ','
+                + JsonInt('footprint_count', Count) + ','
+                + JsonInt('pad_count', PadCount) + ','
+                + JsonBool('wrote', False) + ','
+                + JsonRaw('body_mm', '[' + FloatToJsonStr(BX1) + ',' + FloatToJsonStr(BY1)
+                    + ',' + FloatToJsonStr(BX2) + ',' + FloatToJsonStr(BY2) + ']')));
+            Exit;
+        End;
+        Created := False;
+        RolledBack := False;
+        Footprint := Nil;
+        Try
+            Footprint := PCBServer.CreatePCBLibComp;
+            If Footprint = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+                    'Footprint factory returned no component');
+                Exit;
+            End;
+            Footprint.Name := Name;
+            Footprint.Description := Description;
+            PcbLib.RegisterComponent(Footprint);
+            Created := True;
+            OrgX := CoordToMM(Footprint.X);
+            OrgY := CoordToMM(Footprint.Y);
+            AllAdded := True;
+            Rest := PadsText;
+            While Rest <> '' Do
+            Begin
+                Sep := Pos('~~', Rest);
+                If Sep = 0 Then Begin Item := Rest; Rest := ''; End
+                Else Begin Item := Copy(Rest, 1, Sep - 1);
+                    Rest := Copy(Rest, Sep + 2, Length(Rest)); End;
+                Fields.Free; Fields := TStringList.Create; StartAt := 1;
+                For I := 1 To Length(Item) + 1 Do
+                    If (I > Length(Item)) Or (Item[I] = '|') Then
+                    Begin
+                        Fields.Add(Copy(Item, StartAt, I - StartAt));
+                        StartAt := I + 1;
+                    End;
+                Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+                If Pad = Nil Then Begin AllAdded := False; Break; End;
+                Pad.Name := Fields[0];
+                Pad.Mode := ePadMode_Simple;
+                Pad.HoleSize := 0;
+                Pad.X := MMsToCoord(OrgX + StrToFloatDef(Fields[1], 0));
+                Pad.Y := MMsToCoord(OrgY + StrToFloatDef(Fields[2], 0));
+                Pad.Layer := eTopLayer;
+                Pad.TopXSize := MMsToCoord(StrToFloatDef(Fields[3], 0));
+                Pad.TopYSize := MMsToCoord(StrToFloatDef(Fields[4], 0));
+                ShapeText := Fields[5];
+                If ShapeText = 'Round' Then Pad.TopShape := eRounded
+                Else If ShapeText = 'Oval' Then Pad.TopShape := eRounded
+                Else Pad.TopShape := eRectangular;
+                Footprint.AddPCBObject(Pad);
+                PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast,
+                    PCBM_BoardRegisteration, c_NoEventData);
+            End;
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX1, BY1, BX2, BY1, OrgX, OrgY);
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX2, BY1, BX2, BY2, OrgX, OrgY);
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX2, BY2, BX1+Chamfer, BY2, OrgX, OrgY);
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX1+Chamfer, BY2, BX1, BY2-Chamfer, OrgX, OrgY);
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX1, BY2-Chamfer, BX1, BY1, OrgX, OrgY);
+            For J := 0 To 3 Do If AllAdded Then
+            Begin
+                If J = 0 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(13), BX1, BY1, BX2, BY1, OrgX, OrgY);
+                If J = 1 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(13), BX2, BY1, BX2, BY2, OrgX, OrgY);
+                If J = 2 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(13), BX2, BY2, BX1, BY2, OrgX, OrgY);
+                If J = 3 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(13), BX1, BY2, BX1, BY1, OrgX, OrgY);
+                If J = 0 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(15), BX1-Excess, BY1-Excess, BX2+Excess, BY1-Excess, OrgX, OrgY);
+                If J = 1 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(15), BX2+Excess, BY1-Excess, BX2+Excess, BY2+Excess, OrgX, OrgY);
+                If J = 2 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(15), BX2+Excess, BY2+Excess, BX1-Excess, BY2+Excess, OrgX, OrgY);
+                If J = 3 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(15), BX1-Excess, BY2+Excess, BX1-Excess, BY1-Excess, OrgX, OrgY);
+            End;
+            If AllAdded Then
+            Begin
+                Pin1Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
+                If Pin1Arc = Nil Then AllAdded := False
+                Else
+                Begin
+                    Pin1Arc.Layer := eTopOverlay;
+                    Pin1Arc.XCenter := MMsToCoord(OrgX + BX1 - 0.3);
+                    Pin1Arc.YCenter := MMsToCoord(OrgY + BY2 + 0.3);
+                    Pin1Arc.Radius := MMsToCoord(0.15);
+                    Pin1Arc.LineWidth := MMsToCoord(0.30);
+                    Pin1Arc.StartAngle := 0;
+                    Pin1Arc.EndAngle := 360;
+                    Footprint.AddPCBObject(Pin1Arc);
+                    PCBServer.SendMessageToRobots(Pin1Arc.I_ObjectAddress,
+                        c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
+                End;
+            End;
+            If AllAdded Then
+            Begin
+                DesigText := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
+                If DesigText = Nil Then AllAdded := False
+                Else
+                Begin
+                    DesigText.Text := '.Designator';
+                    DesigText.Layer := ILayer.MechanicalLayer(13);
+                    DesigText.XLocation := MMsToCoord(OrgX + BX1);
+                    DesigText.YLocation := MMsToCoord(OrgY);
+                    DesigText.Size := MMsToCoord(1.0);
+                    DesigText.Width := MMsToCoord(0.15);
+                    Footprint.AddPCBObject(DesigText);
+                    PCBServer.SendMessageToRobots(DesigText.I_ObjectAddress,
+                        c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
+                End;
+            End;
+            If Not AllAdded Then
+            Begin
+                PcbLib.RemoveComponent(Footprint);
+                Created := False;
+                Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+                    'A pad or outline primitive could not be created; footprint removed');
+                Exit;
+            End;
+            PcbLib.CurrentComponent := Footprint;
+            PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, Footprint.I_ObjectAddress);
+            PcbLib.Board.ViewManager_FullUpdate;
+            MarkDocDirtyByPath(PcbLib.Board.FileName);
+        Except
+            If Created Then
+            Begin
+                Try
+                    PcbLib.RemoveComponent(Footprint);
+                    RolledBack := True;
+                Except End;
+            End;
+            If RolledBack Then
+                Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+                    'Footprint construction failed and was rolled back')
+            Else
+                Result := BuildErrorResponse(RequestId, 'PARTIAL_CREATE',
+                    'Footprint construction failed; check the library before retrying');
+            Exit;
+        End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('library_path', PcbLib.Board.FileName) + ','
+            + JsonStr('name', Name) + ','
+            + JsonInt('footprint_count_before', Count) + ','
+            + JsonInt('pad_count', PadCount) + ','
+            + JsonBool('wrote', True) + ','
+            + JsonRaw('body_mm', '[' + FloatToJsonStr(BX1) + ',' + FloatToJsonStr(BY1)
+                + ',' + FloatToJsonStr(BX2) + ',' + FloatToJsonStr(BY2) + ']')));
+    Finally
+        Fields.Free;
+        PadNames.Free;
+    End;
+End;
+
 { FootprintOriginX / Y - the footprint's own origin, in board coordinates.    }
 {                                                                             }
 { EVERY AUTHORING CALL HERE MUST OFFSET BY THIS. A PcbLib footprint does not  }
@@ -20380,6 +20722,7 @@ Begin
         'add_symbol_line':      Result := Lib_AddSymbolLine(Params, RequestId);
         'add_symbol_lines':     Result := Lib_AddSymbolLines(Params, RequestId);
         'create_footprint':     Result := Lib_CreateFootprint(Params, RequestId);
+        'create_pcb_footprint': Result := Lib_CreatePCBFootprint(Params, RequestId);
         'add_footprint_pad':    Result := Lib_AddFootprintPad(Params, RequestId);
         'add_footprint_via':    Result := Lib_AddFootprintVia(Params, RequestId);
         'get_library_origin':   Result := Lib_GetLibraryOrigin(Params, RequestId);

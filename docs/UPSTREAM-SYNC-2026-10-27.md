@@ -2,6 +2,20 @@
 
 ## Later upstream tip in this session
 
+The 119 cached fork/default/feature refs were scanned for async tool names.
+Most apparent missing names were old aliases for existing tools. One
+substantive difference was `rabihnd/integration`'s custom pad-list
+footprint creation, which our standard-family and package-drawing
+generators did not offer as a single call. Script `.85` ports that
+capability with exact-library preflight, dry run, count precondition and
+readback. On a disposable PcbLib copy, two pads and 13 tracks, one pin-1
+arc and one designator text survived save/reopen. A shape constant in the
+fork made an oval pad octagonal on AD 26.11; the adapted port uses the
+measured round/elongated shape. The fork's vault-list, footprint
+diagnostic, screenshot and STEP-body tools have existing equivalents in
+`lib_list_available_libraries`, `lib_probe_footprint`,
+`lib_render_footprint` and the exact-library body/model tools.
+
 Script `.83` completes the saved STEP standoff read on a named clean
 PcbLib even when another document is the active tab. The native footprint
 read reports whether that exact library's unsaved state is known and whether

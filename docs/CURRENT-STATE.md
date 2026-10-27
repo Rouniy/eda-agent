@@ -2,6 +2,20 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Script `.85` adapts `rabihnd/integration`'s custom pad-list footprint
+creation as `lib_create_pcb_footprint`. It plans by default, requires an
+exact existing PcbLib, validates every pad and refuses an occupied name or
+stale footprint count before one native creation call. Native creation
+reads back pads, silk/assembly/courtyard outlines, a pin-1 dot and
+`.Designator`. On a separate disposable PcbLib copy, two pads and all
+15 non-pad primitives read back; the corrected oval shape, pad geometry
+and primitive layers persisted after exact save and reopen. The fork's
+`eRoundedRectangle` oval mapping produced an octagonal pad on AD 26.11;
+the port uses `eRounded` with unequal pad dimensions and verifies the
+returned shape. Wrong path, stale count and duplicate name were refused.
+The owner PCB hash remained unchanged. Pascal lint/build and three
+focused Python tests passed.
+
 Script `.83` reports the exact PcbLib document's known/modified state in
 `lib_get_footprint_primitives` and resolves saved STEP Z offsets when that
 document is clean. The disposable `AD_FE38` library read returned

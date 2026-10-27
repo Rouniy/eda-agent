@@ -2,6 +2,11 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [x] Adapt `rabihnd/integration`'s custom pad-list footprint creator to
+  one guarded native call. Script `.85` plans against an exact PcbLib,
+  reads back pad and outline geometry, and persisted the corrected oval
+  pad and 15 non-pad primitives after save/reopen on a disposable copy.
+
 - [x] Resolve saved STEP Z offset for a named clean PcbLib even when a
   separate PCB tab is active. Script `.83` reads the exact library's
   known/modified state natively; `AD_FE38` returned its saved 0.254 mm

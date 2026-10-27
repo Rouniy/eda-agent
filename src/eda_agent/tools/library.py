@@ -2193,6 +2193,152 @@ def register_library_tools(mcp):
         return result
 
     @mcp.tool()
+    async def lib_create_pcb_footprint(
+        library_path: str,
+        name: str,
+        pads: list[dict[str, Any]],
+        description: str = "",
+        body_x_mm: float = 0.0,
+        body_y_mm: float = 0.0,
+        courtyard_excess_mm: float = 0.25,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Create a custom pad-list footprint in one Altium call.
+
+        Adapted from rabihnd/integration. Each pad has ``designator``,
+        ``x_mm``, ``y_mm``, ``x_size_mm``, ``y_size_mm`` and optional
+        ``shape`` (round, rect or oval). Mil equivalents ``x``, ``y``,
+        ``x_size``, ``y_size`` are accepted. The native handler keeps one
+        component reference while adding pads, silk, assembly and courtyard
+        outlines. The default dry run checks the exact existing PcbLib,
+        duplicate names and all pad values. A write repeats the checks with
+        the planned footprint count and reads every pad back. Make the named
+        PcbLib active first; the native handler refuses a different tab.
+        Saving remains a separate operation. Mechanical 13 is assembly,
+        15 courtyard.
+        """
+        path = Path(library_path)
+        if not path.is_absolute() or path.suffix.casefold() != ".pcblib" or not path.is_file():
+            return {"ok": False, "reason": "library_path must name an existing absolute PcbLib"}
+        if not name.strip() or not isinstance(pads, list) or not pads:
+            return {"ok": False, "reason": "name and a nonempty pads list are required"}
+        dimensions = (body_x_mm, body_y_mm, courtyard_excess_mm)
+        if (any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in dimensions)
+                or (body_x_mm == 0) != (body_y_mm == 0)):
+            return {"ok": False, "reason": "body dimensions must both be positive or zero; courtyard excess must be nonnegative"}
+        encoded: list[str] = []
+        expected: dict[str, tuple[float, float, float, float, str]] = {}
+        shapes = {"round": "Round", "circle": "Round", "rect": "Rect",
+                  "rectangular": "Rect", "oval": "Oval", "obround": "Oval"}
+        for index, pad in enumerate(pads):
+            if not isinstance(pad, dict):
+                return {"ok": False, "reason": f"pads[{index}] must be an object"}
+            designator = str(pad.get("designator", "")).strip()
+            if (not designator or any(c in designator for c in "|~\t\r\n")
+                    or designator.casefold() in expected):
+                return {"ok": False, "reason": f"pads[{index}] has an invalid or duplicate designator"}
+            shape = shapes.get(str(pad.get("shape", "round")).casefold())
+            if shape is None:
+                return {"ok": False, "reason": f"pads[{index}] has an unsupported shape"}
+            values = []
+            for mm_key, mil_key in (("x_mm", "x"), ("y_mm", "y"),
+                                    ("x_size_mm", "x_size"), ("y_size_mm", "y_size")):
+                if mm_key in pad:
+                    raw = pad[mm_key]
+                elif mil_key in pad:
+                    raw = pad[mil_key]
+                    if type(raw) in (int, float):
+                        raw = raw * MM_PER_MIL
+                else:
+                    return {"ok": False, "reason": f"pads[{index}] needs {mm_key} or {mil_key}"}
+                if type(raw) not in (int, float) or not math.isfinite(raw):
+                    return {"ok": False, "reason": f"pads[{index}] has a nonfinite dimension"}
+                values.append(float(raw))
+            x, y, width, height = values
+            if width <= 0 or height <= 0 or any(abs(v) > 100000 for v in values):
+                return {"ok": False, "reason": f"pads[{index}] has an invalid size or coordinate"}
+            expected[designator.casefold()] = (x, y, width, height, shape)
+            encoded.append("|".join((designator, *(repr(v) for v in values), shape)))
+        params: dict[str, Any] = {
+            "library_path": library_path, "name": name.strip(),
+            "description": description, "pads": "~~".join(encoded),
+            "body_x_mm": repr(float(body_x_mm)),
+            "body_y_mm": repr(float(body_y_mm)),
+            "courtyard_excess_mm": repr(float(courtyard_excess_mm)),
+            "apply": "false",
+        }
+        bridge = get_bridge()
+        plan = await bridge.send_command_async("library.create_pcb_footprint", params)
+        if (not isinstance(plan, dict) or plan.get("wrote") is not False
+                or not isinstance(plan.get("library_path"), str)
+                or plan["library_path"].casefold() != library_path.casefold()
+                or plan.get("name") != name.strip()
+                or plan.get("pad_count") != len(expected)
+                or type(plan.get("footprint_count")) is not int):
+            return {"ok": False, "reason": "custom footprint plan is incomplete or from another library",
+                    "native_reply": plan}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "plan": plan,
+                    "library_path": library_path, "name": name.strip()}
+        params["apply"] = "true"
+        params["expected_count"] = str(plan["footprint_count"])
+        written = await bridge.send_command_async("library.create_pcb_footprint", params)
+        if (not isinstance(written, dict) or written.get("wrote") is not True
+                or not isinstance(written.get("library_path"), str)
+                or written["library_path"].casefold() != library_path.casefold()
+                or written.get("name") != name.strip()
+                or written.get("pad_count") != len(expected)
+                or written.get("footprint_count_before") != plan["footprint_count"]):
+            return {"ok": False, "reason": "custom footprint creation was not confirmed",
+                    "native_reply": written, "save_required": True}
+        readback = await bridge.send_command_async("library.get_pad_geometry", {
+            "library_path": library_path, "footprint_name": name.strip(),
+        })
+        rows = readback.get("pads") if isinstance(readback, dict) else None
+        if (not isinstance(readback, dict) or readback.get("name") != name.strip()
+                or not isinstance(readback.get("library_path"), str)
+                or readback["library_path"].casefold() != library_path.casefold()
+                or readback.get("pad_count") != len(expected)
+                or not isinstance(rows, list) or len(rows) != len(expected)):
+            return {"ok": False, "reason": "custom footprint pad readback is incomplete",
+                    "native_reply": written, "readback": readback, "save_required": True}
+        for row in rows:
+            target = expected.get(str(row.get("name", "")).casefold()) if isinstance(row, dict) else None
+            if (target is None or any(type(row.get(key)) not in (int, float)
+                or not math.isclose(row[key], value, abs_tol=0.00001)
+                for key, value in zip(("x_mm", "y_mm", "w_mm", "h_mm"), target[:4]))
+                or row.get("shape") != {"Round": "round", "Oval": "round",
+                                         "Rect": "rectangular"}[target[4]]):
+                return {"ok": False, "reason": "custom footprint pad geometry differs from the plan",
+                        "native_reply": written, "readback": readback, "save_required": True}
+        primitives = await bridge.send_command_async("library.get_footprint_primitives", {
+            "library_path": library_path, "footprint_name": name.strip(),
+        })
+        tracks = primitives.get("tracks") if isinstance(primitives, dict) else None
+        arcs = primitives.get("arcs") if isinstance(primitives, dict) else None
+        texts = primitives.get("texts") if isinstance(primitives, dict) else None
+        layers = [track.get("layer") if isinstance(track, dict) else None
+                  for track in tracks] if isinstance(tracks, list) else []
+        if (not isinstance(primitives, dict) or primitives.get("name") != name.strip()
+                or not isinstance(primitives.get("library_path"), str)
+                or primitives["library_path"].casefold() != library_path.casefold()
+                or not isinstance(tracks, list) or len(tracks) != 13
+                or layers.count("TopOverlay") != 5
+                or layers.count("Mechanical13") != 4
+                or layers.count("Mechanical15") != 4
+                or not isinstance(arcs, list) or len(arcs) != 1
+                or not isinstance(texts, list) or len(texts) != 1
+                or not isinstance(texts[0], dict)
+                or texts[0].get("text") != ".Designator"):
+            return {"ok": False, "reason": "custom footprint outlines or markers did not read back",
+                    "native_reply": written, "readback": readback,
+                    "primitive_readback": primitives, "save_required": True}
+        return {"ok": True, "library_path": library_path, "name": name.strip(),
+                "pads": rows, "pad_count": len(rows), "body_mm": written.get("body_mm"),
+                "tracks": 13, "arcs": 1, "texts": 1,
+                "save_required": True}
+
+    @mcp.tool()
     async def lib_create_standard_footprint(
         name: str,
         family: str,

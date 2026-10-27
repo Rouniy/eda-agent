@@ -1,4 +1,19 @@
-# Release verification: 2026.10.27.83
+# Release verification: 2026.10.27.85
+
+Script `.85` adds the adapted `rabihnd/integration` custom footprint
+creator. An isolated copy of `BodyEdit_20261027.PcbLib` received
+`EDA_AGENT_CUSTOM_2P_OVAL` with two pads. Native readback found pad 1
+rectangular, pad 2 round with 0.6 × 1.2 mm dimensions (an oval), both at
+the requested centres within Altium's coordinate resolution. The footprint
+also had five TopOverlay, four Mechanical13 and four Mechanical15 tracks,
+one pin-1 arc and one `.Designator` text. Exact save and reopen preserved
+those pad values and primitive counts. A wrong library path, stale count
+and duplicate name were refused before creation. The original fork's
+oval constant created an octagonal pad in the first disposable experiment;
+the port corrected and checked it. Altium 26.11.1.5 loaded `.85` with
+zero cast errors; Pascal lint/build passed 12 files with zero errors or
+warnings, and three focused wrapper tests passed. The source owner PCB
+SHA-256 remained `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
 
 Script `.83` makes the native footprint primitive reply include
 `document_state_known` and `document_modified` for the requested PcbLib.
