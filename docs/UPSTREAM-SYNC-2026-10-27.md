@@ -1,5 +1,25 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 additional branch behavior audit
+
+Across 111 cached external fork refs, six Python test paths are absent
+from our tree. This is a path inventory, not a missing-feature count.
+The original 11 `vincent-himpe/fix/decimal-mils-leftovers` length tests
+all pass against `main`. The custom-pad test's six `eCustomShape`
+mappings are present in our Pascal readers and covered by
+`test_library_and_board_reads_writes_2026_10_23.py`. EasyEDA extension
+nonempty-destination behavior is covered by
+`test_easyeda_extension_packaging.py`; the fork's CLI was adapted into
+our existing `easyeda_extension.py`. The other missing test paths are
+security-policy format, an empty benchmark package, and the
+`bblacklock3` designator-batch refusal.
+
+The last is a deliberate behavioral difference: upstream commit
+`6486ac1` removed `SetWritesDesignator` to retain bulk renaming, and
+our `obj_batch_modify` describes the partial-write/netlist risk. We
+retain that functionality for now and track a safer preflight/verify
+design separately. This review did not make a native CAD edit.
+
 ## 2026-10-28 native parameter-scope follow-up
 
 The `mooreaa` template Value reconciliation led to a first-level

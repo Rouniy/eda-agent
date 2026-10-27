@@ -1,5 +1,17 @@
 # Fork integration TODO
 
+## Fork behavior audit, 2026-10-28
+
+- [x] Run the 11 `vincent-himpe` decimal-length tests against `main`;
+  all pass. Confirm six custom-pad shape readers already name
+  `eCustomShape`, and the EasyEDA extension delivery guards have adapted
+  coverage. See the sync checkpoint for the six absent test-path audit.
+- [ ] Design and qualify a safe preflight/verification path for bulk
+  designator rewrites. The `bblacklock3` fork refused them because a
+  partial batch can leave duplicate designators and merge nets;
+  upstream restored the bulk capability. Preserve useful bulk editing
+  while closing that failure mode on disposable projects.
+
 ## mooreaa template value reconciliation, 2026-10-28
 
 - [x] Run the fork's placement-cleanup source tests against `main`.
