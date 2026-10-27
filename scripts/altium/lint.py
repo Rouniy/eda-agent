@@ -1048,6 +1048,7 @@ def lint_file(path: str) -> list[Finding]:
     findings.extend(_scan_case_on_enum(rel, raw_lines))
     findings.extend(_scan_if_then_try(rel, raw_lines))
     findings.extend(_scan_reserved_in_var_block(rel, raw_lines))
+    findings.extend(_scan_duplicate_routines(rel, raw_lines))
     findings.extend(_scan_param_redeclared_as_local(rel, raw_lines))
     findings.extend(_scan_dollar_i(rel, text))
     findings.extend(_scan_unbracketed_comparison(rel, text))
@@ -1057,6 +1058,26 @@ def lint_file(path: str) -> list[Finding]:
     # Comment-brace check uses raw text (it tracks comment depth itself).
     findings.extend(_scan_comment_brace(rel, text))
 
+    return findings
+
+
+def _scan_duplicate_routines(path: str, lines: list[str]) -> list[Finding]:
+    """A merged unit cannot declare the same top-level routine twice."""
+    seen: set[str] = set()
+    findings: list[Finding] = []
+    pattern = re.compile(r"^(?:Function|Procedure)\s+([A-Za-z_]\w*)\s*\(", re.I)
+    for line_no, raw in enumerate(_blank_block_comments(lines), 1):
+        match = pattern.match(strip_comments_and_strings(raw))
+        if match is None:
+            continue
+        name = match.group(1).lower()
+        if name in seen:
+            findings.append(Finding(
+                file=path, line=line_no, col=1, rule="duplicate-routine",
+                severity="error", snippet=lines[line_no - 1],
+                memory="upstream-merge-native-compile-2026-10-27",
+            ))
+        seen.add(name)
     return findings
 
 

@@ -6,7 +6,7 @@
   reconcile legacy upstream tests that assume implicit active-board writes
   with the exact-board contracts retained here. The broad suite previously
   reached 7419 passing tests; focused fixes after that run passed.
-- Natively check `.42` on disposable Altium documents, including bottom-side
+- Natively check `.49` on disposable Altium documents, including bottom-side
   component placement and flip readback. Keep these native acceptance checks
   separate from the source merge.
 - Keep reviewing the latest MOREmbedded tip `032fb4b` for behavior that

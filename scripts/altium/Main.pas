@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.42';
+    SCRIPT_VERSION = '2026.10.27.49';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -165,6 +165,13 @@ Var
       library, and the name is compared against this recorded string
       rather than against anything read back off the component. }
     LastCreatedLibComponentName : String;
+
+    { Per-command coverage and board fallback diagnostics. The dispatcher
+      resets these before routing every request. }
+    SheetsSeen, SheetsSkipped : Integer;
+    BoardFallbackPath, BoardFallbackFrom, BoardMissWhy : String;
+    SlotSession, SaveScope : String;
+    SlotStartTick, QueueNoteTick, CleanLeftAlone : Integer;
 
 {..............................................................................}
 { Initialise polling tunables to compile-time defaults. Called by the          }

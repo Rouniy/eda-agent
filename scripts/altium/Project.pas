@@ -1111,6 +1111,7 @@ Var
     UsePhysical : Boolean;
     Data, CompDesig, NetName : String;
     First : Boolean;
+    LimitHit : Boolean;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     FilterComp := ExtractJsonValue(Params, 'component');
@@ -1231,7 +1232,8 @@ Var
     SkippedDocs, SkippedComps, SkippedPins : Integer;
     UsePhysical : Boolean;
     Data, CompDesig, CompComment, CompFP, CompLib, PinList : String;
-    First, FirstPin : Boolean;
+    First, FirstPin, LimitHit : Boolean;
+    Skipped : Integer;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 1000);
@@ -3050,11 +3052,9 @@ Begin
             Try OutJobDoc.Focus; Except End;
         End;
         OutJobOpened := OutJobDoc <> Nil;
-    End;
-    If OutJobDoc <> Nil Then
-    Begin
-        Try Client.ShowDocument(OutJobDoc); Except End;
-        Try OutJobDoc.Focus; Except End;
+    Except
+        OutJobDoc := Nil;
+        OutJobOpened := False;
     End;
     OutJobActive := False;
     Try

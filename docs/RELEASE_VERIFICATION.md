@@ -1,8 +1,25 @@
-# Release verification: 2026.10.27.42
+# Release verification: 2026.10.27.49
 
-The `.42` upstream merge candidate is undergoing source and test review;
-native acceptance and deployment remain pending. The historical checks
-below describe the earlier `.41` and older builds.
+The upstream merge `f71a076` was pushed to `Rouniy/eda-agent/main` with
+`9ee593e` as its second parent. The first `.42` native reload exposed missing
+dispatcher globals. Subsequent Altium restarts exposed duplicate Pascal
+routines, an incomplete `Try` in OutJob, an incomplete `If/Else` in schematic
+properties and missing local variables. These are fixed in the main checkout;
+the build now reports 12 files, zero errors and zero warnings. Live
+`application.ping` reports `.49`, Altium 26.11.1.5, protocol 2 and zero cast
+errors. The supervisor reports `bridge_usable=true`; HTTP MCP 14701 and TCP
+relay 14700 listen. The HTTP process was restarted from the main directory.
+The owner PcbDoc SHA256 remains
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
+Focused Python source and lint checks passed (40 tests). Upstream's added
+Altium suite has 112 passing and 17 failing cases; those 17 call exact-board
+tools without `board_path` or use superseded parameter names. They do not
+establish native behavior for the new write paths. The broad suite before
+post-merge fixes had 7419 passes, 147 skips, one expected failure and 30
+failures. Native acceptance of new writes remains on disposable documents.
+
+The historical checks below describe the earlier `.41` and older builds.
 
 The `.41` pour grow tool passed three focused tests, Pascal lint/build,
 live write on an isolated PcbDoc, and exact save/close/reopen persistence.

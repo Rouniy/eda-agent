@@ -2,8 +2,8 @@
 
 `Rouniy/eda-agent/main` remains the integration branch. The October 27
 integration merge has `9ee593ea0dce989bf3bfc97d0c982044ed41badb`
-(`salitronic/eda-agent/main`) as its second parent. Once the merge is
-committed, `git merge-base main upstream/main` identifies this precise
+(`salitronic/eda-agent/main`) as its second parent. `git merge-base main
+upstream/main` identifies this precise
 upstream synchronization point. The fork rows below record feature review
 and ports, not Git ancestry with those forks.
 
@@ -23,10 +23,8 @@ in our adapted `main`; this is a feature-level observation, not an ancestry
 claim. The `93141c6` branch syncs an older upstream point (`d6823d5`),
 so it does not advance our reviewed-through upstream tip.
 
-The merge bases are older than the reviewed tips because features have been
-ported and adapted as separate commits. `git merge-base main upstream/main`
-answers ancestry; this file answers the newer **reviewed-through** point.
-Do not describe the reviewed tip as a Git merge or an exact source tree.
+The table records merge bases before the October 27 merge. Upstream is now
+an actual second parent; fork features remain reviewed and adapted ports.
 
 On 2026-10-27 after commit `f61565f`, `git fetch` advanced the
 `upstream/main` ref to `9ee593ea0dce989bf3bfc97d0c982044ed41badb`.
@@ -147,11 +145,13 @@ that still need a dependency and native-behaviour review.
 
 ## October 27 integration merge
 
-The earlier aborted trial was followed by a fresh two-parent merge of the
-fetched upstream tip. The candidate retains the local `DesignPlan` tools,
+The earlier aborted trial was followed by a two-parent merge `f71a076` of the
+fetched upstream tip, pushed to `origin/main`. The merge retains the local `DesignPlan` tools,
 exact-board write guards and Altium crash refusals while adding the upstream
 design, library, routing, simulation, fabrication and maintenance modules.
 The MOREmbedded NPI and SDK features remain integrated as adapted ports.
+The native runtime now answers script `.49`; post-merge Pascal fixes are in
+a separate follow-up commit.
 Pascal lint/build, source tests and the live runtime check are recorded in
 `docs/RELEASE_VERIFICATION.md`. Native acceptance of new write paths must
 use disposable CAD documents; this Git merge alone does not validate them.

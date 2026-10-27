@@ -829,6 +829,7 @@ Var
     Project : IProject;
     AddToProject, Saved, Added, Focused : Boolean;
     I : Integer;
+    ProjSaved : Boolean;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
     FilePath := ExtractJsonValue(Params, 'file_path');
@@ -1006,56 +1007,6 @@ End;
 { reported but not trusted, as App_SaveAll records.                           }
 {..............................................................................}
 
-Function App_SaveDocument(Params : String; RequestId : String) : String;
-Var
-    FilePath, Reason : String;
-    ServerDoc : IServerDocument;
-    WasModified, Saved : Boolean;
-    AgeBefore, AgeAfter : Integer;
-Begin
-    FilePath := ExtractJsonValue(Params, 'file_path');
-    If FilePath = '' Then FilePath := CurrentFocusedDocPath(0);
-    If FilePath = '' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
-            'No file_path given and no document is focused');
-        Exit;
-    End;
-    ServerDoc := Nil;
-    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
-    If ServerDoc = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
-            FilePath + ' is not open in Altium, so it holds no unsaved edits');
-        Exit;
-    End;
-
-    WasModified := False;
-    Try WasModified := ServerDoc.Modified; Except End;
-    AgeBefore := -1;
-    Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
-    Try ServerDoc.SetModified(True); Except End;
-    Try ServerDoc.DoFileSave(''); Except End;
-    AgeAfter := -1;
-    Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
-    Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore);
-    { Written, so a later stop has nothing of this edit left to save. }
-    If Saved Then ForgetDocEdited(FilePath);
-
-    Reason := '';
-    If Not Saved Then
-        Reason := 'The file did not get newer. Altium declines a save while a '
-            + 'command is active in the editor, which an abandoned edit can '
-            + 'leave behind with nothing on screen, and a read-only folder '
-            + 'refuses it. File ages tick every two seconds, so a save right '
-            + 'after another can also read as not written: try again.';
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"file_path":"' + EscapeJsonString(FilePath) + '"'
-        + ',"saved":' + BoolToJsonStr(Saved)
-        + ',"was_modified":' + BoolToJsonStr(WasModified)
-        + ',"reason":"' + EscapeJsonString(Reason) + '"}');
-End;
 
 {..............................................................................}
 { Command Handler - must be at end so all functions are declared               }

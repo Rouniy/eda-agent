@@ -1,16 +1,18 @@
 # Current integration state / agent handoff
 
-## Upstream merge candidate, 2026-10-27
+## Upstream merge and live runtime, 2026-10-27
 
-An isolated worktree at `D:\ai\eda-agent-large-integration` is merging
-`upstream/main` at `9ee593ea0dce989bf3bfc97d0c982044ed41badb` into
-`Rouniy/eda-agent` after `e6a3a7b`. The merge is under test and has not
-been committed or deployed. Its script identifies itself as `.42` for
-source review; the live Altium bridge still runs the verified `.41` build
-from `main`. Do not interpret source lint as native acceptance. The
-MOREmbedded NPI, SDK, Altium 365 and library tests pass in the merge
-candidate; bottom-side placement has a new exact-board post-commit flip
-path that still needs native acceptance on a disposable PcbDoc.
+`Rouniy/eda-agent/main` has the two-parent merge `f71a076` with
+`upstream/main` at `9ee593ea0dce989bf3bfc97d0c982044ed41badb` as its
+second parent. The merge is pushed to `origin/main`. The live Altium bridge
+now answers version `.49` from the main directory, and the supervisor reports
+`bridge_usable=true`. HTTP MCP port 14701 and the TCP relay port 14700 both
+listen. The owner PcbDoc remains byte-identical at SHA256
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+The post-merge Pascal fixes that led to `.49` are a follow-up commit; see
+`RELEASE_VERIFICATION.md`. The MOREmbedded NPI, SDK, Altium 365 and library
+tests pass. Bottom-side placement still needs native acceptance on a
+disposable PcbDoc.
 
 ## Latest native integration, 2026-10-27
 
