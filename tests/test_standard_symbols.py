@@ -226,7 +226,33 @@ def test_body_primitives_can_target_a_part():
     for handler in ("Lib_AddSymbolPolygon", "Lib_AddSymbolLines",
                     "Lib_AddSymbolRectangle"):
         assert "SetOwnerPartFrom(" in lib[handler], handler
+    assert "StrToIntDef(OwnerStr, -1) >= 0" in lib["SetOwnerPartFrom"]
     assert "AreaColor" in lib["Lib_AddSymbolPolygon"]
+
+
+def test_symbol_lines_keep_explicit_multipart_owner(monkeypatch):
+    tools, bridge = _tools(monkeypatch)
+    lines = [
+        {"x1": 0, "y1": 0, "x2": 100, "y2": 0, "owner_part_id": 2},
+        {"x1": 0, "y1": 25, "x2": 100, "y2": 25, "owner_part_id": 0},
+        {"x1": 0, "y1": 50, "x2": 100, "y2": 50},
+    ]
+    asyncio.run(tools["lib_add_symbol_lines"](lines))
+    [(command, params)] = bridge.sent
+    assert command == "library.add_symbol_lines"
+    encoded = params["lines"].split("~~")
+    assert encoded[0].endswith("owner_part_id=2")
+    assert encoded[1].endswith("owner_part_id=0")
+    assert "owner_part_id" not in encoded[2]
+
+
+def test_symbol_lines_reject_invalid_part_before_writing(monkeypatch):
+    tools, bridge = _tools(monkeypatch)
+    result = asyncio.run(tools["lib_add_symbol_lines"]([
+        {"x1": 0, "y1": 0, "x2": 100, "y2": 0, "owner_part_id": -1},
+    ]))
+    assert result["ok"] is False
+    assert bridge.sent == []
 
 
 def test_audit_flags_an_amplifier_drawn_as_a_box():

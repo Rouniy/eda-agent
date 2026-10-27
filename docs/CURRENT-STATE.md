@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Multipart symbol lines from `rabihnd/integration`, 2026-10-27
+
+Source `.100` carries the fork's explicit `owner_part_id` on schematic
+symbol lines through the existing batch tool. The native batch handler
+already accepted the field, but Python had omitted it. Native
+`SetOwnerPartFrom` now treats 0 as a shared graphic instead of falling back
+to whichever sub-part is current. Omitting the field still uses that current
+part. Three native symbol writers (rectangle, polygon and batch lines) now
+use `AddLibSymbolPrim`; the earlier direct component insertion could leave
+the new graphic invisible until a library view refresh. Sixty-nine related
+tests passed, with one unrelated existing schematic-name assertion excluded;
+Pascal lint/build passed. Native
+save/reopen acceptance on a disposable multipart SchLib remains pending.
+
 ## Fork helper recovery, 2026-10-27
 
 A declaration-name comparison over 119 cached fork refs found 20 Python

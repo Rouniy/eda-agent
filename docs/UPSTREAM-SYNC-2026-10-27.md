@@ -1,5 +1,19 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Multipart symbol line ownership
+
+The `rabihnd/integration` single-line tool exposed an explicit
+`owner_part_id` (including 0 for a graphic shared across sub-parts). Our
+batch `lib_add_symbol_lines` had no such parameter even though
+`Lib_AddSymbolLines` already parsed it. Source `.100` now sends an optional
+owner for each line and makes the common Pascal owner helper honor 0.
+Three symbol writers now also use the existing `AddLibSymbolPrim` route to
+show new graphics immediately on the active symbol and preserve their
+specified owner. The batch path retains its one-call editing behavior.
+Sixty-nine related tests and Pascal lint/build passed; one pre-existing
+reverse schematic-name assertion remains outside this change. Native
+save/reopen verification remains.
+
 ## Recovered fork helpers
 
 The 119-ref name inventory exposed a real merge loss beneath the apparent

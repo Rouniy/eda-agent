@@ -1,5 +1,20 @@
 # Fork integration TODO
 
+## Multipart symbol lines, 2026-10-27
+
+- [x] Port `rabihnd/integration`'s explicit line `owner_part_id` through
+  `lib_add_symbol_lines`. The native batch handler already read it; the
+  Python wrapper dropped it. Accept 0 as a shared graphic in the common
+  native owner helper. Route rectangle, polygon and batch line insertion
+  through `AddLibSymbolPrim` so newly written graphics appear on the active
+  symbol. Source `.100` passes 69 related tests and Pascal lint/build.
+- [ ] In a disposable multipart SchLib, add lines to part 2 and shared
+  part 0, save/reopen, and verify their owner and visibility in each part.
+- [ ] Reconcile the older `test_symbol_writes_on_screen.py` schematic-name
+  assertion with current object type reporting. It expects reverse names
+  that `Generic.pas` does not currently emit; this is separate from the
+  symbol line ownership check.
+
 ## Lost helpers in fork reconciliation, 2026-10-27
 
 - [x] Restore `ReadNoErcProp`, `WriteNoErcProp` and `SaveProjectFile`,

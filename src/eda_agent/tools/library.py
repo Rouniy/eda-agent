@@ -2152,8 +2152,9 @@ def register_library_tools(mcp):
         Args:
             lines: list of dicts, each with keys ``x1``, ``y1``,
                 ``x2``, ``y2`` (mils, int), ``width`` (int 0-3,
-                default 1) and an optional ``color`` (Altium colour
-                integer).
+                default 1), optional ``color`` (Altium colour integer)
+                and ``owner_part_id`` (1..N selects a sub-part, 0 shares
+                the line across all parts; omitted uses the current part).
             grid: snap grid (mils) for the line endpoints. Glyph lines do
                 NOT need the 100-mil pin grid (rule 15), so the default is
                 a finer 25 mils for clean glyph detail; pass 100 for the
@@ -2173,6 +2174,14 @@ def register_library_tools(mcp):
             ]
             if line.get("color") is not None:
                 fields.append(f"color={int(line['color'])}")
+            if line.get("owner_part_id") is not None:
+                try:
+                    owner_part_id = int(line["owner_part_id"])
+                except (TypeError, ValueError):
+                    return {"ok": False, "reason": "owner_part_id must be a nonnegative integer"}
+                if owner_part_id < 0:
+                    return {"ok": False, "reason": "owner_part_id must be a nonnegative integer"}
+                fields.append(f"owner_part_id={owner_part_id}")
             op_strs.append(";".join(fields))
         if not op_strs:
             return {"error": "No lines provided", "added": 0}

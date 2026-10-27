@@ -124,14 +124,15 @@ Begin
 End;
 
 { An explicit owner_part_id puts a primitive on that part of a multi-part }
-{ symbol, the way Lib_AddPins already does; empty keeps SetOwnerPart.      }
+{ symbol, the way Lib_AddPins already does; 0 shares it across all parts.  }
+{ An empty value keeps SetOwnerPart.                                        }
 { Without it every body primitive landed on whichever part was current,  }
 { so part 2 of a dual op-amp could not get its own triangle.              }
 Procedure SetOwnerPartFrom(Obj : ISch_GraphicalObject; Component : ISch_Component;
     OwnerStr : String);
 Begin
     If Obj = Nil Then Exit;
-    If (OwnerStr <> '') And IsIntStr(OwnerStr) And (StrToIntDef(OwnerStr, 0) > 0) Then
+    If (OwnerStr <> '') And IsIntStr(OwnerStr) And (StrToIntDef(OwnerStr, -1) >= 0) Then
     Begin
         Try Obj.OwnerPartId := StrToIntDef(OwnerStr, 1); Except End;
         Try Obj.OwnerPartDisplayMode := 0; Except End;
@@ -1344,8 +1345,7 @@ Begin
 
         SchServer.ProcessControl.PreProcess(SchLib, '');
         SetOwnerPartFrom(Rect, Component, ExtractJsonValue(Params, 'owner_part_id'));
-        Component.AddSchObject(Rect);
-        SchRegisterObject(Component, Rect);
+        ViaLib := AddLibSymbolPrim(SchLib, Component, Rect);
         SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
 
         MarkLibDirty(SchLib);
@@ -8074,8 +8074,7 @@ Begin
 
             SchServer.ProcessControl.PreProcess(SchLib, '');
             SetOwnerPartFrom(Polygon, Component, OwnerStr);
-            Component.AddSchObject(Polygon);
-            SchRegisterObject(Component, Polygon);
+            ViaLib := AddLibSymbolPrim(SchLib, Component, Polygon);
             SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
 
             MarkLibDirty(SchLib);
@@ -8898,8 +8897,7 @@ Begin
             Line.LineWidth := Width;
 
             SetOwnerPartFrom(Line, Component, GetBatchField(Op, 'owner_part_id'));
-            Component.AddSchObject(Line);
-            SchRegisterObject(Component, Line);
+            If AddLibSymbolPrim(SchLib, Component, Line) Then ViaLib := True;
             Inc(Added);
         End;
     Finally
