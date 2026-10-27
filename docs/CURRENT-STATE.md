@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Hosted Actions on the fork, 2026-10-28
+
+The public GitHub API lists `battery-research-lab` as active but with
+zero runs; all repository runs stop at 2026-10-26. The signed-in
+repository Actions page supplies the missing explanation verbatim:
+"Workflows on this fork have been disabled." It offers a button to
+re-enable them. The imported battery workflow now has
+`workflow_dispatch` and explicit `permissions: contents: read`; no
+hosted run can be claimed while the repository-level setting remains
+disabled. A request to enable Actions is pending with the owner because
+that setting permits workflow code to execute on the fork.
+
 ## Native fractional polygon outline with arc, 2026-10-28
 
 The same disposable PcbDoc used for the circle check was then given a

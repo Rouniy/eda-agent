@@ -44,9 +44,11 @@
   `yniantongtian-oss/feat/battery-ai-comsol-lab` without changing core
   `eda-agent` dependencies. Ruff and six isolated tests pass, including
   a short electrothermal solve.
-- [ ] Observe the path-scoped hosted GitHub Actions workflow after push.
-  GitHub lists it as active, but its run count was still zero after the
-  `18e48a3` push; the latest repository Actions runs were from 2026-10-26.
+- [ ] Observe the path-scoped hosted GitHub Actions workflow after Actions
+  is enabled for the fork. GitHub's repository Actions page explicitly says
+  "Workflows on this fork have been disabled" and offers a re-enable
+  button; the workflow API reports zero runs. The workflow now supports
+  manual dispatch and limits its token to `contents: read`.
 - [ ] Exercise the optional MPh adapter against a licensed COMSOL install
   when one is available; PyBaMM validation does not qualify COMSOL.
 
