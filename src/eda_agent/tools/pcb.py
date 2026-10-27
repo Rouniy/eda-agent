@@ -4064,6 +4064,19 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_get_impedance_profiles() -> dict[str, Any]:
+        """Read Altium's own layer-stack impedance profiles for the open board.
+
+        Returns targets, tolerances, reference layers, solved widths and gaps,
+        calculated impedance, and ``read_errors`` for unavailable fields.
+        The reply names the board so the result can be checked against the
+        intended design.
+        """
+        return await get_bridge().send_command_async(
+            "pcb.get_impedance_profiles", {}
+        )
+
+    @mcp.tool()
     async def pcb_query_region(
         object_type: str,
         x1: int,

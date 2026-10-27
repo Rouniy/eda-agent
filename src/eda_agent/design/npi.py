@@ -327,7 +327,7 @@ EVT_CRITERIA: tuple[Criterion, ...] = (
            "board are different claims. This gate is where the second one "
            "has to be true.",
        kind=AUTOMATIC,
-       tools=("pcb_get_layer_stackup",
+       tools=("pcb_get_impedance_profiles",
               "pcb_calc_trace_width_for_impedance"),
        passes_when="every controlled-impedance class maps to a profile "
                    "whose calculated impedance is inside tolerance"),

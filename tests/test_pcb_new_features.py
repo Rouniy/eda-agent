@@ -135,6 +135,14 @@ async def test_placed_regions_keep_fractional_mils(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_impedance_profiles_dispatches_read(monkeypatch):
+    bridge = RecBridge()
+    tools = _pcb(monkeypatch, bridge)
+    await tools["pcb_get_impedance_profiles"]()
+    assert bridge.calls[-1] == ("pcb.get_impedance_profiles", {})
+
+
+@pytest.mark.asyncio
 async def test_import_placement_packs_records(monkeypatch):
     b = RecBridge()
     tools = _pcb(monkeypatch, b)
