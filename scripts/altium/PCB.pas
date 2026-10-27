@@ -15454,7 +15454,8 @@ Var
     PlacementsStr, BoardPathStr, OnePlace, Remaining, LoadStr : String;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr : String;
     UniqueIdStr, PadNetsStr, PadName, NetName, BadLayers : String;
-    X, Y, PlacedCount, FailedCount, SepPos : Integer;
+    PlacedCount, FailedCount, SepPos : Integer;
+    X, Y : Double;
     OldX, OldY, DX, DY, CenterX, CenterY : TCoord;
     CenterCount : Integer;
     Rotation : Double;

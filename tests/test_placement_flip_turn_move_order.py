@@ -38,9 +38,12 @@ def test_bottom_batch_flips_on_the_placed_board(monkeypatch):
     out = asyncio.run(tool([{
         "footprint": "R0603", "library_path": "D:/lib/parts.PcbLib",
         "designator": "R1", "layer": "BottomLayer", "rotation": 0,
+        "x": 100.125, "y": -50.0625,
     }]))
     assert out["flipped_to_bottom"] == ["R1"]
     assert "rotation==180" in sent[0][1]["placements"]
+    assert "x==100.125" in sent[0][1]["placements"]
+    assert "y==-50.0625" in sent[0][1]["placements"]
     assert sent[1] == ("pcb.flip_component", {
         "designator": "R1", "board_path": "D:/boards/actual.PcbDoc"})
 

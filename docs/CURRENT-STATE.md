@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Fractional PCB batch placement, 2026-10-27
+
+Source `.107` preserves fractional-mil X/Y positions in
+`pcb_place_components`: Python serializes mils to four decimal places and
+the native batch parser keeps X/Y as `Double` until `MilsToCoordF`.
+Previously the Python wrapper called `int()` and the Pascal batch handler
+stored `StrToFloatDef` in `Integer` variables, so a sub-mil request was
+rounded twice before placement. Nineteen placement/decimal tests pass;
+Pascal lint/build reports 12 units with zero errors or warnings. Native
+save/reopen acceptance of a fractional placement remains pending.
+
 ## MOREmbedded mechanical-layer targeting, 2026-10-27
 
 `lib_render_footprint` and `lib_audit_footprint_vs_package` now ask the

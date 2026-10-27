@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## Fractional PCB batch placement, 2026-10-27
+
+- [x] Preserve sub-mil X/Y coordinates through Python batch serialization
+  and Pascal's `pcb.place_components` parser. Script `.107` passes 19
+  focused tests and Pascal lint/build.
+- [ ] Place a component at fractional-mil coordinates in a disposable board
+  with loaded `.107`; read back after exact save/reopen and verify the
+  bottom-side flip still leaves the requested origin and rotation.
+
 ## MOREmbedded footprint layer identity, 2026-10-27
 
 - [x] Pass the footprint's exact PcbLib path to both mechanical-layer reads

@@ -957,3 +957,11 @@ tools already perform the same reads but had omitted its explicit PcbLib
 path on the mechanical-layer call. Both now pass the path returned by the
 pad/primitive read. Forty-three related tests pass; the name comparison is
 only a surface check, and native multi-library acceptance is still needed.
+
+The MOREmbedded bottom-side placement fix (`be21eb3`) and rotation audit
+(`2cabd7b`) are present in `main`; its `pcb_modify_layer` already accepts
+fractional thickness. Inspecting the shared placement path found a separate
+precision loss in our newer batch wrapper: Python cast X/Y to `int`, and
+`PCB_PlaceComponents` assigned parsed floats into integer locals. Script
+`.107` keeps the values as decimal mils through `MilsToCoordF`. Nineteen
+focused tests and Pascal lint/build pass; native placement is pending.

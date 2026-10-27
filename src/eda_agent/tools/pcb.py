@@ -9152,8 +9152,8 @@ def register_pcb_tools(mcp):
                 v = str(p.get(key, "") or "").strip()
                 if v:
                     fields.append(f"{key}=={v}")
-            fields.append(f"x=={int(p.get('x', 0))}")
-            fields.append(f"y=={int(p.get('y', 0))}")
+            fields.append(f"x=={_mils(p.get('x', 0))}")
+            fields.append(f"y=={_mils(p.get('y', 0))}")
             if p.get("rotation") is not None:
                 rotation = p.get("rotation")
                 if bottom:

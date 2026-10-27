@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.106';
+    SCRIPT_VERSION = '2026.10.27.107';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -51982,7 +51982,8 @@ Var
     PlacementsStr, BoardPathStr, OnePlace, Remaining, LoadStr : String;
     Footprint, LibPath, LibRef, Designator, Comment, LayerStr : String;
     UniqueIdStr, PadNetsStr, PadName, NetName, BadLayers : String;
-    X, Y, PlacedCount, FailedCount, SepPos : Integer;
+    PlacedCount, FailedCount, SepPos : Integer;
+    X, Y : Double;
     OldX, OldY, DX, DY, CenterX, CenterY : TCoord;
     CenterCount : Integer;
     Rotation : Double;
