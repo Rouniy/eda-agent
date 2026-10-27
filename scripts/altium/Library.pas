@@ -10449,6 +10449,61 @@ Begin
         + ',"seen":"' + EscapeJsonString(Seen) + '"}');
 End;
 
+{ List all libraries Altium knows, including those not installed. The
+  available-library type is TLibraryType, not a reliable Workspace source
+  indicator; obtain a Workspace name separately from a placed managed part. }
+Function Lib_ListAvailableLibraries(Params : String; RequestId : String) : String;
+Var
+    I, Total, Installed, Kind : Integer;
+    Path, ItemsJson, WorkspaceName, Seen, Diag : String;
+    FromOtherKind : Boolean;
+Begin
+    If IntegratedLibraryManager = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MANAGER',
+            'IntegratedLibraryManager unavailable');
+        Exit;
+    End;
+    Total := -1;
+    Installed := -1;
+    Try Total := IntegratedLibraryManager.AvailableLibraryCount; Except End;
+    Try Installed := IntegratedLibraryManager.InstalledLibraryCount; Except End;
+    If Total < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'ENUM_FAILED',
+            'AvailableLibraryCount is unavailable');
+        Exit;
+    End;
+    ItemsJson := '';
+    Diag := '';
+    For I := 0 To Total - 1 Do
+    Begin
+        Path := '';
+        Kind := -1;
+        Try Path := IntegratedLibraryManager.AvailableLibraryPath(I);
+        Except Diag := Diag + 'path ' + IntToStr(I) + ' unreadable;'; End;
+        Try Kind := IntegratedLibraryManager.AvailableLibraryType(I);
+        Except Diag := Diag + 'type ' + IntToStr(I) + ' unreadable;'; End;
+        If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+        ItemsJson := ItemsJson + '{"index":' + IntToStr(I)
+            + ',"library_path":"' + EscapeJsonString(Path) + '"'
+            + ',"library_type":"' + LibTypeName(Kind) + '"'
+            + ',"library_type_ordinal":' + IntToStr(Kind) + '}';
+    End;
+    WorkspaceName := '';
+    Seen := '';
+    FromOtherKind := False;
+    VaultNameFromDesign(WorkspaceName, Seen, FromOtherKind);
+    Result := BuildSuccessResponse(RequestId,
+        '{"libraries":[' + ItemsJson + ']'
+        + ',"available_count":' + IntToStr(Total)
+        + ',"installed_count":' + IntToStr(Installed)
+        + ',"workspace_from_design":"' + EscapeJsonString(WorkspaceName) + '"'
+        + ',"workspace_identifiers_seen":"' + EscapeJsonString(Seen) + '"'
+        + ',"workspace_other_kind":' + BoolToJsonStr(FromOtherKind)
+        + ',"diag":"' + EscapeJsonString(Diag) + '"}');
+End;
+
 {..............................................................................}
 { Lib_GetVaultComponent - whether one managed item can be placed, without     }
 { placing it.                                                                  }
@@ -20007,6 +20062,7 @@ Begin
         'install_library':      Result := Lib_InstallLibrary(Params, RequestId);
         'uninstall_library':    Result := Lib_UninstallLibrary(Params, RequestId);
         'get_vault_name':       Result := Lib_GetVaultName(Params, RequestId);
+        'list_available_libraries': Result := Lib_ListAvailableLibraries(Params, RequestId);
         'set_pad_properties':   Result := Lib_SetPadProperties(Params, RequestId);
         'get_vault_component':  Result := Lib_GetVaultComponent(Params, RequestId);
         'find_vault_components': Result := Lib_FindVaultComponents(Params, RequestId);

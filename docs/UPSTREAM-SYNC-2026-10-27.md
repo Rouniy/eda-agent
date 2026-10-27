@@ -202,3 +202,11 @@ and schematic polylines; `vincent-himpe/bf31274` footprint fills;
 the corresponding handlers and Python tools in `main`. The AD23/AD26 paste
 flag guard `4f9b64a` is an ancestor of `main`, so the earlier audit's
 paste-compatibility candidate is no longer outstanding.
+
+From `cad435/4f57311`, the available-library diagnostic is now integrated
+as `lib_list_available_libraries`. It enumerates Altium's Available list,
+including libraries not installed, and separately reports a Workspace name
+seen on an open managed part. The AvailableLibraryType ordinal is interpreted
+as TLibraryType; it is not used to claim that an entry is a connected
+Workspace. The existing `lib_get_installed_libraries` remains the installed
+inventory. Two focused tests cover the difference and source dispatch.

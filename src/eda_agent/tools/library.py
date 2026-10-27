@@ -6008,6 +6008,18 @@ def register_library_tools(mcp):
         return await bridge.send_command_async("library.get_vault_name", {})
 
     @mcp.tool()
+    async def lib_list_available_libraries() -> dict[str, Any]:
+        """List every library known to Altium, including uninstalled ones.
+
+        ``library_type`` is Altium's library-file type. The available list
+        need not contain a connected Workspace. ``workspace_from_design``
+        separately reads its name from an already open managed component;
+        an empty list does not prove that no Workspace is connected.
+        """
+        return await get_bridge().send_command_async(
+            "library.list_available_libraries", {})
+
+    @mcp.tool()
     async def lib_find_vault_components(name: str) -> dict[str, Any]:
         """Find the Design Item ID of a managed part by its exact name.
 

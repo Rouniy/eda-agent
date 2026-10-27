@@ -49,6 +49,30 @@ def test_it_needs_nothing_to_answer(monkeypatch):
     assert sent.calls[0][0] == "library.get_installed_libraries"
 
 
+def test_available_inventory_is_separate_from_installed(monkeypatch):
+    reply = {"libraries": [{"library_path": "C:/lib/Parts.IntLib",
+                             "library_type": "integrated"}],
+             "available_count": 1, "installed_count": 0,
+             "workspace_from_design": "Workspace A"}
+    sent = _Sent().install(monkeypatch, reply)
+    out = asyncio.run(_tools()["lib_list_available_libraries"]())
+    assert sent.calls == [("library.list_available_libraries", {})]
+    assert out["installed_count"] == 0
+    assert out["workspace_from_design"] == "Workspace A"
+
+
+def test_available_inventory_does_not_guess_a_workspace_type():
+    from tests.pascal_source import load
+    from pathlib import Path
+
+    pas = Path(__file__).resolve().parents[1] / "scripts/altium/Library.pas"
+    handler = load(pas)["Lib_ListAvailableLibraries"]
+    assert "AvailableLibraryCount" in handler
+    assert "AvailableLibraryType" in handler
+    assert "VaultNameFromDesign" in handler
+    assert "LIB_SRC_VAULT" not in handler
+
+
 def test_the_default_leaves_the_count_flag_to_the_handler(monkeypatch):
     """Sending nothing is what selects the handler's own default.
 
