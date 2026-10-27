@@ -22,6 +22,11 @@ Do not describe the reviewed tip as a Git merge or an exact source tree.
 | Upstream `7a65a96` | Periodic datasheet reminder, preserving our bridge reattach workflow | Interval and datasheet-hint tests |
 | Upstream `2b0344f` (response fix) | Schematic `obj_modify` reports dirty state without claiming a disk save | Source test and Pascal lint |
 
+After the source build, the live HTTP MCP endpoint reported 622 tools and
+`app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
+`26.11.1.5`. This confirms deployment and tool registration, not native
+acceptance of a CAD write.
+
 The older port-by-feature history and outstanding items remain in
 `FORK-INTEGRATION-AUDIT-2026-10-26.md`. In particular, the new upstream
 commits from `0a9ccd4` through `ce53d6e` add many project and PCB tools

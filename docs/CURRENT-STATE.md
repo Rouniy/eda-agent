@@ -6,9 +6,13 @@ The `main` source now includes SDK coverage and NPI phase gates from
 `MOREmbedded/main`, a periodic datasheet reminder from upstream, and a
 schematic generic edit response that no longer calls a dirty document saved.
 The reviewed upstream and fork tips, true merge bases and remaining merge
-work are recorded in `docs/UPSTREAM-SYNC-2026-10-27.md`. The new script
-source version is `2026.10.27.1`; deployment status is recorded below after
-the bridge is reloaded. Native acceptance of new write paths remains open.
+work are recorded in `docs/UPSTREAM-SYNC-2026-10-27.md`. The bridge was
+reloaded from the same `main` directory. Streamable HTTP on TCP 14701 now
+advertises 622 tools, including all three NPI tools; `app_ping` reports
+loaded and bundled script `2026.10.27.1`, `version_match=true`, and Altium
+`26.11.1.5`. The existing TCP 14700 relay still listens. Focused integration,
+documentation and version tests passed; native acceptance of new write paths
+remains open.
 
 ## Source integration and runtime, 2026-10-26
 
