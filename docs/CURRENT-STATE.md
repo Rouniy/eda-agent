@@ -1,5 +1,31 @@
 # Current integration state / agent handoff
 
+## Refreshed handoff, 2026-10-27
+
+`main` and `origin/main` are at `f339ee53e2643f1e222015028cb239b9fb9ede58`.
+The exact upstream synchronization point remains
+`9ee593ea0dce989bf3bfc97d0c982044ed41badb`: it is both the
+`upstream/main` tip fetched this day and `git merge-base main upstream/main`.
+There are zero newer upstream commits outside our history. The direct child
+fork `MOREmbedded/main` is `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`;
+its 33 divergent commits are Git ancestry, not a count of missing features.
+
+Script source and generated bundle are `.60`; bundle SHA-256 is
+`1E85E72F6F31E09A78B3FED79BC266431499AC850927AF68D7C022C8D4D86FF2`.
+Via tenting with an exact-board plan persisted on an isolated PcbDoc after
+save, close and reopen in Altium 26.11.1.5. The loaded script answered
+`application.ping` as `.60` and `pcb.focus_board` on the open isolated board.
+After that acceptance run Altium was no longer running when checked;
+port 14701 still served the Python MCP (748 tools, including the updated
+via-tenting schema) and TCP relay 14700 still listened. Do not treat the
+listening HTTP port alone as proof that the Altium VM is attached.
+
+On this date GitHub listed 61 direct forks of `salitronic/eda-agent` and
+one child fork of `Rouniy/eda-agent` (`MOREmbedded`). `git ls-remote`
+matched every external direct fork's cached default-branch tip; only our
+cached `forks/rouniy/main` ref lagged and was refreshed. The API list and
+the actual branch-tip check are recorded in `UPSTREAM-SYNC-2026-10-27.md`.
+
 ## Upstream merge and live runtime, 2026-10-27
 
 `Rouniy/eda-agent/main` has the two-parent merge `f71a076` with

@@ -1,5 +1,23 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Current remote-tip check
+
+After `f339ee5` was pushed, `git fetch` kept `upstream/main` at
+`9ee593ea0dce989bf3bfc97d0c982044ed41badb` and
+`morembedded/main` at `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+`git merge-base main upstream/main` equals the exact upstream tip;
+`git rev-list --left-right --count upstream/main...main` returned
+`0 354`. This is an ancestry claim for upstream, not for the child fork.
+
+The GitHub forks API listed 61 direct upstream forks and one child fork
+of `Rouniy/eda-agent`, `MOREmbedded`. For each direct fork, the branch
+named by its `default_branch` was checked with `git ls-remote` against
+its `refs/remotes/forks/<owner>/<branch>` cache. All 60 external branch
+tips matched; only our own cached `forks/rouniy/main` lagged, and it was
+refreshed to `f339ee5`. The child fork was fetched separately and had no
+new `main` commit. This checks tip freshness; the older rows below remain
+the feature-level audit and native-acceptance ledger.
+
 `Rouniy/eda-agent/main` remains the integration branch. The October 27
 integration merge has `9ee593ea0dce989bf3bfc97d0c982044ed41badb`
 (`salitronic/eda-agent/main`) as its second parent. `git merge-base main

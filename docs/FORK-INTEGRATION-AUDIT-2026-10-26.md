@@ -19,7 +19,8 @@ counts because several changes were ported with edited patches.
 | Integrated during this recheck | Withdraw timed-out requests, batch PCB DRC, direct Altium 365 API, standard schematic symbols and library save tracking, schematic templates alongside DesignPlan, duplicate footprint guard, installed menu and dialog translations, localized dashboard, PCB coordinate zoom, mask-sliver and silk rule gaps, offline SPICE deck export for ngspice and LTspice, generic PCB keepout restrictions, decimal-mil rectangle corners for board outlines and polygon pours | `9206588` through `541d2ce`; focused tests and Pascal lint pass; native execution still pending |
 | Already present before this recheck | Advisory two-pad rotation, bottom-side rotation scoring, offline fab package inspection, CLI script-folder discovery, performance report, DelphiScript routine checks | Earlier audit below; `2cabd7b` needs no second copy |
 | Next source candidates | Remaining decimal-mil geometry handlers; STEP/3D model editing; integrated libraries; multi-part schematic template support; ERC and project membership; session document isolation; update flow | Require conflict resolution, tests and in some cases disposable-board native acceptance |
-| Held for rewrite or evidence | `74d745d` forces one net-label colour; upstream removal of the main DesignPlan layout engine | Preserve both layout paths; review the net-label policy separately |
+| Already present after the upstream ancestry merge | `74d745d` forces Altium's native maroon net-label colour; our compiled electrical-label path already uses it | Keep the electrical-index behaviour; the old held label in this dated audit was stale |
+| Held for review | Upstream removal of the main DesignPlan layout engine | Preserve both layout paths |
 
 `be21eb3` bottom-side placement is now an exact-board adapted port in
 `main`. On 2026-10-27 it passed a native mirror and rotation check on an

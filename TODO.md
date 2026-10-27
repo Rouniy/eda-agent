@@ -1,14 +1,29 @@
 # Fork integration TODO
 
+## Refreshed after `.60`, 2026-10-27
+
+- [x] Establish an exact upstream merge point: `9ee593e` is an ancestor
+  of our current `main`, and there are zero upstream commits behind it.
+- [x] Recheck every direct fork default branch against its cached ref:
+  61 listed, 60 external tips unchanged, own cached tip refreshed.
+  Recheck periodically; this is a dated inventory, not a permanent claim.
+- [x] Port the child fork's via-tenting write with exact-board dry run,
+  reviewed token and Altium save/close/reopen acceptance on a disposable
+  board (`6b08ff4`). Bottom-side placement also passed native mirror,
+  rotation and persistence checks (`63f1d6c`).
+- Continue native acceptance of the already integrated multipart,
+  rigid-flex, library and manufacturing paths listed below. A Git-divergent
+  fork commit alone is not evidence that its feature is absent.
+
 ## Upstream merge qualification, 2026-10-27
 
 - The two-parent merge includes upstream `9ee593e`; follow-up work should
   reconcile legacy upstream tests that assume implicit active-board writes
   with the exact-board contracts retained here. The broad suite previously
   reached 7419 passing tests; focused fixes after that run passed.
-- Natively check `.49` on disposable Altium documents, including bottom-side
-  component placement and flip readback. Keep these native acceptance checks
-  separate from the source merge.
+- Continue native checks on disposable Altium documents using script `.60`.
+  Bottom-side component placement and flip readback passed on an isolated
+  PcbDoc; other operations in this section retain their own acceptance gaps.
 - Keep reviewing the latest MOREmbedded tip `032fb4b` for behavior that
   needs additional native qualification. Its NPI/SDK/3D features are ported.
 
