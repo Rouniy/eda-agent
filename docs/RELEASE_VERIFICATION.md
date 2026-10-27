@@ -1,4 +1,12 @@
-# Release verification: 2026.10.27.77
+# Release verification: 2026.10.27.78
+
+Script `.78` adds exact-board preflight and old-value checks to the
+expanded PCB editor and paste-array preferences. On the isolated PcbDoc,
+`board_area_color` changed from 0 to 1 and back to 0; paste repeat count
+changed from 1 to 2 and back to 1. A stale expected colour was rejected
+before a write. All 29 view and 29 edit settings read successfully, and
+31 focused Python tests passed. Pascal lint/build reported zero errors
+or warnings. Loaded Altium 26.11.1.5 answered `.78` with zero cast errors.
 
 Script `.77` loaded in Altium 26.11.1.5 with zero cast errors after
 merging upstream `40814ba`. On an isolated PcbDoc, Gerber setup read

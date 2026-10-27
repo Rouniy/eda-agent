@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.77';
+    SCRIPT_VERSION = '2026.10.27.78';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -57848,19 +57848,35 @@ Var
     Opts : IPCB_SystemOptions;
     Board : IPCB_Board;
     Names, SetStr, Item, Name, Value, Items, NotApplied, Refused, Unknown, Got : String;
+    ExpectedPath, ExpectStr, CheckStr, CheckName, CheckValue, CurrentVal : String;
     CommaPos, PipePos, EqPos : Integer;
     Changed, Took : Boolean;
 Begin
     Names := ExtractJsonValue(Params, 'names');
     SetStr := ExtractJsonValue(Params, 'set');
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    ExpectStr := ExtractJsonValue(Params, 'expect');
     { The PCB server holds these, and is loaded with the first board: on a   }
     { fresh Altium with no board open, PCBServer.SystemOptions halted the    }
     { script (see PCB_PolygonRepourMode).                                    }
-    If GetPCBBoardAnywhere(0) = Nil Then
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB',
             'Open a PCB document first: Altium loads its PCB server, which '
             + 'holds these preferences, with the first board.');
+        Exit;
+    End;
+    If (ExpectedPath = '') Or (UpperCase(Board.FileName) <> UpperCase(ExpectedPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'An exact active board_path is required for editor options');
+        Exit;
+    End;
+    If (SetStr <> '') And (ExpectStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+            'expect is required for editor option writes');
         Exit;
     End;
     Opts := Nil;
@@ -57869,6 +57885,42 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SYSTEM_OPTIONS', 'Could not reach the PCB editor preferences');
         Exit;
+    End;
+    While ExpectStr <> '' Do
+    Begin
+        PipePos := Pos('|', ExpectStr);
+        If PipePos = 0 Then Begin CheckStr := ExpectStr; ExpectStr := ''; End
+        Else Begin CheckStr := Copy(ExpectStr, 1, PipePos - 1);
+            ExpectStr := Copy(ExpectStr, PipePos + 1, Length(ExpectStr)); End;
+        EqPos := Pos('=', CheckStr);
+        If EqPos < 2 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PRECONDITION',
+                'expect contains an invalid property');
+            Exit;
+        End;
+        CheckName := Copy(CheckStr, 1, EqPos - 1);
+        CheckValue := Copy(CheckStr, EqPos + 1, Length(CheckStr));
+        If PcbOptionKind(CheckName) = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PRECONDITION',
+                'expect contains an unknown property');
+            Exit;
+        End;
+        CurrentVal := PcbOptionGet(Opts, CheckName);
+        If PcbOptionKind(CheckName) = 't' Then
+            Took := CurrentVal = '"' + EscapeJsonString(CheckValue) + '"'
+        Else If (PcbOptionKind(CheckName) = 'f') Or (PcbOptionKind(CheckName) = 'm') Then
+            Took := Abs(StrToFloatDef(CurrentVal, -1) -
+                StrToFloatDef(CheckValue, -2)) < 0.0001
+        Else
+            Took := CurrentVal = LowerCase(CheckValue);
+        If Not Took Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+                'An editor option differs from expect; read again');
+            Exit;
+        End;
     End;
     Items := ''; NotApplied := ''; Refused := ''; Unknown := '';
     Changed := False;
@@ -57937,7 +57989,8 @@ Begin
         Try Board.ViewManager_FullUpdate; Except End;
     End;
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonRaw('options', '{' + Items + '}') + ','
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonRaw('options', '{' + Items + '}') + ','
         + JsonBool('changed', Changed) + ','
         + JsonRaw('not_applied', '[' + NotApplied + ']') + ','
         + JsonRaw('refused', '[' + Refused + ']') + ','

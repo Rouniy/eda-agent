@@ -707,6 +707,20 @@ _PCB_VIEW_OPTIONS = {
     "from_tos_display": "FromTosDisplayMode",
     "layer_name_display": "LayerNameDisplayMode",
     "draft_track_threshold_mils": "DraftTrackThreshold",
+    "show_invisible_objects": "ShowInvisibleObjects",
+    "transparent_layers": "UseTransparent",
+    "clean_redraw": "CleanRedraw",
+    "redraw_layer_on_toggle": "RedrawLayerOnToggle",
+    "text_as_box_below": "TextToRectSize",
+    "pad_net_font": "PadViaFontName",
+    "pad_net_min_font_size": "PadViaMinFontSize",
+    "pad_net_font_color": "PadViaFontColor",
+    "pad_net_font_background": "PadViaFontBkColor",
+    "default_truetype_font": "DefaultTTFont",
+    "board_area_color": "BoardAreaColor",
+    "board_line_color": "BoardLineColor",
+    "sheet_area_color": "SheetAreaColor",
+    "sheet_line_color": "SheetLineColor",
 }
 _PCB_EDIT_OPTIONS = {
     "rotation_step": "RotationStep", "undo_levels": "UndoRedoStackSize",
@@ -718,6 +732,24 @@ _PCB_EDIT_OPTIONS = {
     "allow_duplicate_designators": "DuplicateDesignatorsAllowed",
     "auto_pan": "AutoPan", "drag_mode": "DragMode",
     "component_move": "ComponentMoveKind",
+    "confirm_delete": "QuestionDelete",
+    "confirm_global_edit": "QuestionGlobalChange",
+    "confirm_drag": "QuestionDrag",
+    "confirm_selection_memory_clear": "ConfirmSelectionMemoryClear",
+    "shift_to_select": "MustHoldShiftToSelect",
+    "global_edit_includes_arcs": "GlobalEditIncludeArcsWithTracks",
+    "pick_nearest_component": "NearestComponent",
+    "defaults_permanent": "DefaultPrimsPermanent",
+    "check_board_on_load": "ValidateOnLoad",
+    "netlist_remove_unconnected_parts": "DeleteUnconnectedComps",
+    "netlist_remove_unconnected_objects": "DeleteUnconnectedPrims",
+    "netlist_check_footprints": "CheckPatterns",
+    "netlist_check_comments": "CheckComments",
+    "auto_pan_mode": "AutoPanMode",
+    "auto_pan_step": "AutoPanSmallStep",
+    "auto_pan_big_step": "AutoPanLargeStep",
+    "auto_pan_speed": "AutoPanSpeed",
+    "pour_redraw_threshold": "PolygonThreshold",
 }
 _PCB_ROUTE_OPTIONS = {
     "route_mode": "InteractiveRouteMode",
@@ -725,10 +757,22 @@ _PCB_ROUTE_OPTIONS = {
     "shove_depth": "PlaceShoveDepth", "lock_pre_routes": "LockPreRoutes",
     "delete_dead_ends": "DeleteDeadEnds", "smart_track_ends": "UseSmartTrackEnds",
 }
-_PCB_OPTION_FLOATS = {"rotation_step", "draft_track_threshold_mils"}
+_PCB_OPTION_FLOATS = {"rotation_step", "draft_track_threshold_mils",
+                      "repeat_angle", "repeat_x_mils", "repeat_y_mils"}
+_PCB_OPTION_SIGNED = {"repeat_x_mils", "repeat_y_mils"}
 _PCB_OPTION_INTS = {"plane_draw_mode", "pad_types_display", "from_tos_display",
                     "layer_name_display", "drag_mode", "component_move",
-                    "route_mode", "shove_depth"}
+                    "route_mode", "shove_depth", "text_as_box_below",
+                    "pad_net_min_font_size", "pad_net_font_color",
+                    "pad_net_font_background", "board_area_color",
+                    "board_line_color", "sheet_area_color", "sheet_line_color",
+                    "auto_pan_mode", "auto_pan_step", "auto_pan_big_step",
+                    "auto_pan_speed", "pour_redraw_threshold", "repeat_count"}
+_PCB_OPTION_COLORS = {"pad_net_font_color", "pad_net_font_background",
+                      "board_area_color", "board_line_color", "sheet_area_color",
+                      "sheet_line_color"}
+_PCB_OPTION_TEXTS = {"pad_net_font", "default_truetype_font",
+                     "repeat_increment"}
 
 
 def _pcb_option_text(value: bool | int | float) -> str:
@@ -746,9 +790,14 @@ async def _pcb_editor_options(board_path: str, names: dict[str, str],
     for key, value in updates.items():
         if key in _PCB_OPTION_FLOATS:
             valid = (not isinstance(value, bool) and isinstance(value, (int, float))
-                     and math.isfinite(value) and value >= 0)
+                     and math.isfinite(value)
+                     and (key in _PCB_OPTION_SIGNED or value >= 0))
         elif key in _PCB_OPTION_INTS:
-            valid = type(value) is int and value >= 0
+            valid = (type(value) is int and value >= 0
+                     and (key not in _PCB_OPTION_COLORS or value <= 0xFFFFFF))
+        elif key in _PCB_OPTION_TEXTS:
+            valid = (isinstance(value, str) and bool(value.strip())
+                     and all(ch not in value for ch in "|\r\n"))
         else:
             valid = type(value) is bool
         if not valid:
@@ -9976,6 +10025,20 @@ def register_pcb_tools(mcp):
         from_tos_display: Optional[int] = None,
         layer_name_display: Optional[int] = None,
         draft_track_threshold_mils: Optional[float] = None,
+        show_invisible_objects: Optional[bool] = None,
+        transparent_layers: Optional[bool] = None,
+        clean_redraw: Optional[bool] = None,
+        redraw_layer_on_toggle: Optional[bool] = None,
+        text_as_box_below: Optional[int] = None,
+        pad_net_font: Optional[str] = None,
+        pad_net_min_font_size: Optional[int] = None,
+        pad_net_font_color: Optional[int] = None,
+        pad_net_font_background: Optional[int] = None,
+        default_truetype_font: Optional[str] = None,
+        board_area_color: Optional[int] = None,
+        board_line_color: Optional[int] = None,
+        sheet_area_color: Optional[int] = None,
+        sheet_line_color: Optional[int] = None,
         dry_run: bool = True,
     ) -> dict[str, Any]:
         """Read or plan a change to Altium's global PCB display preferences."""
@@ -9993,6 +10056,20 @@ def register_pcb_tools(mcp):
             "from_tos_display": from_tos_display,
             "layer_name_display": layer_name_display,
             "draft_track_threshold_mils": draft_track_threshold_mils,
+            "show_invisible_objects": show_invisible_objects,
+            "transparent_layers": transparent_layers,
+            "clean_redraw": clean_redraw,
+            "redraw_layer_on_toggle": redraw_layer_on_toggle,
+            "text_as_box_below": text_as_box_below,
+            "pad_net_font": pad_net_font,
+            "pad_net_min_font_size": pad_net_min_font_size,
+            "pad_net_font_color": pad_net_font_color,
+            "pad_net_font_background": pad_net_font_background,
+            "default_truetype_font": default_truetype_font,
+            "board_area_color": board_area_color,
+            "board_line_color": board_line_color,
+            "sheet_area_color": sheet_area_color,
+            "sheet_line_color": sheet_line_color,
         }, dry_run)
 
     @mcp.tool()
@@ -10008,6 +10085,24 @@ def register_pcb_tools(mcp):
         auto_pan: Optional[bool] = None,
         drag_mode: Optional[int] = None,
         component_move: Optional[int] = None,
+        confirm_delete: Optional[bool] = None,
+        confirm_global_edit: Optional[bool] = None,
+        confirm_drag: Optional[bool] = None,
+        confirm_selection_memory_clear: Optional[bool] = None,
+        shift_to_select: Optional[bool] = None,
+        global_edit_includes_arcs: Optional[bool] = None,
+        pick_nearest_component: Optional[bool] = None,
+        defaults_permanent: Optional[bool] = None,
+        check_board_on_load: Optional[bool] = None,
+        netlist_remove_unconnected_parts: Optional[bool] = None,
+        netlist_remove_unconnected_objects: Optional[bool] = None,
+        netlist_check_footprints: Optional[bool] = None,
+        netlist_check_comments: Optional[bool] = None,
+        auto_pan_mode: Optional[int] = None,
+        auto_pan_step: Optional[int] = None,
+        auto_pan_big_step: Optional[int] = None,
+        auto_pan_speed: Optional[int] = None,
+        pour_redraw_threshold: Optional[int] = None,
         dry_run: bool = True,
     ) -> dict[str, Any]:
         """Read or plan a change to global PCB editing preferences."""
@@ -10021,6 +10116,24 @@ def register_pcb_tools(mcp):
             "allow_duplicate_designators": allow_duplicate_designators,
             "auto_pan": auto_pan, "drag_mode": drag_mode,
             "component_move": component_move,
+            "confirm_delete": confirm_delete,
+            "confirm_global_edit": confirm_global_edit,
+            "confirm_drag": confirm_drag,
+            "confirm_selection_memory_clear": confirm_selection_memory_clear,
+            "shift_to_select": shift_to_select,
+            "global_edit_includes_arcs": global_edit_includes_arcs,
+            "pick_nearest_component": pick_nearest_component,
+            "defaults_permanent": defaults_permanent,
+            "check_board_on_load": check_board_on_load,
+            "netlist_remove_unconnected_parts": netlist_remove_unconnected_parts,
+            "netlist_remove_unconnected_objects": netlist_remove_unconnected_objects,
+            "netlist_check_footprints": netlist_check_footprints,
+            "netlist_check_comments": netlist_check_comments,
+            "auto_pan_mode": auto_pan_mode,
+            "auto_pan_step": auto_pan_step,
+            "auto_pan_big_step": auto_pan_big_step,
+            "auto_pan_speed": auto_pan_speed,
+            "pour_redraw_threshold": pour_redraw_threshold,
         }, dry_run)
 
     @mcp.tool()
@@ -10227,6 +10340,7 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_paste_options(
+        board_path: str,
         paste_same_net: Optional[bool] = None,
         paste_same_class: Optional[bool] = None,
         paste_same_layer: Optional[bool] = None,
@@ -10238,14 +10352,14 @@ def register_pcb_tools(mcp):
         repeat_rotate: Optional[bool] = None,
         repeat_x_mils: Optional[float] = None,
         repeat_y_mils: Optional[float] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
         """Read, or set, what the board editor keeps when pasting, and
         its paste array (Paste Special > Paste Array): how many
         instances, how designators step, and a line or circle of them.
 
-        These are Altium's own preferences and apply to every board. A
-        board must be open. Call with nothing to read; every option set
-        is read back.
+        These are Altium's own preferences and apply to every board. An
+        exact active board is required; changes are planned by default.
 
         Args:
             paste_same_net / paste_same_class / paste_same_layer /
@@ -10270,7 +10384,7 @@ def register_pcb_tools(mcp):
             return refusal
         if repeat_angle is not None and repeat_angle < 0:
             return {"ok": False, "reason": "repeat_angle is 0 or more"}
-        reply = await run_options("pcb.editor_options", _PCB_PASTE_OPTIONS, {
+        reply = await _pcb_editor_options(board_path, _PCB_PASTE_OPTIONS, {
             "paste_same_net": paste_same_net, "paste_same_class": paste_same_class,
             "paste_same_layer": paste_same_layer,
             "paste_same_designator": paste_same_designator,
@@ -10281,12 +10395,14 @@ def register_pcb_tools(mcp):
             # Altium keeps the steps at 10000 to the mil (measured: 1000 mils
             # read 10000000).
             "repeat_x_mils": None if repeat_x_mils is None else float(repeat_x_mils) * 10000,
-            "repeat_y_mils": None if repeat_y_mils is None else float(repeat_y_mils) * 10000})
-        options = reply.get("options") if isinstance(reply, dict) else None
-        if isinstance(options, dict):
-            for key in ("repeat_x_mils", "repeat_y_mils"):
-                if isinstance(options.get(key), (int, float)):
-                    options[key] = options[key] / 10000
+            "repeat_y_mils": None if repeat_y_mils is None else float(repeat_y_mils) * 10000},
+            dry_run)
+        for field in ("options", "before", "would_set"):
+            options = reply.get(field) if isinstance(reply, dict) else None
+            if isinstance(options, dict):
+                for key in ("repeat_x_mils", "repeat_y_mils"):
+                    if isinstance(options.get(key), (int, float)):
+                        options[key] = options[key] / 10000
         return reply
 
 

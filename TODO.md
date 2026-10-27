@@ -5,8 +5,11 @@
 - [ ] Reconcile the new upstream `40814ba` net-colour and project-colour
   options with our exact-board, expected-state `pcb_net_display` contract.
   Reconcile its coarse visible-grid factor and grid units with our
-  exact-board `pcb_set_grids` contract. Expand the PCB editor preference
-  wrappers for the new font, colour, confirmation and pan settings.
+  exact-board `pcb_set_grids` contract.
+- [x] Expand PCB editor preference and paste-array wrappers for the new
+  font, colour, confirmation and pan settings, with exact-board preflight.
+  Script `.78` read all properties and changed/restored board-area colour
+  and paste repeat count; stale expected state was refused.
 - [x] Merge the `40814ba` upstream tip with a two-parent commit, add its
   Gerber/print setup, paste-array preferences, Testpoint Style rule fields
   and schematic reference zones. Script `.77` compiled and answered native
