@@ -2018,3 +2018,13 @@ Both began with `ISO-10303-21`; the tools reported distinct SHA256 hashes.
 A wrong-board request was refused. The owner PcbDoc stayed active and
 modified=false with unchanged SHA256. Two focused tests and Pascal
 lint/build passed.
+
+# Differential-pair impedance rule, 2026-10-27
+
+Script `.27` on Altium 26.11.1.5 read `DiffPairsRouting` on the owner's
+PcbDoc. On an isolated copy, `impedance_driven` persisted after exact
+save and reopen in both true and false states. Direct SDK writes of
+49/50/51 ohm limits read back in memory, but all three returned to 50
+ohms after exact save and reopen, regardless of the mode state. Script
+`.28` therefore exposes the numeric values for reading and refuses
+numeric writes. The owner's PcbDoc was never saved in this test.

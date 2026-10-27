@@ -75,6 +75,25 @@ def _drill_pairs_snapshot(reply: dict[str, Any], board_path: str) -> list[dict[s
     return pairs
 
 
+def _pair_impedance_snapshot(reply: Any, board_path: str,
+                             rule_name: str) -> dict[str, Any]:
+    if (not isinstance(reply, dict)
+            or not isinstance(reply.get("board_path"), str)
+            or reply["board_path"].casefold() != board_path.casefold()
+            or str(reply.get("rule_name", "")).casefold() != rule_name.casefold()
+            or reply.get("rule_kind") != 51
+            or not isinstance(reply.get("after"), dict)):
+        raise ValueError("pair impedance read is incomplete or from another rule")
+    state = reply["after"]
+    if type(state.get("impedance_driven")) is not bool:
+        raise ValueError("pair impedance mode is missing")
+    for field in ("min_ohms", "max_ohms", "preferred_ohms"):
+        value = state.get(field)
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f"pair impedance {field} is missing")
+    return state
+
+
 def _offset_pair_polyline(
     points: list[tuple[float, float]],
     center_offset: float,
@@ -7220,6 +7239,101 @@ def register_pcb_tools(mcp):
             },
         )
         return result
+
+    @mcp.tool()
+    async def pcb_get_pair_impedance_rule(
+        board_path: str, rule_name: str,
+    ) -> dict[str, Any]:
+        """Read numeric impedance limits of one Differential Pairs Routing rule."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not rule_name.strip():
+            return {"ok": False, "reason": "rule_name is required"}
+        reply = await get_bridge().send_command_async(
+            "pcb.pair_impedance_rule",
+            {"board_path": board_path, "rule_name": rule_name.strip()}, timeout=120.0,
+        )
+        try:
+            _pair_impedance_snapshot(reply, board_path, rule_name.strip())
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_set_pair_impedance_rule(
+        board_path: str,
+        rule_name: str,
+        impedance_driven: Optional[bool] = None,
+        min_ohms: Optional[float] = None,
+        max_ohms: Optional[float] = None,
+        preferred_ohms: Optional[float] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Plan or set the pair impedance-driven flag with exact-board checks.
+
+        Numeric fields remain readable but Altium 26.11 did not persist their
+        direct SDK writes across an exact save and reopen. Saving is separate.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not rule_name.strip():
+            return {"ok": False, "reason": "rule_name is required"}
+        updates = {"impedance_driven": impedance_driven,
+                   "min_ohms": min_ohms, "max_ohms": max_ohms,
+                   "preferred_ohms": preferred_ohms}
+        updates = {key: value for key, value in updates.items() if value is not None}
+        if not updates:
+            return {"ok": False, "reason": "give at least one impedance setting"}
+        if any(key in updates for key in ("min_ohms", "max_ohms", "preferred_ohms")):
+            return {"ok": False, "reason":
+                    "numeric pair impedance fields did not persist after Altium 26.11 save/reopen"}
+        if ("impedance_driven" in updates
+                and type(updates["impedance_driven"]) is not bool):
+            return {"ok": False, "reason": "impedance_driven must be boolean"}
+        bridge = get_bridge()
+        base = {"board_path": board_path, "rule_name": rule_name.strip()}
+        snapshot = await bridge.send_command_async(
+            "pcb.pair_impedance_rule", base, timeout=120.0,
+        )
+        try:
+            old = _pair_impedance_snapshot(snapshot, board_path, rule_name.strip())
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": snapshot}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "rule_name": rule_name.strip(), "before": old,
+                    "would_set": updates}
+        params = {**base,
+                  "expect_impedance_driven": "true" if old["impedance_driven"] else "false",
+                  "expect_min_ohms": str(old["min_ohms"]),
+                  "expect_max_ohms": str(old["max_ohms"]),
+                  "expect_preferred_ohms": str(old["preferred_ohms"])}
+        for key, value in updates.items():
+            params[key] = ("true" if value else "false") if key == "impedance_driven" else str(value)
+        reply = await bridge.send_command_async("pcb.pair_impedance_rule", params, timeout=120.0)
+        try:
+            after = _pair_impedance_snapshot(reply, board_path, rule_name.strip())
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        for key, value in updates.items():
+            actual = after[key]
+            matched = (actual is value if key == "impedance_driven" else
+                       math.isclose(actual, value, abs_tol=0.001))
+            if not matched:
+                return {"ok": False, "reason": f"{key} did not read back",
+                        "native_reply": reply}
+        reread = await bridge.send_command_async("pcb.pair_impedance_rule", base, timeout=120.0)
+        try:
+            confirmed = _pair_impedance_snapshot(reread, board_path, rule_name.strip())
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reread}
+        if any((confirmed[key] is not value if key == "impedance_driven" else
+                not math.isclose(confirmed[key], value, abs_tol=0.001))
+               for key, value in updates.items()):
+            return {"ok": False, "reason": "independent impedance readback disagrees",
+                    "native_reply": reread}
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
 
     @mcp.tool()
     async def pcb_get_rule_properties(name: str) -> dict[str, Any]:

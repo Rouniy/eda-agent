@@ -19978,6 +19978,157 @@ Begin
         + JsonBool('saved', Saved)));
 End;
 
+Function PCB_PairImpedanceJson(Rule : IPCB_DifferentialPairsRoutingRule) : String;
+Begin
+    Result := JsonObj(JsonBool('impedance_driven', Rule.ImpedanceDriven) + ','
+        + JsonFloat('min_ohms', Rule.MinImpedance) + ','
+        + JsonFloat('max_ohms', Rule.MaxImpedance) + ','
+        + JsonFloat('preferred_ohms', Rule.FavoredImpedance) + ','
+        + JsonStr('descriptor', Rule.Descriptor));
+End;
+
+Function PCB_PairImpedanceRule(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Rule : IPCB_DifferentialPairsRoutingRule;
+    ExpectedPath, Why, RuleName, DrivenStr, MinStr, MaxStr, PrefStr : String;
+    ExpectDriven, ExpectMin, ExpectMax, ExpectPref, BeforeJson, AfterJson : String;
+    Driven, NewDriven, Changed : Boolean;
+    MinOhms, MaxOhms, PrefOhms : Double;
+    Found : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    RuleName := Trim(ExtractJsonValue(Params, 'rule_name'));
+    DrivenStr := LowerCase(ExtractJsonValue(Params, 'impedance_driven'));
+    MinStr := ExtractJsonValue(Params, 'min_ohms');
+    MaxStr := ExtractJsonValue(Params, 'max_ohms');
+    PrefStr := ExtractJsonValue(Params, 'preferred_ohms');
+    If (ExpectedPath = '') Or (RuleName = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'board_path and rule_name are required');
+        Exit;
+    End;
+    If ((DrivenStr <> '') And (DrivenStr <> 'true') And (DrivenStr <> 'false'))
+       Or ((MinStr <> '') And (Not IsFloatStr(MinStr)))
+       Or ((MaxStr <> '') And (Not IsFloatStr(MaxStr)))
+       Or ((PrefStr <> '') And (Not IsFloatStr(PrefStr))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'impedance values must be numbers and impedance_driven true/false');
+        Exit;
+    End;
+    If (MinStr <> '') Or (MaxStr <> '') Or (PrefStr <> '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'UNSUPPORTED_PERSISTENCE',
+            'Altium 26.11 does not persist pair impedance numeric fields after save/reopen');
+        Exit;
+    End;
+    If ((MinStr <> '') And (StrToFloatDef(MinStr, 0) <= 0))
+       Or ((MaxStr <> '') And (StrToFloatDef(MaxStr, 0) <= 0))
+       Or ((PrefStr <> '') And (StrToFloatDef(PrefStr, 0) <= 0)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'impedance values must be greater than zero ohms');
+        Exit;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    Iter := Board.BoardIterator_Create;
+    Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+    Iter.AddFilter_LayerSet(AllLayers);
+    Iter.AddFilter_Method(eProcessAll);
+    Found := False;
+    Rule := Nil;
+    Try
+        Rule := Iter.FirstPCBObject;
+        While Rule <> Nil Do
+        Begin
+            If (Rule.RuleKind = 51) And (UpperCase(Rule.Name) = UpperCase(RuleName)) Then
+            Begin Found := True; Break; End;
+            Rule := Iter.NextPCBObject;
+        End;
+        If Not Found Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_RULE',
+                'No Differential Pairs Routing rule named ' + RuleName);
+            Exit;
+        End;
+        BeforeJson := PCB_PairImpedanceJson(Rule);
+        Driven := Rule.ImpedanceDriven;
+        MinOhms := Rule.MinImpedance;
+        MaxOhms := Rule.MaxImpedance;
+        PrefOhms := Rule.FavoredImpedance;
+        Changed := (DrivenStr <> '') Or (MinStr <> '') Or (MaxStr <> '') Or (PrefStr <> '');
+        If Changed Then
+        Begin
+            ExpectDriven := LowerCase(ExtractJsonValue(Params, 'expect_impedance_driven'));
+            ExpectMin := ExtractJsonValue(Params, 'expect_min_ohms');
+            ExpectMax := ExtractJsonValue(Params, 'expect_max_ohms');
+            ExpectPref := ExtractJsonValue(Params, 'expect_preferred_ohms');
+            If ((ExpectDriven <> 'true') And (ExpectDriven <> 'false'))
+               Or (Not IsFloatStr(ExpectMin)) Or (Not IsFloatStr(ExpectMax))
+               Or (Not IsFloatStr(ExpectPref)) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+                    'all old impedance values are required');
+                Exit;
+            End;
+            If (Driven <> (ExpectDriven = 'true'))
+               Or (Abs(MinOhms - StrToFloatDef(ExpectMin, -1)) > 0.001)
+               Or (Abs(MaxOhms - StrToFloatDef(ExpectMax, -1)) > 0.001)
+               Or (Abs(PrefOhms - StrToFloatDef(ExpectPref, -1)) > 0.001) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'STALE_RULE',
+                    'impedance values changed; read the rule again');
+                Exit;
+            End;
+            NewDriven := Driven;
+            If DrivenStr <> '' Then NewDriven := (DrivenStr = 'true');
+            If MinStr <> '' Then MinOhms := StrToFloatDef(MinStr, 0);
+            If MaxStr <> '' Then MaxOhms := StrToFloatDef(MaxStr, 0);
+            If PrefStr <> '' Then PrefOhms := StrToFloatDef(PrefStr, 0);
+            If (MinOhms > PrefOhms) Or (PrefOhms > MaxOhms) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_RANGE',
+                    'require min_ohms <= preferred_ohms <= max_ohms');
+                Exit;
+            End;
+            PCBServer.PreProcess;
+            Try
+                PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
+                    PCBM_BeginModify, c_NoEventData);
+                If DrivenStr <> '' Then Rule.ImpedanceDriven := NewDriven;
+                If MinStr <> '' Then Rule.MinImpedance := MinOhms;
+                If MaxStr <> '' Then Rule.MaxImpedance := MaxOhms;
+                If PrefStr <> '' Then Rule.FavoredImpedance := PrefOhms;
+                PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
+                    PCBM_EndModify, c_NoEventData);
+            Finally
+                PCBServer.PostProcess;
+            End;
+        End;
+        AfterJson := PCB_PairImpedanceJson(Rule);
+        If Changed And (BeforeJson <> AfterJson) Then MarkDocDirtyByPath(Board.FileName);
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('board_path', Board.FileName) + ','
+            + JsonStr('rule_name', Rule.Name) + ','
+            + JsonInt('rule_kind', 51) + ','
+            + JsonBool('changed', BeforeJson <> AfterJson) + ','
+            + JsonRaw('before', BeforeJson) + ','
+            + JsonRaw('after', AfterJson)));
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 Function PcbOptionKind(Name : String) : String;
 Begin
     Result := '';
@@ -20308,6 +20459,7 @@ Begin
         'get_impedance_profiles':   Result := PCB_GetImpedanceProfiles(Params, RequestId);
         'editor_options':        Result := PCB_EditorOptions(Params, RequestId);
         'export_component_step': Result := PCB_ExportComponentStep(Params, RequestId);
+        'pair_impedance_rule':   Result := PCB_PairImpedanceRule(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
