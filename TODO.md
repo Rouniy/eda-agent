@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## Exact document save, 2026-10-27
+
+- Add an exact-path save command that reports a verified disk write without
+  closing/reopening the document. `app_reload_document` with
+  `save_before_close=true` is the currently verified exact-path route.
+- Investigate why `MarkDocDirtyByPath` does not make the modified flag true
+  for free PcbDocs after grid changes. Do not infer that modified=false
+  means native changes have been saved.
+
 ## Package equality acceptance, 2026-10-27
 
 - On a disposable populated PCB, compare two geometrically equal packages

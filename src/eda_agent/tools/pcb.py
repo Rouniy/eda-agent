@@ -7422,6 +7422,83 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_set_grids(
+        board_path: str,
+        snap_x: Optional[float] = None,
+        snap_y: Optional[float] = None,
+        track: Optional[float] = None,
+        via: Optional[float] = None,
+        visible: Optional[float] = None,
+        visible_big: Optional[float] = None,
+        dot_grid: Optional[bool] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Read or set PCB grids in mils on one exact PcbDoc.
+
+        Omitted values are unchanged. Component movement grids are returned
+        for inspection; Altium 26.11 follows the snap grid for those. A
+        change defaults to a dry-run plan. On an explicit write, all old
+        values are checked natively before any setter runs, then read back.
+        A changed grid remains in memory until an explicit save; on a free
+        PcbDoc, app_reload_document with save_before_close=true can save
+        that exact document and reopen it for persistence readback.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        requested = {"snap_x": snap_x, "snap_y": snap_y, "track": track,
+                     "via": via, "visible": visible, "visible_big": visible_big}
+        if any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+               for value in requested.values() if value is not None):
+            return {"ok": False, "reason": "grid sizes must be finite positive mils"}
+        if dot_grid is not None and type(dot_grid) is not bool:
+            return {"ok": False, "reason": "dot_grid must be boolean"}
+        bridge = get_bridge()
+        before = await bridge.send_command_async(
+            "pcb.set_grids", {"board_path": board_path}, timeout=120.0,
+        )
+        old = before.get("grids") if isinstance(before, dict) else None
+        if (not isinstance(before, dict)
+                or not isinstance(before.get("board_path"), str)
+                or before["board_path"].casefold() != board_path.casefold()
+                or not isinstance(old, dict)
+                or any(type(old.get(key)) not in (int, float)
+                       or not math.isfinite(old[key])
+                       for key in (*requested, "component_x", "component_y"))
+                or type(old.get("dot_grid")) is not bool):
+            return {"ok": False, "reason": "native grid read is incomplete or from another board",
+                    "native_reply": before}
+        changes = {key: value for key, value in requested.items() if value is not None}
+        if dot_grid is not None:
+            changes["dot_grid"] = dot_grid
+        if not changes:
+            return before
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "before": old, "would_set": changes}
+        params = {"board_path": board_path}
+        for key in requested:
+            params["expect_" + key] = repr(float(old[key]))
+        params["expect_dot_grid"] = "true" if old["dot_grid"] else "false"
+        for key, value in changes.items():
+            params[key] = ("true" if value else "false") if key == "dot_grid" else repr(float(value))
+        result = await bridge.send_command_async("pcb.set_grids", params, timeout=120.0)
+        actual = result.get("grids") if isinstance(result, dict) else None
+        if (not isinstance(result, dict)
+                or not isinstance(result.get("board_path"), str)
+                or result["board_path"].casefold() != board_path.casefold()
+                or result.get("wrote") is not True
+                or not isinstance(actual, dict)
+                or result.get("not_applied") != []
+                or any(type(actual.get(key)) not in (int, float)
+                       or abs(float(actual[key]) - float(value)) > 0.001
+                       for key, value in changes.items() if key != "dot_grid")
+                or ("dot_grid" in changes and actual.get("dot_grid") is not dot_grid)):
+            return {"ok": False, "reason": "board grid write was not fully verified",
+                    "native_reply": result}
+        result["save_required"] = bool(result.get("changed"))
+        return result
+
+    @mcp.tool()
     async def pcb_check_fab_output(
         directory: str,
         board_path: str,

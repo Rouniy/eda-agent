@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.18';
+    SCRIPT_VERSION = '2026.10.27.19';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -36154,6 +36154,188 @@ Begin
 End;
 
 {..............................................................................}
+Function PCB_GridMils(Board : IPCB_Board; Key : String) : Double;
+Begin
+    Result := -1;
+    If Key = 'snap_x' Then Result := CoordToMilsF(Board.SnapGridSizeX)
+    Else If Key = 'snap_y' Then Result := CoordToMilsF(Board.SnapGridSizeY)
+    Else If Key = 'track' Then Result := CoordToMilsF(Board.TrackGridSize)
+    Else If Key = 'via' Then Result := CoordToMilsF(Board.ViaGridSize)
+    Else If Key = 'visible' Then Result := CoordToMilsF(Board.VisibleGridSize)
+    Else If Key = 'visible_big' Then Result := CoordToMilsF(Board.BigVisibleGridSize);
+End;
+
+Function PCB_GridsJson(Board : IPCB_Board) : String;
+Begin
+    Result := JsonFloat('snap_x', PCB_GridMils(Board, 'snap_x')) + ','
+        + JsonFloat('snap_y', PCB_GridMils(Board, 'snap_y')) + ','
+        + JsonFloat('component_x', CoordToMilsF(Board.ComponentGridSizeX)) + ','
+        + JsonFloat('component_y', CoordToMilsF(Board.ComponentGridSizeY)) + ','
+        + JsonFloat('track', PCB_GridMils(Board, 'track')) + ','
+        + JsonFloat('via', PCB_GridMils(Board, 'via')) + ','
+        + JsonFloat('visible', PCB_GridMils(Board, 'visible')) + ','
+        + JsonFloat('visible_big', PCB_GridMils(Board, 'visible_big')) + ','
+        + JsonBool('dot_grid', Board.DrawDotGrid);
+End;
+
+{ Read or set the six writable board grids and visible-grid dot mode. }
+{ All new values and all old values are checked before changing anything. }
+Function PCB_SetGrids(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    ExpectedPath, Why, Keys, Key, ValueStr, OldStr, DotStr : String;
+    BeforeJson, AfterJson, NotApplied : String;
+    CommaPos : Integer;
+    Value, OldValue : Double;
+    Writing : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path is required');
+        Exit;
+    End;
+    Writing := False;
+    Keys := 'snap_x,snap_y,track,via,visible,visible_big';
+    While Keys <> '' Do
+    Begin
+        CommaPos := Pos(',', Keys);
+        If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+        Else Begin Key := Copy(Keys, 1, CommaPos - 1);
+            Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+        ValueStr := ExtractJsonValue(Params, Key);
+        If ValueStr = '' Then Continue;
+        Writing := True;
+        If Not IsFloatStr(ValueStr) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', Key + ' is not a number');
+            Exit;
+        End;
+        Value := StrToFloatDef(ValueStr, 0);
+        If Value <= 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', Key + ' must be positive');
+            Exit;
+        End;
+    End;
+    DotStr := LowerCase(ExtractJsonValue(Params, 'dot_grid'));
+    If DotStr <> '' Then
+    Begin
+        Writing := True;
+        If (DotStr <> 'true') And (DotStr <> 'false') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+                'dot_grid must be true or false');
+            Exit;
+        End;
+    End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    BeforeJson := PCB_GridsJson(Board);
+    If Writing Then
+    Begin
+        Keys := 'snap_x,snap_y,track,via,visible,visible_big';
+        While Keys <> '' Do
+        Begin
+            CommaPos := Pos(',', Keys);
+            If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+            Else Begin Key := Copy(Keys, 1, CommaPos - 1);
+                Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+            OldStr := ExtractJsonValue(Params, 'expect_' + Key);
+            If Not IsFloatStr(OldStr) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+                    'all six old grid values are required');
+                Exit;
+            End;
+            OldValue := StrToFloatDef(OldStr, -1);
+            If Abs(PCB_GridMils(Board, Key) - OldValue) > 0.001 Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+                    'board grid changed; read again before writing');
+                Exit;
+            End;
+        End;
+        OldStr := LowerCase(ExtractJsonValue(Params, 'expect_dot_grid'));
+        If (OldStr <> 'true') And (OldStr <> 'false') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+                'old dot_grid is required');
+            Exit;
+        End;
+        If Board.DrawDotGrid <> (OldStr = 'true') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+                'dot grid changed; read again before writing');
+            Exit;
+        End;
+    End;
+    NotApplied := '';
+    If Writing Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            Keys := 'snap_x,snap_y,track,via,visible,visible_big';
+            While Keys <> '' Do
+            Begin
+                CommaPos := Pos(',', Keys);
+                If CommaPos = 0 Then Begin Key := Keys; Keys := ''; End
+                Else Begin Key := Copy(Keys, 1, CommaPos - 1);
+                    Keys := Copy(Keys, CommaPos + 1, Length(Keys)); End;
+                ValueStr := ExtractJsonValue(Params, Key);
+                If ValueStr = '' Then Continue;
+                Value := StrToFloatDef(ValueStr, 0);
+                If Key = 'snap_x' Then Board.SnapGridSizeX := MilsToCoordF(Value)
+                Else If Key = 'snap_y' Then Board.SnapGridSizeY := MilsToCoordF(Value)
+                Else If Key = 'track' Then Board.TrackGridSize := MilsToCoordF(Value)
+                Else If Key = 'via' Then Board.ViaGridSize := MilsToCoordF(Value)
+                Else If Key = 'visible' Then Board.VisibleGridSize := MilsToCoordF(Value)
+                Else If Key = 'visible_big' Then Board.BigVisibleGridSize := MilsToCoordF(Value);
+                If Abs(PCB_GridMils(Board, Key) - Value) > 0.001 Then
+                Begin
+                    If NotApplied <> '' Then NotApplied := NotApplied + ',';
+                    NotApplied := NotApplied + '"' + Key + '"';
+                End;
+            End;
+            If DotStr <> '' Then
+            Begin
+                Board.DrawDotGrid := (DotStr = 'true');
+                If Board.DrawDotGrid <> (DotStr = 'true') Then
+                Begin
+                    If NotApplied <> '' Then NotApplied := NotApplied + ',';
+                    NotApplied := NotApplied + '"dot_grid"';
+                End;
+            End;
+        Finally
+            PCBServer.PostProcess;
+        End;
+    End;
+    AfterJson := PCB_GridsJson(Board);
+    If BeforeJson <> AfterJson Then
+    Begin
+        Try Board.ViewManager_FullUpdate; Except End;
+        MarkDocDirtyByPath(Board.FileName);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonBool('wrote', Writing) + ','
+        + JsonBool('changed', BeforeJson <> AfterJson) + ','
+        + JsonRaw('before', '{' + BeforeJson + '}') + ','
+        + JsonRaw('grids', '{' + AfterJson + '}') + ','
+        + JsonRaw('not_applied', '[' + NotApplied + ']')));
+End;
+
+{..............................................................................}
 { PCB_GetFabBoardFacts - one exact-board snapshot for fab package checks.    }
 { No outline rebuild and no capped object window.                          }
 {..............................................................................}
@@ -45588,6 +45770,7 @@ Begin
         'delete_xsignals':        Result := PCB_DeleteXSignals(Params, RequestId);
         'find_same_package':      Result := PCB_FindSamePackage(Params, RequestId);
         'net_display':            Result := PCB_NetDisplay(Params, RequestId);
+        'set_grids':              Result := PCB_SetGrids(Params, RequestId);
         'set_track_width':         Result := PCB_SetTrackWidth(Params, RequestId);
         'get_unrouted_nets':       Result := PCB_GetUnroutedNets(Params, RequestId);
         'rebuild_connectivity':    Result := PCB_RebuildConnectivity(Params, RequestId);

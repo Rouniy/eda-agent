@@ -2,6 +2,31 @@
 
 ## Source integration, 2026-10-27
 
+The `.19` source ports upstream's `pcb_set_grids` for six writable grid
+sizes and dot/line display, with exact PcbDoc targeting, validation of all
+new values before mutation, old-state preflight, a dry-run plan and
+readback. The Python reply marks changed settings `save_required=true`:
+native grid changes remained in memory when the scratch PcbDoc was closed
+without saving, even though `MarkDocDirtyByPath` ran and
+`app_get_active_document.modified` reported false. Three grid-tool tests
+pass; Pascal lint/build has zero errors/warnings. Altium 26.11.1.5
+loaded `.19` with zero cast errors. On a disposable board, snap X changed
+from 5 to 12.5 mil, track from 20 to 7.5 mil, component X followed snap,
+and dot-grid became false; an independent read matched. A wrong board path
+was refused. Exact `app_reload_document(save_before_close=true)` on a
+separate disposable board preserved a 14.5-mil snap grid across reopen.
+All scratch documents were closed and their files removed.
+
+During the persistence investigation, one `app_save_all` call wrote two
+documents, including the owner's `DC-DCmodule_DT11328.PcbDoc`, although
+the active-document modified flag was false. That file's write time became
+2026-10-27 12:28:19 local; its current length is 8,336,384 bytes and SHA256
+is `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+There is no pre-save hash, so content equivalence to the previous disk
+revision is unverified. The owner PCB is active and currently reports
+modified=false. Use the exact-path reload/save route for later scratch
+persistence checks; avoid broad Save All for this purpose.
+
 The `.18` source ports upstream's batch `pcb_net_display` for connection
 lines, loop removal, own net colour and jumper visibility. It requires an
 exact PcbDoc; the native handler resolves every net and checks all four

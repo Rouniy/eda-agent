@@ -1,4 +1,17 @@
-# Release verification: 2026.10.27.18
+# Release verification: 2026.10.27.19
+
+The `.19` grid tool covers snap X/Y, track, via, fine/coarse visible grids
+and dot mode. It checks every new number and the six old sizes plus dot
+mode before writing, defaults to a dry-run plan, and returns
+`save_required` for changed values. Three focused tests and Pascal
+lint/build pass. Altium loaded `.19` with zero cast errors. A disposable
+PcbDoc read back 12.5-mil snap X, 7.5-mil track grid and dot mode false;
+component X followed snap X. Exact-path reload with
+`save_before_close=true` preserved a separate 14.5-mil snap X across
+reopen. All scratch files were removed. A broad `app_save_all` used during
+this check also rewrote an owner's PcbDoc despite its modified flag being
+false; current file identity is recorded in CURRENT-STATE, and equality
+with its previous disk revision cannot be established.
 
 The `.18` net-display tool reads or sets four display flags across a
 batch of nets. A write checks the old four-bit state of every net before
