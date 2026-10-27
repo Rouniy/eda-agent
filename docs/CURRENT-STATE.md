@@ -2,6 +2,16 @@
 
 ## Source integration, 2026-10-27
 
+The `.12` source ports the remaining `mooreaa` placement styling: new ports,
+power ports, text frames and sheet entries use an explicit `font_id` or infer
+one from the sheet; a positive port `width` disables AutoSize before writing
+the width, with native readback in the reply; text-frame `\\n` and line breaks
+are normalized for Altium. A `Value` stamp now updates an existing first-level
+Value parameter alongside Comment, and newly created parameters are hidden
+at the component location. 70 related tests pass, three FPC-dependent tests
+skip, and Pascal lint/build passes. Native disposable-sheet acceptance and
+live `.12` reload are pending.
+
 The `.11` source ports the corrected `mooreaa` multipart placement and tidy
 step. `sch_place_components` accepts `part_id` per part and a `tidy` switch
 (on by default). The native handler writes the requested part before and

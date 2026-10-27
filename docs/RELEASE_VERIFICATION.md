@@ -1,4 +1,9 @@
-# Release verification: 2026.10.27.11
+# Release verification: 2026.10.27.12
+
+The `.12` font/width/newline/Value cleanup has source tests and Pascal
+lint/build. Native acceptance requires a disposable sheet with an established
+font, a fixed-width port, text frame, sheet symbol/entry and a component with
+an existing Value parameter. Three FPC tests skip locally.
 
 The `.11` multipart placement and tidy port has source tests and Pascal
 lint/build. Native acceptance must place several parts of a disposable

@@ -1714,6 +1714,7 @@ def register_generic_tools(mcp):
         io_type: str = "unspecified",
         side: str = "left",
         distance_from_top: int = 100,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a sheet entry port on an existing sheet symbol.
 
@@ -1727,6 +1728,7 @@ def register_generic_tools(mcp):
             io_type: "input" | "output" | "bidirectional" | "unspecified"
             side: "left" | "right" | "top" | "bottom"
             distance_from_top: Position along the chosen side in mils
+            font_id: Optional label font. Zero infers the sheet's font.
 
         Returns:
             Dictionary confirming sheet entry placement
@@ -1740,6 +1742,7 @@ def register_generic_tools(mcp):
                 "io_type": io_type,
                 "side": side,
                 "distance_from_top": str(distance_from_top),
+                "font_id": str(int(font_id)),
             },
         )
         return result
@@ -2091,6 +2094,8 @@ def register_generic_tools(mcp):
         style: str = "right",
         io_type: str = "bidirectional",
         sheet_path: str | None = None,
+        width: float = 0,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a port on the active schematic for inter-sheet connectivity.
 
@@ -2102,6 +2107,8 @@ def register_generic_tools(mcp):
             io_type: I/O direction, "unspecified", "output", "input", "bidirectional"
             sheet_path: Optional absolute target .SchDoc path. If omitted,
                 the active schematic is used.
+            width: Fixed width in mils; positive values disable AutoSize.
+            font_id: Optional font. Zero infers the sheet's port or label font.
 
         Returns:
             Dictionary confirming placement
@@ -2116,6 +2123,8 @@ def register_generic_tools(mcp):
                 "style": style,
                 "io_type": io_type,
                 "sheet_path": sheet_path or "",
+                "width": str(float(width)),
+                "font_id": str(int(font_id)),
             },
         )
         return result
@@ -2127,6 +2136,7 @@ def register_generic_tools(mcp):
         y: int,
         style: str = "circle",
         orientation: int = -1,
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a power port symbol (VCC, GND, etc.) on the active schematic.
 
@@ -2147,6 +2157,7 @@ def register_generic_tools(mcp):
                 point: 0=right, 1=up, 2=left, 3=down. Leave at -1 to let
                 the bridge decide by style: the three ground glyphs point
                 down, the supply glyphs (circle, arrow, bar, wave) point up.
+            font_id: Optional font. Zero infers the sheet's font.
 
         Returns:
             Dictionary confirming placement
@@ -2167,6 +2178,7 @@ def register_generic_tools(mcp):
                 "y": str(y),
                 "style": style,
                 "orientation": str(int(orientation)),
+                "font_id": str(int(font_id)),
             },
         )
         return result
@@ -2689,6 +2701,7 @@ def register_generic_tools(mcp):
         y2: int,
         text: str,
         align: str = "left",
+        font_id: int = 0,
     ) -> dict[str, Any]:
         """Place a multi-line text frame (note block) on the active sheet.
 
@@ -2699,6 +2712,7 @@ def register_generic_tools(mcp):
             x1, y1, x2, y2: The two rectangle corners in mils.
             text: Frame contents (use \\n for line breaks).
             align: Horizontal alignment "left", "center", or "right".
+            font_id: Optional font. Zero infers the sheet's font.
 
         Returns:
             Dict confirming placement and the frame corners.
@@ -2713,6 +2727,7 @@ def register_generic_tools(mcp):
                 "y2": str(y2),
                 "text": text,
                 "align": align,
+                "font_id": str(int(font_id)),
             },
         )
 

@@ -60,6 +60,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | `mooreaa` `053aff9` through `fc22136` (placement model choice) | Select a named PCB model the library symbol already carries on single and bulk placement, verify all current flags and restore them on failure | Focused source tests and Pascal lint/build; native disposable-sheet acceptance pending |
 | `mooreaa` `3d5817f` through `fc22136` (Footprint stamps) | Choose an existing model on single/bulk Footprint parameter writes before fallback rename; refuse unloaded explicit batch sheets | 52 related tests, Pascal lint/build and loaded `.10` runtime; native multi-model acceptance pending |
 | `mooreaa` `dc36b7e`–`fc22136` (multipart placement and tidy) | Place an explicit sub-part, verify its sheet state and report issues; link the library, hide inherited model parameters and adopt the sheet designator font | 65 related tests, Pascal lint/build and loaded `.11` runtime; native multipart-sheet acceptance pending |
+| `mooreaa` `dc36b7e`–`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests and Pascal lint/build; native disposable-sheet acceptance pending |
 
 After the source build, the live HTTP MCP endpoint reported 622 tools and
 `app_ping` confirmed loaded/bundled script `2026.10.27.1` on Altium
@@ -85,7 +86,7 @@ automatic pass from the current partial reads.
 | MOREmbedded `84b682c`, upstream `5db72f2` | Edit 3D bodies and rotate complete footprints | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews and natively qualify the restored footprint reader and model association | Verify against a disposable PcbLib and an isolated output directory |
 | MOREmbedded `pcb_check_fab_output` | Compare exported fab package with one exact board | Eliminate the 5000-pad cap and reject incomplete/mismatched reads |
-| `mooreaa` `dc36b7e` through `fc22136` | Remaining port/power/text/entry placement cleanup, Value parameter handling and other relink paths | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
+| `mooreaa` `dc36b7e` through `fc22136` | Remaining relink paths and native acceptance of placement/parameter ports | Use final corrected handlers; verify exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This
 table tracks next implementation batches, not a claim that the listed source

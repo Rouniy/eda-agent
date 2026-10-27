@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.11';
+    SCRIPT_VERSION = '2026.10.27.12';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -45188,6 +45188,16 @@ End;
 
 { The font a new object should take: font_id when the caller gave one,
   otherwise the sheet's own font for that kind. 0 = leave Altium's default. }
+Function PlacementFontId(SchDoc : ISch_Document; Kind : Integer;
+    Params : String) : Integer;
+Var
+    Inferred : Integer;
+Begin
+    Result := StrToIntDef(ExtractJsonValue(Params, 'font_id'), 0);
+    If Result > 0 Then Exit;
+    If InferSheetFontFor(SchDoc, Kind, Inferred) Then
+        Result := Inferred;
+End;
 
 Function UnsupportedSchProperty(Obj : ISch_GraphicalObject; SetStr : String) : String;
 Var
@@ -50307,6 +50317,7 @@ Var
     Entry : ISch_SheetEntry;
     SheetNameStr, EntryName, IOStr, SideStr, ThisName : String;
     DistFromTop, WantSide, GotSide, GotDist, GotX, GotY : Integer;
+    FontToUse, GotFont : Integer;
     Found, Placed : Boolean;
 Begin
     SheetNameStr := ExtractJsonValue(Params, 'sheet_name');
@@ -50366,6 +50377,8 @@ Begin
         Exit;
     End;
 
+    FontToUse := PlacementFontId(SchDoc, eSheetEntry, Params);
+
     Entry := SchServer.SchObjectFactory(eSheetEntry, eCreate_Default);
     If Entry = Nil Then
     Begin
@@ -50413,6 +50426,10 @@ Begin
 
     Try Entry.Side := WantSide; Except End;
     Try Entry.DistanceFromTop := MilsToCoord(DistFromTop); Except End;
+    If FontToUse > 0 Then
+    Begin
+        Try Entry.TextFontID := FontToUse; Except End;
+    End;
 
     SchRegisterObject(Sym, Entry);
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
@@ -50425,6 +50442,8 @@ Begin
     GotDist := -1;
     Try GotSide := Entry.Side; Except End;
     Try GotDist := CoordToMils(Entry.DistanceFromTop); Except End;
+    GotFont := 0;
+    Try GotFont := Entry.TextFontID; Except End;
     GotX := 0;
     GotY := 0;
     Try
@@ -50453,6 +50472,7 @@ Begin
             JsonInt('requested_distance_from_top', DistFromTop) + ',' +
             JsonInt('actual_side', GotSide) + ',' +
             JsonInt('actual_distance_from_top', GotDist) + ',' +
+            JsonInt('font_id', GotFont) + ',' +
             JsonInt('x', GotX) + ',' +
             JsonInt('y', GotY) + ',' +
             JsonStr('note', 'x and y are read back from the placed entry. '
@@ -51615,7 +51635,9 @@ End;
 Function Gen_PlacePort(Params : String; RequestId : String) : String;
 Var
     Name, StyleStr, IOTypeStr, SheetPath : String;
-    X, Y, SepPos : Integer;
+    X, Y, SepPos, FontToUse, GotFont, GotWidth : Integer;
+    WantWidth : Double;
+    GotAuto : Boolean;
     SchDoc : ISch_Document;
     SchPort : ISch_Port;
 Begin
@@ -51625,6 +51647,7 @@ Begin
     StyleStr := ExtractJsonValue(Params, 'style');
     IOTypeStr := ExtractJsonValue(Params, 'io_type');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
+    WantWidth := StrToFloatDef(ExtractJsonValue(Params, 'width'), 0);
 
     { Backward-compatible transport for Python MCP processes whose published
       schema predates sheet_path: "PORTNAME@@C:\path\sheet.SchDoc". }
@@ -51654,6 +51677,8 @@ Begin
         Exit;
     End;
 
+    FontToUse := PlacementFontId(SchDoc, ePort, Params);
+
     SchPort := SchServer.SchObjectFactory(ePort, eCreate_Default);
     If SchPort = Nil Then
     Begin
@@ -51676,11 +51701,28 @@ Begin
     Else If IOTypeStr = 'bidirectional' Then SchPort.IOType := ePortBidirectional
     Else SchPort.IOType := ePortUnspecified;
 
+    If FontToUse > 0 Then
+        Try SchPort.FontId := FontToUse; Except End;
+    { AutoSize recomputes Width on redraw. Set the font first, disable it,
+      then assign the requested fixed width. }
+    If WantWidth > 0 Then
+    Begin
+        Try SchPort.AutoSize := False; Except End;
+        Try SchPort.Width := MilsToCoordF(WantWidth); Except End;
+    End;
+
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(SchPort);
     SchRegisterObject(SchDoc, SchPort);
     SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
+
+    GotFont := 0;
+    GotWidth := 0;
+    GotAuto := True;
+    Try GotFont := SchPort.FontId; Except End;
+    Try GotWidth := CoordToMils(SchPort.Width); Except End;
+    Try GotAuto := SchPort.AutoSize; Except End;
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
       the rest of Altium is concerned. SmartCompile skips its recompile
@@ -51692,7 +51734,9 @@ Begin
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"name":"' + EscapeJsonString(Name) +
-        '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
+        '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+        + JsonInt('font_id', GotFont) + ',' + JsonInt('width', GotWidth) + ','
+        + JsonBool('auto_size', GotAuto) + '}');
 End;
 
 {..............................................................................}
@@ -51703,7 +51747,7 @@ End;
 Function Gen_PlacePowerPort(Params : String; RequestId : String) : String;
 Var
     Text, StyleStr, SheetPath : String;
-    X, Y, OrientationVal : Integer;
+    X, Y, OrientationVal, FontToUse, GotFont : Integer;
     SchDoc : ISch_Document;
     PowerObj : ISch_PowerObject;
     Loc : TLocation;
@@ -51753,6 +51797,7 @@ Begin
         End;
     End;
 
+    FontToUse := PlacementFontId(SchDoc, ePowerObject, Params);
     PowerObj := SchServer.SchObjectFactory(ePowerObject, eCreate_Default);
     If PowerObj = Nil Then
     Begin
@@ -51766,6 +51811,10 @@ Begin
     PowerObj.Location := Loc;
     PowerObj.Text := Text;
     PowerObj.ShowNetName := True;
+    If FontToUse > 0 Then
+    Begin
+        Try PowerObj.FontId := FontToUse; Except End;
+    End;
 
     // Style: circle, arrow, bar, wave, gnd_power, gnd_signal, gnd_earth
     If StyleStr = 'arrow' Then PowerObj.Style := ePowerArrow
@@ -51799,9 +51848,13 @@ Begin
         If SrvDoc <> Nil Then SrvDoc.SetModified(True);
     Except End;
 
+    GotFont := 0;
+    Try GotFont := PowerObj.FontId; Except End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"text":"' + EscapeJsonString(Text) +
-        '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + '}');
+        '","x":' + IntToStr(X) + ',"y":' + IntToStr(Y) + ','
+        + JsonInt('font_id', GotFont) + '}');
 End;
 
 {..............................................................................}
@@ -53619,6 +53672,34 @@ End;
 
 { Set (or create) a component parameter. Returns True if created, False if     }
 { modified. Caller is responsible for PreProcess/PostProcess on the document. }
+Function SetExistingCompParamText(Comp : ISch_Component; ParamName, ParamValue : String) : Boolean;
+Var
+    Iter : ISch_Iterator;
+    Param : ISch_Parameter;
+Begin
+    Result := False;
+    Iter := Comp.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eParameter));
+        Iter.SetState_IterationDepth(eIterateFirstLevel);
+        Param := Iter.FirstSchObject;
+        While Param <> Nil Do
+        Begin
+            If UpperCase(Param.Name) = UpperCase(ParamName) Then
+            Begin
+                SchBeginModify(Param);
+                Try Param.Text := ParamValue; Except End;
+                SchEndModify(Param);
+                Result := True;
+                Break;
+            End;
+            Param := Iter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(Iter);
+    End;
+End;
+
 Function SetCompParamText(Comp : ISch_Component; ParamName, ParamValue : String) : Boolean;
 Var
     Iter : ISch_Iterator;
@@ -53657,6 +53738,8 @@ Begin
         Begin
             NewParam.Name := ParamName;
             NewParam.Text := ParamValue;
+            Try NewParam.IsHidden := True; Except End;
+            Try NewParam.Location := Comp.Location; Except End;
             Comp.AddSchObject(NewParam);
             SchRegisterObject(Comp, NewParam);
             Result := True;
@@ -54028,10 +54111,12 @@ Begin
             If Val = '' Then Continue;  { skip empty values }
             If Key = 'Value' Then
             Begin
-                { Convention: Value -> Comment.Text, NOT a Parameter. }
+                { Comment is the visible value; update an existing Value
+                  parameter as well so it does not retain a stale token. }
                 SchBeginModify(TargetComp.Comment);
                 Try TargetComp.Comment.Text := Val; Except End;
                 SchEndModify(TargetComp.Comment);
+                SetExistingCompParamText(TargetComp, 'Value', Val);
                 Inc(Applied);
             End
             Else If Key = 'Footprint' Then
@@ -55780,6 +55865,7 @@ Begin
                                         SchBeginModify(Comp.Comment);
                                         Try Comp.Comment.Text := Val; Except End;
                                         SchEndModify(Comp.Comment);
+                                        SetExistingCompParamText(Comp, 'Value', Val);
                                     End
                                     Else If Key = 'Footprint' Then
                                     Begin
@@ -57538,7 +57624,7 @@ End;
 
 Function Gen_PlaceTextFrame(Params : String; RequestId : String) : String;
 Var
-    X1, Y1, X2, Y2, TmpI : Integer;
+    X1, Y1, X2, Y2, TmpI, FontToUse, GotFont : Integer;
     SchDoc : ISch_Document;
     TF : ISch_TextFrame;
     TextStr, AlignStr : String;
@@ -57549,6 +57635,10 @@ Begin
     Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
     TextStr := ExtractJsonValue(Params, 'text');
     AlignStr := LowerCase(ExtractJsonValue(Params, 'align'));
+    TextStr := StringReplace(TextStr, '\' + 'n', #10, -1);
+    TextStr := StringReplace(TextStr, #13 + #10, #10, -1);
+    TextStr := StringReplace(TextStr, #13, #10, -1);
+    TextStr := StringReplace(TextStr, #10, #13 + #10, -1);
     If X1 > X2 Then Begin TmpI := X1; X1 := X2; X2 := TmpI; End;
     If Y1 > Y2 Then Begin TmpI := Y1; Y1 := Y2; Y2 := TmpI; End;
 
@@ -57558,6 +57648,8 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
         Exit;
     End;
+
+    FontToUse := PlacementFontId(SchDoc, eTextFrame, Params);
 
     TF := SchServer.SchObjectFactory(eTextFrame, eCreate_Default);
     If TF = Nil Then
@@ -57579,6 +57671,10 @@ Begin
     Begin Try TF.Alignment := eRightAlign; Except End; End
     Else
     Begin Try TF.Alignment := eLeftAlign; Except End; End;
+    If FontToUse > 0 Then
+    Begin
+        Try TF.FontId := FontToUse; Except End;
+    End;
 
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(TF);
@@ -57594,9 +57690,12 @@ Begin
       the file and still listed as violations until the project was
       reopened. }
     If SchDoc <> Nil Then MarkDocDirtyByPath(SchDoc.DocumentName);
+    GotFont := 0;
+    Try GotFont := TF.FontId; Except End;
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
-        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + '}');
+        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
+        + JsonInt('font_id', GotFont) + '}');
 End;
 
 {..............................................................................}
