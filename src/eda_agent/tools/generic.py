@@ -1165,6 +1165,9 @@ def register_generic_tools(mcp):
         or more parameters. Special keys allowed:
           - ``Value``, ``Comment``, ``Manufacturer``, ``MPN``,
             ``Footprint``, ``Description``, ``HelpURL``, etc.
+            ``Footprint`` selects an existing PCB model on the component;
+            only a component without that named model has its current one
+            renamed. Failed selections appear in ``footprints_not_applied``.
           - Custom parameters: any key name. Unknown parameters are
             CREATED if they don't already exist on the component.
 
@@ -1174,14 +1177,14 @@ def register_generic_tools(mcp):
                 ``[{"designator": "R1", "Value": "10k",
                 "Manufacturer": "Yageo", "MPN": "RC0603FR-0710KL"},
                 {"designator": "C5", "Value": "100nF"}]``
-            sheet_path: Optional explicit SchDoc path. Empty uses the
-                currently-focused schematic.
+            sheet_path: Optional explicit open SchDoc path. Empty uses the
+                currently-focused schematic; an unloaded explicit path is
+                refused.
 
         Returns:
-            Dict with ``{updated, failed, total}``. ``updated`` is the
-            count of components whose parameters were touched;
-            ``failed`` is the count of stamps that couldn't be applied
-            (designator not found, parameter not settable, etc).
+            Dict with ``{updated, failed, total, footprints_applied,
+            footprints_not_applied}``. ``updated`` counts matched components;
+            a Footprint failure is reported separately.
         """
         # Encode the list-of-dicts into the Pascal handler's expected
         # wire format: stamps separated by `~~`, fields within a stamp

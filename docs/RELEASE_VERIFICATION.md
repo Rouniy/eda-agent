@@ -1,4 +1,9 @@
-# Release verification: 2026.10.27.9
+# Release verification: 2026.10.27.10
+
+The `.10` Footprint stamp port chooses an existing model before falling back
+to a rename, counts failed stamps and refuses an unloaded explicit batch
+sheet. Source tests and Pascal lint/build pass. Native stamps on a disposable
+multi-model component are pending.
 
 The `.9` placement port chooses a named model already carried by the
 symbol, verifies all `IsCurrent` flags and reports a missing or failed

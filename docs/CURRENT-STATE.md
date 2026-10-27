@@ -2,15 +2,23 @@
 
 ## Source integration, 2026-10-27
 
+The `.10` source routes single/bulk `Footprint` stamps through the verified
+model chooser before any fallback rename. A component that already carries
+the requested model switches to it rather than duplicating its name and
+keeping the previous model's pin map. A failed choice is counted separately.
+Bulk parameter stamping now refuses an explicitly named sheet that is not
+loaded rather than falling through to the focused document. Pascal lint/build
+and focused tests pass; live reload and native sheet acceptance are pending.
+
 The `.9` source ports the `mooreaa` footprint-model chooser to single and
 bulk schematic placement. A requested footprint is matched against the
 symbol's own PCB models; the helper clears other current flags, sets the
 requested one, verifies every flag and restores the originals if it fails.
 Placement reports a missing or unapplied model without silently renaming
 another one. Pascal lint/build and focused source tests pass. The remaining
-model-name stamp/relink handlers still rename the current implementation and
-need the same chooser. Live `.9` reload and native disposable-sheet checks
-are pending.
+model-name stamp handlers were subsequently updated in `.10`; other relink
+paths remain under review. Live `.9` loaded with `version_match=true` on
+Altium `26.11.1.5`, and native disposable-sheet checks remain pending.
 
 The `.8` source adds `mooreaa`'s placed-component `DisplayMode`,
 `DisplayModeCount` and current `FootprintPinMap` property handling. Reads and

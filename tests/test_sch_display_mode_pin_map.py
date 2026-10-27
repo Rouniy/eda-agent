@@ -52,6 +52,25 @@ def test_placement_chooses_its_own_model_and_reports_failures():
     assert '"footprint_issues":[' in batch
 
 
+def test_footprint_stamp_selects_existing_model_before_renaming():
+    source = _source()
+    helper = _routine(source, "SetPlacedFootprintName")
+    choose = helper.index("ChooseFootprintModel(Comp, NewName, Before, After)")
+    rename = helper.index("Target.ModelName := NewName")
+    assert choose < helper.index("If Choice <> 0 Then") < rename
+    assert "Result := (Choice = 1)" in helper
+    assert "Target.ModelName := NewName" in helper
+    for name in ("Gen_SetSchComponentParameters",
+                 "Gen_SetSchComponentsParameters"):
+        body = _routine(source, name)
+        assert "SetPlacedFootprintName(" in body
+        assert "Impl.ModelName := Val" not in body
+    batch = _routine(source, "Gen_SetSchComponentsParameters")
+    assert "SHEET_NOT_LOADED" in batch
+    assert '"footprints_applied":' in batch
+    assert '"footprints_not_applied":' in batch
+
+
 def test_pin_map_parser_and_merge_check_run_in_pascal(tmp_path):
     fpc = shutil.which("fpc")
     if not fpc:

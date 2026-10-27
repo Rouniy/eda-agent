@@ -8835,9 +8835,92 @@ End;
 { optional fields. Returns the count of fields applied.                          }
 {..............................................................................}
 
+Function SetPlacedFootprintName(Comp : ISch_Component; NewName : String;
+    Var Before : String; Var After : String) : Boolean;
+Var
+    ImplIter : ISch_Iterator;
+    Impl, Target, FirstFp : ISch_Implementation;
+    Link : ISch_ModelDatafileLink;
+    MT : String;
+    IsCur : Boolean;
+    J, LinkCount, Choice : Integer;
+Begin
+    Result := False;
+    Before := '';
+    After := '';
+    Choice := ChooseFootprintModel(Comp, NewName, Before, After);
+    If Choice <> 0 Then
+    Begin
+        Result := (Choice = 1);
+        Exit;
+    End;
+    Target := Nil;
+    FirstFp := Nil;
+    ImplIter := Comp.SchIterator_Create;
+    Try
+        ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+        Impl := ImplIter.FirstSchObject;
+        While Impl <> Nil Do
+        Begin
+            MT := '';
+            Try MT := Impl.ModelType; Except End;
+            If UpperCase(MT) = 'PCBLIB' Then
+            Begin
+                If FirstFp = Nil Then FirstFp := Impl;
+                IsCur := False;
+                Try IsCur := Impl.IsCurrent; Except End;
+                If IsCur Then
+                Begin
+                    Target := Impl;
+                    Break;
+                End;
+            End;
+            Impl := ImplIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(ImplIter);
+    End;
+    If Target = Nil Then Target := FirstFp;
+    If Target = Nil Then Exit;
+
+    Try Before := Target.ModelName; Except End;
+    SchBeginModify(Target);
+    Try Target.ModelName := NewName; Except End;
+    LinkCount := 0;
+    Try LinkCount := Target.DatafileLinkCount; Except LinkCount := 0; End;
+    For J := 0 To LinkCount - 1 Do
+    Begin
+        Link := Nil;
+        Try Link := Target.DatafileLink[J]; Except End;
+        If Link <> Nil Then
+            Try Link.EntityName := NewName; Except End;
+    End;
+    SchEndModify(Target);
+    Try After := Target.ModelName; Except End;
+    Result := (After = NewName);
+End;
+
+{..............................................................................}
+{ Gen_SetSchComponentParameters - Stamp BOM/value/footprint metadata onto a      }
+{ placed schematic component.                                                    }
+{                                                                                }
+{ Params: designator, sheet_path, parameters (JSON sub-object).                  }
+{                                                                                }
+{ For each (name, value) entry in parameters:                                    }
+{   - "Value" writes to Comp.Comment.Text (convention: Comment field IS Value). }
+{   - "Footprint" repoints the footprint model (SetPlacedFootprintName) and     }
+{     counts only when the model reads back the new name.                       }
+{   - everything else is a regular ISch_Parameter on the component, modified    }
+{     in place if present, created via SchObjectFactory(eParameter) otherwise.  }
+{                                                                                }
+{ Empty values are skipped, so the caller can send a single payload with        }
+{ optional fields. Returns the count of fields applied.                          }
+{..............................................................................}
+
 Function Gen_SetSchComponentParameters(Params : String; RequestId : String) : String;
 Var
     DesigStr, SheetPath, SubObj, Key, Val, FootprintLibStr, FootprintStr : String;
+    FpBefore, FpAfter : String;
     SchDoc : ISch_Document;
     Iter, ImplIter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
@@ -8847,6 +8930,7 @@ Var
     Found : Boolean;
     P, Applied, Created, J, LinkCount : Integer;
     SrvDoc : IServerDocument;
+    FpOk : Boolean;
 Begin
     DesigStr := ExtractJsonValue(Params, 'designator');
     SheetPath := ExtractJsonValue(Params, 'sheet_path');
@@ -8930,6 +9014,9 @@ Begin
     SchServer.ProcessControl.PreProcess(SchDoc, '');
     Applied := 0;
     Created := 0;
+    FpOk := False;
+    FpBefore := '';
+    FpAfter := '';
     P := 1;
     Try
         { Top-level form is intentionally supported for automation callers: }
@@ -8971,33 +9058,9 @@ Begin
         End;
         If FootprintStr <> '' Then
         Begin
-            ImplIter := TargetComp.SchIterator_Create;
-            Try
-                ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
-                Impl := ImplIter.FirstSchObject;
-                While Impl <> Nil Do
-                Begin
-                    If UpperCase(Impl.ModelType) = 'PCBLIB' Then
-                    Begin
-                        SchBeginModify(Impl);
-                        Try Impl.ModelName := FootprintStr; Except End;
-                        LinkCount := 0;
-                        Try LinkCount := Impl.DatafileLinkCount; Except End;
-                        For J := 0 To LinkCount - 1 Do
-                        Begin
-                            Link := Nil;
-                            Try Link := Impl.DatafileLink[J]; Except End;
-                            If Link <> Nil Then
-                                Try Link.EntityName := FootprintStr; Except End;
-                        End;
-                        SchEndModify(Impl);
-                    End;
-                    Impl := ImplIter.NextSchObject;
-                End;
-            Finally
-                TargetComp.SchIterator_Destroy(ImplIter);
-            End;
-            Inc(Applied);
+            FpOk := SetPlacedFootprintName(TargetComp, FootprintStr,
+                FpBefore, FpAfter);
+            If FpOk Then Inc(Applied);
         End;
         While NextJsonObjectField(SubObj, P, Key, Val) Do
         Begin
@@ -9012,28 +9075,9 @@ Begin
             End
             Else If Key = 'Footprint' Then
             Begin
-                { CurrentFootprintModelName is read-only in DelphiScript      }
-                { but the owned implementation's ModelName is writable. Walk  }
-                { the placed component's implementations and update the first }
-                { PCB model in place so compile/BOM/ECO see the new footprint. }
-                Impl := Nil;
-                ImplIter := TargetComp.SchIterator_Create;
-                Try
-                    ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
-                    Impl := ImplIter.FirstSchObject;
-                    While Impl <> Nil Do
-                    Begin
-                        If UpperCase(Impl.ModelType) = 'PCBLIB' Then Break;
-                        Impl := ImplIter.NextSchObject;
-                    End;
-                Finally
-                    TargetComp.SchIterator_Destroy(ImplIter);
-                End;
-                If Impl <> Nil Then
-                Begin
-                    Try Impl.ModelName := Val; Except End;
-                    Inc(Applied);
-                End;
+                FpOk := SetPlacedFootprintName(TargetComp, Val,
+                    FpBefore, FpAfter);
+                If FpOk Then Inc(Applied);
             End
             Else If Key = 'FootprintLibrary' Then
             Begin
@@ -9096,7 +9140,10 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"designator":"' + EscapeJsonString(DesigStr) + '",'
         + '"applied":' + IntToStr(Applied) + ','
-        + '"created":' + IntToStr(Created) + '}');
+        + '"created":' + IntToStr(Created) + ','
+        + '"footprint_applied":' + BoolToJsonStr(FpOk) + ','
+        + '"footprint_before":"' + EscapeJsonString(FpBefore) + '",'
+        + '"footprint_after":"' + EscapeJsonString(FpAfter) + '"}');
 End;
 
 {..............................................................................}
@@ -10535,12 +10582,12 @@ End;
 Function Gen_SetSchComponentsParameters(Params : String; RequestId : String) : String;
 Var
     StampsStr, SheetPath, Op, Remaining : String;
-    OpCount, Updated, Failed, OpIdx : Integer;
+    FpBefore, FpAfter, FpNotApplied : String;
+    OpCount, Updated, Failed, OpIdx, FpApplied : Integer;
     SchDoc : ISch_Document;
-    Iter, ImplIter : ISch_Iterator;
+    Iter : ISch_Iterator;
     Obj : ISch_GraphicalObject;
     Comp : ISch_Component;
-    Impl : ISch_Implementation;
     DesigList : TStringList;
     OpsList : TStringList;
     OpStr, FieldStr, Key, Val : String;
@@ -10558,7 +10605,15 @@ Begin
 
     SchDoc := Nil;
     If SheetPath <> '' Then
+    Begin
         Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_NOT_LOADED',
+                'No SchDoc loaded at ' + SheetPath + '. Open it first.');
+            Exit;
+        End;
+    End;
     If SchDoc = Nil Then
         SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then
@@ -10589,6 +10644,8 @@ Begin
 
         Updated := 0;
         Failed := 0;
+        FpApplied := 0;
+        FpNotApplied := '';
 
         SchServer.ProcessControl.PreProcess(SchDoc, '');
         Try
@@ -10632,32 +10689,16 @@ Begin
                                     End
                                     Else If Key = 'Footprint' Then
                                     Begin
-                                        { Rename only the FIRST PCBLIB model.  }
-                                        { Renaming every implementation makes  }
-                                        { a multi-model part collapse to one   }
-                                        { name and the ECO then reports the    }
-                                        { footprint as ambiguous. The ordinary }
-                                        { Footprint parameter is deliberately  }
-                                        { NOT written: when both it and        }
-                                        { ModelName carry a value Altium emits }
-                                        { a duplicate-footprint ECO error.     }
-                                        Impl := Nil;
-                                        ImplIter := Comp.SchIterator_Create;
-                                        Try
-                                            ImplIter.AddFilter_ObjectSet(
-                                                MkSet(eImplementation));
-                                            Impl := ImplIter.FirstSchObject;
-                                            While Impl <> Nil Do
-                                            Begin
-                                                If UpperCase(Impl.ModelType) =
-                                                    'PCBLIB' Then Break;
-                                                Impl := ImplIter.NextSchObject;
-                                            End;
-                                        Finally
-                                            Comp.SchIterator_Destroy(ImplIter);
+                                        If SetPlacedFootprintName(Comp, Val,
+                                                FpBefore, FpAfter) Then
+                                            Inc(FpApplied)
+                                        Else
+                                        Begin
+                                            If FpNotApplied <> '' Then
+                                                FpNotApplied := FpNotApplied + ',';
+                                            FpNotApplied := FpNotApplied
+                                                + Comp.Designator.Text;
                                         End;
-                                        If Impl <> Nil Then
-                                            Try Impl.ModelName := Val; Except End;
                                     End
                                     Else
                                         SetCompParamText(Comp, Key, Val);
@@ -10690,7 +10731,9 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"updated":' + IntToStr(Updated) +
         ',"failed":' + IntToStr(Failed) +
-        ',"total":' + IntToStr(OpCount) + '}');
+        ',"total":' + IntToStr(OpCount) +
+        ',"footprints_applied":' + IntToStr(FpApplied) +
+        ',"footprints_not_applied":"' + EscapeJsonString(FpNotApplied) + '"}');
 End;
 
 {..............................................................................}
