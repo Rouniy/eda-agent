@@ -3516,6 +3516,17 @@ remote-tracking refs; all 117 refs then matched their live tips. The
 `andrzej-sikora-elte/elte` branch contributed generic reads of
 `UseDBTableName`, `UseLibraryName` and `FootprintModel` on placed schematic
 components. The footprint read uses the existing typed implementation
-iterator and returns a name only when that model is current. Script `.61`
-has source tests and Pascal lint/build; these three reads have not yet
-been exercised in the Altium VM on a database-linked test component.
+iterator and returns a name only when that model is current. The first native
+query with script `.61` exposed an old call to an undefined
+`SchDocByPathLoading`; after that was replaced with an exact, loaded-document
+lookup, the same query exposed an uninitialized `SymbolRef` read in the
+schematic object loop. Script `.62` removes the dead read. Altium 26.11.1.5
+then answered `generic.query_objects` on an exact, already loaded DCDC
+schematic path with two placed components, `unknown_count=0`,
+`failed_count=0`, and `unreadable_count=0`. R13 returned
+`UseDBTableName=true`, `UseLibraryName=true`, and
+`FootprintModel=RESC640X320X80L95`; U4 returned the same two flags and
+`FootprintModel=SON9P80_400X400X80L52X30T300X220`. This was a read-only
+query; the source sheet was not saved or changed. Pascal lint/build reported
+12 files and zero errors or warnings; the selected Python regression suite
+reported 37 passed and one skipped.

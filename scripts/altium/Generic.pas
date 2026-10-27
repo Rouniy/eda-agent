@@ -2887,7 +2887,6 @@ Var
     First : Boolean;
     MaxIter, LastAddr, ThisAddr, SameTries : Integer;
     DeadPins : TStringList;
-    SymbolRef : String;
     PinObj : ISch_Pin;
 Begin
     Result := '';
@@ -3151,9 +3150,6 @@ Begin
                     ObjJson := '{"_doc":"' + EscapeJsonString(DocPath) + '"}'
                 Else
                     ObjJson := Copy(ObjJson, 1, 1) + '"_doc":"' + EscapeJsonString(DocPath) + '",' + Copy(ObjJson, 2, Length(ObjJson));
-                { Which symbol answered, so a caller can tell. }
-                If SymbolRef <> '' Then
-                    ObjJson := Copy(ObjJson, 1, 1) + '"_symbol":"' + EscapeJsonString(SymbolRef) + '",' + Copy(ObjJson, 2, Length(ObjJson));
                 If Not First Then Result := Result + ',';
                 First := False;
                 Result := Result + ObjJson;
@@ -3375,11 +3371,10 @@ Begin
         Exit;
     End;
 
-    // Do NOT RunProcess Client:OpenDocument, that loads the file but
-    // strips any project association, producing a "free document" in the
-    // UI with the full path as its tab title. SchDocByPathLoading opens it
-    // through the Client API, which keeps the membership.
-    SchDoc := SchDocByPathLoading(DocPath);
+    // Resolve only an already loaded sheet. An implicit open here can
+    // change project membership and focus while the caller expects a
+    // query on its exact document path.
+    SchDoc := LoadedSchDocByPath(DocPath);
     If SchDoc = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
@@ -5479,7 +5474,7 @@ Begin
         Exit;
     End;
 
-    If DocPath <> '' Then SchDoc := SchDocByPathLoading(DocPath)
+    If DocPath <> '' Then SchDoc := LoadedSchDocByPath(DocPath)
     Else SchDoc := SchServer.GetCurrentSchDocument;
 
     If SchDoc = Nil Then
@@ -7934,7 +7929,7 @@ Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
 
     If FilePath <> '' Then
-        SchDoc := SchDocByPathLoading(FilePath)
+        SchDoc := LoadedSchDocByPath(FilePath)
     Else
         SchDoc := SchServer.GetCurrentSchDocument;
 

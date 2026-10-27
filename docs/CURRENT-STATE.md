@@ -12,21 +12,20 @@ There are zero newer upstream commits outside our history. The direct child
 fork `MOREmbedded/main` is `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`;
 its 33 divergent commits are Git ancestry, not a count of missing features.
 
-Script source and generated bundle are `.60`; bundle SHA-256 is
-`1E85E72F6F31E09A78B3FED79BC266431499AC850927AF68D7C022C8D4D86FF2`.
+Script source and generated bundle are `.62`; see `git hash-object
+scripts/altium/Altium_MCP.pas` for the current exact bundle identity.
 Via tenting with an exact-board plan persisted on an isolated PcbDoc after
 save, close and reopen in Altium 26.11.1.5. The loaded script answered
-`application.ping` as `.60` and `pcb.focus_board` on the open isolated board.
-After that acceptance run Altium was no longer running when checked;
-port 14701 still served the Python MCP (748 tools, including the updated
-via-tenting schema) and TCP relay 14700 still listened. Do not treat the
-listening HTTP port alone as proof that the Altium VM is attached.
+`application.ping` as `.62` after the latest restart. An exact-document,
+read-only `generic.query_objects` call returned live DbLib flags and current
+footprint model names for R13 and U4 with no property diagnostics. Altium,
+HTTP MCP port 14701 and TCP relay port 14700 are running at this handoff.
 
 On this date GitHub listed 61 direct forks of `salitronic/eda-agent` and
 one child fork of `Rouniy/eda-agent` (`MOREmbedded`). `git ls-remote`
-matched every external direct fork's cached default-branch tip; only our
-cached `forks/rouniy/main` ref lagged and was refreshed. The API list and
-the actual branch-tip check are recorded in `UPSTREAM-SYNC-2026-10-27.md`.
+matched all 62 default-branch tips. An all-branch audit found 20 missing
+cached branch refs, fetched them, and then matched all 117 live branch tips.
+The API list and tip checks are recorded in `UPSTREAM-SYNC-2026-10-27.md`.
 
 ## Upstream merge and live runtime, 2026-10-27
 

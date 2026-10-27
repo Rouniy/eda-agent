@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.61';
+    SCRIPT_VERSION = '2026.10.27.62';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -1716,6 +1716,16 @@ Begin
     Inc(SheetsSeen);
     Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
     If Result = Nil Then Inc(SheetsSkipped);
+End;
+
+{ Resolve one exact sheet already loaded in the editor, without changing
+  focus or silently opening it as a free document. ProjectSheet is not used
+  here because this is not a project-wide coverage walk. }
+Function LoadedSchDocByPath(Path : String) : ISch_Document;
+Begin
+    Result := Nil;
+    If Path = '' Then Exit;
+    Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
 End;
 
 { The reply with the sheet counts added when a project-wide read skipped a   }
@@ -65910,7 +65920,6 @@ Var
     First : Boolean;
     MaxIter, LastAddr, ThisAddr, SameTries : Integer;
     DeadPins : TStringList;
-    SymbolRef : String;
     PinObj : ISch_Pin;
 Begin
     Result := '';
@@ -66174,9 +66183,6 @@ Begin
                     ObjJson := '{"_doc":"' + EscapeJsonString(DocPath) + '"}'
                 Else
                     ObjJson := Copy(ObjJson, 1, 1) + '"_doc":"' + EscapeJsonString(DocPath) + '",' + Copy(ObjJson, 2, Length(ObjJson));
-                { Which symbol answered, so a caller can tell. }
-                If SymbolRef <> '' Then
-                    ObjJson := Copy(ObjJson, 1, 1) + '"_symbol":"' + EscapeJsonString(SymbolRef) + '",' + Copy(ObjJson, 2, Length(ObjJson));
                 If Not First Then Result := Result + ',';
                 First := False;
                 Result := Result + ObjJson;
@@ -66398,11 +66404,10 @@ Begin
         Exit;
     End;
 
-    // Do NOT RunProcess Client:OpenDocument, that loads the file but
-    // strips any project association, producing a "free document" in the
-    // UI with the full path as its tab title. SchDocByPathLoading opens it
-    // through the Client API, which keeps the membership.
-    SchDoc := SchDocByPathLoading(DocPath);
+    // Resolve only an already loaded sheet. An implicit open here can
+    // change project membership and focus while the caller expects a
+    // query on its exact document path.
+    SchDoc := LoadedSchDocByPath(DocPath);
     If SchDoc = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
@@ -68502,7 +68507,7 @@ Begin
         Exit;
     End;
 
-    If DocPath <> '' Then SchDoc := SchDocByPathLoading(DocPath)
+    If DocPath <> '' Then SchDoc := LoadedSchDocByPath(DocPath)
     Else SchDoc := SchServer.GetCurrentSchDocument;
 
     If SchDoc = Nil Then
@@ -70957,7 +70962,7 @@ Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
 
     If FilePath <> '' Then
-        SchDoc := SchDocByPathLoading(FilePath)
+        SchDoc := LoadedSchDocByPath(FilePath)
     Else
         SchDoc := SchServer.GetCurrentSchDocument;
 

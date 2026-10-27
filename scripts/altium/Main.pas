@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.61';
+    SCRIPT_VERSION = '2026.10.27.62';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -1707,6 +1707,16 @@ Begin
     Inc(SheetsSeen);
     Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
     If Result = Nil Then Inc(SheetsSkipped);
+End;
+
+{ Resolve one exact sheet already loaded in the editor, without changing
+  focus or silently opening it as a free document. ProjectSheet is not used
+  here because this is not a project-wide coverage walk. }
+Function LoadedSchDocByPath(Path : String) : ISch_Document;
+Begin
+    Result := Nil;
+    If Path = '' Then Exit;
+    Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
 End;
 
 { The reply with the sheet counts added when a project-wide read skipped a   }
