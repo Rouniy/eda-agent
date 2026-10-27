@@ -2,6 +2,12 @@
 
 ## Fork behavior audit, 2026-10-28
 
+- [x] Native-qualify MOREmbedded `lib_set_symbol_parts` on a separate
+  copied Spirit Level SchLib. `ADXL202E` changed from one part to two,
+  persisted after save/close/reopen, then returned to one part with all
+  eight original pins. A second display mode was added, persisted, and
+  removed; each command reported `complete=true`, and the original
+  library was untouched.
 - [x] Preserve fractional-mil widths through the Python keep-out
   outline and board-pour edge-clearance wrappers. On a disposable
   arched board, three tracks and one arc persisted at 20.625 mil on

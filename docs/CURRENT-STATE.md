@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## MOREmbedded symbol part and display mode QA, 2026-10-28
+
+The integrated `library.set_symbol_parts` handler was exercised in Altium
+on a separate Temp copy of `SpiritLevel_2E.SchLib`. `ADXL202E` went from
+one part to two, and `library.get_components` still read two after
+save/close/reopen (including its `ADXL210` alias row). Adding a second
+display mode and removing the empty second part both returned
+`complete=true`; another save/reopen showed one part, one populated part,
+and eight pins. Removing the second display mode, saving, and reopening
+then gave a final no-op readback of one part and one mode, again with
+`complete=true`. The QA copy was closed; the original example library
+was not edited.
+
 ## Structured schematic refusal details, 2026-10-28
 
 Script `.118` fixes three `BuildErrorResponseDetailed` call sites in
