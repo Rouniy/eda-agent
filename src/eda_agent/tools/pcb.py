@@ -7516,6 +7516,9 @@ def register_pcb_tools(mcp):
         net: str = "",
         top: Optional[bool] = None,
         bottom: Optional[bool] = None,
+        board_path: str = "",
+        dry_run: bool = True,
+        expected_plan: str = "",
     ) -> dict[str, Any]:
         """Set a board via's own Tenting Top / Bottom flags.
 
@@ -7528,29 +7531,41 @@ def register_pcb_tools(mcp):
         PcbLib.
 
         Args:
+            board_path: Exact loaded PcbDoc path. Required for reads and writes.
             points: ``[{x, y}]`` in mils; each picks the via whose pad
                 covers that point (nearest centre wins).
             net: Without points, every free via on this net; with points,
                 only vias on this net are considered.
             top, bottom: True tents that side, False opens it; leave one
                 out to keep it as it is.
+            dry_run: True by default. Return the selected vias and a plan token.
+            expected_plan: The token from that dry run, required for a write.
 
         Returns:
             ``matched``, ``changed``, ``failed``, ``points_without_a_via``,
             ``footprint_vias_skipped`` and ``vias`` [{x_mils, y_mils, net,
             tenting_top, tenting_bottom, mask_made_manual, ok}].
         """
+        if (not board_path or not Path(board_path).is_absolute()
+                or Path(board_path).suffix.casefold() != ".pcbdoc"):
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if (top is not None and type(top) is not bool) or (bottom is not None and type(bottom) is not bool):
+            return {"ok": False, "reason": "top and bottom must be booleans"}
         if top is None and bottom is None:
             return {"ok": False, "reason": "top and/or bottom say what to set"}
         if not points and not net.strip():
             return {"ok": False, "reason": "points or net say which vias"}
-        params: dict[str, Any] = {}
+        params: dict[str, Any] = {"board_path": board_path, "dry_run": "true"}
         if points:
             try:
+                coords = [(float(p["x"]), float(p["y"])) for p in points]
+                if any(not math.isfinite(v) or abs(v) > 1_000_000
+                       for pair in coords for v in pair):
+                    raise ValueError("point coordinate outside board range")
                 params["points"] = ";".join(
-                    f"{float(p['x'])},{float(p['y'])}" for p in points)
+                    f"{x:.6f},{y:.6f}" for x, y in coords)
             except (KeyError, TypeError, ValueError):
-                return {"ok": False, "reason": "each point is {x, y} in mils"}
+                return {"ok": False, "reason": "each point needs finite {x, y} in mils"}
         if net.strip():
             params["net"] = net.strip()
         if top is not None:
@@ -7558,7 +7573,31 @@ def register_pcb_tools(mcp):
         if bottom is not None:
             params["bottom"] = "true" if bottom else "false"
         bridge = get_bridge()
-        return await bridge.send_command_async("pcb.set_via_tenting", params)
+        plan = await bridge.send_command_async("pcb.set_via_tenting", params)
+        if (not isinstance(plan, dict) or plan.get("dry_run") is not True
+                or str(plan.get("board_path", "")).casefold() != board_path.casefold()
+                or type(plan.get("matched")) is not int
+                or not isinstance(plan.get("plan_token"), str)):
+            return {"ok": False, "reason": "via tenting plan was incomplete or targeted another board",
+                    "native_reply": plan}
+        if dry_run or plan.get("success") is not True:
+            return plan
+        if not expected_plan or expected_plan != plan["plan_token"]:
+            return {"ok": False, "reason": "expected_plan differs from the current via selection",
+                    "current_plan": plan}
+        reply = await bridge.send_command_async(
+            "pcb.set_via_tenting",
+            {**params, "dry_run": "false", "expected_plan": expected_plan})
+        if (not isinstance(reply, dict) or reply.get("success") is not True
+                or reply.get("dry_run") is not False
+                or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or reply.get("matched") != plan["matched"]
+                or reply.get("failed") != 0):
+            return {"ok": False, "reason": "via tenting write was not fully verified",
+                    "native_reply": reply, "plan": plan}
+        reply["ok"] = True
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
 
     @mcp.tool()
     async def pcb_get_mech_layer_names(

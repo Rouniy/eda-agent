@@ -3493,3 +3493,17 @@ product was about +5890 square mils on top and -5890 on bottom;
 the pad geometry was mirrored, not merely assigned a bottom-layer flag.
 The source board SHA-256 remained
 `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
+## Exact-board via tenting (2026-10-27)
+
+Script `.60` requires an exact `board_path` and defaults to a read-only
+plan. Its token binds the selected live via objects and their current
+top/bottom flags; a write requires the reviewed token. On isolated
+`PlacementBottom_20261027.PcbDoc`, a plan selected one free via at
+(2609.7464, 2074.8383) mils on `NetJ1_1`, initially tented on both
+sides. Writing `top=false` reported one changed via and zero failures.
+Exact save, close and reopen preserved `top=false, bottom=true`; the
+new read had a new object-address token, as expected after reload.
+The same live session compiled and answered `pcb.focus_board` after
+removing an undeclared `FrontPCBBoardPath` reference found during this
+acceptance run. Altium reported version 26.11.1.5 and script `.60`.

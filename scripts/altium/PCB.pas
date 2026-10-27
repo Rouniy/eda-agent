@@ -15758,8 +15758,9 @@ Var
     Board : IPCB_Board;
     Front : String;
     ServerDoc : IServerDocument;
+    Workspace : IWorkspace;
+    Doc : IDocument;
     BoardPathStr : String;
-    Focused : Boolean;
 Begin
     BoardPathStr := ExtractJsonValue(Params, 'board_path');
     Board := ResolvePCBBoard(BoardPathStr);
@@ -15779,34 +15780,19 @@ Begin
     Try ServerDoc := Client.GetDocumentByPath(Board.FileName); Except ServerDoc := Nil; End;
     If ServerDoc <> Nil Then
         Try Client.ShowDocument(ServerDoc); Except End;
-    Front := FrontPCBBoardPath(0);
+    Front := '';
+    Workspace := GetWorkspace;
+    If Workspace <> Nil Then
+    Begin
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc <> Nil Then
+            Try Front := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    End;
     If UpperCase(Front) <> UpperCase(Board.FileName) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'FOCUS_FAILED',
             Board.FileName + ' did not come to the front (in front: '
             + Front + ')');
-        Exit;
-    End;
-
-    { Do the focusing HERE rather than trusting ResolvePCBBoard to have   }
-    { done it: its no-path and load-failed branches go through            }
-    { GetPCBBoardAnywhere, which resolves without focusing and puts the   }
-    { previous view back. A caller that asked for a board by name and     }
-    { got focused:true was reading a claim the engine never honoured.     }
-    Focused := False;
-    ServerDoc := Nil;
-    Try ServerDoc := Client.GetDocumentByPath(Board.FileName); Except ServerDoc := Nil; End;
-    If ServerDoc <> Nil Then
-    Begin
-        Try Client.ShowDocument(ServerDoc); Focused := True; Except Focused := False; End;
-    End;
-
-    If Not Focused Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'FOCUS_FAILED',
-            'Found the board but could not make it the current document. ' +
-            'It is resolved and readable, but tools that act on the focused ' +
-            'document will still act on whatever is focused now.');
         Exit;
     End;
 
@@ -17694,16 +17680,28 @@ Var
     Cache : TPadCache;
     I, J, Changed, Failed, InFootprint : Integer;
     NetFilter, NetName, TopStr, BotStr, PointsStr, Rest, Pt, Missed, Items : String;
+    BoardPathStr, PlanToken, ExpectedPlan, DryRunStr, PlanItems : String;
     PX, PY : TCoord;
     D, BestD : Double;
-    MadeManual, Ok, Dup : Boolean;
+    MadeManual, Ok, Dup, DryRun, PlanValid, WasTop, WasBottom : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
+    BoardPathStr := ExtractJsonValue(Params, 'board_path');
+    If BoardPathStr = '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BuildErrorResponse(RequestId, 'MISSING_BOARD_PATH',
+            'Exact board_path is required for a via tenting plan or write');
         Exit;
     End;
+    Board := ResolvePCBBoard(BoardPathStr);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB',
+            'Requested PcbDoc is not loaded and focused: ' + BoardPathStr);
+        Exit;
+    End;
+    DryRunStr := LowerCase(ExtractJsonValue(Params, 'dry_run'));
+    DryRun := DryRunStr <> 'false';
+    ExpectedPlan := ExtractJsonValue(Params, 'expected_plan');
     NetFilter := ExtractJsonValue(Params, 'net');
     PointsStr := ExtractJsonValue(Params, 'points');
     TopStr := LowerCase(ExtractJsonValue(Params, 'top'));
@@ -17793,6 +17791,62 @@ Begin
         End;
     End;
 
+    { Bind a write to the exact live via objects and current flags seen by  }
+    { the caller's dry run. A reload or any changed selection invalidates   }
+    { the token. This pass reads no cache and changes no via.               }
+    PlanToken := '';
+    PlanItems := '';
+    PlanValid := True;
+    For I := 0 To Targets.Count - 1 Do
+    Begin
+        Prim := Targets.Items[I];
+        Via := Prim;
+        WasTop := False;
+        WasBottom := False;
+        Try
+            WasTop := Via.GetState_IsTenting_Top;
+            WasBottom := Via.GetState_IsTenting_Bottom;
+        Except
+            PlanValid := False;
+        End;
+        If PlanToken <> '' Then PlanToken := PlanToken + '|';
+        PlanToken := PlanToken + IntToStr(Via.I_ObjectAddress) + ':'
+            + BoolToJsonStr(WasTop) + ':' + BoolToJsonStr(WasBottom);
+        If PlanItems <> '' Then PlanItems := PlanItems + ',';
+        NetName := '';
+        Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
+        PlanItems := PlanItems + '{"x_mils":' + FloatToJsonStr(CoordToMilsF(Via.x))
+            + ',"y_mils":' + FloatToJsonStr(CoordToMilsF(Via.y))
+            + ',"net":"' + EscapeJsonString(NetName) + '"'
+            + ',"tenting_top":' + BoolToJsonStr(WasTop)
+            + ',"tenting_bottom":' + BoolToJsonStr(WasBottom) + '}';
+    End;
+    If Not PlanValid Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'VIA_STATE_UNREADABLE',
+            'A selected via tenting flag could not be read; nothing changed');
+        Exit;
+    End;
+    If DryRun Then
+    Begin
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":' + BoolToJsonStr((Missed = '') And (Targets.Count > 0))
+            + ',"dry_run":true'
+            + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"'
+            + ',"matched":' + IntToStr(Targets.Count)
+            + ',"plan_token":"' + EscapeJsonString(PlanToken) + '"'
+            + ',"points_without_a_via":[' + Missed + ']'
+            + ',"footprint_vias_skipped":' + IntToStr(InFootprint)
+            + ',"vias":[' + PlanItems + ']}');
+        Exit;
+    End;
+    If (ExpectedPlan = '') Or (ExpectedPlan <> PlanToken) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PLAN_CHANGED',
+            'The selected via objects or flags differ from the reviewed dry run');
+        Exit;
+    End;
+
     Changed := 0;
     Failed := 0;
     Items := '';
@@ -17852,6 +17906,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"success":' + BoolToJsonStr((Failed = 0) And (Missed = '') And (Targets.Count > 0))
+        + ',"dry_run":false'
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"'
         + ',"matched":' + IntToStr(Targets.Count)
         + ',"changed":' + IntToStr(Changed)
         + ',"failed":' + IntToStr(Failed)
