@@ -3,6 +3,7 @@
 """Library management tools for Altium Designer MCP Server."""
 
 import asyncio
+import math
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -16,7 +17,7 @@ from ..library_db import (
 from .bulk_hints import BulkHintTracker
 from .datasheet_hints import tag_response
 from ..config import get_config
-from ..units import format_length, length_in, normalise_units
+from ..units import MM_PER_MIL, format_length, length_in, normalise_units
 from ..atomicfile import replace_with_retry
 from .. import profile as _profile_module
 
@@ -5607,6 +5608,135 @@ def register_library_tools(mcp):
         bridge = get_bridge()
         return await bridge.send_command_async(
             "library.set_pad_properties", _with_units(params, units))
+
+    @mcp.tool()
+    async def lib_set_3d_body(
+        footprint_name: str,
+        library_path: str,
+        standoff_height: Optional[float] = None,
+        overall_height: Optional[float] = None,
+        opacity: Optional[float] = None,
+        layer: str = "",
+        body_index: Optional[int] = None,
+        units: str = "mil",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Read or edit existing bodies of one PcbLib footprint; saving is separate.
+
+        For STEP bodies, standoff changes the model's Z offset. Its three
+        rotations come from the saved library file; unsaved rotations in
+        Altium cannot be preserved by this API.
+        """
+        path = Path(library_path)
+        if not path.is_absolute() or path.suffix.casefold() != ".pcblib" or not path.is_file():
+            return {"ok": False, "reason": "library_path must be an existing absolute PcbLib"}
+        if not footprint_name.strip():
+            return {"ok": False, "reason": "footprint_name is required"}
+        if type(body_index) is not int and body_index is not None:
+            return {"ok": False, "reason": "body_index must be a positive integer"}
+        if body_index is not None and body_index < 1:
+            return {"ok": False, "reason": "body_index starts at 1"}
+        if units.strip().lower() not in ("mil", "mm"):
+            return {"ok": False, "reason": "units must be mil or mm"}
+        scale = 1 / MM_PER_MIL if units.strip().lower() == "mm" else 1.0
+        updates: dict[str, str] = {}
+        for key, value in (("standoff_height", standoff_height),
+                           ("overall_height", overall_height)):
+            if value is not None:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    return {"ok": False, "reason": f"{key} must be finite"}
+                updates[key] = str(round(value * scale, 4))
+        if opacity is not None:
+            if isinstance(opacity, bool) or not isinstance(opacity, (int, float)) or not math.isfinite(opacity) or not 0 <= opacity <= 1:
+                return {"ok": False, "reason": "opacity must be between 0 and 1"}
+            updates["opacity"] = str(opacity)
+        if layer.strip():
+            updates["layer"] = layer.strip()
+        bridge = get_bridge()
+        base = {"library_path": str(path), "footprint_name": footprint_name.strip()}
+        snapshot = await bridge.send_command_async("library.set_3d_body", base, timeout=120.0)
+        bodies = snapshot.get("before") if isinstance(snapshot, dict) else None
+        count = snapshot.get("bodies") if isinstance(snapshot, dict) else None
+        if (not isinstance(snapshot, dict)
+                or str(snapshot.get("library", "")).casefold() != str(path).casefold()
+                or snapshot.get("footprint", "").casefold() != footprint_name.strip().casefold()
+                or type(count) is not int or count < 0
+                or not isinstance(bodies, list) or len(bodies) != count
+                or any(not isinstance(b, dict) or b.get("index") != i for i, b in enumerate(bodies, 1))):
+            return {"ok": False, "reason": "3D body read is incomplete", "native_reply": snapshot}
+        if body_index is not None and body_index > count:
+            return {"ok": False, "reason": "body_index exceeds body count"}
+        selected = bodies if body_index is None else [bodies[body_index - 1]]
+        if not updates:
+            return snapshot
+        if dry_run:
+            return {"ok": True, "dry_run": True, "library": str(path),
+                    "footprint": footprint_name.strip(), "bodies": count,
+                    "before": selected, "would_set": updates}
+        params = {**base, **updates, "expected_count": str(count)}
+        if body_index is not None:
+            params["body_index"] = str(body_index)
+        if "standoff_height" in updates and any(b.get("step") for b in selected):
+            from ..fileio.altium_pcblib import read_pcblib_saved_body_models
+            try:
+                saved = read_pcblib_saved_body_models(path, footprint_name.strip())
+            except (OSError, ValueError):
+                saved = None
+            if saved is None or len(saved) != count:
+                return {"ok": False, "reason": "saved model records do not match live bodies"}
+            for body in selected:
+                if not body.get("step"):
+                    continue
+                record = saved[body["index"] - 1]
+                if (record.get("model_type") != 1
+                        or not record.get("model_file")
+                        or record["model_file"].casefold() != str(body.get("model_file", "")).casefold()
+                        or len(record.get("rotation_deg", [])) != 3
+                        or "|" in record["model_file"]):
+                    return {"ok": False, "reason": "STEP model identity or saved rotation is unavailable"}
+            params["saved_count"] = str(count)
+            params["saved_models"] = "|".join(
+                f"{b['model_file']}|{b['model_type']}|"
+                + "|".join(str(v) for v in b["rotation_deg"] if isinstance(v, (int, float)))
+                if b.get("model_file") and b.get("model_type") is not None
+                and len(b.get("rotation_deg", [])) == 3 else "|".join(("", "", "0", "0", "0"))
+                for b in saved)
+        reply = await bridge.send_command_async("library.set_3d_body", params, timeout=120.0)
+        after = reply.get("after") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or str(reply.get("library", "")).casefold() != str(path).casefold()
+                or reply.get("footprint", "").casefold() != footprint_name.strip().casefold()
+                or reply.get("bodies") != count
+                or not isinstance(after, list) or len(after) != len(selected)
+                or reply.get("skipped")
+                or reply.get("changed") != len(selected)
+                or any(not isinstance(b, dict) or b.get("index") != old["index"]
+                       for b, old in zip(after, selected))):
+            return {"ok": False, "reason": "3D body edit was not fully verified",
+                    "native_reply": reply}
+        for current in after:
+            if ("overall_height" in updates and
+                    not math.isclose(current.get("overall_height_mils", float("nan")),
+                                     float(updates["overall_height"]), abs_tol=0.02)):
+                return {"ok": False, "reason": "overall height did not read back",
+                        "native_reply": reply}
+            if ("opacity" in updates and
+                    not math.isclose(current.get("opacity", float("nan")),
+                                     float(updates["opacity"]), abs_tol=0.001)):
+                return {"ok": False, "reason": "opacity did not read back",
+                        "native_reply": reply}
+            if ("standoff_height" in updates and not current.get("step") and
+                    not math.isclose(current.get("standoff_height_mils", float("nan")),
+                                     float(updates["standoff_height"]), abs_tol=0.02)):
+                return {"ok": False, "reason": "body standoff did not read back",
+                        "native_reply": reply}
+        if "standoff_height" in updates:
+            step_indexes = {b["index"] for b in selected if b.get("step")}
+            if not step_indexes.issubset(set(reply.get("model_z_offset_written", []))):
+                return {"ok": False, "reason": "STEP model offset was not written",
+                        "native_reply": reply}
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
 
     @mcp.tool()
     async def lib_get_footprint_primitives(

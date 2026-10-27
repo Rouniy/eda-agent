@@ -1975,3 +1975,14 @@ unary room rule and a binary clearance rule. A missing second object for the
 binary rule and a wrong PcbDoc path were refused. The owner file's SHA256 was
 unchanged. Source tests: `tests/test_pcb_rule_resolution.py` (2 passed);
 Pascal lint/build clean.
+
+# Existing 3D body edit, 2026-10-27
+
+Script `.23` on Altium 26.11.1.5 edited AD_FE38 in an isolated copy of
+the owner's PcbLib. A dry-run plan preceded the write. Setting STEP
+standoff to 10 mil and opacity to 0.7 was verified in memory; an exact
+save then showed model Z offset 10 mil in the saved file, with rotations
+still 90/0/360 degrees. A separate overall-height write to 50 mil read
+back and was discarded when the copy closed. Owner library and board
+hashes were unchanged. Three focused source tests and Pascal lint/build
+passed. Layer changes and multi-body STEP edits remain to be qualified.

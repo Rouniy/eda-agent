@@ -2,6 +2,19 @@
 
 ## Source integration, 2026-10-27
 
+The `.23` source ports MOREmbedded's `lib_set_3d_body`. It reads saved STEP
+rotations from the exact PcbLib so a model Z-offset edit can retain them;
+the tool requires an existing absolute library path, checks the live body
+count, plans writes by default and verifies native results. Three focused
+tests pass; Pascal lint/build has zero errors/warnings. Altium 26.11.1.5
+loaded `.23`. On an isolated copy of the owner's 38-footprint library,
+AD_FE38's STEP Z offset was changed from 0 to 10 mil, saved with
+`app_save_document`, and parsed from disk as 10 mil with rotations still
+90/0/360 degrees. Opacity read back as 0.7. A separate 50-mil overall-height
+edit read back and was discarded on close. Owner PcbLib and PcbDoc hashes
+were unchanged. The closed test copy remains under
+`workspace/native-acceptance/BodyEdit_20261027.PcbLib`.
+
 The `.22` source ports Altium's dominant PCB rule lookup and rule-scope
 evaluation for component, pad and net objects. Both require an exact absolute
 PcbDoc path and reject incomplete native replies. Two focused tests pass;

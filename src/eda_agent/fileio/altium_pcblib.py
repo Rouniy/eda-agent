@@ -17,14 +17,18 @@ has, its height and description. Enough for the library-hygiene checks
 worth running in CI (an undescribed footprint, a pad count that disagrees
 with its symbol's pin count), which is the same bar altium_schlib.py set.
 
-The one binary payload read here is the embedded 3D models, because their
-container is not Altium's primitive format but plain zlib around a STEP file,
+The binary payloads read here are embedded 3D models and each saved 3D body's
+model placement. The embedded model container holds plain zlib around a STEP file,
 indexed by an ASCII table (measured on two vendor libraries written by
 Altium, one model and eleven):
 
     Library/Models/Header          <uint32 count>
     Library/Models/Data            count x <uint32 length><NAME=..|ID=..|.. NUL>
     Library/Models/<i>             zlib(STEP text) for the i-th Data record
+
+Saved body model placement is read from the ASCII fields in a footprint's
+``Data`` stream. It supplies the rotations that Altium's scripting interface
+cannot read before a STEP standoff edit.
 
 Pad GEOMETRY is deliberately absent: it lives in the binary region, and
 reading it live through the bridge (library.get_footprint_pads) is both
@@ -35,6 +39,8 @@ running at all.
 from __future__ import annotations
 
 import struct
+import re
+import math
 from pathlib import Path
 from typing import Any
 
@@ -165,6 +171,57 @@ def read_pcblib_header(path: str | Path) -> str:
         return ""
     inner_length = raw[4]
     return raw[5:5 + inner_length].decode("latin-1", "replace")
+
+
+_BODY_TEXT = re.compile(rb"\|[^\x00]*?MODEL\.3D\.DZ=[^\x00]*")
+
+
+def _saved_body_records(data: bytes) -> list[dict[str, Any]]:
+    """Model placement records from one saved footprint's Data stream."""
+    bodies: list[dict[str, Any]] = []
+    for match in _BODY_TEXT.finditer(data):
+        rec = {k.strip().upper(): v.strip() for k, v in
+               (part.split("=", 1) for part in
+                match.group(0).decode("latin-1").split("|") if "=" in part)}
+        try:
+            rotation = [float(rec[k]) for k in
+                        ("MODEL.3D.ROTX", "MODEL.3D.ROTY", "MODEL.3D.ROTZ")]
+            if not all(math.isfinite(v) for v in rotation):
+                rotation = []
+        except (KeyError, ValueError):
+            rotation = []
+        raw_z = rec.get("MODEL.3D.DZ", "")
+        z_match = re.fullmatch(
+            r"\s*(-?[\d.]+(?:E[-+]?\d+)?)\s*(mil|mm)?\s*", raw_z, re.I)
+        z_mils = None
+        if z_match:
+            z_mils = float(z_match.group(1))
+            if (z_match.group(2) or "").lower() == "mm":
+                z_mils /= MM_PER_MIL
+        bodies.append({
+            "model_file": rec.get("MODEL.NAME", ""),
+            "model_type": _as_int(rec.get("MODEL.MODELTYPE", "")),
+            "rotation_deg": rotation,
+            "model_z_offset_mils": z_mils,
+        })
+    return bodies
+
+
+def read_pcblib_saved_body_models(path: str | Path,
+                                  footprint_name: str) -> list[dict[str, Any]] | None:
+    """Read saved body model placements for one exact footprint, without editing."""
+    ole = _open_pcblib(path)
+    try:
+        for entry in ole.listdir():
+            if len(entry) != 2 or entry[1] != "Data" or entry[0] in _NON_FOOTPRINT_STORAGES:
+                continue
+            data = _read_stream(ole, entry)
+            if len(data) < 5 or data[5:5 + data[4]].decode("latin-1") != footprint_name:
+                continue
+            return _saved_body_records(data)
+        return None
+    finally:
+        ole.close()
 
 
 def _model_records(data: bytes) -> list[dict[str, str]]:
