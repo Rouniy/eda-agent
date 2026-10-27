@@ -1,5 +1,19 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 live fork-tip audit
+
+`fork-status --verify-fork-branches` matched all 62/62 live default tips
+and 117/117 live branch tips to cached refs. The direct MOREmbedded fork
+is at `032fb4b`. Its two commits after the old `b48f970` checkpoint,
+`789cabb` (SDK property coverage) and `032fb4b` (NPI phase gates), are
+already adapted in our `ef78bd5` and `87eb0f3`. Their substantive source
+diffs are the deliberate DFM gate manual classification in `f95c232`
+until a specific board can be compared with a fab package, and a stale
+SDK resolver test threshold. The current resolver finds 37 schematic and
+31 PCB types, so the upstream test's stronger >30/>20 guard is restored.
+The 66 SDK/NPI focused tests pass. The fork's two commits need no second
+copy.
+
 ## 2026-10-28 upstream main advance
 
 `upstream/main` advanced from `f3bd57f` to `ee7589c`. The latter is merged

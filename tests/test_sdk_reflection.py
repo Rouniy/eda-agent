@@ -210,8 +210,7 @@ def test_both_object_type_resolvers_are_parsed():
     assert sch["component"] == "eSchComponent"
     assert sch["port"] == "ePort"
     assert pcb["pad"] == "ePadObject"
-    # Our main keeps a narrower schematic resolver than the fork.
-    assert len(sch) >= 20 and len(pcb) >= 20
+    assert len(sch) > 30 and len(pcb) > 20
 
 
 def test_the_interface_name_is_mechanical_except_where_it_is_not():
