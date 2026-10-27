@@ -2028,3 +2028,10 @@ save and reopen in both true and false states. Direct SDK writes of
 ohms after exact save and reopen, regardless of the mode state. Script
 `.28` therefore exposes the numeric values for reading and refuses
 numeric writes. The owner's PcbDoc was never saved in this test.
+
+# Via structures, 2026-10-27
+
+Script `.29` on Altium 26.11.1.5 returned 730 vias in one structure
+group on the owner's PcbDoc, with `omitted_vias=0` and `truncated=false`.
+A different absolute PcbDoc path was refused. Two focused Python tests
+and Pascal lint/build passed. This was a read-only check.

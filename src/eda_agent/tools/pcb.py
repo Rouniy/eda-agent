@@ -5762,6 +5762,32 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
+    async def pcb_via_structures(board_path: str, limit: int = 200) -> dict[str, Any]:
+        """Count via structure, protection and back-drill configurations.
+
+        The exact PcbDoc path is required. ``truncated`` and
+        ``omitted_vias`` show whether the distinct-kind limit hid entries.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(limit) is not int or not 1 <= limit <= 2000:
+            return {"ok": False, "reason": "limit must be an integer from 1 to 2000"}
+        reply = await get_bridge().send_command_async(
+            "pcb.via_structures", {"board_path": board_path, "limit": str(limit)},
+            timeout=120.0,
+        )
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        if (str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or type(reply.get("vias")) is not int
+                or type(reply.get("omitted_vias")) is not int
+                or type(reply.get("truncated")) is not bool
+                or not isinstance(reply.get("structures"), list)):
+            return {"ok": False, "reason": "incomplete or wrong-board via structure reply",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
     async def pcb_get_tracks(
         net: str = "",
         layer: str = "",

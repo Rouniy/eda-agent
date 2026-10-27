@@ -20129,6 +20129,102 @@ Begin
     End;
 End;
 
+Function PCB_ViaStructureJson(Via : IPCB_Via) : String;
+Var
+    VS : IPCB_ViaStructure;
+    F : IPCB_ViaStructureFeature;
+    BD : IPCB_BackDrilling;
+    I : Integer;
+    Feats : String;
+Begin
+    Feats := '';
+    VS := Nil;
+    Try VS := Via.ViaStructure; Except VS := Nil; End;
+    If VS <> Nil Then
+    Begin
+        For I := 0 To VS.FeaturesCount - 1 Do
+        Begin
+            F := VS.GetState_Feature(I);
+            If F = Nil Then Continue;
+            If Feats <> '' Then Feats := Feats + ',';
+            Feats := Feats + JsonObj(JsonInt('type', F.FeatureType) + ','
+                + JsonInt('side', F.Side) + ',' + JsonStr('material', F.Material));
+        End;
+        Result := JsonInt('structure_type', VS.StructureType);
+    End
+    Else
+        Result := JsonInt('structure_type', -1);
+    BD := Via;
+    Result := Result + ',' + JsonRaw('features', '[' + Feats + ']') + ','
+        + JsonBool('back_drilled', BD.IsBackdrill) + ','
+        + JsonRaw('top_stub_mils', FloatToJsonStr(CoordToMilsF(BD.TopUnusedStub))) + ','
+        + JsonRaw('bottom_stub_mils', FloatToJsonStr(CoordToMilsF(BD.BottomUnusedStub))) + ','
+        + JsonRaw('oversize_mils', FloatToJsonStr(CoordToMilsF(BD.HoleOversize)));
+End;
+
+Function PCB_ViaStructures(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    Kinds, Counts : TStringList;
+    ExpectedPath, Key, Items : String;
+    I, Limit, Total, Omitted : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 200);
+    If ExpectedPath = '' Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path is required'); Exit; End;
+    If (Limit < 1) Or (Limit > 2000) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'limit must be 1..2000'); Exit; End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active'); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    Kinds := TStringList.Create;
+    Counts := TStringList.Create;
+    Iter := Board.BoardIterator_Create;
+    Total := 0;
+    Omitted := 0;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Via := Iter.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            Inc(Total);
+            Key := PCB_ViaStructureJson(Via);
+            I := Kinds.IndexOf(Key);
+            If I < 0 Then
+            Begin
+                If Kinds.Count < Limit Then
+                Begin Kinds.Add(Key); Counts.Add('1'); End
+                Else Inc(Omitted);
+            End
+            Else Counts.Strings[I] := IntToStr(StrToInt(Counts.Strings[I]) + 1);
+            Via := Iter.NextPCBObject;
+        End;
+        Items := '';
+        For I := 0 To Kinds.Count - 1 Do
+        Begin
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + '{' + JsonRaw('vias', Counts.Strings[I]) + ',' + Kinds.Strings[I] + '}';
+        End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('board_path', Board.FileName) + ','
+            + JsonInt('vias', Total) + ','
+            + JsonInt('omitted_vias', Omitted) + ','
+            + JsonBool('truncated', Omitted > 0) + ','
+            + JsonRaw('structures', '[' + Items + ']')));
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+        Kinds.Free;
+        Counts.Free;
+    End;
+End;
+
 Function PcbOptionKind(Name : String) : String;
 Begin
     Result := '';
@@ -20460,6 +20556,7 @@ Begin
         'editor_options':        Result := PCB_EditorOptions(Params, RequestId);
         'export_component_step': Result := PCB_ExportComponentStep(Params, RequestId);
         'pair_impedance_rule':   Result := PCB_PairImpedanceRule(Params, RequestId);
+        'via_structures':       Result := PCB_ViaStructures(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);
