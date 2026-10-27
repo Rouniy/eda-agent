@@ -2,6 +2,20 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Script `.89` is loaded in Altium 26.11.1.5 with zero cast errors. It restores
+the pin-property helpers lost in an earlier merge; without them a generic
+schematic query raised a modal undeclared-identifier error. On disposable
+SchDoc/SchLib files, two sections of a three-part symbol survived exact
+save/reopen, as did a pin `ShowName` change. The existing
+`sch_relink_components` handler was then checked on that disposable SchDoc:
+both sections switched from `EDA_AGENT_QA_TRIPLE` to `EDA_AGENT_QA_DUAL`
+and survived save/reopen; both were restored to `EDA_AGENT_QA_TRIPLE` and
+survived another save/reopen. A wrong sheet path and nonexistent library
+symbol were refused without changing the links. The upstream merge base
+remains `40814badc695813157fd8c50d24feafc5a553fcd`, with zero upstream
+commits pending after a fresh fetch. Other fork acceptance gaps remain in
+the dated upstream-sync table.
+
 Script `.88` fixes STEP standoff editing for multi-body footprints.
 `lib_set_3d_body` now matches a saved model name against the basename of
 the live model's full path; the native handler checks that identity before

@@ -2,6 +2,12 @@
 
 ## Refreshed after `.68`, 2026-10-27
 
+- [x] Native-qualify the `mooreaa` multipart placement and existing SchLib
+  relink path on disposable SchDoc/SchLib files. Script `.89` restored the
+  missing pin-property helpers. Both placed sections and their later link
+  changes survived exact save/reopen; wrong sheet and missing symbol were
+  refused. DbLib/IntLib relink and parameter/model paths still need checks.
+
 - [x] Add `rabihnd/integration`'s STEP body creation on an exact PcbLib.
   Script `.87` preserved the existing body, centre, layer, rotation and
   saved Z offset after save/reopen on a disposable library.

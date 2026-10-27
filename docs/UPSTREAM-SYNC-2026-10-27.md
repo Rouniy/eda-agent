@@ -249,7 +249,7 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 | MOREmbedded `84b682c`, upstream `5db72f2` | Multi-body STEP layer and Z-offset edits are now qualified on one disposable PcbLib; further qualify bulk edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
 | MOREmbedded `pcb_check_fab_output` | A >5000-drilled-pad board and revision provenance of external packages | Real Altium GerberX2/NC Drill package now parsed and compared to its production-review PcbDoc; copper and hole counts match, exported Profile is larger than the live board. Keep that mismatch visible; a package manifest/revision proof is still needed for sign-off. |
-| `mooreaa` `dc36b7e` through `fc22136` | Remaining relink paths and parameter-port acceptance; multipart placement and pin-property read/write are now natively checked | Use final corrected handlers; verify remaining exact-sheet targeting, native readback and disposable-sheet safety |
+| `mooreaa` `dc36b7e` through `fc22136` | DbLib/IntLib relink paths and parameter-port acceptance remain; SchLib relink, multipart placement and pin-property read/write are now natively checked | Use final corrected handlers; verify remaining exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This
 table tracks next implementation batches, not a claim that the listed source
@@ -539,3 +539,19 @@ properties were checked on that separate symbol. Pascal lint/build passed
 12 files with zero errors/warnings; the focused suite passed 17 cases with
 one optional case skipped. Remaining `mooreaa` relink and parameter paths
 still need native acceptance.
+
+The same loaded `.89` runtime also qualified the existing SchLib relink
+path on the disposable two-part sheet. The exact sheet and SchLib paths
+matched both `U_QA1` sections. Changing their links to the existing
+`EDA_AGENT_QA_DUAL` returned `matched=2`, `changed=2`, `failed=0`;
+`LibReference` and `DesignItemId` survived exact save/close/reopen on both
+parts. Restoring `EDA_AGENT_QA_TRIPLE` survived a second save/reopen. A
+wrong sheet path returned `SHEET_NOT_OPEN`, and a missing symbol returned
+`LIB_REF_NOT_FOUND`; readback after the latter still showed both original
+links. This checks link metadata only: the drawn symbol intentionally
+remained three-part throughout. DbLib/IntLib relinks and model/parameter
+updates still need their own native cases. A fresh upstream fetch still
+gives merge base `40814badc695813157fd8c50d24feafc5a553fcd` and zero
+unmerged upstream commits.
+The live `fork-status --verify-fork-branches` rerun also found all 62
+default fork tips and all 117 branch tips still equal to their local refs.
