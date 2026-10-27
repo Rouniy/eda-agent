@@ -960,6 +960,9 @@ def main() -> int:
     fork_p.add_argument("--cached-forks", action="store_true",
                         help="Also compare every locally cached forks/* branch ref. "
                              "These refs are not refreshed by --fetch.")
+    fork_p.add_argument("--verify-fork-tips", action="store_true",
+                        help="Read every direct upstream and origin fork's live "
+                             "default-branch tip and compare it with local refs.")
     fork_p.add_argument("--json", action="store_true", dest="json_out",
                         help="Emit machine-readable JSON.")
 
@@ -1358,7 +1361,7 @@ def main() -> int:
     if args.command == "fork-status":
         import json as _json
         from pathlib import Path as _Path
-        from .diag.fork_status import fork_status, format_fork_status
+        from .diag.fork_status import fork_status, format_fork_status, verify_fork_tips
 
         try:
             report = fork_status(_Path.cwd(),
@@ -1366,13 +1369,17 @@ def main() -> int:
                                  ("origin", "upstream", "morembedded"),
                                  fetch=args.fetch,
                                  cached_forks=args.cached_forks)
+            if args.verify_fork_tips:
+                report["fork_tip_check"] = verify_fork_tips(_Path.cwd())
         except (RuntimeError, OSError) as exc:
             print(f"fork-status: {exc}", file=sys.stderr)
             return 2
         print(_json.dumps(report, indent=2) if args.json_out else
               format_fork_status(report))
-        return 1 if any(item.get("fetch_error") for item in
-                        report["sources"].values()) else 0
+        return 1 if (any(item.get("fetch_error") for item in
+                         report["sources"].values()) or
+                     report.get("fork_tip_check", {}).get("fresh") !=
+                     report.get("fork_tip_check", {}).get("checked")) else 0
     if args.command == "profile-init":
         return cli.cmd_profile_init(args.name, here=args.here)
     if args.command == "profile-list":

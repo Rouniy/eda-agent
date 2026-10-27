@@ -9,6 +9,10 @@ never a count of missing capabilities.
 from __future__ import annotations
 
 import subprocess
+import json
+import re
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +26,100 @@ def _git(root: Path, *args: str) -> str:
         raise RuntimeError((completed.stderr or completed.stdout).strip()
                            or f"git {' '.join(args)} failed")
     return completed.stdout.strip()
+
+
+def _github_repo(url: str) -> str:
+    match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url.strip(), re.I)
+    if not match:
+        raise ValueError(f"not a GitHub remote: {url}")
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def _github_forks(repo: str) -> list[dict[str, Any]]:
+    """Fetch every page of GitHub's default-branch fork inventory."""
+    forks: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        url = f"https://api.github.com/repos/{repo}/forks?per_page=100&page={page}"
+        request = urllib.request.Request(url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "eda-agent-fork-status",
+        })
+        with urllib.request.urlopen(request, timeout=20) as response:
+            batch = json.load(response)
+        if not isinstance(batch, list):
+            raise RuntimeError(f"GitHub returned no fork list for {repo}")
+        forks.extend(batch)
+        if len(batch) < 100:
+            return forks
+        page += 1
+
+
+def verify_fork_tips(root: Path, *, max_workers: int = 10) -> dict[str, Any]:
+    """Read live default-branch tips of direct upstream and origin forks.
+
+    This neither fetches commit history nor changes refs. A matching tip
+    proves freshness of that cached branch, not feature equivalence.
+    """
+    root = Path(root).resolve()
+    remote_names = _git(root, "remote").splitlines()
+    remote_repos = {
+        _github_repo(_git(root, "remote", "get-url", name)).casefold(): name
+        for name in remote_names
+    }
+    parents = []
+    for name in ("upstream", "origin"):
+        if name not in remote_names:
+            raise RuntimeError(f"{name} remote is required for fork-tip verification")
+        parents.append(_github_repo(_git(root, "remote", "get-url", name)))
+    cached = dict(line.split("\t", 1) for line in _git(
+        root, "for-each-ref", "--format=%(refname:short)%09%(objectname)",
+        "refs/remotes/forks").splitlines())
+    for name in remote_names:
+        try:
+            cached[f"{name}/main"] = _git(root, "rev-parse", "--verify", f"{name}/main")
+        except RuntimeError:
+            pass
+
+    seen: set[str] = set()
+    candidates = []
+    for parent in parents:
+        for fork in _github_forks(parent):
+            full_name = fork["full_name"]
+            if full_name.casefold() in seen:
+                continue
+            seen.add(full_name.casefold())
+            candidates.append((parent, fork))
+
+    def check(item: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+        parent, fork = item
+        branch = fork["default_branch"]
+        owner = fork["owner"]["login"].casefold()
+        name = fork["full_name"]
+        configured = remote_repos.get(name.casefold())
+        ref = f"{configured}/{branch}" if configured else f"forks/{owner}/{branch}"
+        try:
+            proc = subprocess.run(
+                ["git", "ls-remote", fork["clone_url"], f"refs/heads/{branch}"],
+                capture_output=True, text=True, timeout=25, check=False,
+            )
+            tip = proc.stdout.split()[0] if proc.returncode == 0 and proc.stdout.strip() else ""
+            error = (proc.stderr or "branch not found").strip() if not tip else ""
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            tip = ""
+            error = str(exc)
+        result = {"repo": name, "parent": parent, "branch": branch,
+                  "ref": ref, "remote_tip": tip, "cached_tip": cached.get(ref)}
+        result["fresh"] = bool(tip and tip == result["cached_tip"])
+        if not tip:
+            result["error"] = error
+        return result
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        entries = list(pool.map(check, candidates))
+    return {"parents": parents, "checked": len(entries),
+            "fresh": sum(entry["fresh"] for entry in entries),
+            "forks": entries}
 
 
 def fork_status(root: Path, *, remotes: tuple[str, ...] =
@@ -107,4 +205,15 @@ def format_fork_status(report: dict[str, Any]) -> str:
             bases = ", ".join(item["merge_bases"]) or "none"
             lines.append(f"{name}: {item['tip']}; ahead {item['ahead']}, "
                          f"behind {item['behind']}; merge-base {bases}")
+    if "fork_tip_check" in report:
+        check = report["fork_tip_check"]
+        lines.append(f"live fork default branches: {check['fresh']}/{check['checked']} "
+                     "match local refs")
+        for item in check["forks"]:
+            if not item["fresh"]:
+                lines.append(f"{item['repo']} {item['branch']}: "
+                             f"remote {item['remote_tip'] or 'unavailable'}, "
+                             f"local {item['cached_tip'] or 'missing'} "
+                             f"({item['ref']})"
+                             + (f"; {item['error']}" if item.get("error") else ""))
     return "\n".join(lines)

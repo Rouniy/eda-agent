@@ -18,6 +18,14 @@ refreshed to `f339ee5`. The child fork was fetched separately and had no
 new `main` commit. This checks tip freshness; the older rows below remain
 the feature-level audit and native-acceptance ledger.
 
+The same audit is now repeatable with
+`eda-agent fork-status --verify-fork-tips --json`. It reads the two GitHub
+fork inventories and compares each live default-branch tip with a local
+`forks/*` or configured remote ref; it does not update refs. On this
+checkpoint the command returned `checked=62, fresh=62`, including
+`MOREmbedded` as the one child fork. A mismatch gives the exact repo,
+branch, remote commit and local ref to fetch and review.
+
 `Rouniy/eda-agent/main` remains the integration branch. The October 27
 integration merge has `9ee593ea0dce989bf3bfc97d0c982044ed41badb`
 (`salitronic/eda-agent/main`) as its second parent. `git merge-base main
