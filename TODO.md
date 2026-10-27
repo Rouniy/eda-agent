@@ -11,6 +11,12 @@
   Times New Roman 10. A missing exact sheet was refused.
 - [ ] Run disposable-project acceptance of upstream's simulation probe,
   setup and sheet-run changes in the merged `.112` bundle.
+  On an isolated copy of Altium's Simulation Quick Start project,
+  `sim_get_setup` read operating-point, DC, transient and AC settings
+  and 14 stored runs. `proj_load_sheets` loaded all seven sheets;
+  `sim_get_probes` returned a complete empty inventory with no unloaded
+  sheets. The copy closed without saving. Probe placement/readback and
+  `sim_run` remain to verify.
 
 ## Combined fork decimal guard, 2026-10-27
 

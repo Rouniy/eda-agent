@@ -1,5 +1,15 @@
 # Current integration state / agent handoff
 
+## Native simulation reads on `.112`, 2026-10-27
+
+An isolated copy of Altium's installed Simulation Quick Start project
+opened in the restarted bridge. `sim_get_setup` read operating-point,
+DC, transient and AC analyses, including their stored settings and 14
+prior runs. `proj_load_sheets` loaded all seven SchDocs, after which
+`sim_get_probes` returned `count=0` and `not_loaded=[]`. The project
+closed with `save=false`; the installed original was never opened.
+Probe placement and a new simulation run remain unverified locally.
+
 ## Native free-text acceptance on `.112`, 2026-10-27
 
 On a disposable free `FreeText_QA.SchDoc`, `sch_add_text` placed native

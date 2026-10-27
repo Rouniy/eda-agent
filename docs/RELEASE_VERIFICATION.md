@@ -6,6 +6,12 @@ bundle. Source lint/build and focused tests pass. The restarted Altium
 14701 lists the new tools. Merged simulation behavior still needs native
 acceptance on a disposable project.
 
+Read-only native simulation acceptance now covers `sim_get_setup` on an
+isolated Simulation Quick Start copy (four analysis types and 14 stored
+runs), plus `sim_get_probes` after all seven sheets loaded (zero probes,
+no unloaded sheets). The copy closed without saving. Probe placement
+and `sim_run` still need a native case.
+
 Free-text native acceptance is now complete on a disposable SchDoc:
 `sch_add_text` placed one `eLabel`, and exact save/reopen retained its
 text, fractional coordinates and 90-degree orientation. Altium changed
