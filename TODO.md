@@ -396,8 +396,17 @@
   native owner helper. Route rectangle, polygon and batch line insertion
   through `AddLibSymbolPrim` so newly written graphics appear on the active
   symbol. Source `.100` passes 69 related tests and Pascal lint/build.
-- [ ] In a disposable multipart SchLib, add lines to part 2 and shared
-  part 0, save/reopen, and verify their owner and visibility in each part.
+- [x] In a disposable multipart SchLib, add lines to part 2 and shared
+  part 0, save/reopen, and verify their OwnerPartId values persist (2 and 0).
+  Native test on 2026-10-28 used XC2S300E-6PQ208C in a SpiritLevel_2E
+  copy; `library.add_symbol_lines` added both and `generic.query_objects`
+  returned both owners after reopen. The library copy was closed.
+- [ ] Verify part-specific visibility in the Altium editor. The current
+  SchLib query enumerates both owners for every `@part` scope, so it cannot
+  prove what the editor displays. Also fix `generic.query_objects` with
+  `Vertices` for SchLib lines: Altium raises `Undeclared identifier:
+  GetState_VerticesCount`. A cast to `ISch_Polygon` did not resolve it;
+  that unverified code was reverted and the bridge restarted on `.121`.
 - [x] Reconcile the older `test_symbol_writes_on_screen.py` schematic-name
   assertion: the reverse names were lost from `Generic.pas` in a merge.
 
