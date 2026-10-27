@@ -1,6 +1,7 @@
 name: battery-research-lab
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - "research/battery-ai-comsol-lab/**"
