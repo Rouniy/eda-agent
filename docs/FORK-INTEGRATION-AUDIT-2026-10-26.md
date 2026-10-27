@@ -1,5 +1,11 @@
 # Fork integration audit - 2026-10-26
 
+On 2026-10-28, the circular board outline mentioned below passed native
+save/close/reopen acceptance with a fractional-mil centre and radius on
+a disposable PcbDoc under script `.115`. The exact geometry is in
+`CURRENT-STATE.md`; the older statement below describes its original
+source-only state.
+
 The newer fetched tips and current reviewed-through checkpoint are in
 `UPSTREAM-SYNC-2026-10-27.md`. The former `bf9e08c` via-tenting hold was
 resolved on 2026-10-27 by commit `6b08ff4`: the adapted write requires an

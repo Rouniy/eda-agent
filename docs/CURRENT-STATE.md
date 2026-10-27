@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Native fractional circular board outline, 2026-10-28
+
+Loaded script `.115` set a circle on disposable
+`C:\Users\Alex\AppData\Local\Temp\eda-circle-qa-20261028.PcbDoc`, copied
+from the installed Spirit Level example. `pcb.set_board_shape` accepted
+centre (7000.125, 7500.375) mil and radius 500.625 mil. Before the
+edit the copied board had an eight-vertex rounded rectangle; after the
+edit `pcb.get_board_outline` returned four 90-degree arcs at that exact
+centre, bounding box (6499.5, 6999.75)..(7500.75, 8001) mil, and
+`closed=true`. Exact save, close and reopen preserved the four arcs and
+bounds. The disposable board then closed. The installed example was
+read only; the modified copy remains in Temp.
+
 ## Component parameter scope and native Value readback, 2026-10-28
 
 The fork template-value reconciliation exposed a native scope defect:

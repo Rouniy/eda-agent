@@ -11,6 +11,10 @@
   partial batch can leave duplicate designators and merge nets;
   upstream restored the bulk capability. Preserve useful bulk editing
   while closing that failure mode on disposable projects.
+- [x] Qualify `vincent-himpe`'s fractional circular board outline in
+  Altium `.115`: exact centre and radius were returned as four closed
+  quarter arcs and persisted after save/close/reopen on a disposable
+  PcbDoc. See `docs/CURRENT-STATE.md` for coordinates.
 
 ## mooreaa template value reconciliation, 2026-10-28
 
