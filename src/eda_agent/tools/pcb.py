@@ -405,6 +405,109 @@ _TERMINATION_DEFAULTS = {
 }
 
 
+_PCB_VIEW_OPTIONS = {
+    "show_pad_nets": "ShowPadNets", "show_pad_numbers": "ShowPadNumbers",
+    "show_via_nets": "ShowViaNets", "show_test_points": "ShowTestPoints",
+    "single_layer_mode": "SingleLayerMode",
+    "show_special_strings": "DisplaySpecialStrings",
+    "highlight_in_net_color": "UseNetColorForHighlight",
+    "highlight_full": "HighlightFull",
+    "highlight_whole_net": "ShowAllPrimitivesInHighlightedNets",
+    "show_component_reference_point": "ShowComponentRefPoint",
+    "plane_draw_mode": "PlaneDrawMode", "pad_types_display": "PadTypesDisplayMode",
+    "from_tos_display": "FromTosDisplayMode",
+    "layer_name_display": "LayerNameDisplayMode",
+    "draft_track_threshold_mils": "DraftTrackThreshold",
+}
+_PCB_EDIT_OPTIONS = {
+    "rotation_step": "RotationStep", "undo_levels": "UndoRedoStackSize",
+    "protect_locked": "ProtectLockedPrimitives",
+    "select_only_visible": "OnlySelectVisible",
+    "click_clears_selection": "ClickClearsSelection",
+    "double_click_runs_inspector": "DoubleClickRunsInspector",
+    "snap_to_centre": "SnapToCentre",
+    "allow_duplicate_designators": "DuplicateDesignatorsAllowed",
+    "auto_pan": "AutoPan", "drag_mode": "DragMode",
+    "component_move": "ComponentMoveKind",
+}
+_PCB_ROUTE_OPTIONS = {
+    "route_mode": "InteractiveRouteMode",
+    "plow_through_pours": "PlowThroughPolygons", "auto_via": "AutoVia",
+    "shove_depth": "PlaceShoveDepth", "lock_pre_routes": "LockPreRoutes",
+    "delete_dead_ends": "DeleteDeadEnds", "smart_track_ends": "UseSmartTrackEnds",
+}
+_PCB_OPTION_FLOATS = {"rotation_step", "draft_track_threshold_mils"}
+_PCB_OPTION_INTS = {"plane_draw_mode", "pad_types_display", "from_tos_display",
+                    "layer_name_display", "drag_mode", "component_move",
+                    "route_mode", "shove_depth"}
+
+
+def _pcb_option_text(value: bool | int | float) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+async def _pcb_editor_options(board_path: str, names: dict[str, str],
+                              values: dict[str, Any], dry_run: bool) -> dict[str, Any]:
+    """Exact-board read, old-value preflight and native readback for preferences."""
+    if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+        return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+    updates = {key: value for key, value in values.items() if value is not None}
+    for key, value in updates.items():
+        if key in _PCB_OPTION_FLOATS:
+            valid = (not isinstance(value, bool) and isinstance(value, (int, float))
+                     and math.isfinite(value) and value >= 0)
+        elif key in _PCB_OPTION_INTS:
+            valid = type(value) is int and value >= 0
+        else:
+            valid = type(value) is bool
+        if not valid:
+            return {"ok": False, "reason": f"invalid value for {key}"}
+    bridge = get_bridge()
+    base = {"board_path": board_path, "names": ",".join(names.values())}
+    snapshot = await bridge.send_command_async("pcb.editor_options", base, timeout=120.0)
+    raw = snapshot.get("options") if isinstance(snapshot, dict) else None
+    if (not isinstance(snapshot, dict) or not isinstance(snapshot.get("board_path"), str)
+            or snapshot["board_path"].casefold() != board_path.casefold()
+            or not isinstance(raw, dict) or set(raw) != set(names.values())
+            or snapshot.get("refused") != [] or snapshot.get("unknown") != []):
+        return {"ok": False, "reason": "PCB preference read is incomplete",
+                "native_reply": snapshot}
+    old = {key: raw[native] for key, native in names.items()}
+    if not updates:
+        return {**snapshot, "options": old}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "board_path": board_path,
+                "before": old, "would_set": updates}
+    params = {**base,
+              "expect": "|".join(f"{native}={_pcb_option_text(raw[native])}"
+                                  for native in names.values()),
+              "set": "|".join(f"{names[key]}={_pcb_option_text(value)}"
+                              for key, value in updates.items())}
+    reply = await bridge.send_command_async("pcb.editor_options", params, timeout=120.0)
+    after = reply.get("options") if isinstance(reply, dict) else None
+    if (not isinstance(reply, dict) or not isinstance(reply.get("board_path"), str)
+            or reply["board_path"].casefold() != board_path.casefold()
+            or not isinstance(after, dict) or set(after) != set(names.values())
+            or reply.get("refused") != [] or reply.get("unknown") != []
+            or reply.get("not_applied") != []):
+        return {"ok": False, "reason": "PCB preference write was not fully verified",
+                "native_reply": reply}
+    for key, value in updates.items():
+        actual = after[names[key]]
+        if key in _PCB_OPTION_FLOATS:
+            matches = type(actual) in (int, float) and math.isclose(
+                actual, value, abs_tol=0.0001)
+        else:
+            matches = actual == value and type(actual) is type(value)
+        if not matches:
+            return {"ok": False, "reason": f"{key} did not read back",
+                    "native_reply": reply}
+    reply["options"] = {key: after[native] for key, native in names.items()}
+    return reply
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -7589,6 +7692,93 @@ def register_pcb_tools(mcp):
                     "native_reply": result}
         result["save_required"] = bool(result.get("changed"))
         return result
+
+    @mcp.tool()
+    async def pcb_view_options(
+        board_path: str,
+        show_pad_nets: Optional[bool] = None,
+        show_pad_numbers: Optional[bool] = None,
+        show_via_nets: Optional[bool] = None,
+        show_test_points: Optional[bool] = None,
+        single_layer_mode: Optional[bool] = None,
+        show_special_strings: Optional[bool] = None,
+        highlight_in_net_color: Optional[bool] = None,
+        highlight_full: Optional[bool] = None,
+        highlight_whole_net: Optional[bool] = None,
+        show_component_reference_point: Optional[bool] = None,
+        plane_draw_mode: Optional[int] = None,
+        pad_types_display: Optional[int] = None,
+        from_tos_display: Optional[int] = None,
+        layer_name_display: Optional[int] = None,
+        draft_track_threshold_mils: Optional[float] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Read or plan a change to Altium's global PCB display preferences."""
+        return await _pcb_editor_options(board_path, _PCB_VIEW_OPTIONS, {
+            "show_pad_nets": show_pad_nets, "show_pad_numbers": show_pad_numbers,
+            "show_via_nets": show_via_nets, "show_test_points": show_test_points,
+            "single_layer_mode": single_layer_mode,
+            "show_special_strings": show_special_strings,
+            "highlight_in_net_color": highlight_in_net_color,
+            "highlight_full": highlight_full,
+            "highlight_whole_net": highlight_whole_net,
+            "show_component_reference_point": show_component_reference_point,
+            "plane_draw_mode": plane_draw_mode,
+            "pad_types_display": pad_types_display,
+            "from_tos_display": from_tos_display,
+            "layer_name_display": layer_name_display,
+            "draft_track_threshold_mils": draft_track_threshold_mils,
+        }, dry_run)
+
+    @mcp.tool()
+    async def pcb_edit_options(
+        board_path: str,
+        rotation_step: Optional[float] = None,
+        protect_locked: Optional[bool] = None,
+        select_only_visible: Optional[bool] = None,
+        click_clears_selection: Optional[bool] = None,
+        double_click_runs_inspector: Optional[bool] = None,
+        snap_to_centre: Optional[bool] = None,
+        allow_duplicate_designators: Optional[bool] = None,
+        auto_pan: Optional[bool] = None,
+        drag_mode: Optional[int] = None,
+        component_move: Optional[int] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Read or plan a change to global PCB editing preferences."""
+        return await _pcb_editor_options(board_path, _PCB_EDIT_OPTIONS, {
+            "rotation_step": rotation_step, "undo_levels": None,
+            "protect_locked": protect_locked,
+            "select_only_visible": select_only_visible,
+            "click_clears_selection": click_clears_selection,
+            "double_click_runs_inspector": double_click_runs_inspector,
+            "snap_to_centre": snap_to_centre,
+            "allow_duplicate_designators": allow_duplicate_designators,
+            "auto_pan": auto_pan, "drag_mode": drag_mode,
+            "component_move": component_move,
+        }, dry_run)
+
+    @mcp.tool()
+    async def pcb_route_options(
+        board_path: str,
+        route_mode: Optional[int] = None,
+        plow_through_pours: Optional[bool] = None,
+        auto_via: Optional[bool] = None,
+        shove_depth: Optional[int] = None,
+        lock_pre_routes: Optional[bool] = None,
+        delete_dead_ends: Optional[bool] = None,
+        smart_track_ends: Optional[bool] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Read or plan a change to global PCB routing preferences."""
+        return await _pcb_editor_options(board_path, _PCB_ROUTE_OPTIONS, {
+            "route_mode": route_mode,
+            "plow_through_pours": plow_through_pours,
+            "auto_via": auto_via, "shove_depth": shove_depth,
+            "lock_pre_routes": lock_pre_routes,
+            "delete_dead_ends": delete_dead_ends,
+            "smart_track_ends": smart_track_ends,
+        }, dry_run)
 
     @mcp.tool()
     async def pcb_get_drill_pairs(board_path: str) -> dict[str, Any]:

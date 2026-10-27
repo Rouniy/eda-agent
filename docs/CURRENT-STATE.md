@@ -2,6 +2,15 @@
 
 ## Source integration, 2026-10-27
 
+The `.25` source ports upstream's three PCB editor preference groups:
+display, editing and routing. These are global Altium settings, read with an
+exact active PcbDoc path. Writes use old-value preflight, default dry-run and
+native readback. Three focused tests pass; Pascal lint/build reports zero
+errors/warnings. Altium 26.11.1.5 loaded `.25`. On the owner's board,
+show-pad-numbers, auto-pan and auto-via each toggled, read back, and were
+restored to their original values. A wrong board path was refused. The
+owner PcbDoc remained active, modified=false and SHA256 unchanged.
+
 The `.24` source ports MOREmbedded's complete-footprint quarter-turns.
 `lib_rotate_footprint` focuses an exact existing PcbLib, plans the object
 counts by default, refuses unsupported primitives unless explicitly allowed,

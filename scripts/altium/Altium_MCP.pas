@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.24';
+    SCRIPT_VERSION = '2026.10.27.25';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47039,6 +47039,285 @@ Begin
         + JsonBool('applies', Applies)));
 End;
 
+Function PcbOptionKind(Name : String) : String;
+Begin
+    Result := '';
+    If (Name = 'ShowPadNets') Or (Name = 'ShowPadNumbers') Or
+       (Name = 'ShowViaNets') Or (Name = 'ShowTestPoints') Or
+       (Name = 'SingleLayerMode') Or (Name = 'DisplaySpecialStrings') Or
+       (Name = 'UseNetColorForHighlight') Or (Name = 'HighlightFull') Or
+       (Name = 'ShowAllPrimitivesInHighlightedNets') Or
+       (Name = 'ShowComponentRefPoint') Or
+       (Name = 'ProtectLockedPrimitives') Or (Name = 'OnlySelectVisible') Or
+       (Name = 'ClickClearsSelection') Or (Name = 'DoubleClickRunsInspector') Or
+       (Name = 'SnapToCentre') Or (Name = 'DuplicateDesignatorsAllowed') Or
+       (Name = 'AutoPan') Or (Name = 'PlowThroughPolygons') Or
+       (Name = 'AutoVia') Or (Name = 'LockPreRoutes') Or
+       (Name = 'DeleteDeadEnds') Or (Name = 'UseSmartTrackEnds') Then Result := 'b'
+    Else If (Name = 'PlaneDrawMode') Or (Name = 'PadTypesDisplayMode') Or
+       (Name = 'FromTosDisplayMode') Or (Name = 'LayerNameDisplayMode') Or
+       (Name = 'DragMode') Or (Name = 'ComponentMoveKind') Or
+       (Name = 'InteractiveRouteMode') Or (Name = 'PlaceShoveDepth') Then Result := 'n'
+    Else If Name = 'DraftTrackThreshold' Then Result := 'm'
+    Else If Name = 'UndoRedoStackSize' Then Result := 'r'
+    Else If Name = 'RotationStep' Then Result := 'f';
+End;
+
+Function PcbOptionGet(Opts : IPCB_SystemOptions; Name : String) : String;
+Begin
+    Result := '';
+    If Name = 'ShowPadNets' Then Result := BoolToJsonStr(Opts.ShowPadNets)
+    Else If Name = 'ShowPadNumbers' Then Result := BoolToJsonStr(Opts.ShowPadNumbers)
+    Else If Name = 'ShowViaNets' Then Result := BoolToJsonStr(Opts.ShowViaNets)
+    Else If Name = 'ShowTestPoints' Then Result := BoolToJsonStr(Opts.ShowTestPoints)
+    Else If Name = 'SingleLayerMode' Then Result := BoolToJsonStr(Opts.SingleLayerMode)
+    Else If Name = 'DisplaySpecialStrings' Then Result := BoolToJsonStr(Opts.DisplaySpecialStrings)
+    Else If Name = 'UseNetColorForHighlight' Then Result := BoolToJsonStr(Opts.UseNetColorForHighlight)
+    Else If Name = 'HighlightFull' Then Result := BoolToJsonStr(Opts.HighlightFull)
+    Else If Name = 'ShowAllPrimitivesInHighlightedNets' Then Result := BoolToJsonStr(Opts.ShowAllPrimitivesInHighlightedNets)
+    Else If Name = 'ShowComponentRefPoint' Then Result := BoolToJsonStr(Opts.ShowComponentRefPoint)
+    Else If Name = 'ProtectLockedPrimitives' Then Result := BoolToJsonStr(Opts.ProtectLockedPrimitives)
+    Else If Name = 'OnlySelectVisible' Then Result := BoolToJsonStr(Opts.OnlySelectVisible)
+    Else If Name = 'ClickClearsSelection' Then Result := BoolToJsonStr(Opts.ClickClearsSelection)
+    Else If Name = 'DoubleClickRunsInspector' Then Result := BoolToJsonStr(Opts.DoubleClickRunsInspector)
+    Else If Name = 'SnapToCentre' Then Result := BoolToJsonStr(Opts.SnapToCentre)
+    Else If Name = 'DuplicateDesignatorsAllowed' Then Result := BoolToJsonStr(Opts.DuplicateDesignatorsAllowed)
+    Else If Name = 'AutoPan' Then Result := BoolToJsonStr(Opts.AutoPan)
+    Else If Name = 'PlowThroughPolygons' Then Result := BoolToJsonStr(Opts.PlowThroughPolygons)
+    Else If Name = 'AutoVia' Then Result := BoolToJsonStr(Opts.AutoVia)
+    Else If Name = 'LockPreRoutes' Then Result := BoolToJsonStr(Opts.LockPreRoutes)
+    Else If Name = 'DeleteDeadEnds' Then Result := BoolToJsonStr(Opts.DeleteDeadEnds)
+    Else If Name = 'UseSmartTrackEnds' Then Result := BoolToJsonStr(Opts.UseSmartTrackEnds)
+    Else If Name = 'PlaneDrawMode' Then Result := IntToStr(Opts.PlaneDrawMode)
+    Else If Name = 'PadTypesDisplayMode' Then Result := IntToStr(Opts.PadTypesDisplayMode)
+    Else If Name = 'FromTosDisplayMode' Then Result := IntToStr(Opts.FromTosDisplayMode)
+    Else If Name = 'LayerNameDisplayMode' Then Result := IntToStr(Opts.LayerNameDisplayMode)
+    Else If Name = 'DragMode' Then Result := IntToStr(Opts.DragMode)
+    Else If Name = 'ComponentMoveKind' Then Result := IntToStr(Opts.ComponentMoveKind)
+    Else If Name = 'InteractiveRouteMode' Then Result := IntToStr(Opts.InteractiveRouteMode)
+    Else If Name = 'PlaceShoveDepth' Then Result := IntToStr(Opts.PlaceShoveDepth)
+    Else If Name = 'DraftTrackThreshold' Then Result := FloatToJsonStr(CoordToMilsF(Opts.DraftTrackThreshold))
+    Else If Name = 'UndoRedoStackSize' Then Result := IntToStr(Opts.UndoRedoStackSize)
+    Else If Name = 'RotationStep' Then Result := FloatToJsonStr(Opts.RotationStep);
+End;
+
+{ Write one, as text from the caller; False when the value is not of the    }
+{ option's kind (nothing is written then).                                   }
+Function PcbOptionSet(Opts : IPCB_SystemOptions; Name : String; Value : String) : Boolean;
+Var
+    Kind : String;
+    B : Boolean;
+    F : Double;
+    N : Integer;
+Begin
+    Result := False;
+    Kind := PcbOptionKind(Name);
+    B := False;
+    F := 0;
+    N := 0;
+    If Kind = 'b' Then
+    Begin
+        If LowerCase(Value) = 'true' Then B := True
+        Else If LowerCase(Value) <> 'false' Then Exit;
+    End
+    Else If (Kind = 'f') Or (Kind = 'm') Then
+    Begin
+        If Not IsFloatStr(Value) Then Exit;
+        F := StrToFloatDef(Value, -1);
+        If F < 0 Then Exit;
+    End
+    Else If Kind = 'n' Then
+    Begin
+        If Not IsIntStr(Value) Then Exit;
+        N := StrToInt(Value);
+        If N < 0 Then Exit;
+    End
+    Else Exit;
+    If Name = 'ShowPadNets' Then Opts.ShowPadNets := B
+    Else If Name = 'ShowPadNumbers' Then Opts.ShowPadNumbers := B
+    Else If Name = 'ShowViaNets' Then Opts.ShowViaNets := B
+    Else If Name = 'ShowTestPoints' Then Opts.ShowTestPoints := B
+    Else If Name = 'SingleLayerMode' Then Opts.SingleLayerMode := B
+    Else If Name = 'DisplaySpecialStrings' Then Opts.DisplaySpecialStrings := B
+    Else If Name = 'UseNetColorForHighlight' Then Opts.UseNetColorForHighlight := B
+    Else If Name = 'HighlightFull' Then Opts.HighlightFull := B
+    Else If Name = 'ShowAllPrimitivesInHighlightedNets' Then Opts.ShowAllPrimitivesInHighlightedNets := B
+    Else If Name = 'ShowComponentRefPoint' Then Opts.ShowComponentRefPoint := B
+    Else If Name = 'ProtectLockedPrimitives' Then Opts.ProtectLockedPrimitives := B
+    Else If Name = 'OnlySelectVisible' Then Opts.OnlySelectVisible := B
+    Else If Name = 'ClickClearsSelection' Then Opts.ClickClearsSelection := B
+    Else If Name = 'DoubleClickRunsInspector' Then Opts.DoubleClickRunsInspector := B
+    Else If Name = 'SnapToCentre' Then Opts.SnapToCentre := B
+    Else If Name = 'DuplicateDesignatorsAllowed' Then Opts.DuplicateDesignatorsAllowed := B
+    Else If Name = 'AutoPan' Then Opts.AutoPan := B
+    Else If Name = 'PlowThroughPolygons' Then Opts.PlowThroughPolygons := B
+    Else If Name = 'AutoVia' Then Opts.AutoVia := B
+    Else If Name = 'LockPreRoutes' Then Opts.LockPreRoutes := B
+    Else If Name = 'DeleteDeadEnds' Then Opts.DeleteDeadEnds := B
+    Else If Name = 'UseSmartTrackEnds' Then Opts.UseSmartTrackEnds := B
+    Else If Name = 'PlaneDrawMode' Then Opts.PlaneDrawMode := N
+    Else If Name = 'PadTypesDisplayMode' Then Opts.PadTypesDisplayMode := N
+    Else If Name = 'FromTosDisplayMode' Then Opts.FromTosDisplayMode := N
+    Else If Name = 'LayerNameDisplayMode' Then Opts.LayerNameDisplayMode := N
+    Else If Name = 'DragMode' Then Opts.DragMode := N
+    Else If Name = 'ComponentMoveKind' Then Opts.ComponentMoveKind := N
+    Else If Name = 'InteractiveRouteMode' Then Opts.InteractiveRouteMode := N
+    Else If Name = 'PlaceShoveDepth' Then Opts.PlaceShoveDepth := N
+    Else If Name = 'DraftTrackThreshold' Then Opts.DraftTrackThreshold := MilsToCoordF(F)
+    Else If Name = 'RotationStep' Then Opts.RotationStep := F;
+    Result := True;
+End;
+
+{..............................................................................}
+{ PCB_EditorOptions - read, or set, board editor preferences by name.          }
+{ Params: names (comma-separated, to read), set ('Name=Value|Name=Value').    }
+{ Every option set is read back: one that reads otherwise is in not_applied, }
+{ a value of the wrong kind in refused, a name not offered in unknown.       }
+{..............................................................................}
+Function PCB_EditorOptions(Params : String; RequestId : String) : String;
+Var
+    Opts : IPCB_SystemOptions;
+    Board : IPCB_Board;
+    ExpectedPath, Why, ExpectStr, ExpectItem : String;
+    Names, SetStr, Item, Name, Value, Items, NotApplied, Refused, Unknown, Got : String;
+    CommaPos, PipePos, EqPos : Integer;
+    Changed, Took : Boolean;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    Names := ExtractJsonValue(Params, 'names');
+    SetStr := ExtractJsonValue(Params, 'set');
+    ExpectStr := ExtractJsonValue(Params, 'expect');
+    If ExpectedPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'board_path is required');
+        Exit;
+    End;
+    { The PCB server holds these, and is loaded with the first board: on a   }
+    { fresh Altium with no board open, PCBServer.SystemOptions halted the    }
+    { script (see PCB_PolygonRepourMode).                                    }
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
+        Exit;
+    End;
+    If (SetStr <> '') And (ExpectStr = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+            'old preference values are required for a write');
+        Exit;
+    End;
+    Opts := Nil;
+    Try Opts := PCBServer.SystemOptions; Except Opts := Nil; End;
+    If Opts = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SYSTEM_OPTIONS', 'Could not reach the PCB editor preferences');
+        Exit;
+    End;
+    While ExpectStr <> '' Do
+    Begin
+        PipePos := Pos('|', ExpectStr);
+        If PipePos = 0 Then Begin ExpectItem := ExpectStr; ExpectStr := ''; End
+        Else Begin ExpectItem := Copy(ExpectStr, 1, PipePos - 1);
+            ExpectStr := Copy(ExpectStr, PipePos + 1, Length(ExpectStr)); End;
+        EqPos := Pos('=', ExpectItem);
+        If EqPos = 0 Then
+        Begin Result := BuildErrorResponse(RequestId, 'BAD_PRECONDITION', 'invalid old preference'); Exit; End;
+        Name := Trim(Copy(ExpectItem, 1, EqPos - 1));
+        Value := Trim(Copy(ExpectItem, EqPos + 1, Length(ExpectItem)));
+        If PcbOptionKind(Name) = '' Then
+        Begin Result := BuildErrorResponse(RequestId, 'BAD_PRECONDITION', 'unknown preference ' + Name); Exit; End;
+        Got := PcbOptionGet(Opts, Name);
+        If (PcbOptionKind(Name) = 'f') Or (PcbOptionKind(Name) = 'm') Then
+            Took := Abs(StrToFloatDef(Got, -1) - StrToFloatDef(Value, -2)) < 0.0001
+        Else Took := Got = LowerCase(Value);
+        If Not Took Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'STALE_OPTIONS',
+                Name + ' changed since the last read');
+            Exit;
+        End;
+    End;
+    Items := ''; NotApplied := ''; Refused := ''; Unknown := '';
+    Changed := False;
+    While SetStr <> '' Do
+    Begin
+        PipePos := Pos('|', SetStr);
+        If PipePos = 0 Then Begin Item := SetStr; SetStr := ''; End
+        Else Begin Item := Copy(SetStr, 1, PipePos - 1); SetStr := Copy(SetStr, PipePos + 1, Length(SetStr)); End;
+        EqPos := Pos('=', Item);
+        If EqPos = 0 Then Continue;
+        Name := Trim(Copy(Item, 1, EqPos - 1));
+        Value := Trim(Copy(Item, EqPos + 1, Length(Item)));
+        If PcbOptionKind(Name) = '' Then
+        Begin
+            If Unknown <> '' Then Unknown := Unknown + ',';
+            Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        If Not PcbOptionSet(Opts, Name, Value) Then
+        Begin
+            If Refused <> '' Then Refused := Refused + ',';
+            Refused := Refused + '"' + EscapeJsonString(Name) + '"';
+            Continue;
+        End;
+        Changed := True;
+        Got := PcbOptionGet(Opts, Name);
+        If (PcbOptionKind(Name) = 'f') Or (PcbOptionKind(Name) = 'm') Then
+            Took := Abs(StrToFloatDef(Got, -1) - StrToFloatDef(Value, -2)) < 0.0001
+        Else
+            Took := Got = LowerCase(Value);
+        If Not Took Then
+        Begin
+            If NotApplied <> '' Then NotApplied := NotApplied + ',';
+            NotApplied := NotApplied + '"' + Name + '"';
+        End;
+        If Pos(',' + Name + ',', ',' + Names + ',') = 0 Then
+        Begin
+            If Names <> '' Then Names := Names + ',';
+            Names := Names + Name;
+        End;
+    End;
+    While Names <> '' Do
+    Begin
+        CommaPos := Pos(',', Names);
+        If CommaPos = 0 Then Begin Name := Names; Names := ''; End
+        Else Begin Name := Copy(Names, 1, CommaPos - 1); Names := Copy(Names, CommaPos + 1, Length(Names)); End;
+        Name := Trim(Name);
+        If Name = '' Then Continue;
+        If PcbOptionKind(Name) = '' Then
+        Begin
+            If Pos('"' + Name + '"', Unknown) = 0 Then
+            Begin
+                If Unknown <> '' Then Unknown := Unknown + ',';
+                Unknown := Unknown + '"' + EscapeJsonString(Name) + '"';
+            End;
+            Continue;
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + Name + '":' + PcbOptionGet(Opts, Name);
+    End;
+    If Changed Then
+    Begin
+        Try Board.ViewManager_FullUpdate; Except End;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonRaw('options', '{' + Items + '}') + ','
+        + JsonBool('changed', Changed) + ','
+        + JsonRaw('not_applied', '[' + NotApplied + ']') + ','
+        + JsonRaw('refused', '[' + Refused + ']') + ','
+        + JsonRaw('unknown', '[' + Unknown + ']')));
+End;
+
+{..............................................................................}
+
 Function HandlePCBCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -47088,6 +47367,7 @@ Begin
         'get_special_strings':     Result := PCB_GetSpecialStrings(Params, RequestId);
         'get_layer_stackup':       Result := PCB_GetLayerStackup(Params, RequestId);
         'get_impedance_profiles':   Result := PCB_GetImpedanceProfiles(Params, RequestId);
+        'editor_options':        Result := PCB_EditorOptions(Params, RequestId);
         'board_options':           Result := PCB_BoardOptions(Params, RequestId);
         'pours_at':                Result := PCB_PoursAt(Params, RequestId);
         'get_layout_model':        Result := PCB_GetLayoutModel(Params, RequestId);

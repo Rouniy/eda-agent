@@ -1998,3 +1998,13 @@ expected locations after exact save and reopen. The STEP model retained
 its 10-mil Z offset and rotated about Z with the body. Owner library and
 board hashes were unchanged. Three focused tests and Pascal lint/build
 passed.
+
+# PCB editor preferences, 2026-10-27
+
+Script `.25` on Altium 26.11.1.5 read the view, edit and route preference
+groups on the owner's board. Each of show-pad-numbers, auto-pan and
+auto-via had a dry-run plan, a write and independent readback, then was
+restored. The final values were false, true and true respectively. A
+wrong PcbDoc path was refused. The owner's file SHA256 was unchanged and
+its document remained unmodified. Three focused tests and Pascal
+lint/build passed.
