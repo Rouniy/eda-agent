@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.38';
+    SCRIPT_VERSION = '2026.10.27.39';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47491,6 +47491,152 @@ Begin
         + JsonRaw('layers', '[' + Items + ']')));
 End;
 
+Function PCB_FlexStackName(S : IPCB_LayerStack) : String;
+Begin
+    Result := '';
+    If S = Nil Then Exit;
+    Try Result := S.Name; Except Result := ''; End;
+End;
+
+Function PCB_FlexStackLayers(S : IPCB_LayerStack) : String;
+Var
+    L : IPCB_LayerObject;
+    Items : String;
+Begin
+    Items := '';
+    L := S.First(eLayerClass_Electrical);
+    While L <> Nil Do
+    Begin
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + EscapeJsonString(L.Name) + '"';
+        L := S.Next(eLayerClass_Electrical, L);
+    End;
+    Result := '[' + Items + ']';
+End;
+
+Function PCB_FlexBendJson(Board : IPCB_Board; BL : IPCB_BendingLine; At : Integer) : String;
+Var
+    P, Q : TPoint;
+Begin
+    P := BL.FromPoint;
+    Q := BL.ToPoint;
+    Result := JsonObj(JsonInt('index', At) + ','
+        + JsonRaw('from', '[' + FloatToJsonStr(CoordToMilsF(P.X - Board.XOrigin)) + ','
+            + FloatToJsonStr(CoordToMilsF(P.Y - Board.YOrigin)) + ']') + ','
+        + JsonRaw('to', '[' + FloatToJsonStr(CoordToMilsF(Q.X - Board.XOrigin)) + ','
+            + FloatToJsonStr(CoordToMilsF(Q.Y - Board.YOrigin)) + ']') + ','
+        + JsonFloat('radius_mils', CoordToMilsF(BL.Radius)) + ','
+        + JsonFloat('angle', BL.Angle) + ','
+        + JsonInt('fold_index', BL.FoldIndex));
+End;
+
+Function PCB_FlexRegionsJson(Board : IPCB_Board) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Reg : IPCB_BoardRegion;
+    S : IPCB_LayerStack;
+    BL : IPCB_BendingLine;
+    Items, Bends : String;
+    I, RegIdx : Integer;
+Begin
+    Items := '';
+    RegIdx := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        Prim := Iter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            If Prim.ViewableObjectID = eViewableObject_BoardRegion Then
+            Begin
+                Reg := Prim;
+                S := Nil;
+                Try S := Reg.LayerStack; Except S := Nil; End;
+                Bends := '';
+                For I := 0 To Reg.BendingLinesCount - 1 Do
+                Begin
+                    BL := Reg.GetBendingLines(I);
+                    If Bends <> '' Then Bends := Bends + ',';
+                    Bends := Bends + PCB_FlexBendJson(Board, BL, I);
+                End;
+                If Items <> '' Then Items := Items + ',';
+                Items := Items + JsonObj(JsonInt('index', RegIdx) + ','
+                    + JsonStr('name', Reg.Name) + ','
+                    + JsonStr('layer_stack', PCB_FlexStackName(S)) + ','
+                    + JsonBool('locked_3d', Reg.Locked3D) + ','
+                    + JsonRaw('bend_lines', '[' + Bends + ']'));
+                Inc(RegIdx);
+            End;
+            Prim := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+    Result := '[' + Items + ']';
+End;
+
+Function PCB_FlexState(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Outline : IPCB_BoardOutline;
+    Line : IPCB_SplitBoardRegionWithArcs;
+    Side : IPCB_BoardRegion;
+    MLS : IPCB_MasterLayerStack;
+    S : IPCB_LayerStack;
+    ExpectedPath, Why, Splits, Stacks, LeftName, RightName : String;
+    I, SplitCount, StackCount : Integer;
+Begin
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath = '' Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path required'); Exit; End;
+    Board := GetPCBBoardForMutation(Why);
+    If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', Why); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
+    Outline := Board.BoardOutline;
+    MLS := Board.MasterLayerStack;
+    If (Outline = Nil) Or (MLS = Nil) Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_STACK', 'board outline or master stack unavailable'); Exit; End;
+    Splits := '';
+    SplitCount := Outline.GetState_SplitLineCount;
+    For I := 0 To SplitCount - 1 Do
+    Begin
+        Line := Outline.GetState_SplitLine(I);
+        LeftName := '';
+        RightName := '';
+        Side := Nil;
+        Try Side := Line.GetProperty_LeftBoardRegion; Except Side := Nil; End;
+        If Side <> Nil Then LeftName := Side.Name;
+        Side := Nil;
+        Try Side := Line.GetProperty_RightBoardRegion; Except Side := Nil; End;
+        If Side <> Nil Then RightName := Side.Name;
+        If Splits <> '' Then Splits := Splits + ',';
+        Splits := Splits + JsonObj(JsonInt('index', I) + ','
+            + JsonStr('left_region', LeftName) + ','
+            + JsonStr('right_region', RightName));
+    End;
+    Stacks := '';
+    StackCount := MLS.SubstackCount;
+    For I := 0 To StackCount - 1 Do
+    Begin
+        S := MLS.GetState_Substacks(I);
+        If Stacks <> '' Then Stacks := Stacks + ',';
+        Stacks := Stacks + JsonObj(JsonStr('name', PCB_FlexStackName(S)) + ','
+            + JsonBool('flex', S.IsFlex) + ','
+            + JsonRaw('copper_layers', PCB_FlexStackLayers(S)));
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('split_line_count', SplitCount) + ','
+        + JsonInt('layer_stack_count', StackCount) + ','
+        + JsonRaw('regions', PCB_FlexRegionsJson(Board)) + ','
+        + JsonRaw('split_lines', '[' + Splits + ']') + ','
+        + JsonRaw('layer_stacks', '[' + Stacks + ']')));
+End;
+
 Function PCB_SetStackStyle(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -48355,6 +48501,7 @@ Begin
         'pair_impedance_rule':   Result := PCB_PairImpedanceRule(Params, RequestId);
         'via_structures':       Result := PCB_ViaStructures(Params, RequestId);
         'physical_stack':       Result := PCB_PhysicalStack(Params, RequestId);
+        'flex_state':           Result := PCB_FlexState(Params, RequestId);
         'set_stack_style':      Result := PCB_SetStackStyle(Params, RequestId);
         'set_dielectric':       Result := PCB_SetDielectric(Params, RequestId);
         'impedance_profile':    Result := PCB_ImpedanceProfile(Params, RequestId);

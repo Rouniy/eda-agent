@@ -2095,3 +2095,11 @@ inserted above `Int2` and persisted after exact save/reopen. The empty
 new layer was then moved below `Int2` and that order also persisted.
 Five focused tests and Pascal lint/build passed. The owner's PcbDoc
 SHA256 stayed unchanged. Movement of a populated layer was not tested.
+
+# Rigid-flex inventory, 2026-10-27
+
+Script `.39` on Altium 26.11.1.5 read one board region assigned to the
+`Board Layer Stack`, four copper layers, and zero split and bend lines
+on the owner's PcbDoc. A wrong-board path was refused. Two focused tests
+and Pascal lint/build passed; the owner's PcbDoc SHA256 was unchanged.
+A board with multiple flex regions still needs native read acceptance.

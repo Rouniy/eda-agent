@@ -4,9 +4,10 @@
 
 - Qualify relative movement of a populated copper layer and rigid-flex
   stack-region edits from upstream `642e6a8` and `9ee593e` on isolated
-  PcbDocs with exact save/reopen checks. Empty-layer ordering, stack-style
-  writes, impedance profile lifecycle and per-copper-layer settings are
-  now ported and natively checked.
+  PcbDocs with exact save/reopen checks. The exact-board rigid-flex reader
+  passed on a single-region rigid board; a multi-region flex sample is
+  still needed. Empty-layer ordering, stack-style writes, impedance
+  profile lifecycle and per-copper-layer settings are ported and checked.
 - Continue reviewing upstream `172d254` and the remaining direct/child
   fork features against the sync ledger before claiming a true merge.
 

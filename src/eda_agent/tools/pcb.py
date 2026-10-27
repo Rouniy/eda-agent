@@ -4366,6 +4366,39 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_get_board_regions(board_path: str) -> dict[str, Any]:
+        """Read rigid-flex regions, split/bend lines and named layer stacks.
+
+        Coordinates of bend endpoints are in mils from the board origin.
+        The exact active PcbDoc path is required.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.flex_state", {"board_path": board_path}, timeout=120.0,
+        )
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        if (str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or type(reply.get("split_line_count")) is not int
+                or type(reply.get("layer_stack_count")) is not int
+                or not isinstance(reply.get("regions"), list)
+                or not isinstance(reply.get("split_lines"), list)
+                or not isinstance(reply.get("layer_stacks"), list)
+                or len(reply["split_lines"]) != reply["split_line_count"]
+                or len(reply["layer_stacks"]) != reply["layer_stack_count"]
+                or any(not isinstance(region, dict)
+                       or not isinstance(region.get("bend_lines"), list)
+                       for region in reply["regions"])
+                or any(not isinstance(stack, dict)
+                       or not isinstance(stack.get("copper_layers"), list)
+                       or type(stack.get("flex")) is not bool
+                       for stack in reply["layer_stacks"])):
+            return {"ok": False, "reason": "incomplete or wrong-board rigid-flex snapshot",
+                    "native_reply": reply}
+        return reply
+
+    @mcp.tool()
     async def pcb_set_stack_style(
         board_path: str, style: int, dry_run: bool = True,
     ) -> dict[str, Any]:

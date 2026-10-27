@@ -2,6 +2,17 @@
 
 ## Latest native integration, 2026-10-27
 
+Script `.39` on Altium 26.11.1.5 added an exact-board rigid-flex
+inventory: board regions, split lines, bend lines and named layer stacks
+with their copper layers. On the owner's PcbDoc it returned one region,
+one rigid `Board Layer Stack` with Top Layer, Int1, Int2 and Bottom Layer,
+and zero split or bend lines. A wrong-board read was refused. A board
+with actual flex splits and bends remains to be checked natively. Two
+focused tests and Pascal lint/build pass. Generated bundle SHA256:
+`2F6905FB64F751FF340F84D0F670A0607F5D17A753A584B8FA71CF74ADDC42B1`.
+The owner PcbDoc remained active with unchanged SHA256
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
 Script `.38` on Altium 26.11.1.5 added exact-board copper order listing,
 relative insertion and movement. The list includes visible names and
 canonical layer IDs, so a renamed `MidLayer1` is not mistaken for a free
