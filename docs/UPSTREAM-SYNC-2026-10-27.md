@@ -972,3 +972,26 @@ coordinates to integers before the native handlers; `Gen_PlaceTextFrame`
 stored parsed floats and its corner-swap temporary in integers. Source
 `.108` preserves decimal mils to `MilsToCoordF`. Forty-three focused tests
 pass; native save/reopen checks remain pending.
+
+## Refreshed fork-tip and branch audit after source `.108`
+
+After fetching `upstream`, `morembedded` and `origin`, `main` and
+`origin/main` both point to `f6a6d5d497612b050ad8df9bfb856ab62245033e`.
+`upstream/main` is still `c45ca0a537ad5afe0cda4ce1951e6bfb6be4ff3d`:
+it is the exact merge base and `main..upstream/main` contains zero commits.
+`morembedded/main` remains `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+
+The live GitHub fork inventory and `git ls-remote` check now match 62/62
+default branch tips and 117/117 branch tips in cached refs. The recently
+updated `RHSvekon/main` still points to `9ee593e`, already in upstream
+history. This freshness check proves which remote commits were inspected;
+it does not prove every fork behavior is natively accepted.
+
+Rechecked the individually named `vincent-himpe` fixes for PCB zoom, via
+mask following, keepout restrictions, region arcs, primitive net writes,
+polygon pour settings and decimal-mil handling. Their current source and
+focused tests are present in `main`; 72 related tests pass. The donor's
+`2c0a56d` decimal conversion lines are present in the current Pascal and
+Python sources apart from two response-building lines whose structure has
+since changed. This is a source comparison, with native acceptance still
+tracked separately.
