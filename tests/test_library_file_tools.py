@@ -269,6 +269,60 @@ def test_render_draws_every_pad_and_reports_the_extent():
     assert summary["bbox_mm"]["x2"] == pytest.approx(1.7)
 
 
+def test_render_uses_altium_mechanical_kind_over_layer_number():
+    from eda_agent.design.landpattern.live import layer_roles
+
+    prims = {"tracks": [{"layer": "Mechanical1", "x1": -1, "y1": -1,
+                          "x2": 1, "y2": -1, "width": 0.1}]}
+    roles = layer_roles([{"layer": "Mechanical1", "name": "Mech 1",
+                          "kind": "Courtyard Top"}])
+    svg, _ = render_footprint_svg(_pads(), prims, layer_roles=roles)
+    assert 'data-layer="Mechanical1" stroke="#f59e0b"' in svg
+    assert layer_kind("Courtyard", {"courtyard": "mechanical"}) == "mechanical"
+
+
+def test_live_render_reports_mechanical_role_and_silk_contact(tmp_path, monkeypatch):
+    pads = _pads()
+    prims = _prims(tracks=[
+        {"layer": "Mechanical1", "x1": -1, "y1": -1,
+         "x2": 1, "y2": -1, "width": 0.1},
+        {"layer": "Top Overlay", "x1": -1, "y1": 0,
+         "x2": 1, "y2": 0, "width": 0.1},
+    ])
+    pads["library_path"] = prims["library_path"] = "Parts.PcbLib"
+
+    class Bridge:
+        async def send_command_async(self, command, params):
+            if command == "library.get_pad_geometry":
+                return pads
+            if command == "library.get_footprint_primitives":
+                return prims
+            assert command == "library.get_mech_layers"
+            return {"library_path": "Parts.PcbLib", "layers": [
+                {"layer": "Mechanical1", "name": "Mech 1",
+                 "kind": "Courtyard Top"}]}
+
+    class MCP:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self, *args, **kwargs):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return register
+
+    monkeypatch.setattr(library_tools, "get_bridge", lambda: Bridge())
+    mcp = MCP()
+    library_tools.register_library_tools(mcp)
+    result = asyncio.run(mcp.tools["lib_render_footprint"](
+        "Part", output_path=str(tmp_path / "part.svg"), png=False))
+    assert result["ok"] and result["roles"]["courtyard"]["count"] == 1
+    assert result["silk_over_copper"]
+    assert 'data-layer="Mechanical1" stroke="#f59e0b"' in (
+        tmp_path / "part.svg").read_text()
+
+
 def test_render_punches_holes_for_through_hole_pads():
     pads = _pads(hole_mm=0.6, layer="Multi-Layer", shape="Round")
     svg, _ = render_footprint_svg(pads, _prims())

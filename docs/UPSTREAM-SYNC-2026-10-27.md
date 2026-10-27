@@ -2,6 +2,15 @@
 
 ## Refreshed Git and function inventory
 
+The `abed-amraie` footprint preview used Altium's mechanical-layer kind
+and returned courtyard/assembly roles plus silk-on-copper findings. Our
+existing `lib_render_footprint` now adds those findings while keeping its
+SVG format and existing fields. The SVG colors a mechanical layer from
+its native kind (or an explicit caller override), rather than its number
+or incidental name. Both `TopOverlay` and `Top Overlay` classify as silk;
+the latter was lost by the prior live-model converter. Thirty focused
+render/live-model tests passed. Native library acceptance remains pending.
+
 The `rabihnd/integration` fork's one-pin-per-pad designator guard was
 missing from our batch library writers. `_pins_payload`, `_pads_payload`
 and the single footprint-pad tool now reject grouped names such as

@@ -33,8 +33,13 @@ _KINDS = {
 }
 
 
-def layer_kind(name: str) -> str:
+def layer_kind(name: str, roles: dict[str, str] | None = None) -> str:
     """Classify a layer by its name (Altium's or a stack's own)."""
+    role = (roles or {}).get(name.lower())
+    if role in ("courtyard", "assembly", "mechanical"):
+        return role
+    if role == "silk":
+        return "overlay"
     n = name.replace(" ", "").replace("_", "").lower()
     if "courtyard" in n:
         return "courtyard"
@@ -129,7 +134,8 @@ def _arc_svg(a: dict) -> str:
 
 
 def render_footprint_svg(pads: dict, prims: dict,
-                         margin_mm: float = 0.5) -> tuple[str, dict]:
+                         margin_mm: float = 0.5,
+                         layer_roles: dict[str, str] | None = None) -> tuple[str, dict]:
     """The SVG text and a summary ``{bbox_mm, pads, by_layer}``."""
     items: list[tuple[int, str]] = []
     by_layer: dict[str, int] = {}
@@ -137,7 +143,7 @@ def render_footprint_svg(pads: dict, prims: dict,
     ys: list[float] = [0.0]
 
     def _put(layer: str, svg: str, *pts: tuple[float, float]) -> None:
-        kind = layer_kind(layer)
+        kind = layer_kind(layer, layer_roles)
         by_layer[layer] = by_layer.get(layer, 0) + 1
         items.append((_KINDS[kind][1], f'<g data-layer="{_esc(layer)}" '
                       f'stroke="{_KINDS[kind][0]}" fill="{_KINDS[kind][0]}">{svg}</g>'))

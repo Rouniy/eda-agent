@@ -7909,6 +7909,8 @@ def register_library_tools(mcp):
         library_path: str = "",
         output_path: str = "",
         png: bool = True,
+        courtyard_layer: str = "",
+        assembly_layer: str = "",
     ) -> dict[str, Any]:
         """Draw one library footprint to an SVG (and a PNG) to look at.
 
@@ -7926,25 +7928,65 @@ def register_library_tools(mcp):
             output_path: SVG path; default the workspace ``renders`` folder.
             png: also rasterize to a PNG next to it (needs a Chromium-family
                 browser; skipped with a note when there is none).
+            courtyard_layer / assembly_layer: optional mechanical layer names
+                when the library has no corresponding Altium layer kind.
 
         Returns:
             ``{ok, svg_path, png_path?, bbox_mm, pads, by_layer,
-            regions_as_boxes}``.
+            regions_as_boxes, roles, silk_over_copper, notes}``.
         """
+        from ..bridge.exceptions import AltiumCommandError
+        from ..design.landpattern.live import (
+            layer_roles, model_from_live, role_summary, silk_over_copper,
+        )
         from ..render.footprint_svg import render_footprint_svg
 
         pads, prims, problem = await _read_footprint(footprint_name, library_path)
         if problem:
             return {"ok": False, "reason": f"could not read footprint "
                     f"{footprint_name!r}: {problem}"}
-        svg, summary = render_footprint_svg(pads, prims)
+        notes: list[str] = []
+        mech: list[dict[str, Any]] = []
+        source_path = str(prims.get("library_path") or pads.get("library_path")
+                          or library_path or "")
+        try:
+            reply = await get_bridge().send_command_async(
+                "library.get_mech_layers", {})
+            read_path = str((reply or {}).get("library_path") or "")
+            if read_path and source_path and read_path.lower() != source_path.lower():
+                notes.append(f"mechanical layer kinds came from {read_path}, "
+                             f"not {source_path}; explicit layer names only")
+            else:
+                mech = list((reply or {}).get("layers") or [])
+        except AltiumCommandError as exc:
+            notes.append(f"mechanical layer kinds unavailable ({exc.code or exc}); "
+                         "explicit layer names only")
+        roles = layer_roles(mech, courtyard_layer=courtyard_layer,
+                            assembly_layer=assembly_layer)
+        display_roles = dict(roles)
+        for entry in mech:
+            for key in (entry.get("layer"), entry.get("name")):
+                if key:
+                    display_roles.setdefault(str(key).lower(), "mechanical")
+        model = model_from_live(pads, prims, mech,
+                                courtyard_layer=courtyard_layer,
+                                assembly_layer=assembly_layer)
+        silk_hits = silk_over_copper(model)
+        if silk_hits:
+            notes.insert(0, "silkscreen over copper on pad(s) "
+                         + ", ".join(sorted({hit["pad"] for hit in silk_hits})))
+        svg, summary = render_footprint_svg(
+            pads, prims, layer_roles=display_roles)
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", footprint_name).strip("._") or "footprint"
         target = Path(output_path) if output_path else (
             Path(get_config().workspace_dir) / "renders" / f"footprint_{safe}.svg")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(svg, encoding="utf-8")
         out: dict[str, Any] = {"ok": True, "footprint": footprint_name,
-                               "svg_path": str(target), **summary}
+                               "svg_path": str(target), **summary,
+                               "roles": role_summary(model),
+                               "silk_over_copper": silk_hits,
+                               "notes": notes}
         if png:
             from ..render.rasterize import rasterize_svg
             png_path = target.with_suffix(".png")

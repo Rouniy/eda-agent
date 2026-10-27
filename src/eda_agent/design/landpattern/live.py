@@ -32,7 +32,8 @@ _ROLE_BY_KIND = {
     "designator top": "designator", "designator bottom": "designator",
     "component center top": "center", "component center bottom": "center",
 }
-_SILK = {"topoverlay": "silk", "bottomoverlay": "silk"}
+_SILK = {"topoverlay": "silk", "bottomoverlay": "silk",
+         "top overlay": "silk", "bottom overlay": "silk"}
 
 _SHAPES = {"roundrectangle": "roundrect", "rectangle": "rect",
            "rect": "rect", "round": "circle", "circle": "circle",

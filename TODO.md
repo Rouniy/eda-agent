@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Library preview fork parity, 2026-10-27
+
+- [x] Restore Altium mechanical-kind coloring and courtyard/assembly role
+  reporting in the existing footprint preview; report silk over copper.
+  Thirty focused tests pass.
+- [ ] Verify a real PcbLib preview with a Courtyard Top mechanical layer
+  and a silkscreen line crossing a pad on a disposable Altium library.
+
 ## MOREmbedded bridge reply parity, 2026-10-27
 
 - [x] Restore stale-server reply warnings and the optional fit-board call
