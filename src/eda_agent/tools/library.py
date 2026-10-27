@@ -3744,8 +3744,9 @@ def register_library_tools(mcp):
     async def lib_read_pcblib_headers(library_path: str) -> dict[str, Any]:
         """Read a .PcbLib's footprint headers WITHOUT Altium running.
 
-        Returns each footprint's ``{name, pattern, description, pad_count,
-        height}`` plus the library's format string, by parsing the ASCII
+        Returns each footprint's ``{name, pattern, storage_name,
+        description, pad_count, height}`` plus the library's format string,
+        by parsing the ASCII
         streams of the OLE container directly. Use it for library hygiene
         where opening Altium is not worth it or not possible: a CI check,
         a sweep over a directory of libraries, a quick "what is in here".

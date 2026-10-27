@@ -2,6 +2,12 @@
 
 ## Fork behavior audit, 2026-10-28
 
+- [x] Compare native and offline PcbLib footprint names on the same
+  copied library. Fix a sanitized OLE storage name (`SO-G5_P.95`)
+  leaking as the footprint name instead of its `PATTERN` (`SO-G5/P.95`).
+  All 33 names now agree; offline primitive geometry is still not
+  implemented.
+
 - [x] Native-read footprint primitives from a copied 33-footprint
   PcbLib under script `.115`: `PQ208` and `CC1608-0603` returned the
   exact library identity and non-pad geometry; separate pad reads

@@ -10,6 +10,7 @@ automatically without it.
 """
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,29 @@ def test_as_int_reports_unparseable_as_none():
     assert _as_int("many") is None
 
 
+def test_pattern_is_the_name_when_ole_storage_sanitizes_a_slash(monkeypatch):
+    import olefile
+
+    class FakeOle:
+        def listdir(self):
+            return [["SO-G5_P.95", "Data"]]
+
+        def openstream(self, path):
+            if path == ["SO-G5_P.95", "Parameters"]:
+                body = b"|PATTERN=SO-G5/P.95|HEIGHT=0mil\x00"
+                return io.BytesIO(len(body).to_bytes(4, "little") + body)
+            return io.BytesIO(b"")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(olefile, "isOleFile", lambda path: True)
+    monkeypatch.setattr(olefile, "OleFileIO", lambda path: FakeOle())
+    row, = read_pcblib_footprints("unused.PcbLib")
+    assert row["name"] == row["pattern"] == "SO-G5/P.95"
+    assert row["storage_name"] == "SO-G5_P.95"
+
+
 def test_a_file_that_is_not_ole_is_refused(tmp_path):
     junk = tmp_path / "x.PcbLib"
     junk.write_bytes(b"not ole")
@@ -80,6 +104,7 @@ def test_reads_footprint_headers_from_a_real_library():
     by_name = {f["name"]: f for f in footprints}
     fp = by_name["PCBComponent_1"]
     assert fp["pattern"] == "PCBComponent_1"
+    assert fp["storage_name"] == "PCBComponent_1"
     assert fp["pad_count"] == 2
     assert fp["height"] == "0mil"
     # Library/ and FileVersionInfo/ also hold a Data stream and are not

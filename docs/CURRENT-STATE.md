@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Offline PcbLib footprint identity parity, 2026-10-28
+
+Comparing the native 33-footprint list from the copied Spirit Level
+PcbLib with `read_pcblib_footprints` found one real name mismatch:
+Altium reports `SO-G5/P.95`, while its OLE storage is `SO-G5_P.95`.
+The saved `PATTERN` field has the editor name. The offline reader now
+uses `PATTERN` as `name` and exposes `storage_name` separately so callers
+can still identify the OLE stream. A regression test covers the
+sanitised-storage case. After the fix, the 33 native and 33 offline
+names matched exactly. The copied PcbLib closed without saving.
+Focused file-reader tests: 22 passed, six local-fixture skips. This
+compares identity and count; offline pad/primitive geometry remains
+outside this reader's scope.
+
 ## Native footprint-primitives read on copied PcbLib, 2026-10-28
 
 Loaded script `.115` opened the copied

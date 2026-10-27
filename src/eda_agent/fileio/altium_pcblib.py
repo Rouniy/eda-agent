@@ -107,8 +107,8 @@ def _as_int(value: str) -> int | None:
 
 
 def read_pcblib_footprints(path: str | Path) -> list[dict[str, Any]]:
-    """Return each footprint's header: ``{name, pattern, description,
-    pad_count, height}``.
+    """Return each footprint's header: ``{name, pattern, storage_name,
+    description, pad_count, height}``.
 
     ``pad_count`` is None when the library's table of contents does not
     carry one, rather than 0, because "no pads" and "not stated" are
@@ -133,13 +133,14 @@ def read_pcblib_footprints(path: str | Path) -> list[dict[str, Any]]:
         for name in storages:
             params = _fields(_length_prefixed_text(
                 _read_stream(ole, [name, "Parameters"])))
-            row = toc.get(name, {})
+            # Altium replaces characters such as '/' in OLE storage names.
+            # PATTERN is the footprint name the editor and live API use.
+            pattern = params.get("PATTERN", "") or name
+            row = toc.get(pattern, toc.get(name, {}))
             out.append({
-                "name": name,
-                # PATTERN is the footprint's own name for itself; it has
-                # matched the storage name in every sample seen, but it is
-                # reported rather than assumed.
-                "pattern": params.get("PATTERN", "") or name,
+                "name": pattern,
+                "pattern": pattern,
+                "storage_name": name,
                 "description": params.get("DESCRIPTION", "") or row.get("Description", ""),
                 "pad_count": _as_int(row.get("Pad Count", "")),
                 "height": params.get("HEIGHT", "") or row.get("Height", ""),
