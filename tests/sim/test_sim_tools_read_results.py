@@ -154,7 +154,7 @@ def test_a_selection_altium_did_not_take_is_reported_not_hidden(sim, monkeypatch
                     "results_saved": True})
     out = asyncio.run(tools["sim_run"](analyses=["ac"]))
     assert out["selection_applied"] is False
-    assert "reopened" in out["selection_note"]
+    assert "even after reopening" in out["selection_note"]
 
 
 def test_an_unknown_analysis_is_refused_before_anything_runs(sim):

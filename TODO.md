@@ -9,14 +9,21 @@
   SchDoc: type, text, coordinates and rotation persisted. Altium
   normalised the rotated font from ID 1 to ID 2; the family/size stayed
   Times New Roman 10. A missing exact sheet was refused.
-- [ ] Run disposable-project acceptance of upstream's simulation probe,
+- [x] Run disposable-project acceptance of upstream's simulation probe,
   setup and sheet-run changes in the merged `.112` bundle.
   On an isolated copy of Altium's Simulation Quick Start project,
   `sim_get_setup` read operating-point, DC, transient and AC settings
   and 14 stored runs. `proj_load_sheets` loaded all seven sheets;
   `sim_get_probes` returned a complete empty inventory with no unloaded
-  sheets. The copy closed without saving. Probe placement/readback and
-  `sim_run` remain to verify.
+  sheets. `sch_place_probe` then placed `SimulationProbe=V` at
+  (4250,10200) mil on `out`; save/reopen preserved it. `sim_run`
+  produced and saved real results for the focused sheet. Its
+  `analyses=['op']` selection did not hold: Altium returned op, DC,
+  transient and AC, even after reopening with an op-only saved setup.
+  The copy closed without saving after each run.
+- [ ] Find a native Altium mechanism that reliably limits a sheet run
+  to selected analyses. Until then, report the actual `ran_analyses`
+  and `selection_applied=false` when the simulator ignores the request.
 
 ## Combined fork decimal guard, 2026-10-27
 

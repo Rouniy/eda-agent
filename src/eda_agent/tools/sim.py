@@ -338,14 +338,12 @@ def register_sim_tools(mcp):
         reports in ``ran_analyses`` which analyses this run produced,
         read back from the results.
 
-        MEASURED on AD 26.11: Altium takes the on/off switches from the
-        setup at the first run after the project opens and keeps that
-        selection until the project is reopened; each run also switches
-        operating point, DC, transient and AC back on in the setup. So
-        ``analyses`` writes the switches and is applied by the first run
-        after opening; otherwise the run does what Altium kept, and
-        ``selection_applied`` is false. sim_get_results(analysis=...)
-        reads one analysis either way.
+        ``analyses`` writes the requested switches before running, then
+        ``ran_analyses`` reports what Altium actually produced. AD 26.11
+        has been observed running operating point, DC, transient and AC
+        despite an op-only setup, even after the project was reopened.
+        In that case ``selection_applied`` is false. Use
+        sim_get_results(analysis=...) to read one analysis.
 
         With no sheet in front and none given, the project's first
         simulator output runs instead (``run_mode`` "project"), which
@@ -425,10 +423,11 @@ def register_sim_tools(mcp):
             reply["selection_applied"] = applied
             if not applied:
                 reply["selection_note"] = (
-                    "Altium kept the analysis selection it loaded at this "
-                    "project's first run since it was opened; the switches "
-                    "are saved in the setup and apply after the project is "
-                    "reopened. sim_get_results(analysis=...) reads one.")
+                    "Altium ran different analyses from the requested "
+                    "switches. The saved setup is not proof of what its "
+                    "simulator will run, even after reopening the project. "
+                    "Use ran_analyses for the actual run and "
+                    "sim_get_results(analysis=...) to read one.")
         reply["results"] = _results(charts, waves=None, max_points=0)
         return reply
 
@@ -507,7 +506,7 @@ def register_sim_tools(mcp):
         outputs: list[str] | None = None,
         project_path: str = "",
     ) -> dict[str, Any]:
-        """Set the analyses sim_run will use, in the project's .simcfg.
+        """Set saved analyses and their settings in the project's .simcfg.
 
         Values are SPICE values: a number in SI units, or a string with a
         SPICE suffix ("5u", "10n", "1k", "100meg").
@@ -524,8 +523,10 @@ def register_sim_tools(mcp):
             project_path: the project; empty uses the focused one.
 
         Each analysis set here is switched on; one already on stays on
-        and runs on its last settings. sim_run(analyses=[...]) runs only
-        the ones named, and sim_get_setup shows what is on. Dashboard
+        and retains its last settings. sim_run(analyses=[...]) requests
+        only the named analyses, but Altium may still run more;
+        sim_get_setup shows what was saved, and sim_run.ran_analyses
+        shows what actually ran. Dashboard
         changes are saved first and kept; a project without a .simcfg
         gets one.
 
@@ -542,7 +543,7 @@ def register_sim_tools(mcp):
 
     @mcp.tool()
     async def sim_get_setup(sheet: str = "", project_path: str = "") -> dict[str, Any]:
-        """What a simulation run would do: the analyses on and their settings.
+        """Read the saved simulation analysis switches and settings.
 
         Reads the project's .simcfg as Altium last saved it (its edits in
         the dashboard are saved first). Altium uses a sheet's own settings
@@ -553,6 +554,10 @@ def register_sim_tools(mcp):
             sheet: the schematic to report for; empty uses the sheet in
                 front.
             project_path: the project; empty uses the focused one.
+
+        The switches are a setup readback, not a prediction of the next
+        run: AD 26.11 has run all four analyses from an op-only setup.
+        Check sim_run.ran_analyses for what actually ran.
 
         Returns:
             Dict with simcfg, affect, source, enabled (of op, dc,

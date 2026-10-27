@@ -3,21 +3,26 @@
 Expect `altium_script_version` = `2026.10.27.112` for the current source
 bundle. Source lint/build and focused tests pass. The restarted Altium
 26.11.1.5 session reports `.112` with zero cast errors, and HTTP/MCP
-14701 lists the new tools. Merged simulation behavior still needs native
-acceptance on a disposable project.
+14701 lists the new tools. Merged simulation behavior was subsequently
+checked on a disposable project copy, as described below.
 
 Read-only native simulation acceptance now covers `sim_get_setup` on an
 isolated Simulation Quick Start copy (four analysis types and 14 stored
 runs), plus `sim_get_probes` after all seven sheets loaded (zero probes,
 no unloaded sheets). The copy closed without saving. Probe placement
-and `sim_run` still need a native case.
+and a sheet-scoped run were then checked on the same copy:
+`sch_place_probe` created a persisted voltage probe at (4250,10200)
+mil, and `sim_run` saved an SDF with numeric operating-point, DC,
+transient and AC results. `analyses=['op']` did not constrain Altium's
+run; even after reopening with an op-only saved setup, it ran all four.
+The tool reports the actual `ran_analyses` and no longer promises that
+reopening will fix the selection. The copy closed without saving.
 
 Free-text native acceptance is now complete on a disposable SchDoc:
 `sch_add_text` placed one `eLabel`, and exact save/reopen retained its
 text, fractional coordinates and 90-degree orientation. Altium changed
 the font table ID from 1 to 2 for the rotated entry; both use Times New
-Roman 10. The file was closed and removed. Merged simulation behavior
-still needs local native acceptance.
+Roman 10. The file was closed and removed.
 
 ## Previous native verification: 2026.10.27.94
 
@@ -3363,15 +3368,17 @@ Simulation Quick Start project. Its `sch_place_probe` now creates the
 parameters of a native voltage probe (`SimulationProbe=V`,
 `ProbeVoltage=True`, `ProbeName`, `ProbeCustomName` and
 `ProbeValueDisplay`). `sim_get_probes` distinguishes it from an old bare
-probe that the simulator ignores. `sim_get_setup` reports the settings
-the next run will use. `sim_run` can run a sheet's selected analyses and
-reports which analyses actually ran; Altium retains its first selection
-until the project is reopened. Reloading a `.simcfg` despite
+probe that the simulator ignores. `sim_get_setup` reports the saved
+settings. `sim_run` runs a sheet and reports which analyses actually
+ran. Local `.112` acceptance found that an op-only request still ran
+all four analyses even after the project was reopened with an op-only
+saved setup. Reloading a `.simcfg` despite
 `SupportsReload=False` worked in that upstream test.
 
 This merge carries the source and upstream's native observations.
-Native acceptance of the merged `.112` bundle in our shared Altium
-session is still pending.
+The merged `.112` bundle has now been checked on a disposable copy for
+probe persistence, setup readback and sheet-run results; reliable
+single-analysis selection remains unresolved.
 
 ## Still open, and not blocking
 

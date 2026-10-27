@@ -8,7 +8,23 @@ DC, transient and AC analyses, including their stored settings and 14
 prior runs. `proj_load_sheets` loaded all seven SchDocs, after which
 `sim_get_probes` returned `count=0` and `not_loaded=[]`. The project
 closed with `save=false`; the installed original was never opened.
-Probe placement and a new simulation run remain unverified locally.
+Probe placement and a new simulation run were verified the next day.
+
+## Native simulation write and run on `.112`, 2026-10-28
+
+On the same isolated Quick Start copy, `sch_place_probe` put a voltage
+probe at (4250,10200) mil on the `out` wire. `sim_get_probes` returned
+one simulation probe with `SimulationProbe=V`, `ProbeVoltage=True` and
+custom name `QA_OUT`, both before and after saving/reopening the copied
+sheet. A sheet-scoped `sim_run(analyses=['op'])` saved an SDF with
+numeric outputs and correctly reported `selection_applied=false`:
+Altium actually ran operating point, DC, transient and AC. Reopening
+the copied project with `sim_get_setup.enabled=['op']` and running the
+same sheet again still produced all four. The prior claim that
+reopening makes the selection apply was wrong; the tool's note and
+documentation now report the observed behavior. The copy closed
+without saving after the run. Analysis selection needs a separate
+native solution.
 
 ## Native free-text acceptance on `.112`, 2026-10-27
 
@@ -20,8 +36,8 @@ coordinates, object type and orientation. Altium changed `FontId` 1 to 2
 on reopen: both specs are Times New Roman 10, with rotation 0 and 90
 respectively. A missing exact SchDoc was refused with
 `SHEET_NOT_LOADED`. The disposable document was closed and removed.
-The simulation additions from upstream still need merged-bundle native
-acceptance on a disposable project.
+The simulation additions from upstream were subsequently checked on a
+disposable project copy, with the analysis-selection limitation above.
 
 ## Live `.112` runtime after restart, 2026-10-27
 
