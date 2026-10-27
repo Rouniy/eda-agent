@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## Battery research branch, 2026-10-28
+
+- [x] Import the standalone PyBaMM/COMSOL research lab from
+  `yniantongtian-oss/feat/battery-ai-comsol-lab` without changing core
+  `eda-agent` dependencies. Ruff and six isolated tests pass, including
+  a short electrothermal solve.
+- [ ] Observe the path-scoped hosted GitHub Actions workflow after push.
+- [ ] Exercise the optional MPh adapter against a licensed COMSOL install
+  when one is available; PyBaMM validation does not qualify COMSOL.
+
 ## Live `.113` fractional text-frame correction, 2026-10-28
 
 - [x] On a disposable free SchDoc, batch wire vertices retained

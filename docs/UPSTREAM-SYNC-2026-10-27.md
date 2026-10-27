@@ -1,5 +1,16 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 optional battery lab branch
+
+The self-contained `research/battery-ai-comsol-lab` tree and its scoped
+CI workflow were imported from fork branch
+`yniantongtian-oss/feat/battery-ai-comsol-lab` at `0f7c73f`. This is an
+optional research package, not an Altium bridge dependency. Its own
+Python 3.12 environment installed PyBaMM 26.10.1.1; Ruff and six tests,
+including a short electrothermal solve, passed. The COMSOL/MPh adapter
+still needs a licensed native run. We intentionally did not import the
+branch's unrelated root documentation, dependency and submodule changes.
+
 ## 2026-10-28 live fork-tip audit
 
 `fork-status --verify-fork-branches` matched all 62/62 live default tips

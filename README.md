@@ -8,6 +8,11 @@ Local fork reliability work and acceptance gaps: [integration TODO](TODO.md).
 Agents: read [AGENTS.md](AGENTS.md) before using the upstream setup or connecting to Altium.
 Current deployment, evidence and next-agent memory: [current-state handoff](docs/CURRENT-STATE.md).
 
+The optional [battery research lab](research/battery-ai-comsol-lab/README.md)
+from a fork runs as a separate Python package for PyBaMM baselines, sweeps
+and an optional COMSOL adapter. It does not add dependencies to the Altium
+bridge.
+
 ### Restricted integration status (2026-10-14)
 
 The current integration candidate uses script `2026.10.14.5`. The local Altium

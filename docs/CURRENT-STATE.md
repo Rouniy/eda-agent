@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Optional battery research lab from a fork, 2026-10-28
+
+The self-contained `research/battery-ai-comsol-lab` package and its
+path-scoped GitHub Actions workflow were imported from
+`yniantongtian-oss/feat/battery-ai-comsol-lab`. The core `eda-agent`
+dependency set and CLI were not changed. In an isolated Python 3.12
+environment with PyBaMM 26.10.1.1, Ruff passed and all six package tests
+passed, including the short electrothermal smoke run and CSV/manifest
+output. COMSOL/MPh was not installed or natively exercised; its adapter
+remains optional and requires a local COMSOL installation and license.
+
 ## Exact-board net inventory native read, 2026-10-28
 
 Script `.114` opened two disposable PcbDocs. `pcb_get_nets` with the
