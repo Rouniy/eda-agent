@@ -2,13 +2,21 @@
 
 ## Source integration, 2026-10-27
 
+The `.7` source ports `mooreaa`'s corrected live-pin filter. Schematic ePin
+queries omit hidden copies from other parts and display modes unless the
+filter explicitly names `OwnerPart`. `sch_fix_port_crossrefs` reads these pins
+and includes them in the reviewed plan digest. Pascal lint also exposed an
+existing missing local `Pin` declaration in `SetSchProperty`; it is fixed.
+The focused CrossRef suite has 21 passing tests and Pascal lint/build passes.
+Live Altium reload and disposable-sheet acceptance are pending.
+
 The `.6` source ports `mooreaa`'s port cross-reference planner and exposes
 `sch_fix_port_crossrefs` with dry run by default. Applying a plan requires
 an exact sheet path, a matching plan SHA-256 and `confirm=true`; each write
 uses the old CrossRef position and is read back. The native property reader
-adds read-only `ConnectedEnd`. The tool does not yet query live pins because
-our generic ePin iterator lacks the fork's hidden-pin filter; geometry and
-Altium's ConnectedEnd remain available, and ambiguous ports are not moved.
+adds read-only `ConnectedEnd`. At that version direct pin fallback was disabled;
+geometry and Altium's ConnectedEnd remained available, and ambiguous ports
+were not moved.
 Focused tests and Pascal lint/build pass. The existing HTTP child was
 restarted by its supervisor, then Altium loaded `.6`: `app_ping` reports
 loaded/bundled `.6`, `version_match=true`, on Altium `26.11.1.5`. TCP 14701

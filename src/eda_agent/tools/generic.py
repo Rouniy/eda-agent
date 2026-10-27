@@ -2001,12 +2001,9 @@ def register_generic_tools(mcp):
             wires = await query("eWire", "Vertices")
             refs = await query("eParameter", "Name,Text,Location.X,Location.Y,Justification",
                                "Name=CrossRef")
+            pins = await query("ePin", "Designator,ConnectionX,ConnectionY")
         except ValueError as exc:
             return {"error": "INCOMPLETE_READ", "reason": str(exc)}
-        # The current main branch does not yet have mooreaa's live-pin
-        # filter. Unfiltered ePin reads include hidden copies from other
-        # parts/display modes and can misidentify a port's wired end.
-        pins = []
         info = await bridge.send_command_async("generic.get_document_info", {})
         x_range = None
         if isinstance(info, dict):
@@ -2015,15 +2012,15 @@ def register_generic_tools(mcp):
 
         plan = plan_crossref_fixes(ports, wires, refs, pins, x_range)
         digest_input = {"sheet_path": sheet_path, "ports": ports,
-                        "wires": wires, "crossrefs": refs, "moves": plan["moves"]}
+                        "wires": wires, "crossrefs": refs, "pins": pins,
+                        "moves": plan["moves"]}
         plan_sha256 = hashlib.sha256(json.dumps(
             digest_input, sort_keys=True, ensure_ascii=False,
             default=str).encode("utf-8")).hexdigest()
         plan.update({"sheet_path": sheet_path, "dry_run": dry_run,
                      "ports": len(ports), "crossrefs": len(refs),
                      "border_x": list(x_range) if x_range else None,
-                     "plan_sha256": plan_sha256,
-                     "pin_fallback": "disabled until live-pin filtering is ported"})
+                     "plan_sha256": plan_sha256, "live_pins": len(pins)})
         if not refs:
             plan["note"] = ("No CrossRef parameters found: Port Cross References "
                             "may be off, or the sheet was not compiled since "

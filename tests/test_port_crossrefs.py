@@ -243,7 +243,11 @@ async def test_dry_run_writes_nothing(monkeypatch):
     assert not [c for c, _ in bridge.calls if c == "generic.modify_objects"]
     queried = [p["object_type"] for c, p in bridge.calls
                if c == "generic.query_objects"]
-    assert set(queried) == {"ePort", "eWire", "eParameter"}
+    assert set(queried) == {"ePort", "eWire", "eParameter", "ePin"}
+    pin_query = next(p for c, p in bridge.calls if c == "generic.query_objects"
+                     and p["object_type"] == "ePin")
+    assert pin_query["scope"] == f"doc:{_SHEET}"
+    assert pin_query["properties"] == "Designator,ConnectionX,ConnectionY"
     ref_query = next(p for c, p in bridge.calls if c == "generic.query_objects"
                      and p["object_type"] == "eParameter")
     assert ref_query["filter"] == "Name=CrossRef"
@@ -251,6 +255,22 @@ async def test_dry_run_writes_nothing(monkeypatch):
     port_query = next(p for c, p in bridge.calls if c == "generic.query_objects"
                       and p["object_type"] == "ePort")
     assert "ConnectedEnd" in port_query["properties"]
+
+
+@pytest.mark.asyncio
+async def test_live_pin_query_changes_the_reviewed_plan(monkeypatch):
+    bridge = _SheetBridge(_ROWS)
+    bridge.rows["ePort"][0].pop("ConnectedEnd")
+    bridge.rows["eWire"] = []
+    tool = _tool(monkeypatch, bridge)
+    without_pin = await tool(sheet_path=_SHEET)
+    assert without_pin["moves"] == []
+
+    bridge.rows["ePin"] = [{"ConnectionX": 13300, "ConnectionY": 2800}]
+    with_pin = await tool(sheet_path=_SHEET)
+    assert len(with_pin["moves"]) == 1
+    assert with_pin["live_pins"] == 1
+    assert with_pin["plan_sha256"] != without_pin["plan_sha256"]
 
 
 @pytest.mark.asyncio

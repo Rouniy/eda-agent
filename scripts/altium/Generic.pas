@@ -942,6 +942,7 @@ Var
     R : ISch_Rectangle;
     L : ISch_Line;
     Comp : ISch_Component;
+    Pin : ISch_Pin;
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
@@ -1782,6 +1783,79 @@ Begin
 End;
 
 {..............................................................................}
+{ A placed component carries pins for all parts and display modes. Identify }
+{ the copies that its current part and display mode do not show.             }
+Function PinShownOn(Comp : ISch_Component; Pin : ISch_Pin) : Boolean;
+Var
+    Owner, PartId : Integer;
+Begin
+    Owner := 0;
+    PartId := 0;
+    Try Owner := Pin.OwnerPartId; Except End;
+    Try PartId := Comp.CurrentPartID; Except End;
+    Result := (Owner = 0) Or (Owner = PartId);
+End;
+
+Function PinKey(Pin : ISch_Pin) : String;
+Var
+    Desig : String;
+    Part, PinMode, X, Y : Integer;
+Begin
+    Desig := '';
+    Part := 0;
+    PinMode := 0;
+    X := 0;
+    Y := 0;
+    Try Desig := Pin.Designator; Except End;
+    Try Part := Pin.OwnerPartId; Except End;
+    Try PinMode := Pin.OwnerPartDisplayMode; Except End;
+    Try X := Pin.Location.X; Except End;
+    Try Y := Pin.Location.Y; Except End;
+    Result := Desig + '|' + IntToStr(Part) + '|' + IntToStr(PinMode) + '|'
+        + IntToStr(X) + '|' + IntToStr(Y);
+End;
+
+Procedure DeadPinKeys(SchDoc : ISch_Document; Dead : TStringList);
+Var
+    Iterator, PinIter : ISch_Iterator;
+    Comp : ISch_Component;
+    Pin : ISch_Pin;
+    Mode, PinMode : Integer;
+Begin
+    Iterator := SchDoc.SchIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Comp := Iterator.FirstSchObject;
+        While Comp <> Nil Do
+        Begin
+            Mode := 0;
+            Try Mode := Comp.DisplayMode; Except End;
+            PinIter := Comp.SchIterator_Create;
+            Try
+                PinIter.AddFilter_ObjectSet(MkSet(ePin));
+                Pin := PinIter.FirstSchObject;
+                While Pin <> Nil Do
+                Begin
+                    PinMode := Mode;
+                    Try PinMode := Pin.OwnerPartDisplayMode; Except End;
+                    If PinShownOn(Comp, Pin) Then
+                    Begin
+                        If PinMode <> Mode Then Dead.Add(PinKey(Pin));
+                    End
+                    Else
+                        Dead.Add(PinKey(Pin));
+                    Pin := PinIter.NextSchObject;
+                End;
+            Finally
+                Comp.SchIterator_Destroy(PinIter);
+            End;
+            Comp := Iterator.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iterator);
+    End;
+End;
+
 { Helper: Process objects in a single SchDoc                                  }
 { Mode: 'query', 'modify', 'delete'                                         }
 {..............................................................................}
@@ -1796,10 +1870,12 @@ Var
     Sym : ISch_SheetSymbol;
     SchLib : ISch_Lib;
     LibComp : ISch_Component;
-    Removed, ParamsOfSymbol : Boolean;
+    Removed, ParamsOfSymbol, LivePinsOnly, Skip : Boolean;
     ObjJson : String;
     First : Boolean;
     MaxIter : Integer;
+    DeadPins : TStringList;
+    PinObj : ISch_Pin;
 Begin
     Result := '';
     First := (TotalMatched = 0);
@@ -1986,12 +2062,25 @@ Begin
         Iterator := SchDoc.SchIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
 
+    { A filter on OwnerPart explicitly requests hidden part/mode copies. }
+    LivePinsOnly := (ObjTypeInt = ePin) And (Mode = 'query')
+        And (SchDoc.ObjectId <> eSchLib)
+        And (Pos('OwnerPart', FilterStr) = 0);
+    DeadPins := TStringList.Create;
+    If LivePinsOnly Then DeadPinKeys(SchDoc, DeadPins);
+
     Obj := Iterator.FirstSchObject;
     While Obj <> Nil Do
     Begin
         If (Limit > 0) And (TotalMatched >= Limit) Then Break;
 
-        If MatchesFilter(Obj, FilterStr) Then
+        Skip := False;
+        If LivePinsOnly Then
+        Begin
+            PinObj := Obj;
+            If DeadPins.IndexOf(PinKey(PinObj)) >= 0 Then Skip := True;
+        End;
+        If (Not Skip) And MatchesFilter(Obj, FilterStr) Then
         Begin
             If Mode = 'query' Then
             Begin
@@ -2031,6 +2120,7 @@ Begin
         LibComp.SchIterator_Destroy(Iterator)
     Else
         SchDoc.SchIterator_Destroy(Iterator);
+    DeadPins.Free;
 
     If Mode = 'modify' Then
         SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');

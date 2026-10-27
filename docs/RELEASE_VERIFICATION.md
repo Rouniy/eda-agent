@@ -1,9 +1,15 @@
-# Release verification: 2026.10.27.6
+# Release verification: 2026.10.27.7
+
+The `.7` schematic ePin query filter follows `mooreaa`'s final AD25 fix:
+typed pin objects, string keys and a caller-owned list. It filters hidden
+parts/display modes by default, while `OwnerPart` filters retain full access.
+The CrossRef tool now uses the live pins and binds them into its plan digest.
+The 21 focused tests and Pascal lint/build pass. Native query acceptance on a
+disposable multipart schematic is pending.
 
 The `.6` port CrossRef planner has source tests and Pascal lint/build. Its
 `ConnectedEnd` getter and the CrossRef edit/readback still need native
-acceptance on a disposable sheet; direct pin fallback remains disabled until
-the fork's live-pin filter is integrated.
+acceptance on a disposable sheet.
 
 The `.5` generic schematic property guard has source tests and Pascal
 lint/build. Its `TextFontId` read/write path still needs native acceptance
