@@ -71,10 +71,10 @@ def test_a_request_carries_unicode_as_literal_utf8(tmp_path):
 
 
 def test_a_reply_escapes_all_four_hex_digits():
-    hexer = _decommented(_body(_src("Utils.pas"), "CodeUnitHex4"))
+    hexer = _decommented(_body(_src("Utils.pas"), "CodeUnitToHex4"))
     assert "Shr 12" in hexer and "Shr 8" in hexer and "'00'" not in hexer
     escaper = _decommented(_body(_src("Utils.pas"), "EscapeJsonString"))
-    assert escaper.count("CodeUnitHex4(O)") == 2
+    assert escaper.count("CodeUnitToHex4(O)") == 2
     errors = _decommented(_body(_src("Main.pas"), "BuildErrorResponseDetailed"))
     assert "Shr 12" in errors and "'\\u00'" not in errors
 
@@ -164,10 +164,12 @@ async def test_a_confirmed_stop_reports_what_it_saved(monkeypatch):
     tools, _ = _tools(monkeypatch, "eda_agent.tools.application",
                       "register_application_tools",
                       reply={"stopped": True, "edited_saved": 1,
+                             "edited_attempted": 2,
                              "clean_left_alone": 5})
     out = await tools["app_detach"]()
     assert out["stopped"] is True
     assert (out["edited_saved"], out["clean_left_alone"]) == (1, 5)
+    assert out["edited_attempted"] == 2
 
 
 def test_stopping_writes_only_edited_documents():
@@ -185,8 +187,10 @@ def test_stopping_writes_only_edited_documents():
     # sheet edited once is rewritten by every later stop.
     forget = save[save.index("ServerDoc.DoFileSave('')"):]
     assert "ForgetDocEdited(Path)" in forget
+    assert "SaveWritten := SaveWritten + 1" in forget
     assert "IsLibraryDocPath" not in forget
     one = _decommented(_body(_src("Application.pas"), "App_SaveDocument"))
-    assert "If Saved Then ForgetDocEdited(FilePath);" in one
+    assert "(AgeAfter <> -1) And (AgeAfter <> AgeBefore)" in one
+    assert "ForgetDocEdited(FilePath);" in one
     # app_save_all keeps the full flush: its scope is never 'edited'.
     assert "SaveScope" not in _decommented(_body(_src("Application.pas"), "App_SaveAll"))

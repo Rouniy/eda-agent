@@ -642,8 +642,11 @@ def _stamp_deployed_unit(path: Path) -> None:
     raw = path.read_bytes()
     text = raw.decode("utf-8-sig")
     if has_stamp(text):
-        path.write_bytes((_UTF8_BOM if raw.startswith(_UTF8_BOM) else b"")
-                         + stamp_source(text).encode("utf-8"))
+        # AD25 reads script sources in the local ANSI codepage. Preserve the
+        # ASCII source but never deploy the UTF-8 mark from a donor file.
+        path.write_bytes(stamp_source(text).encode("utf-8"))
+    elif raw.startswith(_UTF8_BOM):
+        path.write_bytes(text.encode("utf-8"))
 
 
 def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:

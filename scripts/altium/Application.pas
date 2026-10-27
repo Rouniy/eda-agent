@@ -1020,10 +1020,12 @@ Begin
     SaveScope := 'edited';
     CleanLeftAlone := 0;
     SaveAttempts := 0;
+    SaveWritten := 0;
     Try SaveAllDirty(0); Except End;
     SaveScope := '';
     Running := False;
     Result := BuildSuccessResponse(RequestId, '{"stopped":true,"edited_saved":'
+        + IntToStr(SaveWritten) + ',"edited_attempted":'
         + IntToStr(SaveAttempts) + ',"clean_left_alone":'
         + IntToStr(CleanLeftAlone) + '}');
 End;
@@ -1050,6 +1052,7 @@ Begin
         AgesBefore := AgesForPaths(Paths);
 
         SaveAttempts := 0;
+        SaveWritten := 0;
         LibsSkippedClean := 0;
         SkippedLibNames := '';
         SaveAllDirty(0);

@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.94';
+    SCRIPT_VERSION = '2026.10.27.96';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -104,7 +104,7 @@ Var
     LastCompileTick : Cardinal;
     { Documents the last save pass actually reached. See
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
-    SaveAttempts : Integer;
+    SaveAttempts, SaveWritten : Integer;
     { Libraries the last save pass left alone because no tool edited them,
       and their names. See SaveOneDocByDocRef. }
     LibsSkippedClean : Integer;
@@ -197,8 +197,8 @@ End;
 { unambiguous even when a single operation's property list contains '|'.       }
 {                                                                               }
 { Defined in Main.pas so Library.pas and Generic.pas can both use them,       }
-{ the Altium project compiles files in DesignN order (Main → ... → Library →  }
-{ ... → Generic) and a callee must come earlier than its caller.               }
+{ the Altium project compiles files in DesignN order (Main -> Library ->    }
+{ Generic) and a callee must come earlier than its caller.                  }
 {..............................................................................}
 
 Function NextBatchOp(Var Remaining : String) : String;
@@ -855,6 +855,19 @@ Begin
     If Pos('|' + UpperCase(Path) + '|', SavePassSeen) > 0 Then Exit;
     SavePassSeen := SavePassSeen + '|' + UpperCase(Path) + '|';
 
+        { Detach may flush only documents with actual unsaved editor changes  }
+        { or changes tracked by our tools. A clean schematic or board must   }
+        { not be rewritten merely because it is open. app_save_all uses the   }
+        { full pass and does not set SaveScope.                              }
+        If SaveScope = 'edited' Then
+        Begin
+            If (Not ServerDoc.Modified) And (Not DocWasEdited(Path)) Then
+            Begin
+                CleanLeftAlone := CleanLeftAlone + 1;
+                Exit;
+            End;
+        End;
+
         { A LIBRARY NO TOOL EDITED IS LEFT ALONE. Libraries are opened to
           read from and copy out of far more often than they are edited, and
           the forced flush below rewrote every one of them. See
@@ -876,12 +889,14 @@ Begin
         Try AgeBefore := FileAge(Path); Except AgeBefore := -1; End;
         Try ServerDoc.SetModified(True); Except End;
         Try ServerDoc.DoFileSave(''); Except End;
-        { Once written, a library has nothing pending until the next edit. }
-        If IsLibraryDocPath(Path) Then
+        { A confirmed write clears the edit marker for every document kind. }
+        { Otherwise a later detach can rewrite a now-clean schematic.       }
+        AgeAfter := -1;
+        Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
+        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then
         Begin
-            AgeAfter := -1;
-            Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
-            If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
+            SaveWritten := SaveWritten + 1;
+            ForgetDocEdited(Path);
         End;
 End;
 

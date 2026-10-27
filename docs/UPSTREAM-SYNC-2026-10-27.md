@@ -9,8 +9,23 @@ first and uses the system codepage only when UTF-8 decoding fails. Both
 the BOM and a CP936 Chinese reply decode in the focused test; 37 bridge
 and session checks passed. A live AD25 zh-CN session is still needed to
 verify the fallback end to end. Six unrelated assertions in the older
-`test_unicode_and_detach_transport.py` fail against the current main script
-and detach API; they predate this reader change and need a separate audit.
+`test_unicode_and_detach_transport.py` initially failed against the current
+main script and detach API; the audit below resolved them.
+
+The `redbird98` AD25 source-encoding and detach checks revealed two real
+merge losses. Script units and installed copies are now ASCII without a BOM;
+the generated `Altium_MCP.pas` was rebuilt from the current sources. The
+native detach path now honours `SaveScope='edited'`, leaving clean open
+documents untouched, and clears tracked edit marks after a confirmed save
+for every document kind. The stop reply separates confirmed writes
+(`edited_saved`) from attempts (`edited_attempted`); a failed Python
+`app_detach` reports `stopped=false` and its reason. The remaining legacy
+assertions were updated to the current hex helper, timestamp-verified save
+contract and registry key name. Seventy related tests passed; Pascal
+lint/build found zero errors or warnings across 12 units. Script `.96`
+was reloaded in Altium 26.11.1.5; `eda-agent doctor` confirmed the same
+version with zero critical failures. Disposable-document detach/save
+acceptance remains pending.
 
 The `yniantongtian-oss` release verifier checked both wheel and sdist
 payloads and the wheel's package metadata. Our existing verifier already

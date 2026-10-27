@@ -1005,17 +1005,19 @@ def register_application_tools(mcp):
 
         Call this tool once you've finished your Altium work for the session.
         It sends application.stop_server so the DelphiScript loop exits cleanly
-        and stops the Python keep-alive. It does not save documents. The MCP
-        transport remains available for tools that do not need DelphiScript.
+        and stops the Python keep-alive. The native stop attempts to save
+        editor-modified or tool-edited documents and leaves clean documents
+        untouched. The MCP transport remains available for tools that do not
+        need DelphiScript.
 
         After detach, app_attach launches StartMCPServer again when the local
         launcher is available.
 
         Returns:
             attached False always; stopped True only when Altium answered
-            that its loop stopped, with edited_saved and clean_left_alone
-            counts. Otherwise stopped False and the reason: the loop may
-            still be running.
+            that its loop stopped, with edited_saved (confirmed disk writes),
+            edited_attempted and clean_left_alone counts. Otherwise stopped
+            False and the reason: the loop may still be running.
         """
         bridge = get_bridge()
         reply: Any = None
@@ -1029,7 +1031,7 @@ def register_application_tools(mcp):
         if isinstance(reply, dict) and reply.get("stopped") is True:
             out = {"attached": False, "stopped": True,
                    "message": "Detached from Altium Designer and stopped MCP server"}
-            for key in ("edited_saved", "clean_left_alone"):
+            for key in ("edited_saved", "edited_attempted", "clean_left_alone"):
                 if key in reply:
                     out[key] = reply[key]
             return out
@@ -1037,6 +1039,8 @@ def register_application_tools(mcp):
             reason = f"Altium did not confirm the stop (reply: {reply!r})"
         return {
             "attached": False,
+            "stopped": False,
+            "reason": reason,
             "mcp_listening": True,
             "message": "Released the Altium scripting engine; MCP transport remains available. Call app_attach to restart the script worker.",
         }
