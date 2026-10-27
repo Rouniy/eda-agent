@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Native free-text acceptance on `.112`, 2026-10-27
+
+On a disposable free `FreeText_QA.SchDoc`, `sch_add_text` placed native
+`eLabel` `QA_REV_A` at (125.125, 200.25) mil, rotation 90 degrees.
+`obj_query` returned one label with those fields. `app_save_document`
+observed a disk write; exact close/reopen returned the same text,
+coordinates, object type and orientation. Altium changed `FontId` 1 to 2
+on reopen: both specs are Times New Roman 10, with rotation 0 and 90
+respectively. A missing exact SchDoc was refused with
+`SHEET_NOT_LOADED`. The disposable document was closed and removed.
+The simulation additions from upstream still need merged-bundle native
+acceptance on a disposable project.
+
 ## Live `.112` runtime after restart, 2026-10-27
 
 The user-authorized Altium restart replaced the `.96` VM with source

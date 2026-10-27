@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Native fork free-text acceptance on `.112`
+
+The merged runtime placed `sch_add_text` as one `eLabel` on a disposable
+free SchDoc at 125.125, 200.25 mil with 90-degree orientation. Exact
+save, close and reopen preserved its text and geometry. Altium's font
+table normalised `FontId` 1 to 2; both records are Times New Roman 10,
+and ID 2 carries the 90-degree rotation. An unloaded exact sheet was
+refused. The QA file was closed and deleted. This closes the free-text
+native acceptance item; merged simulation behavior remains untested here.
+
 ## Live merged bundle `.112`
 
 Altium 26.11.1.5 was restarted after the source merge. The loaded main

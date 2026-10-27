@@ -5,9 +5,12 @@
 - [x] Restart Altium with the main script project, confirm `app_ping`
   reports `.112` with zero cast errors, and restart the HTTP/MCP process
   on 14701. A client listed 757 tools; TCP 14700 stayed live.
-- [ ] Run native save/reopen acceptance of the new free-text `eLabel`
-  handler and disposable-project acceptance of upstream's simulation
-  probe, setup and sheet-run changes.
+- [x] Native save/reopen acceptance of `sch_add_text` on a disposable
+  SchDoc: type, text, coordinates and rotation persisted. Altium
+  normalised the rotated font from ID 1 to ID 2; the family/size stayed
+  Times New Roman 10. A missing exact sheet was refused.
+- [ ] Run disposable-project acceptance of upstream's simulation probe,
+  setup and sheet-run changes in the merged `.112` bundle.
 
 ## Combined fork decimal guard, 2026-10-27
 
@@ -28,8 +31,8 @@
 - [x] Port `rabihnd/integration`'s `eLabel` free-text placement as
   `sch_add_text` with exact sheet targeting and readback. Script `.111`
   passes source tests and Pascal lint/build.
-- [ ] On a disposable SchDoc with `.111` loaded, place a rotated free-text
-  label, save/reopen, and verify its type, text, font and position.
+- [x] On disposable SchDoc with `.112` loaded, place a rotated free-text
+  label, save/reopen, and verify type, text, font family/size and position.
 
 ## Fresh fork parity check, 2026-10-27
 

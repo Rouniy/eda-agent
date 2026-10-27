@@ -3,8 +3,15 @@
 Expect `altium_script_version` = `2026.10.27.112` for the current source
 bundle. Source lint/build and focused tests pass. The restarted Altium
 26.11.1.5 session reports `.112` with zero cast errors, and HTTP/MCP
-14701 lists the new tools. Free-text placement/save-reopen and merged
-simulation behavior still need native acceptance on disposable documents.
+14701 lists the new tools. Merged simulation behavior still needs native
+acceptance on a disposable project.
+
+Free-text native acceptance is now complete on a disposable SchDoc:
+`sch_add_text` placed one `eLabel`, and exact save/reopen retained its
+text, fractional coordinates and 90-degree orientation. Altium changed
+the font table ID from 1 to 2 for the rotated entry; both use Times New
+Roman 10. The file was closed and removed. Merged simulation behavior
+still needs local native acceptance.
 
 ## Previous native verification: 2026.10.27.94
 
