@@ -255,6 +255,8 @@ def register_generic_tools(mcp):
                 PinLength is a common source of wrong conclusions about
                 what is wired.
                 "Designator.Text,Comment.Text,LibReference" for components
+                "DisplayMode,DisplayModeCount,FootprintPinMap" for a placed
+                component's drawn symbol and current PCB model pin map.
                 "VerticesCount,Vertices,LineWidth" for graphic polylines.
                 Vertices is a semicolon-separated list of x,y pairs in mils;
                 the template's ePolyline objects are distinct from eLine.
@@ -533,6 +535,10 @@ def register_generic_tools(mcp):
                 filter="Designator=1",
                 set="Name=A"
             )
+        A placed component also accepts DisplayMode (0 through
+        DisplayModeCount - 1) and FootprintPinMap, for example
+        "G->1;D->2;S->3". A pin map write merges Altium entries and is
+        read back; it cannot clear the whole map through this property.
         """
         bad = filter_problem(filter)
         if bad:

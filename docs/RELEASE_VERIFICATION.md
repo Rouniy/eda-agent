@@ -1,4 +1,10 @@
-# Release verification: 2026.10.27.7
+# Release verification: 2026.10.27.8
+
+The `.8` placed-component property port has source tests and Pascal
+lint/build. `DisplayMode`, `DisplayModeCount` and `FootprintPinMap` still need
+native read/write checks on a disposable symbol with alternate modes and
+multiple PCB models. The FPC map-parser execution test was skipped locally
+because `fpc` is not installed.
 
 The `.7` schematic ePin query filter follows `mooreaa`'s final AD25 fix:
 typed pin objects, string keys and a caller-owned list. It filters hidden

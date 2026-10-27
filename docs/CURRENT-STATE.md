@@ -2,6 +2,16 @@
 
 ## Source integration, 2026-10-27
 
+The `.8` source adds `mooreaa`'s placed-component `DisplayMode`,
+`DisplayModeCount` and current `FootprintPinMap` property handling. Reads and
+writes are gated to `eSchComponent`; mode writes check the available range and
+read back, and pin-map writes require an old-map read, check the requested
+entries after Altium's merge and restore the old map on failure. The related
+source suite passed 22 tests; three FPC-dependent tests were skipped because
+`fpc` is unavailable here. Pascal lint/build passes. Native component
+acceptance is pending, and the fork's named footprint-model chooser remains
+to be ported.
+
 The `.7` source ports `mooreaa`'s corrected live-pin filter. Schematic ePin
 queries omit hidden copies from other parts and display modes unless the
 filter explicitly names `OwnerPart`. `sch_fix_port_crossrefs` reads these pins

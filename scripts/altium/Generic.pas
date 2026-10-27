@@ -267,6 +267,9 @@ Begin
                 Or ((PropName = 'TextColor') And (Not SchObjectHasTextColor(Obj)))
                 Or ((PropName = 'FontId') And (Not SchObjectHasFontId(Obj)))
                 Or ((PropName = 'TextFontId') And (Not SchObjectHasTextFontId(Obj)))
+                Or (((PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap'))
+                    And (Obj.ObjectId <> eSchComponent))
+                Or (PropName = 'DisplayModeCount')
                 Or (PropName = 'ConnectedEnd') Then
             Begin
                 Result := PropName;
@@ -577,6 +580,169 @@ Begin
         Result := IntToStr(CoordToMils(Vtx.Y));
 End;
 
+Function CurrentFootprintImpl(Comp : ISch_Component) : ISch_Implementation;
+Var
+    ImplIter : ISch_Iterator;
+    Impl, FirstFp : ISch_Implementation;
+    MT : String;
+    IsCur : Boolean;
+Begin
+    Result := Nil;
+    FirstFp := Nil;
+    ImplIter := Comp.SchIterator_Create;
+    Try
+        ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+        Impl := ImplIter.FirstSchObject;
+        While Impl <> Nil Do
+        Begin
+            MT := '';
+            Try MT := Impl.ModelType; Except End;
+            If UpperCase(MT) = 'PCBLIB' Then
+            Begin
+                If FirstFp = Nil Then FirstFp := Impl;
+                IsCur := False;
+                Try IsCur := Impl.IsCurrent; Except End;
+                If IsCur Then
+                Begin
+                    Result := Impl;
+                    Break;
+                End;
+            End;
+            Impl := ImplIter.NextSchObject;
+        End;
+    Finally
+        Comp.SchIterator_Destroy(ImplIter);
+    End;
+    If Result = Nil Then Result := FirstFp;
+End;
+
+{ The PCBLIB model names a part carries, comma separated, for a hint. }
+
+Function CanonicalPinMap(Text : String) : String;
+Var
+    Rest, Entry, Pin, Pad, Ch : String;
+    I, P : Integer;
+Begin
+    Result := '';
+    Rest := '';
+    For I := 1 To Length(Text) Do
+    Begin
+        Ch := Copy(Text, I, 1);
+        If (Ch = '(') Or (Ch = ')') Then Ch := '';
+        If Ch = ';' Then Ch := ',';
+        Rest := Rest + Ch;
+    End;
+    Rest := StringReplace(Rest, '->', ':', -1);
+    While Rest <> '' Do
+    Begin
+        P := Pos(',', Rest);
+        If P > 0 Then
+        Begin
+            Entry := Trim(Copy(Rest, 1, P - 1));
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Entry := Trim(Rest);
+            Rest := '';
+        End;
+        If Entry <> '' Then
+        Begin
+            P := Pos(':', Entry);
+            If P = 0 Then
+            Begin
+                Result := '';
+                Exit;
+            End;
+            Pin := Trim(Copy(Entry, 1, P - 1));
+            Pad := Trim(Copy(Entry, P + 1, Length(Entry)));
+            If (Pin = '') Or (Pad = '') Then
+            Begin
+                Result := '';
+                Exit;
+            End;
+            If Result <> '' Then Result := Result + ',';
+            Result := Result + '(' + Pin + ':' + Pad + ')';
+        End;
+    End;
+End;
+
+{ True when every "(pin:pad)" entry of Wanted (in CanonicalPinMap form) is   }
+{ in Got, whatever the order and spacing. Altium merges a written map by     }
+{ schematic pin, so Got may hold entries Wanted does not name.               }
+Function PinMapHolds(Wanted : String; Got : String) : Boolean;
+Var
+    Rest, Entry, Have : String;
+    P : Integer;
+Begin
+    Result := False;
+    Have := ',' + StringReplace(CanonicalPinMap(Got), ' ', '', -1) + ',';
+    Rest := StringReplace(Wanted, ' ', '', -1);
+    If Rest = '' Then Exit;
+    While Rest <> '' Do
+    Begin
+        P := Pos('),', Rest);
+        If P > 0 Then
+        Begin
+            Entry := Copy(Rest, 1, P);
+            Rest := Copy(Rest, P + 2, Length(Rest));
+        End
+        Else
+        Begin
+            Entry := Rest;
+            Rest := '';
+        End;
+        If Pos(',' + Entry + ',', Have) = 0 Then Exit;
+    End;
+    Result := True;
+End;
+
+{ WriteFootprintPinMap - the current footprint model's pin map, in any form  }
+{ CanonicalPinMap takes. Read back; when it does not hold, the old map is    }
+{ written back and False returned. Altium merges by schematic pin, so a map  }
+{ cannot be cleared this way, and pads are not checked against the footprint.}
+Function WriteFootprintPinMap(Comp : ISch_Component; Value : String) : Boolean;
+Var
+    Impl : ISch_Implementation;
+    Wanted, Old, Got : String;
+    HaveOld : Boolean;
+Begin
+    Result := False;
+    Wanted := CanonicalPinMap(Value);
+    If Wanted = '' Then Exit;
+    Impl := CurrentFootprintImpl(Comp);
+    If Impl = Nil Then Exit;
+    Old := '';
+    HaveOld := False;
+    Try Old := Impl.MapAsString; HaveOld := True; Except End;
+    If Not HaveOld Then Exit;
+    SchBeginModify(Impl);
+    Try Impl.MapAsString := Wanted; Except End;
+    SchEndModify(Impl);
+    Got := '';
+    Try Got := Impl.MapAsString; Except End;
+    If PinMapHolds(Wanted, Got) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
+    SchBeginModify(Impl);
+    Try Impl.MapAsString := Old; Except End;
+    SchEndModify(Impl);
+End;
+
+{ The current footprint model's pin map, '' when the part has no PCB model. }
+Function ReadFootprintPinMap(Comp : ISch_Component) : String;
+Var
+    Impl : ISch_Implementation;
+Begin
+    Result := '';
+    Impl := CurrentFootprintImpl(Comp);
+    If Impl = Nil Then Exit;
+    Try Result := Impl.MapAsString; Except Result := ''; End;
+End;
+
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     NoERC : ISch_NoERC;
@@ -685,6 +851,22 @@ Begin
         Begin
             Comp := Obj;
             Try Result := IntToStr(Comp.PartCount); Except Result := ''; End;
+        End
+        Else If (PropName = 'DisplayMode') Or (PropName = 'DisplayModeCount')
+            Or (PropName = 'FootprintPinMap') Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                If PropName = 'DisplayMode' Then
+                    Result := IntToStr(Comp.DisplayMode)
+                Else If PropName = 'DisplayModeCount' Then
+                    Result := IntToStr(Comp.DisplayModeCount)
+                Else
+                    Result := ReadFootprintPinMap(Comp);
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
         End
 
         // Sub-object string properties (compound interfaces, typed cast required).
@@ -946,6 +1128,7 @@ Var
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
+    ModeCount, NewMode : Integer;
     Matched : Boolean;
     { Separate from Matched on purpose. Matched says the property NAME is
       one this build writes; WroteOK says the value actually landed, read
@@ -1137,6 +1320,35 @@ Begin
               identifiers raise a modal that bypasses Try/Except. }
             Comp := Obj;
             Try Comp.PartCount := StrToIntDef(Value, 1); Except End;
+        End
+        Else If PropName = 'DisplayMode' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                ModeCount := Comp.DisplayModeCount;
+                If ModeCount < 1 Then ModeCount := 1;
+                NewMode := StrToIntDef(Trim(Value), -1);
+                If (NewMode < 0) Or (NewMode >= ModeCount) Then
+                    WroteOK := False
+                Else
+                Begin
+                    Comp.DisplayMode := NewMode;
+                    WroteOK := (Comp.DisplayMode = NewMode);
+                End;
+            End
+            Else
+                Matched := False;
+        End
+        Else If PropName = 'FootprintPinMap' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                WroteOK := WriteFootprintPinMap(Comp, Value);
+            End
+            Else
+                Matched := False;
         End
         Else If PropName = 'OwnerPartId' Then
             Obj.OwnerPartId := StrToIntDef(Value, 0)
