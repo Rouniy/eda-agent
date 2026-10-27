@@ -1,16 +1,21 @@
 # Fork integration TODO
 
-## Refreshed after `.60`, 2026-10-27
+## Refreshed after `.62`, 2026-10-27
 
 - [x] Establish an exact upstream merge point: `9ee593e` is an ancestor
   of our current `main`, and there are zero upstream commits behind it.
-- [x] Recheck every direct fork default branch against its cached ref:
-  61 listed, 60 external tips unchanged, own cached tip refreshed.
+- [x] Recheck every fork branch against its cached ref: 62 default tips
+  and 117 total branch tips matched after fetching 20 previously missing
+  branch refs. The `fork-status --verify-fork-branches` command repeats
+  this live check.
   Recheck periodically; this is a dated inventory, not a permanent claim.
 - [x] Port the child fork's via-tenting write with exact-board dry run,
   reviewed token and Altium save/close/reopen acceptance on a disposable
   board (`6b08ff4`). Bottom-side placement also passed native mirror,
   rotation and persistence checks (`63f1d6c`).
+- [x] Port useful generic DbLib reads from `andrzej-sikora-elte/elte`.
+  Script `.62` returned flags and current footprint models from two
+  placed parts on a live DCDC schematic without property diagnostics.
 - Continue native acceptance of the already integrated multipart,
   rigid-flex, library and manufacturing paths listed below. A Git-divergent
   fork commit alone is not evidence that its feature is absent.
@@ -21,7 +26,7 @@
   reconcile legacy upstream tests that assume implicit active-board writes
   with the exact-board contracts retained here. The broad suite previously
   reached 7419 passing tests; focused fixes after that run passed.
-- Continue native checks on disposable Altium documents using script `.60`.
+- Continue native checks on disposable Altium documents using script `.62`.
   Bottom-side component placement and flip readback passed on an isolated
   PcbDoc; other operations in this section retain their own acceptance gaps.
 - Keep reviewing the latest MOREmbedded tip `032fb4b` for behavior that
