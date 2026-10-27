@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.65';
+    SCRIPT_VERSION = '2026.10.27.66';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -49443,11 +49443,12 @@ Function PCB_PlaceViaArray(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Via : IPCB_Via;
-    X1, Y1, X2, Y2, TmpI, Pitch : Integer;
+    X1, Y1, X2, Y2, TmpI, Pitch : Double;
     ViaSize, ViaHole : Double;
     NetStr, LowLayerStr, HighLayerStr : String;
     FoundNet : IPCB_Net;
-    Ix, Iy, PlacedCount : Integer;
+    Ix, Iy : Double;
+    Nx, Ny, PlacedCount : Integer;
     LowLayer, HighLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -49457,11 +49458,11 @@ Begin
         Exit;
     End;
 
-    X1 := StrToIntDef(ExtractJsonValue(Params, 'x1'), 0);
-    Y1 := StrToIntDef(ExtractJsonValue(Params, 'y1'), 0);
-    X2 := StrToIntDef(ExtractJsonValue(Params, 'x2'), 0);
-    Y2 := StrToIntDef(ExtractJsonValue(Params, 'y2'), 0);
-    Pitch := StrToIntDef(ExtractJsonValue(Params, 'pitch'), 50);
+    X1 := StrToFloatDef(ExtractJsonValue(Params, 'x1'), 0);
+    Y1 := StrToFloatDef(ExtractJsonValue(Params, 'y1'), 0);
+    X2 := StrToFloatDef(ExtractJsonValue(Params, 'x2'), 0);
+    Y2 := StrToFloatDef(ExtractJsonValue(Params, 'y2'), 0);
+    Pitch := StrToFloatDef(ExtractJsonValue(Params, 'pitch'), 50);
     ViaSize := StrToFloatDef(ExtractJsonValue(Params, 'size'), 30);
     ViaHole := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 12);
     NetStr := ExtractJsonValue(Params, 'net');
@@ -49496,17 +49497,19 @@ Begin
     PlacedCount := 0;
     PCBServer.PreProcess;
     Try
+        Ny := 0;
         Iy := Y1;
-        While Iy <= Y2 Do
+        While Iy <= Y2 + 0.000001 Do
         Begin
+            Nx := 0;
             Ix := X1;
-            While Ix <= X2 Do
+            While Ix <= X2 + 0.000001 Do
             Begin
                 Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
                 If Via <> Nil Then
                 Begin
-                    Via.x := MilsToCoord(Ix);
-                    Via.y := MilsToCoord(Iy);
+                    Via.x := MilsToCoordF(Ix);
+                    Via.y := MilsToCoordF(Iy);
                     Via.Size := MilsToCoordF(ViaSize);
                     Via.HoleSize := MilsToCoordF(ViaHole);
                     Via.LowLayer := LowLayer;
@@ -49517,9 +49520,11 @@ Begin
                         PCBM_BoardRegisteration, Via.I_ObjectAddress);
                     Inc(PlacedCount);
                 End;
-                Ix := Ix + Pitch;
+                Inc(Nx);
+                Ix := X1 + Nx * Pitch;
             End;
-            Iy := Iy + Pitch;
+            Inc(Ny);
+            Iy := Y1 + Ny * Pitch;
         End;
     Finally
         PCBServer.PostProcess;
@@ -49529,9 +49534,9 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(PlacedCount) + ','
-        + '"x1":' + IntToStr(X1) + ',"y1":' + IntToStr(Y1) + ','
-        + '"x2":' + IntToStr(X2) + ',"y2":' + IntToStr(Y2) + ','
-        + '"pitch":' + IntToStr(Pitch) + ','
+        + '"x1":' + FloatToJsonStr(X1) + ',"y1":' + FloatToJsonStr(Y1) + ','
+        + '"x2":' + FloatToJsonStr(X2) + ',"y2":' + FloatToJsonStr(Y2) + ','
+        + '"pitch":' + FloatToJsonStr(Pitch) + ','
         + '"low_layer":"' + EscapeJsonString(GetLayerString(LowLayer)) + '",'
         + '"high_layer":"' + EscapeJsonString(GetLayerString(HighLayer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');

@@ -1,6 +1,6 @@
 # Fork integration TODO
 
-## Refreshed after `.65`, 2026-10-27
+## Refreshed after `.66`, 2026-10-27
 
 - [x] Establish an exact upstream merge point: `9ee593e` is an ancestor
   of our current `main`, and there are zero upstream commits behind it.
@@ -26,6 +26,11 @@
   and answered native distance/pin queries. The expanded fork audit still
   lists PCB geometry and audit/reply conversions, plus the fractional
   placed-pin acceptance gap.
+- [x] Keep decimal corners and pitch in via arrays. A four-via array
+  persisted at exact fractional coordinates on a disposable PcbDoc after
+  save/close/reopen. The stitching-via wrapper and outline grid also
+  preserve fractional inputs; their native placement still needs separate
+  acceptance.
 - Continue native acceptance of the already integrated multipart,
   rigid-flex, library and manufacturing paths listed below. A Git-divergent
   fork commit alone is not evidence that its feature is absent.
@@ -36,7 +41,7 @@
   reconcile legacy upstream tests that assume implicit active-board writes
   with the exact-board contracts retained here. The broad suite previously
   reached 7419 passing tests; focused fixes after that run passed.
-- Continue native checks on disposable Altium documents using script `.65`.
+- Continue native checks on disposable Altium documents using script `.66`.
   Bottom-side component placement and flip readback passed on an isolated
   PcbDoc; other operations in this section retain their own acceptance gaps.
 - Keep reviewing the latest MOREmbedded tip `032fb4b` for behavior that

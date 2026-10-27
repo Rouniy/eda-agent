@@ -524,19 +524,23 @@ def _outline_ring(outline: Any, step_deg: float = 5.0) -> list[tuple[float, floa
 
 
 def _grid_points(x1: float, y1: float, x2: float, y2: float,
-                 spacing: float) -> list[tuple[int, int]]:
+                 spacing: float) -> list[tuple[float, float]]:
     """Inclusive rectangular grid, regardless of corner ordering."""
     low_x, high_x = sorted((x1, x2))
     low_y, high_y = sorted((y1, y2))
     spacing = spacing if spacing > 0 else 50
     points = []
+    row = 0
     y = low_y
-    while y <= high_y:
+    while y <= high_y + 0.000001:
+        col = 0
         x = low_x
-        while x <= high_x:
-            points.append((int(round(x)), int(round(y))))
-            x += spacing
-        y += spacing
+        while x <= high_x + 0.000001:
+            points.append((x, y))
+            col += 1
+            x = low_x + col * spacing
+        row += 1
+        y = low_y + row * spacing
     return points
 
 
@@ -3751,14 +3755,14 @@ def register_pcb_tools(mcp):
         bridge = get_bridge()
         params = {
             "net": net,
-            "x1_mils": str(round(x1_mils)),
-            "y1_mils": str(round(y1_mils)),
-            "x2_mils": str(round(x2_mils)),
-            "y2_mils": str(round(y2_mils)),
-            "spacing_mils": str(round(spacing_mils)),
-            "via_size_mils": str(round(via_size_mils)),
-            "via_hole_mils": str(round(via_hole_mils)),
-            "clearance_mils": str(round(clearance_mils)),
+            "x1_mils": _mils(x1_mils),
+            "y1_mils": _mils(y1_mils),
+            "x2_mils": _mils(x2_mils),
+            "y2_mils": _mils(y2_mils),
+            "spacing_mils": _mils(spacing_mils),
+            "via_size_mils": _mils(via_size_mils),
+            "via_hole_mils": _mils(via_hole_mils),
+            "clearance_mils": _mils(clearance_mils),
             "dry_run": "true" if dry_run else "false",
             "avoid_parts": "1" if avoid_parts else "0",
         }
@@ -3783,7 +3787,8 @@ def register_pcb_tools(mcp):
                 return {"net": net, "dry_run": dry_run, "placed": 0,
                         "skipped": 0, "outside_board": outside,
                         "note": "no grid point lies inside the board"}
-            params["points"] = ";".join(f"{x},{y}" for x, y in inside)
+            params["points"] = ";".join(
+                f"{_mils(x)},{_mils(y)}" for x, y in inside)
         result = await bridge.send_command_async(
             "pcb.place_stitching_vias", params, timeout=120.0)
         if isinstance(result, dict):
@@ -6615,14 +6620,14 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_place_via_array(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        pitch: int = 50,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        pitch: float = 50,
         net: str = "",
-        size: int = 30,
-        hole_size: int = 12,
+        size: float = 30,
+        hole_size: float = 12,
         low_layer: str = "TopLayer",
         high_layer: str = "BottomLayer",
     ) -> dict[str, Any]:
@@ -6651,14 +6656,14 @@ def register_pcb_tools(mcp):
         result = await bridge.send_command_async(
             "pcb.place_via_array",
             {
-                "x1": str(x1),
-                "y1": str(y1),
-                "x2": str(x2),
-                "y2": str(y2),
-                "pitch": str(pitch),
+                "x1": _mils(x1),
+                "y1": _mils(y1),
+                "x2": _mils(x2),
+                "y2": _mils(y2),
+                "pitch": _mils(pitch),
                 "net": net,
-                "size": str(size),
-                "hole_size": str(hole_size),
+                "size": _mils(size),
+                "hole_size": _mils(hole_size),
                 "low_layer": low_layer,
                 "high_layer": high_layer,
             },

@@ -48,6 +48,14 @@ def _project(monkeypatch, bridge):
     return _capture(project_module, project_module.register_project_tools, monkeypatch, bridge)
 
 
+def test_stitch_grid_keeps_fractional_endpoints_without_drift():
+    points = pcb_module._grid_points(10.25, -20.5, 10.55, -20.2, 0.1)
+    assert len(points) == 16
+    assert points[0] == (10.25, -20.5)
+    assert round(points[-1][0], 4) == 10.55
+    assert round(points[-1][1], 4) == -20.2
+
+
 @pytest.mark.asyncio
 async def test_stitching_vias_preserves_fractional_mils(monkeypatch):
     bridge = RecBridge()
@@ -56,6 +64,7 @@ async def test_stitching_vias_preserves_fractional_mils(monkeypatch):
         "GND", 10.25, 20.5, 30.75, 40.125,
         spacing_mils=2.5, via_size_mils=1.75,
         via_hole_mils=0.625, clearance_mils=0.375,
+        within_board=False,
     )
     command, params = bridge.calls[-1]
     assert command == "pcb.place_stitching_vias"

@@ -3561,3 +3561,21 @@ a fractional placed-pin readback remains to be tested on a disposable sheet.
 The expanded source audit from the fork now passes its decimal symbol
 location check. It still identifies PCB geometry and audit/reply conversions
 for later reconciliation.
+
+## Decimal via grids on a disposable board (2026-10-27)
+
+Script `.66` adapts `vincent-himpe/fix/decimal-mils-leftovers` for
+`pcb_place_via_array`: fractional rectangle corners and pitch survive both
+the Python wire format and DelphiScript conversion. The index-based loop
+computes each coordinate from the origin to avoid cumulative float drift.
+The companion stitching-via wrapper no longer rounds fractional geometry;
+its outline-filter grid uses the same index-based calculation.
+
+Native Altium 26.11.1.5 placed four vias on the isolated copy
+`D:\AI\eda-agent-integration-safety\ViaArrayDecimal_20261027.PcbDoc` at
+(10000.125, 10000.25), (10020.25, 10000.25), (10000.125, 10020.375),
+and (10020.25, 10020.375) mil. Exact save, close, reopen and `pcb.get_vias`
+returned the same four coordinates. The owner source PcbDoc retained
+SHA-256 `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+Pascal lint/build passed 12 files with zero errors/warnings; 31 selected
+Python tests and the fork's via-array source gate passed.

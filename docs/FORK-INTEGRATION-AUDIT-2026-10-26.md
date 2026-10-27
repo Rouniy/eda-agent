@@ -34,6 +34,10 @@ against current `main` leaves 30 `CoordToMils` function hits, 36 computed
 `MilsToCoord` hits, 15 integer-read length parameters, and 14 whole-mil
 reply hits. These categories overlap; they are exact current audit findings,
 not a count of distinct features or files.
+The `.66` follow-up adapted decimal via-array inputs and an index-based
+pitch loop, then accepted the four resulting vias on a disposable board
+after exact save/reopen. The existing stitching-via wrapper's fractional
+format and outline-grid calculation were also corrected.
 
 `be21eb3` bottom-side placement is now an exact-board adapted port in
 `main`. On 2026-10-27 it passed a native mirror and rotation check on an
