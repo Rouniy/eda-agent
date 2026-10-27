@@ -950,6 +950,16 @@ def main() -> int:
                        help="Read a reflected SDK from PATH instead of "
                             "reference/altium_sdk.json.")
 
+    fork_p = subparsers.add_parser(
+        "fork-status", help="Show exact Git synchronization points with forks.")
+    fork_p.add_argument("--fetch", action="store_true",
+                        help="Refresh each configured remote's main without tags.")
+    fork_p.add_argument("--remote", action="append", dest="remotes",
+                        help="Remote to compare; repeat for several. Defaults to "
+                             "origin, upstream and morembedded.")
+    fork_p.add_argument("--json", action="store_true", dest="json_out",
+                        help="Emit machine-readable JSON.")
+
     # profile-* -- per-workspace owner profile (naming/rules/fab/footprint
     # conventions, document units & grid, project templates). See profile.py
     # and docs/PROFILES.md. Flat hyphenated verbs, same style as
@@ -1342,6 +1352,23 @@ def main() -> int:
         return cli.cmd_sdk_coverage(as_json=args.json_out,
                                     detail=args.detail,
                                     sdk_json=args.sdk_json)
+    if args.command == "fork-status":
+        import json as _json
+        from pathlib import Path as _Path
+        from .diag.fork_status import fork_status, format_fork_status
+
+        try:
+            report = fork_status(_Path.cwd(),
+                                 remotes=tuple(args.remotes) if args.remotes else
+                                 ("origin", "upstream", "morembedded"),
+                                 fetch=args.fetch)
+        except (RuntimeError, OSError) as exc:
+            print(f"fork-status: {exc}", file=sys.stderr)
+            return 2
+        print(_json.dumps(report, indent=2) if args.json_out else
+              format_fork_status(report))
+        return 1 if any(item.get("fetch_error") for item in
+                        report["sources"].values()) else 0
     if args.command == "profile-init":
         return cli.cmd_profile_init(args.name, here=args.here)
     if args.command == "profile-list":

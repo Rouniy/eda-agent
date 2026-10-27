@@ -26,6 +26,14 @@ so it does not advance our reviewed-through upstream tip.
 The table records merge bases before the October 27 merge. Upstream is now
 an actual second parent; fork features remain reviewed and adapted ports.
 
+`eda-agent fork-status --fetch --json` now reports the live Git boundary
+without relying on this dated note. It lists all merge bases when histories
+have more than one. On October 27 the refreshed upstream tip was
+`9ee593e` and was an ancestor of our `main` (zero upstream commits behind).
+The direct child fork's tip was `032fb4b`, with two merge bases; its Git
+commit count is not a list of unported features. This command is read-only
+except for the explicit `--fetch`, which updates remote-tracking refs.
+
 On 2026-10-27 after commit `f61565f`, `git fetch` advanced the
 `upstream/main` ref to `9ee593ea0dce989bf3bfc97d0c982044ed41badb`.
 Its three newer commits are `172d254` (pour growth and related PCB tools),
