@@ -1,5 +1,18 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## Upstream `f3bd57f` simulation merge
+
+`upstream/main` advanced from `c45ca0a` to
+`f3bd57ff87b915d5cfe72579fa501bfea85c3511`. This is one commit:
+Altium-native voltage probe parameters, probe inventory, simulation setup
+readback, sheet-run analysis selection and `.simcfg` reload. It was merged
+as a true second parent; the native script version is `.112` because the
+main fork already contained `.111` and its exact-sheet free-text handler.
+The main fork's selected-project flags remain in `Main.pas`.
+Upstream's scratch-project Altium acceptance is recorded in the merged
+release verification; local source tests and Pascal lint/build pass.
+Native acceptance of this exact merged bundle remains pending.
+
 ## Fresh live inventory after `1d093a2`
 
 Fetched `upstream/main`, `morembedded/main` and `origin/main`, then ran

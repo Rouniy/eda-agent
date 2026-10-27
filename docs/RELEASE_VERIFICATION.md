@@ -1,6 +1,6 @@
-# Release verification: 2026.10.27.111
+# Release verification: 2026.10.27.112
 
-Expect `altium_script_version` = `2026.10.27.111` for the current source
+Expect `altium_script_version` = `2026.10.27.112` for the current source
 bundle. Source lint/build and focused tests pass. Native load,
 free-text placement and save/reopen acceptance are pending; the shared
 Altium session last reported loaded `.96`.
@@ -458,6 +458,8 @@ works elsewhere cannot be an undeclared identifier:
 | 51, sheet zones | `ObjectReferenceZone` on a sheet | no, nowhere | none, read only |
 | 52, unpoured pours | `GetDefaultName` on a polygon | no, nowhere | low, names an unnamed pour; ran live |
 | 52, library delete | `GetComponentByName` on the library | yes, `Library.pas` (PcbLibTarget) | medium, removes primitives; ran live after a clean restart |
+| 53, probes | `AddSchObject` of parameters on a probe | yes, on components and parameter sets | low, adds a probe's own parameters; ran live upstream |
+| 53, settings reload | `DoFileLoad` on a settings document reporting `SupportsReload` False | no, nowhere | low, a .simcfg only; ran live upstream |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -3339,6 +3341,23 @@ every document closed without saving and the files hashed the same
 before and after. All passed as described.
 
 ---
+
+## 53. Upstream simulation probes and sheet run (f3bd57f)
+
+Upstream tested this change on AD 26.11.1.5 with a scratch copy of the
+Simulation Quick Start project. Its `sch_place_probe` now creates the
+parameters of a native voltage probe (`SimulationProbe=V`,
+`ProbeVoltage=True`, `ProbeName`, `ProbeCustomName` and
+`ProbeValueDisplay`). `sim_get_probes` distinguishes it from an old bare
+probe that the simulator ignores. `sim_get_setup` reports the settings
+the next run will use. `sim_run` can run a sheet's selected analyses and
+reports which analyses actually ran; Altium retains its first selection
+until the project is reopened. Reloading a `.simcfg` despite
+`SupportsReload=False` worked in that upstream test.
+
+This merge carries the source and upstream's native observations.
+Native acceptance of the merged `.112` bundle in our shared Altium
+session is still pending.
 
 ## Still open, and not blocking
 

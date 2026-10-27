@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Upstream simulation tip, 2026-10-27
+
+- [x] Merge upstream `f3bd57f` as a true parent, preserving local script
+  flags and free-text placement. Source `.112` passes Pascal lint/build
+  and the focused simulation/bridge suite.
+- [ ] Load `.112` when the shared Altium session can safely restart, then
+  verify its voltage probe and sheet-run behavior on a disposable copy.
+
 ## Fork schematic free text, 2026-10-27
 
 - [x] Port `rabihnd/integration`'s `eLabel` free-text placement as

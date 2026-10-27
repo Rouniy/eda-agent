@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Upstream simulation merge, 2026-10-27
+
+Upstream advanced one commit to `f3bd57ff87b915d5cfe72579fa501bfea85c3511`.
+The true merge carries native voltage-probe parameters, `sim_get_probes`,
+`sim_get_setup`, sheet-scoped `sim_run` analysis selection and the `.simcfg`
+reload change. Script `.112` preserves our exact-sheet free-text handler
+and shared-mode flags. The combined Pascal lint/build found zero errors or
+warnings; 59 focused simulation, free-text and bridge tests passed.
+Upstream ran the simulation changes on a scratch project in Altium 26.11;
+our merged `.112` bundle has not yet been loaded in the shared session.
+
 ## Fork free-text primitive, 2026-10-27
 
 The `rabihnd/integration` branch's `sch_add_text` creates an `eLabel`.
