@@ -7504,6 +7504,101 @@ def register_library_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def lib_add_3d_body(
+        library_path: str,
+        footprint_name: str,
+        model_path: str,
+        offset_x_mm: float = 0.0,
+        offset_y_mm: float = 0.0,
+        rot_z_deg: float = 0.0,
+        standoff_mm: float = 0.0,
+        mech_layer: int = 1,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Embed a STEP model as an additional body on one exact PcbLib footprint.
+
+        Coordinates are the body's bounding-box centre relative to the
+        footprint origin. No existing body is removed. The default is a
+        reviewable plan; saving the PcbLib is a separate operation.
+        """
+        path = Path(library_path)
+        model = Path(model_path)
+        name = footprint_name.strip()
+        if not path.is_absolute() or path.suffix.casefold() != ".pcblib" or not path.is_file():
+            return {"ok": False, "reason": "library_path must be an existing absolute PcbLib"}
+        if not name:
+            return {"ok": False, "reason": "footprint_name is required"}
+        if (not model.is_absolute() or model.suffix.casefold() not in (".step", ".stp")
+                or not model.is_file()):
+            return {"ok": False, "reason": "model_path must be an existing absolute STEP file"}
+        if type(mech_layer) is not int or not 1 <= mech_layer <= 32:
+            return {"ok": False, "reason": "mech_layer must be 1 through 32"}
+        for key, value, limit in (("offset_x_mm", offset_x_mm, 1000),
+                                  ("offset_y_mm", offset_y_mm, 1000),
+                                  ("standoff_mm", standoff_mm, 1000),
+                                  ("rot_z_deg", rot_z_deg, 360)):
+            if (isinstance(value, bool) or not isinstance(value, (float, int))
+                    or not math.isfinite(value) or abs(value) > limit):
+                return {"ok": False, "reason": f"{key} must be finite and within {limit}"}
+        bridge = get_bridge()
+        before = await bridge.send_command_async(
+            "library.get_footprint_primitives",
+            {"library_path": str(path), "footprint_name": name}, timeout=120.0)
+        bodies = before.get("body_models") if isinstance(before, dict) else None
+        if (not isinstance(before, dict)
+                or str(before.get("library_path", "")).casefold() != str(path).casefold()
+                or before.get("name") != name
+                or not isinstance(bodies, list)
+                or before.get("bodies") != len(bodies)):
+            return {"ok": False, "reason": "footprint body read was incomplete",
+                    "native_reply": before}
+        if any(Path(str(body.get("model_file", ""))).name.casefold() == model.name.casefold()
+               for body in bodies):
+            return {"ok": False, "reason": "footprint already contains this STEP model"}
+        plan = {"ok": True, "dry_run": True, "library_path": str(path),
+                "footprint_name": name, "model_path": str(model),
+                "body_count_before": len(bodies), "body_count_after": len(bodies) + 1,
+                "mech_layer": mech_layer, "offset_x_mm": offset_x_mm,
+                "offset_y_mm": offset_y_mm, "rot_z_deg": rot_z_deg,
+                "standoff_mm": standoff_mm}
+        if dry_run:
+            return plan
+        params = {"library_path": str(path), "footprint_name": name,
+                  "model_path": str(model), "expected_count": len(bodies),
+                  "mech_layer": mech_layer, "offset_x_mm": offset_x_mm,
+                  "offset_y_mm": offset_y_mm, "rot_z_deg": rot_z_deg,
+                  "standoff_mm": standoff_mm}
+        reply = await bridge.send_command_async("library.add_3d_body", params, timeout=120.0)
+        if (not isinstance(reply, dict) or reply.get("success") is not True
+                or str(reply.get("library_path", "")).casefold() != str(path).casefold()
+                or reply.get("footprint_name") != name
+                or reply.get("model_file", "").casefold() != model.name.casefold()
+                or reply.get("body_count_before") != len(bodies)
+                or reply.get("body_count_after") != len(bodies) + 1
+                or not math.isclose(reply.get("after_x_mm", float("nan")),
+                                    offset_x_mm, abs_tol=0.02)
+                or not math.isclose(reply.get("after_y_mm", float("nan")),
+                                    offset_y_mm, abs_tol=0.02)):
+            return {"ok": False, "reason": "STEP body addition needs inspection",
+                    "native_reply": reply}
+        after = await bridge.send_command_async(
+            "library.get_footprint_primitives",
+            {"library_path": str(path), "footprint_name": name}, timeout=120.0)
+        after_bodies = after.get("body_models") if isinstance(after, dict) else None
+        if (not isinstance(after, dict)
+                or str(after.get("library_path", "")).casefold() != str(path).casefold()
+                or after.get("name") != name or not isinstance(after_bodies, list)
+                or len(after_bodies) != len(bodies) + 1
+                or after.get("bodies") != len(after_bodies)
+                or sum(Path(str(b.get("model_file", ""))).name.casefold() == model.name.casefold()
+                       for b in after_bodies) != 1):
+            return {"ok": False, "reason": "STEP body was added but readback needs inspection",
+                    "native_reply": reply, "after": after}
+        reply["ok"] = True
+        reply["save_required"] = True
+        return reply
+
+    @mcp.tool()
     async def lib_position_3d_body(
         library_path: str,
         footprint_name: str,

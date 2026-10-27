@@ -2,6 +2,18 @@
 
 ## Refreshed handoff, 2026-10-27
 
+Script `.87` adds `lib_add_3d_body`, adapting the `rabihnd/integration`
+STEP-body feature to an exact PcbLib and footprint, a default dry run, an
+old-body-count precondition and native readback. The selected footprint is
+made current before the body is created: a native test found that adding to
+an inactive footprint otherwise moved the body by 50,000 mil after save.
+On a disposable PcbLib copy, the new STEP body joined an existing SOIC STEP
+body on Mechanical13. Its (1, -1) mm centre, 90-degree Z rotation and
+10-mil model Z offset survived exact save, close and reopen. The original
+model remained. Pascal lint/build had zero errors or warnings, and eight
+related Python tests passed. The library file is test data, not a release
+artifact. The exact save remains a separate operation.
+
 The `4pplet` EasyEDA auto-layout emission path is restored alongside the
 hand-template workflow: `easyeda_emit_plan` computes placements from a
 validated DesignPlan and `easyeda_emit_connections` emits wires, labels or

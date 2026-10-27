@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.27.85';
+    SCRIPT_VERSION = '2026.10.27.87';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -28672,6 +28672,210 @@ End;
 { Move one 3D body by its bounding-box centre, adapting the rabihnd fork's  }
 { position_3d_body to an exact library and footprint with an old-state     }
 { precondition. MoveByXY applies a delta, avoiding MoveToXY's anchor rule.  }
+Function Lib_Add3DBody(Params : String; RequestId : String) : String;
+Var
+    LibPath, ModelPath, FpName, FocusedPath, Seen, Addr : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    Iter : IPCB_GroupIterator;
+    Existing, Body : IPCB_ComponentBody;
+    Model : IPCB_Model;
+    BRect : TCoordRect;
+    ExpectedCount, Count, LayerNum, Dx, Dy : Integer;
+    TargetX, TargetY, RotZ, Standoff, CentreX, CentreY : Double;
+    BodyLayer : TLayer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpName := ExtractJsonValue(Params, 'footprint_name');
+    ModelPath := ExtractJsonValue(Params, 'model_path');
+    ExpectedCount := StrToIntDef(ExtractJsonValue(Params, 'expected_count'), -1);
+    LayerNum := StrToIntDef(ExtractJsonValue(Params, 'mech_layer'), -1);
+    If (LibPath = '') Or (FpName = '') Or (ModelPath = '') Or
+        (ExpectedCount < 0) Or (LayerNum < 1) Or (LayerNum > 32) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'offset_x_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'offset_y_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'rot_z_deg')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'standoff_mm')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'Exact library, footprint, STEP file, old body count, mechanical layer and numeric placement are required');
+        Exit;
+    End;
+    TargetX := StrToFloatDef(ExtractJsonValue(Params, 'offset_x_mm'), 0);
+    TargetY := StrToFloatDef(ExtractJsonValue(Params, 'offset_y_mm'), 0);
+    RotZ := StrToFloatDef(ExtractJsonValue(Params, 'rot_z_deg'), 0);
+    Standoff := StrToFloatDef(ExtractJsonValue(Params, 'standoff_mm'), 0);
+    If (Abs(TargetX) > 1000) Or (Abs(TargetY) > 1000) Or
+        (Abs(Standoff) > 1000) Or (Abs(RotZ) > 360) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PLACEMENT',
+            'Offset and standoff must be within 1000 mm; Z rotation within 360 degrees');
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LIBRARY_FILE', LibPath);
+        Exit;
+    End;
+    If Not FileExists(ModelPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MODEL_FILE', ModelPath);
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If UpperCase(FocusedPath) <> UpperCase(LibPath) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED', LibPath);
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', LibPath);
+        Exit;
+    End;
+    Footprint := FootprintByName(PcbLib, FpName);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', FpName);
+        Exit;
+    End;
+    { The board's library origin belongs to the current component. Adding a }
+    { body to an inactive component appears correctly positioned in memory, }
+    { then shifts by -50000 mil on save. Select it before the factory call. }
+    Try PcbLib.SetState_CurrentComponent(Footprint); Except End;
+    Footprint := PcbLib.CurrentComponent;
+    If (Footprint = Nil) Or (Footprint.Name <> FpName) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_FOOTPRINT_ACTIVE', FpName);
+        Exit;
+    End;
+    Count := 0;
+    Seen := #9;
+    Iter := Footprint.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+        Existing := Iter.FirstPCBObject;
+        While Existing <> Nil Do
+        Begin
+            Addr := IntToStr(Existing.I_ObjectAddress);
+            If Pos(#9 + Addr + #9, Seen) = 0 Then
+            Begin
+                Seen := Seen + Addr + #9;
+                Inc(Count);
+            End;
+            Existing := Iter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(Iter);
+    End;
+    If Count <> ExpectedCount Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BODY_SET_CHANGED',
+            '3D body count changed before addition');
+        Exit;
+    End;
+    BodyLayer := ILayer.MechanicalLayer(LayerNum);
+    Body := Nil;
+    Model := Nil;
+    Try
+        Body := PCBServer.PCBObjectFactory(eComponentBodyObject, eNoDimension, eCreate_Default);
+        If Body <> Nil Then Model := Body.ModelFactory_FromFilename(ModelPath, True);
+        If Model = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MODEL_LOAD_FAILED', ModelPath);
+            Exit;
+        End;
+        Body.SetState_FromModel;
+        Model.SetState(0, 0, RotZ, MMToCoord(Standoff));
+        Body.Model := Model;
+    Except
+        Result := BuildErrorResponse(RequestId, 'MODEL_LOAD_FAILED',
+            'Could not create an embedded STEP body from ' + ModelPath);
+        Exit;
+    End;
+    PCBServer.PreProcess;
+    Try
+        Try
+            Footprint.AddPCBObject(Body);
+            PcbLib.Board.AddPCBObject(Body);
+            PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Body.I_ObjectAddress);
+            PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Body.I_ObjectAddress);
+            Body.BodyProjection := eBoardSide_Top;
+            Body.Layer := BodyLayer;
+            Body.BodyOpacity3D := 1.0;
+            BRect := Body.BoundingRectangle;
+            CentreX := (CoordToMM(BRect.Left - Footprint.X)
+                + CoordToMM(BRect.Right - Footprint.X)) / 2;
+            CentreY := (CoordToMM(BRect.Bottom - Footprint.Y)
+                + CoordToMM(BRect.Top - Footprint.Y)) / 2;
+            Dx := MMToCoord(TargetX - CentreX);
+            Dy := MMToCoord(TargetY - CentreY);
+            If (Dx <> 0) Or (Dy <> 0) Then
+            Begin
+                PCBServer.SendMessageToRobots(Body.I_ObjectAddress,
+                    c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                Body.MoveByXY(Dx, Dy);
+                PCBServer.SendMessageToRobots(Body.I_ObjectAddress,
+                    c_Broadcast, PCBM_EndModify, c_NoEventData);
+            End;
+        Except
+            Result := BuildErrorResponse(RequestId, 'ADD_BODY_FAILED',
+                'Body creation or placement failed; inspect the footprint before retrying');
+            Exit;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+    BRect := Body.BoundingRectangle;
+    CentreX := (CoordToMM(BRect.Left - Footprint.X)
+        + CoordToMM(BRect.Right - Footprint.X)) / 2;
+    CentreY := (CoordToMM(BRect.Bottom - Footprint.Y)
+        + CoordToMM(BRect.Top - Footprint.Y)) / 2;
+    If (Abs(CentreX - TargetX) > 0.02) Or (Abs(CentreY - TargetY) > 0.02) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'POSITION_NOT_VERIFIED',
+            'STEP body was added but its centre did not read back at the target');
+        Exit;
+    End;
+    Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+    MarkDocDirtyByPath(LibPath);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('success', True) + ','
+        + JsonStr('library_path', LibPath) + ','
+        + JsonStr('footprint_name', FpName) + ','
+        + JsonStr('model_file', ExtractFileName(ModelPath)) + ','
+        + JsonInt('body_count_before', Count) + ','
+        + JsonInt('body_count_after', Count + 1) + ','
+        + JsonInt('mech_layer', LayerNum) + ','
+        + JsonFloat('after_x_mm', CentreX) + ','
+        + JsonFloat('after_y_mm', CentreY) + ','
+        + JsonFloat('rotation_z_deg', RotZ) + ','
+        + JsonFloat('standoff_mm', Standoff)));
+End;
+
 Function Lib_Position3DBody(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpName, Addr, Seen : String;
@@ -33105,6 +33309,7 @@ Begin
         'link_footprint':       Result := Lib_LinkFootprint(Params, RequestId);
         'rotate_footprint':     Result := Lib_RotateFootprint(Params, RequestId);
         'set_3d_body':          Result := Lib_Set3DBody(Params, RequestId);
+        'add_3d_body':          Result := Lib_Add3DBody(Params, RequestId);
         'position_3d_body':     Result := Lib_Position3DBody(Params, RequestId);
         'link_3d_model':        Result := Lib_Link3DModel(Params, RequestId);
         'set_mech_layers':      Result := Lib_SetMechLayers(Params, RequestId);

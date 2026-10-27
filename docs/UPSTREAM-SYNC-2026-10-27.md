@@ -480,3 +480,14 @@ three-pad SOT-23 at 0 degrees on both sides. After exact save/reopen,
 orientation cross products (about +5890 and -5890 square mils), proving
 mirror geometry rather than a layer flag alone. The source board SHA-256
 remained `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
+The `rabihnd/integration` STEP-body creation is now adapted as
+`lib_add_3d_body` on script `.87`. It requires an exact saved PcbLib,
+footprint, existing STEP and old body count, and plans by default. Its
+native path selects the named footprint before creating the body; native
+testing found that creation on an inactive footprint otherwise looked
+correct in memory but shifted by -50,000 mil after save/reopen. On a
+disposable PcbLib copy, adding `LTC3895EFE.STEP` to the SOIC footprint
+preserved the older SOIC body, Mechanical13 layer, (1, -1) mm centre,
+90-degree Z rotation and 10-mil model Z offset after exact save/reopen.
+No owner design was written.
