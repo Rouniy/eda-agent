@@ -1,5 +1,17 @@
 # Fork integration TODO
 
+## Live `.113` fractional text-frame correction, 2026-10-28
+
+- [x] On a disposable free SchDoc, batch wire vertices retained
+  0.125/0.375/0.625-mil fractions after exact save/reopen.
+- [x] Fix `sch_place_text_frame`'s rounded response and expose
+  `Corner.X/Y` through `obj_query` and `obj_modify` for `eTextFrame`.
+  Pascal lint/build found zero errors or warnings. Loaded `.113`
+  returned exact fractional corners, modified one corner and preserved
+  both frames after save/reopen.
+- [x] In native `.113`, `pcb.delete_xsignals` rejected a request that
+  combined a name with `all=true` before looking for a board.
+
 ## Live `.112` runtime, 2026-10-27
 
 - [x] Restart Altium with the main script project, confirm `app_ping`
@@ -37,7 +49,7 @@
   flags and free-text placement. Source `.112` passes Pascal lint/build
   and the focused simulation/bridge suite.
 - [x] Load `.112` after restarting the shared Altium session; probe and
-  sheet-run behavior still need disposable-copy verification above.
+  sheet-run behavior were checked on a disposable copy above.
 
 ## Fork schematic free text, 2026-10-27
 
@@ -64,7 +76,9 @@
 - [x] Refuse `pcb_delete_xsignals` with both names and `all=true` in
   Python and native Pascal. Script `.110` passes 17 related tests and
   Pascal lint/build. The old behavior would select all despite names.
-- [ ] Qualify the refusal against `.110` in Altium on a disposable board.
+- [x] Qualify the refusal in loaded `.113` against the native handler.
+  It returned `BAD_PARAM` for `names` with `all=true` before any board
+  lookup, so no disposable board was needed for this refusal case.
 - [x] Reconcile the seven remaining stale cases in
   `test_added_altium_tools.py` with the exact-board/preflight wrappers.
   The combined legacy and focused suites pass (129 tests).
@@ -83,8 +97,11 @@
 - [x] Preserve fractional mils in batch wires, DbLib component placement,
   and text-frame corners. Source `.108` passes 43 focused tests, including
   exact bridge parameter checks.
-- [ ] After loading `.108`, place each object on a disposable schematic,
-  save/reopen, and read back its native coordinates.
+- [x] On a disposable schematic with `.112` then `.113`, batch wires and
+  a text frame kept fractional mils through save/reopen. Text-frame
+  reply/readback was corrected in `.113` as recorded above.
+- [ ] Place a DbLib component at fractional-mil coordinates on a
+  disposable schematic, then save/reopen and read back its position.
 
 ## Fractional PCB batch placement, 2026-10-27
 

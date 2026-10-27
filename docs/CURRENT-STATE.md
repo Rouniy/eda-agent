@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## Live fractional schematic acceptance on `.113`, 2026-10-28
+
+An isolated free `Fractional_QA.SchDoc` showed batch wire vertices at
+2000.125/2100.375 to 2200.625/2100.375 mil after exact save/reopen.
+On `.112`, a text frame's actual fractional geometry persisted but
+`sch_place_text_frame` rounded its reply and `obj_query` returned empty
+`Corner.X/Y`. Script `.113` uses decimal JSON for the reply and typed
+`ISch_TextFrame.Corner` for generic read/write. Altium was restarted
+with the main script project; `application.ping` returned `.113` and
+zero cast errors. A second text frame returned exact 1700.125/1800.375
+and 1900.625/1950.875 mil corners. `obj_modify` changed the first
+frame's `Corner.X` to 1600.75 mil. Both frames and that edit survived
+exact save, close and reopen. No managed project was modified. DbLib
+component placement remains a separate fractional-coordinate check.
+
 ## Fresh sync and service check, 2026-10-28
 
 After a fresh fetch, `upstream/main` and the exact `main` merge base
@@ -11,7 +26,8 @@ is already an ancestor of `main`. The built-in live verifier, which
 also includes upstream, reported 62/62 default tips and 117/117
 branch tips matched. The HTTP/MCP process was restarted
 from the corrected Python source on 14701; TCP 14700 stayed listening,
-and Altium still answered `.112` with zero cast errors.
+and Altium answered `.112` with zero cast errors before the later
+`.113` restart described above.
 
 ## Native simulation reads on `.112`, 2026-10-27
 

@@ -1,5 +1,19 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 fractional schematic native fix
+
+The fork's fractional-coordinate port preserved batch wire vertices
+after save/reopen, but the text-frame placement reply rounded all four
+coordinates and the generic query returned empty `Corner.X/Y`. Script
+`.113` uses decimal JSON in the reply and typed `ISch_TextFrame.Corner`
+for generic read/write. Altium loaded `.113` and returned exact
+fractional placement and corner-edit coordinates after save/reopen on
+a disposable SchDoc. Pascal lint/build passed 12 units with zero
+errors or warnings, and 12 related source tests passed. The native
+`pcb.delete_xsignals` conflict guard also refused `names` with
+`all=true` before resolving any board. DbLib fractional placement is
+still unverified.
+
 ## 2026-10-28 continuation: native simulation and live fork tips
 
 The merged `.112` runtime placed a voltage probe on the `out` wire of

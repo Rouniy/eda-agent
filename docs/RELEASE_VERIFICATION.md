@@ -1,7 +1,16 @@
-# Release verification: 2026.10.27.112
+# Release verification: 2026.10.28.113
 
-Expect `altium_script_version` = `2026.10.27.112` for the current source
-bundle. Source lint/build and focused tests pass. The restarted Altium
+Current source and loaded Altium script are `2026.10.28.113`. Pascal
+lint/build scanned 12 units with zero errors or warnings. Twelve
+schematic property/style tests passed. On a disposable SchDoc, the
+text-frame placement reply and `obj_query` returned exact fractional
+corners; `obj_modify` changed one corner and save/reopen preserved both
+frames. Batch wire vertices also persisted with fractional mils.
+
+## Previous native verification: 2026.10.27.112
+
+At that checkpoint `altium_script_version` was `2026.10.27.112`.
+Source lint/build and focused tests passed. The restarted Altium
 26.11.1.5 session reports `.112` with zero cast errors, and HTTP/MCP
 14701 lists the new tools. Merged simulation behavior was subsequently
 checked on a disposable project copy, as described below.
