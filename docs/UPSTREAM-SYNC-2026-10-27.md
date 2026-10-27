@@ -225,6 +225,15 @@ the corresponding handlers and Python tools in `main`. The AD23/AD26 paste
 flag guard `4f9b64a` is an ancestor of `main`, so the earlier audit's
 paste-compatibility candidate is no longer outstanding.
 
+The `yniantongtian-oss` fix `0bbf48e` exposed one remaining WSL path
+bug in `plan_from_live_sheet`: it used the host's `Path` for Altium's
+Windows project and sheet names. Those names now use `PureWindowsPath`.
+The existing same-filename/different-directory guard was already present.
+The repository's EasyEDA extension build and distribution checks likewise
+already cover the fork's delivery work through equivalent modules. A
+forced POSIX-path test confirms the Windows sheet name round-trips; all
+38 focused sheet-plan tests passed.
+
 From `cad435/4f57311`, the available-library diagnostic is now integrated
 as `lib_list_available_libraries`. It enumerates Altium's Available list,
 including libraries not installed, and separately reports a Workspace name
