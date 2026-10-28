@@ -83,6 +83,14 @@ Two dashboards ship with eda-agent:
 - **In-Altium status window** - a floating Altium-side window showing live status, request count, cumulative Altium-side time, auto-shutdown countdown, and a per-command log with durations. `Hide pings` filters the 30 s keep-alive traffic; `Only >100ms` isolates slow calls. Its native **Detach** button requests a no-save stop. API/browser Detach instead saves dirty documents. See [shutdown and recovery](docs/SHUTDOWN.md).
 - **Web dashboard** - a local browser dashboard at `http://127.0.0.1:8766`, focused on design review. A **Review** tab surfaces datasheet / MPN / manufacturer / footprint coverage gauges and an actionable issue queue (missing datasheet, missing MPN, orphan nets, ...); **Project**, **Components**, **Nets**, **Libraries** and **Plan** tabs give live structured views. Click any component or net to drill into a detail drawer; one click cross-probes it into Altium. Light / dark theme, server-sent-events live feed. It is auto-started by the MCP server - the **Open Dashboard** button on the in-Altium status window launches the browser.
 
+## Layout voting
+
+For pairwise layout feedback, install the optional web dependency with
+`python -m pip install '.[web]'` in a checkout, then run
+`eda-agent vote --plan PLAN.json --symbols SYMBOLS.json`. This opens a local
+comparison UI on port 8765 and records votes for the preference model. Omit
+`--symbols` to read symbols through a running Altium bridge.
+
 ## How it works
 
 - Altium Designer stays open and in full control of your design

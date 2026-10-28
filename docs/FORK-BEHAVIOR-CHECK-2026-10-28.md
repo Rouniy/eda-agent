@@ -339,6 +339,17 @@ AD26-tested implementation and interleaves incompatible calculator code in
 `cli.py` and `calc.py`. Automatic `-X ours` therefore cannot stand in for
 the logical merge. The child also adds a `vote` CLI parser without a matching
 dispatch branch; importing that parser alone would advertise a dead command.
+The useful part is now wired in `main`: `eda-agent vote --plan ...` forwards
+to the existing pairwise web application, with optional offline symbols and
+host/port settings. A CLI-to-app test loaded a real DesignPlan fixture and
+verified that the local server received the requested port; the backend
+startup slice passed 8/8 with this route present. No live vote was written
+by that check. A separate local process started the real command with a
+fixture plan and empty offline symbol list; `GET /stats` returned HTTP 200
+and `n_votes: 0`. The process was then terminated and its temporary fixture
+removed. The focused CLI, source-header, documentation-style and update
+checks passed 28/28 after four older tests received their missing SPDX
+headers.
 By contrast, `git merge-base main upstream/main` is exactly
 `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, which is the second parent
 of the completed upstream merge `63f7c16`.

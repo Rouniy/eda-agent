@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Explicit four-layer updates keep the loaded script project singular."""
 
 from __future__ import annotations

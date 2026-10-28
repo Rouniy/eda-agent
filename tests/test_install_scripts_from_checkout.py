@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """A named checkout supplies scripts without changing the live destination."""
 
 from pathlib import Path

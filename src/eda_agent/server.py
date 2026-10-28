@@ -1136,6 +1136,18 @@ def main() -> int:
               "Altium script and you want to kill it without rebooting."),
     )
 
+    vote_p = subparsers.add_parser(
+        "vote",
+        help="Compare two layouts of a DesignPlan in a local browser",
+    )
+    vote_p.add_argument("--plan", required=True, type=Path,
+                        help="DesignPlan JSON to compare")
+    vote_p.add_argument("--symbols", type=Path,
+                        help="Offline symbol fixture JSON; omit for live Altium")
+    vote_p.add_argument("--host", default="127.0.0.1")
+    vote_p.add_argument("--port", type=int, default=8765)
+    vote_p.add_argument("--debug", action="store_true")
+
     # review -- OFFLINE FALLBACK, opt-in schematic review (no Altium).
     # Not the preferred path: the live-Altium tools see connectivity this
     # reader can't. Disabled unless --offline / EDA_AGENT_HEADLESS_REVIEW=1.
@@ -1353,6 +1365,16 @@ def main() -> int:
             return 1
     if args.command == "review":
         return _run_review(args)
+    if args.command == "vote":
+        from .web.server import main as vote_main
+
+        vote_args = ["--plan", str(args.plan), "--host", args.host,
+                     "--port", str(args.port)]
+        if args.symbols is not None:
+            vote_args.extend(["--symbols", str(args.symbols)])
+        if args.debug:
+            vote_args.append("--debug")
+        return vote_main(vote_args)
     if args.command == "bom":
         return _run_bom(args)
     if args.command == "netlist":
