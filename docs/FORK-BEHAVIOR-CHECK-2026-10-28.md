@@ -320,6 +320,17 @@ touching the worktree. It reports 62 conflicts (45 content, 15 add/add,
 zero-conflict merge into the current tree. Its public commands and major
 behavior groups have been reconciled above, but making its tip a second
 parent still requires a deliberate merge resolution and regression check.
+
+A fresh path inventory on 2026-10-28 compared all 227 paths changed since
+the child fork's merge base `84b682c` with this `main`: 225 paths exist here.
+The two absent paths are donor test files, `test_sdk_found_tools.py` and
+`test_update_command.py`, not production modules. The former ran unchanged
+as a temporary test file and passed 12/12 checks for symbol parts, STEP model
+export, impedance profiles and STEP export guards; the temporary file was
+removed afterwards. The current placement flip, rotation audit and impedance
+profile tests passed 27/27. These are feature checks, not proof that every
+behavior in the 33 commits has been reconciled. The direct child still needs
+its commit-by-commit review and a conflict-resolved ancestry merge.
 By contrast, `git merge-base main upstream/main` is exactly
 `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, which is the second parent
 of the completed upstream merge `63f7c16`.
