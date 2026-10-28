@@ -439,3 +439,9 @@ The other five external projects remain documented as possible adapter
 sources; importing the donor's Git links would add checkouts but no callable
 backend feature. The lab's reference page previously said those submodules
 were present here; that inaccurate statement has been corrected.
+
+The `jah-yee` `afa13696` Win32 `wintypes` import is already present in
+the current UI module through later upstream code. Its direct import had
+left a duplicate after the fork merge; the duplicate was removed while
+retaining the working import. Fifty-one foreground-guard, control-shape
+and dialog-automation checks passed.
