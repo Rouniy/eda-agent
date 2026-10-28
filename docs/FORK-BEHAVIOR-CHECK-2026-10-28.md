@@ -506,6 +506,20 @@ The other 12 are the prefixed legacy spellings described above. This
 name check does not prove behavior parity; it prevents old API names from
 being counted as 116 unimplemented features.
 
+A signature/docstring pass against `rabihnd/integration` checked those
+39 renamed routes more closely: 34 retain the donor's input names; five
+change their input shape. Single component and wire placement are now
+expressed as one-item calls to the bulk placement tools; the bulk
+component route adds document/tidy options; document removal adds a
+`save_project` option; and PCB sync adds wait and pad-net verification
+options. The donor's `execute_menu` claims execution, but the current
+`app_run_menu` labels its result as dispatch only and `app_click_menu`
+verifies a real menu click. Focused placement, project membership, ECO
+guard and post-sync tests passed 49/49 after their mocked ECO test was
+isolated from a modal window in the user's live Altium session. This
+narrows the compatibility gap to old call shapes, not a missing CAD
+operation; it does not prove every old response field is identical.
+
 The full Python suite at `6cdb3af` ran again after six failing tests were
 repaired: 9780 passed, 165 skipped, one expected failure, and two failures.
 Those two exposed a stale generated tool reference and a via-mask handler

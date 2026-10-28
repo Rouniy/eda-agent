@@ -39,6 +39,9 @@ class _Bridge:
 
 def _tools(bridge, monkeypatch):
     monkeypatch.setattr(project, "get_bridge", lambda: bridge)
+    # These tests exercise the post-ECO comparison. A dialog left open in
+    # the user's live Altium session must not replace the mocked ECO reply.
+    monkeypatch.setattr(project, "_list_open_dialogs", lambda: [])
     tools = {}
 
     class _Mcp:
