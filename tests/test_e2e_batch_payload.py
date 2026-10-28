@@ -149,6 +149,27 @@ def test_an_empty_batch_is_refused_before_the_bridge(e2e_bridge):
     assert skipped == 0
 
 
+def test_multipart_pin_batch_default_preserves_explicit_part_and_shared_pin():
+    pins = [
+        {"designator": "1", "name": "A"},
+        {"designator": "2", "name": "VCC", "owner_part_id": 0},
+        {"designator": "3", "name": "B", "owner_part_id": 2},
+    ]
+    payload, skipped = _pins_payload(pins, default_owner_part_id=3)
+    assert skipped == 0
+    assert [part.split("owner_part_id=")[1].split(";", 1)[0]
+            for part in payload.split("~~")] == ["3", "0", "2"]
+    without_default, _ = _pins_payload([pins[0]])
+    assert "owner_part_id=" not in without_default
+
+
+@pytest.mark.parametrize("owner", [-1, 1.5, True])
+def test_invalid_multipart_owner_refuses_batch_before_ipc(owner):
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        _pins_payload([{"designator": "1", "name": "A",
+                        "owner_part_id": owner}])
+
+
 # ------------------- symbol text over the same grammar ---------------
 
 def _add_symbol_text(bridge, items):

@@ -17,6 +17,11 @@ one-call body add, though a separate body edit could set it later. Script
 `.158` now accepts and verifies the requested height. A native disposable
 PcbLib saved and reopened with the new body at 3.25000112 mm; the original
 library was unchanged.
+Its pin-batch `default_owner_part_id` is now an optional public argument.
+The current-part default remains when omitted; explicit 0 shares the
+batch, while per-pin values override it. A disposable three-part symbol
+read back owners 3, 0 and 2 before and after save/reopen. The source SchLib
+was unchanged.
 
 ## 2026-10-28 refresh after script `.155`
 

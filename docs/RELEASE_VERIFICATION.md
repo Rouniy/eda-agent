@@ -1,5 +1,17 @@
 # Release verification: 2026.10.28.158
 
+The `rabihnd/integration` multipart pin-batch fallback is now exposed as
+optional `default_owner_part_id` on `lib_add_pins`. Omission retains the
+active-part behavior; an explicit value fills only pins without their own
+owner. In a disposable SchLib, a three-part symbol received pins with
+owners 3 (batch default), 0 (shared override) and 2 (part override).
+Altium read back 3/0/2 before and after exact save/reopen, and the copy
+closed cleanly. The source library SHA-256 remained
+`B76D64E6018CF85CC42DC29FE31E261A1EE4B3D5C1181A230A43DE93DE30F358`.
+The focused batch and symbol suite passed 78 tests. This Python-only
+change needs no DelphiScript version bump; the HTTP MCP server was
+restarted and the live script remained `.158`.
+
 Script `.158` carries `rabihnd/integration`'s optional overall STEP body
 height into the exact-library `lib_add_3d_body` operation. The native
 handler sets `OverallHeight` before registering the body and checks it

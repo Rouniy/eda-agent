@@ -2,6 +2,10 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Port `rabihnd/integration`'s multipart pin-batch default owner as
+  optional `default_owner_part_id`, preserving current-part semantics
+  when omitted. Native disposable SchLib readback and save/reopen retained
+  owners 3/0/2; 78 focused tests pass.
 - [x] Port `rabihnd/integration`'s `eText` and `eTextString` aliases to
   the shared schematic object resolver. Script `.157` passed Pascal
   lint/build and 38 focused tests, then loaded in the live Altium bridge.

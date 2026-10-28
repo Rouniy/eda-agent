@@ -959,7 +959,10 @@ def _bodies_payload(bodies: list[dict[str, Any]]) -> tuple[str, list[str]]:
     return "~~".join(ops), problems
 
 
-def _pins_payload(pins: list[dict[str, Any]]) -> tuple[str, int]:
+def _pins_payload(
+    pins: list[dict[str, Any]],
+    default_owner_part_id: Optional[int] = None,
+) -> tuple[str, int]:
     """Build the ``pins`` batch payload, and count what was dropped.
 
     Extracted so the exact string Pascal will parse can be produced
@@ -993,8 +996,11 @@ def _pins_payload(pins: list[dict[str, Any]]) -> tuple[str, int]:
             f"{_payload_safe(p.get('electrical_type', 'passive'))}",
             f"hidden={'true' if p.get('hidden') else 'false'}",
         ]
-        if "owner_part_id" in p and p["owner_part_id"] is not None:
-            fields.append(f"owner_part_id={int(p['owner_part_id'])}")
+        owner = p.get("owner_part_id")
+        if owner is None:
+            owner = default_owner_part_id
+        if owner is not None:
+            fields.append(f"owner_part_id={_nonnegative_owner_part(owner)}")
         # IEEE edge decorations. Omitted entirely when unset, because a
         # fresh pin already carries eNoSymbol and the Pascal only writes
         # the property when the field is present, which keeps every
@@ -1997,6 +2003,7 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_add_pins(
         pins: list[dict[str, Any]],
+        default_owner_part_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Add MANY pins to the current symbol in ONE call (there is no
         single-pin variant).
@@ -2017,6 +2024,9 @@ def register_library_tools(mcp):
                 - hidden: hide the pin (default False)
                 - owner_part_id: sub-part of a multi-part symbol; 0 shares
                   the pin across all parts (power pins).
+            default_owner_part_id: Part to use for pins without their own
+                owner_part_id. 0 makes the batch shared. Omit to retain
+                Altium's current-part default.
                 - symbol_outer_edge / symbol_inner_edge: IEEE decoration,
                   e.g. "dot" (active low) outside, "clock" inside, or any
                   TIeeeSymbol name.
@@ -2026,7 +2036,15 @@ def register_library_tools(mcp):
         Returns:
             Dict with added, failed, total counts.
         """
-        payload, skipped_invalid = _pins_payload(pins)
+        try:
+            if default_owner_part_id is not None:
+                default_owner_part_id = _nonnegative_owner_part(
+                    default_owner_part_id)
+            payload, skipped_invalid = _pins_payload(
+                pins, default_owner_part_id)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "added": 0,
+                    "total": len(pins)}
 
         if not payload:
             return {
