@@ -5759,6 +5759,9 @@ def register_pcb_tools(mcp):
                     native_state_unknown = True
                     return {"op": op, "native_reply": reply}
                 applied.append(op)
+                if reply.get("ordinary_copper") is False:
+                    return {"op": op, "error": "copper remains additive or non-conductive",
+                            "native_reply": reply}
             return None
 
         all_ops = list(copper_ops)
@@ -5803,6 +5806,8 @@ def register_pcb_tools(mcp):
             else:
                 mismatches = stack_build.check(readback["layers"], plan,
                                                final_inspect["layers"])
+                mismatches.extend(stack_build.check_copper_flags(
+                    final_inspect["layers"]))
             section = stack_build.board_section(readback["layers"])
         ok = failure is None and not mismatches
         view_refresh: dict[str, Any] = {"requested": False}

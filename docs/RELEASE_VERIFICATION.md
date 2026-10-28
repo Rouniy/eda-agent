@@ -1,4 +1,15 @@
-# Release verification: 2026.10.28.160
+# Release verification: 2026.10.28.162
+
+Script `.162` makes inserted and edited copper ordinary rather than
+printed-electronics additive, and reports additive/resistivity flags in
+physical-stack reads. `pcb_build_stack` rejects a layer that remains
+additive or non-conductive. Native acceptance of a changed stack is still
+required on a disposable board; source lint and focused tests are below.
+
+Script `.161` imports MOREmbedded's Pascal lint guards, fixes two
+undeclared PCB locals and honors the net-class `members` option. The
+loaded `.161` script returned four classes with `members_read` matching
+both option values on an unchanged board.
 
 Script `.160` opens the project's primary PcbDoc before a schematic-to-PCB
 ECO when that document is closed, then checks the focused board path and
@@ -83,7 +94,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.160` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.162` from `app_ping`.
 Current `app_ping` reports loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;

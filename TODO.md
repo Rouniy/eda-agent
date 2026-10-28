@@ -11,12 +11,15 @@
   were restarted; live net-class reads confirmed both option values.
   The branch's process-visibility doctor fix (`cbff5f9`) was integrated
   earlier with 75 focused tests and a live doctor pass.
-- [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: port its ordinary
-  copper correction and loss-tangent stack write; verify the guarded
+- [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: port its
+  loss-tangent stack write; verify the guarded
   `pcb_reset_stack_manager_model` on a copy with a visibly stale manager
-  model. The saved-file reader detects additive or non-conductive copper
-  and stale manager thicknesses. The reset is deployed and completed an
-  AD26.11 open/save/readback round trip on a disposable PcbDoc.
+  model. Its ordinary-copper correction and additive/resistivity native
+  reads are integrated in script `.162`; a scratch-board stack mutation
+  still needs native acceptance. The saved-file reader detects additive
+  or non-conductive copper and stale manager thicknesses. The reset is
+  deployed and completed an AD26.11 open/save/readback round trip on a
+  disposable PcbDoc.
 - [x] Expose the forks' requested `delta_t_c` in Altium's
   `pcb_calc_track_current_capacity`, while retaining its fixed rise table
   and optional length/resistance result. The selected current uses the

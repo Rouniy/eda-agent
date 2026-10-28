@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.161';
+    SCRIPT_VERSION = '2026.10.28.162';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -64449,6 +64449,7 @@ Var
     MLS : IPCB_MasterLayerStack;
     L : IPCB_LayerObject;
     DL : IPCB_DielectricLayer;
+    EL : IPCB_ElectricalLayer;
     ExpectedPath, Copper, Dielectric, Mask, Overlay, Paste : String;
     Kind, Key, Items, Extra : String;
     ZTop, ZBot, MaxTop, MinBot, LayerOrder : Integer;
@@ -64498,6 +64499,12 @@ Begin
                 + JsonRaw('constant', FloatToJsonStr(DL.DielectricConstant)) + ','
                 + JsonRaw('loss_tangent', FloatToJsonStr(DL.DielectricLossTangent)) + ','
                 + JsonBool('stiffener', DL.IsStiffener);
+        End
+        Else If Kind = 'copper' Then
+        Begin
+            EL := L;
+            Extra := ',' + JsonBool('additive', EL.IsAdditiveLayer) + ','
+                + JsonRaw('resistivity', FloatToJsonStr(EL.ElectricalResistivity));
         End;
         If Items <> '' Then Items := Items + ',';
         Items := Items + JsonObj(JsonInt('order', LayerOrder) + ','
@@ -65556,6 +65563,21 @@ Begin
     End;
 End;
 
+{ V7 insertion can create a printed-electronics layer with non-conductive }
+{ resistivity. Match the board's top copper after each copper write.       }
+Function StackMakeOrdinaryCopper(MLS : IPCB_MasterLayerStack; L : IPCB_LayerObject) : Boolean;
+Var
+    EL, TopEL : IPCB_ElectricalLayer;
+Begin
+    EL := L;
+    TopEL := MLS.First(eLayerClass_Electrical);
+    If EL.IsAdditiveLayer Then EL.IsAdditiveLayer := False;
+    If (TopEL <> Nil) And (EL.ElectricalResistivity <> TopEL.ElectricalResistivity) Then
+        EL.ElectricalResistivity := TopEL.ElectricalResistivity;
+    Result := (Not EL.IsAdditiveLayer) And
+        ((TopEL = Nil) Or (EL.ElectricalResistivity = TopEL.ElectricalResistivity));
+End;
+
 Function PCB_StackEdit(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -65564,8 +65586,9 @@ Var
     DL : IPCB_DielectricLayer;
     EL : IPCB_ElectricalLayer;
     Op, Kind, RefName, Where, Name, NewName, ThickS, TypeS, ConstS, MatS, Items, ExpectedPath : String;
+    Extra, CopperNames : String;
     Id : TLayer;
-    Removed : Boolean;
+    Removed, Ordinary : Boolean;
     LS7 : IPCB_LayerStack_V7;
     RefObj, NewObj : IPCB_LayerObject_V7;
 Begin
@@ -65679,10 +65702,12 @@ Begin
             Exit;
         End;
         EL := NewL;
+        Ordinary := False;
         PCBServer.PreProcess;
         Try
             If Name <> '' Then NewL.Name := Name;
             If ThickS <> '' Then EL.CopperThickness := MilsToCoordF(StrToFloatDef(ThickS, 0));
+            Ordinary := StackMakeOrdinaryCopper(MLS, NewL);
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
@@ -65692,6 +65717,7 @@ Begin
         Result := BuildSuccessResponse(RequestId, JsonObj(
             JsonStr('board_path', Board.FileName) + ',' + JsonStr('op', Op) + ',' + JsonStr('kind', Kind) + ','
             + JsonStr('name', NewL.Name) + ',' + JsonInt('layer_id', NewL.LayerID) + ','
+            + JsonBool('ordinary_copper', Ordinary) + ','
             + JsonStr('ref', Ref.Name) + ',' + JsonStr('where', Where)));
         Exit;
     End;
@@ -65701,13 +65727,21 @@ Begin
         { Read only: each physical layer's id and whether primitives sit on
           it, so pcb_build_stack can refuse a plan before its first write. }
         Items := '';
+        CopperNames := UpperCase(PCB_StackClassNames(MLS, eLayerClass_Electrical));
         L := MLS.First(eLayerClass_Physical);
         While L <> Nil Do
         Begin
             If Items <> '' Then Items := Items + ',';
+            Extra := '';
+            If Pos('|' + UpperCase(L.Name) + '|', CopperNames) > 0 Then
+            Begin
+                EL := L;
+                Extra := ',' + JsonBool('additive', EL.IsAdditiveLayer) + ','
+                    + JsonRaw('resistivity', FloatToJsonStr(EL.ElectricalResistivity));
+            End;
             Items := Items + JsonObj(JsonStr('name', L.Name) + ','
                 + JsonInt('layer_id', L.LayerID) + ','
-                + JsonBool('used_by_prims', L.UsedByPrims));
+                + JsonBool('used_by_prims', L.UsedByPrims) + Extra);
             L := MLS.Next(eLayerClass_Physical, L);
         End;
         Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -65786,10 +65820,12 @@ Begin
     If Op = 'set_copper' Then
     Begin
         EL := L;
+        Ordinary := False;
         PCBServer.PreProcess;
         Try
             If NewName <> '' Then L.Name := NewName;
             If ThickS <> '' Then EL.CopperThickness := MilsToCoordF(StrToFloatDef(ThickS, 0));
+            Ordinary := StackMakeOrdinaryCopper(MLS, L);
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
@@ -65799,6 +65835,7 @@ Begin
         Result := BuildSuccessResponse(RequestId, JsonObj(
             JsonStr('board_path', Board.FileName) + ',' + JsonStr('op', Op) + ',' + JsonStr('name', L.Name) + ','
             + JsonInt('layer_id', L.LayerID) + ','
+            + JsonBool('ordinary_copper', Ordinary) + ','
             + JsonRaw('thickness_mils', FloatToJsonStr(CoordToMilsF(EL.CopperThickness)))));
         Exit;
     End;

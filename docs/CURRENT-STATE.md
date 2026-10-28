@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## mooreaa copper guard, 2026-10-28
+
+The ordinary-copper part of `mooreaa/main` commit `4f70c9c` is adapted
+to the exact-board stack editor. Insert and set_copper clear the additive
+flag and copy top copper's resistivity, returning `ordinary_copper`.
+`pcb.physical_stack` and stack inspection report additive/resistivity;
+`pcb_build_stack` fails if a write returns false or the final inventory
+still shows additive/non-conductive copper. The saved-PcbDoc reader's
+corresponding check was integrated earlier. Forty-seven focused tests
+and 12-file Pascal lint pass. The monolith was rebuilt; live AD26.11.1.5
+script `.162` answers `app_ping`. A read-only call on the unchanged DCDC
+board returned four copper layers, each additive=false and resistivity=0.
+The write path still needs acceptance on a disposable board. The donor's
+loss-tangent write and a visibly stale-manager-model reset remain.
+
 ## MOREmbedded Pascal lint and live bridge, 2026-10-28
 
 The remaining `MOREmbedded/claude/determined-gould-ebb38e` commit

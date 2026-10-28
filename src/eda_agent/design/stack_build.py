@@ -236,6 +236,21 @@ def dielectric_ops(readback: list[dict[str, Any]], plan: list[dict[str, Any]]) -
     return removes + temps + finals
 
 
+def check_copper_flags(inspected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Report copper that remains additive or electrically non-conductive."""
+    findings: list[dict[str, Any]] = []
+    for layer in inspected:
+        if "additive" not in layer:
+            continue
+        if layer["additive"]:
+            findings.append({"check": "additive", "layer": layer.get("name"),
+                             "got": True, "expected": False})
+        if float(layer.get("resistivity") or 0) >= 1e9:
+            findings.append({"check": "non_conductive", "layer": layer.get("name"),
+                             "got": layer.get("resistivity"), "expected": "copper"})
+    return findings
+
+
 def check(readback: list[dict[str, Any]], plan: list[dict[str, Any]],
           inspect: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Where the stack read back from Altium differs from the plan."""

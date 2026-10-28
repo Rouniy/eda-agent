@@ -177,6 +177,17 @@ def test_readback_rejects_wrong_plane_type_and_material():
     assert [c["check"] for c in checks] == ["material", "copper_type", "material"]
 
 
+def test_additive_and_nonconductive_copper_is_rejected():
+    inventory = [
+        {"name": "Top", "additive": False, "resistivity": 1.7},
+        {"name": "Signal", "additive": True, "resistivity": 2147483647},
+        {"name": "Dielectric 1"},
+    ]
+    assert [(f["check"], f["layer"]) for f in
+            stack_build.check_copper_flags(inventory)] == [
+                ("additive", "Signal"), ("non_conductive", "Signal")]
+
+
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, 0.0])
 def test_nonfinite_or_nonpositive_thickness_is_refused(bad):
     with pytest.raises(stack_build.StackPlanError, match="finite and positive"):
