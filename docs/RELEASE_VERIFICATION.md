@@ -1,5 +1,11 @@
 
-# Release verification: 2026.10.28.170
+# Release verification: 2026.10.28.171
+
+Script `.171` adds a focused-board-only resolver for the via soldermask
+handler. It refuses an absent focused board instead of falling back to a
+different open board. Pascal lint/build had zero findings, 64 related
+tests and 9 via checks passed, and the AD26.11.1.5 bridge restarted and
+answered `application.ping` as `.171`.
 
 Script `.170` removes the `CompilationMasked` read that AD26.11 does not
 honour, uses the focus-aware board resolver for via mask edits, and adds a
@@ -162,7 +168,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.170` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.171` from `app_ping`.
 At that earlier checkpoint, `app_ping` reported loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;

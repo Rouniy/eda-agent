@@ -484,3 +484,35 @@ The current designator, via-mask, Workspace and DbLib focused slice passed
 33 tests. This inventory checks path-level completeness and the named
 behaviors; it does not make AD25 native acceptance or every generated SDK
 accessor complete.
+
+## Latest live-ref and regression check
+
+At `main` `6cdb3af`, `fork-status --fetch --cached-forks
+--verify-fork-branches --json` refreshed origin, upstream and MOREmbedded.
+The upstream tip and merge base are both `0bb1b3154cca6e58a517b23edee3d7a108f1c232`;
+the last explicit upstream merge is `63f7c16`. MOREmbedded's tip and merge
+base are both `d495c4d8802c0b7259068c2f414b7b23bfdf6ee6`. All 63
+live fork defaults and 120 live branches matched their cached refs.
+
+An AST pass over the 49 distinct divergent tips found 116 donor-only
+`@mcp.tool` function names. Of these, 104 are from the old unprefixed API
+in `rabihnd` and `james-martinez`: 65 have an exact suffix match after
+the current namespace prefix; 39 require a renamed-route comparison, such as
+`compile_project` / `proj_compile`, `query_objects` / `obj_query`,
+`get_open_projects` / `proj_list_open`, and `update_pcb` / `proj_sync_pcb`.
+All 39 proposed current route names exist in the registered tool source.
+The other 12 are the prefixed legacy spellings described above. This
+name check does not prove behavior parity; it prevents old API names from
+being counted as 116 unimplemented features.
+
+The full Python suite at `6cdb3af` ran again after six failing tests were
+repaired: 9780 passed, 165 skipped, one expected failure, and two failures.
+Those two exposed a stale generated tool reference and a via-mask handler
+that could fall back to another board after losing focus. The reference was
+regenerated, and the handler now uses a focused-board-only resolver;
+64 related tests and 9 via checks passed. The generated SDK accessor for
+`CompilationMasked` was removed because AD26.11 ignored its write, and
+the generator now records it as native-unreliable so a later regeneration
+does not restore it. Its focused generator/reflection slice passed 40/40.
+The current `.171` script passed lint/build and answered a native restart
+ping. The entire suite has not been rerun after these last two fixes.

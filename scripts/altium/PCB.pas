@@ -18807,7 +18807,7 @@ Begin
             'Focus the PcbDoc whose vias should be changed');
         Exit;
     End;
-    Board := GetPCBBoardAnywhere(0);
+    Board := GetFocusedPCBBoard(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');

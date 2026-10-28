@@ -151,6 +151,25 @@ def test_names_a_chain_already_handles_are_not_offered_again(model):
     assert [n for n, _p in take] == ["Ratio", "Visible"]
 
 
+def test_native_unreliable_compile_mask_is_not_generated():
+    data = {
+        "schema": 1, "assembly": "fake",
+        "interfaces": {"SCH.ISch_Component": {
+            "name": "ISch_Component", "namespace": "SCH", "inherits": [],
+            "properties": {
+                "CompilationMasked": {"name": "CompilationMasked", "get": "Boolean",
+                                      "set": "Boolean"},
+                "LibReference": {"name": "LibReference", "get": "String"},
+            }, "methods": [],
+        }},
+    }
+    sdk = SdkModel(data)
+    for direction in ("read", "write"):
+        take, skipped = plan(sdk, "ISch_Component", direction)
+        assert "CompilationMasked" not in {name for name, _ in take}
+        assert any(s.name == "CompilationMasked" for s in skipped)
+
+
 # --------------------------------------------------------------------------
 # The Pascal it emits
 # --------------------------------------------------------------------------

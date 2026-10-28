@@ -32,6 +32,10 @@ from .coverage import handled_heads, interface_for, supported_sch_types
 from .reflect import Property, SdkModel
 from .symbols import ABSENT, GETTER, PLAIN, SymbolTable
 
+# AD 26.11 accepts this ISch_Component member but ignores a write: a read
+# immediately returns false. Do not offer it again as a generated accessor.
+NATIVE_UNRELIABLE = {("ISch_Component", "CompilationMasked")}
+
 #: Reading a property into the chain's String result. The chains report
 #: every value as text, so each declared type needs the conversion the
 #: existing lines already use: IntToStr for counts and enums,
@@ -160,6 +164,9 @@ def plan(model: SdkModel, interface: str, kind: str, *,
     skip: list[Skipped] = []
     for name in sorted(props):
         if name.lower() in known:
+            continue
+        if (interface, name) in NATIVE_UNRELIABLE:
+            skip.append(Skipped(name, "native write/readback is unreliable"))
             continue
         reason = _reject(props[name], kind, table, allow_getter)
         if reason:

@@ -14,7 +14,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.170';
+    SCRIPT_VERSION = '2026.10.28.171';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -690,6 +690,23 @@ Begin
     { Restore the user's prior view so the focus blink is invisible. }
     If (PrevView <> Nil) And (Client <> Nil) Then
         Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
+End;
+
+{..............................................................................}
+{ Only the focused PCB is eligible for handlers that require exact focus.   }
+{ Unlike GetPCBBoardAnywhere, this never searches another open project.     }
+Function GetFocusedPCBBoard(Dummy : Integer) : IPCB_Board;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+Begin
+    Result := Nil;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc = Nil Then Exit;
+    If UpperCase(Doc.DM_DocumentKind) <> 'PCB' Then Exit;
+    Try Result := PCBServer.GetCurrentPCBBoard; Except Result := Nil; End;
 End;
 
 {..............................................................................}
