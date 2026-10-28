@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.144';
+    SCRIPT_VERSION = '2026.10.28.145';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -60069,7 +60069,7 @@ Var
     LayerStack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
     Lyr : TLayer;
-    DesStr, OnePad, PadName, NetName, Items : String;
+    DesStr, OnePad, PadName, NetName, Items, ExpectedPath : String;
     Count, PlaneCount : Integer;
 Begin
     DesStr := Trim(ExtractJsonValue(Params, 'designator'));
@@ -60083,6 +60083,18 @@ Begin
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'board_path is required');
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
         Exit;
     End;
     Comp := Board.GetPcbComponentByRefDes(DesStr);
@@ -60142,8 +60154,10 @@ Begin
         Exit;
     End;
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonStr('designator', DesStr) + ','
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonStr('designator', DesStr) + ','
         + JsonInt('plane_layers', PlaneCount) + ','
+        + JsonInt('pad_count', Count) + ','
         + JsonRaw('pads', '[' + Items + ']')));
 End;
 

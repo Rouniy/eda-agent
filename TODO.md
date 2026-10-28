@@ -1,5 +1,16 @@
 # Fork integration TODO
 
+## Internal-plane read contract, 2026-10-28
+
+- [x] Repair the upstream `pcb_plane_connections` handler's reply and
+  exact-board guard. Before the fix, the native handler read MH6 on a
+  board with one internal plane, but the public tool rejected it because
+  `board_path` and `pad_count` were absent. Script `.145` echoes both,
+  refuses a different selected board, and the public tool now reads
+  MH6.MOUNT and all 20 pads of J1 on the CW308 baseboard. U1-1 reports
+  net GND. The board was closed without saving; 107 focused tests and
+  the 12-unit Pascal build pass.
+
 ## New `mooreaa` tip `a4be7fc`, 2026-10-28
 
 - [x] Port and natively qualify `pcb_adjust_designators` from `77cf340`:
@@ -77,7 +88,10 @@
 - [x] Refuse a close when `GetDocumentByPath` resolves to a different
   document, and remove the undefined-local `obj_zoom(point)` branch.
 - [ ] Reproduce the phantom-path close case on a disposable document;
-  assess other remaining fork differences against our current code.
+  assess other remaining fork differences against our current code. A
+  nonexistent same-name path in another directory returned NOT_LOADED
+  while the real scratch SchDoc stayed open; Altium did not resolve it to
+  the real document, so that probe did not exercise PATH_MISMATCH.
 - [x] Require an explicit project for checkpointing when selection is
   ambiguous; default GND-named template ports downward; keep exported
   screenshots at native size and enlarge only OCR inputs.

@@ -1,5 +1,16 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 live refresh and plane-read repair
+
+`git fetch upstream main` returned
+`ee7589c9fc543d0b99bb142dc8ca12b618fffeab`; it is an ancestor of
+`Rouniy/eda-agent/main`, with zero missing upstream commits. The live
+fork inventory matched all 62 cached default tips and all 117 branch
+tips. The inherited internal-plane reader was present but unusable through
+the public tool because its native reply omitted exact-board identity and
+pad count. Script `.145` repairs that contract and passed a native read
+on the CW308 baseboard with one internal plane; see `CURRENT-STATE.md`.
+
 ## 2026-10-28 MOREmbedded large fab snapshot
 
 The exact-board fab-facts handler read 8355 drilled vias on the

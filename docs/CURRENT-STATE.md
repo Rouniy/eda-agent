@@ -1,5 +1,23 @@
 # Current integration state / agent handoff
 
+## Internal-plane tool contract and fresh fork check, 2026-10-28
+
+Live `fork-status --verify-fork-branches` found 62/62 default fork tips
+and 117/117 branch tips fresh. A new fetch left `upstream/main` at
+`ee7589c9fc543d0b99bb142dc8ca12b618fffeab`, an ancestor of `main`
+with zero upstream commits pending.
+
+The upstream `pcb_plane_connections` handler returned real plane data but
+omitted the `board_path` and `pad_count` fields required by the public MCP
+wrapper. On `CW308_PCB.PcbDoc`, MH6.MOUNT initially returned a native
+one-plane reading while the public tool reported an incomplete reply.
+Script `.145` checks the selected board path and returns both fields.
+After a native restart, the public tool read MH6.MOUNT, all 20 pads of J1,
+and U1-1 on net GND. A different requested board path was rejected.
+The board closed without saving; the Pascal build had zero findings and
+107 related tests passed. This verifies the public read contract, while
+the broader connected-versus-isolated plane comparison remains open.
+
 ## Native variant switch and RFSoC DRC, 2026-10-28
 
 Script `.144` switches a project's active variant through
