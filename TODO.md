@@ -15,7 +15,9 @@
   `pcb_reset_stack_manager_model` on a copy with a visibly stale manager
   model. Its ordinary-copper correction, additive/resistivity native reads
   and optional loss-tangent stack write are integrated in scripts `.162`
-  and `.163`; a scratch-board stack mutation still needs native acceptance.
+  and `.163`. AD26.11 scratch-board checks confirmed both an inserted
+  ordinary, conductive copper layer and a changed loss tangent; both copies
+  were closed without saving and removed.
   The saved-file reader detects additive
   or non-conductive copper and stale manager thicknesses. The reset is
   deployed and completed an AD26.11 open/save/readback round trip on a

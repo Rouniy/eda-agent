@@ -8,8 +8,10 @@ in the physical-stack readback. This adapts the remaining write feature
 from `mooreaa/main` commit `ae97798`. Fifty-two focused tests pass.
 Pascal lint reports zero errors/warnings across 12 files; script `.163`
 loaded in AD26.11.1.5 and answered `app_ping`. HTTP MCP was restarted
-from main on 14701 while the TCP relay remains on 14700. Native write
-acceptance on a disposable board is still pending.
+from main on 14701 while the TCP relay remains on 14700. Native AD26.11
+write acceptance on a disposable PcbDoc changed Dielectric 1 from loss
+tangent 0.02 to 0.017; physical-stack readback returned 0.017. The copy
+was closed without saving and removed.
 
 ## mooreaa copper guard, 2026-10-28
 
@@ -23,8 +25,11 @@ corresponding check was integrated earlier. Forty-seven focused tests
 and 12-file Pascal lint pass. The monolith was rebuilt; live AD26.11.1.5
 script `.162` answers `app_ping`. A read-only call on the unchanged DCDC
 board returned four copper layers, each additive=false and resistivity=0.
-The write path still needs acceptance on a disposable board. The donor's
-loss-tangent write and a visibly stale-manager-model reset remain.
+Native AD26.11 acceptance on another disposable PcbDoc inserted signal
+layer `EDA_TEST_COPPER` below Top Layer: the reply reported
+`ordinary_copper=true`, and physical-stack readback showed a 1.378 mil
+copper layer with additive=false and resistivity=0. The copy was closed
+without saving and removed. A visibly stale-manager-model reset remains.
 
 ## MOREmbedded Pascal lint and live bridge, 2026-10-28
 

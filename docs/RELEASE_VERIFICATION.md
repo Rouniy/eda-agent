@@ -2,12 +2,17 @@
 
 Script `.163` passes an optional dielectric `loss_tangent` through
 `pcb_build_stack` and verifies it against the physical stack readback.
+On a disposable PcbDoc, `pcb.stack_edit set_dielectric` changed Dielectric 1
+from 0.02 to 0.017 and `pcb_physical_stack` returned 0.017. The copy was
+closed without saving and removed. Another disposable PcbDoc accepted
+`pcb.stack_edit insert` for `EDA_TEST_COPPER`, 1.378 mil: the reply said
+`ordinary_copper=true`, and the physical-stack readback reported a copper
+layer with additive=false and resistivity=0. That copy was also discarded.
 
 Script `.162` makes inserted and edited copper ordinary rather than
 printed-electronics additive, and reports additive/resistivity flags in
 physical-stack reads. `pcb_build_stack` rejects a layer that remains
-additive or non-conductive. Native acceptance of a changed stack is still
-required on a disposable board; source lint and focused tests are below.
+additive or non-conductive. Source lint and focused tests are below.
 
 Script `.161` imports MOREmbedded's Pascal lint guards, fixes two
 undeclared PCB locals and honors the net-class `members` option. The
