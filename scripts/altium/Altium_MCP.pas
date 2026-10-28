@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.164';
+    SCRIPT_VERSION = '2026.10.28.165';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -40351,12 +40351,13 @@ Function PCB_GetComponentsForBoard(Board : IPCB_Board; RequestId : String) : Str
 Var
     Iterator : IPCB_BoardIterator;
     Comp : IPCB_Component;
-    BBox : TCoordRect;
+    BBox, BBoxNoNameComment : TCoordRect;
     JsonItems, Designator, Footprint, LayerStr : String;
     CommentStr, SrcDesignator, SrcUniqueId, UniqueIdStr : String;
     First : Boolean;
     Count : Integer;
     HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Double;
+    NoNameX1, NoNameY1, NoNameX2, NoNameY2 : Double;
 Begin
     JsonItems := '';
     First := True;
@@ -40400,6 +40401,15 @@ Begin
             BBoxH := BBoxY2 - BBoxY1;
         Except End;
 
+        NoNameX1 := 0; NoNameY1 := 0; NoNameX2 := 0; NoNameY2 := 0;
+        Try
+            BBoxNoNameComment := Comp.BoundingRectangleNoNameComment;
+            NoNameX1 := CoordToMilsF(BBoxNoNameComment.X1);
+            NoNameY1 := CoordToMilsF(BBoxNoNameComment.Y1);
+            NoNameX2 := CoordToMilsF(BBoxNoNameComment.X2);
+            NoNameY2 := CoordToMilsF(BBoxNoNameComment.Y2);
+        Except End;
+
         JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Designator) + '",'
             + '"comment":"' + EscapeJsonString(CommentStr) + '",'
             + '"x":' + FloatToJsonStr(CoordToMilsF(Comp.x)) + ','
@@ -40414,6 +40424,10 @@ Begin
             + '"bbox":{"x1":' + FloatToJsonStr(BBoxX1) + ',"y1":' + FloatToJsonStr(BBoxY1)
             + ',"x2":' + FloatToJsonStr(BBoxX2) + ',"y2":' + FloatToJsonStr(BBoxY2)
             + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '},'
+            + '"bbox_no_name_comment":{"x1":' + FloatToJsonStr(NoNameX1)
+            + ',"y1":' + FloatToJsonStr(NoNameY1)
+            + ',"x2":' + FloatToJsonStr(NoNameX2)
+            + ',"y2":' + FloatToJsonStr(NoNameY2) + '},'
             + '"placement_bbox":{"x1":' + FloatToJsonStr(BBoxX1)
             + ',"y1":' + FloatToJsonStr(BBoxY1)
             + ',"x2":' + FloatToJsonStr(BBoxX2)

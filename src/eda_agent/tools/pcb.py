@@ -2013,7 +2013,7 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with "components" array (each with designator, x, y,
-            rotation, layer, footprint) and "count", plus
+            rotation, layer, footprint, bbox, bbox_no_name_comment) and "count", plus
             `_datasheet_guidance` + `_datasheet_parts`.
         """
         bridge = get_bridge()
