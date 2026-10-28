@@ -871,6 +871,24 @@ def test_length_limits_validate_pair_and_reach_typed_rule(monkeypatch):
     assert "RuleLengthIter.MaxLimit = WantMaxLen" in body
 
 
+def test_signal_impedance_limits_are_distinct_from_width_impedance(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_rule_properties",
+                    name="SI_Impedance", min_signal_impedance_ohms=45,
+                    max_signal_impedance_ohms=55)
+    assert sent == [("pcb.set_rule_properties", {
+        "name": "SI_Impedance", "min_signal_impedance_ohms": "45",
+        "max_signal_impedance_ohms": "55"})]
+    for limits in ({"min_signal_impedance_ohms": 0},
+                   {"min_signal_impedance_ohms": 60,
+                    "max_signal_impedance_ohms": 50}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_set_rule_properties", name="SI_Impedance", **limits)
+        assert sent == [] and result["ok"] is False
+    body = _body("PCB.pas", "PCB_SetRuleProperties")
+    assert "RuleSignalImpIter : IPCB_RuleMaxMinImpedance" in body
+    assert "Abs(RuleSignalImpIter.Minimum - WantSigMin)" in body
+
+
 def test_rules_say_when_the_schematic_defines_them():
     body = _body("PCB.pas", "PCB_GetDesignRulesForBoard")
     assert "Try FromSch := Rule.DefinedByLogicalDocument; Except" in body

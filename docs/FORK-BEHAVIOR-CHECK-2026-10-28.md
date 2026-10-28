@@ -986,7 +986,7 @@ This compares call contracts, not the behavior of every function body.
 | `lib_delete_component` (`name`) | The same operation takes `component_name` or a verified component index. |
 | `easyeda_activate_document` (`uuid`) | `tab_id` is required because EasyEDA's activation API accepts an open tab ID; document UUIDs go through `easyeda_open_document`. |
 | `easyeda_cross_probe` (`primitive_ids`) | The current cross-probe uses names; `easyeda_select_primitives` accepts editor primitive IDs. |
-| `pcb_set_rule_properties` (`priority`, generic min/max limits, preferred via hole and impedance names) | The current tool has typed, read-back constraint fields for width, length, differential-pair impedance and via size/hole. Priority is read-only through the Altium scripting interface. The donor's generic `IPCB_Rule` writes are not evidence that all those fields work on native rule subtypes; generic flight-time and signal-impedance limits remain specific candidates for native qualification. |
+| `pcb_set_rule_properties` (`priority`, generic min/max limits, preferred via hole and impedance names) | The current tool has typed, read-back constraint fields for width, length, signal impedance, differential-pair impedance and via size/hole. Priority is read-only through the Altium scripting interface. The donor's generic `IPCB_Rule` writes are not evidence that all those fields work on native rule subtypes; flight-time limits remain a specific candidate for native qualification. |
 
 The Length rule limits were added in script `.180` and verified on a disposable
 copy of `03-07366_R3.PcbDoc`: `LengthStubFind` (kind 3) read back 10.5 mil
@@ -994,3 +994,8 @@ minimum and 50.25 mil maximum after a setter call. The source board was
 untouched and the copy was closed with edits discarded. This review leaves
 other generic rule-limit candidates and AD25 native checks open rather than
 equating a changed parameter name with an absent feature.
+
+Script `.181` also added typed Signal Integrity Impedance limits. On a copy
+of `UNG8071_B1-EVB-KSZ9477.PcbDoc`, rule `MaxMinImpedance` (kind 33) read
+back 45.5 and 60.25 ohms; Altium's rule descriptor showed the same values.
+The copy was closed with edits discarded and the bridge still answered ping.

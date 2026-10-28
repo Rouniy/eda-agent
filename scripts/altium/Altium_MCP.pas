@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.180';
+    SCRIPT_VERSION = '2026.10.28.181';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -39147,6 +39147,7 @@ End;
 {   - MaxMinWidth (kind 2):  min_width_mils / max_width_mils / favored_width_mils}
 {   - MaxMinHoleSize (kind 42):  min_hole_size_mils / max_hole_size_mils       }
 {   - MaxMinLength (kind 3):  min_length_mils / max_length_mils               }
+{   - MaxMinImpedance (kind 33): signal impedance limits in ohms             }
 {                                                                               }
 { Empirically determined kind 52 from the runtime rule list; the published     }
 { TRuleKind enum stops at 51 (DifferentialPairsRouting). Kinds 52+ are newer   }
@@ -39170,6 +39171,7 @@ Var
     RuleWidthIter : IPCB_MaxMinWidthConstraint;
     RuleHoleIter : IPCB_MaxMinHoleSizeConstraint;
     RuleLengthIter : IPCB_MaxMinLengthConstraint;
+    RuleSignalImpIter : IPCB_RuleMaxMinImpedance;
     RuleViaIter : IPCB_RoutingViaStyleRule;
     RulePolyConn : IPCB_PolygonConnectStyleRule;
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
@@ -39191,6 +39193,9 @@ Var
     MinLenStr, MaxLenStr, LenReport, LenProblem : String;
     WantMinLen, WantMaxLen : TCoord;
     LenAsked, LenWritten : Integer;
+    SigMinStr, SigMaxStr, SigReport, SigProblem : String;
+    WantSigMin, WantSigMax : Double;
+    SigAsked, SigWritten : Integer;
     VMinS, VMaxS, VPrefS, VMinH, VMaxH, VPrefH, ViaReport, ViaDesc, ViaProblem : String;
     NMinS, NMaxS, NPrefS, NMinH, NMaxH, NPrefH : TCoord;
     ViaAsked, ViaWritten : Integer;
@@ -39321,6 +39326,8 @@ Begin
     MaxHStr := ExtractJsonValue(Params, 'max_hole_size_mils');
     MinLenStr := ExtractJsonValue(Params, 'min_length_mils');
     MaxLenStr := ExtractJsonValue(Params, 'max_length_mils');
+    SigMinStr := ExtractJsonValue(Params, 'min_signal_impedance_ohms');
+    SigMaxStr := ExtractJsonValue(Params, 'max_signal_impedance_ohms');
     VMinS := ExtractJsonValue(Params, 'min_via_size_mils');
     VMaxS := ExtractJsonValue(Params, 'max_via_size_mils');
     VPrefS := ExtractJsonValue(Params, 'preferred_via_size_mils');
@@ -39619,6 +39626,74 @@ Begin
         End;
         If LenProblem <> '' Then
             LenReport := LenReport + ',"length_note":"' + EscapeJsonString(LenProblem) + '"';
+    End;
+
+    { SIGNAL INTEGRITY IMPEDANCE: this is a different rule from Width's     }
+    { impedance-driven track widths and Differential Pair impedance.       }
+    SigReport := '';
+    SigAsked := 0;
+    SigWritten := 0;
+    If (SigMinStr <> '') Or (SigMaxStr <> '') Then
+    Begin
+        SigProblem := '';
+        If Kind <> eRule_MaxMinImpedance Then
+            SigProblem := 'signal impedance limits apply only to a MaxMinImpedance rule';
+        If ((SigMinStr <> '') And (Not IsFloatStr(SigMinStr))) Or
+           ((SigMaxStr <> '') And (Not IsFloatStr(SigMaxStr))) Then
+            SigProblem := 'signal impedance limits must be numbers in ohms';
+        If SigProblem = '' Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Found := False;
+            Try
+                RuleSignalImpIter := Iter.FirstPCBObject;
+                While (RuleSignalImpIter <> Nil) And (Not Found) Do
+                Begin
+                    If (RuleSignalImpIter.RuleKind = eRule_MaxMinImpedance) And
+                       (RuleSignalImpIter.Name = RuleName) Then
+                    Begin
+                        Found := True;
+                        WantSigMin := RuleSignalImpIter.Minimum;
+                        WantSigMax := RuleSignalImpIter.Maximum;
+                        If SigMinStr <> '' Then WantSigMin := StrToFloatDef(SigMinStr, 0);
+                        If SigMaxStr <> '' Then WantSigMax := StrToFloatDef(SigMaxStr, 0);
+                        If (WantSigMin <= 0) Or (WantSigMax <= 0) Or
+                           (WantSigMin > WantSigMax) Then
+                            SigProblem := 'signal impedance limits require 0 < min <= max'
+                        Else
+                        Begin
+                            If SigMinStr <> '' Then
+                            Begin
+                                Inc(SigAsked);
+                                Try RuleSignalImpIter.Minimum := WantSigMin; Except End;
+                                If Abs(RuleSignalImpIter.Minimum - WantSigMin) < 0.0001 Then Inc(SigWritten);
+                            End;
+                            If SigMaxStr <> '' Then
+                            Begin
+                                Inc(SigAsked);
+                                Try RuleSignalImpIter.Maximum := WantSigMax; Except End;
+                                If Abs(RuleSignalImpIter.Maximum - WantSigMax) < 0.0001 Then Inc(SigWritten);
+                            End;
+                            UpdatedCount := UpdatedCount + SigWritten;
+                        End;
+                        SigReport := ',"signal_impedance_ohms":{"min":' +
+                            FloatToJsonStr(RuleSignalImpIter.Minimum) + ',"max":' +
+                            FloatToJsonStr(RuleSignalImpIter.Maximum) +
+                            '},"signal_impedance_written":' + IntToStr(SigWritten) +
+                            ',"signal_impedance_requested":' + IntToStr(SigAsked);
+                    End;
+                    If Not Found Then RuleSignalImpIter := Iter.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
+            End;
+            If Not Found Then SigProblem := 'MaxMinImpedance rule not found by typed iterator';
+        End;
+        If SigProblem <> '' Then
+            SigReport := SigReport + ',"signal_impedance_note":"' + EscapeJsonString(SigProblem) + '"';
     End;
 
     { THE ROUTING VIA RULE'S SIZES, through a typed local assigned straight }
@@ -40052,7 +40127,7 @@ Begin
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
-        + GapReport + LenReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport + '}');
+        + GapReport + LenReport + SigReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport + '}');
 End;
 
 {..............................................................................}
