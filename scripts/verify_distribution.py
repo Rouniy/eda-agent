@@ -10,6 +10,8 @@ wheel into a fresh virtual environment, and runs the first user commands.
 from __future__ import annotations
 
 import email
+import hashlib
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -68,6 +70,14 @@ def _check_wheel_metadata(archive: zipfile.ZipFile, names: set[str]) -> None:
         raise ValueError("wheel is missing the eda-agent console entry point")
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main(dist: str) -> int:
     wheels = sorted(Path(dist).glob("eda_agent-*.whl"))
     sdists = sorted(Path(dist).glob("eda_agent-*.tar.gz"))
@@ -108,6 +118,28 @@ def main(dist: str) -> int:
                 print("the installed command found a source checkout, not "
                       "the wheel's own copy")
                 return 1
+        extension_dir = Path(tmp) / "easyeda-build"
+        done = subprocess.run(
+            [str(exe), "easyeda-extension", "build", "--out",
+             str(extension_dir)], capture_output=True, text=True,
+        )
+        print(f"installed EasyEDA build -> {done.returncode}: "
+              f"{(done.stdout or done.stderr).strip()}")
+        extension = extension_dir / "eda-agent-bridge.eext"
+        if done.returncode != 0 or not extension.is_file() or extension.stat().st_size == 0:
+            print("installed wheel did not build a usable EasyEDA extension")
+            return 1
+        shipped_extension = Path(dist) / extension.name
+        shutil.copy2(extension, shipped_extension)
+
+    artifacts = [wheel, sdists[0], shipped_extension]
+    checksums = Path(dist) / "SHA256SUMS.txt"
+    checksums.write_text(
+        "".join(f"{_sha256(path)}  {path.name}\n"
+                for path in sorted(artifacts, key=lambda item: item.name)),
+        encoding="ascii",
+    )
+    print(f"verified {len(artifacts)} artifacts; checksums: {checksums}")
     return 0
 
 

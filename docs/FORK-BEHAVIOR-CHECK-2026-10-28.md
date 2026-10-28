@@ -699,3 +699,25 @@ the missing-codec path leaves no empty file, while the WSL readback test
 checks the Windows-form path and fallback encoding. The pointer, WSL and
 Unicode transport slice passed 18/18 on Windows. A real WSL-to-Altium session
 has not yet been run for this change.
+
+## Installed-wheel release bundle from delivery fork
+
+`yniantongtian-oss/release/0.5.0-deliverable-hardening` publishes an
+EasyEDA `.eext` beside the wheel and sdist, with SHA-256 checksums. The
+current package had verified and installed its wheel but stopped there.
+`scripts/verify_distribution.py` now builds the `.eext` using the current
+`eda-agent easyeda-extension build` command from that clean wheel install,
+then writes all three deliverables and `SHA256SUMS.txt` under `dist/`.
+The package CI job uploads that verified set under a commit-SHA name.
+A local 0.7.1 wheel/sdist build and clean-wheel verification produced a
+55,115-byte `.eext`; all three listed hashes matched an independent
+SHA-256 calculation. The focused EasyEDA tests passed 17, with two
+optional skips. Hosted Actions publication remains unverified because
+this fork's workflows have no completed hosted run at this checkpoint.
+
+The separate `viknandala-eng/main` Workspace component test file passed
+6/7 unchanged against current main. Its one failure expects placement
+immediately after `set_active_document`; current main also reads back the
+focused document and refuses placement on a mismatch. The current
+Workspace and live-sheet test slice passed 46/46. This is a stricter
+selection check, not an absent Workspace placement route.

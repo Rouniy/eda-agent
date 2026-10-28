@@ -283,5 +283,21 @@ jobs:
           python -m pip install build
           python -m build
 
-      - name: Check and install the wheel
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Verify installed wheel and build release artifacts
         run: python scripts/verify_distribution.py dist
+
+      - name: Upload verified release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eda-agent-dist-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/*.eext
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
