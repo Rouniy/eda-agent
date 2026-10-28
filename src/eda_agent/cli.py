@@ -479,10 +479,10 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
         print("ERROR: relaunch runs on Windows, where Altium is", file=sys.stderr)
         return 1
     project = (Path(prjscr).expanduser() if prjscr
-               else get_default_scripts_dest() / "Altium_API.PrjScr")
+               else get_bundled_scripts_path() / "Altium_API.PrjScr")
     if not project.is_file():
-        print(f"ERROR: no script project at {project}. Run "
-              f"`eda-agent install-scripts` first, or pass --prjscr.",
+        print(f"ERROR: no script project at {project}. Check "
+              f"`eda-agent scripts-path` or pass --prjscr.",
               file=sys.stderr)
         return 1
 

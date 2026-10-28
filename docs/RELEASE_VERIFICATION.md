@@ -1,5 +1,11 @@
 # Release verification: 2026.10.28.156
 
+`eda-agent relaunch --dry-run` now selects this checkout's
+`scripts/altium/Altium_API.PrjScr` by default. Before the CLI fix it
+failed while looking for an absent separate installed copy. The dry run
+prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
+CLI tests pass.
+
 Expect `altium_script_version` = `2026.10.28.156` from `app_ping`.
 Current `app_ping` reports loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a

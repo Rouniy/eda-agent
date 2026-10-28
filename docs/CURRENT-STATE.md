@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Relaunch from the main checkout, 2026-10-28
+
+The `xthanhn91` loop-relaunch feature is handled by the existing
+`eda-agent relaunch` CLI and bridge supervisor. The CLI's default path
+still pointed at a separate installed script copy; on this machine
+`eda-agent relaunch --dry-run` failed because that copy does not exist.
+It now defaults to the bundled source project, which in this editable
+checkout is `D:\AI\eda-agent\scripts\altium\Altium_API.PrjScr`.
+The same dry run prints the correct `StartMCPServer` command, and all
+25 relaunch and restart-queue tests pass. An explicit `--prjscr` still
+selects another project when requested. The running `.156` bridge was
+left in place because this check did not require an actual restart.
+
 ## Generic DbLib field writes, 2026-10-28
 
 Script `.156` carries the useful `andrzej-sikora-elte/elte` component

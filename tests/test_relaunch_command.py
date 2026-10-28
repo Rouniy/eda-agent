@@ -40,6 +40,16 @@ def test_the_command_runs_startmcpserver_from_the_project():
         r"|ProcName=Dispatcher.pas>StartMCPServer)"]
 
 
+def test_default_relaunch_uses_the_bundled_main_project(tmp_path, monkeypatch,
+                                                         capsys):
+    _, project = _one_altium(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "get_bundled_scripts_path", lambda: tmp_path)
+    monkeypatch.setattr(cli, "get_default_scripts_dest",
+                        lambda: tmp_path / "separate-installed-copy")
+    assert cli.cmd_relaunch(dry_run=True) == 0
+    assert str(project) in capsys.readouterr().out
+
+
 def test_a_live_bridge_is_left_alone(tmp_path, monkeypatch, capsys):
     _, project = _one_altium(tmp_path, monkeypatch)
     import eda_agent.diag.doctor as doctor
@@ -83,9 +93,9 @@ def test_two_altiums_are_not_guessed_between(tmp_path, monkeypatch, capsys):
     assert "2 running" in capsys.readouterr().err
 
 
-def test_a_missing_project_says_to_install_the_scripts(tmp_path, capsys):
+def test_a_missing_project_names_the_source_check(tmp_path, capsys):
     assert cli.cmd_relaunch(prjscr=str(tmp_path / "none.PrjScr")) == 1
-    assert "install-scripts" in capsys.readouterr().err
+    assert "scripts-path" in capsys.readouterr().err
 
 
 def _relaunch_with_frames(tmp_path, monkeypatch, before, hidden):

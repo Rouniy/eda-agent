@@ -46,6 +46,14 @@ The scan is a way to find missing tool surfaces; it does not compare
 arguments or semantics in shared functions, so the behavioral review
 remains open.
 
+`xthanhn91/main`'s `ensure_loop.py` adds automatic relaunch. The current
+CLI already has a supervised `relaunch` command and keeps outstanding
+requests, but its default sought a separate installed script project that
+does not exist in this main-only checkout. The default now uses the bundled
+project in `main`; the live `--dry-run` printed that path and 25 related
+tests passed. The donor's request-file purge and shell-built command were
+not needed for this behavior.
+
 The older `rabihnd/integration` names checked individually here have
 current paths: `lib_diag_footprint` maps to `lib_probe_footprint` for live
 3D-body diagnostics; `lib_set_label_format` to `lib_set_label_formats`;
