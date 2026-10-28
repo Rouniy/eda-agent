@@ -965,3 +965,29 @@ The test also exposed a redundant `FoundNet.AddPCBObject` call in
 `pcb.place_via` that Altium rejected at compile time. It was removed; the
 existing `BindPrimitiveToNet` path remains. The native bridge again answers
 ping from the one main script project.
+
+## Shared tool argument review across divergent branches
+
+An AST pass over all 53 cached fork refs outside `main` ancestry compared
+the parameters of their `@mcp.tool` functions with current `main`. Only
+14 shared tool names had a donor-only parameter in any branch. Twenty-one
+refs carried one of these differences, often the same old signature.
+This compares call contracts, not the behavior of every function body.
+
+| Donor signature difference | Current operation or decision |
+| --- | --- |
+| `pcb_calc_wavelength` (`er_eff`, `length_mils`), `pcb_calc_wire_gauge` (`diameter_mils`), `pcb_calc_fusing_current` (`seconds`, `area_sq_mils`), `pcb_calc_padstack` (`vendor`, `copper_layers`, `kind`, `outer_oz`, `tier`) | The donor physics/fab formulas are exposed by the separate `physics_calc_*` tools. The current `pcb_calc_*` spellings retain their earlier geometric calculator contracts. |
+| `obj_zoom` (`x`, `y`, `radius`) | Point zoom is `obj_zoom_to_xy`; the general `obj_zoom` keeps its fit/document/selection actions. |
+| `lib_rotate_footprint` (`save`) | Rotation leaves the library dirty for inspection; `app_save_document` saves the exact PcbLib separately. |
+| `lib_render_footprint` (`path`) | `output_path` selects the SVG destination. |
+| `pcb_grow_pour` (`name`) | The current selector requires exact board, polygon index, expected name and layer, then verifies the preview before editing. |
+| `pcb_physical_stack` (`style`) | `pcb_set_stack_style` provides the write with exact-board selection and dry-run/readback. |
+| `pcb_build_stack` (`pcbdoc_path`) | The same operation takes `board_path`. |
+| `lib_delete_component` (`name`) | The same operation takes `component_name` or a verified component index. |
+| `easyeda_activate_document` (`uuid`) | `tab_id` is required because EasyEDA's activation API accepts an open tab ID; document UUIDs go through `easyeda_open_document`. |
+| `easyeda_cross_probe` (`primitive_ids`) | The current cross-probe uses names; `easyeda_select_primitives` accepts editor primitive IDs. |
+| `pcb_set_rule_properties` (`priority`, generic min/max limits, preferred via hole and impedance names) | The current tool has typed, read-back constraint fields for width, differential-pair impedance and via size/hole. Priority is read-only through the Altium scripting interface. The donor's generic `IPCB_Rule` writes are not evidence that all those fields work on native rule subtypes; generic flight-time/impedance limits remain a specific candidate for native qualification. |
+
+This review found no additional proved missing public operation. It leaves
+the generic rule-limit candidate and AD25 native checks open rather than
+equating a changed parameter name with an absent feature.
