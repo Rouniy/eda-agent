@@ -145,11 +145,21 @@ def test_dirtiness_is_read_through_one_helper():
     helper = main["DocIsModified"]
     assert "Client.GetDocumentByPath" in helper
     assert "Modified" in helper
+    assert "DocWasEdited(FilePath)" in helper, (
+        "Altium can report Modified=false after a library write; the "
+        "bridge's edit record must still reach app_context")
 
     body = load(_APPLICATION, minimum=12)["App_GetOpenDocuments"]
     assert "DocIsModified" in body, (
         "App_GetOpenDocuments is reading the modified flag its own way "
         "instead of through the shared helper")
+
+    save = load(_APPLICATION, minimum=12)["App_SaveDocument"]
+    assert "ModifiedBefore := DocIsModified(FilePath);" in save
+    assert save.index("ForgetDocEdited(FilePath)") < save.index(
+        "ModifiedAfter := DocIsModified(FilePath);"), (
+        "the save reply must clear the edit record only after a disk write "
+        "and then report the resulting unsaved state")
 
 
 def test_the_helper_is_defined_before_it_is_called():

@@ -817,3 +817,25 @@ same shape in native coordinates: `[[10000000,10000000,90],
 [10000000,11000000,0]]`. This proves the arc survives a disk round
 trip as a shape segment, not only as a flattened contour response.
 The scratch board was closed and removed.
+
+## Library edit state after native footprint creation
+
+The free-PcbLib acceptance above exposed that AD26.11 returned
+`IServerDocument.Modified=false` immediately after a successful
+`library.create_footprint`. The bridge already recorded that edit for
+`app_save_all` and safe close, but `app_get_active_document` and
+`app_list_documents` reported `modified=false`, concealing the pending
+save from `app_context`. Script `.175` now reports a loaded document as
+modified when either its native flag or the bridge's edit record says
+it changed. `application.save_document` reports that combined state
+before and after its confirmed disk write.
+
+On a disposable free PcbLib, `application.create_document` first reported
+`modified=false`; `library.create_footprint(name=DIRTY_QA)` succeeded,
+and both active and open-document reads reported `modified=true`.
+`application.save_document` returned `modified_before=true` and
+`modified_after=false`; a fresh active-document read also returned
+`false`. The library closed without a prompt and the scratch file was
+removed. Pascal lint/build passed and 33 focused tests passed. This
+repairs the dirty-state signal needed by clients using the fork's
+footprint writers.

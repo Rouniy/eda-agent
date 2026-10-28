@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.174';
+    SCRIPT_VERSION = '2026.10.28.175';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -548,8 +548,10 @@ Begin
 End;
 
 {..............................................................................}
-{ Read that same flag back. The counterpart to MarkDocDirtyByPath, and the     }
-{ one definition of "unsaved" for every handler that reports it.               }
+{ Read both the native flag and our edit record. Altium can return Modified }
+{ False immediately after a successful library edit even though the changed }
+{ footprint has not been saved. The record is cleared after a confirmed save }
+{ or close, and makes app_context and app_get_active_document conservative. }
 {                                                                              }
 { A path with no resident IServerDocument reports False: a document that is    }
 { not open in the editor holds no unsaved edits. Treat a True as reliable and  }
@@ -568,7 +570,10 @@ Begin
     Try
         ServerDoc := Client.GetDocumentByPath(FilePath);
         If ServerDoc <> Nil Then
-            If ServerDoc.Modified Then Result := True;
+        Begin
+            Result := DocWasEdited(FilePath);
+            Try If ServerDoc.Modified Then Result := True; Except End;
+        End;
     Except
         Result := False;
     End;
@@ -5327,8 +5332,7 @@ Begin
             'Loaded document path differs from file_path');
         Exit;
     End;
-    ModifiedBefore := False;
-    Try ModifiedBefore := ServerDoc.Modified; Except End;
+    ModifiedBefore := DocIsModified(FilePath);
     AgeBefore := -1;
     Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
     Try ServerDoc.DoFileSave(''); Except
@@ -5338,10 +5342,9 @@ Begin
     End;
     AgeAfter := -1;
     Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
-    ModifiedAfter := False;
-    Try ModifiedAfter := ServerDoc.Modified; Except End;
     If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
         ForgetDocEdited(FilePath);
+    ModifiedAfter := DocIsModified(FilePath);
     Result := BuildSuccessResponse(RequestId,
         '{"file_path":"' + EscapeJsonString(ActualPath) + '",'
         + '"file_exists":' + BoolToJsonStr(FileExists(FilePath)) + ','

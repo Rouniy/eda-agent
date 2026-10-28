@@ -1,6 +1,6 @@
 # Current integration state / agent handoff
 
-The main Altium script is now `.174`, loaded from the one source project,
+The main Altium script is now `.175`, loaded from the one source project,
 and answers ping on AD26.11.1.5. The Python MCP service on 14701 was
 restarted from this `main` and advertises 766 tools without the stale-server
 warning; the separate TCP relay on 14700 answers `/health` as `ready`.

@@ -574,8 +574,7 @@ Begin
             'Loaded document path differs from file_path');
         Exit;
     End;
-    ModifiedBefore := False;
-    Try ModifiedBefore := ServerDoc.Modified; Except End;
+    ModifiedBefore := DocIsModified(FilePath);
     AgeBefore := -1;
     Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
     Try ServerDoc.DoFileSave(''); Except
@@ -585,10 +584,9 @@ Begin
     End;
     AgeAfter := -1;
     Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
-    ModifiedAfter := False;
-    Try ModifiedAfter := ServerDoc.Modified; Except End;
     If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
         ForgetDocEdited(FilePath);
+    ModifiedAfter := DocIsModified(FilePath);
     Result := BuildSuccessResponse(RequestId,
         '{"file_path":"' + EscapeJsonString(ActualPath) + '",'
         + '"file_exists":' + BoolToJsonStr(FileExists(FilePath)) + ','
