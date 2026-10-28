@@ -1046,3 +1046,11 @@ excluded compile-mask property, and the generated tool reference had a stale
 `pcb_get_vias` description. The comment and reference were corrected; both
 failed tests then passed (2/2). The entire suite was not rerun after these
 documentation-only corrections.
+
+A subsequent fresh fork-status refresh found `MOREmbedded/main` advanced to
+`751d46c`, a merge of the already integrated `b1d0fa1` branch. `git
+merge-tree --write-tree main morembedded/main` produced a tree identical to
+`main`, and merge `1c55594` brought the new child tip into `main` ancestry
+with zero file changes. The fork-status refresh matched all 120/120 live
+branch tips to cached refs; the upstream synchronization point remains
+`0bb1b315`.
