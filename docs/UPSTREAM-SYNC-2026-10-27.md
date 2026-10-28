@@ -54,6 +54,16 @@ removed. This narrows the open E1 condition to the donor's AD25 behavior
 or another unmodeled project setting; it does not justify a speculative
 source patch.
 
+The `yniantongtian-oss/feat/comsol-ai-ecosystem` branch was reviewed at
+`0168f7f`: its six `external/comsol-ai/*` entries are Git submodule pins,
+not code called by the package. Its `docs/comsol-ai-ecosystem.md` describes
+them as a reference base for a future adapter. All six project names and
+links are already in `research/battery-ai-comsol-lab/docs/09-reference-stack.md`,
+and that lab has its own optional MPh adapter. Adding the pinned Gitlinks
+would make clone/checkout depend on six external repositories without
+adding a callable feature. No submodule files were imported; the distinct
+research code and workflow from this fork remain in `main`.
+
 ## 2026-10-28 refresh after script `.155`
 
 `python -m eda_agent fork-status --fetch --cached-forks
