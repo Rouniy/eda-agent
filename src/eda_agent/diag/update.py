@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Read-only update status across the checkout, package, scripts and VM.
+"""Update status and explicit reconciliation across checkout, scripts and VM.
 
 Updating eda-agent is four things that fail independently: the git
 checkout, the installed Python package, the DelphiScript files copied
@@ -9,7 +9,8 @@ each is the same -- a tool that behaves like an older build -- so
 working out which one is stale is most of the job.
 
 Adapted from MOREmbedded's four-layer update report. The existing
-``eda-agent update --yes`` handles application; this module only reads.
+``eda-agent update --yes`` handles the ordinary origin fast-forward;
+``run_update`` supports an explicit combined reconciliation.
 Without ``--fetch``, Git comparisons use the last fetched refs. A busy or
 stopped Altium is unknown, never presented as a current compiled script.
 """
@@ -28,6 +29,7 @@ __all__ = [
     "Step",
     "gather_state",
     "plan",
+    "run_update",
 ]
 
 
@@ -651,3 +653,107 @@ def format_report(steps: list[Step]) -> str:
         lines.append("")
         lines.append("Everything is current. Nothing left to do.")
     return "\n".join(lines)
+
+
+def run_update(*, pull: bool = False, fetch: bool = False,
+               check_only: bool = False, force_scripts: bool = False,
+               compare_remote: str = "", source_dir: str = "") -> tuple[list[Step], int]:
+    """Reconcile a named installation when explicitly invoked.
+
+    A checkout pull is fast-forward only. Script deployment uses the same
+    validated installer as ``install-scripts`` and targets the folder the
+    status report checked; an editable checkout already loaded by Altium is
+    never copied to a second runtime location. Exit 0 for no action left,
+    1 for a remaining action, and 2 when a requested operation fails.
+    """
+    state = gather_state(fetch=fetch, compare_remote=compare_remote,
+                         source_dir=source_dir)
+
+    def refresh(previous: dict[str, Any]) -> dict[str, Any]:
+        fresh = gather_state(fetch=False, compare_remote=compare_remote,
+                             source_dir=source_dir)
+        for key in ("fetched", "fetch_failed", "upstream_fetched",
+                    "upstream_fetch_failed"):
+            if key in previous:
+                fresh[key] = previous[key]
+        return fresh
+
+    pulled = False
+    pull_blocker = ""
+    if pull and not check_only:
+        if not state.get("repo_root"):
+            pull_blocker = "this installation has no Git checkout"
+        elif state.get("dirty"):
+            pull_blocker = "the working tree has uncommitted changes"
+        elif state.get("behind") is None:
+            pull_blocker = "there is no tracking branch to fast-forward from"
+        elif (state.get("ahead") or 0) > 0 and (
+                state.get("behind") or 0) > 0:
+            pull_blocker = "the checkout and its tracking branch diverged"
+        else:
+            result = _run_git(["pull", "--ff-only", "--no-tags"],
+                              Path(state["repo_root"]), timeout=120.0)
+            if result is None:
+                return ([Step("your remote", "action", "fast-forward failed",
+                              action="Inspect the tracking branch and retry a "
+                                     "clean `git pull --ff-only`.")], 2)
+            pulled = True
+            state = refresh(state)
+            state["fetched"] = True
+            state["fetch_failed"] = False
+
+    deployed = False
+    source_valid = not source_dir or state.get("source_ok")
+    want_version = (state.get("source_script_version") if source_dir else
+                    state.get("bundled_version"))
+    needs_deploy = bool(want_version and
+                        want_version != state.get("deployed_version"))
+    source_scripts = (state.get("source_scripts") if source_dir else
+                      state.get("bundled_scripts"))
+    target_scripts = state.get("deployed_scripts")
+    same_folder = bool(source_scripts and target_scripts and
+                       Path(source_scripts).resolve() ==
+                       Path(target_scripts).resolve())
+    if source_valid and (needs_deploy or force_scripts) and not check_only \
+            and not same_folder:
+        from eda_agent.cli import cmd_install_scripts
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        output = StringIO()
+        try:
+            with redirect_stdout(output):
+                result = cmd_install_scripts(dest=target_scripts, force=True,
+                                             source=source_dir or None)
+        except (OSError, ValueError) as exc:
+            return ([Step("altium scripts", "action",
+                          "the script deployment failed",
+                          action="Check the source project and destination.",
+                          details={"error": str(exc),
+                                   "output": output.getvalue()[-800:]})], 2)
+        if result != 0:
+            return ([Step("altium scripts", "action",
+                          "the script deployment failed",
+                          action="Run `eda-agent install-scripts --force` "
+                                 "and inspect the error.",
+                          details={"output": output.getvalue()[-800:]})], 2)
+        deployed = True
+        state = refresh(state)
+
+    runtime = altium_runtime()
+    if runtime:
+        state["loaded_script_projects"] = runtime.get("script_projects") or []
+    steps = plan(state, pull=pulled, scripts_deployed=deployed,
+                 compiled_version=(runtime or {}).get("script_version"),
+                 source_dir=source_dir)
+    if pull_blocker:
+        steps.append(Step("fast-forward", "action",
+                          f"requested pull skipped: {pull_blocker}",
+                          action="Resolve that condition and retry "
+                                 "`update --reconcile --pull`."))
+    if compare_remote and state.get("upstream_missing"):
+        steps.append(Step("original project", "action",
+                          f"remote {compare_remote} is not configured",
+                          action="Choose a configured remote with --from.",
+                          details={"available": state["upstream_missing"]}))
+    return steps, (1 if any(step.needs_human for step in steps) else 0)

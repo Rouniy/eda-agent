@@ -56,6 +56,19 @@ third-party release tags. Seventeen focused status/fork tests passed; a live
 `update --status --fetch --from upstream --json` showed both fetches true,
 zero upstream commits pending, and Altium compiling the main script `.167`.
 
+The child fork's single-command reconciliation is now adapted as explicit
+`update --reconcile`. Its fast-forward is `--ff-only --no-tags` on a clean
+tracking branch; script deployment uses the validated installer and the
+already checked folder, so the loaded main project is not copied into a
+second runtime. `--check` never applies a change, JSON stays parseable
+after deployment, and a compiled-script mismatch remains a separate
+`relaunch --restart` action. Thirty-seven local update/status tests passed.
+The unchanged donor test file now passes 42/50; its remaining failures are
+older action text or source-spelling checks, the old `cmd_update(as_json)`
+entry point, a raw copier that accepts a source lacking a `.PrjScr`, and
+an Altium-version mock of the older ping path. The current API checks the
+loaded project path as well as the compiled version.
+
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not

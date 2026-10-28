@@ -462,6 +462,31 @@ def cmd_update_status(*, fetch: bool = False, source: str = "",
     return code
 
 
+def cmd_update_reconcile(*, pull: bool = False, fetch: bool = False,
+                         check_only: bool = False,
+                         force_scripts: bool = False,
+                         source: str = "", as_json: bool = False) -> int:
+    """Apply the four-layer update plan when --reconcile is explicit."""
+    import json
+    from dataclasses import asdict
+
+    from .diag.update import format_report, run_update
+
+    source = source.strip()
+    source_dir = source if source and Path(source).expanduser().is_dir() else ""
+    compare_remote = "" if source_dir else source
+    steps, code = run_update(pull=pull, fetch=fetch, check_only=check_only,
+                             force_scripts=force_scripts,
+                             compare_remote=compare_remote,
+                             source_dir=source_dir)
+    if as_json:
+        print(json.dumps({"ok": code != 2, "exit_code": code,
+                          "steps": [asdict(step) for step in steps]}, indent=2))
+    else:
+        print(format_report(steps))
+    return code
+
+
 def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
                  force: bool = False, restart: bool = False) -> int:
     """Start the bridge script in the running Altium, when you ask for it.

@@ -2,6 +2,16 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Adapt `MOREmbedded`'s combined `run_update` into an explicit
+  `eda-agent update --reconcile` mode. It can fast-forward a clean tracked
+  checkout with `--pull`, deploy validated scripts from this tree or a
+  named folder to the checked destination, preserve one main-directory
+  runtime, and report the remaining compiled Altium step. `--check` is
+  read-only and JSON output remains parseable after deployment.
+  Update/status tests passed 37/37, and live reconcile on the current
+  `.167` script reported no second deployment. The donor's full test
+  file now passes 42/50; eight differences concern old command names,
+  GUI-only relaunch text, raw unvalidated copying or source spellings.
 - [x] Make `update --status --fetch --from upstream` prove that the
   named remote actually fetched before reporting it current. A failed
   fetch now leaves cached zero-behind state `unknown`; the push remote

@@ -850,19 +850,25 @@ def main() -> int:
               "scripts and restart the Altium loop."),
     )
     update_p.add_argument("--check", action="store_true",
-                          help="Only show what an update would bring.")
+                          help="Only show what an update would bring; with --reconcile, apply nothing.")
     update_p.add_argument("--yes", action="store_true",
                           help="Update without asking.")
     update_p.add_argument("--no-relaunch", action="store_true",
                           help="Leave the Altium loop running the old scripts.")
     update_p.add_argument("--status", action="store_true",
                           help="Read checkout, package, deployed scripts and compiled Altium state without changing them.")
+    update_p.add_argument("--reconcile", action="store_true",
+                          help="Apply the four-layer plan explicitly: optional clean fast-forward and validated script deployment.")
+    update_p.add_argument("--pull", action="store_true",
+                          help="With --reconcile, fast-forward the clean tracked checkout.")
+    update_p.add_argument("--force-scripts", action="store_true",
+                          help="With --reconcile, redeploy scripts even when versions match.")
     update_p.add_argument("--fetch", action="store_true",
-                          help="With --status, refresh Git remote refs before comparing.")
+                          help="With --status or --reconcile, refresh Git remote refs before comparing.")
     update_p.add_argument("--from", dest="source", default="",
-                          help="With --status, compare a named remote or source folder.")
+                          help="With --status or --reconcile, compare a named remote or source folder.")
     update_p.add_argument("--json", action="store_true", dest="json_out",
-                          help="With --status, print structured JSON.")
+                          help="With --status or --reconcile, print structured JSON.")
 
     # health -- offline, fast
     subparsers.add_parser(
@@ -1263,6 +1269,19 @@ def main() -> int:
         return cli.cmd_relaunch(prjscr=args.prjscr, dry_run=args.dry_run,
                                 force=args.force, restart=args.restart)
     if args.command == "update":
+        if args.reconcile:
+            if args.status or args.yes or args.no_relaunch:
+                print("update --reconcile cannot combine with --status, --yes or --no-relaunch",
+                      file=sys.stderr)
+                return 2
+            return cli.cmd_update_reconcile(
+                pull=args.pull, fetch=args.fetch, check_only=args.check,
+                force_scripts=args.force_scripts, source=args.source,
+                as_json=args.json_out)
+        if args.pull or args.force_scripts:
+            print("--pull and --force-scripts require update --reconcile",
+                  file=sys.stderr)
+            return 2
         if args.status:
             if args.yes or args.no_relaunch:
                 print("update --status cannot be combined with --yes or --no-relaunch",
