@@ -644,13 +644,29 @@ Function CurrentFocusedDocPath(Dummy : Integer): String;
 Var
     Workspace : IWorkspace;
     Doc : IDocument;
+    View : IServerDocumentView;
+    ServerDoc : IServerDocument;
 Begin
     Result := '';
     Try
         Workspace := GetWorkspace;
-        If Workspace = Nil Then Exit;
-        Doc := Workspace.DM_FocusedDocument;
-        If Doc <> Nil Then Result := Doc.DM_FullPath;
+        If Workspace <> Nil Then
+        Begin
+            Doc := Workspace.DM_FocusedDocument;
+            If Doc <> Nil Then Result := Doc.DM_FullPath;
+        End;
+    Except End;
+    If Result <> '' Then Exit;
+
+    { A newly shown free document can own the editor view before the DM   }
+    { focused-document pointer catches up. The view still identifies the   }
+    { exact document, including a free PcbLib absent from any project.     }
+    Try
+        If Client = Nil Then Exit;
+        View := Client.GetCurrentView;
+        If View = Nil Then Exit;
+        ServerDoc := View.GetOwnerDocument;
+        If ServerDoc <> Nil Then Result := ServerDoc.FileName;
     Except End;
 End;
 

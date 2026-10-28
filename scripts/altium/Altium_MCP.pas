@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.173';
+    SCRIPT_VERSION = '2026.10.28.174';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -3150,13 +3150,29 @@ Function CurrentFocusedDocPath(Dummy : Integer): String;
 Var
     Workspace : IWorkspace;
     Doc : IDocument;
+    View : IServerDocumentView;
+    ServerDoc : IServerDocument;
 Begin
     Result := '';
     Try
         Workspace := GetWorkspace;
-        If Workspace = Nil Then Exit;
-        Doc := Workspace.DM_FocusedDocument;
-        If Doc <> Nil Then Result := Doc.DM_FullPath;
+        If Workspace <> Nil Then
+        Begin
+            Doc := Workspace.DM_FocusedDocument;
+            If Doc <> Nil Then Result := Doc.DM_FullPath;
+        End;
+    Except End;
+    If Result <> '' Then Exit;
+
+    { A newly shown free document can own the editor view before the DM   }
+    { focused-document pointer catches up. The view still identifies the   }
+    { exact document, including a free PcbLib absent from any project.     }
+    Try
+        If Client = Nil Then Exit;
+        View := Client.GetCurrentView;
+        If View = Nil Then Exit;
+        ServerDoc := View.GetOwnerDocument;
+        If ServerDoc <> Nil Then Result := ServerDoc.FileName;
     Except End;
 End;
 
@@ -4898,6 +4914,8 @@ Var
     Doc : IDocument;
     SchDoc : ISch_Document;
     Board : IPCB_Board;
+    View : IServerDocumentView;
+    ServerDoc : IServerDocument;
     Data, FileName : String;
 Begin
     Data := '';
@@ -4915,11 +4933,34 @@ Begin
         End;
     End;
 
-    // DM_FocusedDocument is UI-focus-dependent and returns Nil when no
-    // editor window holds focus (e.g. right after a programmatic
-    // create/place). Fall back to the SCH then PCB server module's
-    // current document, which track the last-shown sheet/board
-    // independent of workspace focus.
+    // A newly shown free document may own the current editor view before
+    // the workspace focused-document pointer catches up. Read its owner
+    // first; SCH/PCB module fallbacks can refer to older documents.
+    If Data = '' Then
+    Begin
+        ServerDoc := Nil;
+        Try
+            If Client <> Nil Then
+            Begin
+                View := Client.GetCurrentView;
+                If View <> Nil Then ServerDoc := View.GetOwnerDocument;
+            End;
+        Except ServerDoc := Nil; End;
+        If ServerDoc <> Nil Then
+        Begin
+            FileName := ServerDoc.FileName;
+            If FileName <> '' Then
+            Begin
+                Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
+                Data := Data + ',"file_path":"' + EscapeJsonString(FileName) + '"';
+                Data := Data + ',"document_kind":"' + EscapeJsonString(ServerDoc.Kind) + '"';
+                Data := Data + ',"modified":' + BoolToJsonStr(DocIsModified(FileName)) + '}';
+            End;
+        End;
+    End;
+
+    // Only when neither UI focus nor current view identifies a document,
+    // fall back to the SCH and PCB server modules' last current document.
     If Data = '' Then
     Begin
         SchDoc := Nil;

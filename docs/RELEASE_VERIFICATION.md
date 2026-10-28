@@ -1,10 +1,10 @@
 
-# Release verification: 2026.10.28.173
+# Release verification: 2026.10.28.174
 
 Script `.173` guards the impedance profile layer-name read on AD26.11.
 The 12-unit Pascal build had zero errors or warnings, 11 focused
 impedance tests passed, and the active main script answered `app_ping`
-as `2026.10.28.173`.
+as `2026.10.28.174`.
 
 Script `.172` fixes the SDK probe's explicit `doc_path`: the handler now
 resolves an already loaded SchDoc through `LoadedSchDocByPath`. The prior
@@ -186,7 +186,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.173` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.174` from `app_ping`.
 
 ## 2026.10.28.156 - Previous native checkpoint
 
