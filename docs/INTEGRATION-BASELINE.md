@@ -8,8 +8,11 @@ The current `main` builds on these two exact Git commits:
 | `MOREmbedded/eda-agent` (`morembedded/main`) | `d495c4d8802c0b7259068c2f414b7b23bfdf6ee6` | `ce7aab8fe1db6c0e804f142512246e2f0c4b4d13` (second parent) |
 
 Both exact tips are ancestors of our `main`, so Git records the sync
-points without relying on a manually maintained version number. A fresh
-fetch on 2026-10-28 found zero commits pending from either source. The
+points without relying on a manually maintained version number. At the
+2026-10-28 integration both source tips were current. A later fetch on
+the same day found `upstream/main` at
+`75df9907a8ece15a2a0d20952fb67edd09e6d46d`, one commit after the
+integrated tip; `morembedded/main` still has zero commits pending. The
 annotated tag `upstream-sync-2026-10-28` points to the exact upstream
 commit `0bb1b315` and is pushed to `origin`, so `git log --graph --all`
 shows the integration boundary directly. GitHub also records
@@ -53,3 +56,17 @@ These checks establish the Git baseline and current local regression state.
 They do not establish native Altium 25 compatibility or complete behavior
 parity for every divergent third-party fork branch; those checks remain in
 the dated fork audit.
+
+## Latest recheck
+
+At `main` / `origin/main` `e75f3b6e85f205acca7c284759d6385f19654995`,
+`git merge-base main upstream/main` still returns the table's upstream tip;
+`git rev-list --count main..upstream/main` returns `1`.
+`git merge-base main morembedded/main` still returns the table's child-fork
+tip, with `0` pending commits. `fork-status --fetch --cached-forks
+--verify-fork-branches --json` matched all 63 direct fork defaults and all
+120 live branch tips to their cached refs. The new upstream commit
+`75df990` is a broad feature release; it remains outside this integration
+point while the current fork is stabilized. A native MCP ping on port 14701
+reported script `2026.10.28.178` and `version_match=true` after the
+net-lookup repair in `e75f3b6`.
