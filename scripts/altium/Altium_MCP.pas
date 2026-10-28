@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.146';
+    SCRIPT_VERSION = '2026.10.28.147';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -65100,6 +65100,10 @@ Begin
             Try
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_BeginModify, c_NoEventData);
+                { MoveByXY updates the placed component and its children in }
+                { Altium's board structures. Move the children back to keep }
+                { the footprint artwork at its original absolute positions. }
+                Comp.MoveByXY(Dx, Dy);
                 GroupIter := Comp.GroupIterator_Create;
                 Try
                     GroupIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
@@ -65116,8 +65120,6 @@ Begin
                 Finally
                     Comp.GroupIterator_Destroy(GroupIter);
                 End;
-                Comp.X := Cx;
-                Comp.Y := Cy;
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_EndModify, c_NoEventData);
                 Moved := True;

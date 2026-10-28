@@ -1,5 +1,27 @@
 # Current integration state / agent handoff
 
+## Component-origin persistence and integration checks, 2026-10-28
+
+Script `.147` moves a component through Altium's `MoveByXY` before moving
+its child primitives back to preserve their board coordinates. On a scratch
+copy of the CW308 baseboard, J14's origin changed from `(5710,3850)` to
+`(5610,3850)` mil while pads 3/2/1 stayed at their original coordinates.
+Save, close and reopen confirmed both the new origin and unchanged pads;
+the original board was never saved. The 12-unit Pascal build passed.
+
+The fabrication-manifest writer now uses `replace_with_retry` for its
+atomic final rename, covering scanner interference on Windows. Integration
+tests were updated where their fakes expected old save-all behavior, a
+zero-project checkpoint, or non-IntLib bytes. DelphiScript lint now has a
+narrow exception for the native-qualified `PCB_XSignalClassHasName`
+`MemberName` read. The focused integration gate passed 110 tests.
+
+Fresh batch DRC of RFSoC antenna and transceiver boards found no rule
+violations. Their respective Altium reports had 19 and 96 rule rows, with
+row totals matching the report headers and no early limit stop. Both
+`altium-drc-fresh.json` files contain `[]`; both boards were closed without
+saving.
+
 ## Authored PCB classes and plane read, 2026-10-28
 
 Script `.146` adds `user_class_count` to `pcb_get_object_classes` while

@@ -8,6 +8,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from ..atomicfile import replace_with_retry
+
 MANIFEST_NAME = "eda-fab-manifest.json"
 
 
@@ -52,7 +54,7 @@ def seal_package(directory: str | Path, board_path: str | Path,
     temporary = directory / (MANIFEST_NAME + ".tmp")
     temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n",
                          encoding="utf-8")
-    temporary.replace(target)
+    replace_with_retry(temporary, target)
     return {"sealed": True, "path": str(target), "file_count": len(files),
             "board_sha256": board_hash_before, "outjob_sha256": outjob_hash_before}
 

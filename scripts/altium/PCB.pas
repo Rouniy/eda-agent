@@ -28366,6 +28366,10 @@ Begin
             Try
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_BeginModify, c_NoEventData);
+                { MoveByXY updates the placed component and its children in }
+                { Altium's board structures. Move the children back to keep }
+                { the footprint artwork at its original absolute positions. }
+                Comp.MoveByXY(Dx, Dy);
                 GroupIter := Comp.GroupIterator_Create;
                 Try
                     GroupIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
@@ -28382,8 +28386,6 @@ Begin
                 Finally
                     Comp.GroupIterator_Destroy(GroupIter);
                 End;
-                Comp.X := Cx;
-                Comp.Y := Cy;
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_EndModify, c_NoEventData);
                 Moved := True;

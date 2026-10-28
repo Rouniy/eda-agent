@@ -67,6 +67,8 @@ class _Bridge:
         self.calls.append((command, params or {}))
         if command == "project.get_project_path":
             return {"project_dir": "D:/project", "project_name": "x.PrjPcb"}
+        if command == "project.get_open_projects":
+            return {"projects": [{"project_path": "D:/project/x.PrjPcb"}]}
         if command == "application.get_open_documents":
             return [{"file_path": "D:/project/Main.SchDoc", "loaded": True}]
         if command == "pcb.place_track" and self.fail:

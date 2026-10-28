@@ -152,9 +152,15 @@ def test_executor_creates_project_when_missing(tmp_path: Path) -> None:
     ]
     assert len(bulk_place) == 1
     assert len(_parse_batch_ops(bulk_place[0]["placements"])) == 2
-    # Verification runs after save_all; save_all is the last write-side
-    # command but project.get_nets follows it for net verification.
-    assert "application.save_all" in cmds
+    # The plan saves only its own sheet and project before checking nets.
+    assert "application.save_all" not in cmds
+    created_sheets = [p["file_path"] for c, p in bridge.calls
+                      if c == "application.create_document"]
+    assert [p["file_path"] for c, p in bridge.calls
+            if c == "application.save_document"] == created_sheets
+    assert [p for c, p in bridge.calls if c == "project.save"] == [
+        {"project_path": str(tmp_path / "test.PrjPcb")}]
+    assert cmds.index("project.save") < cmds.index("project.get_nets")
     assert cmds[-1] == "project.get_nets"
 
 

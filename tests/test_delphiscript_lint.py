@@ -17,9 +17,9 @@ landing on users and costing debugging sessions, so they are pinned here:
     undeclared. Try/Except can NOT guard compile-time undeclared identifiers
     in DelphiScript; the whole file fails to compile. Use UnitSystem instead.
 
-4.  ``Try ... .MemberCount ... Except`` / ``Try ... .MemberName[...]``:
-    IPCB_ObjectClass has no per-member enumeration surface; these are
-    compile-time errors.
+4.  General ``IPCB_ObjectClass.MemberCount/MemberName`` enumeration is
+    unavailable. The xSignal class's indexed ``MemberName`` read is a
+    narrowly measured exception in ``PCB_XSignalClassHasName``.
 
 The linter walks ``scripts/altium/*.pas`` excluding the legacy monolithic
 ``Altium_MCP.pas`` (not in the active PrjScr) and fails any test whose rule
@@ -177,8 +177,8 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     ),
     (
         re.compile(r"IPCB_ObjectClass.*\.MemberCount|\.MemberName\s*\["),
-        "IPCB_ObjectClass has no per-member enumeration surface",
-        "ObjClass.MemberCount / ObjClass.MemberName[I]  →  iterate nets and group",
+        "general IPCB_ObjectClass membership enumeration is unavailable",
+        "use IsMember probing; only PCB_XSignalClassHasName has a measured Signal-class MemberName read",
     ),
     (
         re.compile(r"\beElectricBiDir\b"),
@@ -269,7 +269,11 @@ def _scan_file_for_bad_patterns(path: Path) -> list[str]:
     src = path.read_text(encoding="utf-8", errors="replace")
     code_only = _strip_string_literals(src)
     violations: list[str] = []
+    current_function = ""
     for lineno, fragment in _iter_lines_outside_comments(code_only):
+        function = re.match(r"\s*(?:Function|Procedure)\s+(\w+)", fragment, re.I)
+        if function:
+            current_function = function.group(1)
         for entry in BAD_PATTERNS:
             pattern, desc, hint = entry[0], entry[1], entry[2]
             # Optional 4th element: set of filenames where the pattern
@@ -277,6 +281,10 @@ def _scan_file_for_bad_patterns(path: Path) -> list[str]:
             # calls the raw API it's wrapping).
             allowed = entry[3] if len(entry) > 3 else frozenset()
             if path.name in allowed:
+                continue
+            if (path.name == "PCB.pas"
+                    and current_function == "PCB_XSignalClassHasName"
+                    and re.search(r"\.MemberName\s*\[", fragment)):
                 continue
             if pattern.search(fragment):
                 violations.append(f"{path.name}:{lineno}  {desc}\n    hint: {hint}")

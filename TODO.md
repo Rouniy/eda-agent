@@ -1,5 +1,16 @@
 # Fork integration TODO
 
+## Integration gate and RFSoC DRC, 2026-10-28
+
+- [x] Qualify the component-origin move in native Altium: on a scratch CW308
+  board, J14's origin persisted after save/reopen while all three pads kept
+  their board coordinates (script `.147`).
+- [x] Retry the atomic fabrication-manifest rename through the shared
+  Windows-safe helper; focused tests passed.
+- [x] Run fresh RFSoC antenna and transceiver batch DRC. Both had zero
+  violations, complete rule summaries (19/96 rows), no early-stop limit,
+  and `[]` JSON exports at the requested paths.
+
 ## Object-class inventory on blank and populated boards, 2026-10-28
 
 - [x] Distinguish Altium's built-in superclasses from authored classes in

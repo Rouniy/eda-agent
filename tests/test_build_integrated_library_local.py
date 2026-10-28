@@ -40,6 +40,10 @@ class _Bridge:
 
 def _run(monkeypatch, bridge, package, sources, **kwargs):
     monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    # This fake compiler writes a marker, not an OLE IntLib. The separate
+    # completeness tests cover missing source streams; here we exercise the
+    # fresh-artifact and install path with its requested PcbLib present.
+    monkeypatch.setattr(library, "_intlib_source_kinds", lambda _path: {"pcblib"})
     mcp = _Mcp()
     library.register_library_tools(mcp)
     return asyncio.run(mcp.tools["lib_build_integrated_library"](
