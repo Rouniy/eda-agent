@@ -1561,6 +1561,8 @@ def register_generic_tools(mcp):
             ``Footprint`` selects an existing PCB model on the component;
             only a component without that named model has its current one
             renamed. Failed selections appear in ``footprints_not_applied``.
+            ``Description`` and ``ComponentDescription`` set the native
+            component description, which survives save and reload.
           - Custom parameters: any key name. Unknown parameters are
             CREATED if they don't already exist on the component.
 

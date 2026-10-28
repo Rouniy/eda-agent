@@ -6522,6 +6522,7 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_apply_stackup_template(
         template: str, dry_run: bool = True,
+        legacy_stack_write: bool = False,
     ) -> dict[str, Any]:
         """Give the active board a fab stack-up's thicknesses and Dk.
 
@@ -6537,6 +6538,8 @@ def register_pcb_tools(mcp):
         Args:
             template: stack-up name, e.g. "JLC04161H-7628"
             dry_run: True to only plan (default)
+            legacy_stack_write: Explicit opt-in to the legacy V7 dielectric
+                write path; verify the saved result with pcb_stack_from_file.
 
         Returns:
             ``{"ok", "template", "calls", "dry_run"}``, plus per-layer
@@ -6550,6 +6553,11 @@ def register_pcb_tools(mcp):
         plan = fab_library.plan_apply(board, template)
         if not plan["ok"] or dry_run:
             return {**plan, "dry_run": dry_run}
+        if not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "Use pcb_build_stack on an exact PcbDoc, or opt in and "
+                    "verify the saved file with pcb_stack_from_file.",
+                    "calls": plan["calls"]}
         results, changed, not_changed = [], [], []
         for call in plan["calls"]:
             params = {k: (f"{v:g}" if isinstance(v, float) else str(v))
@@ -6564,7 +6572,8 @@ def register_pcb_tools(mcp):
             (changed if ok else not_changed).append(call["layer"])
         return {"ok": not not_changed, "template": plan["template"],
                 "dry_run": False, "calls": plan["calls"], "results": results,
-                "changed": changed, "not_changed": not_changed}
+                "changed": changed, "not_changed": not_changed,
+                "verify": "save and check with pcb_stack_from_file"}
 
     @mcp.tool()
     async def pcb_set_plane_net(layer: str, net: str) -> dict[str, Any]:

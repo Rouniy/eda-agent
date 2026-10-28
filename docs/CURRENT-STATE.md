@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Additional `mooreaa` stack and description fixes, 2026-10-28
+
+The legacy `pcb_apply_stackup_template(dry_run=False)` path now requires
+explicit `legacy_stack_write=True`, like the other V7 stack writers; its
+successful reply directs the caller to inspect the saved physical stack.
+The bulk schematic parameter writer routes `Description` and
+`ComponentDescription` to the component's native `ComponentDescription`
+field rather than a transient parameter. Script `.124` rebuilt with zero
+Pascal lint errors or warnings, and 62 related Python tests pass. Native
+description save/reopen acceptance and `.124` VM reload are pending while
+the currently running Altium command is active. The HTTP MCP endpoint
+continues to answer protocol checks, but script ping is unavailable.
+
 ## Additional `mooreaa` corrections, 2026-10-28
 
 `app_checkpoint` now requires an exact project path whenever zero or

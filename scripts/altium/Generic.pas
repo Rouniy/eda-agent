@@ -13878,6 +13878,13 @@ Begin
                                         SchEndModify(Comp.Comment);
                                         SetExistingCompParamText(Comp, 'Value', Val);
                                     End
+                                    Else If (Key = 'Description') Or
+                                            (Key = 'ComponentDescription') Then
+                                    Begin
+                                        { A parameter named Description may be dropped
+                                          on reload; set the component's native field. }
+                                        Try Comp.ComponentDescription := Val; Except End;
+                                    End
                                     Else If Key = 'Footprint' Then
                                     Begin
                                         If SetPlacedFootprintName(Comp, Val,

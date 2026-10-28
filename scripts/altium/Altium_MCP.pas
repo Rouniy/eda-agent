@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.123';
+    SCRIPT_VERSION = '2026.10.28.124';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -79325,6 +79325,13 @@ Begin
                                         Try Comp.Comment.Text := Val; Except End;
                                         SchEndModify(Comp.Comment);
                                         SetExistingCompParamText(Comp, 'Value', Val);
+                                    End
+                                    Else If (Key = 'Description') Or
+                                            (Key = 'ComponentDescription') Then
+                                    Begin
+                                        { A parameter named Description may be dropped
+                                          on reload; set the component's native field. }
+                                        Try Comp.ComponentDescription := Val; Except End;
                                     End
                                     Else If Key = 'Footprint' Then
                                     Begin

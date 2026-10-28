@@ -2,6 +2,10 @@
 
 ## `mooreaa` UI corrections, 2026-10-28
 
+- [x] Guard the fab-stack template apply path behind legacy write opt-in.
+- [ ] Reload `.124` when the active Altium command finishes, then verify
+  `Description` persists on a disposable SchDoc after save/reopen.
+
 - [x] Port and natively verify schematic deselection and full-sheet
   zoom on a disposable SchDoc; exact-path close also succeeded.
 - [x] Refuse a close when `GetDocumentByPath` resolves to a different
