@@ -9,7 +9,21 @@ and 76 related project/catalog tests passed. `eda-agent relaunch --restart`
 started the main `Altium_API.PrjScr` in AD 26.11.1.5; a fresh
 `application.ping` returned `.164` with zero cast errors. A read-only
 `project.get_variants` on the focused project returned an empty list.
-The merged writes and BOM remain to be checked on a disposable project.
+
+Native `.164` variant acceptance used a full copy of FE310_Module at
+`D:\ai\_checks\variant-merge-20261028\FE310_Module`. The copy began
+without variants and had a 42-part base BOM with C1=`100n`.
+`project.create_variant` made MERGE_CHECK; `project.set_parameter_variation`
+set C1 Comment=`1n`, returned `applied=true`, and a fresh variant listing
+read the value back. `project.rename_variant` renamed it MERGE_RENAMED;
+`project.copy_variant` created MERGE_COPY with one entry and one parameter
+value, `differs=[]`. `project.set_active_variant` switched to MERGE_COPY
+and back to `[No Variations]`, both verified by Altium. After saving the
+copy, closing, and reopening, both variants and C1's value persisted.
+The 42-part variant BOM showed C1=`1n` while the base BOM retained `100n`.
+The copy was closed; the automatic command review rejected recursive
+cleanup, so that scratch folder remains for manual cleanup. The original
+project on `Z:` was never opened for these writes.
 
 The `.163` results below are the last native acceptance evidence.
 
