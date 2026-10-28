@@ -23,6 +23,13 @@ passed and the actual 12-file bundle build reported zero lint findings.
 This qualifies the bundle builder, not an AD25 compile of the active
 multi-file `Altium_API.PrjScr` project.
 
+`malteheringorgatex`'s WSL process-detection commit `d57df64` is covered
+by the current `process_manager.py`: it reads the Windows `tasklist.exe`
+CSV when WSL interop works and lets IPC diagnose reachability when it does
+not. The focused WSL bridge tests passed 10/10. Its fork-specific five-second
+poll timeout (`80ebe59`) is a tuning choice; the current ten-second default
+is retained for long CAD calls, and callers can configure it.
+
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not
