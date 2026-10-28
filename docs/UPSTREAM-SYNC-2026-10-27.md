@@ -1049,7 +1049,17 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Find a persistent Altium API for numeric differential-pair impedance rule fields, plus broader project STEP export; placed-component STEP export, editor preferences, pours-at-point, board options and per-net jumper display are now present | Keep numeric writes disabled until exact save/reopen proves they survive; port other families with source tests, script build and disposable-board native checks |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Two-body bulk layer, opacity and standoff edits are natively qualified; rotation refusal on a footprint containing unsupported polygon/dimension primitives remains | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
-| MOREmbedded `pcb_check_fab_output` | Full >5000-hole Gerber/Excellon comparison and revision provenance of external packages; the native 8355-via snapshot is now accepted | Real Altium GerberX2/NC Drill package was compared to its production-review PcbDoc; copper and hole counts match, exported Profile is larger than the live board. Keep that mismatch visible; a package manifest/revision proof is still needed for sign-off. |
+| MOREmbedded `pcb_check_fab_output` | Revision provenance of external packages; the native 8355-via snapshot and a fresh >5000-hole Gerber/Excellon comparison are now accepted | The large legacy package matches all three required checks, while an earlier GerberX2 production-review package retains a genuine outline mismatch. A package manifest/revision proof is still needed for external sign-off. |
+
+The >5000-hole comparison is now accepted on an isolated copy of
+`FR1_Antenna_Array.PrjPcb`. Its OutJob had Gerber and NC Drill outputs
+disabled; they were enabled only in the copy. Altium exported `Main.TXT`
+(312 hits), `Main.TX1` (18) and `Main.TX2` (8025). The old parser silently
+read only `Main.TXT`; the legacy OutJob reader now includes every numbered
+drill-pair file. The fresh package and native board both have four copper
+layers, a 406.4 x 124.46 mm outline and 8355 holes. Comparison ran all
+three required checks and passed with no findings. The 26 focused fab tests
+pass. External package revision provenance remains open.
 | `mooreaa` `dc36b7e` through `fc22136` | DbLib relink and persistent alternatives for two port display fields remain; SchLib and IntLib relink, multipart placement, pin properties, parameter properties and port AutoSize are natively checked | Use final corrected handlers; verify remaining exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This

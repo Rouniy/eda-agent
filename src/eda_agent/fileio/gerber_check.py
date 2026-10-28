@@ -113,6 +113,31 @@ def _altium_fabrication_files(directory: Path):
     return files, overrides, ignored, name
 
 
+def _altium_legacy_drills(directory: Path):
+    """Read every drill pair in an Altium Gerber + NC Drill OutJob export.
+
+    The through-hole file is ``Main.TXT``; blind/buried pairs are separate
+    ``Main.TX1``, ``Main.TX2``, etc. gerbonara's directory inference currently
+    recognises only the TXT file, silently omitting the other pairs.
+    """
+    gerber, drill = directory / "Gerber", directory / "NC Drill"
+    if not (gerber.is_dir() and drill.is_dir()):
+        return None
+    tops = list(gerber.glob("*.GTL"))
+    if len(tops) != 1:
+        raise ValueError("legacy Gerber export must have exactly one top copper file")
+    stem = tops[0].stem
+    base = drill / f"{stem}.TXT"
+    if not base.is_file():
+        raise ValueError(f"NC Drill has no matching {stem}.TXT")
+    pairs = sorted(p for p in drill.iterdir() if p.is_file()
+                   and re.fullmatch(re.escape(stem) + r"\.TX[0-9]+", p.name,
+                                    flags=re.IGNORECASE))
+    paths = [base, *pairs]
+    from gerbonara.excellon import ExcellonFile
+    return paths, _drill_summary([ExcellonFile.open(path) for path in paths])
+
+
 def _finding(severity: str, check: str, message: str,
              expected: Any = None, actual: Any = None) -> dict[str, Any]:
     return {"severity": severity, "check": check, "message": message,
@@ -170,6 +195,12 @@ def summarise_package(directory: str | Path,
         drill_layers = list(stack.drill_layers)
         outline = _outline_size(stack)
         drills = _drill_summary(drill_layers)
+        if selected is None:
+            legacy = _altium_legacy_drills(directory)
+            if legacy is not None:
+                drill_paths, drills = legacy
+                files.extend(path.relative_to(directory).as_posix()
+                             for path in drill_paths)
         min_aperture = _min_aperture(copper)
         layer_map = stack.format_layer_map()
     except Exception as exc:  # noqa: BLE001 - same reasoning

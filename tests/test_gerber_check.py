@@ -15,6 +15,7 @@ import pytest
 from eda_agent.fileio.gerber_check import (
     ERROR,
     WARNING,
+    _altium_legacy_drills,
     compare_with_board,
     summarise_package,
 )
@@ -99,6 +100,22 @@ def test_nested_altium_export_refuses_unaccounted_subtype_drills(tmp_path):
         result = summarise_package(tmp_path)
     assert result["ok"] is False
     assert "absent from base" in result["reason"]
+
+
+def test_legacy_altium_export_counts_blind_drill_pair_files(tmp_path):
+    gerber = tmp_path / "Gerber"
+    drill = tmp_path / "NC Drill"
+    gerber.mkdir()
+    drill.mkdir()
+    for name in ("GTL", "GBL"):
+        (gerber / f"Main.{name}").write_text(COPPER)
+    (gerber / "Main.GM").write_text(OUTLINE)
+    (drill / "Main.TXT").write_text(DRILL)
+    (drill / "Main.TX1").write_text(DRILL.replace("X10.0Y5.0", "X11.0Y5.0"))
+    paths, drills = _altium_legacy_drills(tmp_path)
+    assert [path.name for path in paths] == ["Main.TXT", "Main.TX1"]
+    assert drills["files"] == 2
+    assert drills["hits"] == 4
 
 
 def test_drill_hits_and_sizes_are_read(package):
