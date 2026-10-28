@@ -802,3 +802,18 @@ The `.174` focus repair uses the current editor view's owner when the
 workspace focused-document pointer is empty. Pascal lint/build passed,
 and 38 focused document/context/version checks passed. The main
 Altium loop was restarted and answered the live native calls above.
+
+## Native board-region arc acceptance
+
+The `vincent-himpe/feature/region-true-arcs` behavior was exercised on
+a disposable free PcbDoc in AD26.11.1.5 with script `.174`. A four-vertex
+Top Layer region had one 90-degree arc from `(1000, 1000)` to
+`(1100, 1000)` mil. `pcb.place_region` returned `placed=true`,
+`arc_edges=1`, `name=ARC_QA`, and the four-vertex `shape` with a
+90-degree sweep at its first vertex. After `application.save_document`,
+close and reopen, `pcb.get_layout_model(section=copper)` returned the
+same shape in native coordinates: `[[10000000,10000000,90],
+[11000000,10000000,0],[11000000,11000000,0],
+[10000000,11000000,0]]`. This proves the arc survives a disk round
+trip as a shape segment, not only as a flattened contour response.
+The scratch board was closed and removed.
