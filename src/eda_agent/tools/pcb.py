@@ -4734,35 +4734,42 @@ def register_pcb_tools(mcp):
         copper_oz: float = 1.0,
         layer: str = "external",
         length_mils: float = 0.0,
+        delta_t_c: float = 10.0,
     ) -> dict[str, Any]:
         """IPC-2221 current-carrying capacity for a PCB track.
 
         Offline math. ``I = k (dT)^0.44 (h w)^0.725`` in mils and degrees
-        C, with k 0.048 external and 0.024 internal, at rises of 1, 5,
-        10, 20 and 30 C. A length adds DC resistance (annealed copper,
-        20 C) and the voltage drop at each current.
+        C, with k 0.048 external and 0.024 internal. Returns the current
+        at ``delta_t_c`` as well as the established 1/5/10/20/30 C table.
+        A length adds DC resistance (annealed copper, 20 C) and the
+        voltage drop at each tabulated current.
 
         Args:
             width_mils: Track width in mils.
             copper_oz: Copper weight in oz/ft² (1 oz = 1.378 mil).
             layer: ``"external"`` (default) or ``"internal"``.
             length_mils: If > 0, also return resistance and voltage drop.
+            delta_t_c: Requested temperature rise in C (default 10).
 
         Returns:
             ``width_mils``, ``copper_oz``, ``thickness_mils``, ``layer``,
-            ``current_amps`` (keys ``1c`` ... ``30c``), and with a length
+            ``current_a`` at ``delta_t_c``, ``current_amps`` (keys
+            ``1c`` ... ``30c``), and with a length
             ``resistance_mohm`` and ``voltage_drop_mv``.
         """
         if width_mils <= 0:
             return {"ok": False, "reason": "width_mils must be > 0"}
         if copper_oz <= 0:
             return {"ok": False, "reason": "copper_oz must be > 0"}
+        if not math.isfinite(delta_t_c) or delta_t_c <= 0:
+            return {"ok": False, "reason": "delta_t_c must be finite and > 0"}
         layer_norm = layer.strip().lower()
         if layer_norm not in ("external", "internal"):
             return {"ok": False,
                     "reason": "layer must be 'external' or 'internal'"}
 
         from ..units import OZ_TO_MILS
+        from ..design.trace_sizing import current_capacity_amps
 
         thickness_mils = copper_oz * OZ_TO_MILS
         k = 0.024 if layer_norm == "internal" else 0.048
@@ -4772,12 +4779,17 @@ def register_pcb_tools(mcp):
 
         rises = (1, 5, 10, 20, 30)
         current = {f"{t}c": round(k * (t ** b) * hw_c, 3) for t in rises}
+        selected_current = current_capacity_amps(
+            width_mils, copper_oz=copper_oz, delta_t_c=delta_t_c,
+            layer=layer_norm)
         out: dict[str, Any] = {
             "ok": True,
             "width_mils": width_mils,
             "copper_oz": copper_oz,
             "thickness_mils": round(thickness_mils, 3),
             "layer": layer_norm,
+            "delta_t_c": delta_t_c,
+            "current_a": round(selected_current, 4),
             "current_amps": current,
         }
         if length_mils > 0:

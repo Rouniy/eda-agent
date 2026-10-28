@@ -11,7 +11,7 @@ import pytest
 from eda_agent.tools import pcb as pcb_module
 
 
-def _tool(monkeypatch):
+def _tool(monkeypatch, name="pcb_calc_trace_width_for_current"):
     monkeypatch.setattr(pcb_module, "get_bridge", lambda: None)
     cap: dict = {}
 
@@ -23,7 +23,7 @@ def _tool(monkeypatch):
             return d
 
     pcb_module.register_pcb_tools(M())
-    return cap["pcb_calc_trace_width_for_current"]
+    return cap[name]
 
 
 @pytest.mark.asyncio
@@ -64,6 +64,30 @@ async def test_capacity_resistance_is_the_shared_figure(monkeypatch):
     out = await cap["pcb_calc_track_current_capacity"](
         10.0, copper_oz=1.0, length_mils=1000.0)
     assert out["resistance_mohm"] == pytest.approx(49.26, rel=0.002)
+
+
+@pytest.mark.asyncio
+async def test_capacity_accepts_custom_temperature_rise_without_losing_table(monkeypatch):
+    from eda_agent.design.trace_sizing import current_capacity_amps
+
+    capacity = _tool(monkeypatch, "pcb_calc_track_current_capacity")
+    default = await capacity(10.0, copper_oz=1.0, length_mils=1000.0)
+    custom = await capacity(10.0, copper_oz=1.0, delta_t_c=17.5,
+                            length_mils=1000.0)
+    assert custom["current_a"] == pytest.approx(round(
+        current_capacity_amps(10.0, copper_oz=1.0, delta_t_c=17.5), 4))
+    assert custom["current_amps"] == default["current_amps"]
+    assert custom["current_a"] > default["current_a"]
+    assert custom["resistance_mohm"] == default["resistance_mohm"]
+
+
+@pytest.mark.asyncio
+async def test_capacity_refuses_invalid_temperature_rise(monkeypatch):
+    capacity = _tool(monkeypatch, "pcb_calc_track_current_capacity")
+    for value in (0, -1, float("nan"), float("inf")):
+        out = await capacity(10.0, delta_t_c=value)
+        assert out["ok"] is False
+        assert "delta_t_c" in out["reason"]
 
 
 @pytest.mark.asyncio

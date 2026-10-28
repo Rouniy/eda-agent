@@ -5,6 +5,11 @@ main` returned `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`.
 `git merge-base main upstream/main` returned that exact commit and
 `git rev-list --count main..upstream/main` returned zero.
 
+The Altium `pcb_calc_track_current_capacity` tool now accepts the
+`delta_t_c` argument already present in the fork/shared calculator, while
+preserving its fixed-rise and length/resistance outputs. This reduces the
+donor-only argument queue from 15 to 14; 53 calculator tests pass.
+
 On 2026-10-28 `rabihnd/integration`'s multipart rectangular IC layout
 arguments were integrated into the existing symbol generator and
 `lib_create_multipart_symbol`, with `lib_create_ic_symbol(parts=...)` as a

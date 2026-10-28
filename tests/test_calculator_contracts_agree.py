@@ -49,7 +49,8 @@ KNOWN_DIVERGENT: dict[str, str] = {
     "pcb_calc_trace_width_for_current":
         "current_a (calc) vs current_amps (pcb)",
     "pcb_calc_track_current_capacity":
-        "delta_t_c (calc) vs length_mils (pcb)",
+        "both support delta_t_c, but pcb adds length_mils and the "
+        "parameter order differs",
     "pcb_calc_termination":
         "z0/er vs z0_ohms/dielectric_constant; pcb adds length_fraction",
     "pcb_calc_thermal_vias":

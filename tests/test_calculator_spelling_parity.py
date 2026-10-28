@@ -178,10 +178,9 @@ def test_every_shared_calculator_is_covered_or_known_different(registries):
     """A calculator added later must not slip through unexamined.
 
     pcb_calc_track_current_capacity is listed as a known difference
-    rather than an alias: Altium takes length_mils and computes voltage
-    drop over a run, the shared build takes delta_t_c and computes
-    capacity at a chosen temperature rise. Those are different
-    features, not two names for one, so aliasing them would be a lie.
+    rather than an alias: both builds accept delta_t_c, while Altium also
+    takes length_mils and computes voltage drop over a run. The differing
+    parameter order and result shape remain a known contract difference.
     """
     known_different = {"pcb_calc_track_current_capacity"}
     already_agreed = {"pcb_calc_impedance",

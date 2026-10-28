@@ -2,6 +2,10 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Expose the forks' requested `delta_t_c` in Altium's
+  `pcb_calc_track_current_capacity`, while retaining its fixed rise table
+  and optional length/resistance result. The selected current uses the
+  shared trace-sizing engine; 53 focused calculator tests pass.
 - [x] Integrate `rabihnd/integration`'s `lib_create_ic_symbol(parts=...)`
   rectangular multi-part layout into the existing multipart tool. The
   shared generator now supports configurable pin length, row spacing,
@@ -64,7 +68,7 @@
   branch refs from the 62-default/117-branch live audit. Divergent Git
   history is not a missing-feature count; record each distinct capability
   against current source and native acceptance where it changes Altium.
-- [ ] Review the other 15 donor-only tool argument pairs from the
+- [ ] Review the other 14 donor-only tool argument pairs from the
   2026-10-28 signature scan. Separate renamed interfaces and intentional
   policy choices from native capabilities still hidden by Python.
 
