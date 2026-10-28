@@ -15,8 +15,12 @@ that entry before deciding whether the project is ambiguous. The focused
 checkpoint tests passed 8/8, and the HTTP MCP server was restarted from
 `main`; Altium script `.129` still answers on port 14701. The other Rosen
 test failures in that external test run were response-contract differences
-or its temporary location making relative Pascal source paths invalid;
-they are not evidence of missing behavior.
+or its temporary location making relative Pascal source paths invalid.
+Rerunning with the source path corrected passed 15/18: the remaining
+three are the two PDF error-shape assertions and an assertion for the
+fork's `SameDocPath` spelling. Our close handler performs the same
+canonical-path comparison before `Client.CloseDocument`; those three
+failures do not identify a missing behavior.
 
 ## 2026-10-28 public-tool-name cross-check
 
