@@ -2527,8 +2527,10 @@ def register_generic_tools(mcp):
                      "plan_sha256": plan_sha256, "live_pins": len(pins)})
         if not refs:
             plan["note"] = ("No CrossRef parameters found: Port Cross References "
-                            "may be off, or the sheet was not compiled since "
-                            "they were turned on.")
+                            "may be off. Open the linked project sheets and "
+                            "compile the project; Altium may not generate "
+                            "these parameters while a referenced sheet is "
+                            "unloaded.")
         if dry_run:
             return plan
 

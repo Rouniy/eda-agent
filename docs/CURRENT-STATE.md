@@ -1,5 +1,25 @@
 # Current integration state / agent handoff
 
+## Project-generated CrossRef native qualification, 2026-10-28
+
+On a disposable two-sheet `Multipart_QA.PrjPcb` copy with
+`AutoCrossReferences=1`, Altium 26.11.1.5/script `.137` generated a real
+`CrossRef` for matching `QA_REAL_CROSSREF` ports after both sheets were
+opened and the project compiled. On `Template_Value_QA.SchDoc`, its text
+was `Template_Value_Param_QA[2B]`. With a wire from `(7800,4000)` to the
+port at `(8000,4000)`, `ConnectedEnd=1` and Altium placed the reference
+at `(8420,4000)`, justification 3. The test moved that generated
+parameter to the wrong end `(7980,4000)`, justification 5, in memory.
+`sch_fix_port_crossrefs` planned one move and applied it with exactly
+one matching readback at `(8420,4000)`, justification 3, and no failures.
+
+Saving and reopening the sheets did not leave a visible CrossRef until
+both sheets were reopened and the project was compiled again. Compiling
+with only the first sheet open returned success but no CrossRef. With
+both sheets open, Altium generated the reference at the correct end and
+the planner found no move. The missing-reference hint now describes this
+loading condition. The QA project was closed after the check.
+
 ## Port CrossRef native apply and readback, 2026-10-28
 
 The `mooreaa` CrossRef planner was exercised on a disposable project copy
@@ -19,8 +39,8 @@ separate `obj_query` read X=8420, Y=4000, justification 3. Exact-sheet
 save, project close and reopen left the plan with zero moves and one
 `ok` reference. The source QA sheet remained SHA-256
 `fa9931bba40abed643e1ae0093843419d106200473d32f2c0cc20b7d307e5661`.
-The reference was a deliberately created test parameter; native
-acceptance on a project-generated CrossRef is still open. Twenty-one
+The reference was a deliberately created test parameter; the separate
+project-generated qualification above covers that case. Twenty-one
 focused tests pass, including normalized coordinate readback.
 
 ## mooreaa live-pin filtering on two modes and parts, 2026-10-28
