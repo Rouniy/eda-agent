@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.158';
+    SCRIPT_VERSION = '2026.10.28.159';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -66306,8 +66306,8 @@ Begin
     Else If N = 'parameter'       Then Result := eParameter
     Else If N = 'parameterset'    Then Result := eParameterSet
     Else If N = 'pin'             Then Result := ePin
-    { Legacy schematic text names refer to the same eLabel primitive. }
-    Else If (N = 'label') Or (N = 'text') Or (N = 'textstring')
+    { eText is a PCB alias too; keep that spelling for board text. }
+    Else If (N = 'label') Or (N = 'textstring')
                                Then Result := eLabel
     Else If N = 'line'            Then Result := eLine
     Else If N = 'polyline'        Then Result := ePolyline
@@ -70037,7 +70037,8 @@ Begin
     { active SchLib's current component as a side effect, and doing so for a   }
     { query that is about to be refused would leave the editor somewhere the   }
     { caller never asked for.                                                  }
-    If (ObjectTypeFromStringPCB(ObjTypeStr) <> -1)
+    If (ObjectTypeFromString(ObjTypeStr) = -1)
+        And (ObjectTypeFromStringPCB(ObjTypeStr) <> -1)
         And (ScopeType <> 'active_doc') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'SCOPE_NOT_SUPPORTED',

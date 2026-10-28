@@ -6,12 +6,18 @@ main` returned `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`.
 `git rev-list --count main..upstream/main` returned zero.
 
 On 2026-10-28 the older `rabihnd/integration` multipart-symbol patch was
-checked again. Its `eText` and `eTextString` names for schematic labels
-were absent from the current resolver. Both now map to `eLabel` in source
-`.157`, with a clean 12-unit Pascal build, 38 focused tests and a live
-bridge reload. Its force-save-before-`lib_get_components` behavior was not
+checked again. Its `eTextString` name for schematic labels was absent
+from the current resolver. Source `.157` initially copied `eText` too,
+but native QA found that spelling already means PCB text and its query
+scope guard refused a SchLib query. Source `.159` preserves `eText` for
+PCB, uses `eTextString` for schematic `eLabel`, and checks the schematic
+resolver before rejecting PCB-only scopes. Its force-save-before-
+`lib_get_components` behavior was not
 ported: the current read reports saved and unsaved symbol inventories
 separately and must not save a user's edited library as a side effect.
+Native `.159` queries confirmed the intended split: `eTextString` worked
+in a SchLib component scope, while `eText` and `eTextObject` each found
+five texts on a disposable board. Both documents closed without saving.
 The same donor's STEP `overall_height_mm` was absent from the current
 one-call body add, though a separate body edit could set it later. Script
 `.158` now accepts and verifies the requested height. A native disposable

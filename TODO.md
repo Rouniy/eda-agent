@@ -6,9 +6,11 @@
   optional `default_owner_part_id`, preserving current-part semantics
   when omitted. Native disposable SchLib readback and save/reopen retained
   owners 3/0/2; 78 focused tests pass.
-- [x] Port `rabihnd/integration`'s `eText` and `eTextString` aliases to
-  the shared schematic object resolver. Script `.157` passed Pascal
-  lint/build and 38 focused tests, then loaded in the live Altium bridge.
+- [x] Port `rabihnd/integration`'s unambiguous `eTextString` alias for
+  schematic labels. Native QA found its `eText` alias collides with PCB
+  text; script `.159` preserves the board meaning and corrects the
+  schematic scope guard. Native scoped SchLib queries succeeded, and
+  both PCB spellings returned the same five texts.
 - [x] Port its optional STEP `overall_height_mm` into the exact PcbLib
   `lib_add_3d_body` operation. Script `.158` and the restarted MCP passed
   source checks; a disposable library retained 3.25 mm across save/reopen.

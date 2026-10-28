@@ -1,4 +1,16 @@
-# Release verification: 2026.10.28.158
+# Release verification: 2026.10.28.159
+
+Script `.159` resolves a name collision found during native alias QA.
+`eText` remains PCB text, while the donor's unambiguous `eTextString`
+resolves schematic `eLabel`. The query scope guard now checks the
+schematic resolver first, so a SchLib query for `eTextString` is not
+refused merely because a different PCB type shares its normalized name.
+Native PCB and SchLib readback is recorded below.
+On the disposable SchLib, scoped `eLabel` and `eTextString` queries both
+completed with count 0 and no scope error. On a disposable PcbDoc,
+`eText` and `eTextObject` each returned five board texts. Both documents
+closed without saving. The 12-unit Pascal build and 38 focused tests
+passed; `app_ping` reported loaded `.159` after the restart.
 
 The `rabihnd/integration` multipart pin-batch fallback is now exposed as
 optional `default_owner_part_id` on `lib_add_pins`. Omission retains the
@@ -26,10 +38,10 @@ the source library SHA-256 remained
 The restarted HTTP MCP server on 14701 reported `.158`, matching the
 loaded script and the bundled source.
 
-Script `.157` accepts the `rabihnd/integration` schematic object aliases
-`eText` and `eTextString` as `eLabel` in the shared type resolver. This
-enables the same names for query, selection and object creation in a
-SchLib. The 12-unit Pascal lint/build reported zero findings, and 38
+Script `.157` initially accepted `rabihnd/integration`'s `eText` and
+`eTextString` aliases as `eLabel`. Native QA found that `eText` collides
+with PCB text; `.159` narrows the schematic alias to `eTextString`.
+The 12-unit Pascal lint/build reported zero findings, and 38
 focused source tests passed. `eda-agent relaunch --restart` loaded `.157`
 in the existing Altium session; the bridge answered again with two queued
 calls preserved. Native object readback remains a separate step.
@@ -54,7 +66,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.158` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.159` from `app_ping`.
 Current `app_ping` reports loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
