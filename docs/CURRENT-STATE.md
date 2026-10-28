@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Fresh batch DRC rule rows, 2026-10-28
+
+The Python `pcb_run_drc` tool now reads all rule rows from its confirmed
+fresh Altium HTML report, including rules with zero violations. It returns
+`report_rules`, `report_rule_count` and a check that the row counts sum to
+the report's active violation total. A parser format mismatch leaves the
+rule list absent rather than claiming an empty list. On the RFSoC antenna
+board, the public tool returned 19 rule rows, zero active violations,
+32 net-tie warnings and a matching sum. The board closed without saving.
+Focused tests passed 32/32. The broader selected-project DRC runner remains
+open in `TODO.md`.
+
 ## Internal-plane tool contract and fresh fork check, 2026-10-28
 
 Live `fork-status --verify-fork-branches` found 62/62 default fork tips

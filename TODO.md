@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## Batch DRC rule coverage, 2026-10-28
+
+- [x] Return every per-rule row from a confirmed fresh batch DRC HTML
+  report as `report_rules`, including zero-count rows, and check that
+  their counts sum to the report header. Native `pcb_run_drc` on the RFSoC
+  antenna board returned 19 rule rows, zero rule violations, 32 net-tie
+  warnings and `report_rules_total_matches_header=true`. The board closed
+  without saving. This does not yet expose the separate selected-project
+  DRC runner described below.
+
 ## Internal-plane read contract, 2026-10-28
 
 - [x] Repair the upstream `pcb_plane_connections` handler's reply and

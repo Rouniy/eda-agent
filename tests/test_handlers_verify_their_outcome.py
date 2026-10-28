@@ -85,7 +85,7 @@ def test_project_scoped_saves_are_not_workspace_wide():
         assert "WorkspaceManager:SaveAll" not in body, (
             f"{func} saves the whole workspace despite taking a "
             f"project_path; use SaveProjectMembers")
-        assert "SaveProjectMembers" in body, (
+        assert "SaveEditedProjectMembers(Project)" in body, (
             f"{func} must save only the project it was given")
 
 

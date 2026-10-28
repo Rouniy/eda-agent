@@ -21,12 +21,35 @@ def test_batch_report_counts_active_and_waived(tmp_path):
         "warnings": 0, "rule_violations": 0, "waived_violations": 1}
 
 
+def test_batch_report_retains_zero_rule_rows_and_validates_the_sum(tmp_path):
+    report = tmp_path / "drc_batch_rules.html"
+    report.write_text('''
+<td class="DRC_summary_header_col1">Rule Violations:</td>
+<td class="DRC_summary_header_col2"></td><td class="DRC_summary_header_col3">2</td>
+<table><tr><th class="column1">Rule Violations</th><th class="column2">Count</th></tr>
+<tr><td class="column1"><a href="#one">Clearance Constraint (All),(All)</a></td>
+<td class="column2">2</td></tr>
+<tr><td class="column1"><a href="#two">Short-Circuit Constraint (All),(All)</a></td>
+<td class="column2">0</td></tr>
+<tr><td class="column1">Total</td><td class="column2">2</td></tr></table>
+''', encoding="utf-8")
+    assert pcb._drc_report_rules(str(report)) == [
+        {"label": "Clearance Constraint (All),(All)", "violations": 2},
+        {"label": "Short-Circuit Constraint (All),(All)", "violations": 0},
+    ]
+    assert pcb._drc_report_rules(str(tmp_path / "missing.html")) is None
+
+
 @pytest.mark.asyncio
 async def test_run_drc_reports_truncation_and_fresh_totals(tmp_path, monkeypatch):
     report = tmp_path / "drc_batch_check.html"
     report.write_text('''
 <td class="DRC_summary_header_col1">Rule Violations:</td>
 <td class="DRC_summary_header_col2"></td><td class="DRC_summary_header_col3">125</td>
+<table><tr><th class="column1">Rule Violations</th><th class="column2">Count</th></tr>
+<tr><td class="column1">Clearance Constraint (All),(All)</td>
+<td class="column2">125</td></tr>
+<tr><td class="column1">Total</td><td class="column2">125</td></tr></table>
 ''', encoding="utf-8")
 
     class Bridge:
@@ -49,5 +72,9 @@ async def test_run_drc_reports_truncation_and_fresh_totals(tmp_path, monkeypatch
     pcb.register_pcb_tools(mcp)
     result = await mcp.run_drc()
     assert result["report_counts"] == {"rule_violations": 125}
+    assert result["report_rules"] == [
+        {"label": "Clearance Constraint (All),(All)", "violations": 125}]
+    assert result["report_rule_count"] == 1
+    assert result["report_rules_total_matches_header"] is True
     assert result["violations_returned"] == 100
     assert result["violations_truncated"] is True

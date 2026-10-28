@@ -8,6 +8,7 @@ component placement, trace lengths, layer stackup, board outline, etc.
 
 import json
 import hashlib
+import html
 import math
 import re
 from pathlib import Path
@@ -62,6 +63,49 @@ def _drc_report_counts(report_path: str) -> dict[str, int]:
         if match:
             counts[key] = int(match.group(1))
     return counts if "rule_violations" in counts else {}
+
+
+def _drc_report_rules(report_path: str) -> list[dict[str, Any]] | None:
+    """Read every rule row in the fresh batch report's summary table.
+
+    ``None`` means the table could not be located; an empty list means
+    Altium included the table but listed no rules. Keep the full label,
+    including scopes, because several rules share the same kind.
+    """
+    path = Path(report_path)
+    if path.suffix.casefold() != ".html" or not path.is_file():
+        return None
+    try:
+        report = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    table = re.search(
+        r'<th\b[^>]*class="column1"[^>]*>\s*Rule Violations\s*</th>'
+        r'.*?</table>', report, re.IGNORECASE | re.DOTALL,
+    )
+    if not table:
+        return None
+    rows: list[dict[str, Any]] = []
+    total_seen = False
+    for label_html, count_html in re.findall(
+        r'<td\b[^>]*class="column1"[^>]*>(.*?)</td>\s*'
+        r'<td\b[^>]*class="column2"[^>]*>(.*?)</td>',
+        table.group(), re.IGNORECASE | re.DOTALL,
+    ):
+        label = html.unescape(re.sub(r"<[^>]+>", "", label_html)).strip()
+        count = html.unescape(re.sub(r"<[^>]+>", "", count_html)).strip()
+        if label.casefold() == "total":
+            total_seen = True
+            continue
+        if not label or not count.isdecimal():
+            return None
+        rows.append({"label": label, "violations": int(count)})
+    # A format change must not turn an unparsed zero-count rule into an
+    # apparent empty report. The first header's opening <tr> precedes the
+    # matched section, so each <tr> here is a rule row or the Total row.
+    if not total_seen or len(re.findall(r"<tr\b", table.group(), re.IGNORECASE)) != len(rows) + 1:
+        return None
+    return rows
 
 
 def _fab_board_facts(reply: dict[str, Any], expected_path: str) -> dict[str, Any]:
@@ -1933,6 +1977,10 @@ def register_pcb_tools(mcp):
         Check board statistics first: a large unrouted board can take a
         long time to check.
 
+        A confirmed batch report also returns every rule row in
+        ``report_rules`` and whether those rows sum to the report's active
+        violation total. An absent rule row is not a passing rule check.
+
         With ``allow_modal=True``, use the interactive Design Rule Checker
         instead. That dialog blocks the bridge until someone answers it.
         """
@@ -1944,6 +1992,13 @@ def register_pcb_tools(mcp):
                 counts = _drc_report_counts(result["report_path"])
                 if counts:
                     result["report_counts"] = counts
+                    rules = _drc_report_rules(result["report_path"])
+                    if rules is not None:
+                        result["report_rules"] = rules
+                        result["report_rule_count"] = len(rules)
+                        result["report_rules_total_matches_header"] = (
+                            sum(row["violations"] for row in rules)
+                            == counts["rule_violations"])
             violations = result.get("violations")
             if isinstance(violations, list) and type(result.get("violation_count")) is int:
                 result["violations_returned"] = len(violations)
