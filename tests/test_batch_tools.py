@@ -247,13 +247,13 @@ class TestBatchModify:
     ``scope;object_type;filter;set`` and join the ops with ``|`` -- the very
     character that separates AND-conditions inside a filter and assignments
     inside a set. An op like
-    ``active_doc;eSchComponent;Location.X=500|Location.Y=300;Designator.Text=C1``
+    ``active_doc;eSchComponent;Location.X=500|Location.Y=300;Comment.Text=10k``
     was split at the first pipe, neither half had the three semicolons the
     Pascal parser required, and both were dropped with no error. The call
     returned ``operations_processed: 0`` while the identical filter worked
     through the single-shot obj_modify (whose filter travels in its own JSON
     field). Coordinate-addressed batches -- the only way to reach components
-    whose designators are all still ``U?`` -- could therefore never work.
+    with repeated component names -- could therefore never work.
     """
 
     @pytest.mark.asyncio
@@ -264,18 +264,35 @@ class TestBatchModify:
         await tools["obj_batch_modify"](operations=[
             {"scope": "active_doc", "object_type": "eSchComponent",
              "filter": "Location.X=7013|Location.Y=7634",
-             "set": "Designator.Text=C1027"},
+             "set": "Comment.Text=C1027"},
             {"scope": "active_doc", "object_type": "eSchComponent",
              "filter": "Location.X=7508|Location.Y=6964",
-             "set": "Designator.Text=R4"},
+             "set": "Comment.Text=R4"},
         ])
         assert sent.command == "generic.batch_modify"
         ops = sent.params["operations"].split("~~")
         assert len(ops) == 2, "ops must not be split on the filter's '|'"
         assert ops[0] == (
             "scope=active_doc;object_type=eSchComponent;"
-            "filter=Location.X=7013|Location.Y=7634;set=Designator.Text=C1027"
+            "filter=Location.X=7013|Location.Y=7634;set=Comment.Text=C1027"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("assignment", [
+        "Designator=R8", " designator.text = R8",
+        "Comment.Text=10k|DESIGNATOR.Text=R8",
+    ])
+    async def test_designator_batch_refused_before_bridge(self, monkeypatch, assignment):
+        sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
+        from eda_agent.tools import generic as g
+        tools = _capture(g, "register_generic_tools")
+        result = await tools["obj_batch_modify"](operations=[
+            {"object_type": "eSchComponent", "set": "Comment.Text=first"},
+            {"object_type": "eSchComponent", "set": assignment},
+        ])
+        assert result["error"] == "DESIGNATOR_BATCH_REFUSED"
+        assert result["operations_processed"] == 0
+        assert sent.command is None
 
     @pytest.mark.asyncio
     async def test_multi_condition_filter_survives_op_split(self, monkeypatch):
@@ -314,10 +331,10 @@ class TestBatchModify:
         raw = asyncio.run(mcp.call_tool("obj_batch_modify", {"operations": [
             {"scope": "active_doc", "object_type": "eSchComponent",
              "filter": "Location.X=500|Location.Y=300",
-             "set": "Designator.Text=C1027"},
+             "set": "Comment.Text=C1027"},
             {"scope": "active_doc", "object_type": "eSchComponent",
              "filter": "Location.X=500|Location.Y=100",
-             "set": "Designator.Text=R4_N_A"},
+             "set": "Comment.Text=R4_N_A"},
         ]}))
         content = raw[0] if isinstance(raw, tuple) else raw
         res = json.loads(content[0].text)

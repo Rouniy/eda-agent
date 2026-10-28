@@ -177,3 +177,25 @@ this fork, so its six shape readers were checked directly: `PCB.pas`,
 `Generic.pas` and `Library.pas` all name `eCustomShape` rather than
 falling through to round/other. This is source and offline-test parity;
 the individual native CAD write paths were not all rerun in this audit.
+
+## Batch designator safety from `bblacklock3`
+
+The donor's `test_batch_refuses_designator_rewrites.py` exposed a real gap:
+the generic `obj_batch_modify` still accepted designator assignments, while
+a failed batch can leave only some parts renamed. The public wrapper now
+refuses either `Designator` or `Designator.Text` (case and whitespace
+insensitive) before sending *any* operation. The Pascal handler also skips
+such an operation for direct or older clients. The planned
+`sch_batch_rename_designators` path is exempt: it checks a project-wide
+snapshot and collisions, uses unique temporary names, and reads back both
+phases. Single-object `obj_modify` is unchanged.
+
+The fresh fork-status check found all 118 branch heads current in the cache.
+`upstream/main` remains `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, an
+ancestor of `main` with zero commits behind. The new `.166` script built with
+zero lint errors or warnings; 78 focused tests passed, one optional test was
+skipped. A live Altium 26.11.1.5 call with `Designator=R8` returned
+`operations_processed: 0`, `operations_skipped: 1` and the refusal note;
+the mixed-case second-assignment form did too. The internal bypass returned
+`unknown_object_type` on a deliberately invalid object type, confirming
+dispatch without changing a design.

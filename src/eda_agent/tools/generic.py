@@ -1198,11 +1198,13 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Apply many filter+set operations in ONE call. PREFER THIS over
         looping obj_modify whenever each object gets its own value (pins,
-        designators, per-sheet titles): one call, one Altium transaction.
+        per-sheet titles): one call, one Altium transaction.
 
         No rollback: ops that ran before a failure stay applied. After a
-        designator batch, check the netlist: duplicate designators merge
-        nets silently. proj_annotate renumbers without duplicates.
+        designator batch, duplicate designators can merge nets silently.
+        Use ``sch_batch_rename_designators`` for planned explicit names or
+        ``proj_annotate`` for automatic numbering. Designator assignments
+        are refused before any command is sent to Altium.
 
         Args:
             operations: List of operation dicts, each with:
@@ -1259,6 +1261,17 @@ def register_generic_tools(mcp):
                             "operations_processed": 0}
             if not obj_type or not set_str:
                 continue
+            if any(
+                assignment.partition("=")[0].strip().casefold()
+                in ("designator", "designator.text")
+                for assignment in str(set_str).split("|")
+                if "=" in assignment
+            ):
+                return {"ok": False, "error": "DESIGNATOR_BATCH_REFUSED",
+                        "reason": ("operations[%d] changes a designator; use "
+                                   "sch_batch_rename_designators or proj_annotate. "
+                                   "Nothing was sent to Altium." % i),
+                        "operations_processed": 0}
             bad = filter_problem(filt)
             if bad:
                 return bad_filter(bad, operations_processed=0)
@@ -1424,7 +1437,8 @@ def register_generic_tools(mcp):
             native_error = ""
             try:
                 reply = await bridge.send_command_async(
-                    "generic.batch_modify", {"operations": "~~".join(operations)})
+                    "generic.batch_modify", {"operations": "~~".join(operations),
+                                             "planned_designator_rename": "true"})
             except Exception as exc:
                 # A transport error may arrive after Altium applied some edits.
                 # Query the project before deciding what actually happened.

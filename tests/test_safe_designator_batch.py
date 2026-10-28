@@ -26,6 +26,7 @@ class Bridge:
             {"UniqueId": "C", "Designator.Text": "C1", "_doc": r"C:\qa\B.SchDoc"},
         ]
         self.batches = []
+        self.batch_params = []
         self.fail_after_first_op = False
         self.raise_in_second_phase = False
 
@@ -36,6 +37,7 @@ class Bridge:
             return {"objects": copy.deepcopy(self.rows), "count": len(self.rows),
                     "sheets_processed": 2}
         if command == "generic.batch_modify":
+            self.batch_params.append(params)
             ops = params["operations"].split("~~")
             self.batches.append(ops)
             for op in ops[:1] if self.fail_after_first_op else ops:
@@ -68,6 +70,8 @@ async def test_swap_uses_unique_intermediate_names_and_verifies(monkeypatch):
         {"unique_id": "A", "to": "R2"}, {"unique_id": "B", "to": "R1"}],
         dry_run=False, expected_snapshot=plan["snapshot"])
     assert result["ok"] and result["verified"] and len(bridge.batches) == 2
+    assert all(p.get("planned_designator_rename") == "true"
+               for p in bridge.batch_params)
     assert all("ZZZ" in op for op in bridge.batches[0])
     assert [r["Designator.Text"] for r in bridge.rows] == ["R2", "R1", "C1"]
 

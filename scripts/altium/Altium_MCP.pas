@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.165';
+    SCRIPT_VERSION = '2026.10.28.166';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -71737,6 +71737,39 @@ Begin
     Result := True;
 End;
 
+Function SetWritesDesignator(SetStr : String) : Boolean;
+Var
+    Remaining, Assignment, PropName : String;
+    PipePos, EqPos : Integer;
+Begin
+    Result := False;
+    Remaining := SetStr;
+    While Remaining <> '' Do
+    Begin
+        PipePos := Pos('|', Remaining);
+        If PipePos > 0 Then
+        Begin
+            Assignment := Copy(Remaining, 1, PipePos - 1);
+            Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+        End
+        Else
+        Begin
+            Assignment := Remaining;
+            Remaining := '';
+        End;
+        EqPos := Pos('=', Assignment);
+        If EqPos > 0 Then
+        Begin
+            PropName := UpperCase(Trim(Copy(Assignment, 1, EqPos - 1)));
+            If (PropName = 'DESIGNATOR') Or (PropName = 'DESIGNATOR.TEXT') Then
+            Begin
+                Result := True;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
 Function Gen_BatchModify(Params : String; RequestId : String) : String;
 Var
     Operations, OpStr, Remaining, OpResult, Note : String;
@@ -71822,6 +71855,12 @@ Begin
             If ObjTypeStr = '' Then Note := 'missing_object_type'
             Else If SetStr = '' Then Note := 'missing_set';
         End;
+        { The project-wide rename tool has already checked UniqueIds,
+          collisions and its reviewed snapshot before calling this handler.
+          Raw batch calls have no such guard. }
+        If (Note = '') And SetWritesDesignator(SetStr)
+            And (ExtractJsonValue(Params, 'planned_designator_rename') <> 'true') Then
+            Note := 'designator_refused_use_proj_annotate_or_sch_batch_rename_designators';
 
         IsPcb := False;
         If Note = '' Then
