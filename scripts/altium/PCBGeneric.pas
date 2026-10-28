@@ -1114,7 +1114,7 @@ Begin
         Begin
             Result := BoolToJsonStr(Not Obj.Moveable);
         End
-        Else If PropName = 'Component' Then
+        Else If (PropName = 'Component') Or (PropName = 'ComponentDesignator') Then
         Begin
             { The owning footprint's designator; empty for a free primitive. }
             If Obj.InComponent Then

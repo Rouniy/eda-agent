@@ -1,6 +1,6 @@
 # Current integration state / agent handoff
 
-The main Altium script is now `.176`, loaded from the one source project,
+The main Altium script is now `.177`, loaded from the one source project,
 and answers ping on AD26.11.1.5. The Python MCP service on 14701 was
 restarted from this `main` and advertises 766 tools without the stale-server
 warning; the separate TCP relay on 14700 answers `/health` as `ready`.
@@ -8,6 +8,26 @@ Script `.172` fixes `sdk-probe --doc-path`; all 29 generated component
 read accessors answered on IC44 in a read-only AD26.11 check. The sheet
 was closed without saving. Broader component kinds and AD25 still need
 native checks.
+
+## Fresh upstream tip and PCB owner-name readback, 2026-10-28
+
+A fresh `fork-status --fetch --cached-forks --verify-fork-branches --json`
+matched all 63 fork defaults and 120 branch tips. Upstream advanced one
+commit to `75df9907a8ece15a2a0d20952fb67edd09e6d46d`, directly after
+the last integrated `0bb1b3154cca6e58a517b23edee3d7a108f1c232`.
+`upstream-sync-2026-10-28` and merge `63f7c16` still identify the exact
+integrated point; the new upstream commit remains pending review under the
+current stabilization scope. `MOREmbedded/main` remains an ancestor of
+`main` at `d495c4d8802c0b7259068c2f414b7b23bfdf6ee6`.
+
+The PCB generic property list advertised `ComponentDesignator` for
+primitives, but querying J_TX_7's keepout arc/fill returned an empty value
+while `Component` returned `J_TX_7`. Script `.177` makes the advertised
+property an alias of the same owner read. On the original read-only board,
+both properties returned `J_TX_7` for the arc and fill. The board was
+closed without saving; its SHA-256 was unchanged. The 12-unit Pascal
+bundle lint/build passed with zero findings and the main script project
+answered the `.177` restart ping.
 
 ## Native via placement and one-sided mask setting, 2026-10-28
 

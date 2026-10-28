@@ -1,9 +1,11 @@
 # Fork behavior checkpoint, 2026-10-28
 
-The current synchronization point is reported by `eda-agent fork-status
---fetch --remote upstream`: `0bb1b3154cca6e58a517b23edee3d7a108f1c232`,
-merged by `63f7c16ab8dd7c703ba9a82ca17b7f06cee1e370`, with zero upstream
-commits pending at the latest fetch. The original checkpoint below was made
+The last integrated synchronization point is
+`0bb1b3154cca6e58a517b23edee3d7a108f1c232`, merged by
+`63f7c16ab8dd7c703ba9a82ca17b7f06cee1e370` and marked by
+`upstream-sync-2026-10-28`. At the latest fetch, upstream/main advanced
+one direct child to `75df9907a8ece15a2a0d20952fb67edd09e6d46d`;
+that new commit is pending review, not part of `main`. The original checkpoint below was made
 at `main` / `origin/main` `52d3b8c8126109e12d2f08e0bc0a18d837874409`,
 when the point was `ee7589c9fc543d0b99bb142dc8ca12b618fffeab` via merge
 `338f615`. `MOREmbedded/main` was

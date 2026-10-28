@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.176';
+    SCRIPT_VERSION = '2026.10.28.177';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -35859,7 +35859,7 @@ Begin
         Begin
             Result := BoolToJsonStr(Not Obj.Moveable);
         End
-        Else If PropName = 'Component' Then
+        Else If (PropName = 'Component') Or (PropName = 'ComponentDesignator') Then
         Begin
             { The owning footprint's designator; empty for a free primitive. }
             If Obj.InComponent Then
