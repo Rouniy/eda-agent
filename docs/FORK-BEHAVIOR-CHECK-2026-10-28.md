@@ -307,9 +307,12 @@ its per-request perf attribution is also ported. Two consecutive live ping
 calls from the same bridge process produced distinct trace keys
 `da93ff10-00000001` and `da93ff10-00000002`; the report joined them to
 separate Altium handler times (16 ms and 0 ms). Sixty-two focused bridge,
-perf, source-header and style checks passed. The live SDK probe and updated
-coverage accounting still need review; `d495c4d` is not yet a parent of
-`main`.
+perf, source-header and style checks passed. Type-scoped coverage accounting
+is also adapted: a delegated Pascal accessor counts
+only for the object type whose branch calls it. The fixture checks passed,
+and the current SDK report still reads 650 of 2,176 declared properties
+because the generated block is not deployed. The live SDK probe still needs
+review; `d495c4d` is not yet a parent of `main`.
 
 The direct child fork's `test_update_command.py` was run unchanged against
 the current source in a temporary test file: 38 passed and 12 failed. The

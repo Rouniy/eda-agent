@@ -6,9 +6,10 @@
   `032fb4b` ancestry merge. The fresh tip is `d495c4d`. The SDK symbol
   extractor and offline candidate generator are ported and tested locally;
   the per-request perf attribution is ported and checked against two live
-  ping calls. The live `sdk-probe`/generated Pascal block and updated
-  coverage accounting still need a safe native review. Do not
-  treat the old child merge as the latest child sync point.
+  ping calls. Type-scoped delegated-property accounting is ported and
+  tested; it changes no current coverage count until a generated block is
+  deployed. The live `sdk-probe`/generated Pascal block still needs a safe
+  native review. Do not treat the old child merge as the latest child sync point.
 - [x] Record the direct child `MOREmbedded/main` tip `032fb4b` as a true
   second parent after manual conflict resolution. Current production paths
   win where the auto-merge duplicated Pascal/Python handlers or removed
