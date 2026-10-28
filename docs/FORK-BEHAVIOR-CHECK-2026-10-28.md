@@ -145,3 +145,23 @@ rotation audit. Direct Altium 365, NPI phase-gate, and rotation-audit
 checks passed 91/91. This is an API and focused-behavior check; it does
 not prove that every implementation detail of the 27 divergent commits
 has the same result on every CAD design.
+
+## Public-name inventory across cached fork branches
+
+An AST pass across 111 cached fork refs found 14 distinct prefixed tool
+names absent from the current public surface. They are legacy spelling
+or narrower entry points, rather than 14 missing capabilities:
+
+| Fork names | Current route |
+| --- | --- |
+| `lib_add_pin`, `lib_add_symbol_line`, `lib_set_label_format` | `lib_add_pins`, `lib_add_symbol_lines`, `lib_set_label_formats` |
+| `pcb_move_component`, `pcb_place_component`, `pcb_place_track`, `sch_add_net_label` | `pcb_move_components`, `pcb_place_components`, `pcb_place_tracks`, `sch_place_net_label` |
+| `sch_attach_spice_model`, `sch_attach_spice_primitive`, `sch_attach_spice_primitives`, `sch_get_simulation_readiness` | `sim_attach_model`, `sim_attach_primitives`, `sim_get_readiness` |
+| `lib_diag_footprint`, `lib_screenshot_footprint`, `lib_list_vault_libraries` | `lib_get_footprint_primitives(kinds="body")`, `app_capture_window` or `lib_render_footprint`, `lib_list_available_libraries` |
+
+The focused footprint, simulation, and catalogue tests passed 51/51
+with two environment skips. The loaded `.164` bridge read four available
+libraries and four installed libraries through
+`library.list_available_libraries`; its response includes library type
+and a separate Workspace name from an open design when available.
+No missing public operation was established by this name inventory.
