@@ -1,7 +1,15 @@
 # Current integration state / agent handoff
 
-The main Altium script is now `.169`, loaded from the one source project,
-and answers ping on AD26.11.1.5. The dashboard writes its bound localhost
+The main Altium script is now `.172`, loaded from the one source project,
+and answers ping on AD26.11.1.5. The Python MCP service on 14701 was
+restarted from this `main` and advertises 766 tools without the stale-server
+warning; the separate TCP relay on 14700 answers `/health` as `ready`.
+Script `.172` fixes `sdk-probe --doc-path`; all 29 generated component
+read accessors answered on IC44 in a read-only AD26.11 check. The sheet
+was closed without saving. Broader component kinds and AD25 still need
+native checks.
+
+Script `.169` added the dashboard's bound localhost
 URL to `dashboard.url`; the status form reads it for Open Dashboard. This
 adapts the `yniantongtian-oss` 8877 port fix without changing the default
 8766 for everyone. Set `EDA_AGENT_DASHBOARD_PORT=8877` for an auto-spawned
@@ -10,7 +18,7 @@ publishes the right URL. A standalone HTTP 200/URL-file check passed, as
 did the 12-file Pascal build and 24 focused checks. Native button-click
 acceptance remains open.
 
-Script `.168` is loaded in the main `Altium_API.PrjScr` and answered a fresh
+Script `.168` was loaded in the main `Altium_API.PrjScr` and answered a fresh
 `application.ping` on AD26.11.1.5. It adds a deliberate `sdk-probe` route
 and generated schematic-component reads. On Main.SchDoc in the Pi Radio
 transceiver design, `sdk-probe --properties DescriptionString` returned
@@ -47,7 +55,7 @@ The exact upstream sync point is
 `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, the second parent of
 merge `63f7c16`; `git merge-base main upstream/main` returns that same
 commit, and the last fetched upstream had zero commits pending. The
-October 28 fork refresh matched all 118 live branch tips. An AST inventory
+October 28 fork refresh matched all 120 live branch tips. An AST inventory
 over 121 cached remote refs found 14 donor-only public tool names, each
 mapped to an existing operation; a production-path inventory found three
 alternative files, including the AD25 headless `StatusFormStub.pas` that
