@@ -40,6 +40,10 @@ record accepted changes in `docs/FORK-BEHAVIOR-CHECK-2026-10-28.md`.
 - `python -m pytest -q`: 9,784 passed, 165 skipped, one expected failure.
 - `python scripts/altium/build.py`: 12 Pascal files, zero errors and zero
   warnings; the bundled script rebuilt without changing tracked output.
+- A direct Streamable HTTP MCP session on TCP 14701 initialized and
+  `app_ping` returned `success=true`, `version_match=true`,
+  `script_location_match=true`, no stale units, and no warnings. Altium
+  reported version 26.11.1.5 and script version `2026.10.28.172`.
 
 These checks establish the Git baseline and current local regression state.
 They do not establish native Altium 25 compatibility or complete behavior
