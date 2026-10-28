@@ -1,11 +1,13 @@
 # Fork behavior checkpoint, 2026-10-28
 
-`main` / `origin/main` were `52d3b8c8126109e12d2f08e0bc0a18d837874409`
-at this check. The exact `upstream/main` merge base and remote tip were
-`ee7589c9fc543d0b99bb142dc8ca12b618fffeab`; no upstream commits were
-pending. The upstream tip is recorded as the second parent of merge
-`338f615`, so the synchronization point is Git ancestry, not a guessed
-date. `MOREmbedded/main` was `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+The current synchronization point is reported by `eda-agent fork-status
+--fetch --remote upstream`: `0bb1b3154cca6e58a517b23edee3d7a108f1c232`,
+merged by `63f7c16ab8dd7c703ba9a82ca17b7f06cee1e370`, with zero upstream
+commits pending at the latest fetch. The original checkpoint below was made
+at `main` / `origin/main` `52d3b8c8126109e12d2f08e0bc0a18d837874409`,
+when the point was `ee7589c9fc543d0b99bb142dc8ca12b618fffeab` via merge
+`338f615`. `MOREmbedded/main` was
+`032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
 
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
@@ -248,3 +250,19 @@ The AST inventory of public tool names found the same 14 donor-only
 spellings listed above, with no new name from the refreshed branch refs.
 These inventories establish file/name coverage, not full behavioral
 equivalence of every divergent commit.
+
+## Fresh large-branch review
+
+The live fork inventory again matched 62/62 default heads and 118/118 branch
+heads. `slatyb/main`'s seven feature commits have current routes for the
+calculator CLI and optional pcb-toolkit cross-check, fab vendor/stackup data,
+replacement-part evaluation, profile templates, fabrication-package readback
+and performance reporting. Their focused test slice passed 166/166.
+
+All seven tracked Python files in
+`yniantongtian-oss/feat/battery-ai-comsol-lab` match the donor after removing
+only the leading SPDX line from our copy. The optional lab tests could not
+collect in this environment because PyYAML and pandas are not installed;
+this is source parity, not a runtime qualification. The current distribution
+verifier additionally checks an sdist and wheel metadata, while retaining
+the donor's EasyEDA payload checks.
