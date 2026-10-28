@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## mooreaa loss tangent, 2026-10-28
+
+`pcb_build_stack` now accepts a finite nonnegative dielectric
+`loss_tangent`, passes it through `set_dielectric`, and checks the value
+in the physical-stack readback. This adapts the remaining write feature
+from `mooreaa/main` commit `ae97798`. Fifty-two focused tests pass.
+Pascal lint reports zero errors/warnings across 12 files; script `.163`
+loaded in AD26.11.1.5 and answered `app_ping`. HTTP MCP was restarted
+from main on 14701 while the TCP relay remains on 14700. Native write
+acceptance on a disposable board is still pending.
+
 ## mooreaa copper guard, 2026-10-28
 
 The ordinary-copper part of `mooreaa/main` commit `4f70c9c` is adapted

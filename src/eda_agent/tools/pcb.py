@@ -5695,6 +5695,8 @@ def register_pcb_tools(mcp):
         The dry run lists the first copper edits. Applying requires an open,
         saved board. Altium adds dielectric layers when copper is inserted;
         the second phase fits those layers to the requested dielectric plan.
+        A dielectric plan may include ``loss_tangent``; the final readback
+        checks it along with thickness, material and dielectric constant.
         A failed phase leaves the board open and unsaved for inspection or
         explicit discard. Save only after checking the returned stack.
         When copper layers are inserted or removed, the tool asks Altium's

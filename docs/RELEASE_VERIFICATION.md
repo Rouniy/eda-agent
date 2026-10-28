@@ -1,4 +1,7 @@
-# Release verification: 2026.10.28.162
+# Release verification: 2026.10.28.163
+
+Script `.163` passes an optional dielectric `loss_tangent` through
+`pcb_build_stack` and verifies it against the physical stack readback.
 
 Script `.162` makes inserted and edited copper ordinary rather than
 printed-electronics additive, and reports additive/resistivity flags in
@@ -94,7 +97,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.162` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.163` from `app_ping`.
 Current `app_ping` reports loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;

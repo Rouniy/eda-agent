@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.162';
+    SCRIPT_VERSION = '2026.10.28.163';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -65586,7 +65586,7 @@ Var
     DL : IPCB_DielectricLayer;
     EL : IPCB_ElectricalLayer;
     Op, Kind, RefName, Where, Name, NewName, ThickS, TypeS, ConstS, MatS, Items, ExpectedPath : String;
-    Extra, CopperNames : String;
+    Extra, CopperNames, LossS : String;
     Id : TLayer;
     Removed, Ordinary : Boolean;
     LS7 : IPCB_LayerStack_V7;
@@ -65602,6 +65602,7 @@ Begin
     TypeS := ExtractJsonValue(Params, 'type');
     ConstS := ExtractJsonValue(Params, 'constant');
     MatS := ExtractJsonValue(Params, 'material');
+    LossS := ExtractJsonValue(Params, 'loss_tangent');
     ExpectedPath := ExtractJsonValue(Params, 'board_path');
     If ExpectedPath = '' Then
     Begin
@@ -65803,6 +65804,7 @@ Begin
             If TypeS <> '' Then DL.DielectricType := StrToInt(TypeS);
             If MatS <> '' Then DL.DielectricMaterial := MatS;
             If ConstS <> '' Then DL.DielectricConstant := StrToFloatDef(ConstS, 1);
+            If LossS <> '' Then DL.DielectricLossTangent := StrToFloatDef(LossS, 0);
             If ThickS <> '' Then DL.DielectricHeight := MilsToCoordF(StrToFloatDef(ThickS, 0));
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);

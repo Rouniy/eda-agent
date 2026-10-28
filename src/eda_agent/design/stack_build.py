@@ -95,6 +95,14 @@ def normalise(plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if not math.isfinite(constant) or constant <= 0:
                     raise StackPlanError(f"layer {i}: constant must be finite and positive")
                 entry["constant"] = constant
+            if "loss_tangent" in raw:
+                try:
+                    loss_tangent = float(raw["loss_tangent"])
+                except (TypeError, ValueError):
+                    raise StackPlanError(f"layer {i}: loss_tangent must be a number") from None
+                if not math.isfinite(loss_tangent) or loss_tangent < 0:
+                    raise StackPlanError(f"layer {i}: loss_tangent must be finite and nonnegative")
+                entry["loss_tangent"] = loss_tangent
             if raw.get("material"):
                 entry["material"] = str(raw["material"])
         if name.upper() in names:
@@ -230,6 +238,8 @@ def dielectric_ops(readback: list[dict[str, Any]], plan: list[dict[str, Any]]) -
                   "type": str(w["type"]), "thickness_mils": f"{w['thickness_mils']:g}"}
             if "constant" in w:
                 op["constant"] = f"{w['constant']:g}"
+            if "loss_tangent" in w:
+                op["loss_tangent"] = f"{w['loss_tangent']:g}"
             if "material" in w:
                 op["material"] = w["material"]
             finals.append(op)
@@ -282,6 +292,10 @@ def check(readback: list[dict[str, Any]], plan: list[dict[str, Any]],
                                     or abs(float(g["constant"]) - p["constant"]) > 0.001):
                 out.append({"check": "constant", "order": i, "layer": p["name"],
                             "got": g.get("constant"), "expected": p["constant"]})
+            if "loss_tangent" in p and (g.get("loss_tangent") is None
+                                         or abs(float(g["loss_tangent"]) - p["loss_tangent"]) > 0.000001):
+                out.append({"check": "loss_tangent", "order": i, "layer": p["name"],
+                            "got": g.get("loss_tangent"), "expected": p["loss_tangent"]})
         elif inspect is not None:
             layer_id = ids.get(p["name"].casefold())
             if layer_id is None or (copper_type(layer_id) == "plane") != p.get("plane", False):

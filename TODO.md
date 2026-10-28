@@ -11,12 +11,12 @@
   were restarted; live net-class reads confirmed both option values.
   The branch's process-visibility doctor fix (`cbff5f9`) was integrated
   earlier with 75 focused tests and a live doctor pass.
-- [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: port its
-  loss-tangent stack write; verify the guarded
+- [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: verify the guarded
   `pcb_reset_stack_manager_model` on a copy with a visibly stale manager
-  model. Its ordinary-copper correction and additive/resistivity native
-  reads are integrated in script `.162`; a scratch-board stack mutation
-  still needs native acceptance. The saved-file reader detects additive
+  model. Its ordinary-copper correction, additive/resistivity native reads
+  and optional loss-tangent stack write are integrated in scripts `.162`
+  and `.163`; a scratch-board stack mutation still needs native acceptance.
+  The saved-file reader detects additive
   or non-conductive copper and stale manager thicknesses. The reset is
   deployed and completed an AD26.11 open/save/readback round trip on a
   disposable PcbDoc.

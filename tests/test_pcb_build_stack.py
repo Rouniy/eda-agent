@@ -188,6 +188,32 @@ def test_additive_and_nonconductive_copper_is_rejected():
                 ("additive", "Signal"), ("non_conductive", "Signal")]
 
 
+def test_loss_tangent_is_written_and_checked():
+    raw = [_cu("Top"), {**_d(4), "loss_tangent": 0.018}, _cu("Bottom")]
+    plan = stack_build.normalise(raw)
+    back = [
+        {"name": "Top", "kind": "copper", "thickness_mils": 1.378},
+        {"name": "Dielectric 1", "kind": "dielectric", "thickness_mils": 4,
+         "dielectric_type": 1, "constant": 4.0, "material": "FR-4",
+         "loss_tangent": 0.025},
+        {"name": "Bottom", "kind": "copper", "thickness_mils": 1.378},
+    ]
+    assert any(op.get("loss_tangent") == "0.018"
+               for op in stack_build.dielectric_ops(back, plan))
+    assert any(f["check"] == "loss_tangent"
+               for f in stack_build.check(back, plan))
+    back[1]["loss_tangent"] = 0.018
+    assert not any(f["check"] == "loss_tangent"
+                   for f in stack_build.check(back, plan))
+
+
+@pytest.mark.parametrize("value", [-0.1, float("nan"), float("inf"), "bad"])
+def test_invalid_loss_tangent_is_refused(value):
+    with pytest.raises(stack_build.StackPlanError, match="loss_tangent"):
+        stack_build.normalise([_cu("Top"), {**_d(4), "loss_tangent": value},
+                               _cu("Bottom")])
+
+
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, 0.0])
 def test_nonfinite_or_nonpositive_thickness_is_refused(bad):
     with pytest.raises(stack_build.StackPlanError, match="finite and positive"):
