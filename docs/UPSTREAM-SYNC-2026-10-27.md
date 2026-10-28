@@ -5,9 +5,10 @@
 The upstream `pcb_pours_at` port passed a populated-board native check:
 on CW308 baseboard its polygon at `(6500,4000)` mil and two overlapping
 GND pours were reported, while `(0,0)` returned none. Both it and
-`pcb_board_options` refused a wrong expected board path. The latter read
-the board's current options; its write path still awaits disposable-board
-acceptance. See `CURRENT-STATE.md` for exact results.
+`pcb_board_options` refused a wrong expected board path. On a disposable
+copy, its polygon-name template write from 0 to 1 survived exact save,
+close and reopen; the original board hash stayed unchanged. See
+`CURRENT-STATE.md` for exact results.
 
 ## 2026-10-28 checkpoint follow-up
 

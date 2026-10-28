@@ -10,8 +10,15 @@ examined seven and found that pour plus `GNDBOT` and `GNDTOP`. At `(0,0)`
 it found none. An incorrect expected board path was refused. The board
 options read returned `polygon_name_template=0` and
 `automatic_split_planes=true`; its wrong-path read was also refused.
-The PcbDoc was closed without saving, with `discarded=false`. A native
-write/readback of the polygon-name template remains unqualified.
+The original PcbDoc was closed without saving, with `discarded=false`.
+On a standalone temporary copy of the same board,
+`polygon_name_template` changed from 0 to 1, read back immediately,
+and survived `app_save_document` (which observed a disk write), close,
+and reopen. The original board SHA-256 remained
+`c4e1c9ab5b3a48931e2b57e1229ee9b652438579e2656d51c645c467f428cf85`.
+The copy was closed after the persisted readback. This qualifies the
+exact-board write on AD26.11.1.5; it does not assign meaning to the
+numeric template choices beyond Altium's stored value.
 
 ## Fresh DRC active versus waived totals, 2026-10-28
 
