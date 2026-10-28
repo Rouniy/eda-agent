@@ -1,10 +1,19 @@
-# Release verification: 2026.10.28.155
+# Release verification: 2026.10.28.156
 
-Expect `altium_script_version` = `2026.10.28.155` from `app_ping`.
-Current `app_ping` reports loaded and bundled `2026.10.28.155` on
+Expect `altium_script_version` = `2026.10.28.156` from `app_ping`.
+Current `app_ping` reports loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
 the copy was closed without saving. Earlier checkpoints follow.
+
+Script `.156` adds component-scoped generic writes for `DatabaseTableName`,
+`UseDBTableName`, `UseLibraryName`, and selection of an existing
+`FootprintModel`. On a disposable `RQA1` SchDoc, one batch write read back
+`QA_TABLE`, `true`, `false`, and `CR2012-0805` before and after save/reopen.
+Selecting an absent footprint reported `failed=["FootprintModel"]` and left
+the model unchanged; the second edit was closed with discard. Direct
+`LibraryIdentifier` writes remain excluded because Altium derives that
+identity. The existing dedicated footprint edit handles model renaming.
 
 Script `.155` requires a focused PcbDoc for per-via solder-mask changes.
 With `Dispatcher.pas` focused the command returned `WRONG_DOCUMENT_FOCUSED`.

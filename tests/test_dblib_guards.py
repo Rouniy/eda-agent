@@ -185,3 +185,18 @@ def test_a_parts_database_link_is_readable_and_never_silently_empty():
     assert "(Impl <> Nil) And Impl.IsCurrent" in branch
     assert "Result := Impl.ModelName" in branch
     assert "NotePropertyDiag('unreadable', PropName)" in branch
+
+
+def test_generic_dblib_edits_are_component_scoped_and_use_verified_footprint_choice():
+    from pathlib import Path
+
+    code = (Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Generic.pas").read_text(
+        encoding="utf-8", errors="replace")
+    body = code.split("Function SetSchProperty(", 1)[1].split("Function FilterMatches(", 1)[0]
+    for field in ("DatabaseTableName", "UseDBTableName", "UseLibraryName", "FootprintModel"):
+        branch = body.split(f"Else If PropName = '{field}' Then", 1)[1].split("Else If PropName =", 1)[0]
+        assert "Obj.ObjectId = eSchComponent" in branch
+        assert "Else Matched := False" in branch
+    assert "ChooseFootprintModel(Comp, Value" in body
+    assert "If FootprintChoice <> 1 Then WroteOK := False" in body
+    assert "Obj.LibraryIdentifier :=" not in body

@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Generic DbLib field writes, 2026-10-28
+
+Script `.156` carries the useful `andrzej-sikora-elte/elte` component
+property writes for `DatabaseTableName`, `UseDBTableName`, and
+`UseLibraryName`, plus a verified choice of an existing `FootprintModel`.
+The 12-unit Pascal lint/build passed without findings. A disposable
+`RQA1` schematic read back `QA_TABLE`, `true`, `false`, and its current
+footprint after a generic batch modify and after exact save/reopen.
+An absent footprint was reported as a failed property and left the
+current model unchanged. Direct `LibraryIdentifier` assignment remains
+excluded because Altium derives it; the dedicated footprint edit can
+rename a model and update its links.
+
 ## Focused PCB guard, 2026-10-28
 
 Script `.155` makes `pcb_set_via_soldermask_relief` require a focused

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.155';
+    SCRIPT_VERSION = '2026.10.28.156';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -68264,6 +68264,8 @@ Var
       a reader at a spelling mistake that is not there. }
     WroteOK : Boolean;
     SwapPin : ISch_Pin;
+    FootprintBefore, FootprintAfter : String;
+    FootprintChoice : Integer;
 Begin
     { Measured on a live document: callers using modify_objects /             }
     { batch_modify                                                            }
@@ -68429,6 +68431,40 @@ Begin
         Else If PropName = 'DesignItemId' Then
         Begin
         If Obj.ObjectId = eSchComponent Then Begin Comp := Obj; Comp.DesignItemId := Value; End
+            Else Matched := False;
+        End
+        { DbLib identity fields are component-only. LibraryIdentifier is
+          derived by Altium and is intentionally not assigned here. }
+        Else If PropName = 'DatabaseTableName' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin Comp := Obj; Comp.DatabaseTableName := Value; End
+            Else Matched := False;
+        End
+        Else If PropName = 'UseDBTableName' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin Comp := Obj; Comp.UseDBTableName := StrToBool(Value); End
+            Else Matched := False;
+        End
+        Else If PropName = 'UseLibraryName' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin Comp := Obj; Comp.UseLibraryName := StrToBool(Value); End
+            Else Matched := False;
+        End
+        { Choose an existing PCBLIB implementation and verify its current
+          flag. An arbitrary model rename would leave its datafile links
+          and the component's library identity inconsistent. }
+        Else If PropName = 'FootprintModel' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                FootprintChoice := ChooseFootprintModel(Comp, Value,
+                    FootprintBefore, FootprintAfter);
+                If FootprintChoice <> 1 Then WroteOK := False;
+            End
             Else Matched := False;
         End
         // `Description` is the natural name (matches get_component_info /

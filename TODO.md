@@ -2,10 +2,13 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
-- [ ] Reconcile `andrzej-sikora-elte/elte` generic DbLib link-field and
+- [x] Reconcile `andrzej-sikora-elte/elte` generic DbLib link-field and
   `FootprintModel` writes with the current dedicated relink and footprint
-  operations. Preserve identity and readback across save/reopen on a
-  disposable component; the fork's raw setters are not yet in `main`.
+  operations. Script `.156` adds component-scoped DbLib field writes and
+  verified selection of an existing model. A disposable component retained
+  the values across save/reopen. The dedicated footprint edit handles a
+  model rename; Altium derives `LibraryIdentifier`, so a direct assignment
+  is not carried over.
 - [ ] Continue behavior-level comparison of the 54 nonancestor cached
   branch refs from the 62-default/117-branch live audit. Divergent Git
   history is not a missing-feature count; record each distinct capability

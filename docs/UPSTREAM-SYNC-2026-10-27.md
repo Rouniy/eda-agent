@@ -17,11 +17,11 @@ The `vincent-himpe/feature/board-via-pad-properties` and
 `vincent-himpe/fix/filter-allobjects-walks` changes are present in the
 current Pascal sources and their regression tests. The `cad435` managed
 placement dirty-document fix is also present. The `andrzej-sikora-elte/elte`
-component DbLib flags and footprint-model *reads* are present; its generic
-property *writes* are still a behavioral difference. The dedicated DbLib
-relink and footprint-model operations cover those changes through separate
-verified paths. This source-level comparison does not prove complete
-behavioral equivalence of all divergent branches.
+component DbLib flags and footprint-model reads were present; script `.156`
+now adds the useful generic writes and passed save/reopen acceptance on a
+disposable component. See `RELEASE_VERIFICATION.md` for the field values.
+This source-level comparison does not prove complete behavioral equivalence
+of all divergent branches.
 
 ## 2026-10-28 live refresh and plane-read repair
 
