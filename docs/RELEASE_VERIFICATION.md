@@ -1,4 +1,12 @@
-# Release verification: 2026.10.28.156
+# Release verification: 2026.10.28.157
+
+Script `.157` accepts the `rabihnd/integration` schematic object aliases
+`eText` and `eTextString` as `eLabel` in the shared type resolver. This
+enables the same names for query, selection and object creation in a
+SchLib. The 12-unit Pascal lint/build reported zero findings, and 38
+focused source tests passed. `eda-agent relaunch --restart` loaded `.157`
+in the existing Altium session; the bridge answered again with two queued
+calls preserved. Native object readback remains a separate step.
 
 Checkout `3f26259` was packaged into an isolated wheel and a Windows
 one-file executable on 2026-10-28. The executable reported `eda-agent
@@ -20,7 +28,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.156` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.157` from `app_ping`.
 Current `app_ping` reports loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;

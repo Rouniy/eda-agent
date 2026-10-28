@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.156';
+    SCRIPT_VERSION = '2026.10.28.157';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -66294,7 +66294,9 @@ Begin
     Else If N = 'parameter'       Then Result := eParameter
     Else If N = 'parameterset'    Then Result := eParameterSet
     Else If N = 'pin'             Then Result := ePin
-    Else If N = 'label'           Then Result := eLabel
+    { Legacy schematic text names refer to the same eLabel primitive. }
+    Else If (N = 'label') Or (N = 'text') Or (N = 'textstring')
+                               Then Result := eLabel
     Else If N = 'line'            Then Result := eLine
     Else If N = 'polyline'        Then Result := ePolyline
     Else If N = 'rectangle'       Then Result := eRectangle

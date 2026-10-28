@@ -76,7 +76,9 @@ Begin
     Else If N = 'parameter'       Then Result := eParameter
     Else If N = 'parameterset'    Then Result := eParameterSet
     Else If N = 'pin'             Then Result := ePin
-    Else If N = 'label'           Then Result := eLabel
+    { Legacy schematic text names refer to the same eLabel primitive. }
+    Else If (N = 'label') Or (N = 'text') Or (N = 'textstring')
+                               Then Result := eLabel
     Else If N = 'line'            Then Result := eLine
     Else If N = 'polyline'        Then Result := ePolyline
     Else If N = 'rectangle'       Then Result := eRectangle

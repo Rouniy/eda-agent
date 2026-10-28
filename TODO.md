@@ -2,6 +2,9 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Port `rabihnd/integration`'s `eText` and `eTextString` aliases to
+  the shared schematic object resolver. Script `.157` passed Pascal
+  lint/build and 38 focused tests, then loaded in the live Altium bridge.
 - [ ] Recheck the `mooreaa` Rosen `pcb_get_mech_layer_names` dirty-on-read
   report on AD25. It stayed clean on a disposable CW308 copy in AD26.11,
   with unchanged SHA-256, but that does not settle the donor's AD25 case.

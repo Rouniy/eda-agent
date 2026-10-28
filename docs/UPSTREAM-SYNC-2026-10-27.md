@@ -5,6 +5,14 @@ main` returned `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`.
 `git merge-base main upstream/main` returned that exact commit and
 `git rev-list --count main..upstream/main` returned zero.
 
+On 2026-10-28 the older `rabihnd/integration` multipart-symbol patch was
+checked again. Its `eText` and `eTextString` names for schematic labels
+were absent from the current resolver. Both now map to `eLabel` in source
+`.157`, with a clean 12-unit Pascal build, 38 focused tests and a live
+bridge reload. Its force-save-before-`lib_get_components` behavior was not
+ported: the current read reports saved and unsaved symbol inventories
+separately and must not save a user's edited library as a side effect.
+
 ## 2026-10-28 refresh after script `.155`
 
 `python -m eda_agent fork-status --fetch --cached-forks
