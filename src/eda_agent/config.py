@@ -161,11 +161,12 @@ def write_workspace_pointer(workspace_dir: Path) -> None:
         )
         return
 
-    # Resolve the Windows ANSI codec before opening the destination.
-    # ``Path.write_text`` creates the file before the codec lookup fails on
-    # non-Windows hosts, otherwise leaving a misleading empty pointer behind.
+    # Resolve the selected codec before opening the destination. Under WSL
+    # this is the single-byte fallback, not Windows-only ``mbcs``.
+    # ``Path.write_text`` creates the file before codec lookup fails.
     try:
-        "".encode("mbcs")
+        encoding = _pointer_encoding()
+        "".encode(encoding)
     except LookupError:
         return
 
@@ -174,7 +175,7 @@ def write_workspace_pointer(workspace_dir: Path) -> None:
         path_str = _windows_path_str(workspace_dir)
         if not path_str.endswith("\\"):
             path_str += "\\"
-        target.write_text(path_str, encoding=_pointer_encoding())
+        target.write_text(path_str, encoding=encoding)
     except (OSError, PermissionError, UnicodeEncodeError, LookupError):
         pass
 

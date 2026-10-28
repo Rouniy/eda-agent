@@ -687,3 +687,15 @@ DbLib getters absent from a fresh generator render. The generator now keeps
 `UseDBTableName` and `UseLibraryName` in the block despite their overlap
 with the handwritten property handler, and a local parity test guards the
 deployed block. No Pascal code or loaded script changed in this replay.
+
+## WSL pointer write recovered from delivery-fork review
+
+Reviewing `yniantongtian-oss/feat/astra-verify-boost` commit `042abf6`
+exposed a cross-platform regression in the current `write_workspace_pointer`:
+it selected a non-Windows fallback codec but first insisted that Windows-only
+`mbcs` exist. On WSL that returned without writing any pointer. The writer
+now validates and uses the same selected codec. A scratch-pointer test checks
+the missing-codec path leaves no empty file, while the WSL readback test
+checks the Windows-form path and fallback encoding. The pointer, WSL and
+Unicode transport slice passed 18/18 on Windows. A real WSL-to-Altium session
+has not yet been run for this change.

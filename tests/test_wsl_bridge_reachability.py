@@ -188,6 +188,9 @@ def test_pointer_write_survives_a_non_windows_host(monkeypatch, tmp_path):
     target = tmp_path / "workspace-path.txt"
     monkeypatch.setenv(cfg.WORKSPACE_POINTER_ENV, str(target))
     monkeypatch.setattr(cfg, "_under_wsl", lambda: True)
+    # Simulate the codec choice on a host where ``mbcs`` does not exist.
+    # The writer must validate the chosen fallback, not ``mbcs`` itself.
+    monkeypatch.setattr(cfg, "_pointer_encoding", lambda: "cp1252")
     monkeypatch.setattr(
         cfg, "_windows_path_str",
         lambda p: "C:\\ProgramData\\eda-agent\\workspace")

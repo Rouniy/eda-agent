@@ -16,12 +16,13 @@ overridable so tests can still exercise the writer against scratch.
 
 from __future__ import annotations
 
-import codecs
 from pathlib import Path
 
+from eda_agent import config as config_mod
 from eda_agent.config import (
     WORKSPACE_POINTER_ENV,
     WORKSPACE_POINTER_FILE,
+    _pointer_encoding,
     workspace_pointer_file,
     write_workspace_pointer,
 )
@@ -64,19 +65,23 @@ def test_pointer_override_redirects_the_write(tmp_path, monkeypatch):
     workspace = tmp_path / "ws"
     write_workspace_pointer(workspace)
 
-    try:
-        codecs.lookup("mbcs")
-    except LookupError:
-        assert not scratch.exists(), (
-            "a non-Windows run must not leave an empty pointer file"
-        )
-        return
-
     assert scratch.exists()
-    written = scratch.read_text(encoding="mbcs").strip()
+    written = scratch.read_text(encoding=_pointer_encoding()).strip()
     assert written == str(workspace) + "\\", (
         "pointer must hold the workspace path with a trailing separator"
     )
+
+
+def test_unavailable_selected_codec_does_not_create_an_empty_pointer(
+    tmp_path, monkeypatch,
+):
+    scratch = tmp_path / "pointer" / "workspace-path.txt"
+    monkeypatch.setenv(WORKSPACE_POINTER_ENV, str(scratch))
+    monkeypatch.setattr(config_mod, "_pointer_encoding", lambda: "missing-codec")
+
+    write_workspace_pointer(tmp_path / "ws")
+
+    assert not scratch.exists()
 
 
 def test_pointer_path_defaults_to_the_global_file(monkeypatch):
