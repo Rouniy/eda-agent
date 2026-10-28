@@ -5,6 +5,17 @@ main` returned `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`.
 `git merge-base main upstream/main` returned that exact commit and
 `git rev-list --count main..upstream/main` returned zero.
 
+On 2026-10-28 `rabihnd/integration`'s multipart rectangular IC layout
+arguments were integrated into the existing symbol generator and
+`lib_create_multipart_symbol`, with `lib_create_ic_symbol(parts=...)` as a
+convenient entry point. It accepts blank group rows, hidden pins and
+custom pin length, spacing, character width and body padding. A duplicate
+package pin across parts is rejected before the SchLib is touched. In a
+disposable AD26.11 SchLib, a two-part symbol was created with five pins;
+Altium read back owner parts 1/2, the hidden pin and the custom gap. The
+same pins survived save, close and reopen. Twenty-nine focused tests pass.
+This brings the live donor-only argument queue from 20 to 15.
+
 On 2026-10-28 the older `rabihnd/integration` multipart-symbol patch was
 checked again. Its `eTextString` name for schematic labels was absent
 from the current resolver. Source `.157` initially copied `eText` too,

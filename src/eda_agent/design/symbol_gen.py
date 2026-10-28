@@ -49,10 +49,14 @@ def _snap(v: float) -> int:
 
 
 def generate_ic_symbol(
-    left_pins: list[dict],
-    right_pins: list[dict],
+    left_pins: list[dict | None],
+    right_pins: list[dict | None],
     *,
     min_inner_width: int = _MIN_INNER,
+    pin_length: int = PIN_LENGTH,
+    pin_spacing: int = PIN_PITCH,
+    char_width: int = _CHAR_W,
+    body_padding: int = _NAME_GAP // 2,
 ) -> SymbolGeometry:
     """Lay out an IC symbol from left/right pin groups.
 
@@ -63,7 +67,9 @@ def generate_ic_symbol(
 
     Returns a :class:`SymbolGeometry`. Raises if both sides are empty.
     """
-    if not left_pins and not right_pins:
+    if pin_length <= 0 or pin_spacing <= 0 or char_width <= 0 or body_padding < 0:
+        raise ValueError("pin_length, pin_spacing and char_width must be positive; body_padding must be nonnegative")
+    if not any(p is not None for p in (*left_pins, *right_pins)):
         raise ValueError("need at least one pin on a side")
 
     # Every pin needs a designator, and designators must be unique across
@@ -71,6 +77,10 @@ def generate_ic_symbol(
     # invalid component that ERC and the netlist would mis-resolve.
     designators: list[str] = []
     for p in (*left_pins, *right_pins):
+        if p is None:
+            continue
+        if not isinstance(p, dict):
+            raise ValueError("each pin row must be an object or null separator")
         d = str(p.get("designator", "")).strip()
         if not d:
             raise ValueError(
@@ -81,45 +91,51 @@ def generate_ic_symbol(
     if dupes:
         raise ValueError(f"duplicate pin designator(s): {dupes}")
 
-    max_l_name = max((len(str(p.get("name", ""))) for p in left_pins),
+    max_l_name = max((len(str(p.get("name", ""))) for p in left_pins if p is not None),
                      default=0)
-    max_r_name = max((len(str(p.get("name", ""))) for p in right_pins),
+    max_r_name = max((len(str(p.get("name", ""))) for p in right_pins if p is not None),
                      default=0)
-    inner = (max_l_name + max_r_name) * _CHAR_W + _NAME_GAP
+    inner = (max_l_name + max_r_name) * char_width + 2 * body_padding
     inner = max(min_inner_width, _snap(inner))
-    body_x_left = PIN_LENGTH                 # left pin bodies sit here
-    body_x_right = PIN_LENGTH + inner        # right pin bodies sit here
+    body_x_left = pin_length                 # left pin bodies sit here
+    body_x_right = pin_length + inner        # right pin bodies sit here
 
     pins: list[dict] = []
     # Left column: pin points LEFT (rotation 180 -> orientation 2), so the
     # wire-end = Location.X - length lands at x=0 for the top-left pin.
     for i, p in enumerate(left_pins):
-        y = -i * PIN_PITCH
+        if p is None:
+            continue
+        y = -i * pin_spacing
         pins.append({
             "designator": str(p.get("designator", "")),
             "name": str(p.get("name", "")),
-            "x": body_x_left, "y": y, "length": PIN_LENGTH, "rotation": 180,
+            "x": body_x_left, "y": y, "length": pin_length, "rotation": 180,
             "electrical_type": p.get("electrical_type", "passive"),
+            "hidden": bool(p.get("hidden", False)),
         })
     # Right column: pin points RIGHT (rotation 0 -> orientation 0), wire-end =
     # Location.X + length.
     for j, p in enumerate(right_pins):
-        y = -j * PIN_PITCH
+        if p is None:
+            continue
+        y = -j * pin_spacing
         pins.append({
             "designator": str(p.get("designator", "")),
             "name": str(p.get("name", "")),
-            "x": body_x_right, "y": y, "length": PIN_LENGTH, "rotation": 0,
+            "x": body_x_right, "y": y, "length": pin_length, "rotation": 0,
             "electrical_type": p.get("electrical_type", "passive"),
+            "hidden": bool(p.get("hidden", False)),
         })
 
     rows = max(len(left_pins), len(right_pins))
-    body_bottom = -(rows - 1) * PIN_PITCH - PIN_PITCH   # one row of margin
+    body_bottom = -rows * pin_spacing   # one row of margin
     body = {
-        "x1": body_x_left, "y1": PIN_PITCH,            # top edge above row 0
+        "x1": body_x_left, "y1": pin_spacing,            # top edge above row 0
         "x2": body_x_right, "y2": body_bottom,
     }
-    width = body_x_right + PIN_LENGTH                  # incl. right pin stub
-    height = PIN_PITCH - body_bottom
+    width = body_x_right + pin_length                  # incl. right pin stub
+    height = pin_spacing - body_bottom
     return SymbolGeometry(pins=tuple(pins), body=body,
                           width_mils=width, height_mils=height)
 

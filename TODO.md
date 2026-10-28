@@ -2,6 +2,14 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Integrate `rabihnd/integration`'s `lib_create_ic_symbol(parts=...)`
+  rectangular multi-part layout into the existing multipart tool. The
+  shared generator now supports configurable pin length, row spacing,
+  character width, body padding, hidden pins and null gap rows. It rejects
+  duplicate package pin numbers across parts before editing the library.
+  Native AD26.11 readback of a disposable two-part SchLib confirmed five
+  pins, owner parts 1/2, a hidden pin and a 300-mil row gap; save/reopen
+  retained all five. Twenty-nine focused tests pass.
 - [x] Expose `vincent-himpe`'s `kinds` filter on
   `lib_get_footprint_primitives`. The current Pascal handler already
   supported filtered native walks, but the Python tool omitted the public
@@ -56,7 +64,7 @@
   branch refs from the 62-default/117-branch live audit. Divergent Git
   history is not a missing-feature count; record each distinct capability
   against current source and native acceptance where it changes Altium.
-- [ ] Review the other 20 donor-only tool argument pairs from the
+- [ ] Review the other 15 donor-only tool argument pairs from the
   2026-10-28 signature scan. Separate renamed interfaces and intentional
   policy choices from native capabilities still hidden by Python.
 

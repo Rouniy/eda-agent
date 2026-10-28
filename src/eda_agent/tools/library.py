@@ -1541,12 +1541,17 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_create_ic_symbol(
         name: str,
-        left_pins: list[dict[str, Any]],
-        right_pins: list[dict[str, Any]],
+        left_pins: Optional[list[dict[str, Any]]] = None,
+        right_pins: Optional[list[dict[str, Any]]] = None,
         designator_prefix: str = "U",
         description: str = "",
         body: str = "auto",
         invert_on_top: bool = False,
+        parts: Optional[list[dict[str, Any]]] = None,
+        pin_length: Optional[int] = None,
+        pin_spacing: Optional[int] = None,
+        char_width: Optional[int] = None,
+        body_padding: Optional[int] = None,
     ) -> dict[str, Any]:
         """Create a complete IC symbol (body plus every pin) in one call.
 
@@ -1581,6 +1586,12 @@ def register_library_tools(mcp):
             body: "auto" (triangle for amplifiers, else rectangle),
                 "amplifier" or "rectangle".
             invert_on_top: triangle only; put IN- above IN+.
+            parts: Optional multi-part rectangular chip. Each part has
+                left_pins/right_pins; a null row adds a visual group gap.
+                Supply this instead of the single-part left/right lists.
+            pin_length / pin_spacing / char_width / body_padding: Mils for
+                rectangular layouts. Multi-part defaults are 200/100/55/200;
+                single-part defaults preserve the existing layout.
 
         Returns:
             Dict with the symbol name, pin count, ``body`` drawn, body
@@ -1594,10 +1605,27 @@ def register_library_tools(mcp):
         if wanted not in ("auto", "amplifier", "rectangle"):
             return {"ok": False, "reason":
                     "body must be 'auto', 'amplifier' or 'rectangle'"}
-        all_pins = [*left_pins, *right_pins]
+        if parts is not None:
+            if left_pins or right_pins or wanted == "amplifier" or invert_on_top:
+                return {"ok": False, "reason":
+                        "parts requires a rectangular body and no single-part pins"}
+            return await lib_create_multipart_symbol(
+                name=name, parts=parts, designator_prefix=designator_prefix,
+                description=description,
+                pin_length=200 if pin_length is None else pin_length,
+                pin_spacing=100 if pin_spacing is None else pin_spacing,
+                char_width=55 if char_width is None else char_width,
+                body_padding=200 if body_padding is None else body_padding)
+        left_pins = left_pins or []
+        right_pins = right_pins or []
+        all_pins = [pin for pin in (*left_pins, *right_pins) if pin is not None]
         if wanted == "amplifier" or (
                 wanted == "auto" and looks_like_amplifier(all_pins,
                                                           description)):
+            if any(value is not None for value in
+                   (pin_length, pin_spacing, char_width, body_padding)):
+                return {"ok": False, "reason":
+                        "rectangular layout dimensions do not apply to an amplifier"}
             try:
                 amp = generate_amplifier_symbol(all_pins,
                                                 invert_on_top=invert_on_top)
@@ -1612,7 +1640,12 @@ def register_library_tools(mcp):
         # The generator is a pure function and raises on bad geometry;
         # at the tool boundary that becomes a refusal, not a stack trace.
         try:
-            geom = generate_ic_symbol(left_pins, right_pins)
+            geom = generate_ic_symbol(
+                left_pins, right_pins,
+                pin_length=200 if pin_length is None else pin_length,
+                pin_spacing=100 if pin_spacing is None else pin_spacing,
+                char_width=70 if char_width is None else char_width,
+                body_padding=150 if body_padding is None else body_padding)
         except ValueError as e:
             return {"ok": False, "reason": str(e)}
 
@@ -1674,11 +1707,17 @@ def register_library_tools(mcp):
         designator_prefix: str = "U",
         description: str = "",
         library_path: str = "",
+        pin_length: int = 200,
+        pin_spacing: int = 100,
+        char_width: int = 70,
+        body_padding: int = 150,
     ) -> dict[str, Any]:
         """Create a complete multipart SchLib symbol in one MCP call.
 
         Each part contains ``name``, ``left_pins`` and ``right_pins`` in
-        top-to-bottom order. Pins are assigned OwnerPartId 1..N. Optional
+        top-to-bottom order. A null row inserts a blank grouping row. The
+        pin length, row spacing, character width and body padding are
+        configurable in mils. Pins are assigned OwnerPartId 1..N. Optional
         ``shared_pins`` are added with OwnerPartId 0 and therefore appear on
         every part (normally supply pins). Every part receives its own body
         rectangle and becomes independently visible in Altium.
@@ -1700,18 +1739,39 @@ def register_library_tools(mcp):
             }
 
         geometries = []
+        used_designators: set[str] = set()
         for part_id, part in enumerate(parts, 1):
-            left = list(part.get("left_pins", []))
-            right = list(part.get("right_pins", []))
+            if not isinstance(part, dict):
+                return {"ok": False, "reason": f"part {part_id} must be an object"}
+            left = list(part.get("left_pins") or [])
+            right = list(part.get("right_pins") or [])
             if not left and not right:
                 return {"ok": False, "reason": f"part {part_id} has no pins"}
-            geometries.append(generate_ic_symbol(left, right))
+            try:
+                geom = generate_ic_symbol(
+                    left, right, pin_length=pin_length,
+                    pin_spacing=pin_spacing, char_width=char_width,
+                    body_padding=body_padding)
+            except ValueError as exc:
+                return {"ok": False, "reason": f"part {part_id}: {exc}"}
+            for pin in geom.pins:
+                designator = str(pin["designator"]).casefold()
+                if designator in used_designators:
+                    return {"ok": False, "reason":
+                            f"duplicate package pin designator: {pin['designator']}"}
+                used_designators.add(designator)
+            geometries.append(geom)
         for pin in shared_pins or []:
-            if not str(pin.get("designator", "")).strip():
+            designator = str(pin.get("designator", "")).strip()
+            if not designator:
                 return {
                     "ok": False,
                     "reason": "every shared pin requires a designator",
                 }
+            if designator.casefold() in used_designators:
+                return {"ok": False, "reason":
+                        f"duplicate package pin designator: {designator}"}
+            used_designators.add(designator.casefold())
 
         bridge = get_bridge()
         if library_path:
@@ -1751,8 +1811,6 @@ def register_library_tools(mcp):
         pin_ops: list[str] = []
         part_summary: list[dict[str, Any]] = []
         for part_id, (part, geom) in enumerate(zip(parts, geometries), 1):
-            left = list(part.get("left_pins", []))
-            right = list(part.get("right_pins", []))
             for pin in geom.pins:
                 pin_ops.append(";".join([
                     f"designator={pin['designator']}",
@@ -1761,7 +1819,8 @@ def register_library_tools(mcp):
                     f"length={pin['length']}",
                     f"rotation={pin['rotation']}",
                     f"electrical_type={pin.get('electrical_type', 'passive')}",
-                    "hidden=false", f"owner_part_id={part_id}",
+                    f"hidden={'true' if pin.get('hidden') else 'false'}",
+                    f"owner_part_id={part_id}",
                 ]))
             part_summary.append({
                 "part_id": part_id,
@@ -1785,15 +1844,8 @@ def register_library_tools(mcp):
                 "owner_part_id=0",
             ]))
 
-        pins_result = await bridge.send_command_async(
-            "library.add_pins", {"pins": "~~".join(pin_ops)}
-        )
-        if (not isinstance(pins_result, dict) or
-                pins_result.get("added") != len(pin_ops) or
-                pins_result.get("failed") != 0):
-            return {"ok": False, "partial": True, "stage": "add_pins",
-                    "symbol": name, "expected_pins": len(pin_ops),
-                    "pins_result": pins_result, "create": created}
+        # Draw the solid bodies before the pins. Altium uses insertion order
+        # as schematic z-order; a rectangle added last covers pin names.
         rectangles = []
         for part_id, geom in enumerate(geometries, 1):
             selected = await bridge.send_command_async(
@@ -1826,6 +1878,16 @@ def register_library_tools(mcp):
                 selected.get("component") != name):
             return {"ok": False, "partial": True, "stage": "restore_active_part",
                     "symbol": name, "selection": selected,
+                    "rectangle_results": rectangles}
+        pins_result = await bridge.send_command_async(
+            "library.add_pins", {"pins": "~~".join(pin_ops)}
+        )
+        if (not isinstance(pins_result, dict) or
+                pins_result.get("added") != len(pin_ops) or
+                pins_result.get("failed") != 0):
+            return {"ok": False, "partial": True, "stage": "add_pins",
+                    "symbol": name, "expected_pins": len(pin_ops),
+                    "pins_result": pins_result, "create": created,
                     "rectangle_results": rectangles}
         return {
             "ok": True,
