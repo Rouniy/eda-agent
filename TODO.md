@@ -2,6 +2,13 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Expose `vincent-himpe`'s `kinds` filter on
+  `lib_get_footprint_primitives`. The current Pascal handler already
+  supported filtered native walks, but the Python tool omitted the public
+  argument. On a disposable PcbLib in AD26.11, `track` returned one
+  track, `via` returned none, and `track|via` returned the track; close
+  with discard left the original library untouched. Fifteen focused
+  tests passed with one optional skip.
 - [x] Port `rabihnd/integration`'s multipart pin-batch default owner as
   optional `default_owner_part_id`, preserving current-part semantics
   when omitted. Native disposable SchLib readback and save/reopen retained
@@ -43,6 +50,9 @@
   branch refs from the 62-default/117-branch live audit. Divergent Git
   history is not a missing-feature count; record each distinct capability
   against current source and native acceptance where it changes Altium.
+- [ ] Review the other 23 donor-only tool argument pairs from the
+  2026-10-28 signature scan. Separate renamed interfaces and intentional
+  policy choices from native capabilities still hidden by Python.
 
 ## STEP-body refresh after fork import, 2026-10-28
 

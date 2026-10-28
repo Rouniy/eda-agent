@@ -7852,6 +7852,7 @@ def register_library_tools(mcp):
     async def lib_get_footprint_primitives(
         footprint_name: str,
         library_path: str = "",
+        kinds: str = "",
     ) -> dict[str, Any]:
         """Every non-pad primitive of one PcbLib footprint, with where it is.
 
@@ -7868,9 +7869,12 @@ def register_library_tools(mcp):
             footprint_name: The footprint name in the library.
             library_path: Optional .PcbLib path; defaults to the focused
                 library.
+            kinds: Optional ``|`` separated kinds: ``track``, ``arc``,
+                ``region``, ``fill``, ``text``, ``via``, ``body``. Empty
+                reads all; a selection skips the other native walks.
 
         Returns:
-            {name, library_path, height_mm, bodies (a count),
+            {name, library_path, kinds, height_mm, bodies (a count),
             body_layers (the layer of each body), body_models (source file,
             model type, rotation, overall height and standoff), tracks
             [{layer, layer_id, x1, y1, x2, y2, width}], arcs [{layer,
@@ -7881,10 +7885,19 @@ def register_library_tools(mcp):
             y2}], vias [{x, y, diameter, hole}]}. A text's box is
             Altium's cached one and can lag an edit made this session.
         """
+        selected = [kind.strip().lower() for kind in kinds.split("|")] if kinds.strip() else []
+        allowed = {"track", "arc", "region", "fill", "text", "via", "body"}
+        invalid = [kind for kind in selected if kind not in allowed]
+        if invalid:
+            return {"ok": False, "reason": "unknown footprint primitive kind",
+                    "invalid_kinds": invalid, "allowed_kinds": sorted(allowed)}
         bridge = get_bridge()
+        params = {"footprint_name": footprint_name, "library_path": library_path}
+        if selected:
+            params["kinds"] = "|".join(dict.fromkeys(selected))
         reply = await bridge.send_command_async(
             "library.get_footprint_primitives",
-            {"footprint_name": footprint_name, "library_path": library_path})
+            params)
         if library_path and (not isinstance(reply, dict)
                              or not isinstance(reply.get("library_path"), str)
                              or reply["library_path"].casefold() != library_path.casefold()

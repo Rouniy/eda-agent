@@ -89,6 +89,21 @@ skip. Live `eda-agent update --status --fetch
 --from upstream --json` reported the remote, checkout, editable package,
 main script folder and compiled `.160` session current.
 
+Comparing public async function argument names in changed tool modules
+across 112 cached fork refs found 24 distinct donor-only name/argument
+pairs. The list includes renamed tools such as `obj_zoom_to_xy` and
+policy differences such as `lib_rotate_footprint(save)`; the other
+candidate arguments still require behavior review.
+One functional omission was `vincent-himpe`'s `kinds` on
+`lib_get_footprint_primitives`: the current Pascal handler already used
+that field to skip unrequested filtered walks, but Python did not expose
+it. The public tool now accepts validated `track|arc|region|fill|text|via|body`
+selections. A disposable library with one added overlay track returned
+one track for the full read and `kinds=track`, zero for `kinds=via`, and
+one for `kinds=track|via`. The exact library path matched each reply;
+closing with discard left the scratch source unchanged. Fifteen focused
+tests passed with one optional skip.
+
 ## 2026-10-28 refresh after script `.155`
 
 `python -m eda_agent fork-status --fetch --cached-forks
