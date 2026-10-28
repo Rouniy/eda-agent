@@ -1,5 +1,25 @@
 # Current integration state / agent handoff
 
+## Project-scoped save and PIC24 read-only parity, 2026-10-28
+
+Script `.126` restricts `proj_save` and `proj_close(save=true)` to modified
+project members or documents marked edited by the script. On a disposable
+two-sheet project, a clean save left both file hashes unchanged; editing A
+then saving changed only A, and a second edit followed by `proj_close`
+again changed only A. Pascal lint passed (12 files, zero findings), the
+project closed, and `app_ping` confirmed `.126` after F9 restart.
+The HTTP MCP service was restarted on 14701; TCP 14700 remained listening.
+`eda-agent doctor` passed 8 checks with zero critical failures. The focused
+save/close test suite passed 34 cases.
+
+The PIC24 curiosity board's native batch DRC had `UnRoutedNet` enabled
+(All/All) and reported 63 total violations, zero Un-Routed Net rows.
+J105-6/7/8/9 are MultiLayer/SHIELD, J212-6/7/8/9 are
+MultiLayer/SHIELD2, and all eight carry `JumperID=123`. Neither net has
+connection lines or separate track/via/arc/fill/region objects. The T1
+project's compiled J10-A41 row has `net="?"`, and Altium lists it among
+the 84 unconnected pins. Both source projects were closed without saving.
+
 ## Explicit direct-print opt-in, 2026-10-28
 
 The remaining `mooreaa` print-dialog correction is adapted into both

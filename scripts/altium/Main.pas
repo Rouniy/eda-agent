@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.125';
+    SCRIPT_VERSION = '2026.10.28.126';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -950,6 +950,26 @@ Begin
         If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
             Try ProjectServerDoc.DoFileSave(''); Except End;
     Except End;
+End;
+
+{ Project-scoped save/close should leave clean open sheets untouched. The
+  editor's Modified bit can miss script edits, so SaveOneDocByDocRef also
+  checks our DocWasEdited marker when SaveScope is 'edited'. Keep the
+  workspace-wide app_save_all behaviour separate. }
+Procedure SaveEditedProjectMembers(Project : IProject);
+Var
+    PreviousScope, PreviousSeen : String;
+Begin
+    PreviousScope := SaveScope;
+    PreviousSeen := SavePassSeen;
+    SaveScope := 'edited';
+    SavePassSeen := '';
+    Try
+        SaveProjectMembers(Project);
+    Finally
+        SaveScope := PreviousScope;
+        SavePassSeen := PreviousSeen;
+    End;
 End;
 
 { CountDirtyInProject / CountDirtyDocuments - how many documents are STILL     }

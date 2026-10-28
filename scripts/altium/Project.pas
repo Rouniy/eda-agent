@@ -462,7 +462,7 @@ Begin
             { scratch project wrote every dirty document in the workspace,    }
             { client projects included. app_save_all is the tool for that,    }
             { and its name says so.                                           }
-            SaveProjectMembers(Project);
+            SaveEditedProjectMembers(Project);
             { The project file too: its document list changes without the }
             { modified flag, so SaveProjectMembers alone left it unwritten. }
             Result := BuildSuccessResponse(RequestId,
@@ -532,7 +532,7 @@ Begin
             End;
 
             If SaveFirst Then
-                SaveProjectMembers(Project)
+                SaveEditedProjectMembers(Project)
             Else
             Begin
                 { DISCARD BEFORE CLOSING, then check the discard took. A close }

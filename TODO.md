@@ -1,5 +1,18 @@
 # Fork integration TODO
 
+## Project-scoped save from `mooreaa`, 2026-10-28
+
+- [x] `proj_save` and `proj_close(save=true)` now save only open project
+  members that Altium marks modified or our script marks edited. The
+  workspace-wide `app_save_all` retains its existing full-pass behavior.
+  Pascal lint: 12 files, zero errors/warnings. Native QA with two copied
+  SchDocs: a clean `proj_save` left both hashes unchanged; editing J10 on A
+  saved A while B stayed byte-identical; a second edit followed by
+  `proj_close(save=true)` did the same. The temporary project was closed.
+- [ ] `proj_print_all_variants` still calls direct PDF print for every
+  variant, which can open a modal Preview SCH. Replace its loop with a
+  verified unattended variant export or a preflight refusal.
+
 ## `mooreaa` UI corrections, 2026-10-28
 
 - [x] Guard the fab-stack template apply path behind legacy write opt-in.
