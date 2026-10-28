@@ -557,6 +557,31 @@ group. The focused layout tests passed 101 with one skip. This is offline
 layout behavior; no schematic document was changed. The full `tests/design`
 package then passed 1,973 tests, skipped 11, and had one expected failure.
 
+### Donor-only internal Python names
+
+The 49-tip function-name inventory produced 14 names absent from current
+source. Each has now been traced to behavior, rather than counted as a
+missing user feature:
+
+| Donor name(s) | Current behavior or decision |
+| --- | --- |
+| `_altium_process_running`, `_check_save_all_canary` | Doctor uses `_altium_process_scan` and a read-only `_check_command_canary`; a save-all call is not a harmless liveness probe. |
+| `_normalise_mpn` | Compatibility alias to the exported `normalise_mpn`. |
+| `_coord` | `_read_coord` keeps the SchDoc fraction exactly, including negative coordinates. |
+| `_listed`, `schematic_pin_nets` | ECO verification uses `netlist_pin_map` and reports each list's true count, truncation flag and rows directly. |
+| `_emit_junctions` | Deliberately omitted: Altium auto-junctions form at the same-net wire geometry; explicit manual dots remain available to callers. |
+| `_ends` | Diffpair `_end_options` explores multiple pad couples on different components and retries candidates. |
+| `_mst` | Rotation scoring uses `mst_length`. |
+| `_copy_extension_source`, `packaged_extension_dir` | `easyeda_extension.source_dir` and `build` choose checkout or packaged source and copy the build payload. |
+| `_prjscr_is_ad25_safe` | Adapted into CLI script-source selection, with an editable-checkout fallback. |
+| `_validate_pin_designator` | `_single_pad_designator` rejects grouped aliases while batch builders report blank entries as skipped. |
+| `_zone_origin_mils` | Integrated as the offset conversion in `_apply_zone_offsets` for both current layout engines. |
+
+The junction, diffpair, SchDoc, ECO, EasyEDA, rotation and doctor-focused
+slice passed 104 tests with 11 fixture skips. This closes the name-level
+inventory, not the wider behavior audit of divergent commits or AD25 native
+acceptance.
+
 At `main` `6cdb3af`, `fork-status --fetch --cached-forks
 --verify-fork-branches --json` refreshed origin, upstream and MOREmbedded.
 The upstream tip and merge base are both `0bb1b3154cca6e58a517b23edee3d7a108f1c232`;
