@@ -25,6 +25,17 @@ from ..atomicfile import replace_with_retry
 from .. import profile as _profile_module
 
 
+def _intlib_source_kinds(path: Path) -> set[str]:
+    """Read compiled library kinds from the IntLib's compound file."""
+    import olefile
+
+    with olefile.OleFileIO(str(path)) as package:
+        return {name[0].casefold() for name in package.listdir(
+            streams=True, storages=False)
+            if len(name) > 1 and name[0].casefold() in
+            {"schlib", "pcblib", "pcblib3d", "dblib"}}
+
+
 def _mils(value: Any) -> str:
     """Format a mil length to Altium's 1e-4 mil coordinate resolution."""
     number = float(value)
@@ -3886,9 +3897,11 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Create/open a LibPkg, add libraries and compile a fresh IntLib.
 
-        The output is accepted only when Altium actually writes a new IntLib
-        under ``Project Outputs for <package name>``. Paths must be absolute
-        so project targeting cannot silently depend on the focused document.
+        The output is accepted only when Altium writes a new IntLib under
+        ``Project Outputs for <package name>`` and it contains the requested
+        SchLib/PcbLib kinds. Altium can silently omit a PcbLib when a symbol's
+        footprint model still points at a stale external path. Paths must be
+        absolute so targeting cannot depend on the focused document.
         """
         package = Path(package_path)
         sources = [Path(source) for source in source_libraries or []]
@@ -3928,17 +3941,39 @@ def register_library_tools(mcp):
         compile_reply = await bridge.send_command_async(
             "project.compile", {"project_path": str(package)}, timeout=300.0)
         after = output.stat().st_mtime_ns if output.is_file() else None
-        built = (isinstance(compile_reply, dict) and
-                 compile_reply.get("success") is True and
-                 after is not None and (before is None or after > before) and
-                 output.stat().st_size > 0)
+        artifact_written = (isinstance(compile_reply, dict) and
+                            compile_reply.get("success") is True and
+                            after is not None and (before is None or after > before)
+                            and output.stat().st_size > 0)
+        expected_kinds = {source.suffix.lower().lstrip(".") for source in sources
+                          if source.suffix.lower() in {".schlib", ".pcblib"}}
+        present_kinds: set[str] = set()
+        validation_error = ""
+        if artifact_written:
+            try:
+                present_kinds = _intlib_source_kinds(output)
+            except (OSError, ValueError) as exc:
+                validation_error = str(exc)
+        missing_kinds = sorted(expected_kinds - present_kinds)
+        built = artifact_written and not validation_error and not missing_kinds
         result: dict[str, Any] = {
-            "success": built, "built": built, "created": created,
+            "success": built, "built": built, "artifact_written": artifact_written,
+            "created": created,
             "package_path": str(package), "added": added,
-            "compile": compile_reply, "intlib": str(output) if built else None,
-            "intlib_bytes": output.stat().st_size if built else None}
+            "compile": compile_reply,
+            "intlib": str(output) if artifact_written else None,
+            "intlib_bytes": output.stat().st_size if artifact_written else None,
+            "source_kinds_present": sorted(present_kinds),
+            "missing_source_kinds": missing_kinds}
         if not built:
-            result["reason"] = "Altium did not produce a new nonempty IntLib"
+            if not artifact_written:
+                result["reason"] = "Altium did not produce a new nonempty IntLib"
+            elif validation_error:
+                result["reason"] = "Could not inspect compiled IntLib: " + validation_error
+            else:
+                result["reason"] = ("Compiled IntLib omits requested "
+                                    + ", ".join(missing_kinds)
+                                    + " content; check the SchLib model links")
         elif install:
             result["install"] = await bridge.send_command_async(
                 "library.install_library", {"library_path": str(output)})

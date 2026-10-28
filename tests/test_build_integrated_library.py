@@ -45,8 +45,10 @@ class _Bridge:
         return {"success": True}
 
 
-def _call(monkeypatch, bridge, **kw):
+def _call(monkeypatch, bridge, present=None, **kw):
     monkeypatch.setattr(library_tools, "get_bridge", lambda: bridge)
+    monkeypatch.setattr(library_tools, "_intlib_source_kinds",
+                        lambda _path: {"schlib", "pcblib"} if present is None else present)
     mcp = _Mcp()
     library_tools.register_library_tools(mcp)
     return asyncio.run(mcp.tools["lib_build_integrated_library"](**kw))
@@ -90,6 +92,16 @@ def test_an_old_intlib_left_from_before_does_not_count(monkeypatch, tmp_path):
     out = _call(monkeypatch, _Bridge(writes=False), package_path=str(pkg),
                 source_libraries=_sources(tmp_path))
     assert out["built"] is False, "a stale IntLib was taken for a new build"
+
+
+def test_missing_requested_footprint_rejects_fresh_artifact(monkeypatch, tmp_path):
+    bridge = _Bridge()
+    out = _call(monkeypatch, bridge, present={"schlib"},
+                package_path=str(tmp_path / "Parts.LibPkg"),
+                source_libraries=_sources(tmp_path), install=True)
+    assert out["artifact_written"] and not out["built"] and not out["success"]
+    assert out["missing_source_kinds"] == ["pcblib"]
+    assert "library.install_library" not in bridge.sent
 
 
 def test_bad_inputs_send_nothing(monkeypatch, tmp_path):

@@ -1,5 +1,23 @@
 # Current integration state / agent handoff
 
+## Integrated-library completeness guard, 2026-10-28
+
+`lib_build_integrated_library` was exercised on a disposable LibPkg
+containing a SchLib and PcbLib extracted from a small IntLib. Altium
+returned compile success and wrote a fresh 5,632-byte IntLib, but its
+compound file contained only `SchLib/0.schlib`: the symbol's footprint
+model still linked to an obsolete `C:\altium-converter\...` PcbLib path.
+After the copied SchLib model was rebound by name to the supplied
+footprint, a fresh 22,528-byte IntLib contained both `SchLib/0.schlib`
+and `PCBLib/0.pcblib`.
+
+The builder now inspects the compiled IntLib and requires each requested
+SchLib/PcbLib kind to be present before reporting `built=true` or
+installing it. Against two fresh Altium builds, the stale-link case
+returned `artifact_written=true`, `built=false`, missing `pcblib`; the
+relinked case returned `built=true` with both kinds. Five focused tests
+pass. The scratch libraries were closed without unsaved changes.
+
 ## Schematic parameter and port extra properties, 2026-10-28
 
 On an isolated copy of `Multipart_QA.PrjPcb`, a document parameter

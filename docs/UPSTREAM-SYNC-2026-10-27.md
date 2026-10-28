@@ -1,5 +1,16 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 integrated-library completeness
+
+The imported `lib_build_integrated_library` now checks the compiled
+IntLib's actual SchLib/PcbLib streams. A fresh Altium compile from a
+copied SchLib with an obsolete footprint link omitted its requested
+PcbLib; the tool correctly refused that package after the change.
+Rebinding the copied symbol's model and rebuilding produced both
+streams and passed. This closes the native LibPkg build gate and
+prevents a nonempty but incomplete output from being reported as
+complete. See `CURRENT-STATE.md`.
+
 ## 2026-10-28 mooreaa parameter and port property acceptance
 
 On a disposable schematic copy, native reads and writes of extra
@@ -959,7 +970,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | Upstream `7a65a96` | Periodic datasheet reminder, preserving our bridge reattach workflow | Interval and datasheet-hint tests |
 | Upstream `2b0344f` (response fix) | Schematic `obj_modify` reports dirty state without claiming a disk save | Source test and Pascal lint |
 | Upstream `f39f28b` (impedance profile read) | Read the board's solved impedance profiles and restore the NPI criterion's actual tool reference | Wrapper/source tests and Pascal lint |
-| Upstream `ed4ef59` (partial) | Verify stored Altium checksums before extracting embedded 3D model bytes; compile an integrated library only with an explicit package path and a fresh nonempty IntLib artifact | 21 focused tests, Python compile and Pascal lint; native LibPkg build still pending |
+| Upstream `ed4ef59` (library build) | Verify stored Altium checksums before extracting embedded 3D model bytes; compile an integrated library only with an explicit package path and fresh, complete SchLib/PcbLib content | Native LibPkg build and missing-footprint refusal on disposable sources; focused tests and Python compile pass |
 | Upstream `5d79657` through `ce53d6e`, `ed4ef59` (footprint read) | Restore the native `library.get_footprint_primitives` handler, including body metadata, region shapes and layer names; restrict saved STEP extraction to a named footprint's live model files | 33 focused tests, Pascal lint/build, loaded `.3` runtime and no-target native dispatch; real PcbLib read still pending |
 | Upstream `ce53d6e` (PCB pours/options) | Look up polygon outlines at a board point and read/set the new-polygon name template; include board identity and require an expected file for writes | 28 related tests, Pascal lint/build, loaded `.4` runtime, and no-target native refusals; real-board acceptance pending |
 | `mooreaa` `ad8d5fa`, also in upstream by `ce53d6e` (font safety) | Guard generic `FontId` by actual schematic object type and expose `TextFontId` through typed sheet/harness entries | 22 related tests, Pascal lint/build, loaded `.5` runtime; native entry readback pending |
