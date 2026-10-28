@@ -347,8 +347,11 @@ and performance reporting. Their focused test slice passed 166/166.
 
 All seven tracked Python files in
 `yniantongtian-oss/feat/battery-ai-comsol-lab` match the donor after removing
-only the leading SPDX line from our copy. The optional lab tests could not
-collect in this environment because PyYAML and pandas are not installed;
-this is source parity, not a runtime qualification. The current distribution
+only the leading SPDX line from our copy. The lab was installed into an
+isolated Python 3.12 environment with its declared `dev` dependencies on
+2026-10-28. Its own `ruff check src tests` passed and `pytest -q` passed all
+six tests, including the short PyBaMM electrothermal simulation with
+PyBaMM 26.10.1.1. This qualifies the imported research code locally; COMSOL
+itself and the optional `MPh` bridge were not run. The current distribution
 verifier additionally checks an sdist and wheel metadata, while retaining
 the donor's EasyEDA payload checks.
