@@ -65,7 +65,8 @@ Begin
             (PropName = 'InvertedTTTextBorder') Or
             (PropName = 'TTFInvertedTextJustify') Or
             (PropName = 'TTFOffsetFromInvertedRect') Or
-            (PropName = 'ConvertedString') Or (PropName = 'BorderSpaceType') Then Result := 3
+            (PropName = 'ConvertedString') Or (PropName = 'FontName') Or
+            (PropName = 'BorderSpaceType') Then Result := 3
     Else If (PropName = 'TextHeight') Or (PropName = 'TextWidth') Or
             (PropName = 'TextLineWidth') Or (PropName = 'TextGap') Or
             (PropName = 'TextPosition') Or (PropName = 'TextDimensionUnit') Or
@@ -204,6 +205,7 @@ Begin
         Else If PropName = 'TTFInvertedTextJustify' Then Result := IntToStr(Txt.TTFInvertedTextJustify)
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Result := FloatToJsonStr(CoordToMilsF(Txt.TTFOffsetFromInvertedRect))
         Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString
+        Else If PropName = 'FontName' Then Result := Txt.FontName
         Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType);
     End
     Else If Oid = eDimensionObject Then
@@ -303,6 +305,7 @@ Begin
     Result := -1;
     If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
        (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or
+       (PropName = 'FontName') Or
        (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
@@ -2298,7 +2301,7 @@ Begin
         + 'NameAutoPosition, CommentAutoPosition, FootprintDescription, '
         + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
-        + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, '
+        + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, FontName, '
         + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
         + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '
         + 'GroupNum, SwappedPadName, OwnerPart_ID, OverrideColor, Texture, '

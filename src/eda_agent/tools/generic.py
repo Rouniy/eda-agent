@@ -479,7 +479,7 @@ def register_generic_tools(mcp):
                 StandoffHeight, OverallHeight, InComponent, Component,
                 InPolygon, IsKeepout, Locked, Layer1, Layer2,
                 IsRedundant, Mode, Height, StrokeWidth, IsDesignator,
-                IsComment, UseTTFonts.
+                IsComment, UseTTFonts, FontName (PCB text, read only).
 
                 A board type returns EVERY primitive of that type;
                 filter "InComponent=false|InPolygon=false" for free

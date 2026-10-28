@@ -2,6 +2,11 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Expose PCB text `FontName` as a read-only `obj_query` property.
+  Script `.167` built with zero lint warnings/errors, the main Altium
+  polling loop restarted, and native reads on the RFSoC transceiver board
+  returned `Courier New` for C73_8 and C5_6. The board closed without a
+  save; 27 focused text/project tests passed.
 - [x] Expose the upstream synchronization point and its actual first-parent
   merge commit in `fork-status`, with a repository-level merge test. A fresh
   upstream fetch confirmed point `0bb1b3154cca6e58a517b23edee3d7a108f1c232`,

@@ -1,5 +1,12 @@
 # Current integration state / agent handoff
 
+PCB text `FontName` is now readable through `obj_query` on script `.167`.
+The main Altium loop was restarted and answered a ping. On
+`Z:\pi-radio\rfsoc-fr1-beamformer\01_Altium_Transceiver\Main.PcbDoc`, native
+reads of C73_8 and C5_6's TrueType designator texts both returned
+`Courier New`; the document closed without saving. Twenty-seven focused
+text and script-project checks passed.
+
 ## Latest upstream sync and fork audit, 2026-10-28
 
 The exact upstream sync point is
