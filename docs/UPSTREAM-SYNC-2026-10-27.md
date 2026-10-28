@@ -1,5 +1,28 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 refresh after script `.155`
+
+`python -m eda_agent fork-status --fetch --cached-forks
+--verify-fork-branches --json` refreshed `origin`, `upstream`, and
+`morembedded` and checked the GitHub branch tips. At local and remote
+`main=63532c09171accdf6cf85f5ea709e8b458eaace1`, the exact
+`upstream/main=ee7589c9fc543d0b99bb142dc8ca12b618fffeab` is an
+ancestor and the sole merge base, with zero commits pending from upstream.
+All 62 fork default tips and all 117 branch tips match the cached refs.
+`MOREmbedded/main=032fb4b2088d9cfa8d95daad9572c9f1f49f3d41` is
+unchanged. Fifty-four cached branch refs have commits outside `main` by
+ancestry; this is a review queue, not a count of missing features.
+
+The `vincent-himpe/feature/board-via-pad-properties` and
+`vincent-himpe/fix/filter-allobjects-walks` changes are present in the
+current Pascal sources and their regression tests. The `cad435` managed
+placement dirty-document fix is also present. The `andrzej-sikora-elte/elte`
+component DbLib flags and footprint-model *reads* are present; its generic
+property *writes* are still a behavioral difference. The dedicated DbLib
+relink and footprint-model operations cover those changes through separate
+verified paths. This source-level comparison does not prove complete
+behavioral equivalence of all divergent branches.
+
 ## 2026-10-28 live refresh and plane-read repair
 
 `git fetch upstream main` returned
