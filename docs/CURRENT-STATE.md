@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## Placement footprint-model native persistence, 2026-10-28
+
+The `mooreaa` placement model chooser was accepted on a disposable copy of
+`Multipart_QA.PrjPcb` in Altium 26.11.1.5 with script `.130`. The `RES`
+library symbol carries eight PCB models and defaults to `CR2012-0805`.
+`sch_place_components` placed `RQA3` with requested `CC1608-0603` and
+`RQA4` with nonexistent `QA_NO_MODEL`. It reported `placed=2`,
+`failed=0`, `footprints_chosen=1`, and a `FOOTPRINT_NOT_ON_SYMBOL` issue
+for `RQA4` with the unchanged default. `obj_query` read `RQA3` as
+`CC1608-0603` and `RQA4` as `CR2012-0805`. After exact-sheet save,
+project close without another save, and reopen, both readings persisted.
+The disposable copy was then closed without saving again. This qualifies
+the existing-library-model choice and missing-model reporting for bulk
+placement on AD26; single placement remains to be exercised separately.
+
 ## Placed-part display-mode native persistence, 2026-10-28
 
 The remaining `mooreaa` `DisplayMode` write was accepted on a disposable
