@@ -41,6 +41,29 @@ from ..units import MILS_PER_MM, format_length, length_in, normalise_units
 _GEOMETRY_MAP_TIMEOUT = 1800.0
 
 
+def _drc_report_counts(report_path: str) -> dict[str, int]:
+    """Read Altium's active/waived totals from a fresh batch HTML report."""
+    path = Path(report_path)
+    if path.suffix.casefold() != ".html" or not path.is_file():
+        return {}
+    try:
+        report = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    counts: dict[str, int] = {}
+    for label, key in (("Warnings:", "warnings"),
+                       ("Rule Violations:", "rule_violations"),
+                       ("Waived Violations:", "waived_violations")):
+        match = re.search(
+            r'<td class="DRC_summary_header_col1">' + re.escape(label)
+            + r'</td>\s*<td class="DRC_summary_header_col2">.*?</td>\s*'
+            + r'<td class="DRC_summary_header_col3"[^>]*>\s*(\d+)\s*</td>',
+            report, re.IGNORECASE | re.DOTALL)
+        if match:
+            counts[key] = int(match.group(1))
+    return counts if "rule_violations" in counts else {}
+
+
 def _fab_board_facts(reply: dict[str, Any], expected_path: str) -> dict[str, Any]:
     """Accept only a complete, internally consistent exact-board snapshot."""
     if not isinstance(reply, dict) or reply.get("board_path", "").casefold() != expected_path.casefold():
@@ -1910,8 +1933,18 @@ def register_pcb_tools(mcp):
         instead. That dialog blocks the bridge until someone answers it.
         """
         bridge = get_bridge()
-        return await bridge.send_command_async(
+        result = await bridge.send_command_async(
             "pcb.run_drc", {"allow_modal": "true" if allow_modal else "false"})
+        if isinstance(result, dict) and result.get("drc_confirmed") is True:
+            if result.get("mode") == "batch" and isinstance(result.get("report_path"), str):
+                counts = _drc_report_counts(result["report_path"])
+                if counts:
+                    result["report_counts"] = counts
+            violations = result.get("violations")
+            if isinstance(violations, list) and type(result.get("violation_count")) is int:
+                result["violations_returned"] = len(violations)
+                result["violations_truncated"] = len(violations) < result["violation_count"]
+        return result
 
     @mcp.tool()
     async def pcb_get_components() -> dict[str, Any]:

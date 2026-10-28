@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Fresh DRC active versus waived totals, 2026-10-28
+
+`pcb_run_drc` now reads the summary header from its confirmed, per-request
+batch HTML report and returns `report_counts` separately from the board's
+stored `violation_count`. It also returns `violations_returned` and
+`violations_truncated`, because the native inline array stops after 100
+entries; `pcb_get_clearance_violations` pages through all stored types.
+The parser was checked against two live Altium 26.11 reports: MB2222 has
+zero active and one waived Room violation, while Nordic 400432 has zero
+active and no waived header. Five focused tests passed. The Python MCP
+server must be restarted after this source change; no new native DRC was
+run for the wrapper itself.
+
 ## Populated-board stack builder acceptance, 2026-10-28
 
 Partial-failure recovery was also exercised on the same temporary,
