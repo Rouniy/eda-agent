@@ -25,6 +25,9 @@
 - [x] Open a closed primary PCB before `proj_sync_pcb` runs its modal ECO.
   Script `.160` verified exact board and project focus; native scratch ECO
   added C2 after the old path had refused with `WRONG_FOCUS`.
+- [x] Resolve the apparent ECO class-member validation error for C2:
+  the execution log records the add, and exact-board class readback after
+  save shows both C1 and C2 in `Only`.
 - [x] Reconcile `andrzej-sikora-elte/elte` generic DbLib link-field and
   `FootprintModel` writes with the current dedicated relink and footprint
   operations. Script `.156` adds component-scoped DbLib field writes and

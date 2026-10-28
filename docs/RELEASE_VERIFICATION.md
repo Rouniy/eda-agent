@@ -9,7 +9,10 @@ schematic component and a closed board reached the actual ECO dialog
 without manual focus. Its Add Component row validated and executed;
 after explicitly focusing the exact board, the board read returned C1
 and C2, both with `ECO_QA_FP` and two pads. Altium's separate class-member
-row failed validation for C2, so component-class parity is not claimed.
+row showed a red validation mark for C2, but its ECO execution log says
+"Added Member To Class", and an exact-board `pcb_get_object_classes`
+read after save returned `Only` with members C1 and C2. The final class
+membership was therefore applied despite that validation display.
 The scratch PCB was saved, and the project closed. The live bridge still
 answered with `.160`. The 12-unit Pascal build had zero findings and 17
 focused tests passed.

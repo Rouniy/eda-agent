@@ -37,6 +37,8 @@ The first ECO exposed a separate closed-board `WRONG_FOCUS` refusal.
 Script `.160` opens the exact primary PCB from the project before Compare
 and checks board and project focus. A second ECO reached its modal without
 manual focus and added C2 with the expected footprint and two pads.
+The ECO class-member validation row looked red, but the execution log
+and exact-board class readback showed both C1 and C2 in `Only` after save.
 
 ## 2026-10-28 refresh after script `.155`
 
