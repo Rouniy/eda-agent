@@ -165,3 +165,15 @@ libraries and four installed libraries through
 `library.list_available_libraries`; its response includes library type
 and a separate Workspace name from an open design when available.
 No missing public operation was established by this name inventory.
+
+Nine more `vincent-himpe` feature/fix tips were checked against current
+source: board via/pad properties (`ab85b30`), selected-pad drill type
+(`e6713dd`), region polygon outlines (`f662898`), primitive net writes
+(`8399eea`), region names (`c3adf7f`), custom pad shape (`40ba903`),
+decimal rectangle corners (`ca9b0c7`), board zoom (`23b1837`) and
+footprint fills (`bf31274`). The eight tracked focused test files passed
+62/62. The donor's separate custom-pad source test is not tracked in
+this fork, so its six shape readers were checked directly: `PCB.pas`,
+`Generic.pas` and `Library.pas` all name `eCustomShape` rather than
+falling through to round/other. This is source and offline-test parity;
+the individual native CAD write paths were not all rerun in this audit.
