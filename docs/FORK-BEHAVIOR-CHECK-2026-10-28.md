@@ -135,3 +135,13 @@ paths and public routes in `main`. Its focused library-file, rotation,
 stackup, replacement-part, calculator and performance tests passed 198/198.
 This establishes the checked behavior in those groups, not a blanket
 equivalence of every historical commit or a native CAD acceptance claim.
+
+An AST inventory of public tool functions in both `MOREmbedded/main`
+`032fb4b` and its `project-thread` branch found zero command names absent
+from our current source. The `MOREmbedded/main` bottom-side placement fix
+is represented by the current top-first load followed by a separate
+`PCB_FlipComponent` transaction; bottom-side parts participate in the
+rotation audit. Direct Altium 365, NPI phase-gate, and rotation-audit
+checks passed 91/91. This is an API and focused-behavior check; it does
+not prove that every implementation detail of the 27 divergent commits
+has the same result on every CAD design.
