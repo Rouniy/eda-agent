@@ -2,6 +2,12 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [ ] Recheck the `mooreaa` Rosen `pcb_get_mech_layer_names` dirty-on-read
+  report on AD25. It stayed clean on a disposable CW308 copy in AD26.11,
+  with unchanged SHA-256, but that does not settle the donor's AD25 case.
+- [ ] Reproduce the Rosen ECO "Footprint Not Found" case with a newly
+  added project PcbLib footprint and compare an explicit-library relink;
+  the donor tracked this as E1. Keep the test on a disposable project.
 - [x] Reconcile `andrzej-sikora-elte/elte` generic DbLib link-field and
   `FootprintModel` writes with the current dedicated relink and footprint
   operations. Script `.156` adds component-scoped DbLib field writes and

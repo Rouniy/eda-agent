@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Rosen mechanical-layer read check, 2026-10-28
+
+The `mooreaa` Rosen tracker reported that
+`pcb_get_mech_layer_names(count_primitives=True)` dirtied an AD25 board.
+On Altium 26.11.1.5, a disposable copy of the CW308 baseboard was clean
+before and after the read. It returned eight mechanical layers, seven
+occupied, scanned through layer 64. The copy closed without saving and
+its SHA-256 stayed
+`C4E1C9AB5B3A48931E2B57E1229EE9B652438579E2656D51C645C467F428CF85`.
+This qualifies AD26.11 only; the AD25 Rosen observation still needs an
+AD25 check. The tracker's two stale-layer-tab items are covered by the
+native stack refresh and physical-layer guard recorded below.
+
 ## Relaunch from the main checkout, 2026-10-28
 
 The `xthanhn91` loop-relaunch feature is handled by the existing

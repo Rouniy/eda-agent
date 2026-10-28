@@ -1,5 +1,10 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+After the `adf6526` main-only relaunch fix, another `git fetch upstream
+main` returned `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`.
+`git merge-base main upstream/main` returned that exact commit and
+`git rev-list --count main..upstream/main` returned zero.
+
 ## 2026-10-28 refresh after script `.155`
 
 `python -m eda_agent fork-status --fetch --cached-forks
