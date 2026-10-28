@@ -105,6 +105,11 @@ This is **not** a batch tool that opens a project, runs a script, and exits. It'
 
 ## Features
 
+The [PCB quality skill](skills/boardquality/SKILL.md) gives AI clients a
+physical layout quality bar. Its [guide](docs/pcb-quality/README.md) includes
+English and Chinese rules, a board-intent template, and a fabrication-profile
+template.
+
 - **~800 tools on the default Altium backend** (800+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
 - **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation
 - **Bulk batch primitives**: `obj_batch_modify`, `obj_batch_create`, `obj_batch_delete`, `pcb_place_tracks`, `pcb_move_components`, `sch_place_wires`, `place_net_labels`, `place_power_ports`, `sch_place_components`, `sch_set_components_parameters`, `get_sch_doc_pins`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. Collapse N LLM turns + N IPC round-trips into one. Typical wall-time savings: 10 to 100x on multi-item edits

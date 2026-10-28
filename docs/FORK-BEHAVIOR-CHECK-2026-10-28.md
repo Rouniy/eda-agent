@@ -1065,3 +1065,13 @@ tests and a 12-unit build. A native batch operation on a disposable
 `CW308T_AVR.PcbDoc` copy matched one pad `U1-15` at `(4100, 2570)` mil;
 the readback showed both `Name` and `Designator` as `QA15`. The copy was
 closed with edits discarded, and the source SHA-256 was unchanged.
+
+The `tisn1678065900-dot` board-quality skill and its guide were already
+tracked, but the donor's root README link had not been carried over. The
+current README now links the skill and guide directly, making the imported
+quality workflow discoverable from the repository entry page.
+
+The complete Python suite after the `.185` pad-batch change passed:
+9,815 passed, 165 skipped, one expected failure, zero failures (15m30s).
+The README link edit was made while that run was in progress; both linked
+files were checked separately on disk and `git diff --check` passed.
