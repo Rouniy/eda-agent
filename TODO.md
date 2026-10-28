@@ -9,7 +9,10 @@
   `sdk-probe`/generated Pascal block are ported. Script `.168` answered two
   scoped native probes, including the `DescriptionString` getter. Review
   the remaining generated accessors individually and investigate the
-  unexplained Altium process exit after a later document reopen.
+  Altium process exit after a later document reopen. Windows event 1000
+  records `c0000005` in `ADVPCB.DLL` at `0x3c1728`; the open request did
+  not reach the bridge handler. The initiating background operation is
+  still unknown.
 - [ ] Refresh and audit the other fork branches. At the latest local scan,
   53 of 112 cached `forks/*` refs are non-ancestors of `main`; ancestry
   alone does not say whether their behavior is absent. The refreshed audit

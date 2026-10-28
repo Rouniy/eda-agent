@@ -322,6 +322,8 @@ sheet was closed without saving. Type-scoped coverage rose from 650 to
 timed out when the Altium process exited before handling the request;
 the process was relaunched and `.168` answered ping. The cause of that
 exit and the other generated accessors still require native review.
+Windows event 1000 places the crash in `ADVPCB.DLL` (`c0000005`, offset
+`0x3c1728`), rather than in the request handler.
 After adaptation, merge `ce7aab8` records `d495c4d` as its second parent.
 Fresh fetches report zero commits pending from `MOREmbedded/main` and
 `upstream/main`. The upstream sync point remains `0bb1b315`.

@@ -10,8 +10,9 @@ was closed without saving, and `application.ping` returned `.168`.
 Subsequently the Altium process exited while reopening that same sheet,
 before the new request reached its handler. Altium was started again from
 the installed X2 executable; `StartMCPServer` resumed `.168` and ping
-answered. The exit's cause is undetermined. Do not treat these checks as
-full coverage of every generated accessor.
+answered. Windows event 1000 recorded `c0000005` in `ADVPCB.DLL` at
+offset `0x3c1728`; its initiating operation is undetermined. Do not treat
+these checks as full coverage of every generated accessor.
 
 The `.164` source merges upstream `0bb1b315` as a Git parent, adding
 variant parameter values, rename/copy, and a variant-aware BOM while

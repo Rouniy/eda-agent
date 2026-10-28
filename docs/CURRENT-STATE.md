@@ -9,6 +9,11 @@ was closed without saving. A later attempt to reopen it timed out because
 Altium exited before processing the request. Altium was launched again,
 the same main script loop resumed, and `.168` ping succeeded. The cause of
 the exit remains unverified; do not infer that the accessor caused it.
+Windows Application Error event 1000 at 14:45:09 identifies an access
+violation (`c0000005`) in `ADVPCB.DLL` offset `0x3c1728` for `X2.EXE`
+26.11.1.5. The last successful bridge ping was at 14:45:05; the later
+open request did not reach the handler. This narrows the crash to Altium's
+PCB module, but does not establish which background operation triggered it.
 Type-scoped SDK coverage now reports 678/2176 declared properties. The
 child-fork tip `d495c4d` is the second parent of merge `ce7aab8`.
 Fresh fetches found no commits pending from `upstream/main` or
