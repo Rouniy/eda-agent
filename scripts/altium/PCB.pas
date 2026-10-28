@@ -6478,7 +6478,8 @@ Begin
                 Layer := Board.LayerStack_V7.NextLayer(Layer);
                 Continue;
             End;
-            LName := Layer.Name;
+            LName := '';
+            Try LName := Layer.Name; Except Inc(Misses); End;
             RefTop := '';
             RefBottom := '';
             Enabled := True;

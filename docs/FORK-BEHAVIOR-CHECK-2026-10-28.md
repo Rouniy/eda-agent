@@ -520,6 +520,22 @@ Running the checker on this checkout found 1,260 tracked files, two valid
 manifests, and zero errors or reviewed exceptions. This confirms the local
 check, not a hosted CI run.
 
+An AST inventory against the integrated `MOREmbedded/main` tip `d495c4d`
+found no donor Python function names absent from the current corresponding
+source files. Five donor-only Pascal helper names remain after excluding
+the generated bundle: `CodeUnitHex4` is now `CodeUnitToHex4`, `PinShownOn`
+moved to `Generic.pas`, `FrontPCBBoardPath` became the stricter
+`GetPCBBoardForMutation` selection path, and the implicit
+`SchDocByPathLoading` is now an explicit project-sheet load followed by an
+already-loaded document lookup. The donor's `ImpLayerName` helper was inlined
+in the impedance profile reader; this comparison exposed an unguarded
+`Layer.Name` access. Script `.173` guards that read and counts a failure in
+`read_errors` while retaining the other profile rows. The 12-file Pascal
+lint/build and 11 impedance-focused tests passed; a live MCP ping after
+restarting the one main script project reported `.173`, matching the bundle,
+no stale units and no warnings. The ping confirms script load, not a native
+impedance-profile read on a board.
+
 At `main` `6cdb3af`, `fork-status --fetch --cached-forks
 --verify-fork-branches --json` refreshed origin, upstream and MOREmbedded.
 The upstream tip and merge base are both `0bb1b3154cca6e58a517b23edee3d7a108f1c232`;

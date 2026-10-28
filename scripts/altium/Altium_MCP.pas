@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.172';
+    SCRIPT_VERSION = '2026.10.28.173';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -44011,7 +44011,8 @@ Begin
                 Layer := Board.LayerStack_V7.NextLayer(Layer);
                 Continue;
             End;
-            LName := Layer.Name;
+            LName := '';
+            Try LName := Layer.Name; Except Inc(Misses); End;
             RefTop := '';
             RefBottom := '';
             Enabled := True;
