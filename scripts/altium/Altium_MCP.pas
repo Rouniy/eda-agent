@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.175';
+    SCRIPT_VERSION = '2026.10.28.176';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -46378,8 +46378,6 @@ Begin
         End;
 
         Board.AddPCBObject(Via);
-        If FoundNet <> Nil Then
-            Try FoundNet.AddPCBObject(Via); Except End;
 
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Via.I_ObjectAddress);

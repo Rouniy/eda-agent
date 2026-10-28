@@ -903,3 +903,14 @@ The same 53-ref comparison found eight changed paths absent from
 `test_rosen_small_fixes.py`). Their behavior and decisions are recorded
 in the missing-path inventory above. AD25 runtime qualification of the
 headless stub remains open; this host has AD26.11 but no AD25 install.
+
+## Native one-sided via-mask acceptance
+
+The `vincent-himpe/fix/via-mask-bottom-follows-top` branch behavior now has
+a disk-round-trip check in `CURRENT-STATE.md`. On AD26.11.1.5 script `.176`,
+setting `SolderMaskManual=true|SolderMaskExpansion=4` on a disposable via
+also set `SolderMaskBottomExpansion=4`; both persisted after save/reopen.
+The test also exposed a redundant `FoundNet.AddPCBObject` call in
+`pcb.place_via` that Altium rejected at compile time. It was removed; the
+existing `BindPrimitiveToNet` path remains. The native bridge again answers
+ping from the one main script project.

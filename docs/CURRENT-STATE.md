@@ -1,6 +1,6 @@
 # Current integration state / agent handoff
 
-The main Altium script is now `.175`, loaded from the one source project,
+The main Altium script is now `.176`, loaded from the one source project,
 and answers ping on AD26.11.1.5. The Python MCP service on 14701 was
 restarted from this `main` and advertises 766 tools without the stale-server
 warning; the separate TCP relay on 14700 answers `/health` as `ready`.
@@ -8,6 +8,26 @@ Script `.172` fixes `sdk-probe --doc-path`; all 29 generated component
 read accessors answered on IC44 in a read-only AD26.11 check. The sheet
 was closed without saving. Broader component kinds and AD25 still need
 native checks.
+
+## Native via placement and one-sided mask setting, 2026-10-28
+
+On a disposable free PcbDoc, `pcb.place_via` exposed an Altium script
+compile error, `Undeclared identifier: AddPCBObject`, at its redundant
+`FoundNet.AddPCBObject(Via)` call. The earlier `BindPrimitiveToNet` helper
+already registers a named net; the redundant call was removed. After the
+script `.176` restart, the pending placement completed and a query found
+one via at `(1000,1000)` mil. The active script project remained the single
+`scripts/altium/Altium_API.PrjScr`.
+
+The Vincent one-sided mask behavior was then checked on that via. With
+`SolderMaskManual=true|SolderMaskExpansion=4`, a query read 4 mil for both
+`SolderMaskExpansion` and `SolderMaskBottomExpansion`. Exact save, close and
+reopen retained both 4 mil values and `SolderMaskManual=true`. Setting only
+the expansion had earlier read 4 mil in memory but returned to 0 after a
+save/reopen because `SolderMaskManual` was false; that is the documented
+rule-controlled mode, not a persistence defect. The scratch board was
+closed and deleted. Pascal bundle lint/build passed 12 units without
+findings, and the four focused via-mask tests passed.
 
 ## Local regression and hosted CI gate, 2026-10-28
 

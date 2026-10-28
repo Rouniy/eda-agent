@@ -8801,8 +8801,6 @@ Begin
         End;
 
         Board.AddPCBObject(Via);
-        If FoundNet <> Nil Then
-            Try FoundNet.AddPCBObject(Via); Except End;
 
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Via.I_ObjectAddress);
