@@ -5337,6 +5337,113 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_build_stack(
+        board_path: str, layers: list[dict[str, Any]], dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Plan or build an entire copper/dielectric stack on one exact PcbDoc.
+
+        The dry run lists the first copper edits. Applying requires an open,
+        saved board. Altium adds dielectric layers when copper is inserted;
+        the second phase fits those layers to the requested dielectric plan.
+        A failed phase leaves the board open and unsaved for inspection or
+        explicit discard. Save only after checking the returned stack.
+        """
+        from ..design import stack_build
+
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        try:
+            plan = stack_build.normalise(layers)
+        except stack_build.StackPlanError as exc:
+            return {"ok": False, "reason": str(exc)}
+        bridge = get_bridge()
+        docs = await bridge.send_command_async("application.get_open_documents", {}) or []
+        if isinstance(docs, dict):
+            docs = docs.get("documents", [])
+        entry = next((d for d in docs if isinstance(d, dict)
+                      and str(d.get("file_path", "")).casefold() == board_path.casefold()), None)
+        if entry is None:
+            return {"ok": False, "reason": "the named PcbDoc is not open"}
+        await bridge.send_command_async("application.set_active_document", {"file_path": board_path})
+        current = await pcb_physical_stack(board_path)
+        if not isinstance(current, dict) or current.get("ok") is False or "layers" not in current:
+            return {"ok": False, "reason": "could not read the exact board stack", "native_reply": current}
+        inspected = await bridge.send_command_async(
+            "pcb.stack_edit", {"board_path": board_path, "op": "inspect"})
+        if (not isinstance(inspected, dict)
+                or str(inspected.get("board_path", "")).casefold() != board_path.casefold()
+                or not isinstance(inspected.get("layers"), list)):
+            return {"ok": False, "reason": "incomplete or wrong-board layer inventory",
+                    "native_reply": inspected}
+        try:
+            copper_ops = stack_build.plan_ops(current["layers"], plan, inspected["layers"])
+        except stack_build.StackPlanError as exc:
+            return {"ok": False, "reason": str(exc)}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "copper_ops": copper_ops,
+                    "dielectric_phase": "planned from Altium readback after copper edits",
+                    "current": stack_build.board_section(current["layers"])}
+        if entry.get("modified") is not False:
+            return {"ok": False, "reason": "save the board before building its stack",
+                    "copper_ops": copper_ops}
+
+        applied: list[dict[str, Any]] = []
+
+        async def run(ops: list[dict[str, str]]) -> dict[str, Any] | None:
+            for op in ops:
+                try:
+                    reply = await bridge.send_command_async(
+                        "pcb.stack_edit", {"board_path": board_path, **op}, timeout=120.0)
+                except Exception as exc:  # a timeout can leave an unknown native state
+                    return {"op": op, "error": str(exc)}
+                if (not isinstance(reply, dict) or reply.get("error")
+                        or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                        or (op["op"] == "remove" and reply.get("removed") is not True)):
+                    return {"op": op, "native_reply": reply}
+                applied.append(op)
+            return None
+
+        all_ops = list(copper_ops)
+        failure = await run(copper_ops)
+        if failure is None:
+            middle = await pcb_physical_stack(board_path)
+            if not isinstance(middle, dict) or "layers" not in middle or middle.get("ok") is False:
+                failure = {"op": "read_copper", "native_reply": middle}
+            else:
+                try:
+                    dielectric_ops = stack_build.dielectric_ops(middle["layers"], plan)
+                except stack_build.StackPlanError as exc:
+                    failure = {"op": "plan_dielectrics", "error": str(exc)}
+                else:
+                    all_ops.extend(dielectric_ops)
+                    failure = await run(dielectric_ops)
+        readback = await pcb_physical_stack(board_path)
+        if not isinstance(readback, dict) or "layers" not in readback or readback.get("ok") is False:
+            failure = failure or {"op": "read_final", "native_reply": readback}
+            mismatches: list[dict[str, Any]] = []
+            section: list[dict[str, Any]] = []
+        else:
+            final_inspect = await bridge.send_command_async(
+                "pcb.stack_edit", {"board_path": board_path, "op": "inspect"})
+            if (not isinstance(final_inspect, dict)
+                    or str(final_inspect.get("board_path", "")).casefold() != board_path.casefold()
+                    or not isinstance(final_inspect.get("layers"), list)):
+                failure = failure or {"op": "inspect_final", "native_reply": final_inspect}
+                mismatches = []
+            else:
+                mismatches = stack_build.check(readback["layers"], plan,
+                                               final_inspect["layers"])
+            section = stack_build.board_section(readback["layers"])
+        ok = failure is None and not mismatches
+        return {"ok": ok, "dry_run": False, "board_path": board_path,
+                "ops": all_ops, "applied": len(applied), "failure": failure,
+                "mismatches": mismatches, "stack": section,
+                "partial_unsaved": not ok and bool(applied),
+                "next": ("inspect, then save the named PcbDoc and verify its saved stack"
+                         if ok else "inspect the named PcbDoc and explicitly discard or repair edits")}
+
+    @mcp.tool()
     async def pcb_plane_connections(
         board_path: str, designator: str, pad: str = "",
     ) -> dict[str, Any]:

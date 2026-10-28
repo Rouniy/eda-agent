@@ -1,5 +1,29 @@
 # Current integration state / agent handoff
 
+## Fresh fork tip and full-stack builder, 2026-10-28
+
+Fresh fetches leave upstream `main` at
+`ee7589c9fc543d0b99bb142dc8ca12b618fffeab`, still the exact merge
+base and ancestor of our `main` (zero upstream commits pending).
+`MOREmbedded/main` remains `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+The live 62-default/117-branch audit found one advanced fork:
+`mooreaa/main` moved from `fc22136` to `4cbae2a`. Fetching it restored
+62/62 and 117/117 fresh refs. Its new `pcb_build_stack` feature is being
+integrated with exact-PcbDoc identity checks rather than active-tab writes.
+
+Source `.122` now carries the planner and native MasterLayerStack edits.
+On an isolated Temp copy of `Rules.PcbDoc`, the public tool planned and
+built a two-layer stack, then a four-layer stack with one inserted signal
+layer, one inserted plane and three configured dielectrics. The saved
+four-layer board was closed and reopened; Altium returned the same layer
+order, names, thicknesses, dielectric types and internal-plane layer ID
+39. The copy was closed. Twenty-five planner tests pass, and the Pascal
+12-unit build/lint has zero errors or warnings. `app_ping` confirms
+Altium 26.11.1.5 loaded `.122`. The wrapper leaves failed partial edits
+unsaved for explicit inspection and discard; it never silently closes a
+project-backed board. Broader board fixtures and failure recovery remain
+to be qualified before calling this a general stack migration guarantee.
+
 ## MOREmbedded library checker and footprint export QA, 2026-10-28
 
 On a separate Temp copy of `SpiritLevel_2E.SchLib`, the public

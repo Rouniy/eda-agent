@@ -1,5 +1,18 @@
 # Fork integration TODO
 
+## Fresh `mooreaa` stack builder, 2026-10-28
+
+- [x] Fetch the new `mooreaa/main` tip `4cbae2a` and recheck all live
+  fork refs: 62/62 default tips and 117/117 branch tips fresh. Upstream
+  `ee7589c` remains the exact ancestor of `main` with zero pending commits.
+- [x] Port `pcb_build_stack` with exact-board native edits and a two-phase
+  copper/dielectric planner. On an isolated PcbDoc, a two-layer edit and
+  an inserted four-layer stack persisted after save/close/reopen. Check
+  plane identity and dielectric material in the final readback.
+- [ ] Qualify stack-build failures and recovery on project-backed and
+  populated boards; inspect saved-stack file parity independently. The
+  current tool leaves partial failures unsaved and reports them explicitly.
+
 ## Fork behavior audit, 2026-10-28
 
 - [x] Native-qualify MOREmbedded's `lib_check_schlib` report path on a
