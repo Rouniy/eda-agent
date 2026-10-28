@@ -857,6 +857,25 @@ flags. The board was closed and its scratch file removed. This proves
 native property read/write persistence on this AD26 build; a polygon
 repour or DRC effect was not tested in this run.
 
+## Native keepout effect on a polygon pour
+
+A second disposable PcbDoc closed the repour gap above on AD26.11.1.5.
+`pcb.place_polygon_rect` poured one netless Top Layer polygon over
+`(1500,1500)` to `(2500,2500)` mil. Before the keepout, the copper
+layout model had one poured region. A 20 mil Top Layer track ran from
+`(2000,1450)` to `(2000,2550)` mil across it. `generic.modify_objects`
+set `IsKeepout=true`, `IsKeepoutForCopper=true`, and
+`IsKeepoutForTrack=false`; readback confirmed all three.
+
+`pcb.repour_polygons` rebuilt that one polygon with `failed=0` and
+reported `pieces_before=1`, `pieces_after=2`, and copper area dropping
+from `645.16` to `618.848052624` square mm. The copper layout model
+then contained two poured regions. After an exact save, close and
+reopen, it still contained two and the track retained the three flag
+values. This verifies the native copper-exclusion effect in addition
+to property persistence. DRC treatment of other object kinds was not
+measured. The scratch board was closed and removed.
+
 ## Fresh changed-tool and path inventory after `.175`
 
 At `192ae5f`, `fork-status --fetch --cached-forks
