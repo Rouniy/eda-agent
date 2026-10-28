@@ -61,6 +61,7 @@ commits themselves were merged.
 | `redbird98` `1ff554f`, `f3c2a5c`, `0b6433a`, `f293e80` | Fab statistics classify vias by `LowLayer`/`HighLayer`; DRC re-focuses the board; focus and exact-board resolution verify the selected document | `PCB_GetFabStats`, DRC and focus handlers, `ResolvePCBBoard`; `test_fab_stats_via_spans.py` and existing native batch DRC acceptance |
 | `redbird98/main` `a563269` | OutJob is activated before its container runs | `Project.pas`; `test_outjob_activation.py` |
 | `tisn1678065900-dot/boardquality` `21f0412` | The quality skill and all five `docs/pcb-quality` artifacts are already tracked | `skills/boardquality/SKILL.md`, `docs/pcb-quality/` |
+| `pieterpotgieter` `3e7369b` | Paste-enabled reads and writes have a product-version guard; current source extends measured support to AD25.8 | `PadPasteFlagSupported`; `test_pad_paste_flag_version_gate.py` passed 3/3; AD23 compile remains unverified here |
 | `mooreaa/main` placement-cleanup test | Font inference, placement tidy, live-pin filtering and port properties are present | 20/22 donor source tests pass; the two failures require an old exact source spelling: the current pin filter also checks query mode and non-library scope, while the public port width now forwards a decimal rather than an integer |
 
 The six focused test files for fractional mils, via spans, OutJob,
@@ -79,3 +80,14 @@ script project. This is a possible compatibility gap, not a proved missing
 runtime feature: the current AD26.11 script responds, but no AD25 host is
 available for a compile check. Review the stub and project wiring before
 claiming AD25 parity.
+
+The other `wizd/edev` tip (`6d6cb62`) adds footprint writes and
+component-origin recentering. Both routes are already in `main`;
+`test_footprint_writes_land_where_asked.py` and `test_recenter_origins.py`
+passed 18/18. The donor's `6603c0a` replaces the script project with a
+minimal project and `StatusFormStub.pas`, and `9a9ed84` keeps that
+headless replacement during deployment. That is an AD25-specific
+compatibility route, not a direct replacement for the AD26 status form
+currently loaded from the main script project. Native AD25 acceptance is
+still needed to decide how to expose it without changing the AD26
+runtime's dashboard.
