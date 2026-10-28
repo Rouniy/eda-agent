@@ -2047,7 +2047,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     import logging as _log
     _log.getLogger("werkzeug").setLevel(_log.WARNING)
     srv = make_server(args.host, args.port, app, threaded=True)
-    publish_dashboard_url(pid_path.parent, args.host, args.port)
+    try:
+        publish_dashboard_url(pid_path.parent, args.host, args.port)
+    except OSError as exc:
+        logger.warning("dashboard bound but could not publish URL: %s", exc)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -427,7 +427,10 @@ def _spawn_dashboard_background(host: str, port: int) -> "Optional[object]":
             _log.getLogger("werkzeug").setLevel(_log.WARNING)
             srv = make_server(host, port, app, threaded=True)
             server_holder["srv"] = srv
-            publish_dashboard_url(get_config().workspace_dir, host, port)
+            try:
+                publish_dashboard_url(get_config().workspace_dir, host, port)
+            except OSError as exc:
+                logger.warning("dashboard bound but could not publish URL: %s", exc)
             srv.serve_forever()
         except OSError as e:
             logger.warning("dashboard could not bind %s:%s (%s)",
