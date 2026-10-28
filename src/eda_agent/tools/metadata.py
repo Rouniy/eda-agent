@@ -153,8 +153,6 @@ _OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts", "engineering"})
 # category took the other option and drifted three times; see
 # test_maturity_matches_reality.
 _OFFLINE_TOOLS = frozenset({
-    # Legacy entry point returns a static refusal and never reaches Altium.
-    "proj_export_pdf",
     # Read a profile directory off local disk; Altium is not involved.
     "profile_show", "profile_list",
     # Read or write library FILES directly (OLE streams, LibPkg text,
@@ -257,7 +255,8 @@ INTERACTION_OVERRIDES = {
     # Batch DRC runs without a dialog by default. allow_modal=True still
     # opens the Design Rule Checker and can block the bridge.
     "pcb_run_drc": SILENT,
-    "proj_export_pdf": READONLY,      # legacy entry point only returns a refusal
+    "proj_export_pdf": MODAL,        # direct print requires an explicit opt-in
+    "proj_export_image": MODAL,      # its PDF opt-in opens Preview SCH
     "proj_export_schematic_pdf": SILENT,  # disposable project and PDF under _screens
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and

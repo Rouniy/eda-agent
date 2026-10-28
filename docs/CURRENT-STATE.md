@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+## Explicit direct-print opt-in, 2026-10-28
+
+The remaining `mooreaa` print-dialog correction is adapted into both
+legacy PDF entry points. By default `proj_export_pdf` and
+`proj_export_image(format="pdf")` return `PREVIEW_NOT_SILENT` without
+touching Altium. `open_print_dialog=True` permits the native path,
+refuses an existing output file, and validates a claimed PDF by its
+`%PDF-` header. Both tools are catalogued as potentially modal.
+
+After restarting only HTTP MCP, a disposable SchDoc test confirmed the
+default refusal and that the explicit `proj_export_pdf` call opened
+Altium's Preview SCH dialog. The bridge correctly reported a modal
+instead of pretending that a PDF was written. `app_send_keys(escape)`
+closed the dialog, `app_ping` resumed at `.125`, no PDF existed, and the
+copy closed without a save. The `proj_export_image` PDF path was not
+opened separately in native QA. Export/metadata tests: 87 pass.
+
 ## Native Description persistence and capture QA, 2026-10-28
 
 The prior PIC24 batch DRC stalled Altium's UI and bridge. After its run

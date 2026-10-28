@@ -1142,23 +1142,53 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
-    async def proj_export_pdf(output_path: str) -> dict[str, Any]:
-        """Legacy direct-print entry point; use proj_export_schematic_pdf.
+    async def proj_export_pdf(output_path: str,
+                              open_print_dialog: bool = False) -> dict[str, Any]:
+        """Open the focused document's print dialog for a PDF on request.
+
+        Direct printing opens Preview SCH and blocks the bridge until the
+        dialog is answered. The default refuses; use
+        ``proj_export_schematic_pdf`` for an unattended export. With
+        ``open_print_dialog=True``, finish the dialog in Altium. An existing
+        output file is refused so a cancelled print cannot look successful.
 
         Args:
-            output_path: Full path for the output PDF file
+            output_path: Full path for the output PDF file.
+            open_print_dialog: Explicitly open Altium's modal print dialog.
 
         Returns:
             Dictionary confirming export
         """
-        return {
-            "success": False,
-            "error": {
-                "code": "PREVIEW_NOT_SILENT",
-                "message": "Direct print opens Preview SCH on this Altium build. "
-                           "Use proj_export_schematic_pdf(project_path, output_path).",
-            },
-        }
+        if not open_print_dialog:
+            return {
+                "success": False,
+                "error": {
+                    "code": "PREVIEW_NOT_SILENT",
+                    "message": "Direct print opens Preview SCH on this Altium build. "
+                               "Use proj_export_schematic_pdf(project_path, output_path), "
+                               "or pass open_print_dialog=True for manual printing.",
+                },
+            }
+        import os
+
+        if os.path.exists(output_path):
+            return {"success": False, "error": {"code": "OUTPUT_PATH_EXISTS",
+                "message": "Choose a new output path for the interactive print."}}
+        result = await get_bridge().send_command_async(
+            "project.export_pdf", {"output_path": output_path}, timeout=120.0)
+        if not isinstance(result, dict):
+            return result
+        result["modal_expected"] = True
+        if result.get("success"):
+            try:
+                with open(output_path, "rb") as pdf:
+                    valid = pdf.read(5) == b"%PDF-"
+            except OSError:
+                valid = False
+            if not valid:
+                result["success"] = False
+                result["error"] = "EXPORT_FILE_INVALID"
+        return result
 
     @mcp.tool()
     async def proj_export_schematic_pdf(project_path: str, output_path: str) -> dict[str, Any]:
@@ -1854,11 +1884,13 @@ def register_project_tools(mcp):
         format: str = "pdf",
         width: int = 1920,
         height: int = 1080,
+        open_print_dialog: bool = False,
     ) -> dict[str, Any]:
-        """Legacy image export. PDF callers use proj_export_schematic_pdf.
+        """Export an image, or explicitly open the PDF print dialog.
 
         Direct PDF printing opens Preview SCH on this Altium build, so this
-        handler refuses ``format="pdf"`` without invoking Altium. Raster
+        handler refuses ``format="pdf"`` unless ``open_print_dialog=True``.
+        A pre-existing PDF path is refused before Altium can delete it. Raster
         formats still use the native handler and may return
         ``IMAGE_FORMAT_UNSUPPORTED``.
 
@@ -1867,6 +1899,7 @@ def register_project_tools(mcp):
             format: Output format; PDF returns PREVIEW_NOT_SILENT.
             width: Kept for API compatibility.
             height: Kept for API compatibility.
+            open_print_dialog: Explicitly open Altium's modal PDF preview.
 
         Returns:
             Dictionary confirming the export with the resolved path,
@@ -1875,15 +1908,19 @@ def register_project_tools(mcp):
         """
         import os
 
-        if format.lower().lstrip(".") == "pdf":
+        if format.lower().lstrip(".") == "pdf" and not open_print_dialog:
             return {
                 "success": False,
                 "error": {
                     "code": "PREVIEW_NOT_SILENT",
                     "message": "Direct print opens Preview SCH on this Altium build. "
-                               "Use proj_export_schematic_pdf(project_path, output_path).",
+                               "Use proj_export_schematic_pdf(project_path, output_path), "
+                               "or pass open_print_dialog=True for manual printing.",
                 },
             }
+        if format.lower().lstrip(".") == "pdf" and os.path.exists(output_path):
+            return {"success": False, "error": {"code": "OUTPUT_PATH_EXISTS",
+                "message": "Choose a new output path for the interactive print."}}
 
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -1913,7 +1950,7 @@ def register_project_tools(mcp):
                         head = fh.read(5)
                 except OSError:
                     pass
-                if str(format).lower() == "pdf" and head != b"%PDF-":
+                if str(format).lower().lstrip(".") == "pdf" and head != b"%PDF-":
                     result["success"] = False
                     result["error"] = "EXPORT_FILE_INVALID"
                     result["details"] = (

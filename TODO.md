@@ -24,6 +24,13 @@
 - [x] Restore the fork's `_KEYS_HELP` text. Without it, unsupported
   keystrokes raised `NameError` instead of explaining accepted keys;
   the focused UI suite now passes 120 tests.
+- [x] Port explicit `open_print_dialog=True` to `proj_export_pdf` and
+  `proj_export_image(format="pdf")`. Default calls still refuse without
+  touching Altium, existing output files are protected, and metadata
+  marks both as potentially modal. Native QA on a disposable SchDoc
+  opened Preview SCH; Escape cancelled it, wrote no PDF, and the bridge
+  resumed. The explicit `proj_export_image` route still needs its own
+  native check before claiming successful PDF output.
 
 ## Fresh `mooreaa` stack builder, 2026-10-28
 
