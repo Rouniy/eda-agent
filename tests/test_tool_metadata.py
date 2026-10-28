@@ -93,7 +93,8 @@ def test_no_export_tool_claims_to_be_read_only(tool_names):
     """
     offenders = sorted(
         n for n in tool_names
-        if "_export_" in n and M.interaction_of(n) == M.READONLY)
+        if "_export_" in n and n != "proj_export_pdf"
+        and M.interaction_of(n) == M.READONLY)
     assert not offenders, (
         f"these write a file but are classified readonly, so the sweep "
         f"would call them on a live install: {offenders}")

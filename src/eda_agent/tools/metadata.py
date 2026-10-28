@@ -108,6 +108,7 @@ _SIMULATOR_TOOLS = frozenset({
     "audit_find_missing_decoupling",
     "audit_find_pin_net_name_mismatches",
     "audit_find_unconnected_ic_pins", "design_lint_report",
+    "eng_eco_preview_live",
     "lib_add_footprint_arc", "lib_add_footprint_pad",
     "lib_add_footprint_pads", "lib_add_footprint_track",
     "lib_add_footprint_tracks", "lib_add_pins",
@@ -117,22 +118,22 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_create_ic_symbol", "lib_create_standard_footprint",
     "lib_create_symbol", "lib_delete_footprint_primitives", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components",
-    "lib_link_3d_model", "lib_link_footprint", "lib_search",
+    "lib_link_3d_model", "lib_link_footprint",
     "obj_batch_delete", "obj_batch_modify",
     "obj_create", "obj_delete", "obj_deselect_all", "obj_get_font_id",
     "obj_get_font_spec", "obj_modify", "obj_query", "obj_run_process",
-    "obj_select", "obj_zoom", "pcb_bind_pad_nets",
+    "obj_select", "obj_zoom", "obj_zoom_to_xy", "pcb_bind_pad_nets",
     "pcb_build_from_project", "pcb_create_nets_from_list",
     "pcb_get_board_outline", "pcb_get_board_statistics",
     "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
     "pcb_get_unrouted_nets",
-    "pcb_get_vias", "pcb_move_components", "pcb_place_components",
+    "pcb_get_vias", "pcb_move_components",
     "pcb_place_diff_pair_vias", "pcb_place_tracks", "pcb_place_via",
     "pcb_plan_bga_fanout", "pcb_plan_return_vias",
     "pcb_rebuild_connectivity", "pcb_route_diff_pair", "pcb_run_drc",
     "proj_add_document", "proj_annotate", "proj_compile",
     "proj_create", "proj_cross_probe", "proj_export_bom_html",
-    "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
+    "proj_export_netlist", "proj_get_board_info",
     "proj_get_bom", "proj_get_component_info", "proj_get_focused",
     "proj_get_nets", "proj_get_parameters", "proj_get_stats",
     "proj_list_documents", "proj_open", "proj_remove_document",
@@ -152,6 +153,8 @@ _OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts", "engineering"})
 # category took the other option and drifted three times; see
 # test_maturity_matches_reality.
 _OFFLINE_TOOLS = frozenset({
+    # Legacy entry point returns a static refusal and never reaches Altium.
+    "proj_export_pdf",
     # Read a profile directory off local disk; Altium is not involved.
     "profile_show", "profile_list",
     # Read or write library FILES directly (OLE streams, LibPkg text,
@@ -162,6 +165,7 @@ _OFFLINE_TOOLS = frozenset({
 })
 
 _ENGINEERING_EXTERNAL = frozenset({
+    "eng_eco_preview_live",
     "eng_compare_live_ipc_footprint", "eng_a365_workspaces",
     "eng_a365_projects", "eng_a365_project", "eng_a365_library_folders",
     "eng_a365_library_components", "eng_a365_component", "eng_a365_query",
@@ -182,7 +186,8 @@ _OFFLINE_SUBSTRINGS = ("_calc_", "calc_", "_compute_", "compute_")
 # the package checks compute over a package description and never reach an
 # editor, so they work with nothing running.
 _OFFLINE_BY_NAME = frozenset({"footprint_check_package",
-                              "footprint_render_package"})
+                              "footprint_render_package",
+                              "pcb_stack_from_file"})
 
 # ...except calculators that read their input FROM THE BOARD. The
 # substring rule above assumes a calc tool is pure maths; these query
@@ -465,6 +470,8 @@ _EASYEDA_CATEGORY_OVERRIDE = {
     # Pure computation over a plan; they send nothing.
     "easyeda_emit_template": "design",
     "easyeda_emit_template_connections": "design",
+    "easyeda_emit_plan": "design",
+    "easyeda_emit_connections": "design",
     # Sends nothing directly either: it dispatches to whichever tools an
     # emitted plan names, so there is no command namespace to read.
     "easyeda_run_plan": "design",

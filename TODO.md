@@ -10,8 +10,11 @@
   an inserted four-layer stack persisted after save/close/reopen. Check
   plane identity and dielectric material in the final readback.
 - [ ] Qualify stack-build failures and recovery on project-backed and
-  populated boards; inspect saved-stack file parity independently. The
-  current tool leaves partial failures unsaved and reports them explicitly.
+  populated boards. The current tool leaves partial failures unsaved and
+  reports them explicitly.
+- [x] Port `pcb_stack_from_file` and compare V9 and legacy reads on the
+  saved four-layer QA board: no findings or expected-stack mismatches.
+  Gate legacy V7 writes behind explicit opt-in.
 
 ## Fork behavior audit, 2026-10-28
 

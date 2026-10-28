@@ -5337,6 +5337,32 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
+    async def pcb_stack_from_file(
+        pcbdoc_path: str, expected: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Check a SAVED PcbDoc's physical and legacy layer stacks offline.
+
+        Reads the Board6/Data V9 stack and compares it with the legacy
+        copper chain. Use after saving stack edits; this does not contact
+        Altium and cannot observe unsaved changes.
+        """
+        from ..fileio import altium_pcb_stack
+
+        path = Path(pcbdoc_path)
+        if not path.is_absolute() or path.suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "pcbdoc_path must be an absolute PcbDoc path"}
+        if not path.is_file():
+            return {"ok": False, "reason": f"no such file: {pcbdoc_path}"}
+        try:
+            out = altium_pcb_stack.read_stack(str(path))
+            if expected is not None:
+                out["mismatches"] = altium_pcb_stack.compare_expected(out["layers"], expected)
+                out["ok"] = out["ok"] and not out["mismatches"]
+            return out
+        except Exception as exc:  # malformed or unsupported CAD file
+            return {"ok": False, "reason": f"could not read the stack: {exc}"}
+
+    @mcp.tool()
     async def pcb_build_stack(
         board_path: str, layers: list[dict[str, Any]], dry_run: bool = True,
     ) -> dict[str, Any]:
@@ -6210,7 +6236,8 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
-    async def pcb_add_layer(layer: str, above: str = "", below: str = "") -> dict[str, Any]:
+    async def pcb_add_layer(layer: str, above: str = "", below: str = "",
+                            legacy_stack_write: bool = False) -> dict[str, Any]:
         """Insert a copper layer into the PCB layer stack.
 
         Valid names include MidLayer1..MidLayer30 (signal layers) and
@@ -6223,10 +6250,16 @@ def register_pcb_tools(mcp):
             layer: Layer name, e.g. "MidLayer1", "InternalPlane1"
             above: Put it directly above this layer.
             below: Put it directly below this layer.
+            legacy_stack_write: Explicit opt-in to the legacy V7 stack path.
 
         Returns:
             ``layer`` and ``stack_order``, the copper layers top down.
         """
+        if not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "The V7 stack path can corrupt the saved physical stack. "
+                    "Use pcb_build_stack on an exact PcbDoc, or opt in and "
+                    "verify the saved file with pcb_stack_from_file."}
         if above.strip() and below.strip():
             return {"ok": False, "reason": "give above or below, not both"}
         params: dict[str, Any] = {"layer": layer}
@@ -6234,10 +6267,14 @@ def register_pcb_tools(mcp):
             params["above"] = above.strip()
         if below.strip():
             params["below"] = below.strip()
-        return await get_bridge().send_command_async("pcb.add_layer", params)
+        result = await get_bridge().send_command_async("pcb.add_layer", params)
+        if isinstance(result, dict):
+            result.setdefault("verify", "save and check with pcb_stack_from_file")
+        return result
 
     @mcp.tool()
-    async def pcb_remove_layer(layer: str) -> dict[str, Any]:
+    async def pcb_remove_layer(layer: str,
+                               legacy_stack_write: bool = False) -> dict[str, Any]:
         """Remove a copper layer from the PCB layer stack.
 
         Calls IPCB_LayerStack.RemoveFromStack on the requested layer.
@@ -6245,14 +6282,21 @@ def register_pcb_tools(mcp):
 
         Args:
             layer: Layer name, e.g. "MidLayer1", "InternalPlane2"
+            legacy_stack_write: Explicit opt-in to the legacy V7 stack path.
 
         Returns:
             Dictionary confirming the layer was removed.
         """
+        if not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "Use pcb_build_stack on an exact PcbDoc, or opt in and "
+                    "verify the saved file with pcb_stack_from_file."}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.remove_layer", {"layer": layer}
         )
+        if isinstance(result, dict):
+            result.setdefault("verify", "save and check with pcb_stack_from_file")
         return result
 
     @mcp.tool()
@@ -6264,6 +6308,7 @@ def register_pcb_tools(mcp):
         dielectric_height_mils: float = 0.0,
         dielectric_constant: float = 0.0,
         dielectric_material: str = "",
+        legacy_stack_write: bool = False,
     ) -> dict[str, Any]:
         """Tune properties on an existing copper layer.
 
@@ -6287,10 +6332,16 @@ def register_pcb_tools(mcp):
                 (optional)
             dielectric_constant: New Dk value (optional)
             dielectric_material: New dielectric material string (optional)
+            legacy_stack_write: Explicit opt-in for any dielectric field.
 
         Returns:
             Dictionary confirming the changes.
         """
+        if (dielectric_type or dielectric_height_mils or dielectric_constant
+                or dielectric_material) and not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "Legacy dielectric writes can corrupt the saved physical stack. "
+                    "Use pcb_build_stack or opt in and verify with pcb_stack_from_file."}
         bridge = get_bridge()
         params: dict[str, str] = {"layer": layer}
         if name:
@@ -6306,12 +6357,15 @@ def register_pcb_tools(mcp):
         if dielectric_material:
             params["dielectric_material"] = dielectric_material
         result = await bridge.send_command_async("pcb.modify_layer", params)
+        if legacy_stack_write and isinstance(result, dict):
+            result.setdefault("verify", "save and check with pcb_stack_from_file")
         return result
 
     @mcp.tool()
     async def pcb_configure_multilayer_stackup(
         operations: list[dict[str, Any]],
         dry_run: bool = True,
+        legacy_stack_write: bool = False,
     ) -> dict[str, Any]:
         """Apply a validated sequence of multilayer stack operations.
 
@@ -6320,6 +6374,8 @@ def register_pcb_tools(mcp):
         ``pcb_modify_layer``: name, copper thickness, dielectric type/height,
         dielectric constant, and material. Dry-run is the default because
         layer-stack changes can invalidate existing routing.
+        Applying uses the legacy V7 stack path and requires explicit
+        ``legacy_stack_write=True``; verify the saved physical stack.
         """
         normalized = []
         for index, raw in enumerate(operations):
@@ -6341,6 +6397,10 @@ def register_pcb_tools(mcp):
         if dry_run:
             return {"success": True, "dry_run": True, "operations": normalized,
                     "warning": "Stack changes can invalidate existing routing."}
+        if not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "Use pcb_build_stack on an exact PcbDoc, or opt in and "
+                    "verify the saved file with pcb_stack_from_file."}
         bridge = get_bridge()
         results = []
         for op in normalized:
@@ -6351,7 +6411,8 @@ def register_pcb_tools(mcp):
             result = await bridge.send_command_async(command, params)
             results.append({"operation": op, "result": result})
         return {"success": True, "dry_run": False, "results": results,
-                "operations_applied": len(results)}
+                "operations_applied": len(results),
+                "verify": "save and check with pcb_stack_from_file"}
 
     @mcp.tool()
     async def pcb_apply_impedance_rules(

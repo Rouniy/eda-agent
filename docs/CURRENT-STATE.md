@@ -24,6 +24,18 @@ unsaved for explicit inspection and discard; it never silently closes a
 project-backed board. Broader board fixtures and failure recovery remain
 to be qualified before calling this a general stack migration guarantee.
 
+The fork's `pcb_stack_from_file` saved-file reader now parses the V9
+physical stack and legacy copper chain without Altium. Against the saved
+four-layer QA file it found four copper layers, three dielectrics, no
+findings and no expected-stack mismatches. The parser refuses an absent
+V9 stack or absent legacy chain instead of reporting an empty file healthy.
+Legacy `pcb_add_layer`, `pcb_remove_layer`, dielectric fields of
+`pcb_modify_layer` and the batch stack configurator now require explicit
+`legacy_stack_write=True`; accepted replies direct the caller to saved-file
+verification. The metadata catalog was reconciled with the static
+`proj_export_pdf` refusal, two new EasyEDA emitters and current simulator
+coverage. The 204 related stack, metadata and simulator tests pass.
+
 ## MOREmbedded library checker and footprint export QA, 2026-10-28
 
 On a separate Temp copy of `SpiritLevel_2E.SchLib`, the public
