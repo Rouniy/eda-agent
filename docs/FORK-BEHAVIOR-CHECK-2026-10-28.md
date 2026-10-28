@@ -488,6 +488,31 @@ accessor complete.
 
 ## Latest live-ref and regression check
 
+### Small-fork behavior audit after the 49-tip inventory
+
+Three divergent tips whose branch names were not called out in the earlier
+tables have been compared directly with current source:
+
+| Fork commit | Donor change | Current `main` evidence |
+| --- | --- | --- |
+| `lda-audiotech/main` `22bb2df` | Read non-ASCII workspace pointers and accept a UTF-8 BOM on bridge responses | `diag/health.py` decodes the pointer using `config._pointer_encoding()` (the same codec used to write it), and `bridge/altium_bridge.py:_read_response_json` decodes UTF-8 with BOM before its legacy-codepage fallback. |
+| `jah-yee/fix/wintypes-import` `afa1369` | Import `ctypes.wintypes` for window pointer actions | `ui/windows.py` imports `wintypes` and `byref` together; `wintypes.POINT` is available to the pointer paths. |
+| `malteheringorgatex/wsl-process-detection` `d57df64` | Query Windows `tasklist.exe` from WSL instead of trusting Linux `psutil` | `bridge/process_manager.py:_windows_tasklist_rows` reads the Windows process list, and `_scan_running` uses it when Toolhelp is unavailable. It treats unavailable WSL interop as unknown rather than incorrectly reporting Altium absent. |
+
+The three focused files `test_non_ascii_paths_and_bom_responses.py`,
+`test_pointer_gestures_reach_win32.py`, and `test_wsl_bridge_reachability.py`
+passed 16/16. These are source and local behavior checks, not native AD25
+acceptance.
+
+The donor-only `_validate_pin_designator` helper in `rabihnd/integration` was
+also compared with `tools/library.py:_single_pad_designator`. Both reject
+grouped pin aliases. Current batch builders deliberately count and report
+blank designators as skipped, with an exception for unplated mounting holes;
+copying the donor's blanket empty-value rejection would remove that behavior.
+The donor's `_prjscr_is_ad25_safe` checks only two header strings. The current
+script project contains neither, but this is not proof of AD25 native
+compatibility; the AD25 runtime check remains open.
+
 At `main` `6cdb3af`, `fork-status --fetch --cached-forks
 --verify-fork-branches --json` refreshed origin, upstream and MOREmbedded.
 The upstream tip and merge base are both `0bb1b3154cca6e58a517b23edee3d7a108f1c232`;
