@@ -1,5 +1,16 @@
 # Fork integration TODO
 
+## `redbird98` modal DRC reconciliation, 2026-10-28
+
+- [x] Restore the violation loop's count, detail append, iterator advance
+  and destroy in opt-in modal DRC. Source `.149` passes Pascal lint/build
+  and related source checks; the silent batch path is unchanged.
+- [x] Include AD25's default `Project Outputs for <project>` report paths
+  when confirming a modal DRC, comparing each path's age before and after.
+- [ ] Qualify the opt-in modal DRC on an AD25 machine with an answered
+  dialog and a board that has violations. Current native Altium is 26.11;
+  no modal was opened on the shared bridge for this source-only port.
+
 ## Project-wide sheet coverage from `redbird98`, 2026-10-28
 
 - [x] Return `SHEETS_NOT_LOADED` when every schematic in a project-wide

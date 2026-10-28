@@ -2445,6 +2445,49 @@ Begin
     End;
 End;
 
+{ AD25 can ignore DM_GetOutputPath and use its default "Project Outputs   }
+{ for <project>" directory. Check both the project and board directories  }
+{ because the board may be stored in a subdirectory of the project.       }
+Function DrcDefaultOutputsReportPath(Board : IPCB_Board;
+    UseProjectDir : Boolean) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    P, I : Integer;
+    BoardPath, ProjPath, Root : String;
+Begin
+    Result := '';
+    If Board = Nil Then Exit;
+    BoardPath := '';
+    Try BoardPath := Board.FileName; Except End;
+    If BoardPath = '' Then Exit;
+    Try Workspace := GetWorkspace; Except Workspace := Nil; End;
+    If Workspace = Nil Then Exit;
+    For P := 0 To Workspace.DM_ProjectCount - 1 Do
+    Begin
+        Project := Workspace.DM_Projects(P);
+        If Project = Nil Then Continue;
+        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Nil;
+            Try Doc := Project.DM_LogicalDocuments(I); Except End;
+            If Doc = Nil Then Continue;
+            If UpperCase(Doc.DM_FullPath) <> UpperCase(BoardPath) Then Continue;
+            ProjPath := '';
+            Try ProjPath := Project.DM_ProjectFullPath; Except End;
+            If ProjPath = '' Then Exit;
+            If UseProjectDir Then Root := ExtractFilePath(ProjPath)
+            Else Root := ExtractFilePath(BoardPath);
+            Result := Root + 'Project Outputs for '
+                + ChangeFileExt(ExtractFileName(ProjPath), '')
+                + '\Design Rule Check - '
+                + ChangeFileExt(ExtractFileName(BoardPath), '') + '.drc';
+            Exit;
+        End;
+    End;
+End;
+
 {..............................................................................}
 { PCB_RunDRC - Run design rule check, return violation count                  }
 {..............................................................................}
@@ -2584,8 +2627,11 @@ Var
     Iterator : IPCB_BoardIterator;
     Violation : IPCB_Violation;
     JsonItems, ReportPath, AllowStr, OutputsPath : String;
+    ProjectDefaultPath, BoardDefaultPath : String;
     First, ReportPresent, AllowModal, ReportFresh, BatchOk : Boolean;
     ReportBefore, ReportAfter, OutputsBefore, OutputsAfter : Integer;
+    ProjectDefaultBefore, ProjectDefaultAfter : Integer;
+    BoardDefaultBefore, BoardDefaultAfter : Integer;
     BoardDoc : IServerDocument;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -2669,6 +2715,10 @@ Begin
     ReportBefore := DrcReportAge(ReportPath);
     OutputsPath := DrcOutputsReportPath(Board);
     OutputsBefore := DrcReportAge(OutputsPath);
+    ProjectDefaultPath := DrcDefaultOutputsReportPath(Board, True);
+    ProjectDefaultBefore := DrcReportAge(ProjectDefaultPath);
+    BoardDefaultPath := DrcDefaultOutputsReportPath(Board, False);
+    BoardDefaultBefore := DrcReportAge(BoardDefaultPath);
 
     { The modal process operates on the front board; its previous report
       may have taken focus, so show the board on every invocation. }
@@ -2690,6 +2740,20 @@ Begin
         ReportFresh := True;
         ReportPath := OutputsPath;
     End;
+    ProjectDefaultAfter := DrcReportAge(ProjectDefaultPath);
+    If (Not ReportFresh) And (ProjectDefaultAfter >= 0)
+        And (ProjectDefaultAfter > ProjectDefaultBefore) Then
+    Begin
+        ReportFresh := True;
+        ReportPath := ProjectDefaultPath;
+    End;
+    BoardDefaultAfter := DrcReportAge(BoardDefaultPath);
+    If (Not ReportFresh) And (BoardDefaultAfter >= 0)
+        And (BoardDefaultAfter > BoardDefaultBefore) Then
+    Begin
+        ReportFresh := True;
+        ReportPath := BoardDefaultPath;
+    End;
 
     // Count violations by iterating
     ViolationCount := 0;
@@ -2704,9 +2768,16 @@ Begin
     Violation := Iterator.FirstPCBObject;
     While Violation <> Nil Do
     Begin
-        ReportFresh := True;
-        ReportPath := OutputsPath;
+        Inc(ViolationCount);
+        If ViolationCount <= 100 Then
+        Begin
+            If Not First Then JsonItems := JsonItems + ',';
+            First := False;
+            JsonItems := JsonItems + BuildViolationJson(Violation);
+        End;
+        Violation := Iterator.NextPCBObject;
     End;
+    Board.BoardIterator_Destroy(Iterator);
 
     { A ZERO HERE USED TO BE INDISTINGUISHABLE FROM A CANCELLED CHECK.       }
     { PCB:DesignRuleCheck opens the Design Rule Checker dialog on AD26.      }

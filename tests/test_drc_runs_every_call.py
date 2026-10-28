@@ -43,3 +43,26 @@ def test_the_output_report_name_follows_altium():
     helper = load(_PCB)["DrcOutputsReportPath"]
     assert "'Design Rule Check - '" in helper
     assert "Project.DM_GetOutputPath" in helper
+
+
+def test_ad25_default_output_paths_are_watched_for_freshness():
+    body = _body()
+    helper = load(_PCB)["DrcDefaultOutputsReportPath"]
+    assert "'Project Outputs for '" in helper
+    assert "ExtractFilePath(ProjPath)" in helper
+    assert "ExtractFilePath(BoardPath)" in helper
+    run = body.index("RunProcess('PCB:DesignRuleCheck')")
+    for prefix in ("ProjectDefault", "BoardDefault"):
+        assert body.index(f"{prefix}Before := DrcReportAge(") < run
+        assert body.index(f"{prefix}After := DrcReportAge(") > run
+        assert f"{prefix}After > {prefix}Before" in body
+
+
+def test_modal_drc_advances_past_each_violation():
+    body = _body()
+    loop = body[body.index("Violation := Iterator.FirstPCBObject;"):]
+    loop = loop[:loop.index("Board.BoardIterator_Destroy(Iterator);")]
+    assert "Inc(ViolationCount);" in loop
+    assert "JsonItems := JsonItems + BuildViolationJson(Violation);" in loop
+    assert "Violation := Iterator.NextPCBObject;" in loop
+    assert "ReportFresh := True;" not in loop

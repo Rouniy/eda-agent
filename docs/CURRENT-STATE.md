@@ -1,5 +1,25 @@
 # Current integration state / agent handoff
 
+## Modal DRC violation loop and AD25 report fallback, 2026-10-28
+
+Reviewing `redbird98`'s DRC tests found a severe merge loss in our opt-in
+`PCB_RunDRC(allow_modal=true)`: the violation iterator's loop body only
+assigned report variables and never advanced. On any board with a
+violation, a completed dialog would hang the script loop. Script `.149`
+restores the count, first 100 detailed rows, iterator advancement and
+iterator destruction. The default silent batch path returns before that
+code and is unchanged.
+
+The modal path also checks the AD25 default `Project Outputs for
+<project>` DRC report under both the project and board directories,
+in addition to the board-side `.DRC` and Altium's configured output
+path. Each candidate's file age is compared with its own pre-run age;
+a stale report cannot confirm a cancelled check. The AD25 fallback is
+source-qualified only because this machine runs Altium 26.11.1.5 and a
+modal DRC would block the shared bridge until its dialog is answered.
+Pascal lint/build passed 12 units, 66 related Python checks passed, and
+`app_ping` confirmed loaded/bundled `.149` with no stale units.
+
 ## Fail closed when no project sheets are loaded, 2026-10-28
 
 The `redbird98` sheet-coverage guard exposed a real gap in the adapted
