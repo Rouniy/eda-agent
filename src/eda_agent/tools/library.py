@@ -8143,6 +8143,9 @@ def register_library_tools(mcp):
         library_a: str = "",
         library_b: str = "",
         tol_mm: float = 0.001,
+        courtyard_layer: str = "",
+        assembly_layer: str = "",
+        tolerance_mm: float | None = None,
     ) -> dict[str, Any]:
         """Compare two footprints pad by pad and layer by layer. Read-only.
 
@@ -8151,14 +8154,26 @@ def register_library_tools(mcp):
         the one you trust. Pads match by name; each matched pair lists the
         fields that differ (position, size, shape, corner, rotation, hole,
         layer, paste and mask expansion), lengths within ``tol_mm``.
-        Primitives compare as counts per layer and kind.
+        Primitives compare as counts per layer and kind, plus geometry by
+        layer role. Mechanical-layer kinds come from each exact PcbLib;
+        explicit courtyard/assembly names cover libraries with unset kinds.
+
+        ``tolerance_mm`` is the donor's spelling for ``tol_mm`` and takes
+        precedence when supplied.
 
         Returns:
             ``{ok, identical, pad_counts, pads: {only_a, only_b, changed:
             {pad: {field: [a, b]}}, duplicate_names}, primitives:
-            {"layer/kind": [count_a, count_b]}, height_mm}``.
+            {"layer/kind": [count_a, count_b]}, height_mm, geometry}``.
         """
+        from ..bridge.exceptions import AltiumCommandError
         from ..design.footprint_compare import compare_footprints
+        from ..design.landpattern.live import compare_live, model_from_live
+
+        if tolerance_mm is not None:
+            tol_mm = tolerance_mm
+        if not math.isfinite(tol_mm) or tol_mm < 0:
+            return {"ok": False, "reason": "tolerance must be a nonnegative finite number"}
 
         pa, ra, problem = await _read_footprint(footprint_a, library_a)
         if problem:
@@ -8166,9 +8181,36 @@ def register_library_tools(mcp):
         pb, rb, problem = await _read_footprint(footprint_b, library_b)
         if problem:
             return {"ok": False, "reason": f"could not read {footprint_b!r}: {problem}"}
+        notes: list[str] = []
+
+        async def mech_layers(pads: dict, prims: dict, requested: str) -> list[dict]:
+            source = str(prims.get("library_path") or pads.get("library_path")
+                         or requested or "")
+            try:
+                reply = await get_bridge().send_command_async(
+                    "library.get_mech_layers", {"library_path": source})
+            except AltiumCommandError as exc:
+                notes.append(f"mechanical layer kinds unavailable for {source}: {exc}")
+                return []
+            read_path = str((reply or {}).get("library_path") or "")
+            if read_path and source and read_path.casefold() != source.casefold():
+                notes.append(f"mechanical layer kinds came from {read_path}, "
+                             f"not {source}; explicit layer names only")
+                return []
+            return list((reply or {}).get("layers") or [])
+
+        ma = await mech_layers(pa, ra, library_a)
+        mb = await mech_layers(pb, rb, library_b or library_a)
+        a = model_from_live(pa, ra, ma, courtyard_layer=courtyard_layer,
+                            assembly_layer=assembly_layer)
+        b = model_from_live(pb, rb, mb, courtyard_layer=courtyard_layer,
+                            assembly_layer=assembly_layer)
+        geometry = compare_live(a, b, tol=tol_mm)
+        summary = compare_footprints(pa, ra, pb, rb, tol_mm)
+        summary["identical"] = summary["identical"] and geometry["same"]
         return {"ok": True, "a": {"footprint": footprint_a, "library": pa.get("library_path")},
                 "b": {"footprint": footprint_b, "library": pb.get("library_path")},
-                **compare_footprints(pa, ra, pb, rb, tol_mm)}
+                **summary, "geometry": geometry, "notes": notes}
 
     @mcp.tool()
     async def lib_audit_footprint_vs_datasheet(

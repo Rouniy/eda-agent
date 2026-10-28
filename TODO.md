@@ -9,6 +9,12 @@
   track, `via` returned none, and `track|via` returned the track; close
   with discard left the original library untouched. Fifteen focused
   tests passed with one optional skip.
+- [x] Restore the donor's geometry-aware footprint comparison while
+  retaining the existing pad and per-layer count results. Native AD26.11
+  comparison of two disposable PcbLibs with one overlay track each found
+  their 0.508 mm shift even though primitive counts matched; the new
+  `geometry.layers_differing.silk` reported both bounding boxes. Both
+  libraries closed with discard. Thirty-two focused tests pass.
 - [x] Port `rabihnd/integration`'s multipart pin-batch default owner as
   optional `default_owner_part_id`, preserving current-part semantics
   when omitted. Native disposable SchLib readback and save/reopen retained
@@ -50,7 +56,7 @@
   branch refs from the 62-default/117-branch live audit. Divergent Git
   history is not a missing-feature count; record each distinct capability
   against current source and native acceptance where it changes Altium.
-- [ ] Review the other 23 donor-only tool argument pairs from the
+- [ ] Review the other 20 donor-only tool argument pairs from the
   2026-10-28 signature scan. Separate renamed interfaces and intentional
   policy choices from native capabilities still hidden by Python.
 

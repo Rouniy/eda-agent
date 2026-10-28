@@ -104,6 +104,19 @@ one for `kinds=track|via`. The exact library path matched each reply;
 closing with discard left the scratch source unchanged. Fifteen focused
 tests passed with one optional skip.
 
+The same argument scan found `courtyard_layer`, `assembly_layer` and
+`tolerance_mm` missing from the public `lib_compare_footprints` signature.
+Its count-only primitive comparison could call two shifted outlines
+identical. The wrapper now uses the existing `model_from_live` and
+`compare_live` path to add `geometry` and makes `identical` account for
+that result; the old pad and per-layer count fields remain. Mechanical
+layer kinds are read from each returned PcbLib path, with explicit layer
+names as fallback. On two disposable libraries with one overlay track
+shifted by 0.508 mm, native readback returned equal primitive counts but
+`geometry.layers_differing.silk` contained the two distinct boxes and
+`identical=false`. Both libraries closed with discard; 32 focused tests
+passed.
+
 ## 2026-10-28 refresh after script `.155`
 
 `python -m eda_agent fork-status --fetch --cached-forks
