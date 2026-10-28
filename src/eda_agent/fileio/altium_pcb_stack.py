@@ -119,6 +119,10 @@ def physical_stack(keys: dict[str, str]) -> list[dict[str, Any]]:
                 entry["dielectric_constant"] = float(get("DIELCONST"))
             except ValueError:
                 entry["dielectric_constant"] = None
+            try:
+                entry["loss_tangent"] = float(get("DIELLOSSTANGENT"))
+            except ValueError:
+                entry["loss_tangent"] = None
         layers.append(entry)
     return layers
 
@@ -217,9 +221,25 @@ def manager_model(keys: dict[str, str]) -> list[dict[str, Any]] | None:
     for match in re.finditer(r'<Layer Id="([^"]+)" TypeId="[^"]+" Name="[^"]*"(.*?)</Layer>',
                              xml, re.S):
         body = match.group(2)
-        thickness = re.search(r'Name="Thickness"[^>]*>([^<]*)<', body)
+        def property_text(name: str) -> str | None:
+            prop = re.search(rf'Name="{name}"[^>]*>([^<]*)<', body)
+            return prop.group(1) if prop else None
+
+        def property_float(name: str) -> float | None:
+            value = property_text(name)
+            if not value:
+                return None
+            try:
+                return float(value)
+            except ValueError:
+                return None
+
+        material = property_text("Material")
         out.append({"id": match.group(1).strip("{}").lower(),
-                    "thickness_mils": to_mils(thickness.group(1)) if thickness else None})
+                    "thickness_mils": to_mils(property_text("Thickness")),
+                    "material": material.split(":")[-1] if material else None,
+                    "dielectric_constant": property_float("DielectricConstant"),
+                    "loss_tangent": property_float("LossTangent")})
     return out
 
 
@@ -238,7 +258,18 @@ def check_manager_model(layers: list[dict[str, Any]],
             continue
         actual, displayed = layer.get("thickness_mils"), entry["thickness_mils"]
         if actual is not None and displayed is not None and abs(actual - displayed) > _TOL_MILS:
-            differences.append(f"{layer['name']}: manager {displayed:g} mil, stack {actual:g} mil")
+            differences.append(f"{layer['name']} thickness: manager {displayed:g} mil, stack {actual:g} mil")
+        if layer["kind"] != "dielectric":
+            continue
+        for field, tolerance in (("dielectric_constant", 0.01), ("loss_tangent", 0.001)):
+            actual, displayed = layer.get(field), entry.get(field)
+            if actual is not None and displayed is not None and abs(actual - displayed) > tolerance:
+                differences.append(f"{layer['name']} {field}: manager {displayed:g}, stack {actual:g}")
+        actual_material, displayed_material = layer.get("material"), entry.get("material")
+        if (actual_material and displayed_material and
+                actual_material.casefold() != displayed_material.casefold()):
+            differences.append(f"{layer['name']} material: manager {displayed_material}, "
+                               f"stack {actual_material}")
     if not differences:
         return []
     return [{"severity": "warning", "check": "stack_manager_model_stale",
@@ -315,7 +346,8 @@ def compare_expected(layers: list[dict[str, Any]], expected: list[dict[str, Any]
     """Differences between the copper and dielectric layers and an expected list.
 
     ``expected`` is top to bottom, each ``{"kind": "copper"|"dielectric",
-    "name"?, "thickness_mils"?, "dielectric_type"?, "dielectric_constant"?}``.
+    "name"?, "thickness_mils"?, "dielectric_type"?, "dielectric_constant"?,
+    "loss_tangent"?}``.
     """
     board = [layer for layer in layers if layer["kind"] in ("copper", "dielectric")]
     out: list[dict[str, Any]] = []
@@ -327,7 +359,8 @@ def compare_expected(layers: list[dict[str, Any]], expected: list[dict[str, Any]
             if field in want and str(want[field]) != str(got.get(field)):
                 out.append({"check": field, "order": i, "got": got.get(field),
                             "expected": want[field]})
-        for field, tol in (("thickness_mils", tol_mils), ("dielectric_constant", 0.01)):
+        for field, tol in (("thickness_mils", tol_mils), ("dielectric_constant", 0.01),
+                           ("loss_tangent", 0.001)):
             if field in want:
                 g = got.get(field)
                 if g is None or abs(float(g) - float(want[field])) > tol:

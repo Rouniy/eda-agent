@@ -13,6 +13,11 @@ The saved-PcbDoc reader now reports both copper flags as errors and a
 thickness discrepancy between the physical stack and the manager model as
 a warning. On the closed RFSoC frequency-converter PcbDoc, the saved
 manager model decoded into 11 rows and the new checks produced no findings.
+The later reader pass also compares dielectric material, Dk and loss
+tangent when both saved representations contain them. On that same real
+board all three dielectric rows report loss tangent 0.01 and no stale
+finding; a synthetic mismatched model reports all three differences.
+Forty-six focused stack tests pass after this extension.
 
 The donor's manager-model reset was adapted with an expected SHA-256 gate,
 an exact one-key check, a closed-board check in the public tool, and a

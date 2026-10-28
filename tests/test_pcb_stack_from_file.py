@@ -135,7 +135,30 @@ def test_stale_manager_model_is_a_warning(monkeypatch):
     out = _read(monkeypatch, data)
     assert out["ok"] is True
     assert [f["check"] for f in out["findings"]] == ["stack_manager_model_stale"]
-    assert out["findings"][0]["layers"][0].startswith("Top:")
+    assert out["findings"][0]["layers"][0].startswith("Top thickness:")
+
+
+def test_manager_model_material_dk_and_loss_are_compared(monkeypatch):
+    properties = (('<Property Name="Thickness" Type="LengthValue">4mil</Property>')
+                  + '<Property Name="Material" Type="String">OLD</Property>'
+                  + '<Property Name="DielectricConstant" Type="Float">4.2</Property>'
+                  + '<Property Name="LossTangent" Type="Float">0.03</Property>')
+    xml = ('<StackupDocument><Layer Id="bbb" TypeId="x" Name="D1">'
+           + properties + '</Layer></StackupDocument>')
+    model = base64.b64encode(zlib.compress(xml.encode())).decode()
+    data = _data(
+        _v9([_cu("Top", _TOP), dict(_diel("D1", 1, "4mil", dk="4.000"),
+                                     ID="{BBB}", DIELLOSSTANGENT="0.010"),
+             _cu("Bottom", _BOT)]) + [f"V9_STACKCUSTOMDATA={model}"],
+        _legacy([(1, "Top", "1.378mil", 1, "4mil"),
+                 (32, "Bottom", "1.378mil", 0, "0mil")]))
+    out = _read(monkeypatch, data)
+    assert out["ok"] is True
+    assert out["layers"][1]["loss_tangent"] == pytest.approx(0.01)
+    warning = next(f for f in out["findings"] if f["check"] == "stack_manager_model_stale")
+    assert len(warning["layers"]) == 3
+    assert all(any(field in line for line in warning["layers"])
+               for field in ("dielectric_constant", "loss_tangent", "material"))
 
 
 def test_manager_reset_refuses_an_open_board(monkeypatch, tmp_path):
