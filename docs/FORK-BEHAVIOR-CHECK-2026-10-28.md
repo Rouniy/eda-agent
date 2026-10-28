@@ -234,6 +234,15 @@ An AST pass across 111 cached fork refs found 14 distinct prefixed tool
 names absent from the current public surface. They are legacy spelling
 or narrower entry points, rather than 14 missing capabilities:
 
+The latest refresh has 112 cached refs after adding
+`betamoojw/eda-agent`, which points exactly to the already merged upstream
+tip. A repeat over the 49 divergent distinct tips found no new public
+capability beyond the legacy spellings and mappings below. Raw Python
+function-name comparison also sees the older `rabihnd` and `james-martinez`
+unprefixed tool functions (`get_nets`, `open_project`, and similar), which
+map to today's `proj_*`, `app_*` and `obj_*` tool names; those are naming
+history, not additional absent handlers.
+
 | Fork names | Current route |
 | --- | --- |
 | `lib_add_pin`, `lib_add_symbol_line`, `lib_set_label_format` | `lib_add_pins`, `lib_add_symbol_lines`, `lib_set_label_formats` |
