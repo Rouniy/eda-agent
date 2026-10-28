@@ -2,6 +2,13 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Adapt `rabihnd/integration`'s Claude MCP setup helper to this
+  checkout as `scripts/setup-mcp.ps1` and its `.cmd` wrapper. It discovers
+  the installed executable or Python instead of assuming Python 3.12 in
+  one user's profile, preserves unrelated client JSON, writes no BOM,
+  supports dry-run and add/remove, and checks both common Desktop install
+  roots before editing. Isolated CLI-config add/remove and Unicode bridge
+  tests passed 4/4; no live client configuration was changed.
 - [x] Port `yniantongtian-oss`'s `491555d` bundle-builder BOM guard.
   The builder now removes a UTF-8 BOM from each Pascal source before
   concatenation. An isolated build with a BOM in all 12 inputs produced

@@ -30,6 +30,16 @@ not. The focused WSL bridge tests passed 10/10. Its fork-specific five-second
 poll timeout (`80ebe59`) is a tuning choice; the current ten-second default
 is retained for long CAD calls, and callers can configure it.
 
+`rabihnd/integration`'s `setup-mcp.ps1` capability is adapted into the
+tracked `scripts/` directory. The helper can dry-run, add or remove the
+Claude MCP entry, backs up configs, preserves unrelated JSON and writes
+UTF-8 without a BOM. Its launcher is discovered from the active machine
+instead of a donor-specific Python 3.12 path. An isolated temporary Claude
+Code config passed dry-run/add/remove; no real client config was touched.
+`lda-audiotech`'s Unicode pointer and BOM-response fixes were already
+covered by `config._pointer_encoding`, the health check and
+`_read_response_json`; their focused tests passed 3/3.
+
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not

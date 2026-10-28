@@ -174,6 +174,15 @@ The `--` matters: it tells `claude mcp add` that everything after it is the comm
 
 To verify the connection: `/mcp` in a Claude Code session should list `altium` as connected.
 
+On Windows, `scripts/setup-mcp.ps1` can register the server in both Claude
+Code and Claude Desktop. Preview its changes first with
+`powershell -NoProfile -File scripts/setup-mcp.ps1 -DryRun`. The script backs
+up existing JSON, preserves other MCP entries, writes UTF-8 without a BOM,
+and checks whether Claude Desktop is running before editing its config.
+Use `-CliOnly` or `-DesktopOnly` to limit the target; `-Command` and `-Args`
+select a different launcher. It finds `eda-agent.exe` on `PATH` or uses
+`python.exe -m eda_agent` by default.
+
 ### Other MCP clients
 
 The server speaks standard MCP over stdio; any client that accepts a local stdio command will work. Invoke `eda-agent` (or `eda-agent serve`) as the subprocess, or `python -m eda_agent` if it is not on your `PATH`.
