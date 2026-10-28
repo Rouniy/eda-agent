@@ -1031,3 +1031,18 @@ for IC44-1; a later `ePin` `obj_query` read the new fields with zero
 unknown, failed or unreadable properties. `CompilationMasked` was not
 included because its pin read has not been qualified. The copy was closed
 without saving. Corrected SDK coverage is 727/2176 declarations (33.4%).
+
+All eleven current `morembedded` remote refs, including the direct child's
+`main`, `feature/company-profiles`, four `pr*` branches, and three `claude/*`
+branches, passed `git merge-base --is-ancestor <ref> main`. The exact marked
+upstream synchronization commit and current merge base are both
+`0bb1b3154cca6e58a517b23edee3d7a108f1c232`; `upstream/main` is one
+commit later. Thus the child's branch commits are all represented in our
+history, while the wider behavior audit of other forks remains open.
+
+A full suite run on `38f71fc` produced 9,811 passes, 165 skips, one expected
+failure and two failures: a source guard matched a comment mentioning the
+excluded compile-mask property, and the generated tool reference had a stale
+`pcb_get_vias` description. The comment and reference were corrected; both
+failed tests then passed (2/2). The entire suite was not rerun after these
+documentation-only corrections.

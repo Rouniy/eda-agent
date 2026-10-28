@@ -1588,7 +1588,7 @@ End;
 { END GENERATED - SDK property probe. }
 
 { ISch_Pin reads qualified on IC44-1 in AD26.11 before exposing them in   }
-{ obj_query. CompilationMasked remains outside this block.                 }
+{ obj_query. The unqualified compile-mask property remains outside.        }
 Function GetSchPinGenerated(Obj : ISch_Pin; PropName : String;
     Var Found : Boolean) : String;
 Begin
