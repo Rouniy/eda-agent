@@ -11,9 +11,10 @@
   the remaining generated accessors individually and investigate the
   unexplained Altium process exit after a later document reopen.
 - [ ] Refresh and audit the other fork branches. At the latest local scan,
-  53 of 111 cached `forks/*` refs are non-ancestors of `main`; ancestry
-  alone does not say whether their behavior is absent. Recheck live branch
-  tips and the remaining feature/compatibility gaps in the dated audit.
+  53 of 112 cached `forks/*` refs are non-ancestors of `main`; ancestry
+  alone does not say whether their behavior is absent. The refreshed audit
+  matched all 63 live fork defaults and 120 live branches. Continue the
+  remaining feature/compatibility gaps in the dated audit.
 - [x] Record the direct child `MOREmbedded/main` tip `032fb4b` as a true
   second parent after manual conflict resolution. Current production paths
   win where the auto-merge duplicated Pascal/Python handlers or removed
@@ -186,7 +187,7 @@
   the values across save/reopen. The dedicated footprint edit handles a
   model rename; Altium derives `LibraryIdentifier`, so a direct assignment
   is not carried over.
-- [ ] Continue behavior-level comparison of the 54 nonancestor cached
+- [ ] Continue behavior-level comparison of the 53 nonancestor cached
   branch refs from the 62-default/117-branch live audit. Divergent Git
   history is not a missing-feature count; record each distinct capability
   against current source and native acceptance where it changes Altium.

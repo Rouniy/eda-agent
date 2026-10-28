@@ -325,6 +325,11 @@ exit and the other generated accessors still require native review.
 After adaptation, merge `ce7aab8` records `d495c4d` as its second parent.
 Fresh fetches report zero commits pending from `MOREmbedded/main` and
 `upstream/main`. The upstream sync point remains `0bb1b315`.
+The follow-up live fork audit found one newly created fork,
+`betamoojw/eda-agent`, at exactly `0bb1b315`; its main ref was cached.
+The repeated check then matched 63/63 fork defaults and 120/120 live
+branches to cached refs. Fifty-three of the 112 cached `forks/*` refs
+still have divergent ancestry, which is not a count of missing features.
 
 The direct child fork's `test_update_command.py` was run unchanged against
 the current source in a temporary test file: 38 passed and 12 failed. The

@@ -13,8 +13,11 @@ Type-scoped SDK coverage now reports 678/2176 declared properties. The
 child-fork tip `d495c4d` is the second parent of merge `ce7aab8`.
 Fresh fetches found no commits pending from `upstream/main` or
 `MOREmbedded/main`; their merge bases are `0bb1b315` and `d495c4d`.
-Other cached fork branches still need behavior-level review: 53 of 111
-`forks/*` refs are not ancestors of `main`.
+Other cached fork branches still need behavior-level review: 53 of 112
+`forks/*` refs are not ancestors of `main`. A fresh live fork scan matched
+all 63 default branches and 120 total branches. The new
+`betamoojw/eda-agent` default equals the upstream sync point; its cached
+ref adds no commits to `main`.
 
 PCB text `FontName` is now readable through `obj_query` on script `.167`.
 The main Altium loop was restarted and answered a ping. On
