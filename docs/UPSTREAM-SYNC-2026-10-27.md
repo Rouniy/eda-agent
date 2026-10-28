@@ -1,5 +1,24 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 live synchronization check
+
+`eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
+refreshed origin, upstream and the direct MOREmbedded fork. At local
+`5620c27`, origin matched `main`; upstream tip and exact merge base were
+`ee7589c9fc543d0b99bb142dc8ca12b618fffeab`, with zero upstream
+commits outside `main`. All 62/62 live fork default tips and 117/117
+branch tips matched local cached refs. MOREmbedded tip remains
+`032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`; its 33 commits outside
+our Git ancestry are tracked by the behavior-level integration audit.
+
+## 2026-10-28 placed footprint-stamp qualification
+
+The `mooreaa` placed-component `Footprint` stamp now has AD26 native
+persistence evidence on a disposable sheet. Two existing library models
+were selected in one `sch_set_components_parameters` call; both survived
+exact save, close, and reopen. The public registry exposes that bulk tool
+for one or more stamps and `sch_place_components` for one or more placements.
+
 ## 2026-10-28 placement-model qualification
 
 The `mooreaa` bulk placement model chooser now has native persistence
@@ -842,8 +861,8 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | `mooreaa` `dc36b7e`-`fc22136` (port cross-references, partial) | Plan CrossRef positions from a port's read-only `ConnectedEnd` and wire geometry; require an exact sheet, a reviewed plan digest and per-reference readback for writes | 41 related tests, Pascal lint/build, loaded `.6` runtime and bad-path refusal; native sheet acceptance pending |
 | `mooreaa` through `fc22136` (live pins) | Filter hidden part/display-mode copies from schematic ePin queries, preserving explicit `OwnerPart` inspection; use visible pins in CrossRef planning and its digest | 21 focused tests, Pascal lint/build and loaded `.7` runtime; native multipart-sheet acceptance pending |
 | `mooreaa` `64a71c3` through `fc22136` (part properties) | Read and write a placed part's display mode and current PCB model pin map, with type guards and readback | 22 related source tests, Pascal lint/build; both writes persisted after exact save/close/reopen on disposable AD26 sheets; visual mode-graphic comparison pending |
-| `mooreaa` `053aff9` through `fc22136` (placement model choice) | Select a named PCB model the library symbol already carries on single and bulk placement, verify all current flags and restore them on failure | Focused source tests and Pascal lint/build; AD26 bulk placement accepted and persisted an available nondefault model, reported a missing model and kept the default; single-placement native check pending |
-| `mooreaa` `3d5817f` through `fc22136` (Footprint stamps) | Choose an existing model on single/bulk Footprint parameter writes before fallback rename; refuse unloaded explicit batch sheets | 52 related tests, Pascal lint/build and loaded `.10` runtime; native multi-model acceptance pending |
+| `mooreaa` `053aff9` through `fc22136` (placement model choice) | Select a named PCB model the library symbol already carries on placement, verify all current flags and restore them on failure | Focused source tests and Pascal lint/build; AD26 placement accepted and persisted an available nondefault model, reported a missing model and kept the default; public tool accepts one or more placements |
+| `mooreaa` `3d5817f` through `fc22136` (Footprint stamps) | Choose an existing model on Footprint parameter writes before fallback rename; refuse unloaded explicit batch sheets | 52 related tests, Pascal lint/build; AD26 two-model bulk stamp persisted after exact save/close/reopen; public tool accepts one or more stamps |
 | `mooreaa` `dc36b7e`-`fc22136` (multipart placement and tidy) | Place an explicit sub-part, verify its sheet state and report issues; link the library, hide inherited model parameters and adopt the sheet designator font | 65 related tests, Pascal lint/build and loaded `.11` runtime; native multipart-sheet acceptance pending |
 | `mooreaa` `dc36b7e`-`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests, Pascal lint/build and loaded `.12` runtime; native disposable-sheet acceptance pending |
 | `mooreaa` through `fc22136` (port AutoSize getter) | Return the native port AutoSize flag through generic queries, with a port-only type guard | Native `.12` query exposed the omission; loaded `.13` ePort query read back false, font 1 and width 400 on an isolated sheet |

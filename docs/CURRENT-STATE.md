@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Placed footprint-stamp native persistence, 2026-10-28
+
+The `mooreaa` placed-component `Footprint` stamp passed native acceptance
+on the same disposable four-part QA sheet under AD26.11.1.5, script
+`.130`. `sch_set_components_parameters` switched `RQA3` from
+`CC1608-0603` back to `CR2012-0805` and `RQA4` from `CR2012-0805` to
+`CC1608-0603` in one call. It reported `updated=2`, `failed=0`,
+`footprints_applied=2` and an empty `footprints_not_applied` value.
+`obj_query` read both selected `FootprintModel` names immediately and
+again after exact-sheet save, project close, and reopen. The copy was
+closed without another save. The public MCP registry exposes only the
+bulk parameter-stamp tool; a list of one stamp covers a single part.
+
 ## Placement footprint-model native persistence, 2026-10-28
 
 The `mooreaa` placement model chooser was accepted on a disposable copy of
@@ -13,7 +26,8 @@ for `RQA4` with the unchanged default. `obj_query` read `RQA3` as
 project close without another save, and reopen, both readings persisted.
 The disposable copy was then closed without saving again. This qualifies
 the existing-library-model choice and missing-model reporting for bulk
-placement on AD26; single placement remains to be exercised separately.
+placement on AD26. The public MCP registry exposes one placement tool,
+`sch_place_components`, which accepts lists of one or more parts.
 
 ## Placed-part display-mode native persistence, 2026-10-28
 
