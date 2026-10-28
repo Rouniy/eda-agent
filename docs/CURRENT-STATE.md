@@ -1,5 +1,24 @@
 # Current integration state / agent handoff
 
+## Fresh mooreaa stack diagnosis, 2026-10-28
+
+The live fork check found `mooreaa/main` advanced from `a4be7fc` to
+`5329cfe`; upstream/main remains the exact `ee7589c9` ancestor of our
+main, and MOREmbedded/main remains `032fb4b`. The new fork commits report
+that Altium 25.8.1 can insert a copper layer as printed-electronics
+additive/non-conductive and can leave the Layer Stack Manager's saved
+model stale after a script stack edit.
+
+The saved-PcbDoc reader now reports both copper flags as errors and a
+thickness discrepancy between the physical stack and the manager model as
+a warning. This is a read-only import: it does not reset the saved model
+or change live layer-stack operations. Eighteen focused reader tests pass.
+On the closed RFSoC frequency-converter PcbDoc, the saved manager model
+decoded into 11 rows and the new checks produced no findings. The donor's
+live copper correction, loss-tangent stack write, and manager-model reset
+still need integration and native acceptance before this fork delta is
+fully reconciled.
+
 ## Rosen mechanical-layer read check, 2026-10-28
 
 The `mooreaa` Rosen tracker reported that

@@ -12,6 +12,8 @@ generic, values as found).
 from __future__ import annotations
 
 import asyncio
+import base64
+import zlib
 
 import pytest
 
@@ -103,6 +105,37 @@ def test_a_good_stack_with_split_prepreg_passes(monkeypatch):
     assert out["summary"]["copper_layers"] == 3
     assert out["summary"]["dielectric_layers"] == 3
     assert out["summary"]["board_mils"] == pytest.approx(2.1 + 64.5669, abs=1e-3)
+
+
+def test_additive_and_nonconductive_copper_are_reported(monkeypatch):
+    data = _data(
+        _v9([_cu("Top", _TOP), _diel("D1", 1, "4mil"),
+             dict(_cu("Mid", _TOP + 1), ISADDITIVELAYER="TRUE",
+                  ELECTRICALRESISTIVITY="2147483647"),
+             _diel("D2", 2, "4mil"), _cu("Bottom", _BOT)]),
+        _legacy([(1, "Top", "1.378mil", 1, "4mil"),
+                 (2, "Mid", "1.378mil", 1, "4mil"),
+                 (32, "Bottom", "1.378mil", 0, "0mil")]))
+    out = _read(monkeypatch, data)
+    assert out["ok"] is False
+    assert {f["check"] for f in out["findings"] if f["severity"] == "error"} == {
+        "additive", "non_conductive"}
+
+
+def test_stale_manager_model_is_a_warning(monkeypatch):
+    xml = ('<StackupDocument><Layer Id="aaa" TypeId="x" Name="Top">'
+           '<Property Name="Thickness" Type="LengthValue">0.01778mm</Property>'
+           '</Layer></StackupDocument>')
+    model = base64.b64encode(zlib.compress(xml.encode())).decode()
+    data = _data(
+        _v9([dict(_cu("Top", _TOP), ID="{AAA}"), _diel("D1", 1, "4mil"),
+             _cu("Bottom", _BOT)]) + [f"V9_STACKCUSTOMDATA={model}"],
+        _legacy([(1, "Top", "1.378mil", 1, "4mil"),
+                 (32, "Bottom", "1.378mil", 0, "0mil")]))
+    out = _read(monkeypatch, data)
+    assert out["ok"] is True
+    assert [f["check"] for f in out["findings"]] == ["stack_manager_model_stale"]
+    assert out["findings"][0]["layers"][0].startswith("Top:")
 
 
 def test_kinds_come_from_the_layer_id():

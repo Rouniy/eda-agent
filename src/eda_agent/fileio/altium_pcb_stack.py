@@ -18,7 +18,10 @@ the two views is how such a write is caught.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import re
+import zlib
 from typing import Any, Optional
 
 from ..units import MILS_PER_MM
@@ -37,6 +40,7 @@ _MASK_OVERLAY_PASTE = {
 _LEGACY_COPPER = list(range(1, 33)) + list(range(39, 55))
 
 _TOL_MILS = 0.05
+_NON_CONDUCTIVE_RESISTIVITY = 1e9
 
 
 def layer_kind(layer_id: int) -> str:
@@ -96,9 +100,16 @@ def physical_stack(keys: dict[str, str]) -> list[dict[str, Any]]:
             layer_id = 0
         kind = layer_kind(layer_id)
         entry: dict[str, Any] = {"order": len(layers), "name": get("NAME"),
-                                 "kind": kind, "layer_id": layer_id}
+                                 "kind": kind, "layer_id": layer_id,
+                                 "id": get("ID").strip("{}").lower()}
         if kind == "copper":
             entry["thickness_mils"] = to_mils(get("COPTHICK"))
+            entry["additive"] = get("ISADDITIVELAYER").upper() == "TRUE"
+            try:
+                entry["resistivity"] = (float(get("ELECTRICALRESISTIVITY"))
+                                         if get("ELECTRICALRESISTIVITY") else None)
+            except ValueError:
+                entry["resistivity"] = None
         elif kind in ("dielectric", "solder_mask"):
             entry["thickness_mils"] = to_mils(get("DIELHEIGHT"))
             entry["dielectric_type"] = DIELECTRIC_TYPES.get(get("DIELTYPE"), get("DIELTYPE"))
@@ -150,6 +161,16 @@ def check(layers: list[dict[str, Any]], chain: list[dict[str, Any]]) -> list[dic
             findings.append({"severity": "error", "check": "thickness",
                              "layer": layer["name"],
                              "detail": f"{layer['kind']} thickness is {t} mil"})
+        if layer["kind"] == "copper":
+            if layer.get("additive"):
+                findings.append({"severity": "error", "check": "additive",
+                                 "layer": layer["name"],
+                                 "detail": f"{layer['name']} is marked as additive copper"})
+            if (layer.get("resistivity") or 0) >= _NON_CONDUCTIVE_RESISTIVITY:
+                findings.append({"severity": "error", "check": "non_conductive",
+                                 "layer": layer["name"],
+                                 "detail": f"{layer['name']} has non-conductive resistivity "
+                                           f"{layer['resistivity']:g}"})
     for upper, lower in zip(board, board[1:]):
         if upper["kind"] == "copper" and lower["kind"] == "copper":
             findings.append({"severity": "error", "check": "no_dielectric",
@@ -182,6 +203,48 @@ def check(layers: list[dict[str, Any]], chain: list[dict[str, Any]]) -> list[dic
     return sorted(findings, key=lambda f: order[f["severity"]])
 
 
+def manager_model(keys: dict[str, str]) -> list[dict[str, Any]] | None:
+    """Decode the saved Layer Stack Manager model, when present."""
+    blob = keys.get("V9_STACKCUSTOMDATA")
+    if not blob:
+        return None
+    try:
+        xml = zlib.decompress(base64.b64decode(blob, validate=True)).decode("utf-8")
+    except (ValueError, binascii.Error, zlib.error, UnicodeError):
+        return None
+    out: list[dict[str, Any]] = []
+    for match in re.finditer(r'<Layer Id="([^"]+)" TypeId="[^"]+" Name="[^"]*"(.*?)</Layer>',
+                             xml, re.S):
+        body = match.group(2)
+        thickness = re.search(r'Name="Thickness"[^>]*>([^<]*)<', body)
+        out.append({"id": match.group(1).strip("{}").lower(),
+                    "thickness_mils": to_mils(thickness.group(1)) if thickness else None})
+    return out
+
+
+def check_manager_model(layers: list[dict[str, Any]],
+                        model: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Warn if the manager's saved copy disagrees with the physical stack."""
+    if not model:
+        return []
+    by_id = {entry["id"]: entry for entry in model}
+    differences = []
+    for layer in layers:
+        if layer["kind"] not in ("copper", "dielectric"):
+            continue
+        entry = by_id.get(layer.get("id", ""))
+        if entry is None:
+            continue
+        actual, displayed = layer.get("thickness_mils"), entry["thickness_mils"]
+        if actual is not None and displayed is not None and abs(actual - displayed) > _TOL_MILS:
+            differences.append(f"{layer['name']}: manager {displayed:g} mil, stack {actual:g} mil")
+    if not differences:
+        return []
+    return [{"severity": "warning", "check": "stack_manager_model_stale",
+             "detail": "Layer Stack Manager's saved model differs from the physical stack: "
+                       + "; ".join(differences), "layers": differences}]
+
+
 def summarize(layers: list[dict[str, Any]]) -> dict[str, Any]:
     copper = [layer for layer in layers if layer["kind"] == "copper"]
     dielectric = [layer for layer in layers if layer["kind"] == "dielectric"]
@@ -201,7 +264,7 @@ def read_stack(path: str) -> dict[str, Any]:
     keys = board_keys(read_board_data(path))
     layers = physical_stack(keys)
     chain = legacy_chain(keys)
-    findings = check(layers, chain)
+    findings = check(layers, chain) + check_manager_model(layers, manager_model(keys))
     return {"path": path, "layers": layers, "legacy_chain": chain,
             "summary": summarize(layers), "findings": findings,
             "ok": not any(f["severity"] == "error" for f in findings)}

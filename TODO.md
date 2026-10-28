@@ -2,6 +2,11 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: port its ordinary
+  copper correction and loss-tangent stack write, decide how to safely
+  rebuild a stale Layer Stack Manager model, and verify on disposable
+  boards in Altium. The saved-file reader already detects additive or
+  non-conductive copper and stale manager thicknesses.
 - [x] Expose the forks' requested `delta_t_c` in Altium's
   `pcb_calc_track_current_capacity`, while retaining its fixed rise table
   and optional length/resistance result. The selected current uses the
