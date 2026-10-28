@@ -20487,6 +20487,7 @@ Begin
            Or (Action = 'add_footprint_via')
            Or (Action = 'add_footprint_vias')
            Or (Action = 'add_footprint_bodies')
+           Or (Action = 'add_3d_body')
            Or (Action = 'add_footprint_pads')
            Or (Action = 'add_footprint_track')
            Or (Action = 'add_footprint_tracks')

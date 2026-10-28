@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A designator batch must refuse collisions before sending any write."""
 
 import copy

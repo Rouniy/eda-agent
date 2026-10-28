@@ -31,7 +31,7 @@ Two gaps remain, and they are the ones that decide whether a board is
 usable:
 
 1. **Missing numeric intent.** `design_synthesize_rules` derives rules
-   from a `FabProfile` — but stackup choice, impedance targets, peak
+   from a `FabProfile`, but stackup choice, impedance targets, peak
    currents, edge rates, enclosure constraints and test strategy are not
    in that profile and are not in the functional requirement either. When
    they are absent, they get assumed, and every value computed downstream
@@ -50,7 +50,7 @@ else. It adds no stages and overrides nothing.
 
 ## Using it
 
-**Claude Code** — copy the skill into your project:
+**Claude Code**, copy the skill into your project:
 
 ```bash
 mkdir -p .claude/skills/boardquality
@@ -60,7 +60,7 @@ cp skills/boardquality/SKILL.md .claude/skills/boardquality/SKILL.md
 `/boardquality` is then available in that project, and applies alongside
 `/autodesign`.
 
-**Other clients** — point the model at `rules.en.md` (or `rules.zh.md`)
+**Other clients**, point the model at `rules.en.md` (or `rules.zh.md`)
 as context for the design session. The ruleset is written to be read
 directly; nothing in it depends on the skill wrapper.
 

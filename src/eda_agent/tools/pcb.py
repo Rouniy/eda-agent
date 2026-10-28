@@ -791,35 +791,6 @@ def _mils(value: Any) -> str:
     return f"{v:.4f}".rstrip("0").rstrip(".")
 
 
-def _encode_bindings_param(bindings: list[dict[str, Any]]) -> str:
-    """Encode binding dicts into the ``~~``-op / ``;``-field wire grammar
-    the Pascal ``NextBatchOp``/``GetBatchField`` helpers parse. Entries
-    missing designator/pin/net are dropped (the caller reports counts)."""
-    ops: list[str] = []
-    for b in bindings:
-        desig = str(b.get("designator", "")).strip()
-        pin = str(b.get("pin", "")).strip()
-        net = str(b.get("net", "")).strip()
-        if not desig or not pin or not net:
-            continue
-        ops.append(f"designator={desig};pin={pin};net={net}")
-    return "~~".join(ops)
-
-
-#: The signature defaults of pcb_calc_termination's unit-suffixed
-#: arguments, kept here so the alias handling can tell "the caller did
-#: not pass this" from "the caller passed exactly the default". Without
-#: that distinction a conflicting alias cannot be detected at all, and
-#: the choice is between silently preferring one value and refusing
-#: every call that supplies a terse spelling.
-_TERMINATION_DEFAULTS = {
-    "z0_ohms": 50.0,
-    "dielectric_constant": 4.2,
-    "driver_impedance_ohms": 0.0,
-    "dielectric_height_mils": 0.0,
-}
-
-
 _PCB_VIEW_OPTIONS = {
     "show_pad_nets": "ShowPadNets", "show_pad_numbers": "ShowPadNumbers",
     "show_via_nets": "ShowViaNets", "show_test_points": "ShowTestPoints",

@@ -2,7 +2,7 @@
 
 Companion ruleset for the eda-agent design harness. It governs the
 **physical quality bar** of the finished board: whether a person can
-build it, assemble it, debug it, and read it — and whether it looks like
+build it, assemble it, debug it, and read it, and whether it looks like
 an engineer drew it rather than a script.
 
 Normative language: **MUST** / **MUST NOT** are hard; **SHOULD** admits a
@@ -31,12 +31,12 @@ section's rules while that stage is open; check them again at
 
 When two rules collide, resolve in this order:
 
-1. Safety and manufacturability — the board can be fabricated, assembled,
+1. Safety and manufacturability: the board can be fabricated, assembled,
    and powered without damage
-2. Electrical correctness — netlist parity, impedance, return paths,
+2. Electrical correctness: netlist parity, impedance, return paths,
    power integrity
-3. Serviceability — testable, reworkable, readable
-4. Visual quality — alignment, consistency, tidiness
+3. Serviceability: testable, reworkable, readable
+4. Visual quality: alignment, consistency, tidiness
 
 Never buy a lower item at the cost of a higher one. But when the higher
 items are unaffected, **item 4 is a requirement, not a nicety**: on a
@@ -45,7 +45,7 @@ bar.
 
 ---
 
-## 1. Board intent — stage `requirement`, `architecture`
+## 1. Board intent: stage `requirement`, `architecture`
 
 `design_validate_requirement` captures the functional requirement.
 `design_load_fab_profile` captures the fab's limits. Between them sits a
@@ -77,13 +77,13 @@ workflow: every width, clearance, impedance and stitching pitch computed
 downstream inherits the guess, and none of them are re-derived when the
 real stack arrives.
 
-The fab profile has the same discipline already — `FabProfile.source`
+The fab profile has the same discipline already, `FabProfile.source`
 exists so the numbers trace to a capability page with a date. Honor it:
 transcribe, cite, never recall from memory.
 
 ---
 
-## 2. Rules before geometry — stage `rules_stackup`
+## 2. Rules before geometry: stage `rules_stackup`
 
 **No track, via, or pour may be placed before the design rules exist in
 the editor.** A constraint that lives only in the conversation is
@@ -91,7 +91,7 @@ forgotten within a few turns; a constraint in a design rule is enforced
 by `pcb_run_drc` on every check thereafter. This is the difference
 between a board that converges and one that gets re-routed.
 
-Prefer `design_synthesize_rules(profile=...)` — it derives each value
+Prefer `design_synthesize_rules(profile=...)`, it derives each value
 from a profile field or a verified calculator and hands back
 `pcb_create_design_rule` / `pcb_modify_layer` dicts to dispatch verbatim.
 Hand-authoring rules is the exception, and each hand-authored value MUST
@@ -99,7 +99,7 @@ carry a one-line justification.
 
 The rule set MUST cover, at minimum:
 
-- **Clearance**, banded per net class — signal, power, high-voltage, RF —
+- **Clearance**, banded per net class, signal, power, high-voltage, RF ,
   not one global value
 - **Width**, per net class, with `value` (min), `favored_value` (the
   router's default), and `max_value` all set
@@ -112,12 +112,12 @@ The rule set MUST cover, at minimum:
 - **Solder-mask and paste-mask expansion**, uniform; any per-pad
   exception documented
 - **Differential-pair gap and length matching**, when §8 applies
-- **Polygon connect style** — plane and thermal pads use **direct
+- **Polygon connect style**, plane and thermal pads use **direct
   connect**, not thermal relief. Thermal relief on a ground plane costs
   inductance and thermal path for no benefit on a reflow-assembled
   board. Hand-soldered parts MAY use relief; note which and why.
 
-**Never design to the fab's exact minimum.** Leave one step of margin —
+**Never design to the fab's exact minimum.** Leave one step of margin ,
 if the profile allows 3.5 mil track, design at 5 mil unless density
 genuinely forbids it. Boards that sit on the limit yield worse and cost
 more, and there is nowhere to retreat when a spin needs a wider trace.
@@ -127,7 +127,7 @@ before the change.
 
 ---
 
-## 3. Placement — stage `placement`
+## 3. Placement: stage `placement`
 
 `pcb_plan_placement` optimizes HPWL and keeps groups together. These
 rules constrain what it is allowed to produce.
@@ -149,8 +149,8 @@ must be undone.
 - Parts in one functional block MUST be physically grouped. A block whose
   parts are scattered across the board is a defect regardless of net
   length.
-- Signal flow SHOULD run one way across the board — input to output,
-  left-to-right or bottom-to-top — without doubling back.
+- Signal flow SHOULD run one way across the board, input to output,
+  left-to-right or bottom-to-top, without doubling back.
 - Decoupling capacitors MUST sit at the pin they decouple, on the
   shortest cap → pin → via loop available. Distance to the IC is the
   wrong metric; **loop area** is the metric. A cap that is close but
@@ -158,8 +158,8 @@ must be undone.
   its pad.
 - Crystals and oscillators: adjacent to their IC, shortest possible
   traces, no other signal routed underneath or alongside.
-- Sensitive analog — ADC references, op-amp inputs, high-impedance nodes
-  — kept away from switching regulators, high-di/dt loops, and
+- Sensitive analog, ADC references, op-amp inputs, high-impedance nodes
+ , kept away from switching regulators, high-di/dt loops, and
   connectors.
 - Switching-regulator hot loops (switch node, input cap, diode/FET) are
   placed for **minimum loop area** before anything else in that block.
@@ -168,17 +168,17 @@ must be undone.
 - Connectors face the board edge with room for the mating part, the
   cable's bend radius, and a hand to reach them.
 
-### 3.3 Geometry — this is what makes a board look designed
+### 3.3 Geometry: this is what makes a board look designed
 
 - Every component origin MUST land on a **single declared placement
   grid** (0.5 mm metric, or 25 mil imperial). Confirm with
   `audit_find_off_grid_components`. A coordinate like `X = 12.3847 mm`
   is a defect, not a rounding detail.
 - Rotation MUST be a multiple of 90°. Any other angle requires a stated
-  reason — RF matching structures and mechanically-constrained parts
+  reason, RF matching structures and mechanically-constrained parts
   qualify; "the router preferred it" does not.
-- Like parts in a group — resistor arrays, a decoupling bank, LED rows,
-  test points — MUST be aligned in rows or columns with **uniform
+- Like parts in a group, resistor arrays, a decoupling bank, LED rows,
+  test points, MUST be aligned in rows or columns with **uniform
   pitch**. Uniform, not merely tidy: 2.0 mm between every pair, not
   1.8 / 2.1 / 1.95.
 - **Polarized parts face the same way** within a block: diodes,
@@ -196,13 +196,13 @@ must be undone.
 - Pushing a part outside its functional block to make routing easier.
 - **Inventing a footprint.** If the library lacks one, stop and say so. A
   footprint created without the datasheet land pattern in hand MUST be
-  marked `UNVERIFIED` and listed in the report — never silently emitted.
+  marked `UNVERIFIED` and listed in the report, never silently emitted.
   `library_readiness` exists to prevent exactly this; do not route
   around it.
 
 ---
 
-## 4. Routing — stage `routing`
+## 4. Routing: stage `routing`
 
 - **No 90° corners. No acute angles.** Corners are 45° or arcs. Confirm
   with `audit_find_acute_angles`.
@@ -217,12 +217,12 @@ must be undone.
   requires a reason.
 - **Every trace MUST have a continuous reference plane beneath it.**
   Crossing a plane split is prohibited. If a crossing is unavoidable, add
-  a stitching capacitor at the crossing and report it — the return
+  a stitching capacitor at the crossing and report it, the return
   current takes the long way around otherwise, and that loop is the
   antenna.
 - High-current nets get widths from `pcb_calc_trace_width_for_current`
   (IPC-2221), never from habit. Where the computed width does not fit,
-  parallel across layers with a via array — and say so.
+  parallel across layers with a via array, and say so.
 - Sensitive analog does not run parallel to digital or switching nets for
   any appreciable length. Cross orthogonally where crossing is needed.
 - Differential pairs: same layer, uniform gap end to end, symmetric
@@ -231,7 +231,7 @@ must be undone.
 
 ---
 
-## 5. Copper and ground — stage `pours_tuning`
+## 5. Copper and ground: stage `pours_tuning`
 
 - Keep reference planes **whole**. Every plane cut is a detour for return
   current. Where a cut is unavoidable, trace the return path explicitly
@@ -248,12 +248,12 @@ must be undone.
                                pitch ≤ λ_g / 10   (general)
   ```
 
-  Use the highest frequency of concern from §1 — for digital, the
+  Use the highest frequency of concern from §1, for digital, the
   bandwidth implied by the edge rate (`f_knee ≈ 0.35 / t_r`), not the
   clock. **Show the substitution and the result**; a bare "1.5 mm" is not
   auditable.
 - Every signal via that changes reference layer needs a return via
-  nearby — within ~1.5 mm by default, tighter under §8.
+  nearby, within ~1.5 mm by default, tighter under §8.
 - Ground pads connect to the plane with a via at or immediately beside
   the pad. A pad that reaches ground through a length of trace is not
   grounded at frequency.
@@ -263,12 +263,12 @@ must be undone.
 
 ---
 
-## 6. Silkscreen and documentation — stages `placement`, `outputs`
+## 6. Silkscreen and documentation: stages `placement`, `outputs`
 
 Silkscreen is read by a human holding the board with a soldering iron.
 Judge it by that standard.
 
-- Uniform text height and stroke width board-wide. Default 0.8–1.0 mm
+- Uniform text height and stroke width board-wide. Default 0.8-1.0 mm
   height, 0.15 mm stroke; never below the profile's
   `min_silk_width_mils`.
 - **Designator rotation is 0° or 90° only**, read left-to-right and
@@ -292,7 +292,7 @@ correctly from the silkscreen alone?** If not, it is not finished.
 ## 7. Manufacturability and assembly
 
 - Every geometry sits inside the fab profile with margin (§2).
-- Board-edge: keep components clear of the edge — 5 mm by default, more
+- Board-edge: keep components clear of the edge, 5 mm by default, more
   where rails or V-scoring are used. Reserve rail width when §1 says the
   board is panelized.
 - Footprints follow IPC-7351 land patterns. Do not scale a footprint to
@@ -310,7 +310,7 @@ correctly from the silkscreen alone?** If not, it is not finished.
 
 ---
 
-## 8. High-speed and RF — conditional
+## 8. High-speed and RF: conditional
 
 **Applies when any of these is true**: highest frequency > 100 MHz; edge
 rate < 1 ns; any impedance-controlled net exists. If any holds, the whole
@@ -323,7 +323,7 @@ section is mandatory.
 - A controlled-impedance trace references one continuous plane along its
   entire length. Where it changes layer, the reference must remain
   continuous and a ground via accompanies the transition.
-- RF corners are arcs or mitered — never square.
+- RF corners are arcs or mitered, never square.
 - Keepout beside RF traces: ≥ 3× trace width, no other copper inside it.
 - Termination and matching components sit at the point they act on.
 - Divider, combiner, and any branched structure: hold branch lengths and
@@ -366,7 +366,7 @@ technical clauses, and cost more when they are.
 
 ## 10. Extended visual-review rubric
 
-`design_visual_review` ships a PCB rubric — off-grid parts, acute angles,
+`design_visual_review` ships a PCB rubric, off-grid parts, acute angles,
 courtyard collisions, mirrored text, edge clearance, missing decoupling.
 Walk these additional items in the same loop, and cross-check with the
 audits named:
@@ -385,7 +385,7 @@ audits named:
 
 ---
 
-## 11. Sign-off checklist — stage `verification`
+## 11. Sign-off checklist: stage `verification`
 
 Not complete until every line is checked, with output shown:
 

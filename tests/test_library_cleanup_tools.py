@@ -166,7 +166,7 @@ def test_set_3d_body_touches_only_proven_body_members():
     assert "Model.Rotation" not in body and "RotationX" not in body
     # A STEP body is matched to its saved record before it is written.
     assert "If SavedCount <> Total Then SavedStr := '';" in body
-    assert "UpperCase(SavedFile) <> UpperCase(ModelFile)" in body
+    assert body.count("UpperCase(ExtractFileName(ModelFile))") == 2
     # A skipped body is not counted as changed (read changed 1 live before).
     assert "If Wrote Then Changed := Changed + 1;" in body
     assert "Changed := Changed + 1;" not in body.replace(

@@ -8,7 +8,7 @@ The repository should avoid using COMSOL as an opaque black box. Every model sho
 
 ## 2. Model hierarchy
 
-### M0 — 1D electrochemistry reference
+### M0: 1D electrochemistry reference
 
 Use a 1D porous-electrode model to establish electrochemical consistency with PyBaMM DFN/P2D.
 
@@ -17,7 +17,7 @@ Suggested physics:
 - charge conservation in solids/electrolyte,
 - lithium transport in solid particles,
 - electrolyte mass transport,
-- Butler–Volmer reaction kinetics,
+- Butler-Volmer reaction kinetics,
 - OCP and transport-property functions.
 
 Validation outputs:
@@ -27,7 +27,7 @@ Validation outputs:
 - electrode/electrolyte potentials,
 - solid/electrolyte concentrations.
 
-### M1 — Electro-thermal cell
+### M1: Electro-thermal cell
 
 Couple electrochemistry to heat transfer.
 
@@ -46,7 +46,7 @@ Key outputs:
 - heat-generation partition,
 - voltage/temperature coupling error relative to lower-order models.
 
-### M2 — 2D/3D current-collector and tab model
+### M2: 2D/3D current-collector and tab model
 
 Purpose:
 
@@ -57,7 +57,7 @@ Purpose:
 
 Geometry must be revision-controlled. The exported model manifest should include dimensions and material assignments.
 
-### M3 — Electro-chemo-mechanical model
+### M3: Electro-chemo-mechanical model
 
 Potential couplings:
 
@@ -67,7 +67,7 @@ Potential couplings:
 - casing/contact pressure,
 - stress-dependent transport/kinetics only when scientifically justified and parameterized.
 
-### M4 — Cooling-system / module model
+### M4: Cooling-system / module model
 
 Possible domains:
 
@@ -85,7 +85,7 @@ Objectives:
 - thermal uniformity,
 - robustness to cell variation and boundary uncertainty.
 
-### M5 — Safety-oriented thermal propagation model
+### M5: Safety-oriented thermal propagation model
 
 Use conservative source terms and validated thermal properties. The focus is prevention, detection and propagation mitigation. Do not treat an unvalidated reaction-kinetics model as predictive safety truth.
 

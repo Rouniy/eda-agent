@@ -14,14 +14,14 @@ The repository is organized so each layer can be used independently, while shari
 
 ## Core research tracks
 
-1. **Electrochemistry** — SPM, SPMe, DFN/P2D, transport, kinetics, concentration and potential fields.
-2. **Thermal behavior** — lumped, 2D/3D heat generation and conduction, cooling boundary conditions, anisotropic thermal properties.
-3. **Mechanical coupling** — electrode swelling, diffusion-induced stress, casing constraint, contact/pressure effects.
-4. **Ageing and degradation** — SEI growth, lithium plating, loss of active material, porosity change, resistance growth, calendar/cycle ageing.
-5. **Safety / thermal runaway** — prevention, detection, conservative heat-source and propagation-oriented modeling with safety-first experimental boundaries.
-6. **AI and surrogate models** — SOH/RUL, reduced-order surrogates, PINN/operator-learning experiments, Bayesian optimization, uncertainty quantification.
-7. **BMS and digital twin** — SOC/SOH estimation, model adaptation, parameter tracking, fault indicators, state synchronization with measured data.
-8. **Pack/system studies** — electrical interconnects, cell variation, thermal gradients, cooling topology, module/pack observability.
+1. **Electrochemistry**: SPM, SPMe, DFN/P2D, transport, kinetics, concentration and potential fields.
+2. **Thermal behavior**: lumped, 2D/3D heat generation and conduction, cooling boundary conditions, anisotropic thermal properties.
+3. **Mechanical coupling**: electrode swelling, diffusion-induced stress, casing constraint, contact/pressure effects.
+4. **Ageing and degradation**: SEI growth, lithium plating, loss of active material, porosity change, resistance growth, calendar/cycle ageing.
+5. **Safety / thermal runaway**: prevention, detection, conservative heat-source and propagation-oriented modeling with safety-first experimental boundaries.
+6. **AI and surrogate models**: SOH/RUL, reduced-order surrogates, PINN/operator-learning experiments, Bayesian optimization, uncertainty quantification.
+7. **BMS and digital twin**: SOC/SOH estimation, model adaptation, parameter tracking, fault indicators, state synchronization with measured data.
+8. **Pack/system studies**: electrical interconnects, cell variation, thermal gradients, cooling topology, module/pack observability.
 
 ## Directory map
 
@@ -139,10 +139,10 @@ Every result intended for comparison or publication should carry:
 
 The surrounding `eda-agent` repository already includes reviewed COMSOL/AI projects. For battery-specific work, this lab is designed to interoperate with:
 
-- **PyBaMM** — fast physics-based battery models in Python.
-- **liionpack** — pack simulation built on PyBaMM.
-- **MPh** — Pythonic COMSOL automation.
-- **COMSOL Multiphysics MCP / sim-cli / sim-plugin-comsol** — alternative AI/agent control paths for COMSOL.
+- **PyBaMM**, fast physics-based battery models in Python.
+- **liionpack**, pack simulation built on PyBaMM.
+- **MPh**, Pythonic COMSOL automation.
+- **COMSOL Multiphysics MCP / sim-cli / sim-plugin-comsol**, alternative AI/agent control paths for COMSOL.
 
 Upstream code should remain upstream where possible. This lab owns the integration contracts, reproducible workflows, battery-domain models, experiments, validation and research outputs.
 

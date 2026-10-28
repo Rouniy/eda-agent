@@ -19,19 +19,19 @@ Examples:
 
 ## 3. Modeling hierarchy
 
-### S0 — normal-operation thermal envelope
+### S0: normal-operation thermal envelope
 
 Establish a validated normal-operation electro-thermal model before extrapolating toward abnormal conditions.
 
-### S1 — externally specified conservative heat source
+### S1: externally specified conservative heat source
 
 For propagation-oriented thermal studies, use documented/validated heat-release inputs or bounded source terms as data, rather than inventing reaction kinetics.
 
-### S2 — calibrated reaction model
+### S2: calibrated reaction model
 
 Only use reaction kinetics when parameters have defensible sources and the model is validated against appropriate safety data.
 
-### S3 — module/pack propagation model
+### S3: module/pack propagation model
 
 Study:
 

@@ -1,6 +1,6 @@
 ---
 name: boardquality
-description: Hold a PCB to an engineering quality bar — grid-aligned placement, 45-degree routing, stitched pours, readable silkscreen, fab margin, and machine-enforced design rules. Apply alongside autodesign, or on any board work where the user asks for a layout that is manufacturable, reviewable, or simply looks professionally drawn. Complements the design harness; it does not replace design_next_action.
+description: Hold a PCB to an engineering quality bar, grid-aligned placement, 45-degree routing, stitched pours, readable silkscreen, fab margin, and machine-enforced design rules. Apply alongside autodesign, or on any board work where the user asks for a layout that is manufacturable, reviewable, or simply looks professionally drawn. Complements the design harness; it does not replace design_next_action.
 ---
 
 # Board quality bar (eda-agent)
@@ -30,7 +30,7 @@ actually go wrong:
 
 1. **Never assume a physical parameter.** Stackup, fab limits, impedance
    targets, currents, edge rates. A missing one becomes an
-   `open_question` that blocks the stage — never a "typical value".
+   `open_question` that blocks the stage, never a "typical value".
    Every number computed downstream inherits the guess, and none of them
    get re-derived when the real value arrives.
 
@@ -54,13 +54,13 @@ temperature range, assembly style, panelization, test strategy.
 
 `rules_stackup` cannot synthesize correct rules without these, and
 [fab-profile.template.json](../../docs/pcb-quality/fab-profile.template.json)
-is the shape `design_load_fab_profile` wants — transcribed from the fab's
+is the shape `design_load_fab_profile` wants, transcribed from the fab's
 capability page and cited in `source`, never recalled from memory.
 
 ## During `placement`
 
-Fixed geometry first — connectors, mounting holes, anything the enclosure
-determines — placed and **locked**, then blocks, then parts within
+Fixed geometry first, connectors, mounting holes, anything the enclosure
+determines, placed and **locked**, then blocks, then parts within
 blocks.
 
 Geometry that reads as designed: every origin on one declared grid
@@ -77,13 +77,13 @@ analog away from switchers and connectors; heat spread out.
 45° or arcs, never square corners, never acute
 (`audit_find_acute_angles`). Constant width per net, taper where it must
 change. Groups routed together so parallel runs read as a bus. Continuous
-reference plane under every trace — crossing a plane split is prohibited;
+reference plane under every trace, crossing a plane split is prohibited;
 if unavoidable, add a stitching cap and report it. Widths for current
 from `pcb_calc_trace_width_for_current`, not from habit.
 
 ## During `pours_tuning`
 
-Pours are **stitched across their area**, not fenced along trace edges —
+Pours are **stitched across their area**, not fenced along trace edges ,
 a via fence leaves the copper between fences free to resonate as a patch.
 Use `pcb_place_stitching_vias` over the region, and derive the pitch:
 
@@ -93,7 +93,7 @@ Use `pcb_place_stitching_vias` over the region, and derive the pitch:
 
 For digital use the edge-rate bandwidth (`f_knee ≈ 0.35 / t_r`), not the
 clock. Show the substitution. Return via beside every layer-changing
-signal via. Re-run `pcb_run_drc` after every repour — a repour is a
+signal via. Re-run `pcb_run_drc` after every repour, a repour is a
 geometry change, not a cosmetic one.
 
 ## Silkscreen
@@ -107,5 +107,5 @@ marked, board name / revision / date present.
 
 Walk §10's extra rubric items in the `design_visual_review` loop, then
 the §11 sign-off checklist at `verification`. DRC violations mean not
-finished — list each one with its disposition rather than waiving in
+finished, list each one with its disposition rather than waiving in
 bulk.

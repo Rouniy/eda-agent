@@ -27,10 +27,10 @@ Every model should have a neighboring manifest containing chemistry, geometry re
 
 ## First COMSOL model sequence
 
-1. `lfp_1d_dfn_revA` — 1D electrochemical consistency case.
-2. `generic_cell_thermal_3d_revA` — geometry-driven heat conduction with externally supplied heat source.
-3. `generic_cell_electrothermal_3d_revA` — electro-thermal coupling.
-4. `generic_cell_mechanical_revA` — swelling/stress research model.
-5. `module_cooling_revA` — module/cooling-system model.
+1. `lfp_1d_dfn_revA`: 1D electrochemical consistency case.
+2. `generic_cell_thermal_3d_revA`: geometry-driven heat conduction with externally supplied heat source.
+3. `generic_cell_electrothermal_3d_revA`: electro-thermal coupling.
+4. `generic_cell_mechanical_revA`: swelling/stress research model.
+5. `module_cooling_revA`: module/cooling-system model.
 
 Do not add untraceable commercial geometry or material properties. Unknown values belong in a parameter-estimation task, not in undocumented constants.

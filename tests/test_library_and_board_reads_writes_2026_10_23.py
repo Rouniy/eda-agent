@@ -125,10 +125,11 @@ def test_the_delete_does_not_select_and_clear():
 
 def test_a_schlib_query_walks_the_symbol_on_screen_first():
     body = _fn("Generic.pas", "ProcessSchDocObjects")
-    pick = body.index("ParamsOfSymbol := False;")
-    current = body.index("LibComp := SchDoc.CurrentSchComponent", pick)
+    pick = body.index("If Mode = 'query' Then")
+    current = body.index("LibComp := SchLib.CurrentSchComponent", pick)
     fallback = body.index("LibComp := LastCreatedLibComponent", pick)
     assert current < fallback
+    assert "LibComp := GetTargetLibComponent(SchLib)" in body
     assert "(ObjTypeInt = eParameter) Or (ObjTypeInt = eDesignator)" in body
     assert '"_symbol":"' in body
 

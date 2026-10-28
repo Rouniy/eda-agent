@@ -17,10 +17,10 @@ papers/<paper-id>/
 
 ## Reproduction levels
 
-- **R0 — read/annotate:** equations, parameters, assumptions and missing details extracted.
-- **R1 — qualitative:** trends reproduced.
-- **R2 — quantitative:** reported metrics/curves reproduced within stated tolerance.
-- **R3 — independent validation:** method tested on conditions/data not used in the paper.
+- **R0, read/annotate:** equations, parameters, assumptions and missing details extracted.
+- **R1, qualitative:** trends reproduced.
+- **R2, quantitative:** reported metrics/curves reproduced within stated tolerance.
+- **R3, independent validation:** method tested on conditions/data not used in the paper.
 
 Record discrepancies rather than tuning undocumented parameters until a figure visually matches.
 

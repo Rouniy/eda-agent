@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The fork's update report distinguishes source, deployment and VM state."""
 from __future__ import annotations
 

@@ -1,5 +1,57 @@
 # Current integration state / agent handoff
 
+## Visible SchLib query and broad test gate, 2026-10-28
+
+Script `.151` makes `obj_query(scope="active_doc")` read the symbol
+currently shown in a SchLib, while mutation calls retain their
+newly-created-symbol target. Query rows now include `_symbol` and
+`_owner_part_id`. In Altium 26.11, selecting `CMP-001-1547-1` returned
+its two pins with the matching `_symbol`; selecting `CMP-001-2860-1`
+then returned its GND, VIN and EN/UVLO pins with the new `_symbol`.
+The disposable SchLib was closed without saving. The Pascal build had
+zero findings, 62 focused Python tests passed, and `app_ping` confirmed
+loaded/bundled `.151` without stale units.
+
+The broader test run found an old source-spelling expectation for STEP
+model identity. The implementation deliberately compares the saved
+model name with `ExtractFileName(ModelFile)` in both the preflight and
+write checks, so the test now checks those two basename comparisons.
+It also found a duplicate `_encode_bindings_param` definition and a
+duplicate termination-default table in `tools/pcb.py`; the identical
+second copies are removed. The shadow-definition and netlist tests
+passed 36/36.
+
+## STEP-body footprint refresh and full-suite repair, 2026-10-28
+
+The full Python integration suite resumed after the SPDX header fix and
+found that `lib_add_3d_body` was missing from the same-footprint refresh
+list. On Altium, adding a primitive to the library board can leave the
+current footprint's iterator showing it twice until that footprint is
+made current again. Script `.150` now refreshes after `add_3d_body` as
+it already does for other footprint writers. A disposable PcbLib with
+one extruded body received a checksum-verified extracted STEP model;
+`lib_get_footprint_primitives` immediately reported exactly two bodies,
+and the new model's centre read back at (2, -1) mm. The library was
+closed with discard, and its SHA-256 was unchanged. Pascal lint/build
+passed 12 units and 36 focused Python tests passed. `app_ping` reported
+loaded/bundled `.150` with no stale units.
+
+## Full-suite integration gate and live batch DRC, 2026-10-28
+
+Loaded script `.149` ran a fresh silent batch DRC on
+`CW308T_AVR.PcbDoc`: 97 violations were returned out of 97 reported,
+14 rule rows summed to the report header, and no violation limit
+stopped the run. The board was closed without saving. This qualifies the
+unchanged batch path after the modal DRC repair, not the modal dialog.
+
+The broad Python suite reached 51% with 4,948 passed, 95 skipped and
+one expected failure before its first error. The failing repository
+header gate identified ten already integrated source/test files missing
+their Apache-2.0 SPDX line, including the optional battery research lab,
+Windows executable entry point, designator-batch test and update-status
+test. Their source fork is Apache-2.0; the headers are added and the
+individual gate passes. The remaining suite is being resumed separately.
+
 ## Modal DRC violation loop and AD25 report fallback, 2026-10-28
 
 Reviewing `redbird98`'s DRC tests found a severe merge loss in our opt-in
@@ -1029,7 +1081,7 @@ outside this reader's scope.
 ## Native footprint-primitives read on copied PcbLib, 2026-10-28
 
 Loaded script `.115` opened the copied
-`C:\Users\Alex\AppData\Local\Temp\eda-intlib-qa-20261028\Spirit_Level_Project.PcbLib`
+`%TEMP%\eda-intlib-qa-20261028\Spirit_Level_Project.PcbLib`
 and enumerated 33 footprints. `lib_get_footprint_primitives` with that
 exact path returned `PQ208` with 209 body records, four tracks and
 three arcs; independent `lib_get_pad_geometry` reported 210 pads
@@ -1042,7 +1094,7 @@ does not compare every primitive against an independent file parser.
 ## Native integrated-library build from MOREmbedded path, 2026-10-28
 
 With loaded script `.115`, `lib_build_integrated_library` created
-`Spirit_QA.LibPkg` in `C:\Users\Alex\AppData\Local\Temp\eda-intlib-qa-20261028`
+`Spirit_QA.LibPkg` in `%TEMP%\eda-intlib-qa-20261028`
 from copies of Altium's installed `SpiritLevel_2E.SchLib` (186,880 bytes)
 and `Spirit_Level_Project.PcbLib` (715,264 bytes). Both exact paths appear
 as members in the saved LibPkg and `project.get_documents` returned both.
@@ -1086,7 +1138,7 @@ current shape.
 ## Native fractional circular board outline, 2026-10-28
 
 Loaded script `.115` set a circle on disposable
-`C:\Users\Alex\AppData\Local\Temp\eda-circle-qa-20261028.PcbDoc`, copied
+`%TEMP%\eda-circle-qa-20261028.PcbDoc`, copied
 from the installed Spirit Level example. `pcb.set_board_shape` accepted
 centre (7000.125, 7500.375) mil and radius 500.625 mil. Before the
 edit the copied board had an eight-vertex rounded rectangle; after the
@@ -1132,7 +1184,7 @@ source directory. The scratch documents and library were closed.
 ## Exact-project PCB net-colour plan, 2026-10-28
 
 The installed Mini PC SODIMM example project and board were copied to
-`C:\Users\Alex\AppData\Local\Temp\eda-netcolor-qa-0c37065137df4fc5a5a80d63db2c3f87`.
+`%TEMP%\eda-netcolor-qa-0c37065137df4fc5a5a80d63db2c3f87`.
 Native script `.114` read 229 board nets. With exact copied PrjPcb and
 PcbDoc paths, `pcb_net_display(from_project=True, dry_run=True)` planned
 the project BGR colours for GND (16777070), VDD (48640), VPP (16740095),

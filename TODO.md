@@ -1,5 +1,29 @@
 # Fork integration TODO
 
+## STEP-body refresh after fork import, 2026-10-28
+
+- [x] Include `add_3d_body` in the current-footprint refresh after a
+  library-board add. Native `.150` readback on a disposable PcbLib listed
+  the original and newly added 3D bodies exactly once each; close with
+  discard left the file hash unchanged.
+
+## Broad integration gate, 2026-10-28
+
+- [x] Add the required Apache-2.0 SPDX header to ten imported files
+  exposed by the full-suite source-header gate; that gate now passes.
+- [x] Make SchLib object queries follow the visible symbol and return its
+  identity; verify two symbol switches in native Altium on a disposable
+  library, then close without saving (script `.151`).
+- [x] Remove duplicate PCB netlist binding and termination-default
+  definitions; 36 shadow-definition and netlist tests pass.
+- [x] Clear the repository private-path and dash-style gates after the
+  fork documentation import; their focused tests pass.
+- [x] Confirm loaded `.149` still runs the silent batch DRC on a board
+  with violations: 97/97 rows returned, 14 rule summaries, no early stop,
+  board closed without saving.
+- [ ] Finish the remaining full Python suite after its 51% checkpoint and
+  reconcile any additional integration failures.
+
 ## `redbird98` modal DRC reconciliation, 2026-10-28
 
 - [x] Restore the violation loop's count, detail append, iterator advance

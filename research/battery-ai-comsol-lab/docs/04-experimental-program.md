@@ -6,7 +6,7 @@ Experiments exist to answer a scientific question, identify parameters, validate
 
 ## 2. Experimental levels
 
-### E0 — Instrument and fixture characterization
+### E0: Instrument and fixture characterization
 
 Before cell testing:
 
@@ -16,7 +16,7 @@ Before cell testing:
 - fixture/contact-resistance characterization,
 - ambient/chamber stability check.
 
-### E1 — Baseline capacity and efficiency
+### E1: Baseline capacity and efficiency
 
 Typical outputs:
 
@@ -29,7 +29,7 @@ Typical outputs:
 
 The exact voltage limits, rest times and current rates must come from the tested cell's legitimate specification and laboratory safety procedure.
 
-### E2 — Dynamic pulse characterization
+### E2: Dynamic pulse characterization
 
 Purpose:
 
@@ -39,7 +39,7 @@ Purpose:
 
 Record full current/voltage/temperature time series and the SOC initialization procedure.
 
-### E3 — EIS
+### E3: EIS
 
 Purpose:
 
@@ -50,7 +50,7 @@ Purpose:
 
 Store frequency, real/imaginary impedance, amplitude, DC bias/SOC, temperature and instrument settings.
 
-### E4 — GITT/PITT or relaxation-oriented tests
+### E4: GITT/PITT or relaxation-oriented tests
 
 Purpose:
 
@@ -58,7 +58,7 @@ Purpose:
 - OCP/relaxation behavior,
 - physics-model calibration.
 
-### E5 — Thermal characterization
+### E5: Thermal characterization
 
 Possible measurements:
 
@@ -67,7 +67,7 @@ Possible measurements:
 - heat-flux/calorimetric data if suitable equipment is available,
 - cooling/contact-condition metadata.
 
-### E6 — Ageing matrix
+### E6: Ageing matrix
 
 Independent factors can include:
 

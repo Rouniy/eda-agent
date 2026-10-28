@@ -2,7 +2,7 @@
 
 This roadmap is ordered to create a validated research stack rather than maximizing feature count.
 
-## Phase 0 — Foundation
+## Phase 0: Foundation
 
 Deliverables:
 
@@ -19,7 +19,7 @@ Exit gate:
 - unit tests pass,
 - outputs can be ingested by the common data schema.
 
-## Phase 1 — Physics baseline
+## Phase 1: Physics baseline
 
 Tasks:
 
@@ -36,7 +36,7 @@ Exit gate:
 - baseline figures are script-generated,
 - sensitivity results identify the parameters that matter most for the next experiments.
 
-## Phase 2 — COMSOL electro-thermal model
+## Phase 2: COMSOL electro-thermal model
 
 Tasks:
 
@@ -53,7 +53,7 @@ Exit gate:
 - key outputs are validated against lower-order model and/or experiment,
 - mesh/solver convergence is recorded.
 
-## Phase 3 — Experimental validation
+## Phase 3: Experimental validation
 
 Tasks:
 
@@ -70,7 +70,7 @@ Exit gate:
 - a held-out test condition is predicted with predeclared metrics,
 - disagreement is decomposed into measurement, parameter and model-structure contributions where possible.
 
-## Phase 4 — Degradation
+## Phase 4: Degradation
 
 Tasks:
 
@@ -86,7 +86,7 @@ Exit gate:
 - parameter identifiability is discussed,
 - model generalization is evaluated on held-out conditions.
 
-## Phase 5 — COMSOL surrogate modeling
+## Phase 5: COMSOL surrogate modeling
 
 Tasks:
 
@@ -103,7 +103,7 @@ Exit gate:
 - uncertainty flags poor extrapolation,
 - fresh COMSOL spot checks confirm optimized candidates.
 
-## Phase 6 — BMS and digital twin
+## Phase 6: BMS and digital twin
 
 Tasks:
 
@@ -121,7 +121,7 @@ Exit gate:
 - held-out-cell/state errors are reported,
 - failure/uncertainty behavior is visible instead of hidden.
 
-## Phase 7 — Pack/module scale
+## Phase 7: Pack/module scale
 
 Tasks:
 
@@ -138,7 +138,7 @@ Exit gate:
 - temperature variation and cell variability are explicit,
 - validation exists at least at subsystem level.
 
-## Phase 8 — Optimization and research publications
+## Phase 8: Optimization and research publications
 
 Candidate studies:
 

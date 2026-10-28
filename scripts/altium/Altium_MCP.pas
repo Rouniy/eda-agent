@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.149';
+    SCRIPT_VERSION = '2026.10.28.151';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -33068,6 +33068,7 @@ Begin
            Or (Action = 'add_footprint_via')
            Or (Action = 'add_footprint_vias')
            Or (Action = 'add_footprint_bodies')
+           Or (Action = 'add_3d_body')
            Or (Action = 'add_footprint_pads')
            Or (Action = 'add_footprint_track')
            Or (Action = 'add_footprint_tracks')
@@ -69127,7 +69128,7 @@ Var
     SchLib : ISch_Lib;
     LibComp : ISch_Component;
     Removed, ParamsOfSymbol, LivePinsOnly, Skip : Boolean;
-    ObjJson : String;
+    ObjJson, SymbolRef : String;
     First : Boolean;
     MaxIter, LastAddr, ThisAddr, SameTries : Integer;
     DeadPins : TStringList;
@@ -69143,8 +69144,20 @@ Begin
     If (SchDoc <> Nil) And (SchDoc.ObjectId = eSchLib) Then
     Begin
         SchLib := SchDoc;
-        LibComp := GetTargetLibComponent(SchLib);
+        { A read describes the symbol on screen. The last-created fallback }
+        { is retained for writes, since a newly added symbol can be absent }
+        { from CurrentSchComponent until the editor changes its display.   }
+        If Mode = 'query' Then
+        Begin
+            LibComp := Nil;
+            Try LibComp := SchLib.CurrentSchComponent; Except End;
+            If LibComp = Nil Then LibComp := LastCreatedLibComponent;
+        End
+        Else
+            LibComp := GetTargetLibComponent(SchLib);
         If LibComp = Nil Then Exit;
+        SymbolRef := '';
+        Try SymbolRef := LibComp.LibReference; Except End;
 
         If (Mode = 'modify') Or (Mode = 'delete') Then
             SchServer.ProcessControl.PreProcess(SchLib, '');
@@ -69189,10 +69202,13 @@ Begin
                     Begin
                         ObjJson := BuildObjectJson(Obj, PropsStr);
                         If Length(ObjJson) <= 2 Then
-                            ObjJson := '{"_doc":"' + EscapeJsonString(DocPath) + '"}'
+                            ObjJson := '{"_doc":"' + EscapeJsonString(DocPath)
+                                + '","_symbol":"' + EscapeJsonString(SymbolRef)
+                                + '","_owner_part_id":' + IntToStr(Obj.OwnerPartId) + '}'
                         Else
                             ObjJson := Copy(ObjJson, 1, 1)
                                 + '"_doc":"' + EscapeJsonString(DocPath)
+                                + '","_symbol":"' + EscapeJsonString(SymbolRef)
                                 + '","_owner_part_id":' + IntToStr(Obj.OwnerPartId)
                                 + ',' + Copy(ObjJson, 2, Length(ObjJson));
                         If Not First Then Result := Result + ',';

@@ -1,4 +1,4 @@
-# Board intent — <project name>
+# Board intent: <project name>
 
 Physical intent for one board. Fill this during the `requirement` /
 `architecture` stages, before `rules_stackup` synthesizes anything.
@@ -8,7 +8,7 @@ Rules for filling it in:
 - Every value is **stated by the user** or **derived with a shown
   calculation**. Write the derivation next to the value.
 - A field you cannot fill becomes an `open_question` that blocks the
-  stage. Leave it as `UNKNOWN — blocking`.
+  stage. Leave it as `UNKNOWN, blocking`.
 - `n/a` is a legitimate answer, but only as a decision, not as a way to
   skip a question. Write why.
 
@@ -36,7 +36,7 @@ Rules for filling it in:
 | Surface finish | | |
 | Panelized? rails needed? | | |
 
-Fab limits go in the `FabProfile` JSON, not here — see
+Fab limits go in the `FabProfile` JSON, not here, see
 `fab-profile.template.json`.
 
 ## Electrical
@@ -82,7 +82,7 @@ Fab limits go in the `FabProfile` JSON, not here — see
 
 ## Open questions
 
-Anything above marked `UNKNOWN — blocking`, restated here with who needs
+Anything above marked `UNKNOWN, blocking`, restated here with who needs
 to answer it.
 
 1.

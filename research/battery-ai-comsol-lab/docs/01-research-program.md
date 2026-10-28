@@ -4,7 +4,7 @@
 
 The program treats rechargeable-battery research as a hierarchy of coupled questions rather than a single simulation task. The primary system is a Li-ion cell, then module/pack, with deliberate support for multiple chemistries and form factors.
 
-### Theme A — Electrochemical performance
+### Theme A: Electrochemical performance
 
 Questions:
 
@@ -29,7 +29,7 @@ Primary observables:
 - heat generation,
 - lithium inventory and active-material state.
 
-### Theme B — Electro-thermal coupling
+### Theme B: Electro-thermal coupling
 
 Questions:
 
@@ -44,7 +44,7 @@ Deliverables:
 - hotspot/gradient metrics,
 - reduced-order thermal surrogate.
 
-### Theme C — Mechanics and swelling
+### Theme C: Mechanics and swelling
 
 Questions:
 
@@ -59,7 +59,7 @@ Deliverables:
 - sensitivity to mechanical boundary conditions,
 - candidate observables for pressure/strain-based state estimation.
 
-### Theme D — Degradation
+### Theme D: Degradation
 
 Mechanisms to study separately before coupling:
 
@@ -74,7 +74,7 @@ Mechanisms to study separately before coupling:
 
 Research rule: do not infer a unique degradation mechanism from capacity fade alone. Fit/validate against multiple observables whenever possible.
 
-### Theme E — Safety and abuse modeling
+### Theme E: Safety and abuse modeling
 
 Scope is computational and measurement-oriented: detection, characterization, prevention and propagation mitigation. See `08-safety-thermal-runaway.md` for explicit safety boundaries.
 
@@ -84,7 +84,7 @@ Questions:
 - How do cooling geometry and cell spacing affect propagation risk?
 - Can a reduced-order safety model preserve conservative temperature/risk bounds?
 
-### Theme F — AI / machine learning
+### Theme F: AI / machine learning
 
 AI is used where it adds measurable value:
 
@@ -113,11 +113,11 @@ Each dataset/model record must declare format and geometry revision. Geometry-de
 
 Priority order:
 
-1. LFP/graphite — baseline and thermal/safety studies.
-2. NMC/graphite — high-energy comparison and degradation work.
-3. NCA/graphite — optional high-energy comparison.
-4. LTO-based systems — fast-charge and longevity comparison.
-5. Solid-state systems — future branch once material/interface models and data are available.
+1. LFP/graphite: baseline and thermal/safety studies.
+2. NMC/graphite: high-energy comparison and degradation work.
+3. NCA/graphite: optional high-energy comparison.
+4. LTO-based systems: fast-charge and longevity comparison.
+5. Solid-state systems: future branch once material/interface models and data are available.
 
 ## 4. Model-validation ladder
 
@@ -187,22 +187,22 @@ Before treating a result as publication-ready, require:
 
 ## 8. Candidate first papers/projects
 
-### Project P1 — Electro-thermal model cross-validation
+### Project P1: Electro-thermal model cross-validation
 
 Compare PyBaMM DFN + thermal against COMSOL electro-thermal simulation across C-rate and ambient temperature. Quantify where low-dimensional thermal assumptions break down.
 
-### Project P2 — AI surrogate for 3D battery thermal field
+### Project P2: AI surrogate for 3D battery thermal field
 
 Generate a controlled COMSOL design-of-experiments dataset and train a surrogate to predict peak temperature and spatial temperature metrics. Include uncertainty and out-of-distribution tests.
 
-### Project P3 — Physics + ML SOH estimation
+### Project P3: Physics + ML SOH estimation
 
 Combine interpretable physics-derived features with sequence models or gradient boosting for SOH prediction. Test cross-temperature and cross-cell generalization.
 
-### Project P4 — Cooling geometry optimization
+### Project P4: Cooling geometry optimization
 
 Use COMSOL for high-fidelity training/validation, a surrogate for search, and Bayesian or multi-objective optimization for peak temperature, gradient, pressure drop and energy cost.
 
-### Project P5 — Digital twin with online parameter adaptation
+### Project P5: Digital twin with online parameter adaptation
 
 Run a reduced-order electro-thermal model online, update selected parameters from measured voltage/current/temperature, and track SOC/SOH with uncertainty.

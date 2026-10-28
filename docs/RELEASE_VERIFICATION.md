@@ -3790,7 +3790,7 @@ zero candidates. All six pad names, coordinates, layers and rotations
 matched the source board after reopen. The source board SHA-256 remained
 `DDECD5314589EFC38D059A11000743E6C452A1F8209C8DEA603A63D2B5C17B05`.
 The scratch copy is at
-`C:\Users\Alex\AppData\Local\Temp\eda-agent-recenter-20261027.PcbDoc`;
+`%TEMP%\eda-agent-recenter-20261027.PcbDoc`;
 command policy rejected its removal after the test. Larger bulk writes and
 footprints with unsupported grouped primitive kinds remain unverified.
 
@@ -3834,7 +3834,7 @@ The updated `Gen_CreateObject` removes duplicate property writes and
 refuses a failed assignment before registration. Thirty-five related
 tests passed (three optional FPC tests skipped); the Pascal build/lint
 reported zero errors and warnings. On isolated
-`C:\Users\Alex\EDA Agent\workspace\qa\eda-agent-create-object-20261027.SchDoc`,
+`<workspace>\qa\eda-agent-create-object-20261027.SchDoc`,
 creating an `eLabel` with unsupported `IsHidden` returned
 `UNSUPPORTED_PROPERTY` and left zero matching objects. A valid label at
 100,100 mil persisted after save, close and reopen. The source SchDoc

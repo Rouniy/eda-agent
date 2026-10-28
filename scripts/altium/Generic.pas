@@ -3076,7 +3076,7 @@ Var
     SchLib : ISch_Lib;
     LibComp : ISch_Component;
     Removed, ParamsOfSymbol, LivePinsOnly, Skip : Boolean;
-    ObjJson : String;
+    ObjJson, SymbolRef : String;
     First : Boolean;
     MaxIter, LastAddr, ThisAddr, SameTries : Integer;
     DeadPins : TStringList;
@@ -3092,8 +3092,20 @@ Begin
     If (SchDoc <> Nil) And (SchDoc.ObjectId = eSchLib) Then
     Begin
         SchLib := SchDoc;
-        LibComp := GetTargetLibComponent(SchLib);
+        { A read describes the symbol on screen. The last-created fallback }
+        { is retained for writes, since a newly added symbol can be absent }
+        { from CurrentSchComponent until the editor changes its display.   }
+        If Mode = 'query' Then
+        Begin
+            LibComp := Nil;
+            Try LibComp := SchLib.CurrentSchComponent; Except End;
+            If LibComp = Nil Then LibComp := LastCreatedLibComponent;
+        End
+        Else
+            LibComp := GetTargetLibComponent(SchLib);
         If LibComp = Nil Then Exit;
+        SymbolRef := '';
+        Try SymbolRef := LibComp.LibReference; Except End;
 
         If (Mode = 'modify') Or (Mode = 'delete') Then
             SchServer.ProcessControl.PreProcess(SchLib, '');
@@ -3138,10 +3150,13 @@ Begin
                     Begin
                         ObjJson := BuildObjectJson(Obj, PropsStr);
                         If Length(ObjJson) <= 2 Then
-                            ObjJson := '{"_doc":"' + EscapeJsonString(DocPath) + '"}'
+                            ObjJson := '{"_doc":"' + EscapeJsonString(DocPath)
+                                + '","_symbol":"' + EscapeJsonString(SymbolRef)
+                                + '","_owner_part_id":' + IntToStr(Obj.OwnerPartId) + '}'
                         Else
                             ObjJson := Copy(ObjJson, 1, 1)
                                 + '"_doc":"' + EscapeJsonString(DocPath)
+                                + '","_symbol":"' + EscapeJsonString(SymbolRef)
                                 + '","_owner_part_id":' + IntToStr(Obj.OwnerPartId)
                                 + ',' + Copy(ObjJson, 2, Length(ObjJson));
                         If Not First Then Result := Result + ',';
