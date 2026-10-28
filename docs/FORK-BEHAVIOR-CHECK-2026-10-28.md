@@ -15,6 +15,14 @@ the original upstream. This prevents a wheel user following the update hint
 from replacing this fork with the upstream package. Update/status/fork tests
 passed 26/26.
 
+`yniantongtian-oss` commit `491555d`'s Pascal bundle fix is now present:
+`scripts/altium/build.py` reads each source with `utf-8-sig`, so an input
+BOM cannot be embedded in the middle of `Altium_MCP.pas`. An isolated build
+with BOMs in all 12 inputs produced none in the output; 16 focused tests
+passed and the actual 12-file bundle build reported zero lint findings.
+This qualifies the bundle builder, not an AD25 compile of the active
+multi-file `Altium_API.PrjScr` project.
+
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not

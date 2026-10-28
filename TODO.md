@@ -2,6 +2,11 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Port `yniantongtian-oss`'s `491555d` bundle-builder BOM guard.
+  The builder now removes a UTF-8 BOM from each Pascal source before
+  concatenation. An isolated build with a BOM in all 12 inputs produced
+  no BOM in the output; 16 bundle/project checks passed, and the actual
+  bundle build linted 12 files with zero errors and warnings.
 - [x] Keep wheel update guidance and installation links on this fork.
   `updates.check()` now points package installs to `Rouniy/eda-agent`;
   package metadata and the README clone command point there too, while
