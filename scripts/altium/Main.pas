@@ -13,13 +13,15 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.163';
+
+    SCRIPT_VERSION = '2026.10.28.164';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
     SELECTED_PROJECT_READ_ONLY = False;
     SELECTED_PARAM_EDITS = False;
     SELECTED_PLACE_EDITS = False;
+
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
