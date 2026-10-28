@@ -431,3 +431,11 @@ PyBaMM 26.10.1.1. This qualifies the imported research code locally; COMSOL
 itself and the optional `MPh` bridge were not run. The current distribution
 verifier additionally checks an sdist and wheel metadata, while retaining
 the donor's EasyEDA payload checks.
+
+The `yniantongtian-oss` commit `717efec` pinned six external COMSOL/AI
+repositories as Git submodules, without wiring their code into `eda-agent`.
+This repo's battery lab already implements an optional MPh session adapter.
+The other five external projects remain documented as possible adapter
+sources; importing the donor's Git links would add checkouts but no callable
+backend feature. The lab's reference page previously said those submodules
+were present here; that inaccurate statement has been corrected.

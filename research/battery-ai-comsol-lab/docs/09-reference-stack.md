@@ -66,9 +66,12 @@ Repository:
 
 - https://github.com/MPh-py/MPh
 
-## AI/agent COMSOL ecosystem already vendored by the parent repository
+## AI/agent COMSOL ecosystem
 
-The parent `eda-agent` repository includes reviewed submodules for:
+The `yniantongtian-oss/eda-agent` fork pinned these six external projects as
+Git submodules. This repository does not vendor them. The working integration
+here is the optional MPh adapter in `battery_lab.comsol_bridge`; the other
+projects are references for future adapters:
 
 - `wjc9011/COMSOL_Multiphysics_MCP`
 - `svd-ai-lab/sim-cli`
@@ -77,7 +80,9 @@ The parent `eda-agent` repository includes reviewed submodules for:
 - `ethz-pes/AI-mag`
 - `MPh-py/MPh`
 
-The battery lab should consume these through stable interfaces rather than tightly coupling research logic to any one agent implementation.
+The battery lab should consume these through stable interfaces when a
+specific workflow needs them. A pinned Git link alone does not provide an
+`eda-agent` backend or a verified COMSOL workflow.
 
 ## Selection rule
 
