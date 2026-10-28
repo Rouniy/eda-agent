@@ -23,6 +23,29 @@ disposable component. See `RELEASE_VERIFICATION.md` for the field values.
 This source-level comparison does not prove complete behavioral equivalence
 of all divergent branches.
 
+## 2026-10-28 async tool-surface comparison after `.156`
+
+A source scan compared `async def` names under `src/eda_agent/tools` in
+current `main` with 57 nonancestor remote-tracking refs (forks plus the
+direct MOREmbedded fork). Two refs, `rabihnd/integration` and the
+`james-martinez` Windows-binary branch, retain an older all-in-one Altium
+tool module with dozens of pre-split names. Those names need semantic
+comparison against the current split tool modules. Among the other 55
+refs, the only async names
+absent from `main` were `_live_footprint`, `_open_project_paths`, and
+`lib_list_vault_libraries`.
+
+`_live_footprint` is a private read helper; current render and audit paths
+already read pads, primitives and mechanical-layer kinds with the explicit
+PcbLib path. `_open_project_paths` is a private checkpoint helper; the
+current checkpoint path reads `project.get_open_projects` inline.
+`lib_list_vault_libraries` is the earlier name for the available-library
+diagnostic, now `lib_list_available_libraries`, which also lists
+uninstalled libraries and reports the Workspace seen in an open design.
+The scan is a way to find missing tool surfaces; it does not compare
+arguments or semantics in shared functions, so the behavioral review
+remains open.
+
 ## 2026-10-28 live refresh and plane-read repair
 
 `git fetch upstream main` returned
