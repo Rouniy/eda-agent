@@ -68,9 +68,20 @@
   branch refs from the 62-default/117-branch live audit. Divergent Git
   history is not a missing-feature count; record each distinct capability
   against current source and native acceptance where it changes Altium.
-- [ ] Review the other 14 donor-only tool argument pairs from the
-  2026-10-28 signature scan. Separate renamed interfaces and intentional
-  policy choices from native capabilities still hidden by Python.
+- [x] Review the other 14 donor-only tool argument pairs from the
+  2026-10-28 signature scan. All have an existing equivalent route or
+  are a nested helper rather than a public tool argument; the mapping
+  and policy decisions are in
+  `docs/FORK-ARGUMENT-AUDIT-2026-10-28.md`. This resolves the argument
+  queue, while behavior-level fork comparison remains open.
+- [x] Preserve `MOREmbedded`'s fractional-mil point zoom in the existing
+  `obj_zoom_to_xy` route. The Pascal handler already used floating-point
+  coordinates; the Python signature had unnecessarily restricted all
+  three arguments to integers. A focused wrapper/source test covers the
+  full value, invalid radius and nonfinite coordinates. The restarted MCP
+  exposed numeric arguments, and AD26.11 returned the exact requested
+  1234.5678/-25.125 mil point on a read-only board; it was closed without
+  saving.
 
 ## STEP-body refresh after fork import, 2026-10-28
 

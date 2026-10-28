@@ -5,6 +5,15 @@ main` returned `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`.
 `git merge-base main upstream/main` returned that exact commit and
 `git rev-list --count main..upstream/main` returned zero.
 
+The remaining 14 donor-only tool argument pairs were reviewed against
+their implementations. All have a current route or are an internal
+helper; the complete mapping is in
+`docs/FORK-ARGUMENT-AUDIT-2026-10-28.md`. On a fresh fetch,
+`MOREmbedded/main` stayed at `032fb4b`, and an AST inventory of its
+994 decorated tool names found no name missing from the current tool
+modules. This closes the signature queue, not the behavior-level fork
+review.
+
 The Altium `pcb_calc_track_current_capacity` tool now accepts the
 `delta_t_c` argument already present in the fork/shared calculator, while
 preserving its fixed-rise and length/resistance outputs. This reduces the

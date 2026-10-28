@@ -1119,15 +1119,24 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
-    async def obj_zoom_to_xy(x: int, y: int, radius: int = 200) -> dict[str, Any]:
+    async def obj_zoom_to_xy(
+        x: float, y: float, radius: float = 200,
+    ) -> dict[str, Any]:
         """Center the active schematic or PCB view at X,Y in mils.
 
         On a PCB, fit a square around the point with the given radius
-        (default 200 mils). On a schematic, use its native zoom command.
+        (default 200 mils). Fractional-mil coordinates are supported.
+        On a schematic, use its native zoom command.
         """
+        try:
+            x_mils, y_mils, radius_mils = _mils(x), _mils(y), _mils(radius)
+        except (TypeError, ValueError) as exc:
+            return {"success": False, "error": str(exc)}
+        if float(radius_mils) <= 0:
+            return {"success": False, "error": "radius must be positive"}
         return await get_bridge().send_command_async(
-            "generic.zoom_to_xy", {"x": str(x), "y": str(y),
-                                   "radius": str(radius)})
+            "generic.zoom_to_xy", {"x": x_mils, "y": y_mils,
+                                   "radius": radius_mils})
 
     @mcp.tool()
     async def obj_measure_distance(

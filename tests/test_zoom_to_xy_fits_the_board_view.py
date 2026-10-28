@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 GENERIC = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Generic.pas"
 
 
@@ -53,3 +55,37 @@ def test_the_radius_is_optional_and_never_zero():
     branch = _board_branch()
     assert "StrToFloatDef(RadStr, 200)" in branch
     assert "If Rad <= 0 Then Rad := MilsToCoordF(200)" in branch
+
+
+@pytest.mark.asyncio
+async def test_public_zoom_preserves_fractional_mils_and_rejects_bad_radius(monkeypatch):
+    from eda_agent.tools import generic
+
+    calls = []
+
+    class Bridge:
+        async def send_command_async(self, command, params):
+            calls.append((command, params))
+            return {"success": True}
+
+    class Registry:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self):
+            def decorate(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return decorate
+
+    monkeypatch.setattr(generic, "get_bridge", lambda: Bridge())
+    registry = Registry()
+    generic.register_generic_tools(registry)
+    zoom = registry.tools["obj_zoom_to_xy"]
+
+    assert (await zoom(123.4567, -25.125, 12.5))["success"] is True
+    assert calls == [("generic.zoom_to_xy", {
+        "x": "123.4567", "y": "-25.125", "radius": "12.5"})]
+    assert (await zoom(1, 2, 0))["success"] is False
+    assert (await zoom(float("nan"), 2, 5))["success"] is False
+    assert len(calls) == 1
