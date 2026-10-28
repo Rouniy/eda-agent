@@ -1,5 +1,16 @@
 # Fork integration TODO
 
+## Fresh branch-difference queue, 2026-10-28
+
+- [ ] Reconcile `andrzej-sikora-elte/elte` generic DbLib link-field and
+  `FootprintModel` writes with the current dedicated relink and footprint
+  operations. Preserve identity and readback across save/reopen on a
+  disposable component; the fork's raw setters are not yet in `main`.
+- [ ] Continue behavior-level comparison of the 54 nonancestor cached
+  branch refs from the 62-default/117-branch live audit. Divergent Git
+  history is not a missing-feature count; record each distinct capability
+  against current source and native acceptance where it changes Altium.
+
 ## STEP-body refresh after fork import, 2026-10-28
 
 - [x] Include `add_3d_body` in the current-footprint refresh after a
