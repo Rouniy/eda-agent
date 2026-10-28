@@ -453,3 +453,25 @@ publish their bound URL for Altium's Open Dashboard button. A standalone
 8877 instance answered HTTP 200 and wrote the correct URL; script `.169`
 passed Pascal lint/build and answered a fresh ping. The button click itself
 has not been exercised. The default remains 8766 for existing users.
+
+## Missing-path inventory after the 120-branch refresh
+
+Across the 53 divergent cached refs, only 12 tracked paths under `src/`,
+`scripts/`, `.github/workflows/` or `tests/` are absent from `main`.
+They resolve as follows:
+
+| Donor path group | Decision and evidence |
+| --- | --- |
+| `src/eda_agent/easyeda_extension_cli.py`, `tests/test_easyeda_extension_delivery.py` | The installed `eda_agent.easyeda_extension` route and distribution verifier cover the builder/payload behavior; the older module name is not needed. |
+| `scripts/ensure_loop.py` | `eda-agent relaunch` and the bridge supervisor provide the loop-recovery route. |
+| `.github/workflows/sync.yml` | The donor schedules `tgymnich/fork-sync@v1.8` daily with `FORK_SYNC_TOKEN` to sync `main` directly. This repo records upstream merges after review; an automatic direct sync would bypass that decision. Keep the explicit `fork-status --fetch` and merge workflow. |
+| `scripts/altium/StatusFormStub.pas` | AD25 headless alternative remains unqualified on this AD26 host; the one main script project is retained. |
+| `tests/test_via_soldermask_relief_is_refused.py` | Its refusal describes the old direct `IPCB_Via.SolderMaskExpansion` crash. The current tool writes through `TPadCache` and has native AD26 readback; reverting to refusal would remove working functionality. |
+| `tests/test_batch_refuses_designator_rewrites.py`, `tests/test_custom_pad_shape_is_named.py` | The current batch parser refuses raw designator rewrites, and every current pad-shape reader names `eCustomShape`. |
+| `tests/test_placement_cleanup.py`, `tests/test_rosen_small_fixes.py` | Their donor behavior was assessed separately above; some exact error spellings differ while the current operation remains available. |
+| `tests/test_security_policy_version.py`, `tests/benchmarks/__init__.py` | These are policy/packaging checks, with no production path. The security policy already names the three backends; its private Rouniy reporting channel remains an open maintainer decision. |
+
+The current designator, via-mask, Workspace and DbLib focused slice passed
+33 tests. This inventory checks path-level completeness and the named
+behaviors; it does not make AD25 native acceptance or every generated SDK
+accessor complete.
