@@ -199,3 +199,27 @@ skipped. A live Altium 26.11.1.5 call with `Designator=R8` returned
 the mixed-case second-assignment form did too. The internal bypass returned
 `unknown_object_type` on a deliberately invalid object type, confirming
 dispatch without changing a design.
+
+## Child-fork update command and merge shape
+
+The direct child fork's `test_update_command.py` was run unchanged against
+the current source in a temporary test file: 38 passed and 12 failed. The
+current `eda-agent update --status --from <remote-or-folder> --json` already
+reports the checkout, installed package, deployed scripts and compiled
+Altium version. `eda-agent update --yes` separately updates the primary
+checkout. The donor failures include its older exact action text, its
+single-command `run_update` interface, a different `--check` exit-code
+contract, and deploying scripts *from another folder*. The last route is
+not present in our apply command; it is distinct from read-only `--from`
+and from the owner's main-directory script workflow. Current update/status
+tests pass 21/21. No claim of full CLI contract parity is made.
+
+`git merge-tree --write-tree HEAD morembedded/main` was also checked without
+touching the worktree. It reports 62 conflicts (45 content, 15 add/add,
+2 modify/delete). The child fork's 33 unique commits therefore have no
+zero-conflict merge into the current tree. Its public commands and major
+behavior groups have been reconciled above, but making its tip a second
+parent still requires a deliberate merge resolution and regression check.
+By contrast, `git merge-base main upstream/main` is exactly
+`0bb1b3154cca6e58a517b23edee3d7a108f1c232`, which is the second parent
+of the completed upstream merge `63f7c16`.
