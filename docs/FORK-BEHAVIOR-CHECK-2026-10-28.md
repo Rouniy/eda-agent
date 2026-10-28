@@ -512,6 +512,13 @@ copying the donor's blanket empty-value rejection would remove that behavior.
 The donor's `_prjscr_is_ad25_safe` checks only two header strings. The current
 script project contains neither, but this is not proof of AD25 native
 compatibility; the AD25 runtime check remains open.
+The source-selection guard from `wizd/edev` is now adapted into the CLI:
+an editable checkout skips a stale bundled `Altium_API.PrjScr` containing
+those AD25-incompatible markers when its main source project is safe. The
+guard does not claim to validate every script-project setting. Source
+selection, relaunch, health and update tests passed 34/34; a live
+`eda-agent scripts-path` still resolves to this checkout's single
+`scripts/altium` directory.
 
 The `yniantongtian-oss/main` commit `b643cd0` adds portable-checkout and
 manifest-syntax checks. Its `.github/quality/check_repository.py` and

@@ -30,6 +30,15 @@ def get_package_root() -> Path:
     return Path(eda_agent.__file__).resolve().parent
 
 
+def _prjscr_is_ad25_safe(prjscr: Path) -> bool:
+    """Avoid legacy PCB-project headers that AD25 rejects in a script project."""
+    try:
+        source = prjscr.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "eFMSDropDownList" not in source and "UserID=" not in source
+
+
 def get_bundled_scripts_path() -> Path:
     """Return the path to the bundled DelphiScript sources.
 
@@ -39,17 +48,21 @@ def get_bundled_scripts_path() -> Path:
 
     In an editable install (`pip install -e .`), the `force-include`
     mapping is not honoured; the loader falls back to `<repo>/scripts/altium/`
-    by walking up from the package's source location.
+    by walking up from the package's source location. A stale bundled copy
+    with AD25-incompatible project headers is skipped when a safe source
+    project exists in that checkout.
     """
     bundled = get_package_root() / "scripts"
-    if bundled.exists() and (bundled / "Altium_API.PrjScr").exists():
+    bundled_prj = bundled / "Altium_API.PrjScr"
+    if bundled_prj.is_file() and _prjscr_is_ad25_safe(bundled_prj):
         return bundled
 
     # Editable-install fallback.
     pkg_parent = get_package_root().parent
     repo_root = pkg_parent.parent
     dev_scripts = repo_root / "scripts" / "altium"
-    if dev_scripts.exists() and (dev_scripts / "Altium_API.PrjScr").exists():
+    dev_prj = dev_scripts / "Altium_API.PrjScr"
+    if dev_prj.is_file() and _prjscr_is_ad25_safe(dev_prj):
         return dev_scripts
 
     return bundled
