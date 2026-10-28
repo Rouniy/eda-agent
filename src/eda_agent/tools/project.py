@@ -2012,6 +2012,8 @@ def register_project_tools(mcp):
         container_name: str,
         outjob_path: str = "",
         fresh_window_seconds: float = 5.0,
+        board_path: str = "",
+        seal_manifest: bool = False,
     ) -> dict[str, Any]:
         """Execute a specific output container from an OutJob file.
 
@@ -2039,6 +2041,9 @@ def register_project_tools(mcp):
             fresh_window_seconds: files modified up to this many seconds
                 before the run started still count as written, for file
                 systems with coarse timestamps. Default 5s.
+            board_path: Exact focused PcbDoc path when sealing a package.
+            seal_manifest: Hash the saved board, OutJob and exported files
+                into a sidecar after a successful GeneratedFiles run.
 
         Returns:
             ``success``, ``container_name``, ``container_type``,
@@ -2047,8 +2052,27 @@ def register_project_tools(mcp):
             nothing was written.
         """
         import time as _time
+        from pathlib import Path
+
+        from ..fileio.fab_manifest import seal_package, sha256_file
 
         bridge = get_bridge()
+        board_hash = outjob_hash = ""
+        if seal_manifest:
+            board_file, outjob_file = Path(board_path), Path(outjob_path)
+            if (not board_file.is_absolute() or board_file.suffix.casefold() != ".pcbdoc"
+                    or not board_file.is_file() or not outjob_file.is_absolute()
+                    or outjob_file.suffix.casefold() != ".outjob" or not outjob_file.is_file()):
+                return {"success": False, "reason":
+                        "sealing requires existing absolute board_path and outjob_path"}
+            active = await bridge.send_command_async(
+                "application.get_active_document", {"front": "true"})
+            if (not isinstance(active, dict)
+                    or str(active.get("file_path", "")).casefold() != board_path.casefold()
+                    or active.get("modified") is True):
+                return {"success": False, "reason":
+                        "focus the exact saved, unmodified PcbDoc before sealing"}
+            board_hash, outjob_hash = sha256_file(board_file), sha256_file(outjob_file)
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
             params["outjob_path"] = outjob_path
@@ -2062,7 +2086,25 @@ def register_project_tools(mcp):
                             "Nothing was run.")}
         started_at = _time.time()
         result = await _send_run(bridge, params, 120.0)
-        return _judge_outjob_run(result, started_at, fresh_window_seconds)
+        judged = _judge_outjob_run(result, started_at, fresh_window_seconds)
+        if seal_manifest and isinstance(judged, dict):
+            if not judged.get("success") or judged.get("dialog"):
+                judged["manifest"] = {"verified": False,
+                                       "reason": "export did not finish cleanly"}
+            elif judged.get("container_type") != "GeneratedFiles":
+                judged["manifest"] = {"verified": False,
+                                       "reason": "only GeneratedFiles containers can be sealed"}
+            else:
+                try:
+                    judged["manifest"] = seal_package(
+                        judged["output_dir"], board_path, outjob_path,
+                        board_hash, outjob_hash)
+                except (OSError, ValueError) as exc:
+                    judged["manifest"] = {"verified": False, "reason": str(exc)}
+            if not judged["manifest"].get("sealed"):
+                judged["success"] = False
+                judged["reason"] = "package was not sealed: " + judged["manifest"]["reason"]
+        return judged
 
     def _locked_outputs(output_dir):
         """Files in a container's output folder another program holds

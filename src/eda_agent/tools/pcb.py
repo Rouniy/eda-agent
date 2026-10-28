@@ -10769,6 +10769,7 @@ def register_pcb_tools(mcp):
         min_drill_mm: float = 0.0,
         min_feature_mm: float = 0.0,
         board_name: str = "board",
+        require_manifest: bool = False,
     ) -> dict[str, Any]:
         """Compare Gerber/Excellon output with one focused, exact PCB.
 
@@ -10776,13 +10777,22 @@ def register_pcb_tools(mcp):
         captured in one uncapped pass; incomplete reads cannot pass. The
         optional gerbonara extra is required to parse the exported package.
         Thresholds are millimetres; zero skips each respective threshold.
+        When an export manifest exists, verify the saved board and every
+        exported file before comparing geometry. ``require_manifest``
+        refuses an unsealed external package.
         """
         from ..fileio.gerber_check import compare_with_board, summarise_package
+        from ..fileio.fab_manifest import MANIFEST_NAME, verify_package
 
         if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
             return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         if not math.isfinite(min_drill_mm) or not math.isfinite(min_feature_mm) or min_drill_mm < 0 or min_feature_mm < 0:
             return {"ok": False, "reason": "fab limits must be finite and non-negative millimetres"}
+        provenance = verify_package(directory, board_path, required=require_manifest)
+        if (require_manifest or (Path(directory) / MANIFEST_NAME).is_file()) and not provenance["verified"]:
+            return {"ok": False, "passed": False,
+                    "reason": "fab manifest verification failed: " + provenance["reason"],
+                    "provenance": provenance}
         summary = summarise_package(directory, board_name=board_name)
         if not summary.get("ok"):
             return {"ok": False, "reason": summary.get("reason"),
@@ -10807,6 +10817,7 @@ def register_pcb_tools(mcp):
             result["reason"] = "required fab comparisons did not run: " + ", ".join(missing)
         result["board_path"] = board_path
         result["board_facts"] = facts_reply
+        result["provenance"] = provenance
         return result
 
 

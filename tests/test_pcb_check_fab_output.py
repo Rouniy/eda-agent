@@ -88,6 +88,14 @@ def test_relative_path_rejected_before_parsing(monkeypatch):
     assert result["ok"] is False and not bridge.calls
 
 
+def test_required_manifest_refuses_unsealed_package_before_native_read(monkeypatch):
+    tool, bridge = _tool(monkeypatch, _facts())
+    result = asyncio.run(tool(r"D:\fab\export", PATH, require_manifest=True))
+    assert result["ok"] is False
+    assert "manifest" in result["reason"]
+    assert not bridge.calls
+
+
 def test_fact_tool_exposes_exact_snapshot(monkeypatch):
     bridge = _Bridge(_facts())
     monkeypatch.setattr(pcb, "get_bridge", lambda: bridge)

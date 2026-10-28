@@ -1039,7 +1039,7 @@ exact-board snapshot counts all drilled pads and vias, checks copper layers
 and outline size, and the Python comparison refuses missing checks. The
 native snapshot and wrong-path refusal passed on a disposable board. A real
 exported package has since been compared below, revealing an outline
-mismatch. A board with more than 5000 drilled holes has not yet been checked.
+mismatch. The separate 8355-hole acceptance is recorded below.
 
 ## Next integration blocks
 
@@ -1049,7 +1049,7 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Find a persistent Altium API for numeric differential-pair impedance rule fields, plus broader project STEP export; placed-component STEP export, editor preferences, pours-at-point, board options and per-net jumper display are now present | Keep numeric writes disabled until exact save/reopen proves they survive; port other families with source tests, script build and disposable-board native checks |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Two-body bulk layer, opacity and standoff edits are natively qualified; rotation refusal on a footprint containing unsupported polygon/dimension primitives remains | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
-| MOREmbedded `pcb_check_fab_output` | Revision provenance of external packages; the native 8355-via snapshot and a fresh >5000-hole Gerber/Excellon comparison are now accepted | The large legacy package matches all three required checks, while an earlier GerberX2 production-review package retains a genuine outline mismatch. A package manifest/revision proof is still needed for external sign-off. |
+| MOREmbedded `pcb_check_fab_output` | The native 8355-via snapshot, a fresh >5000-hole Gerber/Excellon comparison and an export-time integrity manifest are accepted | The large legacy package matches all three required checks, while an earlier GerberX2 production-review package retains a genuine outline mismatch. The manifest binds saved board and export bytes; unsigned external packages cannot establish who generated them. |
 
 The >5000-hole comparison is now accepted on an isolated copy of
 `FR1_Antenna_Array.PrjPcb`. Its OutJob had Gerber and NC Drill outputs
@@ -1059,7 +1059,17 @@ read only `Main.TXT`; the legacy OutJob reader now includes every numbered
 drill-pair file. The fresh package and native board both have four copper
 layers, a 406.4 x 124.46 mm outline and 8355 holes. Comparison ran all
 three required checks and passed with no findings. The 26 focused fab tests
-pass. External package revision provenance remains open.
+pass. `proj_run_outjob(seal_manifest=True, board_path=...)` now hashes the
+saved board and OutJob before running a GeneratedFiles container, confirms
+their bytes stayed unchanged, then seals every output file in
+`eda-fab-manifest.json`. `pcb_check_fab_output(require_manifest=True)`
+verifies the board and all package hashes before geometry checks. On the
+same isolated project, a repeat native export wrote 25 files and sealed 27
+files in the output directory; the exact-board checker passed all three
+geometry checks with a verified manifest. The focused export, comparison
+and manifest tests pass. The manifest is an unsigned integrity record: it
+does not prove an external party's identity or rule out editor changes that
+Altium did not mark modified before export.
 | `mooreaa` `dc36b7e` through `fc22136` | DbLib relink and persistent alternatives for two port display fields remain; SchLib and IntLib relink, multipart placement, pin properties, parameter properties and port AutoSize are natively checked | Use final corrected handlers; verify remaining exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This
