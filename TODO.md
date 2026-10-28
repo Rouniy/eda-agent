@@ -2,6 +2,13 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Record the direct child `MOREmbedded/main` tip `032fb4b` as a true
+  second parent after manual conflict resolution. Current production paths
+  win where the auto-merge duplicated Pascal/Python handlers or removed
+  newer tools; the already integrated `vote` CLI route stays functional.
+  The donor's 12 SDK-tool checks are retained. Fifty-four focused tests
+  and the 12-file Pascal lint/build pass. Continue the behavior-level fork
+  audit below; ancestry alone does not prove full native parity.
 - [x] Adapt `MOREmbedded`'s combined `run_update` into an explicit
   `eda-agent update --reconcile` mode. It can fast-forward a clean tracked
   checkout with `--pull`, deploy validated scripts from this tree or a

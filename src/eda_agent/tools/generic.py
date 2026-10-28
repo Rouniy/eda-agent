@@ -1698,6 +1698,12 @@ def register_generic_tools(mcp):
         tells a violation with no objects from one whose objects could
         not be read.
 
+        ``violation_count`` includes suppressed and No Report rows.
+        ``active_count``, severity counts, ``suppressed_count`` and
+        ``no_report_count`` cover the complete result, independent of
+        ``limit`` and ``offset``. Unknown suppression or severity metadata
+        prevents a verified clean result. Compile after editing a sheet.
+
         Args:
             limit: How many violations to return; 0 returns all of them.
             offset: Index of the first violation, to page through a long

@@ -314,23 +314,27 @@ Altium state and a step that needs action: unknown remains visible in the
 report but exits 0; a real action exits 1. Two focused regression cases
 cover both outcomes, and the update/status slice passed 26/26.
 
-`git merge-tree --write-tree HEAD morembedded/main` was also checked without
-touching the worktree. It reports 62 conflicts (45 content, 15 add/add,
-2 modify/delete). The child fork's 33 unique commits therefore have no
-zero-conflict merge into the current tree. Its public commands and major
-behavior groups have been reconciled above, but making its tip a second
-parent still requires a deliberate merge resolution and regression check.
+`git merge-tree --write-tree HEAD morembedded/main` reported 62 conflicts
+(45 content, 15 add/add, 2 modify/delete). The child fork's 33 unique
+commits had no zero-conflict merge into this tree. A two-parent merge now
+records its tip `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`. Resolution
+keeps the current implementations of the 28 paths that an automatic merge
+would change, imports the donor's 12 passing SDK-tool checks, and carries
+forward the useful ERC count documentation. The working `eda-agent vote`
+route was integrated just before this merge. Source and behavior audits
+above explain why other donor implementations were already present or
+superseded; the ancestry link does not claim every AD25-only behavior was
+natively qualified here.
 
 A fresh path inventory on 2026-10-28 compared all 227 paths changed since
 the child fork's merge base `84b682c` with this `main`: 225 paths exist here.
 The two absent paths are donor test files, `test_sdk_found_tools.py` and
 `test_update_command.py`, not production modules. The former ran unchanged
 as a temporary test file and passed 12/12 checks for symbol parts, STEP model
-export, impedance profiles and STEP export guards; the temporary file was
-removed afterwards. The current placement flip, rotation audit and impedance
-profile tests passed 27/27. These are feature checks, not proof that every
-behavior in the 33 commits has been reconciled. The direct child still needs
-its commit-by-commit review and a conflict-resolved ancestry merge.
+export, impedance profiles and STEP export guards; the test is retained in
+the merge. The current placement flip, rotation audit and impedance profile
+tests passed 27/27. These are feature checks, not proof that every behavior
+in the 33 commits has been reconciled; continue the semantic audit.
 An in-memory `git merge-tree --write-tree -X ours main morembedded/main`
 reduced the unresolved set to two modify/delete paths, but the resulting
 tree is **not** suitable for committing: it adds a second
@@ -349,7 +353,10 @@ fixture plan and empty offline symbol list; `GET /stats` returned HTTP 200
 and `n_votes: 0`. The process was then terminated and its temporary fixture
 removed. The focused CLI, source-header, documentation-style and update
 checks passed 28/28 after four older tests received their missing SPDX
-headers.
+headers. The merge-resolution slice passed 54/54, and the Pascal bundle
+lint/build scanned 12 files with zero errors or warnings. A larger optional
+Python suite was stopped after 13% with no failure observed to that point;
+it is not counted as a passing full-suite gate.
 By contrast, `git merge-base main upstream/main` is exactly
 `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, which is the second parent
 of the completed upstream merge `63f7c16`.
