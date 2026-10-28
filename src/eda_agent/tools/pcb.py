@@ -10,6 +10,7 @@ import json
 import hashlib
 import html
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -5632,6 +5633,58 @@ def register_pcb_tools(mcp):
             return out
         except Exception as exc:  # malformed or unsupported CAD file
             return {"ok": False, "reason": f"could not read the stack: {exc}"}
+
+    @mcp.tool()
+    async def pcb_reset_stack_manager_model(
+        pcbdoc_path: str, expected_sha256: str = "", dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Invalidate a saved Layer Stack Manager model on a CLOSED PcbDoc.
+
+        Altium rebuilds the model from the physical stack on the next open.
+        The default dry run only reports whether the saved model exists.
+        Supply the file's SHA-256 from that dry run for an apply call;
+        reopen and save the board separately after examining the result.
+        """
+        from ..fileio import altium_pcb_stack
+
+        path = Path(pcbdoc_path)
+        if not path.is_absolute() or path.suffix.casefold() != ".pcbdoc" or not path.is_file():
+            return {"ok": False, "reason": "pcbdoc_path must be an existing absolute PcbDoc"}
+        if (expected_sha256 and (len(expected_sha256) != 64 or
+                                 any(c not in "0123456789abcdefABCDEF" for c in expected_sha256))):
+            return {"ok": False, "reason": "expected_sha256 must be a SHA-256 hex digest"}
+        if not dry_run and not expected_sha256:
+            return {"ok": False, "reason": "expected_sha256 is required to change the board"}
+        if not dry_run:
+            try:
+                docs = await get_bridge().send_command_async("application.get_open_documents", {})
+            except Exception as exc:
+                return {"ok": False, "reason": f"could not verify closed-board state: {exc}"}
+            if isinstance(docs, dict):
+                docs = docs.get("documents")
+            if not isinstance(docs, list):
+                return {"ok": False, "reason": "could not verify closed-board state"}
+            target = os.path.normcase(os.path.abspath(path))
+            for doc in docs:
+                if not isinstance(doc, dict) or doc.get("loaded") is not True:
+                    continue
+                candidate = str(doc.get("file_path", ""))
+                if not candidate:
+                    continue
+                same = os.path.normcase(os.path.abspath(candidate)) == target
+                if not same:
+                    try:
+                        same = os.path.samefile(candidate, path)
+                    except OSError:
+                        pass
+                if same:
+                    return {"ok": False, "reason": "the board is open in Altium; close it first",
+                            "open_as": candidate}
+        try:
+            return {"ok": True, **altium_pcb_stack.reset_manager_model(
+                str(path), expected_sha256=expected_sha256, dry_run=dry_run)}
+        except Exception as exc:
+            return {"ok": False, "reason": f"could not reset the manager model: {exc}"}
 
     @mcp.tool()
     async def pcb_build_stack(

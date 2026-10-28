@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import re
 import zlib
 from typing import Any, Optional
@@ -243,6 +244,45 @@ def check_manager_model(layers: list[dict[str, Any]],
     return [{"severity": "warning", "check": "stack_manager_model_stale",
              "detail": "Layer Stack Manager's saved model differs from the physical stack: "
                        + "; ".join(differences), "layers": differences}]
+
+
+def reset_manager_model(path: str, *, expected_sha256: str | None = None,
+                        dry_run: bool = True) -> dict[str, Any]:
+    """Invalidate a saved manager model so Altium rebuilds it at next open.
+
+    Only the first byte of the key name changes, preserving the OLE stream
+    length. The caller must ensure that the board is closed in Altium.
+    """
+    import olefile
+
+    marker = b"|V9_STACKCUSTOMDATA="
+    renamed = b"|X9_STACKCUSTOMDATA="
+    with open(path, "rb") as board_file:
+        actual_sha256 = hashlib.file_digest(board_file, "sha256").hexdigest()
+    if not dry_run and not expected_sha256:
+        raise ValueError("expected_sha256 is required to change the saved board")
+    if expected_sha256 and actual_sha256.casefold() != expected_sha256.casefold():
+        raise ValueError("saved PcbDoc SHA-256 differs from expected_sha256")
+    with olefile.OleFileIO(path) as ole:
+        data = ole.openstream("Board6/Data").read()
+    found = data.count(marker)
+    if found != 1:
+        raise ValueError(f"expected one manager model key; found {found}")
+    result = {"path": path, "before_sha256": actual_sha256, "found": found,
+              "dry_run": dry_run}
+    if dry_run:
+        return result
+    with olefile.OleFileIO(path, write_mode=True) as ole:
+        ole.write_stream("Board6/Data", data.replace(marker, renamed, 1))
+    with olefile.OleFileIO(path) as ole:
+        changed = ole.openstream("Board6/Data").read()
+    if changed.count(renamed) != 1 or changed.count(marker) != 0:
+        raise OSError("manager model key write failed verification")
+    with open(path, "rb") as board_file:
+        result["after_sha256"] = hashlib.file_digest(board_file, "sha256").hexdigest()
+    result["dry_run"] = False
+    result["renamed"] = 1
+    return result
 
 
 def summarize(layers: list[dict[str, Any]]) -> dict[str, Any]:

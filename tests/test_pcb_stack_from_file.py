@@ -138,6 +138,37 @@ def test_stale_manager_model_is_a_warning(monkeypatch):
     assert out["findings"][0]["layers"][0].startswith("Top:")
 
 
+def test_manager_reset_refuses_an_open_board(monkeypatch, tmp_path):
+    board = tmp_path / "board.PcbDoc"
+    board.write_bytes(b"scratch")
+    calls = []
+
+    class Registry:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self, *args, **kwargs):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return register
+
+    class Bridge:
+        async def send_command_async(self, command, params=None):
+            return [{"file_path": str(board), "loaded": True}]
+
+    monkeypatch.setattr(pcb_tools, "get_bridge", lambda: Bridge())
+    monkeypatch.setattr(stack, "reset_manager_model",
+                        lambda *args, **kwargs: calls.append((args, kwargs)))
+    registry = Registry()
+    pcb_tools.register_pcb_tools(registry)
+    apply = asyncio.run(registry.tools["pcb_reset_stack_manager_model"](
+        str(board), expected_sha256="a" * 64, dry_run=False))
+    assert apply["ok"] is False and "open in Altium" in apply["reason"]
+    assert calls == []
+    assert board.read_bytes() == b"scratch"
+
+
 def test_kinds_come_from_the_layer_id():
     layers = stack.physical_stack(stack.board_keys(GOOD))
     assert [l["kind"] for l in layers] == [
