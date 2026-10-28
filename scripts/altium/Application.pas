@@ -348,6 +348,16 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NOT_LOADED', 'Document not loaded: ' + FilePath);
         Exit;
     End;
+    { GetDocumentByPath can resolve a phantom path to a differently named
+      open document. Never close that other document on the caller's behalf. }
+    If UpperCase(CanonicalPathValue('path', ServerDoc.FileName)) <>
+       UpperCase(CanonicalPathValue('path', FilePath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PATH_MISMATCH',
+            'Altium resolved ' + FilePath + ' to a different open document: '
+            + ServerDoc.FileName + '. Nothing was closed.');
+        Exit;
+    End;
     WasModified := False;
     Try WasModified := ServerDoc.Modified; Except WasModified := False; End;
     WasEdited := DocWasEdited(FilePath);

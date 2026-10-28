@@ -4300,16 +4300,18 @@ End;
 {..............................................................................}
 
 { ISch_Document has NO ClearSelection method (raises "Undeclared identifier:
-  ClearSelection"). Use the Sch:DeSelectAll process -- iterating objects and
+  ClearSelection"). Use the Sch:DeSelect process -- iterating objects and
   setting .Selection := False faults on sub-objects (parameters, pin labels)
   that don't expose Selection, and that "Undeclared identifier" modal bypasses
-  Try/Except. The process is what Edit|Deselect All runs (see Application.pas). }
+  Try/Except. Sch:DeSelectAll left selections standing on AD 25.8;
+  Sch:DeSelect with Action=All cleared them. }
 Procedure SchDeselectAllObjects(SchDoc : ISch_Document);
 Begin
     If SchDoc = Nil Then Exit;
     Try
         ResetParameters;
-        RunProcess('Sch:DeSelectAll');
+        AddStringParameter('Action', 'All');
+        RunProcess('Sch:DeSelect');
     Except End;
 End;
 
@@ -4376,10 +4378,17 @@ Begin
 
     If ZoomProcess <> '' Then
     Begin
-        If (Action <> 'fit') And (Action <> 'selection') And (Action <> 'board') Then
+        If (Action <> 'fit') And (Action <> 'selection') And (Action <> 'board')
+            And (Action <> 'document') Then
         Begin
             Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
-                'action must be "fit", "board" or "selection", got "' + Action + '"');
+                'action must be "fit", "board", "document" or "selection", got "' + Action + '"');
+            Exit;
+        End;
+        If (Action = 'document') And (ZoomProcess <> 'Sch:Zoom') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+                'action "document" requires a schematic or schematic library');
             Exit;
         End;
         ResetParameters;
@@ -4388,6 +4397,7 @@ Begin
             AddStringParameter('Action', 'Document');
             AddStringParameter('Target', 'Board');
         End
+        Else If Action = 'document' Then AddStringParameter('Action', 'Document')
         Else If (Action = 'fit') Or (Action = 'board') Then AddStringParameter('Action', 'All')
         Else AddStringParameter('Action', 'Selected');
         RunProcess(ZoomProcess);
@@ -4422,6 +4432,18 @@ Begin
         AddStringParameter('Action', 'All');
         If SchDoc <> Nil Then RunProcess('Sch:Zoom')
         Else RunProcess('PCB:Zoom');
+    End
+    Else If Action = 'document' Then
+    Begin
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+                'A schematic document is required to fit the full sheet');
+            Exit;
+        End;
+        ResetParameters;
+        AddStringParameter('Action', 'Document');
+        RunProcess('Sch:Zoom');
     End
     Else If Action = 'board' Then
     Begin

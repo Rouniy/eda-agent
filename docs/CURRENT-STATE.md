@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## `mooreaa` UI corrections, 2026-10-28
+
+Source `.123` includes the fork's schematic deselection process and full
+sheet zoom. On a disposable free SchDoc, `generic.select_objects` made its
+wire's `Selection=true`; `generic.deselect_all` changed it to false, and
+`generic.zoom` with `action=document` dispatched to `Sch:Zoom`. The copy
+was closed with its temporary selection state discarded. The native
+close handler now refuses a path that Altium resolves to a different
+document; the normal exact-path close was accepted, while the phantom
+path condition still needs a separate reproduction. The Python zoom
+wrapper also returns a clear pointer to `obj_zoom_to_xy` for `point`
+instead of referencing undefined local coordinates. Altium 26.11.1.5
+pinged with `.123`; the 12-unit Pascal build/lint passed.
+
 ## Fresh fork tip and full-stack builder, 2026-10-28
 
 Fresh fetches leave upstream `main` at

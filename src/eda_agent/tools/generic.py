@@ -1095,21 +1095,16 @@ def register_generic_tools(mcp):
         library; the focused tab decides which editor zooms.
 
         Args:
-            action: "fit" (all objects), "board" (center and fit the PCB),
-                or "selection" (selected objects)
+            action: "fit" (all objects), "document" (full schematic sheet),
+                "board" (center and fit the PCB), or "selection".
 
         Returns:
             Dictionary confirming the zoom action
         """
         bridge = get_bridge()
         if action == "point":
-            if x is None or y is None:
-                return {"success": False,
-                        "error": 'action "point" needs x and y'}
-            params: dict[str, Any] = {"x": str(float(x)), "y": str(float(y))}
-            if radius is not None:
-                params["radius"] = str(float(radius))
-            return await bridge.send_command_async("generic.zoom_to_xy", params)
+            return {"success": False, "error":
+                    'Use obj_zoom_to_xy(x, y, radius) for a point zoom.'}
         result = await bridge.send_command_async(
             "generic.zoom", {"action": action}
         )

@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## `mooreaa` UI corrections, 2026-10-28
+
+- [x] Port and natively verify schematic deselection and full-sheet
+  zoom on a disposable SchDoc; exact-path close also succeeded.
+- [x] Refuse a close when `GetDocumentByPath` resolves to a different
+  document, and remove the undefined-local `obj_zoom(point)` branch.
+- [ ] Reproduce the phantom-path close case on a disposable document;
+  assess the fork's checkpoint project identity, screenshot resolution
+  and ground-port orientation corrections against our current code.
+
 ## Fresh `mooreaa` stack builder, 2026-10-28
 
 - [x] Fetch the new `mooreaa/main` tip `4cbae2a` and recheck all live
