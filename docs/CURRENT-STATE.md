@@ -1,5 +1,26 @@
 # Current integration state / agent handoff
 
+## mooreaa live-pin filtering on two modes and parts, 2026-10-28
+
+The corrected `mooreaa` ePin query filter now has native acceptance under
+Altium 26.11.1.5, script `.137`. On a disposable copy of
+`Multipart_QA.PrjPcb`, `RQA2` uses an empty display mode 1 while `RQA1`,
+`RQA3` and `RQA4` use mode 0. The normal ePin query returned their six
+visible pins and none at `RQA2`'s X=5000 mil. Adding the explicit filter
+`OwnerPartId=1` returned eight, including the two mode-0 copies at
+X=5000 mil.
+
+The copied `RES` SchLib symbol was then expanded to two parts and gained
+pins 3 and 4 with `OwnerPartId=2`. `sch_place_components` placed `RQA5`
+at X=10000 mil as `CurrentPartID=2`, `PartCount=2`, with no part issues.
+The normal ePin query returned eight pins total, including only 3 and 4
+from `RQA5`. An explicit `OwnerPartId=1` query returned ten, including
+the hidden part-1 pins 1 and 2 from `RQA5`; `OwnerPartId=2` returned only
+its two visible pins. Exact save, project close and reopen reproduced
+counts 8/10/2. The copy and SchLib were closed. The source QA SchLib and
+sheet hashes remained `01cabf700eacff508214983414e06edf80e58a95ae735c0a36d6f2ace258d848`
+and `80becf723a68fb78053c99160a81240d1039ed7985d4af21ce8ec9b4fa76ae19`.
+
 ## xSignal class membership and HTTP restart, 2026-10-28
 
 Script `.137` repairs the upstream xSignal class path. On a populated

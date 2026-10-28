@@ -1,5 +1,14 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 mooreaa live-pin native qualification
+
+The `mooreaa` visible-pin filter was checked on a disposable SchLib and
+sheet with two display modes and two symbol parts. Ordinary ePin queries
+excluded the inactive mode and part copies; explicit `OwnerPartId`
+queries exposed them. Counts 8/10/2 persisted after exact save,
+close and reopen. See `CURRENT-STATE.md` for the pin positions and
+source-copy hash comparison.
+
 ## 2026-10-28 xSignal class and HTTP restart correction
 
 The upstream xSignal class option now creates or reuses a Signal-kind
@@ -902,7 +911,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | Upstream `ce53d6e` (PCB pours/options) | Look up polygon outlines at a board point and read/set the new-polygon name template; include board identity and require an expected file for writes | 28 related tests, Pascal lint/build, loaded `.4` runtime, and no-target native refusals; real-board acceptance pending |
 | `mooreaa` `ad8d5fa`, also in upstream by `ce53d6e` (font safety) | Guard generic `FontId` by actual schematic object type and expose `TextFontId` through typed sheet/harness entries | 22 related tests, Pascal lint/build, loaded `.5` runtime; native entry readback pending |
 | `mooreaa` `dc36b7e`-`fc22136` (port cross-references, partial) | Plan CrossRef positions from a port's read-only `ConnectedEnd` and wire geometry; require an exact sheet, a reviewed plan digest and per-reference readback for writes | 41 related tests, Pascal lint/build, loaded `.6` runtime and bad-path refusal; native sheet acceptance pending |
-| `mooreaa` through `fc22136` (live pins) | Filter hidden part/display-mode copies from schematic ePin queries, preserving explicit `OwnerPart` inspection; use visible pins in CrossRef planning and its digest | 21 focused tests, Pascal lint/build and loaded `.7` runtime; native multipart-sheet acceptance pending |
+| `mooreaa` through `fc22136` (live pins) | Filter hidden part/display-mode copies from schematic ePin queries, preserving explicit `OwnerPart` inspection; use visible pins in CrossRef planning and its digest | 21 focused tests and Pascal lint/build; AD26 native two-mode/two-part sheet returned visible and explicit-owner counts 8/10/2 after save/reopen; CrossRef planner separately pending |
 | `mooreaa` `64a71c3` through `fc22136` (part properties) | Read and write a placed part's display mode and current PCB model pin map, with type guards and readback | 22 related source tests, Pascal lint/build; both writes persisted after exact save/close/reopen on disposable AD26 sheets; visual mode-graphic comparison pending |
 | `mooreaa` `053aff9` through `fc22136` (placement model choice) | Select a named PCB model the library symbol already carries on placement, verify all current flags and restore them on failure | Focused source tests and Pascal lint/build; AD26 placement accepted and persisted an available nondefault model, reported a missing model and kept the default; public tool accepts one or more placements |
 | `mooreaa` `3d5817f` through `fc22136` (Footprint stamps) | Choose an existing model on Footprint parameter writes before fallback rename; refuse unloaded explicit batch sheets | 52 related tests, Pascal lint/build; AD26 two-model bulk stamp persisted after exact save/close/reopen; public tool accepts one or more stamps |
