@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Polygon point and board-options native reads, 2026-10-28
+
+The earlier upstream `pcb_pours_at` and `pcb_board_options` ports now have
+read-only native acceptance on `CW308_PCB.PcbDoc` under Altium 26.11.1.5,
+script `.130`. The board had seven polygons. The saved outline of
+`1V2_HEATSINK` includes `(6500,4000)` mil; `pcb_pours_at` at that point
+examined seven and found that pour plus `GNDBOT` and `GNDTOP`. At `(0,0)`
+it found none. An incorrect expected board path was refused. The board
+options read returned `polygon_name_template=0` and
+`automatic_split_planes=true`; its wrong-path read was also refused.
+The PcbDoc was closed without saving, with `discarded=false`. A native
+write/readback of the polygon-name template remains unqualified.
+
 ## Fresh DRC active versus waived totals, 2026-10-28
 
 `pcb_run_drc` now reads the summary header from its confirmed, per-request
