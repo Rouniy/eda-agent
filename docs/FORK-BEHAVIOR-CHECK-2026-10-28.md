@@ -331,6 +331,14 @@ removed afterwards. The current placement flip, rotation audit and impedance
 profile tests passed 27/27. These are feature checks, not proof that every
 behavior in the 33 commits has been reconciled. The direct child still needs
 its commit-by-commit review and a conflict-resolved ancestry merge.
+An in-memory `git merge-tree --write-tree -X ours main morembedded/main`
+reduced the unresolved set to two modify/delete paths, but the resulting
+tree is **not** suitable for committing: it adds a second
+`PCB_GetImpedanceProfiles` implementation to `PCB.pas` beside the current
+AD26-tested implementation and interleaves incompatible calculator code in
+`cli.py` and `calc.py`. Automatic `-X ours` therefore cannot stand in for
+the logical merge. The child also adds a `vote` CLI parser without a matching
+dispatch branch; importing that parser alone would advertise a dead command.
 By contrast, `git merge-base main upstream/main` is exactly
 `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, which is the second parent
 of the completed upstream merge `63f7c16`.
