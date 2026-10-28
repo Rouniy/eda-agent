@@ -513,6 +513,13 @@ The donor's `_prjscr_is_ad25_safe` checks only two header strings. The current
 script project contains neither, but this is not proof of AD25 native
 compatibility; the AD25 runtime check remains open.
 
+The `yniantongtian-oss/main` commit `b643cd0` adds portable-checkout and
+manifest-syntax checks. Its `.github/quality/check_repository.py` and
+cross-platform `repository-integrity.yml` are already tracked in `main`.
+Running the checker on this checkout found 1,260 tracked files, two valid
+manifests, and zero errors or reviewed exceptions. This confirms the local
+check, not a hosted CI run.
+
 At `main` `6cdb3af`, `fork-status --fetch --cached-forks
 --verify-fork-branches --json` refreshed origin, upstream and MOREmbedded.
 The upstream tip and merge base are both `0bb1b3154cca6e58a517b23edee3d7a108f1c232`;
