@@ -67,3 +67,35 @@ def test_a_type_the_guard_excludes_is_not_credited(pascal):
     assert "OnlyOnThing" not in cov.handled_heads("GetSchProperty")
 
 
+def test_typed_extra_reader_does_not_credit_its_other_type_branches(monkeypatch):
+    source = """
+Function SchGetExtra(Obj : ISch_GraphicalObject; PropName : String) : String;
+Begin
+    If Obj.ObjectId = ePin Then
+    Begin
+        If PropName = 'DefaultValue' Then Result := Pin.DefaultValue;
+    End
+    Else If Obj.ObjectId = ePort Then
+    Begin
+        If PropName = 'AutoSize' Then Result := Port.AutoSize;
+    End
+    Else
+    Begin
+        Comp := Obj;
+        If PropName = 'AliasAsText' Then Result := Comp.AliasAsText;
+    End;
+End;
+
+Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+Begin
+    If SchExtraOwner(PropName) > 0 Then Result := SchGetExtra(Obj, PropName);
+End;
+"""
+    monkeypatch.setattr(cov, "_read", lambda _rel: source)
+    assert cov.typed_extra_heads("GetSchProperty") == {
+        "ePin": {"DefaultValue"}, "ePort": {"AutoSize"},
+        "eSchComponent": {"AliasAsText"},
+    }
+    assert "AliasAsText" not in cov.reachable_heads("GetSchProperty", "ePin")
+
+

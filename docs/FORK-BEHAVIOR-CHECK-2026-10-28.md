@@ -1013,3 +1013,11 @@ A fresh `fork-status --fetch --cached-forks --verify-fork-branches` after
 `d019be2` matched 63/63 fork default tips and 120/120 live branch tips.
 `MOREmbedded/main` `d495c4d` remains in `main`; `upstream/main` is
 `75df990`, one commit after the marked synchronization point `0bb1b315`.
+
+The SDK coverage audit now follows the existing typed `ReadSchPinProp` and
+`SchGetExtra` branches only for their guarded object types. Before this
+correction, the report and `sdk-generate --object-type pin` counted working
+pin fields such as `ShowName`, `DefaultValue`, and `HiddenNetName` as missing.
+The corrected report reads 713/2176 reachable declarations (previously
+677/2176); this is a measurement correction, not 36 new runtime properties.
+The generator's candidate list now excludes those already handled fields.

@@ -92,10 +92,9 @@ def chain_body(source: str, function_name: str) -> str:
     return block
 
 
-#: A chain delegates the generated accessors rather than carrying a
-#: second copy of them, so the names it answers are not all written in
-#: its own body. The callee is named for the job, ending in Generated.
-_DELEGATE = re.compile(r"\b(\w+Generated)\(")
+#: A chain delegates both generated accessors and the typed pin reader.
+#: These names are reachable only for the object type guarding the call.
+_DELEGATE = re.compile(r"\b(\w+Generated|ReadSchPinProp)\(")
 
 #: The ObjectId test that guards a branch. The last one before a
 #: delegation call is the type that delegation is reachable for.
@@ -116,7 +115,7 @@ def handled_names(function_name: str) -> set[str]:
 
 
 def delegated_names(function_name: str) -> dict:
-    """Names a chain answers through a generated routine, by object type.
+    """Names a chain answers through a typed reader, by object type.
 
     The branch reads `If Obj.ObjectId = eSchComponent Then ... Result :=
     GetSchComponentGenerated(...)`, so the names behind it are reachable
@@ -139,6 +138,36 @@ def delegated_names(function_name: str) -> dict:
         names = set(re.findall(r"PropName = '([^']+)'", delegated))
         out.setdefault(guards[-1], set()).update(names)
     return out
+
+
+def typed_extra_heads(function_name: str) -> dict[str, set[str]]:
+    """Properties read by SchGetExtra, scoped to its ObjectId branches."""
+    if function_name != "GetSchProperty":
+        return {}
+    source = _read("scripts/altium/Generic.pas")
+    if "SchGetExtra(Obj, PropName)" not in chain_body(source, function_name):
+        return {}
+    body = chain_body(source, "SchGetExtra")
+    guards = list(re.finditer(r"\b(?:If|Else If) Obj\.ObjectId = (e\w+) Then", body))
+    component_else = re.search(
+        r"\bEnd\s+Else\s+Begin\s+Comp\s*:=\s*Obj\s*;", body)
+    out: dict[str, set[str]] = {}
+    for i, guard in enumerate(guards):
+        end = guards[i + 1].start() if i + 1 < len(guards) else (
+            component_else.start() if component_else else len(body))
+        section = body[guard.end():end]
+        out[guard.group(1)] = set(re.findall(r"PropName = '([^']+)'", section))
+    if component_else:
+        out["eSchComponent"] = set(re.findall(
+            r"PropName = '([^']+)'", body[component_else.end():]))
+    return out
+
+
+def reachable_heads(function_name: str, constant: str) -> set[str]:
+    """Names reachable for one object type, including typed delegates."""
+    return (handled_heads(function_name)
+            | delegated_heads(function_name).get(constant, set())
+            | typed_extra_heads(function_name).get(constant, set()))
 
 
 def handled_heads(function_name: str) -> set[str]:
@@ -289,6 +318,8 @@ def build_report(model: SdkModel | None = None) -> Report:
 
     sch_read = handled_heads("GetSchProperty")
     sch_read_delegated = delegated_heads("GetSchProperty")
+    for constant, names in typed_extra_heads("GetSchProperty").items():
+        sch_read_delegated.setdefault(constant, set()).update(names)
     sch_write = handled_heads("SetSchProperty")
     pcb_read = handled_heads("GetPCBProperty")
     pcb_write = handled_heads("SetPCBProperty")

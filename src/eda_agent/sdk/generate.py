@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from .coverage import handled_heads, interface_for, supported_sch_types
+from .coverage import handled_heads, interface_for, reachable_heads, supported_sch_types
 from .reflect import Property, SdkModel
 from .symbols import ABSENT, GETTER, PLAIN, SymbolTable
 
@@ -336,6 +336,6 @@ def candidates_for(model: SdkModel, object_type: str, kind: str = "read",
     # Defaults to what the deployed block carries, so a probe list and
     # the Pascal that answers it cannot disagree about the spelling.
     take, skip = plan(model, interface, kind,
-                      already=handled_heads(chain), table=table,
+                      already=reachable_heads(chain, constant), table=table,
                       allow_getter=allow_getter)
     return interface, take, skip

@@ -1156,7 +1156,7 @@ def cmd_sdk_generate(*, object_type: str = "component", kind: str = "read",
     import json as _json
 
     from .sdk.generate import (candidates_for, render_probe, render_write)
-    from .sdk.coverage import handled_heads
+    from .sdk.coverage import reachable_heads, supported_sch_types
     from .sdk.reflect import SdkUnavailable, load_sdk
     from .sdk.symbols import SymbolsUnavailable, load_symbols
 
@@ -1170,7 +1170,8 @@ def cmd_sdk_generate(*, object_type: str = "component", kind: str = "read",
         print(str(missing), file=sys.stderr)
         return 1
     chain = "GetSchProperty" if kind == "read" else "SetSchProperty"
-    kwargs = {"already": handled_heads(chain), "table": table}
+    constant = supported_sch_types()[object_type.lower()]
+    kwargs = {"already": reachable_heads(chain, constant), "table": table}
     if kind == "read":
         generated = render_probe(
             model, interface, interface, function_name="SdkCandidateRead",
