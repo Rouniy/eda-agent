@@ -5,8 +5,9 @@
 - [ ] Reconcile the 8 new commits on `MOREmbedded/main` after the
   `032fb4b` ancestry merge. The fresh tip is `d495c4d`. The SDK symbol
   extractor and offline candidate generator are ported and tested locally;
-  the live `sdk-probe`/generated Pascal block, per-request perf attribution,
-  and updated coverage accounting still need a safe native review. Do not
+  the per-request perf attribution is ported and checked against two live
+  ping calls. The live `sdk-probe`/generated Pascal block and updated
+  coverage accounting still need a safe native review. Do not
   treat the old child merge as the latest child sync point.
 - [x] Record the direct child `MOREmbedded/main` tip `032fb4b` as a true
   second parent after manual conflict resolution. Current production paths

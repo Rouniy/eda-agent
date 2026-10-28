@@ -303,8 +303,13 @@ AD26.11 installation the extraction found 44,094 names, and a component
 read plan offered 24 candidates while skipping 15. Sixty-seven focused
 SDK, source-header, fork-status and style checks passed. The donor's live
 probe handler and generated Pascal block have not yet been deployed, and
-its new perf attribution still needs review; `d495c4d` is not yet a parent
-of `main`.
+its per-request perf attribution is also ported. Two consecutive live ping
+calls from the same bridge process produced distinct trace keys
+`da93ff10-00000001` and `da93ff10-00000002`; the report joined them to
+separate Altium handler times (16 ms and 0 ms). Sixty-two focused bridge,
+perf, source-header and style checks passed. The live SDK probe and updated
+coverage accounting still need review; `d495c4d` is not yet a parent of
+`main`.
 
 The direct child fork's `test_update_command.py` was run unchanged against
 the current source in a temporary test file: 38 passed and 12 failed. The
