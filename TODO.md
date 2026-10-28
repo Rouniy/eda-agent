@@ -1,5 +1,17 @@
 # Fork integration TODO
 
+## New `mooreaa` tip `a4be7fc`, 2026-10-28
+
+- [x] Port and natively qualify `pcb_adjust_designators` from `77cf340`:
+  exact-board dry run, plan token, two-part top/bottom apply and persisted
+  save/reopen readback on a disposable PCB. The SVG's optional origin labels
+  are now visually distinct and off by default.
+- [ ] `pcb_build_stack` leaves old layer tabs until the board is reopened;
+  check whether an explicit view refresh can update them, otherwise warn.
+- [ ] `pcb_set_layer_visibility` may report visible=true for a layer absent
+  from the current view tab set; distinguish stored visibility from the
+  active view's available tabs.
+
 ## Sheet-symbol and entry geometry from `mooreaa`, 2026-10-28
 
 - [x] Fix the sheet-symbol Y anchor: Altium extends its positive YSize

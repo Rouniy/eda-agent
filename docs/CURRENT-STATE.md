@@ -1,5 +1,24 @@
 # Current integration state / agent handoff
 
+## `mooreaa` designator fitting, 2026-10-28
+
+Fetched new fork tip `a4be7fc` (previously `4cbae2a`): it adds
+`pcb_adjust_designators` and records two layer-tab view-staleness cases.
+The designator planner, exact-board native handler and optional SVG overlay
+labels are now in `main` source, script `.138`. Apply requires a fresh dry-run
+plan token; native code refuses missing board paths, invalid layers and
+duplicate designator items before editing. Pascal build linted 12 files with
+zero findings. The 16 planner/handler tests and six SVG tests pass.
+
+Native acceptance used a disposable copy of the 96-component FR1 antenna
+board. A dry run saw 46 top and 50 bottom parts. A stale token made no edit;
+the exact two-part plan moved `W_RX_7` to Mechanical10 and `R34` to
+Mechanical11. Apply reported `applied=2`, no property mismatches and one
+expected off-centre warning because Altium centres on the entire part.
+After exact save, close and reopen, both layer, size, stroke, rotation,
+mirror, visibility and centre-autoposition values persisted. The copied
+board was closed.
+
 ## MOREmbedded uncapped fab snapshot above 5000 holes, 2026-10-28
 
 The native `pcb_get_fab_board_facts` path was run on
@@ -9,9 +28,9 @@ script `.137`. It returned the exact board path, four copper layers,
 vias and `hole_count=8355`. The independent board statistics read
 `via_count=8355`, so the snapshot passed the former 5000-hole concern
 without truncation. The PcbDoc was closed without saving. No matching
-Gerber/Excellon package was present in that source folder; external
-package revision proof and a full >5000-hole package comparison remain
-open.
+Gerber/Excellon package was present in that source folder. An OutJob copy
+subsequently produced a full package: all 8355 holes, four copper layers
+and the outline matched, and its export-time hash manifest verified.
 
 ## MOREmbedded two-body bulk STEP edit, 2026-10-28
 

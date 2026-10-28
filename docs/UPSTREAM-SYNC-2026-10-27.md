@@ -1043,6 +1043,16 @@ mismatch. The separate 8355-hole acceptance is recorded below.
 
 ## Next integration blocks
 
+The October 28 live fork-tip check returned 61/62 fresh defaults and
+116/117 fresh branches. The sole move was `mooreaa/main` from `4cbae2a`
+to `a4be7fc` (three commits). Its new `pcb_adjust_designators` function
+has been ported with a dry-run token, exact-board validation and native
+top/bottom save/reopen acceptance on a disposable board; the optional
+SVG designator labels are distinct and off by default. The two newly
+reported layer-tab view-staleness issues are tracked in `TODO.md`.
+After fetching that tip, the cache again matches all 62 default branches
+and 117 branch heads.
+
 | Source | Remaining block | Integration check |
 | --- | --- | --- |
 | Upstream `0a9ccd4`, `bb06837` | The named net, project-library, pin/pad property and shared-package source handlers are present; xSignal create/delete is now natively accepted, while less-used operations remain | Verify per-document targeting and property readback on disposable designs |

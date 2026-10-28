@@ -2558,6 +2558,178 @@ def register_pcb_tools(mcp):
         return await bridge.send_command_async("pcb.apply_via_template", params)
 
     @mcp.tool()
+    async def pcb_adjust_designators(
+        pcbdoc_path: str,
+        designators: Optional[list[str]] = None,
+        top_layer: str = "Mechanical10",
+        bottom_layer: str = "Mechanical11",
+        outline_layers: Optional[list[str]] = None,
+        min_mm: float = 0.1,
+        max_mm: float = 1.0,
+        stroke_ratio: float = 0.25,
+        fit: str = "script",
+        comment: str = "leave",
+        dry_run: bool = True,
+        expected_plan: str = "",
+    ) -> dict[str, Any]:
+        """Put each designator on the assembly layer, centred and sized to its part.
+
+        The house AdjustDesignators.pas convention, run inside the bridge so
+        it can be repeated whenever placement changes. Each part's
+        designator moves to ``top_layer`` (a top part) or ``bottom_layer``,
+        mirrored (a bottom part), in the stroke font, bold, centred on the
+        part (autoposition centre), its height fitted to the part's outline:
+        the box of its tracks on ``outline_layers``, or its bounding
+        rectangle when it has none there. A part taller than wide gets 90
+        degrees on top and 270 on the bottom. Safe to run again: a
+        designator already on the mechanical layer is simply re-fitted.
+
+        Args:
+            pcbdoc_path: the board, as app_list_documents reports it. It is
+                brought to the front; a different board found is refused.
+            designators: only these parts (default all).
+            top_layer, bottom_layer: the designator layers.
+            outline_layers: the layers whose tracks outline a part (default
+                TopOverlay, BottomOverlay, Mechanical13, Mechanical1).
+            min_mm, max_mm: the height is clamped to these.
+            stroke_ratio: stroke as a share of the height under 1 mm (0.254
+                mm stroke from 1 mm up).
+            fit: "script" (the script's rule: when the long side does not
+                fit, the short side over the text length) or "short_side"
+                (the height capped at the short side). Parts that hit the
+                rule are listed either way.
+            comment: "leave" (default) or "hide" the comment text.
+            dry_run: True (default) only plans.
+            expected_plan: The exact token returned by a dry run, required
+                for apply so changed component outlines cannot be used.
+
+        Returns:
+            ``parts`` (per part: side, outline, layer, height, stroke,
+            rotation, flags), ``totals`` and the lists ``bounding_rectangle``
+            (no outline tracks), ``turned``, ``short_side_fallback`` and
+            ``clamped``. Applied, also ``applied``, ``not_taken`` (parts
+            whose read-back differs, with what), ``off_centre`` (text more
+            than 0.25 mm from the outline centre: Altium centres on the whole
+            part, as the script does) and ``undo``.
+        """
+        from ..design import designators as desig
+
+        if fit not in desig.FITS:
+            return {"ok": False, "reason": f"fit is one of {desig.FITS}"}
+        if comment not in ("leave", "hide"):
+            return {"ok": False, "reason": "comment is leave or hide"}
+        if not Path(pcbdoc_path).is_absolute() or Path(pcbdoc_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "pcbdoc_path must be an absolute PcbDoc path"}
+        if (not all(math.isfinite(v) for v in (min_mm, max_mm, stroke_ratio))
+                or not 0 < min_mm <= max_mm or not 0 < stroke_ratio <= 1):
+            return {"ok": False, "reason": "invalid designator size or stroke limits"}
+        if designators and any(not d or any(c in d for c in ",;=|~") for d in designators):
+            return {"ok": False, "reason": "designator contains an invalid batch delimiter"}
+        opt = desig.Options(top_layer=top_layer, bottom_layer=bottom_layer,
+                            min_mm=min_mm, max_mm=max_mm,
+                            stroke_ratio=stroke_ratio, fit=fit)
+        layers = outline_layers or ["TopOverlay", "BottomOverlay",
+                                    "Mechanical13", "Mechanical1"]
+        bridge = get_bridge()
+        focused = await bridge.send_command_async(
+            "application.set_active_document", {"file_path": pcbdoc_path})
+        if (not isinstance(focused, dict) or not focused.get("success")
+                or str(focused.get("file_path", "")).casefold() != pcbdoc_path.casefold()):
+            return {"ok": False, "reason": "could not focus the exact PCB",
+                    "native_reply": focused}
+        docs = await bridge.send_command_async("application.get_open_documents") or []
+        if isinstance(docs, dict):
+            docs = docs.get("documents", [])
+        entry = next((d for d in docs if isinstance(d, dict)
+                      and str(d.get("file_path", "")).lower() == pcbdoc_path.lower()), {})
+        params = {"op": "outlines", "board_path": pcbdoc_path,
+                  "outline_layers": ",".join(layers)}
+        if designators:
+            params["designators"] = ",".join(designators)
+        found = await bridge.send_command_async("pcb.designators", params, timeout=180.0)
+        if (not isinstance(found, dict)
+                or str(found.get("board", "")).casefold() != pcbdoc_path.casefold()
+                or not isinstance(found.get("parts"), list)):
+            return {"ok": False, "reason": "designator outline read did not identify the exact board",
+                    "native_reply": found}
+        outlines = found["parts"]
+        plans, by_name = [], {}
+        for part in outlines:
+            plan = desig.plan_part(part, opt)
+            if not plan["designator"] or plan["designator"].upper() in by_name:
+                return {"ok": False, "reason": "empty or duplicate component designator in outline read"}
+            plans.append(plan)
+            by_name[plan["designator"].upper()] = (plan, part)
+        plan_token = hashlib.sha256(json.dumps(
+            {"board": pcbdoc_path.casefold(), "outlines": outlines,
+             "options": {"top_layer": top_layer, "bottom_layer": bottom_layer,
+                         "outline_layers": layers, "min_mm": min_mm,
+                         "max_mm": max_mm, "stroke_ratio": stroke_ratio,
+                         "fit": fit, "comment": comment}},
+            sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        todo = [p for p in plans if "skip" not in p]
+        out: dict[str, Any] = {
+            "ok": True, "dry_run": dry_run, "board": (found or {}).get("board"),
+            "totals": {"parts": len(plans), "to_adjust": len(todo),
+                       "top": sum(p["side"] == "top" for p in todo),
+                       "bottom": sum(p["side"] == "bottom" for p in todo)},
+            "bounding_rectangle": [p["designator"] for p in plans
+                                   if p["source"] == "bounding_rectangle"],
+            "turned": [p["designator"] for p in todo if p["rotation"]],
+            "short_side_fallback": [p["designator"] for p in todo
+                                    if p.get("short_side_fallback")],
+            "clamped": [p["designator"] for p in todo if "clamped_from_mm" in p],
+            "skipped": [p["designator"] for p in plans if "skip" in p],
+            "parts": plans,
+            "plan": plan_token,
+        }
+        if designators:
+            missing = sorted({d.upper() for d in designators} - set(by_name))
+            if missing:
+                out["not_found"] = missing
+        if dry_run or not todo:
+            return out
+        if out.get("not_found"):
+            return {**out, "ok": False, "reason": "requested designators were not found; nothing applied"}
+        if expected_plan != plan_token:
+            return {**out, "ok": False, "reason": "plan changed; rerun dry-run and pass its plan token"}
+        items = "~~".join(desig.apply_item(p) for p in todo)
+        done = await bridge.send_command_async(
+            "pcb.designators", {"op": "apply", "board_path": pcbdoc_path,
+                                "items": items, "comment": comment}, timeout=300.0)
+        returned = done.get("parts") if isinstance(done, dict) else None
+        wanted = {p["designator"].upper() for p in todo}
+        names = ([str(p.get("designator", "")).upper() for p in returned]
+                 if isinstance(returned, list) else [])
+        if (not isinstance(done, dict) or str(done.get("board", "")).casefold() != pcbdoc_path.casefold()
+                or done.get("applied") != len(todo) or len(names) != len(todo)
+                or len(set(names)) != len(names) or set(names) != wanted):
+            return {**out, "ok": False, "reason": "native apply did not confirm every requested designator",
+                    "native_reply": done}
+        not_taken, off_centre = [], []
+        for got in returned:
+            plan, outline = by_name[str(got.get("designator", "")).upper()]
+            issues = desig.check_part(plan, outline, got)
+            # Altium centres the text on the part's whole bounding box, which
+            # differs from the outline box on parts whose pads or body stick
+            # out of it (LEDs, a USB-C connector on the Rosen board). The
+            # house script does the same, so that is reported, not failed.
+            centre = [i for i in issues if i.startswith("text centre")]
+            rest = [i for i in issues if not i.startswith("text centre")]
+            if rest:
+                not_taken.append({"designator": plan["designator"], "issues": rest})
+            if centre:
+                off_centre.append({"designator": plan["designator"], "issue": centre[0]})
+        out.update({"applied": (done or {}).get("applied", 0), "not_taken": not_taken,
+                    "off_centre": off_centre,
+                    "ok": not not_taken,
+                    "undo": ("no API undo: close the board without saving to "
+                             "revert" + ("" if not entry.get("modified") else
+                                         ", which also loses edits made before "
+                                         "this run (the board was unsaved)"))})
+        return out
+
+    @mcp.tool()
     async def pcb_copy_designators_to_mech(layer: str = "Mechanical1") -> dict[str, Any]:
         """Copy each component designator onto a mechanical layer (assembly prep).
 

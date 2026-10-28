@@ -157,7 +157,7 @@ def register_render_tools(mcp):
         flip_y: bool = True,
         show_drills: bool = True,
         show_texts: bool = True,
-        show_designators: bool = True,
+        show_designators: bool = False,
         interactive_legend: bool = True,
         background: str = "#1f2937",
     ) -> dict[str, Any]:
@@ -181,7 +181,9 @@ def register_render_tools(mcp):
             flip_y: Flip Y to Altium's bottom-left origin (default True).
             show_drills: Draw pad and via holes.
             show_texts: Draw overlay texts.
-            show_designators: Draw designators.
+            show_designators: Add magenta italic labels at each part's
+                origin. The board's own designator text is drawn from its
+                actual layer with the other texts.
             interactive_legend: Add a clickable per-layer legend.
             background: Background fill; ``"none"`` for transparent.
 

@@ -72,3 +72,15 @@ def test_pcb_svg_is_well_formed(flip_y):
     assert _g_balanced(svg), "unbalanced <g>/</g> in PCB SVG"
     ET.fromstring(svg)
     assert svg.rstrip().endswith("</svg>")
+
+
+def test_extra_designator_labels_are_explicit_and_distinct_from_board_text():
+    geometry = {**_PCB_GEOMETRY,
+                "components": [{"des": "R1", "x": 1000, "y": 500, "rotation": 0}]}
+    default = render_pcb_svg(geometry, PcbRenderOptions(interactive_legend=False))
+    assert 'data-layer="Designator labels (overlay)"' not in default
+    shown = render_pcb_svg(
+        geometry, PcbRenderOptions(show_designators=True, interactive_legend=False))
+    assert 'data-layer="Designator labels (overlay)"' in shown
+    assert 'font-style="italic"' in shown
+    assert 'fill="#ff00ff"' in shown
