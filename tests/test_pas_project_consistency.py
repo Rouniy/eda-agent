@@ -120,6 +120,20 @@ def test_prjscr_referenced_files_all_exist():
     )
 
 
+def test_prjscr_has_only_scripting_sections():
+    """AD25 rejected PCB-project options in the Altium script project."""
+    text = PRJSCR.read_text(encoding="utf-8-sig")
+    sections = re.findall(r"^\[([^]]+)\]$", text, flags=re.MULTILINE)
+    names = _prjscr_document_paths()
+    assert sections == (["Design"]
+                        + [f"Document{index}" for index in range(1, len(names) + 1)]
+                        + ["Generic_ScriptingSystem"])
+    assert re.search(r"^Version=1\.0$", text, re.MULTILINE)
+    assert "StartProcName=Dispatcher.pas>StartMCPServer" in text
+    assert "HierarchyMode=" not in text
+    assert "[Electrical Rules Check]" not in text
+
+
 def test_build_py_files_are_in_prjscr():
     """Every file in build.py FILES is also in the PrjScr -- so devs
     can open the source in Altium's scripting IDE for debugging."""

@@ -149,10 +149,19 @@ production path in most forks. The donor's separate
 `eda_agent.easyeda_extension` module and `eda-agent easyeda-extension` CLI;
 its packaging tests pass 7/7 and the CLI resolves the source directory.
 `wizd/edev` has a distinct `StatusFormStub.pas` for an AD25 headless
-script project. This is a possible compatibility gap, not a proved missing
-runtime feature: the current AD26.11 script responds, but no AD25 host is
-available for a compile check. Review the stub and project wiring before
-claiming AD25 parity.
+script project. Its minimal `.PrjScr` header has now been adapted into
+the one main `Altium_API.PrjScr`, preserving all 14 current source
+documents. The 12-file Pascal lint/build and 16 project consistency
+tests passed, and a native AD26.11 restart answered ping with script
+`.167` from that same main project. This removes the donor-observed
+PCB-project metadata that AD25 rejected as `Invalid Constant`, but it
+does not establish a successful AD25 compile.
+
+The old headless stub itself cannot simply replace `StatusForm.pas`:
+the current `Dispatcher.StartMCPServer` delegates to `StartMCPPump`, and
+the timer event and request dispatch now live in that form's unit. The
+donor stub only supplies logging no-ops and has no pump. A new headless
+dispatcher would require separate design and native AD25 verification.
 
 The other `wizd/edev` tip (`6d6cb62`) adds footprint writes and
 component-origin recentering. Both routes are already in `main`;

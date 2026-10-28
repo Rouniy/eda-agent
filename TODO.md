@@ -132,10 +132,19 @@
 - [ ] Recheck the `mooreaa` Rosen `pcb_get_mech_layer_names` dirty-on-read
   report on AD25. It stayed clean on a disposable CW308 copy in AD26.11,
   with unchanged SHA-256, but that does not settle the donor's AD25 case.
-- [ ] Review `wizd/edev`'s AD25 `StatusFormStub.pas` as a possible
-  headless compile route. Current AD26.11 works, but the current script
-  project has no equivalent stub and AD25 compile compatibility is not
-  established. Keep the main script project as the normal runtime.
+- [x] Adapt `wizd/edev`'s minimal AD25 script-project header to the one
+  main `Altium_API.PrjScr`, retaining all 14 current source documents and
+  the existing form/timer pump. The old PCB-project options and ERC/output
+  sections are removed. Sixteen project consistency tests and a 12-file
+  Pascal lint/build passed; AD26.11 restarted the same main project and
+  answered ping as `.167` with its loaded path confirmed.
+- [ ] Establish a working AD25 headless polling path. The donor's
+  `StatusFormStub.pas` cannot be substituted directly: this fork's
+  `Dispatcher.StartMCPServer` calls `StartMCPPump` in `StatusForm.pas`,
+  which also owns the timer event and the request dispatcher. A stub
+  containing only logging no-ops would remove the MCP loop. An AD25
+  host is needed to test the remaining DFM/form compatibility; keep the
+  current nonblocking AD26 pump until a real replacement is verified.
 - [ ] Reproduce the Rosen ECO "Footprint Not Found" case with a newly
   added project PcbLib footprint and compare an explicit-library relink;
   the donor tracked this as E1. An AD26.11 disposable project with a new
