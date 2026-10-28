@@ -714,6 +714,17 @@ def run_update(*, pull: bool = False, fetch: bool = False,
     same_folder = bool(source_scripts and target_scripts and
                        Path(source_scripts).resolve() ==
                        Path(target_scripts).resolve())
+    source_is_runtime = bool(target_scripts and
+                             Path(target_scripts).resolve() ==
+                             Path(state.get("bundled_scripts") or "").resolve())
+    if source_dir and source_valid and (needs_deploy or force_scripts) \
+            and not check_only and source_is_runtime and not same_folder:
+        return ([Step(
+            "altium scripts", "action",
+            "the named folder would overwrite the main checkout's active "
+            "script sources",
+            action="Merge its useful changes into this checkout first, "
+                   "then run `eda-agent relaunch --restart`.")], 1)
     if source_valid and (needs_deploy or force_scripts) and not check_only \
             and not same_folder:
         from eda_agent.cli import cmd_install_scripts

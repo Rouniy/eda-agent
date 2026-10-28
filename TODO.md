@@ -6,9 +6,11 @@
   `eda-agent update --reconcile` mode. It can fast-forward a clean tracked
   checkout with `--pull`, deploy validated scripts from this tree or a
   named folder to the checked destination, preserve one main-directory
-  runtime, and report the remaining compiled Altium step. `--check` is
+  runtime, refuse an external folder that would overwrite the main
+  checkout's active source project, and report the remaining compiled
+  Altium step. `--check` is
   read-only and JSON output remains parseable after deployment.
-  Update/status tests passed 37/37, and live reconcile on the current
+  Update/status tests passed 38/38, and live reconcile on the current
   `.167` script reported no second deployment. The donor's full test
   file now passes 42/50; eight differences concern old command names,
   GUI-only relaunch text, raw unvalidated copying or source spellings.

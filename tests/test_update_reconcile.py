@@ -80,6 +80,23 @@ def test_reconcile_deploys_named_folder_into_checked_destination(
     assert {s.name: s for s in steps}["altium session"].status == "action"
 
 
+def test_named_folder_cannot_overwrite_active_main_sources(tmp_path,
+                                                            monkeypatch):
+    donor = tmp_path / "donor"
+    scripts = tmp_path / "scripts" / "altium"
+    current = state(tmp_path, source_ok=True, source_dir=str(donor),
+                    source_scripts=str(donor / "scripts" / "altium"),
+                    source_script_version="new", source_version="0.7.1")
+    assert current["deployed_scripts"] == str(scripts)
+    monkeypatch.setattr(update, "gather_state", lambda **_kw: current)
+    monkeypatch.setattr(cli, "cmd_install_scripts",
+                        lambda **_kw: (_ for _ in ()).throw(
+                            AssertionError("overwrote active main project")))
+    steps, code = update.run_update(source_dir=str(donor))
+    assert code == 1
+    assert "Merge" in steps[0].action
+
+
 def test_failed_deployment_exits_two(tmp_path, monkeypatch):
     current = state(tmp_path, deployed_scripts=str(tmp_path / "installed"),
                     deployed_version="old")

@@ -60,9 +60,11 @@ The child fork's single-command reconciliation is now adapted as explicit
 `update --reconcile`. Its fast-forward is `--ff-only --no-tags` on a clean
 tracking branch; script deployment uses the validated installer and the
 already checked folder, so the loaded main project is not copied into a
-second runtime. `--check` never applies a change, JSON stays parseable
+second runtime. An external folder cannot overwrite the active main
+checkout's script sources: its changes must be merged into the checkout.
+`--check` never applies a change, JSON stays parseable
 after deployment, and a compiled-script mismatch remains a separate
-`relaunch --restart` action. Thirty-seven local update/status tests passed.
+`relaunch --restart` action. Thirty-eight local update/status tests passed.
 The unchanged donor test file now passes 42/50; its remaining failures are
 older action text or source-spelling checks, the old `cmd_update(as_json)`
 entry point, a raw copier that accepts a source lacking a `.PrjScr`, and
@@ -74,6 +76,11 @@ matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not
 missing functionality. No new branch tip appeared since the previous
 118-branch check.
+
+A fresh repeat after `4da2cc4` again matched 118/118 live branch tips to
+cached refs, with `MOREmbedded/main` still at `032fb4b` and upstream still
+at `0bb1b315` (zero commits pending). The child fork still has 33 commits
+outside `main` ancestry; their feature behavior is tracked separately below.
 
 The following branch-tip behaviors were rechecked in the current source.
 The named tests check source or offline behavior; the native Altium
@@ -231,6 +238,16 @@ libraries and four installed libraries through
 `library.list_available_libraries`; its response includes library type
 and a separate Workspace name from an open design when available.
 No missing public operation was established by this name inventory.
+
+The `rabihnd` footprint diagnostic was checked beyond its name. Its body
+array reports identifier, layer, `has_model`, bounding-box width/height and
+overall height. The current `lib_get_footprint_primitives(kinds="body")`
+reports those fields plus model source/type/rotation/standoff and the full
+four-corner box. The donor's screenshot uses Win32 `BitBlt`; current
+`app_capture_window` captures the actual editor window when given its
+handle, while `lib_render_footprint` provides a separate 2D footprint render.
+Footprint primitive/3D model tests passed 14 with one optional fixture skip.
+The donor-only names remain convenience spellings, not missing body data.
 
 Nine more `vincent-himpe` feature/fix tips were checked against current
 source: board via/pad properties (`ab85b30`), selected-pad drill type
