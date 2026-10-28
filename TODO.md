@@ -19,7 +19,12 @@
   with unchanged SHA-256, but that does not settle the donor's AD25 case.
 - [ ] Reproduce the Rosen ECO "Footprint Not Found" case with a newly
   added project PcbLib footprint and compare an explicit-library relink;
-  the donor tracked this as E1. Keep the test on a disposable project.
+  the donor tracked this as E1. An AD26.11 disposable project with a new
+  two-pad footprint passed ECO validation and added C1/C2, so the donor's
+  AD25/aliased-path condition remains to be reproduced.
+- [x] Open a closed primary PCB before `proj_sync_pcb` runs its modal ECO.
+  Script `.160` verified exact board and project focus; native scratch ECO
+  added C2 after the old path had refused with `WRONG_FOCUS`.
 - [x] Reconcile `andrzej-sikora-elte/elte` generic DbLib link-field and
   `FootprintModel` writes with the current dedicated relink and footprint
   operations. Script `.156` adds component-scoped DbLib field writes and

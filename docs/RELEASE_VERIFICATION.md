@@ -1,4 +1,18 @@
-# Release verification: 2026.10.28.159
+# Release verification: 2026.10.28.160
+
+Script `.160` opens the project's primary PcbDoc before a schematic-to-PCB
+ECO when that document is closed, then checks the focused board path and
+project before invoking the modal. A disposable project with one board
+and two libraries exposed the old `WRONG_FOCUS` refusal; the board had
+to be opened by hand for its first ECO. With `.160`, a second added
+schematic component and a closed board reached the actual ECO dialog
+without manual focus. Its Add Component row validated and executed;
+after explicitly focusing the exact board, the board read returned C1
+and C2, both with `ECO_QA_FP` and two pads. Altium's separate class-member
+row failed validation for C2, so component-class parity is not claimed.
+The scratch PCB was saved, and the project closed. The live bridge still
+answered with `.160`. The 12-unit Pascal build had zero findings and 17
+focused tests passed.
 
 Script `.159` resolves a name collision found during native alias QA.
 `eText` remains PCB text, while the donor's unambiguous `eTextString`
@@ -66,7 +80,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.159` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.160` from `app_ping`.
 Current `app_ping` reports loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;

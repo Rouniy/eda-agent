@@ -5381,7 +5381,9 @@ Var
     Data : String;
     Ok : Boolean;
     FocusedDoc : IDocument;
-    FocusedKind : String;
+    FocusedProject : IProject;
+    ServerDoc : IServerDocument;
+    FocusedKind, FocusedPath : String;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
 
@@ -5429,15 +5431,42 @@ Begin
       process raises that modal and BLOCKS the polling loop until a human
       clicks "Execute Changes" (or closes it). There is no documented silent
       variant. }
+    { ComputeECODifferences took this path from the project's primary PCB,
+      not from the caller. ResolvePCBBoard deliberately refuses to open an
+      arbitrary path; for this trusted project member, open it explicitly
+      when it is not resident yet so a closed board is a usable ECO target. }
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(PcbPath); Except End;
+    If ServerDoc = Nil Then
+    Begin
+        If Not FileExists(PcbPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PCB_FILE_NOT_FOUND', PcbPath);
+            Exit;
+        End;
+        Try ServerDoc := Client.OpenDocument('PCB', PcbPath); Except End;
+        If ServerDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PCB_OPEN_FAILED', PcbPath);
+            Exit;
+        End;
+    End;
+    Try Client.ShowDocument(ServerDoc); Except End;
     ResolvePCBBoard(PcbPath);
     FocusedKind := '';
+    FocusedPath := '';
     Try
         FocusedDoc := Workspace.DM_FocusedDocument;
-        If FocusedDoc <> Nil Then FocusedKind := FocusedDoc.DM_DocumentKind;
+        If FocusedDoc <> Nil Then
+        Begin
+            FocusedKind := FocusedDoc.DM_DocumentKind;
+            FocusedPath := FocusedDoc.DM_FullPath;
+        End;
     Except
         FocusedKind := '';
     End;
-    If FocusedKind <> 'PCB' Then
+    If (FocusedKind <> 'PCB') Or
+        (UpperCase(FocusedPath) <> UpperCase(PcbPath)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WRONG_FOCUS',
             'The project''s PCB could not be focused (the focused document is '
@@ -5445,6 +5474,16 @@ Begin
             + 'anything else focused the same request can update the '
             + 'schematic from the board. Focus ' + PcbPath
             + ' with app_set_active_document, then call this again.');
+        Exit;
+    End;
+    FocusedProject := Nil;
+    Try FocusedProject := Workspace.DM_FocusedProject; Except End;
+    If (FocusedProject = Nil) Or
+        (UpperCase(FocusedProject.DM_ProjectFullPath) <>
+         UpperCase(Project.DM_ProjectFullPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_PROJECT_FOCUSED',
+            'Opening the PCB changed the focused project; ECO was not fired');
         Exit;
     End;
     ResetParameters;

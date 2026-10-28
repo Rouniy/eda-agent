@@ -29,6 +29,15 @@ batch, while per-pin values override it. A disposable three-part symbol
 read back owners 3, 0 and 2 before and after save/reopen. The source SchLib
 was unchanged.
 
+The Rosen E1 baseline was exercised in AD26.11 on a disposable project:
+a footprint created and saved in that project's PcbLib during the session
+validated and entered the board via ECO. This does not reproduce the
+donor's AD25 case with the library also listed through an aliased drive.
+The first ECO exposed a separate closed-board `WRONG_FOCUS` refusal.
+Script `.160` opens the exact primary PCB from the project before Compare
+and checks board and project focus. A second ECO reached its modal without
+manual focus and added C2 with the expected footprint and two pads.
+
 ## 2026-10-28 refresh after script `.155`
 
 `python -m eda_agent fork-status --fetch --cached-forks
