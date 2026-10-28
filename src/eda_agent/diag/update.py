@@ -113,6 +113,7 @@ def gather_state(*, fetch: bool = False, compare_remote: str = "",
         "repo_root": str(root) if root else "",
         "editable": _is_editable_install() if root else False,
         "fetched": False,
+        "fetch_failed": False,
         "behind": None,
         "ahead": None,
         "branch": "",
@@ -125,8 +126,9 @@ def gather_state(*, fetch: bool = False, compare_remote: str = "",
         porcelain = _run_git(["status", "--porcelain"], root)
         state["dirty"] = bool(porcelain) if porcelain is not None else None
         if fetch:
-            state["fetched"] = _run_git(["fetch", "--quiet"], root,
-                                        timeout=60.0) is not None
+            state["fetched"] = _run_git(["fetch", "--quiet", "--no-tags"],
+                                        root, timeout=60.0) is not None
+            state["fetch_failed"] = not state["fetched"]
         counts = _run_git(
             ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
             root)
@@ -189,7 +191,9 @@ def _remote_state(root: Path, name: str, branch: str, *,
     commits they never asked for.
     """
     out: dict[str, Any] = {"upstream_remote": "", "upstream_behind": None,
-                           "upstream_ref": "", "upstream_version": ""}
+                           "upstream_ref": "", "upstream_version": "",
+                           "upstream_fetched": False,
+                           "upstream_fetch_failed": False}
     remotes = (_run_git(["remote"], root) or "").split()
     if name not in remotes:
         out["upstream_remote"] = name
@@ -205,8 +209,10 @@ def _remote_state(root: Path, name: str, branch: str, *,
         # it had never released, which broke a guard asserting the
         # declared version is ahead of every tag. Comparing commits
         # needs no tags at all.
-        _run_git(["fetch", name, "--quiet", "--no-tags"], root,
-                 timeout=60.0)
+        out["upstream_fetched"] = _run_git(
+            ["fetch", name, "--quiet", "--no-tags"], root,
+            timeout=60.0) is not None
+        out["upstream_fetch_failed"] = not out["upstream_fetched"]
 
     # Prefer the same branch name, fall back to the usual default: a
     # fork's feature branch has no counterpart upstream, and comparing
@@ -353,14 +359,21 @@ def plan(state: dict[str, Any], *, pull: bool = False,
                    "`python -m pip install --upgrade eda-agent`."))
     else:
         behind = state.get("behind")
-        stale = "" if state.get("fetched") else \
-            " (from your last fetch, which may be out of date; pass "\
-            "--fetch to refresh)"
+        stale = (" (fetch failed; count is from the last tracking ref)"
+                 if state.get("fetch_failed") else
+                 "" if state.get("fetched") else
+                 " (from your last fetch, which may be out of date; pass "
+                 "--fetch to refresh)")
         if behind is None:
             steps.append(Step(
                 "your remote", "unknown",
                 f"on {state['branch'] or 'an unknown branch'} with no "
                 f"tracking branch to compare against"))
+        elif behind == 0 and state.get("fetch_failed"):
+            steps.append(Step(
+                "your remote", "unknown",
+                "fetch failed; the cached tracking ref cannot prove the "
+                "remote is current", details={"cached_behind": behind}))
         elif behind == 0:
             steps.append(Step(
                 "your remote", "current",
@@ -390,10 +403,21 @@ def plan(state: dict[str, Any], *, pull: bool = False,
             ref = state.get("upstream_ref", "")
             their_version = state.get("upstream_version", "")
             mine = state.get("package_version", "")
-            if behind_upstream == 0:
+            upstream_stale = (
+                " (fetch failed; count is from the last tracking ref)"
+                if state.get("upstream_fetch_failed") else
+                "" if state.get("upstream_fetched", state.get("fetched")) else
+                " (from the last fetch; pass --fetch to refresh)")
+            if behind_upstream == 0 and state.get("upstream_fetch_failed"):
+                steps.append(Step(
+                    "original project", "unknown",
+                    f"fetch of {state['upstream_remote']} failed; cached "
+                    f"{ref} cannot prove it is current",
+                    details={"ref": ref, "cached_behind": behind_upstream}))
+            elif behind_upstream == 0:
                 steps.append(Step(
                     "original project", "current",
-                    f"level with {ref}" + stale))
+                    f"level with {ref}" + upstream_stale))
             else:
                 version_note = ""
                 if their_version and their_version != mine:
@@ -402,7 +426,7 @@ def plan(state: dict[str, Any], *, pull: bool = False,
                 steps.append(Step(
                     "original project", "action",
                     f"{behind_upstream} new commit(s) in {ref}"
-                    + version_note + stale,
+                    + version_note + upstream_stale,
                     action=(
                         f"Review with `git log HEAD..{ref}`, then "
                         f"`git merge {ref}` when you want them. NOT done "

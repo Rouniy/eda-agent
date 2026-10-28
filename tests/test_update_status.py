@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from eda_agent import cli
 from eda_agent.diag import update
@@ -77,6 +78,101 @@ def test_status_json_does_not_apply_an_update(monkeypatch, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["exit_code"] == 0
     assert report["steps"][-1]["name"] == "altium session"
+
+
+def test_failed_named_remote_fetch_cannot_prove_upstream_current(monkeypatch):
+    calls = []
+
+    def git(args, _root, **_kw):
+        calls.append(args)
+        if args == ["remote"]:
+            return "origin\nupstream"
+        if args[:1] == ["fetch"]:
+            return None
+        if args[:1] == ["rev-list"]:
+            return "8\t0"
+        if args[:1] == ["show"]:
+            return '__version__ = "0.7.1"'
+        return None
+
+    monkeypatch.setattr(update, "_run_git", git)
+    remote = update._remote_state(Path("/repo"), "upstream", "main",
+                                  fetch=True)
+    assert ["fetch", "upstream", "--quiet", "--no-tags"] in calls
+    assert remote["upstream_fetch_failed"] is True
+    step = {s.name: s for s in update.plan(_state(**remote))}[
+        "original project"]
+    assert step.status == "unknown"
+    assert "cannot prove" in step.message
+
+
+def test_successful_named_remote_fetch_can_report_current(monkeypatch):
+    def git(args, _root, **_kw):
+        if args == ["remote"]:
+            return "origin\nupstream"
+        if args[:1] == ["fetch"]:
+            return ""
+        if args[:1] == ["rev-list"]:
+            return "8\t0"
+        if args[:1] == ["show"]:
+            return '__version__ = "0.7.1"'
+        return None
+
+    monkeypatch.setattr(update, "_run_git", git)
+    remote = update._remote_state(Path("/repo"), "upstream", "main",
+                                  fetch=True)
+    step = {s.name: s for s in update.plan(_state(**remote))}[
+        "original project"]
+    assert remote["upstream_fetched"] is True
+    assert step.status == "current"
+
+
+def test_failed_own_remote_fetch_does_not_claim_current():
+    step = {s.name: s for s in update.plan(
+        _state(fetch_failed=True, fetched=False))}["your remote"]
+    assert step.status == "unknown"
+
+
+def test_failed_fetch_marks_nonzero_counts_as_cached():
+    state = _state(behind=2, fetched=False, fetch_failed=True,
+                   upstream_remote="upstream", upstream_ref="upstream/main",
+                   upstream_behind=3, upstream_fetched=False,
+                   upstream_fetch_failed=True)
+    steps = {s.name: s for s in update.plan(state)}
+    assert steps["your remote"].status == "action"
+    assert steps["original project"].status == "action"
+    assert "fetch failed" in steps["your remote"].message
+    assert "fetch failed" in steps["original project"].message
+
+
+def test_gather_records_failed_push_remote_fetch_without_importing_tags(
+        tmp_path, monkeypatch):
+    scripts = tmp_path / "scripts" / "altium"
+    scripts.mkdir(parents=True)
+    (scripts / "Main.pas").write_text(
+        "SCRIPT_VERSION = '2026.10.28.167';", encoding="utf-8")
+    (scripts / "Altium_API.PrjScr").write_text("", encoding="utf-8")
+    monkeypatch.setattr(update, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(update, "_is_editable_install", lambda: True)
+    monkeypatch.setattr(cli, "get_bundled_scripts_path", lambda: scripts)
+    monkeypatch.setattr(cli, "get_default_scripts_dest",
+                        lambda: tmp_path / "absent")
+    monkeypatch.setattr(cli, "get_registered_scripts_dirs", lambda: [])
+    calls = []
+
+    def git(args, _root, **_kw):
+        calls.append(args)
+        if args[:1] == ["fetch"]:
+            return None
+        if args[:1] == ["rev-list"]:
+            return "0\t0"
+        return ""
+
+    monkeypatch.setattr(update, "_run_git", git)
+    state = update.gather_state(fetch=True)
+    assert ["fetch", "--quiet", "--no-tags"] in calls
+    assert state["fetch_failed"] is True
+    assert state["fetched"] is False
 
 
 def test_status_ping_has_a_fixed_wait_budget(monkeypatch):

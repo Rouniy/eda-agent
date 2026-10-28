@@ -2,6 +2,13 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Make `update --status --fetch --from upstream` prove that the
+  named remote actually fetched before reporting it current. A failed
+  fetch now leaves cached zero-behind state `unknown`; the push remote
+  has the same guard, and refreshes use `--no-tags`. Seventeen focused
+  status/fork tests passed. A live fresh fetch reported both remotes
+  fetched, the loaded main script `.167`, and zero upstream commits
+  pending.
 - [x] Route GitHub's security-report link to this fork's policy page.
   The `Rouniy/eda-agent/security/policy` URL returned HTTP 200.
 - [ ] Set a private Rouniy vulnerability-report channel in `SECURITY.md`.

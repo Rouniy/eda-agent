@@ -48,6 +48,14 @@ GitHub's Actions API showed no hosted runs for `build-windows-binary.yml`
 and no `tests.yml` runs on the latest commits at this check, so local tests
 remain the verification for those changes.
 
+The four-layer `update --status` now tracks fetch success independently for
+the push remote and the named upstream remote. A failed refresh can no
+longer present a cached zero-behind ref as freshly current; it reports
+`unknown`. Both fetches use `--no-tags` so status checks do not import
+third-party release tags. Seventeen focused status/fork tests passed; a live
+`update --status --fetch --from upstream --json` showed both fetches true,
+zero upstream commits pending, and Altium compiling the main script `.167`.
+
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not
