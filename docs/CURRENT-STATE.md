@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## Additional `mooreaa` corrections, 2026-10-28
+
+`app_checkpoint` now requires an exact project path whenever zero or
+multiple projects are open, and sends that path to the project's save
+operation. A two-project fake refused an unqualified checkpoint and
+accepted the explicitly named project; the prior success/failure save
+tests still pass. The schematic template now points GND-named ports down
+by default even when their style is `bar`; three focused fixtures pass.
+`capture_png` defaults to native pixel size and only the OCR path asks
+for 2x scaling; 35 screenshot/dialog source tests pass. A direct live
+`PrintWindow` attempt on Altium's main window did not return before it
+was cancelled, so native pixel-size QA is still open. Altium subsequently
+showed `Responding=false` while its CPU time increased and another client's
+project request was active; no restart was attempted during that work.
+
 ## `mooreaa` UI corrections, 2026-10-28
 
 Source `.123` includes the fork's schematic deselection process and full

@@ -30,6 +30,19 @@ def _pins(**parts):
     return out
 
 
+@pytest.mark.parametrize("net,style,expected", [
+    ("GND", "bar", 3), ("AGND", "", 3),
+    ("+3V3", "bar", 1),
+])
+def test_ground_net_ports_point_down_even_with_a_supply_style(net, style, expected):
+    pins = {"R1": st.place_symbol_pins("R1", PASSIVE, 0, 0)}
+    port = {"net": net, "at": "R1.1"}
+    if style:
+        port["style"] = style
+    drawing = st.build({"parts": [{"designator": "R1"}], "ports": [port]}, pins)
+    assert drawing.ports[0]["orientation"] == expected
+
+
 def test_pin_ends_follow_rotation():
     p = {p.number: p for p in st.place_symbol_pins("C1", PASSIVE, 1000, 2000, 90)}
     # Rotated 90: pin 1 (left) now points down, its end 200 below the origin.

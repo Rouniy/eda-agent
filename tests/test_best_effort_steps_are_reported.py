@@ -27,6 +27,8 @@ rather than swallowing the exception.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from eda_agent.tools import application as application_module
@@ -69,6 +71,8 @@ class _Bridge:
         if command == "project.get_project_path":
             return {"project_dir": self.project_dir,
                     "project_name": "P.PrjPcb"}
+        if command == "project.get_open_projects":
+            return {"projects": [{"project_path": str(Path(self.project_dir) / "P.PrjPcb")}]}
         return {"ok": True}
 
 
@@ -128,6 +132,33 @@ async def test_a_successful_save_says_so(monkeypatch, workspace):
     assert out["saved"] is True
     assert "save_error" not in out
     assert "note" not in out
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_requires_identity_with_multiple_projects(monkeypatch, workspace):
+    other = workspace.parent / "other"
+    other.mkdir()
+    (other / "Q.PrjPcb").write_text("stub", encoding="utf-8")
+
+    class TwoProjects(_Bridge):
+        async def send_command_async(self, command, params=None, timeout=None):
+            if command == "project.get_open_projects":
+                self.calls.append(command)
+                return {"projects": [
+                    {"project_path": str(workspace / "P.PrjPcb")},
+                    {"project_path": str(other / "Q.PrjPcb")}]}
+            return await super().send_command_async(command, params, timeout)
+
+    bridge = TwoProjects(project_dir=str(workspace))
+    tool = _capture(application_module, "register_application_tools",
+                    "app_checkpoint", monkeypatch, bridge)
+    refused = await tool()
+    assert refused["checkpoint"] is None
+    assert "project.save" not in bridge.calls
+
+    accepted = await tool(project_path=str(workspace / "P.PrjPcb"))
+    assert accepted["saved"] is True
+    assert accepted["checkpoint"] is not None
 
 
 @pytest.mark.asyncio

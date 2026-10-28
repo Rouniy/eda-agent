@@ -7,8 +7,12 @@
 - [x] Refuse a close when `GetDocumentByPath` resolves to a different
   document, and remove the undefined-local `obj_zoom(point)` branch.
 - [ ] Reproduce the phantom-path close case on a disposable document;
-  assess the fork's checkpoint project identity, screenshot resolution
-  and ground-port orientation corrections against our current code.
+  assess other remaining fork differences against our current code.
+- [x] Require an explicit project for checkpointing when selection is
+  ambiguous; default GND-named template ports downward; keep exported
+  screenshots at native size and enlarge only OCR inputs.
+- [ ] Verify `app_screenshot` pixels on a responsive Altium window. A
+  direct `PrintWindow` capture of the main window did not complete.
 
 ## Fresh `mooreaa` stack builder, 2026-10-28
 
