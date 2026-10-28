@@ -1054,3 +1054,14 @@ merge-tree --write-tree main morembedded/main` produced a tree identical to
 with zero file changes. The fork-status refresh matched all 120/120 live
 branch tips to cached refs; the upstream synchronization point remains
 `0bb1b315`.
+
+The `cad435` `c7d55bb` generic pad-designator patch was only partly matched:
+single writes and `Name` batch writes worked, but the raw
+`obj_batch_modify` guard rejected the pad's `Designator` alias before it
+reached Altium. The Python and Pascal batch guards now allow exactly
+`ePadObject` + `Designator`, while still refusing schematic component
+designators and `Designator.Text` on pads. Script `.185` passed 26 focused
+tests and a 12-unit build. A native batch operation on a disposable
+`CW308T_AVR.PcbDoc` copy matched one pad `U1-15` at `(4100, 2570)` mil;
+the readback showed both `Name` and `Designator` as `QA15`. The copy was
+closed with edits discarded, and the source SHA-256 was unchanged.

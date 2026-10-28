@@ -4789,7 +4789,7 @@ Begin
     Result := True;
 End;
 
-Function SetWritesDesignator(SetStr : String) : Boolean;
+Function SetWritesDesignator(SetStr, ObjTypeStr : String) : Boolean;
 Var
     Remaining, Assignment, PropName : String;
     PipePos, EqPos : Integer;
@@ -4813,7 +4813,10 @@ Begin
         If EqPos > 0 Then
         Begin
             PropName := UpperCase(Trim(Copy(Assignment, 1, EqPos - 1)));
-            If (PropName = 'DESIGNATOR') Or (PropName = 'DESIGNATOR.TEXT') Then
+            { A PCB pad's Designator is its Name, not a schematic part name. }
+            If (PropName = 'DESIGNATOR.TEXT') Or
+                ((PropName = 'DESIGNATOR') And
+                 (UpperCase(Trim(ObjTypeStr)) <> 'EPADOBJECT')) Then
             Begin
                 Result := True;
                 Exit;
@@ -4910,7 +4913,7 @@ Begin
         { The project-wide rename tool has already checked UniqueIds,
           collisions and its reviewed snapshot before calling this handler.
           Raw batch calls have no such guard. }
-        If (Note = '') And SetWritesDesignator(SetStr)
+        If (Note = '') And SetWritesDesignator(SetStr, ObjTypeStr)
             And (ExtractJsonValue(Params, 'planned_designator_rename') <> 'true') Then
             Note := 'designator_refused_use_proj_annotate_or_sch_batch_rename_designators';
 

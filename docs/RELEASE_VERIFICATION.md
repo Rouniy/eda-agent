@@ -1,5 +1,15 @@
 
-# Release verification: 2026.10.28.184
+# Release verification: 2026.10.28.185
+
+Script `.185` lets `obj_batch_modify` use `Designator` for a PCB pad while
+continuing to reject schematic component designator writes and unsupported
+`Designator.Text` pad writes. The 12-file Pascal build reported zero errors
+and warnings; 26 focused batch/designator tests passed. After the main
+script restart, the bridge reported `.185`. On a disposable copy of
+`CW308T_AVR.PcbDoc`, a single batch operation matched pad `U1-15` at
+`(4100, 2570)` mil and changed its readback Name/Designator to `QA15`.
+Altium closed that copy with edits discarded. The source file's SHA-256
+remained `EAC475924D2EBDC551B3C029083E6AD8E4B0A59DEC6AE99430100F5FE2812DD9`.
 
 Script `.179` bounds `pcb_get_vias` to 1,000 rows per response by default,
 returns the total matching count and pagination metadata, and supports an
@@ -203,7 +213,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.184` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.185` from `app_ping`.
 
 ## 2026.10.28.156 - Previous native checkpoint
 

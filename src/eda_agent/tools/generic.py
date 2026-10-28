@@ -1205,8 +1205,10 @@ def register_generic_tools(mcp):
         No rollback: ops that ran before a failure stay applied. After a
         designator batch, duplicate designators can merge nets silently.
         Use ``sch_batch_rename_designators`` for planned explicit names or
-        ``proj_annotate`` for automatic numbering. Designator assignments
-        are refused before any command is sent to Altium.
+        ``proj_annotate`` for automatic numbering. Schematic component
+        designator assignments are refused before any command is sent to
+        Altium. A PCB pad's ``Designator`` is its pad name and may be changed
+        on the active board.
 
         Args:
             operations: List of operation dicts, each with:
@@ -1263,12 +1265,22 @@ def register_generic_tools(mcp):
                             "operations_processed": 0}
             if not obj_type or not set_str:
                 continue
-            if any(
+            writes_designator = any(
                 assignment.partition("=")[0].strip().casefold()
                 in ("designator", "designator.text")
                 for assignment in str(set_str).split("|")
                 if "=" in assignment
-            ):
+            )
+            pad_designator_only = (
+                str(obj_type).strip().casefold() == "epadobject"
+                and all(
+                    assignment.partition("=")[0].strip().casefold()
+                    != "designator.text"
+                    for assignment in str(set_str).split("|")
+                    if "=" in assignment
+                )
+            )
+            if writes_designator and not pad_designator_only:
                 return {"ok": False, "error": "DESIGNATOR_BATCH_REFUSED",
                         "reason": ("operations[%d] changes a designator; use "
                                    "sch_batch_rename_designators or proj_annotate. "

@@ -295,6 +295,30 @@ class TestBatchModify:
         assert sent.command is None
 
     @pytest.mark.asyncio
+    async def test_pcb_pad_designator_batch_reaches_bridge(self, monkeypatch):
+        sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
+        from eda_agent.tools import generic as g
+        tools = _capture(g, "register_generic_tools")
+        await tools["obj_batch_modify"](operations=[
+            {"scope": "active_doc", "object_type": "ePadObject",
+             "filter": "Name=1", "set": "Designator=A1"},
+        ])
+        assert sent.command == "generic.batch_modify"
+        assert "object_type=ePadObject" in sent.params["operations"]
+        assert "set=Designator=A1" in sent.params["operations"]
+
+    @pytest.mark.asyncio
+    async def test_pcb_pad_designator_text_is_not_a_setter(self, monkeypatch):
+        sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
+        from eda_agent.tools import generic as g
+        tools = _capture(g, "register_generic_tools")
+        result = await tools["obj_batch_modify"](operations=[
+            {"object_type": "ePadObject", "set": "Designator.Text=A1"},
+        ])
+        assert result["error"] == "DESIGNATOR_BATCH_REFUSED"
+        assert sent.command is None
+
+    @pytest.mark.asyncio
     async def test_multi_condition_filter_survives_op_split(self, monkeypatch):
         """The op separator must not appear inside filter/set values."""
         sent = _install_fake_bridge(monkeypatch, "eda_agent.tools.generic")
