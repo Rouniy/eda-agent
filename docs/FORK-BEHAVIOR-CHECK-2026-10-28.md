@@ -42,3 +42,28 @@ The adapted `build-windows-binary.yml` workflow is in `main` and its local
 wheel/one-file exe smoke test is recorded in `TODO.md`. GitHub's Actions
 API reported zero hosted runs for that workflow at this check; a hosted
 result remains outstanding.
+
+## Additional divergent-branch review
+
+At `7901939`, a fresh `eda-agent fork-status --fetch --cached-forks
+--verify-fork-branches --json` again found `upstream/main=ee7589c9` with
+zero commits behind, and all 118/118 live fork branch tips matched local
+refs. The following distinct capabilities were then compared with the
+current source. These are behavior matches, not claims that the donor
+commits themselves were merged.
+
+| Divergent source | Result in `main` | Evidence |
+| --- | --- | --- |
+| `bblacklock3` `c666912`, `78791d3` | Arc `Width` reads `LineWidth`; fractional mil coordinates are retained | `PCBGeneric.pas` getter; `test_lengths_are_decimal_mils.py` |
+| `cad435/main` `4f57311`, `2a916c2` | The managed-part resolver probes `SchServer.LoadComponent`, and successful placement marks the sheet dirty | `Lib_GetVaultComponent`, `Gen_PlaceWorkspaceComponents`; `test_workspace_component_placement.py` |
+| `mityafoxy` `bba6811` | Request reads use `FileOpen` and `THandleStream`, avoiding the AD26 sharing-violation modal from `LoadFromFile` | `LoadTextFile`; `test_ipc_integration.py` |
+| `prototrace` `961e6c3` | UTF-16 code units are JSON-escaped without truncation; schematic `ePolyline` is queryable | `CodeUnitToHex4`, `Generic.pas` object resolver; `test_unicode_and_detach_transport.py`, `test_symbol_writes_on_screen.py` |
+| `redbird98` `1ff554f`, `f3c2a5c`, `0b6433a`, `f293e80` | Fab statistics classify vias by `LowLayer`/`HighLayer`; DRC re-focuses the board; focus and exact-board resolution verify the selected document | `PCB_GetFabStats`, DRC and focus handlers, `ResolvePCBBoard`; `test_fab_stats_via_spans.py` and existing native batch DRC acceptance |
+| `redbird98/main` `a563269` | OutJob is activated before its container runs | `Project.pas`; `test_outjob_activation.py` |
+| `tisn1678065900-dot/boardquality` `21f0412` | The quality skill and all five `docs/pcb-quality` artifacts are already tracked | `skills/boardquality/SKILL.md`, `docs/pcb-quality/` |
+
+The six focused test files for fractional mils, via spans, OutJob,
+Workspace placement, Unicode transport and IPC passed 77/77; the schematic
+object-spelling file passed another 8/8. This source
+and test review does not prove parity for every commit in those forks or
+settle the remaining divergent branches; continue by distinct behavior.
