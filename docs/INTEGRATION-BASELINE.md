@@ -10,6 +10,10 @@ The current `main` builds on these two exact Git commits:
 Both exact tips are ancestors of our `main`, so Git records the sync
 points without relying on a manually maintained version number. A fresh
 fetch on 2026-10-28 found zero commits pending from either source. The
+annotated tag `upstream-sync-2026-10-28` points to the exact upstream
+commit `0bb1b315` and is pushed to `origin`, so `git log --graph --all`
+shows the integration boundary directly. GitHub also records
+`Rouniy/eda-agent` as a fork of `salitronic/eda-agent`. The
 upstream merge incorporated variant management and BOM support; the
 MOREmbedded merge incorporated its SDK and diagnostics lineage with local
 adaptations. Our later commits, including selected work from other forks,
