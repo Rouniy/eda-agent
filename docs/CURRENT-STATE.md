@@ -1,5 +1,26 @@
 # Current integration state / agent handoff
 
+## Schematic parameter and port extra properties, 2026-10-28
+
+On an isolated copy of `Multipart_QA.PrjPcb`, a document parameter
+`QA_PROP` and port `QA_PROP_PORT` were created on a copied SchDoc.
+Native `obj_query` read `ReadOnlyState=0`,
+`AllowLibrarySynchronize=true`, `AutoSize=false`, the empty
+`OverrideDisplayString` and the port's initial `HarnessColor` with no
+unknown or failed properties. `obj_modify` wrote
+`ReadOnlyState=1`, `AllowLibrarySynchronize=false`, `AutoSize=true`,
+`OverrideDisplayString=QA_ALIAS` and `HarnessColor=123456` with one
+match for each object and immediate readback. `AutoSize` recalculated
+the port width from 400 to 875.1763 mil.
+
+After exact-sheet save, close and reopen, both parameter changes and
+`AutoSize=true` with the new width persisted. `OverrideDisplayString`
+had reverted to empty and `HarnessColor` to 15187117. The saved
+SchDoc's port record contained `AutoSize=T` but neither of those two
+fields. `obj_modify` now reports this AD 26.11 persistence limit when
+either is written, while retaining the live setter for contexts where
+it is useful. The scratch project was closed.
+
 ## IntLib relink persistence and DbLib uniqueness guard, 2026-10-28
 
 The `mooreaa` `sch_relink_components` IntLib path was checked on an

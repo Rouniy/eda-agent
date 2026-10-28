@@ -947,8 +947,12 @@ def test_generic_modify_reports_native_persistence_limits(monkeypatch):
     pad = asyncio.run(tools["obj_modify"](
         object_type="ePadObject", set="PasteMaskUsePercent=true|PasteMaskPercent=50"))
     assert "PasteMaskExpansionMode=2" in pad["_native_write_notes"][0]
+    port = asyncio.run(tools["obj_modify"](
+        object_type="ePort", set="OverrideDisplayString=LABEL|HarnessColor=123456"))
+    assert "reverted after save/reopen" in port["_native_write_notes"][0]
     assert [name for name, _ in bridge.sent] == [
-        "generic.modify_objects", "generic.modify_objects"]
+        "generic.modify_objects", "generic.modify_objects",
+        "generic.modify_objects"]
 
 
 def test_compile_mask_stays_out():

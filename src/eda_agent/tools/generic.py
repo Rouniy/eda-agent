@@ -60,7 +60,7 @@ _ERC_PROJECT_PATH_SCRIPT_VERSION = "2026.10.19.1"
 
 
 def _pcb_write_notes(object_type: str, assignments: str) -> list[str]:
-    """Surface two native properties whose live state can mislead callers."""
+    """Surface native properties whose live state can mislead callers."""
     keys = {part.split("=", 1)[0].strip() for part in assignments.split("|")
             if "=" in part}
     notes: list[str] = []
@@ -77,6 +77,13 @@ def _pcb_write_notes(object_type: str, assignments: str) -> list[str]:
                      "PasteMaskEnabled=true. With mode 1 the percent can read "
                      "back as zero even after a reported write; query the "
                      "pad and save/reopen to verify it.")
+    if object_type == "ePort" and keys.intersection(
+            {"OverrideDisplayString", "HarnessColor"}):
+        notes.append("On an ordinary schematic port in AD 26.11, "
+                     "OverrideDisplayString and HarnessColor read back in "
+                     "memory but reverted after save/reopen. AutoSize did "
+                     "persist. Check the saved sheet before relying on "
+                     "these port fields.")
     return notes
 
 

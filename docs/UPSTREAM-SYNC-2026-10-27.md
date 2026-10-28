@@ -1,5 +1,16 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 mooreaa parameter and port property acceptance
+
+On a disposable schematic copy, native reads and writes of extra
+parameter and port properties passed in memory. Parameter
+`ReadOnlyState` and `AllowLibrarySynchronize`, and port `AutoSize`,
+survived exact save/reopen. Port `OverrideDisplayString` and
+`HarnessColor` reverted on an ordinary port; their fields were absent
+from its saved SchDoc record. The generic modify reply now warns when
+either is written. The 105-test related suite passes. See
+`CURRENT-STATE.md`.
+
 ## 2026-10-28 mooreaa IntLib relink and DbLib preflight
 
 On a disposable project and IntLib copy, `sch_relink_components` linked
@@ -1008,7 +1019,7 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 | MOREmbedded `84b682c`, upstream `5db72f2` | Multi-body STEP layer and Z-offset edits are now qualified on one disposable PcbLib; further qualify bulk edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
 | MOREmbedded `pcb_check_fab_output` | A >5000-drilled-pad board and revision provenance of external packages | Real Altium GerberX2/NC Drill package now parsed and compared to its production-review PcbDoc; copper and hole counts match, exported Profile is larger than the live board. Keep that mismatch visible; a package manifest/revision proof is still needed for sign-off. |
-| `mooreaa` `dc36b7e` through `fc22136` | DbLib relink and parameter-port acceptance remain; SchLib and IntLib relink, multipart placement and pin-property read/write are now natively checked | Use final corrected handlers; verify remaining exact-sheet targeting, native readback and disposable-sheet safety |
+| `mooreaa` `dc36b7e` through `fc22136` | DbLib relink and persistent alternatives for two port display fields remain; SchLib and IntLib relink, multipart placement, pin properties, parameter properties and port AutoSize are natively checked | Use final corrected handlers; verify remaining exact-sheet targeting, native readback and disposable-sheet safety |
 
 The previous audit has the other fork branches and older upstream work. This
 table tracks next implementation batches, not a claim that the listed source
