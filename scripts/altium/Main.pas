@@ -14,7 +14,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.169';
+    SCRIPT_VERSION = '2026.10.28.170';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -1872,7 +1872,10 @@ Begin
                 + 'inside a .PcbLib, use the lib_ tools instead.'
     Else If (ErrorCode = 'NO_SCHDOC') Or (ErrorCode = 'NO_SCHEMATIC') Then
         Result := 'This tool acts on an open .SchDoc sheet. To edit a '
-                + 'symbol inside a .SchLib, use the lib_ tools instead.';
+                + 'symbol inside a .SchLib, use the lib_ tools instead.'
+    Else If (ErrorCode = 'WRONG_PROJECT_FOCUSED') Then
+        Result := 'Open the requested project with proj_open and focus its '
+                + 'PCB with app_set_active_document, then retry.';
 End;
 
 Function BuildErrorResponseDetailed(RequestId : String; ErrorCode : String;

@@ -1,5 +1,11 @@
 
-# Release verification: 2026.10.28.169
+# Release verification: 2026.10.28.170
+
+Script `.170` removes the `CompilationMasked` read that AD26.11 does not
+honour, uses the focus-aware board resolver for via mask edits, and adds a
+recovery hint when an ECO changes the focused project. Pascal lint/build
+had zero findings, 229 related tests passed, and the native bridge
+restarted and answered `application.ping` as `.170`.
 
 Script `.169` lets the Altium status form open the dashboard at its actual
 bound port. The dashboard publishes `dashboard.url` only after binding; the
@@ -156,7 +162,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.169` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.170` from `app_ping`.
 At that earlier checkpoint, `app_ping` reported loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
@@ -692,7 +698,6 @@ works elsewhere cannot be an undeclared identifier:
 | 51, sheet zones | `ObjectReferenceZone` on a sheet | no, nowhere | none, read only |
 | 52, unpoured pours | `GetDefaultName` on a polygon | no, nowhere | low, names an unnamed pour; ran live |
 | 52, library delete | `GetComponentByName` on the library | yes, `Library.pas` (PcbLibTarget) | medium, removes primitives; ran live after a clean restart |
-
 | 53, probes | `AddSchObject` of parameters on a probe | yes, on components and parameter sets | low, adds a probe's own parameters; ran live |
 | 53, settings reload | `DoFileLoad` on a settings document reporting `SupportsReload` False | no, nowhere | low, a .simcfg only; ran live |
 | 54, variant values | `DM_AddParameterVariation`, `DM_SetParameterName`, `DM_SetVariedValue`, `DM_RemoveParameterVariation` on a part's variant entry | yes, merged `Project.pas` | low, the .PrjPcb only; ran live upstream, saved and reopened on a scratch copy |

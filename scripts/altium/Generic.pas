@@ -1553,7 +1553,6 @@ Begin
     Found := False;
     If PropName = 'AliasAsText'                     Then Result := Obj.AliasAsText
     Else If PropName = 'AliasCount'                 Then Result := IntToStr(Obj.AliasCount)
-    Else If PropName = 'CompilationMasked'          Then Result := BoolToJsonStr(Obj.CompilationMasked)
     Else If PropName = 'ConfigurationParameters'    Then Result := Obj.ConfigurationParameters
     Else If PropName = 'ConfiguratorName'           Then Result := Obj.ConfiguratorName
     Else If PropName = 'DescriptionString'          Then Result := Obj.GetState_DescriptionString

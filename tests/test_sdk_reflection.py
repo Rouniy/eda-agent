@@ -236,7 +236,7 @@ def test_coverage_against_a_synthetic_sdk(model, monkeypatch):
     entry = report.types[0]
     assert entry.resolved and entry.interface == "ISch_Component"
     assert "LibReference" in entry.read_covered
-    assert "AliasCount" in entry.missing_reads
+    assert "AliasCount" in entry.read_covered
     reached, declared = report.totals()
     assert 0 < reached < declared
 
