@@ -205,5 +205,3 @@ def test_legacy_stack_writes_need_explicit_opt_in(monkeypatch):
     for name, kwargs in calls:
         out = asyncio.run(registry.tools[name](**kwargs))
         assert out["error"] == "LEGACY_STACK_WRITE"
-
-
