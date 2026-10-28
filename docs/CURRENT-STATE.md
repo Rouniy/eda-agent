@@ -9,6 +9,29 @@ read accessors answered on IC44 in a read-only AD26.11 check. The sheet
 was closed without saving. Broader component kinds and AD25 still need
 native checks.
 
+## Local regression and hosted CI gate, 2026-10-28
+
+At `main` `42ddcba`, the full local Python suite passed with 9,806
+passed, 165 skipped, one expected failure and zero failures in 16:09.
+A fresh wheel and sdist were built, then
+`scripts/verify_distribution.py` installed the wheel in a clean
+environment, exercised its commands, built the EasyEDA `.eext`, and
+verified all three artifacts and their SHA-256 manifest under
+`D:\ai\qa\dist-current`.
+
+GitHub Actions has not created a run for recent `main` pushes: its
+latest visible runs are from 2026-10-26, and the `42ddcba` check-run
+and workflow-run lists are empty. The authenticated repository Actions
+permissions API says `enabled=true` and `allowed_actions=all`; all four
+workflows report `active`, and no repository Actions policy is listed.
+Nevertheless, dispatching the existing repository-integrity workflow
+on `main` returned HTTP 422, `Actions has been disabled for this
+repository.` The cause is not established by these checks; a billing,
+account or platform restriction remains possible. The `tests` workflow
+now also accepts `workflow_dispatch` so the exact current commit can
+be checked after GitHub allows runs again. Local passing results do not
+substitute for hosted Windows/Pascal CI.
+
 Script `.169` added the dashboard's bound localhost
 URL to `dashboard.url`; the status form reads it for Open Dashboard. This
 adapts the `yniantongtian-oss` 8877 port fix without changing the default

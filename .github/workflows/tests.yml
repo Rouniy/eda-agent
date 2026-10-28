@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # A newer push makes an older run's answer worthless, and both compete
 # for the same runner. Superseded runs are cancelled so the queue is not
