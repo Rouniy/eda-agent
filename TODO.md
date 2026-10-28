@@ -1,5 +1,18 @@
 # Fork integration TODO
 
+## Sheet-symbol and entry geometry from `mooreaa`, 2026-10-28
+
+- [x] Fix the sheet-symbol Y anchor: Altium extends its positive YSize
+  downward, so a requested box `(x1,y1)..(x2,y2)` must anchor at
+  `(x1,y2)`. Re-read four sheet-entry hot spots immediately after
+  insertion; `AddAndPositionSchObject` previously left them outside the
+  owner until save/reopen while reporting success. The script now sets
+  the point from the symbol geometry, side and distance, and includes
+  X/Y in `positioned_as_asked`. Script `.129` built with 12 units and
+  zero lint findings. On a disposable two-sheet project, all four
+  points matched immediately and after save/reopen: left 6000,2900;
+  right 7000,2800; top 6300,3000; bottom 6400,2000 mil. Project closed.
+
 ## Exact-board rule reads, 2026-10-28
 
 - [x] Repair native `pcb_find_dominant_rule` and `pcb_check_rule_scope`:

@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Sheet-symbol and sheet-entry geometry, 2026-10-28
+
+Script `.129` repairs the `mooreaa` sheet-entry placement issue. A
+sheet symbol's positive YSize grows down from its Location, so its
+requested bottom/top corners now anchor at the top-left. After Altium's
+`AddAndPositionSchObject`, the handler writes each entry's Location
+from the actual symbol geometry and tests both coordinates as well as
+side/distance before claiming `positioned_as_asked`. On a disposable
+two-sheet project, immediate and saved/reopened positions agreed for
+left `(6000,2900)`, right `(7000,2800)`, top `(6300,3000)` and bottom
+`(6400,2000)` mil. Before the fix, immediate positions lay outside the
+symbol and changed only after reopen. The temporary project was closed.
+
 ## Exact-board rule queries, 2026-10-28
 
 Script `.128` fixes `pcb_find_dominant_rule` and `pcb_check_rule_scope`.

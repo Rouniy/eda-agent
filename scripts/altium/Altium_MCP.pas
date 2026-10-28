@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.128';
+    SCRIPT_VERSION = '2026.10.28.129';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -71844,7 +71844,7 @@ End;
 
 Function Gen_PlaceSheetSymbol(Params : String; RequestId : String) : String;
 Var
-    TmpI : Integer;
+    TmpI : Double;
     X1, Y1, X2, Y2 : Double;
     SchDoc : ISch_Document;
     Sym : ISch_SheetSymbol;
@@ -71884,7 +71884,9 @@ Begin
     { ISch_SheetSymbol has no Corner property (unlike ISch_Rectangle) -- using
       it raises "Undeclared identifier: Corner". Size is set via XSize/YSize
       from the bottom-left Location (Altium SDK: SetState_XSize/YSize). }
-    Sym.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y1));
+    { A sheet symbol grows DOWN from Location. The requested y1/y2 are
+      bottom/top corners, so its anchor must be the top-left corner. }
+    Sym.Location := Point(MilsToCoordF(X1), MilsToCoordF(Y2));
     Sym.XSize := MilsToCoordF(X2 - X1);
     Sym.YSize := MilsToCoordF(Y2 - Y1);
     If NameStr = '' Then NameStr := ChangeFileExt(FileNameStr, '');
@@ -71937,7 +71939,7 @@ Var
     Entry : ISch_SheetEntry;
     SheetNameStr, EntryName, IOStr, SideStr, ThisName : String;
     WantSide, GotSide : Integer;
-    GotX, GotY : Double;
+    GotX, GotY, WantX, WantY : Double;
     GotDist : Double;
     DistFromTop : Double;
     FontToUse, GotFont : Integer;
@@ -72049,6 +72051,20 @@ Begin
 
     Try Entry.Side := WantSide; Except End;
     Try Entry.DistanceFromTop := MilsToCoordF(DistFromTop); Except End;
+    { AddAndPositionSchObject initially leaves Location outside its owner.
+      The saved-file reload later derives the correct point from Side and
+      DistanceFromTop, but wires placed before a reload would target the
+      wrong hot spot. Position it now from the symbol's actual geometry. }
+    WantX := CoordToMilsF(Sym.Location.X);
+    WantY := CoordToMilsF(Sym.Location.Y);
+    If WantSide = eRightSide Then WantX := WantX + CoordToMilsF(Sym.XSize)
+    Else If (WantSide = eTopSide) Or (WantSide = eBottomSide) Then
+        WantX := WantX + DistFromTop;
+    If (WantSide = eLeftSide) Or (WantSide = eRightSide) Then
+        WantY := WantY - DistFromTop
+    Else If WantSide = eBottomSide Then
+        WantY := WantY - CoordToMilsF(Sym.YSize);
+    Try Entry.Location := Point(MilsToCoordF(WantX), MilsToCoordF(WantY)); Except End;
     If FontToUse > 0 Then
     Begin
         Try Entry.TextFontID := FontToUse; Except End;
@@ -72074,7 +72090,8 @@ Begin
         GotY := CoordToMilsF(Entry.Location.Y);
     Except End;
 
-    Placed := (GotSide = WantSide) And (Abs(GotDist - DistFromTop) < 0.0001);
+    Placed := (GotSide = WantSide) And (Abs(GotDist - DistFromTop) < 0.0001)
+        And (Abs(GotX - WantX) < 0.0001) And (Abs(GotY - WantY) < 0.0001);
 
     { A WRITE THAT DOES NOT DIRTY THE DOCUMENT DID NOT HAPPEN, as far as
       the rest of Altium is concerned. SmartCompile skips its recompile
