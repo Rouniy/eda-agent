@@ -1,5 +1,24 @@
 # Current integration state / agent handoff
 
+## MOREmbedded two-body bulk STEP edit, 2026-10-28
+
+The existing `lib_set_3d_body` bulk path was checked on a disposable
+4,140,032-byte PcbLib copy. `TEST PAD` had an extruded body on
+Mechanical13 and a STEP body on Mechanical15. A dry run planned both
+bodies; the native write moved both to Mechanical16 and set opacity to
+0.65 (`changed=2`, no skips). Exact save, close and reopen retained both
+layers and opacities. The saved STEP file and its 90-degree Z rotation
+were unchanged.
+
+A second bulk dry run and write set standoff to 0.1 mil. After exact
+save/reopen, the extruded body's standoff was 0.1 mil and the STEP
+model's saved Z offset was 0.1 mil, with the same 90-degree rotation.
+Altium's live `ComponentBody.StandoffHeight` still returned its unrelated
+negative value for STEP; the saved model record supplied the persistent
+offset. The test copy closed. Dry-run rotation plans for all 41
+footprints in this PcbLib had `not_turned=0`; no footprint here exercised
+the unsupported polygon/dimension guard.
+
 ## Integrated-library completeness guard, 2026-10-28
 
 `lib_build_integrated_library` was exercised on a disposable LibPkg
