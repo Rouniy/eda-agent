@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+Script `.168` is loaded in the main `Altium_API.PrjScr` and answered a fresh
+`application.ping` on AD26.11.1.5. It adds a deliberate `sdk-probe` route
+and generated schematic-component reads. On Main.SchDoc in the Pi Radio
+transceiver design, `sdk-probe --properties DescriptionString` returned
+`Part J_TX_1`; an unknown-property call returned `not_in_probe`. The sheet
+was closed without saving. A later attempt to reopen it timed out because
+Altium exited before processing the request. Altium was launched again,
+the same main script loop resumed, and `.168` ping succeeded. The cause of
+the exit remains unverified; do not infer that the accessor caused it.
+Type-scoped SDK coverage now reports 678/2176 declared properties. The
+new child-fork tip `d495c4d` still needs a Git ancestry merge after the
+behavior-level changes are reviewed.
+
 PCB text `FontName` is now readable through `obj_query` on script `.167`.
 The main Altium loop was restarted and answered a ping. On
 `Z:\pi-radio\rfsoc-fr1-beamformer\01_Altium_Transceiver\Main.PcbDoc`, native

@@ -314,6 +314,15 @@ and the current SDK report still reads 650 of 2,176 declared properties
 because the generated block is not deployed. The live SDK probe still needs
 review; `d495c4d` is not yet a parent of `main`.
 
+The live SDK probe and generated component read block are now adapted in
+script `.168`. The main Altium bridge restarted and answered a native
+`DescriptionString` read (`Part J_TX_1`) and a `not_in_probe` case. The
+sheet was closed without saving. Type-scoped coverage rose from 650 to
+678 of 2,176 declared properties. A later attempt to reopen that sheet
+timed out when the Altium process exited before handling the request;
+the process was relaunched and `.168` answered ping. The cause of that
+exit and the other generated accessors still require native review.
+
 The direct child fork's `test_update_command.py` was run unchanged against
 the current source in a temporary test file: 38 passed and 12 failed. The
 current `eda-agent update --status --from <remote-or-folder> --json` already

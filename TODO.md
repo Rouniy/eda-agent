@@ -8,8 +8,12 @@
   the per-request perf attribution is ported and checked against two live
   ping calls. Type-scoped delegated-property accounting is ported and
   tested; it changes no current coverage count until a generated block is
-  deployed. The live `sdk-probe`/generated Pascal block still needs a safe
-  native review. Do not treat the old child merge as the latest child sync point.
+  deployed. The live `sdk-probe` and generated Pascal block are now ported;
+  the `.168` bridge answered two scoped native probes, including a
+  `DescriptionString` getter. Review the remaining generated accessors
+  individually and record the unexplained Altium process exit after a
+  later document reopen. Do not treat the old child merge as the latest
+  child sync point.
 - [x] Record the direct child `MOREmbedded/main` tip `032fb4b` as a true
   second parent after manual conflict resolution. Current production paths
   win where the auto-merge duplicated Pascal/Python handlers or removed

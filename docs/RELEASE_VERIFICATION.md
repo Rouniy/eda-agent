@@ -1,5 +1,17 @@
 
-# Release verification: 2026.10.28.164
+# Release verification: 2026.10.28.168
+
+Script `.168` adds the explicit `sdk-probe` command and generated
+`ISch_Component` read accessors. The 12-unit Pascal lint/build had zero
+findings; 48 focused Python checks passed. A live AD26.11.1.5 probe read
+`DescriptionString=Part J_TX_1` on a schematic component and a second probe
+returned `not_in_probe` for an unknown name. Both calls answered, the sheet
+was closed without saving, and `application.ping` returned `.168`.
+Subsequently the Altium process exited while reopening that same sheet,
+before the new request reached its handler. Altium was started again from
+the installed X2 executable; `StartMCPServer` resumed `.168` and ping
+answered. The exit's cause is undetermined. Do not treat these checks as
+full coverage of every generated accessor.
 
 The `.164` source merges upstream `0bb1b315` as a Git parent, adding
 variant parameter values, rename/copy, and a variant-aware BOM while
@@ -133,8 +145,8 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.163` from `app_ping`.
-Current `app_ping` reports loaded and bundled `2026.10.28.156` on
+Expect `altium_script_version` = `2026.10.28.168` from `app_ping`.
+At that earlier checkpoint, `app_ping` reported loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
 the copy was closed without saving. Earlier checkpoints follow.

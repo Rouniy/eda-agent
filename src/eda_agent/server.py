@@ -979,6 +979,14 @@ def main() -> int:
     symbols_p.add_argument("--json", action="store_true", dest="json_out")
     symbols_p.add_argument("--sdk-json", default=None, metavar="PATH")
 
+    probe_p = subparsers.add_parser(
+        "sdk-probe", help="Ask running Altium which SDK properties it exposes.")
+    probe_p.add_argument("--designator", default="", metavar="REF")
+    probe_p.add_argument("--properties", default="", metavar="A,B,C")
+    probe_p.add_argument("--doc-path", default="", metavar="PATH")
+    probe_p.add_argument("--json", action="store_true", dest="json_out")
+    probe_p.add_argument("--sdk-json", default=None, metavar="PATH")
+
     generate_p = subparsers.add_parser(
         "sdk-generate", help="Print guarded Pascal property candidates for review.")
     generate_p.add_argument("--object-type", default="component")
@@ -1452,6 +1460,12 @@ def main() -> int:
         return cli.cmd_sdk_symbols(refresh=args.refresh, name=args.name,
                                    as_json=args.json_out,
                                    sdk_json=args.sdk_json)
+    if args.command == "sdk-probe":
+        return cli.cmd_sdk_probe(designator=args.designator,
+                                 properties=args.properties,
+                                 doc_path=args.doc_path,
+                                 as_json=args.json_out,
+                                 sdk_json=args.sdk_json)
     if args.command == "sdk-generate":
         return cli.cmd_sdk_generate(object_type=args.object_type,
                                     kind=args.kind,
