@@ -91,3 +91,15 @@ compatibility route, not a direct replacement for the AD26 status form
 currently loaded from the main script project. Native AD25 acceptance is
 still needed to decide how to expose it without changing the AD26
 runtime's dashboard.
+
+## Additional branch-tip checks
+
+| Divergent source | Result in `main` | Evidence |
+| --- | --- | --- |
+| `mooreaa/main` Rosen small fixes | Fifteen of eighteen donor tests pass unchanged. Both print tests expect the fork's string `PRINT_DIALOG_NOT_SILENT`, while the current tools return a structured `PREVIEW_NOT_SILENT` error and still refuse unattended modal printing. The close test expects a literal `SameDocPath` call; the current `App_CloseDocument` compares both canonical paths and returns `PATH_MISMATCH` before closing. | Temporary donor test run: 15 passed, 3 exact-contract/source failures; current `project.py` and `Application.pas` inspected. The temporary test file was removed. |
+| `darshp848/altium-bridge-sch-repair-tools` `d89589b`, `63b0fef` | Net-label conflict audit, pin explanation, schematic UniqueId repair, component replication, pin-owner editing and per-user KiCad discovery are present. | Tool and Pascal symbol comparison; schematic spatial, DelphiScript and agent-facing checks passed 87/87. |
+| `vanlong2109/feat/dblib-placement` `476d75e` | Single and batch DBLib component placement are present. | `test_place_dblib_components.py`, `test_dblib_tools.py` and KiCad local part-family checks passed 35/35. |
+| `terrencehenry` property-access and TextColor guards `89c017f`, `ee5a455` | Unsupported property preflight, `IsHidden` and typed `TextColor` access are present. | `test_sch_properties_match_their_interface.py` and `test_sch_textcolor.py`: 31 passed, 3 skipped native-only checks. |
+
+These checks add no source change. The three Rosen failures do not show a
+missing behavior; they compare an older error shape or literal Pascal source.
