@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## SchLib line vertex reads, 2026-10-28
+
+`generic.query_objects` formerly called the polyline vertex getter for
+SchLib `eLine` graphics. AD 26.11 raised an uncatchable `Undeclared
+identifier: GetState_VerticesCount` modal. Script `.142` handles `eLine`
+through its two `Location`/`Corner` endpoints for `VerticesCount`,
+`Vertices`, `Vertex1.X`, `VertexLast.Y` and dotted indexed aliases.
+On a scratch copy of `SpiritLevel_2E.SchLib`, querying both `CAP` lines
+returned exact endpoints `(80,-170)..(-80,-170)` and
+`(-80,-130)..(80,-130)` mil with zero failed properties. The library
+copy was closed without saving. Build linted 12 Pascal files with zero
+errors and warnings. Altium's bridge was stopped after the earlier modal
+and restarted on `.142`; Python MCP was restarted and ping reports matching
+loaded/bundled `.142` with no stale units.
+
 ## Layer tabs after stack build, 2026-10-28
 
 On a disposable four-layer PcbDoc, `pcb_build_stack` added a signal and

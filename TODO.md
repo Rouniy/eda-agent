@@ -532,10 +532,12 @@
   returned both owners after reopen. The library copy was closed.
 - [ ] Verify part-specific visibility in the Altium editor. The current
   SchLib query enumerates both owners for every `@part` scope, so it cannot
-  prove what the editor displays. Also fix `generic.query_objects` with
-  `Vertices` for SchLib lines: Altium raises `Undeclared identifier:
-  GetState_VerticesCount`. A cast to `ISch_Polygon` did not resolve it;
-  that unverified code was reverted and the bridge restarted on `.121`.
+  prove what the editor displays.
+- [x] Fix `generic.query_objects` with `Vertices` on SchLib eLine objects.
+  Script `.142` maps Location/Corner to two endpoint vertices instead of
+  calling the polyline getter. A native query of both lines in the CAP
+  symbol returned `VerticesCount=2`, both coordinates, and indexed aliases
+  with no failed properties. The scratch SchLib was closed without saving.
 - [x] Reconcile the older `test_symbol_writes_on_screen.py` schematic-name
   assertion: the reverse names were lost from `Generic.pas` in a merge.
 

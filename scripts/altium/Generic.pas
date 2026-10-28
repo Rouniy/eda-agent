@@ -1019,7 +1019,48 @@ Begin
     End;
 End;
 
-{ Indexed vertex access for the polyline family (eWire, eBus, eLine,          }
+{ A schematic eLine is an ISch_Line with Location/Corner, not a polyline.   }
+{ Calling GetState_VerticesCount on it raises Undeclared identifier at run   }
+{ time in AD 26.11, even inside Try/Except. Present its two endpoints in    }
+{ the same format as polyline vertices.                                        }
+Function GetSchLineVertexProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    LineObj : ISch_Line;
+    U, IndexText, Axis : String;
+    FirstPoint, LastPoint, Point : TLocation;
+Begin
+    Result := '';
+    If Obj.ObjectId <> eLine Then Exit;
+    LineObj := Obj;
+    Try
+        FirstPoint := LineObj.Location;
+        LastPoint := LineObj.Corner;
+    Except
+        Exit;
+    End;
+    U := UpperCase(Trim(PropName));
+    If U = 'VERTICESCOUNT' Then Begin Result := '2'; Exit; End;
+    If U = 'VERTICES' Then
+    Begin
+        Result := FloatToJsonStr(CoordToMilsF(FirstPoint.X)) + ','
+            + FloatToJsonStr(CoordToMilsF(FirstPoint.Y)) + ';'
+            + FloatToJsonStr(CoordToMilsF(LastPoint.X)) + ','
+            + FloatToJsonStr(CoordToMilsF(LastPoint.Y));
+        Exit;
+    End;
+    If Copy(U, 1, 7) = 'VERTEX.' Then U := 'VERTEX' + Copy(U, 8, Length(U));
+    If (Length(U) < 9) Or (Copy(U, 1, 6) <> 'VERTEX') Then Exit;
+    Axis := Copy(U, Length(U) - 1, 2);
+    If (Axis <> '.X') And (Axis <> '.Y') Then Exit;
+    IndexText := Copy(U, 7, Length(U) - 8);
+    If IndexText = '1' Then Point := FirstPoint
+    Else If (IndexText = '2') Or (IndexText = 'LAST') Then Point := LastPoint
+    Else Exit;
+    If Axis = '.X' Then Result := FloatToJsonStr(CoordToMilsF(Point.X))
+    Else Result := FloatToJsonStr(CoordToMilsF(Point.Y));
+End;
+
+{ Indexed vertex access for the polyline family (eWire, eBus,               }
 { ePolyline, ...). Recognises `Vertex<N>.X` / `Vertex<N>.Y`, `VertexLast.X` / }
 { `VertexLast.Y` (N = VerticesCount) and a compact all-vertex dump `Vertices` }
 { formatted `x1,y1;x2,y2` with no trailing separator. Names match case-       }
@@ -1918,11 +1959,16 @@ Begin
         Else If PropName = 'BoundingRectangle.X2' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.X2))
         Else If PropName = 'BoundingRectangle.Y2' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.Y2))
 
-        // Polyline vertex access. eWire / eBus / eLine are ISch_Polyline
-        // children with GetState_Vertex(i : Integer) : TLocation. Audit
+        // Polyline vertex access. eWire / eBus / ePolyline have a vertex
+        // array; eLine instead has Location and Corner. Audit
         // code reads the first two vertices to test wire-vs-component
         // segment intersection; higher indices are theoretically valid
         // but rarely needed (most wires are 2-vertex).
+        Else If (Obj.ObjectId = eLine) And
+             ((UpperCase(Copy(PropName, 1, 6)) = 'VERTEX') Or
+              (UpperCase(PropName) = 'VERTICES') Or
+              (UpperCase(PropName) = 'VERTICESCOUNT')) Then
+            Result := GetSchLineVertexProperty(Obj, PropName)
         Else If PropName = 'VerticesCount' Then Result := IntToStr(Obj.GetState_VerticesCount)
         Else If PropName = 'Vertex.1.X'   Then Result := FloatToJsonStr(CoordToMilsF(Obj.GetState_Vertex(1).X))
         Else If PropName = 'Vertex.1.Y'   Then Result := FloatToJsonStr(CoordToMilsF(Obj.GetState_Vertex(1).Y))

@@ -452,7 +452,8 @@ def register_generic_tools(mcp):
                 component's drawn symbol and current PCB model pin map.
                 "VerticesCount,Vertices,LineWidth" for graphic polylines.
                 Vertices is a semicolon-separated list of x,y pairs in mils;
-                the template's ePolyline objects are distinct from eLine.
+                eLine also returns two vertices from its Location and Corner;
+                the template's ePolyline objects have a real vertex array.
 
                 PCB PRIMITIVES DO NOT. They are a separate, flat set,
                 and mixing the two is the single commonest mistake here:
