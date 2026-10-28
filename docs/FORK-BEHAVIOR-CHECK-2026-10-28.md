@@ -379,9 +379,10 @@ the child fork's merge base `84b682c` with this `main`: 225 paths exist here.
 The two absent paths are donor test files, `test_sdk_found_tools.py` and
 `test_update_command.py`, not production modules. The former ran unchanged
 as a temporary test file and passed 12/12 checks for symbol parts, STEP model
-export, impedance profiles and STEP export guards; the test is retained in
-the merge. The current placement flip, rotation audit and impedance profile
-tests passed 27/27. These are feature checks, not proof that every behavior
+export, impedance profiles and STEP export guards; the donor file itself is
+not tracked in `main`. The current placement flip, rotation audit and
+impedance profile tests passed 27/27. These are feature checks, not proof
+that every behavior
 in the 33 commits has been reconciled; continue the semantic audit.
 An in-memory `git merge-tree --write-tree -X ours main morembedded/main`
 reduced the unresolved set to two modify/delete paths, but the resulting
@@ -515,4 +516,15 @@ regenerated, and the handler now uses a focused-board-only resolver;
 the generator now records it as native-unreliable so a later regeneration
 does not restore it. Its focused generator/reflection slice passed 40/40.
 The current `.171` script passed lint/build and answered a native restart
-ping. The entire suite has not been rerun after these last two fixes.
+ping. The full Python suite after these fixes completed with 9,783 passed,
+165 skipped and one expected failure (no failures) in 16:07.
+
+The unchanged child-fork `test_update_command.py` was rerun separately:
+42 passed, 8 failed. Three failures assert the donor's old action wording;
+two inspect obsolete `altium_version` source strings; one calls the old
+`cmd_update(as_json=...)` signature; one expects the donor's raw
+`_deploy_from` copier; and one mocks only the old version helper while the
+current command checks the loaded script-project path. On the fake state
+used by that last test, the live `.171` Altium project was correctly
+reported as different from the fake `/home/scripts` folder. These are
+specific compatibility differences, not eight proven missing features.
