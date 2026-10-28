@@ -21862,7 +21862,7 @@ End;
 Function PCB_FindDominantRule(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Spec1, Spec2, RuleName, Problem : String;
+    Spec1, Spec2, RuleName, Problem, ExpectedPath : String;
     P1, P2 : IPCB_Primitive;
     Named, Rule : IPCB_Rule;
     Kind : Integer;
@@ -21875,6 +21875,13 @@ Begin
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
         Exit;
     End;
     If RuleName <> '' Then
@@ -21916,10 +21923,12 @@ Begin
         Rule := Board.FindDominantRuleForObjectPair(P1, P2, Kind);
     If Rule = Nil Then
         Result := BuildSuccessResponse(RequestId, JsonObj(
-            JsonInt('rule_kind', Kind) + ',' + JsonBool('found', False)))
+            JsonStr('board_path', Board.FileName) + ','
+            + JsonInt('rule_kind', Kind) + ',' + JsonBool('found', False)))
     Else
         Result := BuildSuccessResponse(RequestId, JsonObj(
-            JsonInt('rule_kind', Kind) + ',' + JsonBool('found', True) + ','
+            JsonStr('board_path', Board.FileName) + ','
+            + JsonInt('rule_kind', Kind) + ',' + JsonBool('found', True) + ','
             + JsonRaw('rule', RuleSummaryJson(Rule))));
 End;
 
@@ -21933,7 +21942,7 @@ End;
 Function PCB_RuleScopeCheck(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Spec1, Spec2, RuleName, Problem : String;
+    Spec1, Spec2, RuleName, Problem, ExpectedPath : String;
     P1, P2 : IPCB_Primitive;
     Rule : IPCB_Rule;
     In1, In2, Applies, Unary : Boolean;
@@ -21945,6 +21954,13 @@ Begin
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
         Exit;
     End;
     Rule := PCB_FindRuleByName(Board, RuleName);
@@ -21978,7 +21994,8 @@ Begin
     Else If P2 <> Nil Then Applies := Rule.CheckBinaryScope(P1, P2)
     Else Applies := In1;
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonRaw('rule', RuleSummaryJson(Rule)) + ','
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonRaw('rule', RuleSummaryJson(Rule)) + ','
         + JsonBool('unary', Unary) + ','
         + JsonBool('scope1_includes_object1', In1) + ','
         + JsonBool('scope2_includes_object2', In2) + ','

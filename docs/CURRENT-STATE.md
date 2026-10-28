@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## Exact-board rule queries, 2026-10-28
+
+Script `.128` fixes `pcb_find_dominant_rule` and `pcb_check_rule_scope`.
+The Pascal handlers now reject a mismatched `board_path` and return the
+verified path with their Altium rule results, so the Python MCP wrapper
+accepts valid answers. Build lint: 12 units, zero errors or warnings.
+After reopening `Dispatcher.pas` and starting it with F9, native MCP
+returned the 7 mil Clearance rule for MH6.MOUNT on `CW308_PCB.PcbDoc`,
+reported true scope flags, and rejected a different board path. The
+board was closed without saving. Source SHA-256: `Main.pas`
+`8880d8cfcb08fe889637ed2d57c12c7c21929b8aceeca1f51aa84ed56d469673`,
+`PCB.pas` `3a86710cfc86f15c1fe8c3f3c3afbcbd577284cd4106fd1a58acbeef831cc09d`,
+generated `Altium_MCP.pas`
+`cb12dc84b81750ec18c4e85f7cb75838002864e8aa3a44be053886a62049b68f`.
+
 ## Silent per-variant schematic PDFs, 2026-10-28
 
 `proj_print_all_variants` no longer sends direct `project.export_pdf` for

@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## Exact-board rule reads, 2026-10-28
+
+- [x] Repair native `pcb_find_dominant_rule` and `pcb_check_rule_scope`:
+  the Pascal answers now validate `board_path` against the selected PCB
+  and echo the exact path that the Python MCP wrapper requires. Script
+  `.128` built with 12 units and zero lint findings. Native MCP on
+  `CW308_PCB.PcbDoc` returned MH6.MOUNT's 7 mil Clearance rule and
+  true scope flags; a wrong board path was rejected. The board was
+  closed without saving.
+
 ## Project-scoped save from `mooreaa`, 2026-10-28
 
 - [x] `proj_save` and `proj_close(save=true)` now save only open project
