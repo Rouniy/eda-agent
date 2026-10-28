@@ -20,6 +20,8 @@ def test_the_handler_avoids_the_crashing_via_property():
     assert not re.search(r"\bVia\.SolderMaskExpansion\s*:=", body)
     assert "Cache.SolderMaskExpansion := Exp;" in body
     assert "Via.SetState_Cache := Cache;" in body
+    assert "WRONG_DOCUMENT_FOCUSED" in body
+    assert "GetPCBBoardAnywhere" not in body
 
 
 def test_the_tool_is_marked_as_a_mutation():

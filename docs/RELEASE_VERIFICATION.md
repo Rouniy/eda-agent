@@ -1,10 +1,16 @@
-# Release verification: 2026.10.28.154
+# Release verification: 2026.10.28.155
 
-Expect `altium_script_version` = `2026.10.28.154` from `app_ping`.
-Current `app_ping` reports loaded and bundled `2026.10.28.154` on
+Expect `altium_script_version` = `2026.10.28.155` from `app_ping`.
+Current `app_ping` reports loaded and bundled `2026.10.28.155` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
 the copy was closed without saving. Earlier checkpoints follow.
+
+Script `.155` requires a focused PcbDoc for per-via solder-mask changes.
+With `Dispatcher.pas` focused the command returned `WRONG_DOCUMENT_FOCUSED`.
+On a disposable CW308 board it matched and verified the sole `NetJ3_3`
+via at 4 mil. The copy was closed without saving; its SHA-256 stayed
+`C4E1C9AB5B3A48931E2B57E1229EE9B652438579E2656D51C645C467F428CF85`.
 
 Script `.153` restored per-via solder-mask expansion through the via's
 pad cache. On a disposable CW308 board, the only via of `NetJ3_3`

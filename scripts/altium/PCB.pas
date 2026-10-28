@@ -18747,6 +18747,8 @@ End;
 Function PCB_SetViaSoldermaskRelief(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
+    Workspace : IWorkspace;
+    FocusedDoc : IDocument;
     Iterator : IPCB_BoardIterator;
     Via : IPCB_Via;
     Prim : IPCB_Primitive;
@@ -18772,7 +18774,23 @@ Begin
       through the cache, and SolderMaskExpansion is never assigned on a
       via. Both sides are written, since the bottom value is stored even
       while the sides are linked and takes effect when they are unlinked. }
-    Board := GetPCBBoardAnywhere(0);
+    Workspace := GetWorkspace;
+    FocusedDoc := Nil;
+    If Workspace <> Nil Then
+        Try FocusedDoc := Workspace.DM_FocusedDocument; Except End;
+    If FocusedDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Focus the PcbDoc whose vias should be changed');
+        Exit;
+    End;
+    If UpperCase(FocusedDoc.DM_DocumentKind) <> 'PCB' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Focus the PcbDoc whose vias should be changed');
+        Exit;
+    End;
+    Board := PCBServer.GetCurrentPCBBoard;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');

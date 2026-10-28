@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.154';
+    SCRIPT_VERSION = '2026.10.28.155';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -55487,6 +55487,8 @@ End;
 Function PCB_SetViaSoldermaskRelief(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
+    Workspace : IWorkspace;
+    FocusedDoc : IDocument;
     Iterator : IPCB_BoardIterator;
     Via : IPCB_Via;
     Prim : IPCB_Primitive;
@@ -55512,7 +55514,23 @@ Begin
       through the cache, and SolderMaskExpansion is never assigned on a
       via. Both sides are written, since the bottom value is stored even
       while the sides are linked and takes effect when they are unlinked. }
-    Board := GetPCBBoardAnywhere(0);
+    Workspace := GetWorkspace;
+    FocusedDoc := Nil;
+    If Workspace <> Nil Then
+        Try FocusedDoc := Workspace.DM_FocusedDocument; Except End;
+    If FocusedDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Focus the PcbDoc whose vias should be changed');
+        Exit;
+    End;
+    If UpperCase(FocusedDoc.DM_DocumentKind) <> 'PCB' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Focus the PcbDoc whose vias should be changed');
+        Exit;
+    End;
+    Board := PCBServer.GetCurrentPCBBoard;
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');

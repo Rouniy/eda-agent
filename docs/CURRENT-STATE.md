@@ -1,5 +1,15 @@
 # Current integration state / agent handoff
 
+## Focused PCB guard, 2026-10-28
+
+Script `.155` makes `pcb_set_via_soldermask_relief` require a focused
+PcbDoc. The bridge was restarted on Altium 26.11.1.5; `app_ping` reports
+loaded and bundled `.155` with no stale units. The command rejects a
+focused script document with `WRONG_DOCUMENT_FOCUSED`, and on a disposable
+CW308 board it matched and verified one `NetJ3_3` via at 4 mil. That copy
+was closed without saving and its SHA-256 was unchanged. The two focused
+regression tests pass.
+
 ## Final broad-gate cleanup, 2026-10-28
 
 The remaining top-level Python tests exposed two unreachable duplicate
