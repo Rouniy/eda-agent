@@ -103,3 +103,12 @@ runtime's dashboard.
 
 These checks add no source change. The three Rosen failures do not show a
 missing behavior; they compare an older error shape or literal Pascal source.
+
+The `yniantongtian-oss/improve/0.5.0-ci-metadata` branch exposed a current
+gap: the package advertised Python 3.11 and 3.12, but the full Windows
+test job ran only on 3.12. The `test` job now uses a 3.11/3.12 matrix
+with independent results. The existing 3.11 compile/import smoke job
+remains as a fast diagnostic. Package metadata now names the KiCad and
+EasyEDA Pro backends documented in the README. Local TOML and matrix
+checks and 13 metadata/version tests passed; a hosted matrix result is
+still needed for native CI acceptance.
