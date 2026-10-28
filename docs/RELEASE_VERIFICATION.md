@@ -1,5 +1,5 @@
 
-# Release verification: 2026.10.28.181
+# Release verification: 2026.10.28.182
 
 Script `.179` bounds `pcb_get_vias` to 1,000 rows per response by default,
 returns the total matching count and pagination metadata, and supports an
@@ -203,7 +203,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.181` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.182` from `app_ping`.
 
 ## 2026.10.28.156 - Previous native checkpoint
 

@@ -889,6 +889,28 @@ def test_signal_impedance_limits_are_distinct_from_width_impedance(monkeypatch):
     assert "Abs(RuleSignalImpIter.Minimum - WantSigMin)" in body
 
 
+def test_flight_time_rule_creation_and_readback_route(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_create_design_rule",
+                    name="Rise", rule_type="flight_time_rising", value=2e-9)
+    assert sent == [("pcb.create_design_rule", {
+        "name": "Rise", "rule_type": "flight_time_rising",
+        "value": "2e-09", "net_scope": "different_nets"})]
+    result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                         "pcb_create_design_rule", name="Bad", rule_type="flight_time_falling",
+                         value=0)
+    assert sent == [] and result["ok"] is False
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_rule_properties",
+                    name="Rise", max_flight_time_seconds=3e-9)
+    assert sent == [("pcb.set_rule_properties", {
+        "name": "Rise", "max_flight_time_seconds": "3e-09"})]
+    create = _body("PCB.pas", "PCB_CreateDesignRule")
+    assert "IPCB_RuleFlightTime_RisingEdge" in create
+    assert "IPCB_RuleFlightTime_FallingEdge" in create
+    setter = _body("PCB.pas", "PCB_SetRuleProperties")
+    assert "RuleFlightRiseIter.MaximumFlightTime" in setter
+    assert "RuleFlightFallIter.MaximumFlightTime" in setter
+
+
 def test_rules_say_when_the_schematic_defines_them():
     body = _body("PCB.pas", "PCB_GetDesignRulesForBoard")
     assert "Try FromSch := Rule.DefinedByLogicalDocument; Except" in body

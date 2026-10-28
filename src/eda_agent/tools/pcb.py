@@ -7873,7 +7873,7 @@ def register_pcb_tools(mcp):
     async def pcb_create_design_rule(
         name: str,
         rule_type: str = "clearance",
-        value: int = 10,
+        value: float = 10,
         max_value: Optional[int] = None,
         favored_value: Optional[int] = None,
         max_uncoupled_length: Optional[int] = None,
@@ -7896,8 +7896,11 @@ def register_pcb_tools(mcp):
                 favored_value, max_uncoupled_length),
                 "solder_mask_expansion" / "paste_mask_expansion" (value =
                 SIGNED radial expansion; negative with scope "IsVia" tents
-                vias), "vias_under_smd" (set ``allowed``, not value).
-            value: Primary value in mils (the MIN for ranged kinds).
+                vias), "vias_under_smd" (set ``allowed``, not value),
+                "flight_time_rising" / "flight_time_falling" (value =
+                maximum flight time in seconds).
+            value: Primary value in mils (the MIN for ranged kinds), or
+                seconds for the two flight-time kinds.
             max_value: MAX for ranged kinds (default 5x value).
             favored_value: Preferred value (default value).
             max_uncoupled_length: differential_pairs only, mils
@@ -7924,6 +7927,9 @@ def register_pcb_tools(mcp):
             refusal = _scope_refusal(scope, created=False)
             if refusal:
                 return refusal
+        if rule_type in ("flight_time_rising", "flight_time_falling"):
+            if not math.isfinite(value) or value <= 0:
+                return {"ok": False, "reason": "flight time must be finite and more than 0 seconds"}
         bridge = get_bridge()
         params: dict[str, Any] = {
             "name": name,
@@ -10129,6 +10135,7 @@ def register_pcb_tools(mcp):
         max_length_mils: float | None = None,
         min_signal_impedance_ohms: float | None = None,
         max_signal_impedance_ohms: float | None = None,
+        max_flight_time_seconds: float | None = None,
         min_via_size_mils: float | None = None,
         max_via_size_mils: float | None = None,
         preferred_via_size_mils: float | None = None,
@@ -10156,6 +10163,8 @@ def register_pcb_tools(mcp):
           The reply includes the limits read back from Altium.
         - Signal Integrity Impedance (kind 33):
           ``min_signal_impedance_ohms`` / ``max_signal_impedance_ohms``.
+        - Flight Time Rising/Falling Edge (kinds 36/37):
+          ``max_flight_time_seconds``.
         - Routing Via: ``min_via_size_mils`` / ``max_via_size_mils`` /
           ``preferred_via_size_mils`` and the three ``*_via_hole_mils``.
           Checked as a set first (minimum <= preferred <= maximum, every
@@ -10240,6 +10249,8 @@ def register_pcb_tools(mcp):
             min_length_mils / max_length_mils: Length rule limits.
             min_signal_impedance_ohms / max_signal_impedance_ohms:
                 Signal Integrity Impedance rule limits, in ohms.
+            max_flight_time_seconds: Maximum for a Flight Time Rising or
+                Falling Edge rule, in seconds.
 
         Returns:
             Dict with name, rule_kind, and properties_updated count.
@@ -10281,6 +10292,7 @@ def register_pcb_tools(mcp):
             ("max_length_mils", max_length_mils),
             ("min_signal_impedance_ohms", min_signal_impedance_ohms),
             ("max_signal_impedance_ohms", max_signal_impedance_ohms),
+            ("max_flight_time_seconds", max_flight_time_seconds),
             ("min_via_size_mils", min_via_size_mils),
             ("max_via_size_mils", max_via_size_mils),
             ("preferred_via_size_mils", preferred_via_size_mils),
@@ -10334,6 +10346,9 @@ def register_pcb_tools(mcp):
         if (min_signal_impedance_ohms is not None and max_signal_impedance_ohms is not None
                 and min_signal_impedance_ohms > max_signal_impedance_ohms):
             return {"ok": False, "reason": "min_signal_impedance_ohms exceeds max_signal_impedance_ohms"}
+        if max_flight_time_seconds is not None and (not math.isfinite(max_flight_time_seconds)
+                                                   or max_flight_time_seconds <= 0):
+            return {"ok": False, "reason": "max_flight_time_seconds must be finite and more than 0"}
         for key, value in (("width_impedance_driven", width_impedance_driven),
                            ("check_connected_copper", check_connected_copper)):
             if value is not None:

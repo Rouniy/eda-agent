@@ -1571,6 +1571,7 @@ End;
 {   - MaxMinHoleSize (kind 42):  min_hole_size_mils / max_hole_size_mils       }
 {   - MaxMinLength (kind 3):  min_length_mils / max_length_mils               }
 {   - MaxMinImpedance (kind 33): signal impedance limits in ohms             }
+{   - FlightTime rising/falling (kinds 36/37): maximum time in seconds       }
 {                                                                               }
 { Empirically determined kind 52 from the runtime rule list; the published     }
 { TRuleKind enum stops at 51 (DifferentialPairsRouting). Kinds 52+ are newer   }
@@ -1595,6 +1596,8 @@ Var
     RuleHoleIter : IPCB_MaxMinHoleSizeConstraint;
     RuleLengthIter : IPCB_MaxMinLengthConstraint;
     RuleSignalImpIter : IPCB_RuleMaxMinImpedance;
+    RuleFlightRiseIter : IPCB_RuleFlightTime_RisingEdge;
+    RuleFlightFallIter : IPCB_RuleFlightTime_FallingEdge;
     RuleViaIter : IPCB_RoutingViaStyleRule;
     RulePolyConn : IPCB_PolygonConnectStyleRule;
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
@@ -1619,6 +1622,9 @@ Var
     SigMinStr, SigMaxStr, SigReport, SigProblem : String;
     WantSigMin, WantSigMax : Double;
     SigAsked, SigWritten : Integer;
+    FtStr, FtReport, FtProblem : String;
+    WantFt, AfterFt : Double;
+    FtWritten : Boolean;
     VMinS, VMaxS, VPrefS, VMinH, VMaxH, VPrefH, ViaReport, ViaDesc, ViaProblem : String;
     NMinS, NMaxS, NPrefS, NMinH, NMaxH, NPrefH : TCoord;
     ViaAsked, ViaWritten : Integer;
@@ -1751,6 +1757,7 @@ Begin
     MaxLenStr := ExtractJsonValue(Params, 'max_length_mils');
     SigMinStr := ExtractJsonValue(Params, 'min_signal_impedance_ohms');
     SigMaxStr := ExtractJsonValue(Params, 'max_signal_impedance_ohms');
+    FtStr := ExtractJsonValue(Params, 'max_flight_time_seconds');
     VMinS := ExtractJsonValue(Params, 'min_via_size_mils');
     VMaxS := ExtractJsonValue(Params, 'max_via_size_mils');
     VPrefS := ExtractJsonValue(Params, 'preferred_via_size_mils');
@@ -2117,6 +2124,74 @@ Begin
         End;
         If SigProblem <> '' Then
             SigReport := SigReport + ',"signal_impedance_note":"' + EscapeJsonString(SigProblem) + '"';
+    End;
+
+    { FLIGHT TIME: the rising and falling kinds use different interfaces. }
+    FtReport := '';
+    FtWritten := False;
+    If FtStr <> '' Then
+    Begin
+        FtProblem := '';
+        If (Kind <> eRule_FlightTime_RisingEdge) And
+           (Kind <> eRule_FlightTime_FallingEdge) Then
+            FtProblem := 'flight time applies only to a Rising or Falling Edge rule';
+        If Not IsFloatStr(FtStr) Then
+            FtProblem := 'flight time must be a number of seconds';
+        WantFt := StrToFloatDef(FtStr, 0);
+        If WantFt <= 0 Then FtProblem := 'flight time must be more than zero seconds';
+        If FtProblem = '' Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Found := False;
+            Try
+                If Kind = eRule_FlightTime_RisingEdge Then
+                Begin
+                    RuleFlightRiseIter := Iter.FirstPCBObject;
+                    While (RuleFlightRiseIter <> Nil) And (Not Found) Do
+                    Begin
+                        If (RuleFlightRiseIter.RuleKind = Kind) And
+                           (RuleFlightRiseIter.Name = RuleName) Then
+                        Begin
+                            Found := True;
+                            Try RuleFlightRiseIter.MaximumFlightTime := WantFt; Except End;
+                            AfterFt := RuleFlightRiseIter.MaximumFlightTime;
+                        End;
+                        If Not Found Then RuleFlightRiseIter := Iter.NextPCBObject;
+                    End;
+                End
+                Else
+                Begin
+                    RuleFlightFallIter := Iter.FirstPCBObject;
+                    While (RuleFlightFallIter <> Nil) And (Not Found) Do
+                    Begin
+                        If (RuleFlightFallIter.RuleKind = Kind) And
+                           (RuleFlightFallIter.Name = RuleName) Then
+                        Begin
+                            Found := True;
+                            Try RuleFlightFallIter.MaximumFlightTime := WantFt; Except End;
+                            AfterFt := RuleFlightFallIter.MaximumFlightTime;
+                        End;
+                        If Not Found Then RuleFlightFallIter := Iter.NextPCBObject;
+                    End;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
+            End;
+            If Found Then
+            Begin
+                FtWritten := Abs(AfterFt - WantFt) <= Abs(WantFt)*0.000001 + 1E-15;
+                If FtWritten Then Inc(UpdatedCount);
+                FtReport := ',"flight_time_after_seconds":' + FloatToJsonStr(AfterFt) +
+                    ',"flight_time_written":' + BoolToJsonStr(FtWritten);
+            End
+            Else FtProblem := 'Flight Time rule not found by typed iterator';
+        End;
+        If FtProblem <> '' Then
+            FtReport := FtReport + ',"flight_time_written":false,"flight_time_note":"' +
+                EscapeJsonString(FtProblem) + '"';
     End;
 
     { THE ROUTING VIA RULE'S SIZES, through a typed local assigned straight }
@@ -2550,7 +2625,7 @@ Begin
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
-        + GapReport + LenReport + SigReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport + '}');
+        + GapReport + LenReport + SigReport + FtReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport + '}');
 End;
 
 {..............................................................................}
@@ -9800,6 +9875,8 @@ Var
     RuleVUS : IPCB_ViasUnderSMDConstraint;
     RulePolyC : IPCB_PolygonConnectStyleRule;
     RulePlaneC : IPCB_PowerPlaneConnectStyleRule;
+    RuleFlightRise : IPCB_RuleFlightTime_RisingEdge;
+    RuleFlightFall : IPCB_RuleFlightTime_FallingEdge;
     StyleStr, ConnDesc : String;
     StyleNo : Integer;
     RuleTypeStr, RuleName, ValueStr, MaxValueStr, FavoredValueStr : String;
@@ -9920,6 +9997,22 @@ Begin
                 RuleHole.Scope1Expression := ScopeStr;
             Rule := RuleHole;
         End
+        Else If RuleTypeStr = 'flight_time_rising' Then
+        Begin
+            RuleFlightRise := PCBServer.PCBRuleFactory(eRule_FlightTime_RisingEdge);
+            RuleFlightRise.Name := RuleName;
+            RuleFlightRise.MaximumFlightTime := RuleValue;
+            If ScopeStr <> '' Then RuleFlightRise.Scope1Expression := ScopeStr;
+            Rule := RuleFlightRise;
+        End
+        Else If RuleTypeStr = 'flight_time_falling' Then
+        Begin
+            RuleFlightFall := PCBServer.PCBRuleFactory(eRule_FlightTime_FallingEdge);
+            RuleFlightFall.Name := RuleName;
+            RuleFlightFall.MaximumFlightTime := RuleValue;
+            If ScopeStr <> '' Then RuleFlightFall.Scope1Expression := ScopeStr;
+            Rule := RuleFlightFall;
+        End
         Else If RuleTypeStr = 'differential_pairs' Then
         Begin
             { IPCB_DifferentialPairsRoutingRule exposes MinGap / MaxGap /     }
@@ -10014,7 +10107,7 @@ Begin
                 'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, '
                 + 'via_size, differential_pairs, solder_mask_expansion, '
                 + 'paste_mask_expansion, vias_under_smd, polygon_connect or '
-                + 'plane_connect');
+                + 'plane_connect, flight_time_rising or flight_time_falling');
             Exit;
         End;
 
@@ -10048,6 +10141,14 @@ Begin
             + '"name":"' + EscapeJsonString(RuleName) + '",'
             + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
             + '"allowed":' + BoolToJsonStr(AllowedVal) + '}')
+    Else If (RuleTypeStr = 'flight_time_rising') Or
+            (RuleTypeStr = 'flight_time_falling') Then
+        Result := BuildSuccessResponse(RequestId,
+            '{"created":true,'
+            + '"name":"' + EscapeJsonString(RuleName) + '",'
+            + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
+            + '"value_seconds":' + FloatToJsonStr(RuleValue) + ','
+            + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"}')
     Else
         Result := BuildSuccessResponse(RequestId,
             '{"created":true,'

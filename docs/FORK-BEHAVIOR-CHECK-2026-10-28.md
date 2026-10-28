@@ -986,7 +986,7 @@ This compares call contracts, not the behavior of every function body.
 | `lib_delete_component` (`name`) | The same operation takes `component_name` or a verified component index. |
 | `easyeda_activate_document` (`uuid`) | `tab_id` is required because EasyEDA's activation API accepts an open tab ID; document UUIDs go through `easyeda_open_document`. |
 | `easyeda_cross_probe` (`primitive_ids`) | The current cross-probe uses names; `easyeda_select_primitives` accepts editor primitive IDs. |
-| `pcb_set_rule_properties` (`priority`, generic min/max limits, preferred via hole and impedance names) | The current tool has typed, read-back constraint fields for width, length, signal impedance, differential-pair impedance and via size/hole. Priority is read-only through the Altium scripting interface. The donor's generic `IPCB_Rule` writes are not evidence that all those fields work on native rule subtypes; flight-time limits remain a specific candidate for native qualification. |
+| `pcb_set_rule_properties` (`priority`, generic min/max limits, preferred via hole and impedance names) | The current tool has typed, read-back constraint fields for width, length, signal impedance, flight time, differential-pair impedance and via size/hole. Priority is read-only through the Altium scripting interface. The donor's generic `IPCB_Rule` writes are not evidence that all those fields work on native rule subtypes. |
 
 The Length rule limits were added in script `.180` and verified on a disposable
 copy of `03-07366_R3.PcbDoc`: `LengthStubFind` (kind 3) read back 10.5 mil
@@ -999,3 +999,17 @@ Script `.181` also added typed Signal Integrity Impedance limits. On a copy
 of `UNG8071_B1-EVB-KSZ9477.PcbDoc`, rule `MaxMinImpedance` (kind 33) read
 back 45.5 and 60.25 ohms; Altium's rule descriptor showed the same values.
 The copy was closed with edits discarded and the bridge still answered ping.
+
+Script `.182` adds creation and read-back updates for the Signal Integrity
+Flight Time Rising/Falling Edge rules. No existing flight-time rule appeared
+in the `Rules6` streams of 614 corpus PcbDocs, so the native check created
+both kinds on a disposable copy of `CW308T_AVR.PcbDoc`: Altium's descriptors
+showed 2/3 ns at creation and 4/5 ns after updates. Both setter replies
+confirmed the values in seconds. The copy was closed with edits discarded;
+the source design was unchanged. This confirms the API path and storage,
+not an actual flight-time DRC violation on a signal-integrity design.
+
+A fresh `fork-status --fetch --cached-forks --verify-fork-branches` after
+`d019be2` matched 63/63 fork default tips and 120/120 live branch tips.
+`MOREmbedded/main` `d495c4d` remains in `main`; `upstream/main` is
+`75df990`, one commit after the marked synchronization point `0bb1b315`.
