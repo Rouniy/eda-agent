@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## cad435 PCB pad-designator native acceptance, 2026-10-28
+
+The `cad435/c7d55bb` pad-name feature was compared with current source
+and tested on a disposable copy of `CW308_PCB.PcbDoc` under Altium
+26.11.1.5, script `.130`. `obj_query` found exactly one pad with
+`Name=M1|X=1600|Y=4700`. `obj_modify` changed `Name` to `QA_PAD1` and
+`obj_batch_modify` then changed its `Designator` to `QA_PAD2` with the
+same three-condition filter. The final active-board query read both
+`Name=QA_PAD2` and `Designator=QA_PAD2` after exact save, close and
+reopen. This verifies the generic single and batch PCB routes and their
+multi-condition filters. PCB objects must be queried with `active_doc`
+scope; `doc:<PcbDoc>` is explicitly refused. The owner PcbDoc remained
+SHA-256 `c4e1c9ab5b3a48931e2b57e1229ee9b652438579e2656d51c645c467f428cf85`.
+
 ## Deselect All menu native readback, 2026-10-28
 
 The `mooreaa` corrected schematic deselection alias was checked in

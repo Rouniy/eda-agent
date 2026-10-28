@@ -1,5 +1,13 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 cad435 pad-name qualification
+
+`cad435/c7d55bb`'s pad-name read/write and PCB batch routing are already
+in `main`. On a disposable CW308 board, one pad was renamed through
+`obj_modify` and then through `obj_batch_modify`; exact save/close/reopen
+retained the final `Name` and `Designator`. The source board hash stayed
+unchanged. See `CURRENT-STATE.md` for the exact filter and readback.
+
 ## 2026-10-28 schematic menu qualification
 
 The `mooreaa` `Sch:DeSelect` alias behind `app_run_menu('Edit|Deselect All')`
