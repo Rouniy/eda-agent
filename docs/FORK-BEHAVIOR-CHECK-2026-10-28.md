@@ -536,6 +536,20 @@ restarting the one main script project reported `.173`, matching the bundle,
 no stale units and no warnings. The ping confirms script load, not a native
 impedance-profile read on a board.
 
+The internal helper `_zone_origin_mils` in `rabihnd/integration` exposed one
+real placement gap: the old fixed-grid layout shifted a zone by its
+`origin_mm`, while the current force-directed and Sugiyama engines ignored
+that field. The shared `compute_layout` pipeline now applies the converted,
+grid-snapped offset after placement and motif shaping, clamps the whole
+group to the declared sheet, and reruns overlap repair. A default zero
+offset leaves existing layouts unchanged; `size_mm` remains advisory, as
+it was in the donor. Both engines were checked with a 25.4 mm / 12.7 mm
+offset (exactly 1,000 / 500 mil in the resulting placements) and with an
+oversized offset that stops at the sheet boundary without collapsing the
+group. The focused layout tests passed 101 with one skip. This is offline
+layout behavior; no schematic document was changed. The full `tests/design`
+package then passed 1,973 tests, skipped 11, and had one expected failure.
+
 At `main` `6cdb3af`, `fork-status --fetch --cached-forks
 --verify-fork-branches --json` refreshed origin, upstream and MOREmbedded.
 The upstream tip and merge base are both `0bb1b3154cca6e58a517b23edee3d7a108f1c232`;

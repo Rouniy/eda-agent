@@ -63,6 +63,37 @@ def _distance(a, b) -> float:
     return ((a.x_mils - b.x_mils) ** 2 + (a.y_mils - b.y_mils) ** 2) ** 0.5
 
 
+@pytest.mark.parametrize("engine", ["force_directed", "sugiyama"])
+def test_zone_origin_moves_its_group_in_millimetres(engine: str) -> None:
+    """Both layout engines preserve their shape when a zone is relocated."""
+    plan = DesignPlan(
+        spec="x", summary="x", sheets=[Sheet(name="main")],
+        zones=[Zone(name="analog")],
+        parts=[Part(refdes=r, lib_ref="RES", sheet="main", zone="analog")
+               for r in ("R1", "R2")],
+        nets=[Net(name="N", pins=[PinRef(refdes="R1", pin="1"),
+                                  PinRef(refdes="R2", pin="1")])],
+    )
+    before = {p.refdes: p for p in compute_layout(plan, engine=engine)}
+    shifted = plan.model_copy(deep=True)
+    shifted.zones = [Zone(name="analog", origin_mm=(25.4, 12.7))]
+    after = {p.refdes: p for p in compute_layout(shifted, engine=engine)}
+    for refdes in ("R1", "R2"):
+        assert after[refdes].x_mils - before[refdes].x_mils == 1000
+        assert after[refdes].y_mils - before[refdes].y_mils == 500
+    assert not audit_overlaps(shifted, list(after.values()))
+
+    shifted.zones = [Zone(name="analog", origin_mm=(254.0, 127.0))]
+    at_edge = {p.refdes: p for p in compute_layout(shifted, engine=engine)}
+    assert all(SHEET_ORIGIN_X_MILS <= p.x_mils <= SHEET_MAX_X_MILS
+               and SHEET_ORIGIN_Y_MILS <= p.y_mils <= SHEET_MAX_Y_MILS
+               for p in at_edge.values())
+    assert (at_edge["R2"].x_mils - at_edge["R1"].x_mils,
+            at_edge["R2"].y_mils - at_edge["R1"].y_mils) == (
+                before["R2"].x_mils - before["R1"].x_mils,
+                before["R2"].y_mils - before["R1"].y_mils)
+
+
 def _ic_part(refdes: str = "U1") -> Part:
     return Part(refdes=refdes, lib_ref="LM358", sheet="main")
 

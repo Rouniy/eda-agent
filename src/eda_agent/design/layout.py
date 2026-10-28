@@ -26,6 +26,7 @@ with existing callers.
 from __future__ import annotations
 
 from collections import defaultdict
+import math
 from typing import Optional
 
 from eda_agent.design.force_directed import (
@@ -693,6 +694,64 @@ def _sugiyama_to_placed(
     ]
 
 
+def _apply_zone_offsets(
+    plan: DesignPlan, placed: list[PlacedPart], body_half: dict | None,
+) -> list[PlacedPart]:
+    """Translate each named zone by its millimetre offset, preserving shape.
+
+    The older fork applied ``origin_mm`` to a fixed placement grid. Keep that
+    intent after either modern layout engine has chosen the group's shape.
+    Restrict one common offset to the sheet so parts do not collapse against
+    an edge independently. The later shove resolves any new inter-zone
+    overlaps.
+    """
+    zones = {(z.sheet, z.name): z for z in plan.zones
+             if z.origin_mm != (0.0, 0.0)}
+    if not zones:
+        return placed
+
+    pin_count = _pin_count_per_part(plan)
+    half = _half_map(pin_count, body_half)
+    part_zone = {p.refdes: (p.sheet, p.zone) for p in plan.parts}
+    groups: dict[tuple[str, str], list[PlacedPart]] = defaultdict(list)
+    for item in placed:
+        key = part_zone.get(item.refdes)
+        if key in zones:
+            groups[key].append(item)
+
+    moved: dict[str, PlacedPart] = {}
+    for key, group in groups.items():
+        zone = zones[key]
+        sheet_min_x, sheet_min_y, sheet_max_x, sheet_max_y = sheet_bounds(
+            plan, key[0])
+        limits = (
+            (max(sheet_min_x + half[p.refdes][0] - p.x_mils for p in group),
+             min(sheet_max_x - half[p.refdes][0] - p.x_mils for p in group)),
+            (max(sheet_min_y + half[p.refdes][1] - p.y_mils for p in group),
+             min(sheet_max_y - half[p.refdes][1] - p.y_mils for p in group)),
+        )
+        shifts = []
+        for mm, (lo, hi) in zip(zone.origin_mm, limits):
+            if not math.isfinite(mm):
+                break
+            grid_lo = math.ceil(lo / SNAP_GRID_MILS) * SNAP_GRID_MILS
+            grid_hi = math.floor(hi / SNAP_GRID_MILS) * SNAP_GRID_MILS
+            if grid_lo > grid_hi:
+                break
+            wanted = round(mm / 0.0254 / SNAP_GRID_MILS) * SNAP_GRID_MILS
+            shifts.append(max(grid_lo, min(grid_hi, wanted)))
+        if len(shifts) != 2:
+            continue
+        dx, dy = shifts
+        for p in group:
+            moved[p.refdes] = PlacedPart(
+                refdes=p.refdes, sheet=p.sheet,
+                x_mils=p.x_mils + dx, y_mils=p.y_mils + dy,
+                rotation=p.rotation,
+            )
+    return [moved.get(p.refdes, p) for p in placed]
+
+
 def compute_layout(
     plan: DesignPlan, *, engine: str = "auto",
     ic_pin_offsets: dict[str, dict[str, tuple[int, int]]] | None = None,
@@ -783,4 +842,8 @@ def compute_layout(
         # a canonical 400-mil offset puts the decoupling cap inside it.
         cleaned = _splat_motifs(plan, cleaned, matches,
                                 body_half=motif_half or _turned or body_half)
+    if any(z.origin_mm != (0.0, 0.0) for z in plan.zones):
+        cleaned = _apply_zone_offsets(plan, cleaned, _turned or body_half)
+        cleaned, _residual = _hard_shove_pass(plan, cleaned,
+                                              _turned or body_half)
     return cleaned
