@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.177';
+    SCRIPT_VERSION = '2026.10.28.178';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -46371,8 +46371,7 @@ Begin
         // Assign net
         If NetStr <> '' Then
         Begin
-            FoundNet := FindPadNetByName(Board, NetStr);
-            If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
+            FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
                 BindPrimitiveToNet(FoundNet, Via);
         End;
@@ -46471,8 +46470,7 @@ Begin
 
         If NetStr <> '' Then
         Begin
-                    FoundNet := FindPadNetByName(Board, NetStr);
-                    If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
+            FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
                 BindPrimitiveToNet(FoundNet, Track);
         End;
@@ -52704,7 +52702,7 @@ Begin
             If NetName <> '' Then
             Begin
                 Inc(Seen);
-                TargetNet := FindPadNetByName(Board, NetName);
+                TargetNet := FindNetByName(Board, NetName);
                 If TargetNet <> Nil Then
                 Begin
                     Try

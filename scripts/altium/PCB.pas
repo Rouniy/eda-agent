@@ -8794,8 +8794,7 @@ Begin
         // Assign net
         If NetStr <> '' Then
         Begin
-            FoundNet := FindPadNetByName(Board, NetStr);
-            If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
+            FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
                 BindPrimitiveToNet(FoundNet, Via);
         End;
@@ -8894,8 +8893,7 @@ Begin
 
         If NetStr <> '' Then
         Begin
-                    FoundNet := FindPadNetByName(Board, NetStr);
-                    If FoundNet = Nil Then FoundNet := FindNetByName(Board, NetStr);
+            FoundNet := FindNetByName(Board, NetStr);
             If FoundNet <> Nil Then
                 BindPrimitiveToNet(FoundNet, Track);
         End;
@@ -15127,7 +15125,7 @@ Begin
             If NetName <> '' Then
             Begin
                 Inc(Seen);
-                TargetNet := FindPadNetByName(Board, NetName);
+                TargetNet := FindNetByName(Board, NetName);
                 If TargetNet <> Nil Then
                 Begin
                     Try
