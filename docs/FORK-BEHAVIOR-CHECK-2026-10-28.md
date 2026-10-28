@@ -820,6 +820,23 @@ same shape in native coordinates: `[[10000000,10000000,90],
 trip as a shape segment, not only as a flattened contour response.
 The scratch board was closed and removed.
 
+## Re-running donor placement and Rosen checks on current main
+
+At `b468962`, the unchanged `mooreaa/main` donor tests were run against
+this checkout as temporary test files and then removed. The placement
+cleanup file passed 20/22 checks. Its two failures compare source text:
+the pin query now limits live-pin filtering to schematic queries (and
+allows explicit `OwnerPart` filters), and port width now uses a fractional
+mil value instead of the donor's `int(width)` spelling. The Rosen small-fix
+file passed 15/18 checks. Its three failures expect the old flat
+`PRINT_DIALOG_NOT_SILENT` error instead of the current structured
+`PREVIEW_NOT_SILENT` refusal, and the donor's `SameDocPath` spelling
+instead of `CanonicalPathValue('path', ...)` before `CloseDocument`.
+These five assertions do not show a missing operation. The current source
+still applies the font, port, text-frame, pin and document-close guards
+that those tests exercise. This is a source/contract comparison; it does
+not add an AD25 native run on this AD26 host.
+
 ## Library edit state after native footprint creation
 
 The free-PcbLib acceptance above exposed that AD26.11 returned
