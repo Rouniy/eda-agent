@@ -16782,7 +16782,7 @@ Var
     Model : IPCB_Model;
     BRect : TCoordRect;
     ExpectedCount, Count, LayerNum, Dx, Dy : Integer;
-    TargetX, TargetY, RotZ, Standoff, CentreX, CentreY : Double;
+    TargetX, TargetY, RotZ, Standoff, Overall, CentreX, CentreY : Double;
     BodyLayer : TLayer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -16795,21 +16795,24 @@ Begin
         Not IsFloatStr(ExtractJsonValue(Params, 'offset_x_mm')) Or
         Not IsFloatStr(ExtractJsonValue(Params, 'offset_y_mm')) Or
         Not IsFloatStr(ExtractJsonValue(Params, 'rot_z_deg')) Or
-        Not IsFloatStr(ExtractJsonValue(Params, 'standoff_mm')) Then
+        Not IsFloatStr(ExtractJsonValue(Params, 'standoff_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'overall_height_mm')) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
-            'Exact library, footprint, STEP file, old body count, mechanical layer and numeric placement are required');
+            'Exact library, footprint, STEP file, old body count, mechanical layer, numeric placement and height are required');
         Exit;
     End;
     TargetX := StrToFloatDef(ExtractJsonValue(Params, 'offset_x_mm'), 0);
     TargetY := StrToFloatDef(ExtractJsonValue(Params, 'offset_y_mm'), 0);
     RotZ := StrToFloatDef(ExtractJsonValue(Params, 'rot_z_deg'), 0);
     Standoff := StrToFloatDef(ExtractJsonValue(Params, 'standoff_mm'), 0);
+    Overall := StrToFloatDef(ExtractJsonValue(Params, 'overall_height_mm'), 0);
     If (Abs(TargetX) > 1000) Or (Abs(TargetY) > 1000) Or
-        (Abs(Standoff) > 1000) Or (Abs(RotZ) > 360) Then
+        (Abs(Standoff) > 1000) Or (Overall < 0) Or (Overall > 1000) Or
+        (Abs(RotZ) > 360) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PLACEMENT',
-            'Offset and standoff must be within 1000 mm; Z rotation within 360 degrees');
+            'Offset and standoff must be within 1000 mm, overall height 0..1000 mm; Z rotation within 360 degrees');
         Exit;
     End;
     If Not FileExists(LibPath) Then
@@ -16907,6 +16910,7 @@ Begin
         Body.SetState_FromModel;
         Model.SetState(0, 0, RotZ, MMToCoord(Standoff));
         Body.Model := Model;
+        If Overall > 0 Then Body.OverallHeight := MMToCoord(Overall);
     Except
         Result := BuildErrorResponse(RequestId, 'MODEL_LOAD_FAILED',
             'Could not create an embedded STEP body from ' + ModelPath);
@@ -16958,6 +16962,13 @@ Begin
             'STEP body was added but its centre did not read back at the target');
         Exit;
     End;
+    If (Overall > 0) And
+        (Abs(CoordToMM(Body.OverallHeight) - Overall) > 0.02) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'HEIGHT_NOT_VERIFIED',
+            'STEP body was added but its overall height did not read back');
+        Exit;
+    End;
     Try PcbLib.Board.ViewManager_FullUpdate; Except End;
     MarkDocDirtyByPath(LibPath);
     Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -16971,7 +16982,8 @@ Begin
         + JsonFloat('after_x_mm', CentreX) + ','
         + JsonFloat('after_y_mm', CentreY) + ','
         + JsonFloat('rotation_z_deg', RotZ) + ','
-        + JsonFloat('standoff_mm', Standoff)));
+        + JsonFloat('standoff_mm', Standoff) + ','
+        + JsonFloat('overall_height_mm', CoordToMM(Body.OverallHeight))));
 End;
 
 Function Lib_Position3DBody(Params : String; RequestId : String) : String;

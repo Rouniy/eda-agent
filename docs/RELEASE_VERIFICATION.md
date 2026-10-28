@@ -1,4 +1,18 @@
-# Release verification: 2026.10.28.157
+# Release verification: 2026.10.28.158
+
+Script `.158` carries `rabihnd/integration`'s optional overall STEP body
+height into the exact-library `lib_add_3d_body` operation. The native
+handler sets `OverallHeight` before registering the body and checks it
+afterward; the Python tool verifies the response and a second footprint
+read. Eight focused tests and the 12-unit Pascal build pass. Native
+save/reopen acceptance passed on a disposable 38-footprint PcbLib. Adding
+`RESC1608X05N.step` to `TEST PAD` with `overall_height_mm=3.25` reported
+two bodies and `3.25000112` mm. Exact save wrote the copy; close/reopen
+read back both bodies and the same height. The copy closed cleanly and
+the source library SHA-256 remained
+`F4A08E82AC6807564893AB0C692D42D9DAAE69128416A1F311663EF125E16EDC`.
+The restarted HTTP MCP server on 14701 reported `.158`, matching the
+loaded script and the bundled source.
 
 Script `.157` accepts the `rabihnd/integration` schematic object aliases
 `eText` and `eTextString` as `eLabel` in the shared type resolver. This
@@ -28,7 +42,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.157` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.158` from `app_ping`.
 Current `app_ping` reports loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;

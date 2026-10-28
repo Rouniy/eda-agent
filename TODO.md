@@ -5,6 +5,9 @@
 - [x] Port `rabihnd/integration`'s `eText` and `eTextString` aliases to
   the shared schematic object resolver. Script `.157` passed Pascal
   lint/build and 38 focused tests, then loaded in the live Altium bridge.
+- [x] Port its optional STEP `overall_height_mm` into the exact PcbLib
+  `lib_add_3d_body` operation. Script `.158` and the restarted MCP passed
+  source checks; a disposable library retained 3.25 mm across save/reopen.
 - [ ] Recheck the `mooreaa` Rosen `pcb_get_mech_layer_names` dirty-on-read
   report on AD25. It stayed clean on a disposable CW308 copy in AD26.11,
   with unchanged SHA-256, but that does not settle the donor's AD25 case.

@@ -7643,12 +7643,15 @@ def register_library_tools(mcp):
         standoff_mm: float = 0.0,
         mech_layer: int = 1,
         dry_run: bool = True,
+        overall_height_mm: float = 0.0,
     ) -> dict[str, Any]:
         """Embed a STEP model as an additional body on one exact PcbLib footprint.
 
         Coordinates are the body's bounding-box centre relative to the
         footprint origin. No existing body is removed. The default is a
         reviewable plan; saving the PcbLib is a separate operation.
+        ``overall_height_mm`` overrides the STEP body's collision height
+        when positive; zero keeps the model-derived height.
         """
         path = Path(library_path)
         model = Path(model_path)
@@ -7665,10 +7668,13 @@ def register_library_tools(mcp):
         for key, value, limit in (("offset_x_mm", offset_x_mm, 1000),
                                   ("offset_y_mm", offset_y_mm, 1000),
                                   ("standoff_mm", standoff_mm, 1000),
+                                  ("overall_height_mm", overall_height_mm, 1000),
                                   ("rot_z_deg", rot_z_deg, 360)):
             if (isinstance(value, bool) or not isinstance(value, (float, int))
                     or not math.isfinite(value) or abs(value) > limit):
                 return {"ok": False, "reason": f"{key} must be finite and within {limit}"}
+        if overall_height_mm < 0:
+            return {"ok": False, "reason": "overall_height_mm must be nonnegative"}
         bridge = get_bridge()
         before = await bridge.send_command_async(
             "library.get_footprint_primitives",
@@ -7689,14 +7695,16 @@ def register_library_tools(mcp):
                 "body_count_before": len(bodies), "body_count_after": len(bodies) + 1,
                 "mech_layer": mech_layer, "offset_x_mm": offset_x_mm,
                 "offset_y_mm": offset_y_mm, "rot_z_deg": rot_z_deg,
-                "standoff_mm": standoff_mm}
+                "standoff_mm": standoff_mm,
+                "overall_height_mm": overall_height_mm}
         if dry_run:
             return plan
         params = {"library_path": str(path), "footprint_name": name,
                   "model_path": str(model), "expected_count": len(bodies),
                   "mech_layer": mech_layer, "offset_x_mm": offset_x_mm,
                   "offset_y_mm": offset_y_mm, "rot_z_deg": rot_z_deg,
-                  "standoff_mm": standoff_mm}
+                  "standoff_mm": standoff_mm,
+                  "overall_height_mm": overall_height_mm}
         reply = await bridge.send_command_async("library.add_3d_body", params, timeout=120.0)
         if (not isinstance(reply, dict) or reply.get("success") is not True
                 or str(reply.get("library_path", "")).casefold() != str(path).casefold()
@@ -7707,7 +7715,10 @@ def register_library_tools(mcp):
                 or not math.isclose(reply.get("after_x_mm", float("nan")),
                                     offset_x_mm, abs_tol=0.02)
                 or not math.isclose(reply.get("after_y_mm", float("nan")),
-                                    offset_y_mm, abs_tol=0.02)):
+                                    offset_y_mm, abs_tol=0.02)
+                or (overall_height_mm > 0 and not math.isclose(
+                    reply.get("overall_height_mm", float("nan")),
+                    overall_height_mm, abs_tol=0.02))):
             return {"ok": False, "reason": "STEP body addition needs inspection",
                     "native_reply": reply}
         after = await bridge.send_command_async(
@@ -7722,6 +7733,14 @@ def register_library_tools(mcp):
                 or sum(Path(str(b.get("model_file", ""))).name.casefold() == model.name.casefold()
                        for b in after_bodies) != 1):
             return {"ok": False, "reason": "STEP body was added but readback needs inspection",
+                    "native_reply": reply, "after": after}
+        added_body = next(b for b in after_bodies
+                          if Path(str(b.get("model_file", ""))).name.casefold()
+                          == model.name.casefold())
+        if (overall_height_mm > 0 and not math.isclose(
+                added_body.get("overall_height_mm", float("nan")),
+                overall_height_mm, abs_tol=0.02)):
+            return {"ok": False, "reason": "STEP body height did not read back",
                     "native_reply": reply, "after": after}
         reply["ok"] = True
         reply["save_required"] = True

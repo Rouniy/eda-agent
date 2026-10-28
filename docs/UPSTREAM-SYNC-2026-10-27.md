@@ -12,6 +12,11 @@ were absent from the current resolver. Both now map to `eLabel` in source
 bridge reload. Its force-save-before-`lib_get_components` behavior was not
 ported: the current read reports saved and unsaved symbol inventories
 separately and must not save a user's edited library as a side effect.
+The same donor's STEP `overall_height_mm` was absent from the current
+one-call body add, though a separate body edit could set it later. Script
+`.158` now accepts and verifies the requested height. A native disposable
+PcbLib saved and reopened with the new body at 3.25000112 mm; the original
+library was unchanged.
 
 ## 2026-10-28 refresh after script `.155`
 
