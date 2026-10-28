@@ -856,3 +856,31 @@ After save, close and reopen, another query returned the same six
 flags. The board was closed and its scratch file removed. This proves
 native property read/write persistence on this AD26 build; a polygon
 repour or DRC effect was not tested in this run.
+
+## Fresh changed-tool and path inventory after `.175`
+
+At `192ae5f`, `fork-status --fetch --cached-forks
+--verify-fork-branches --json` again found upstream `0bb1b315`
+and child fork `d495c4d` with zero commits pending, and matched all
+63 direct fork defaults and 120 live branch tips. There are 53 cached
+refs whose tips are not ancestors of `main`.
+
+A new AST pass inspected `@mcp.tool` functions in Python tool files
+changed between each divergent ref's merge base and its tip. Only six
+public spellings were absent from current source:
+`lib_list_vault_libraries` in `cad435/main`, and `lib_add_pin`,
+`lib_add_symbol_line`, `lib_diag_footprint`,
+`lib_screenshot_footprint`, `lib_set_label_format` in
+`rabihnd/integration`. Their current plural, catalogue, body-read and
+render/capture routes are mapped in the public-name inventory above.
+This scan tests names, not argument or response parity.
+
+The same 53-ref comparison found eight changed paths absent from
+`main`: `.github/workflows/sync.yml`,
+`scripts/altium/StatusFormStub.pas`, `scripts/ensure_loop.py`,
+`src/eda_agent/easyeda_extension_cli.py`, and four donor tests
+(`test_custom_pad_shape_is_named.py`,
+`test_easyeda_extension_delivery.py`, `test_placement_cleanup.py`,
+`test_rosen_small_fixes.py`). Their behavior and decisions are recorded
+in the missing-path inventory above. AD25 runtime qualification of the
+headless stub remains open; this host has AD26.11 but no AD25 install.
