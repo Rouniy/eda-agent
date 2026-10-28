@@ -852,7 +852,8 @@ def register_application_tools(mcp):
         listing = await get_bridge().send_command_async("project.get_open_projects", {})
         projects = listing.get("projects", []) if isinstance(listing, dict) else []
         paths = [str(item.get("project_path", "")) for item in projects
-                 if isinstance(item, dict) and item.get("project_path")]
+                 if isinstance(item, dict) and item.get("project_path")
+                 and str(item["project_path"]).casefold() != "free documents"]
         if project_path:
             if not os.path.isabs(project_path) or not os.path.isfile(project_path):
                 return {"error": f"project file not found: {project_path}", "checkpoint": None}

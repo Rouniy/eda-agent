@@ -162,6 +162,28 @@ async def test_checkpoint_requires_identity_with_multiple_projects(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_free_documents_is_not_a_second_project(monkeypatch, workspace):
+    class OneProjectAndFreeDocuments(_Bridge):
+        async def send_command_async(self, command, params=None, timeout=None):
+            if command == "project.get_open_projects":
+                self.calls.append(command)
+                return {"projects": [
+                    {"project_path": "Free Documents"},
+                    {"project_path": str(workspace / "P.PrjPcb")}],
+                    "count": 2}
+            return await super().send_command_async(command, params, timeout)
+
+    bridge = OneProjectAndFreeDocuments(project_dir=str(workspace))
+    tool = _capture(application_module, "register_application_tools",
+                    "app_checkpoint", monkeypatch, bridge)
+    out = await tool()
+
+    assert out["saved"] is True
+    assert out["checkpoint"]["file_count"] >= 1
+    assert "project.save" in bridge.calls
+
+
+@pytest.mark.asyncio
 async def test_no_save_requested_means_no_claim_either_way(
         monkeypatch, workspace):
     """With save_first=False there is nothing to report, so report nothing."""
