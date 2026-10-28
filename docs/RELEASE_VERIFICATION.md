@@ -1,5 +1,19 @@
 # Release verification: 2026.10.28.156
 
+Checkout `3f26259` was packaged into an isolated wheel and a Windows
+one-file executable on 2026-10-28. The executable reported `eda-agent
+0.7.1` and `install-scripts --force` extracted all 15 DelphiScript files,
+including `Altium_API.PrjScr`, `Main.pas`, and `StatusForm.dfm`. The extracted
+`Main.pas` differs from source only in its deployment `UnitStamp_Main`
+value (`27faf9130572` instead of `dev`). The 76,230,914-byte executable
+has SHA-256
+`5D80FD35CFB9B64856AB3B3DF61008841A3E8F1F224B47D3174B2972D7024854`
+and remains in a temporary directory outside the repository. GitHub's
+API lists the Windows binary workflow as active with zero hosted runs;
+the repository Actions page says workflows on this fork are disabled.
+Hosted build acceptance remains open until Actions are enabled and a
+runner completes it.
+
 `eda-agent relaunch --dry-run` now selects this checkout's
 `scripts/altium/Altium_API.PrjScr` by default. Before the CLI fix it
 failed while looking for an absent separate installed copy. The dry run

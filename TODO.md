@@ -495,7 +495,9 @@
   returned `ok=true` for `NaN`; it now refuses nonnumeric and nonfinite
   values. The calculator, NPI and SDK suites pass (222 tests).
 - [ ] Observe a hosted run of `build-windows-binary.yml`; GitHub Actions
-  reports zero runs so far.
+  reports zero runs so far because workflows on this fork are disabled.
+  A fresh isolated wheel and 76,230,914-byte one-file exe built locally on
+  2026-10-28; version and all 15 installed scripts passed smoke checks.
 
 ## xSignal selector and legacy source checks, 2026-10-27
 
