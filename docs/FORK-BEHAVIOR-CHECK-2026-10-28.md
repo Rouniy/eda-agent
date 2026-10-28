@@ -62,6 +62,7 @@ commits themselves were merged.
 | `redbird98/main` `a563269` | OutJob is activated before its container runs | `Project.pas`; `test_outjob_activation.py` |
 | `redbird98` `35ff5e0` | AD25-compatible Unicode transport uses UTF-8 request files with a BOM, Pascal stream decoding, and escaped Unicode in replies. This retains characters outside the GBK repertoire while avoiding `TEncoding.UTF8` in DelphiScript. AD25 runtime acceptance is still unverified on this AD26 host. | `altium_bridge.py`, `Main.pas`, `Utils.pas`; Unicode transport tests passed 24/24 |
 | `redbird98` `9874d21` | `proj_run_erc` returns the compiled violation rows by reading `generic.get_erc_violations` after the native compile, with paging and suppressed/No Report counts. Print-path exports are classified modal. | `generic.py`, `Generic.pas`, `metadata.py`; ERC/Unicode/print checks passed 38/38 |
+| `xthanhn91` `fc08cf1` | `eNote` and `eTextFrame` are addressable through the schematic object resolver, with placement and typed font access; `eda-agent relaunch` pings first and starts the existing script project only when needed. The separate `ensure_loop.py` script is not needed for those behaviors. | `Generic.pas`, `generic.py`, `cli.py`; object/font/placement/relaunch/supervisor checks passed 47/47 |
 | `tisn1678065900-dot/boardquality` `21f0412` | The quality skill and all five `docs/pcb-quality` artifacts are already tracked | `skills/boardquality/SKILL.md`, `docs/pcb-quality/` |
 | `pieterpotgieter` `3e7369b` | Paste-enabled reads and writes have a product-version guard; current source extends measured support to AD25.8 | `PadPasteFlagSupported`; `test_pad_paste_flag_version_gate.py` passed 3/3; AD23 compile remains unverified here |
 | `mooreaa/main` placement-cleanup test | Font inference, placement tidy, live-pin filtering and port properties are present | 20/22 donor source tests pass; the two failures require an old exact source spelling: the current pin filter also checks query mode and non-library scope, while the public port width now forwards a decimal rather than an integer |
@@ -213,7 +214,8 @@ checkout. The donor failures include its older exact action text, its
 single-command `run_update` interface and a different `--check` exit-code
 contract. The distinct deploy-from-folder operation is now available as
 `eda-agent install-scripts --from <checkout> --force`: it validates the
-source before copying into the existing Altium destination, and treats a
+source and every `DocumentPath` in its `.PrjScr` before copying into the
+existing Altium destination, and treats a
 source that is already the destination as a no-op. This does not create a
 second runtime script project. Focused install/update checks passed 35/35.
 No claim of full CLI contract parity is made.

@@ -43,6 +43,18 @@ def test_rejects_non_checkout_before_touching_destination(tmp_path):
     assert not destination.exists()
 
 
+def test_rejects_incomplete_project_before_touching_destination(tmp_path):
+    source = tmp_path / "donor"
+    scripts = _source(source)
+    (scripts / "Altium_API.PrjScr").write_text(
+        "[Document1]\nDocumentPath=Main.pas\n"
+        "[Document2]\nDocumentPath=Missing.pas\n", encoding="utf-8")
+    destination = tmp_path / "live"
+    assert cli.cmd_install_scripts(dest=str(destination), force=True,
+                                   source=str(source)) == 1
+    assert not destination.exists()
+
+
 def test_source_is_live_directory_needs_no_copy(tmp_path):
     source = tmp_path / "main"
     scripts = _source(source)

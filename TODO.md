@@ -4,7 +4,8 @@
 
 - [x] Add the direct child fork's deploy-from-folder path without changing
   the normal main-directory runtime. `install-scripts --from <checkout>`
-  validates the alternate source and deploys into the existing Altium
+  validates the alternate source and every project document before writing,
+  then deploys into the existing Altium
   destination; a source already loaded there is left untouched. The
   update status hint names this exact command. Focused checks passed 35/35.
 - [x] Make `update --status` return an action exit code only for actionable

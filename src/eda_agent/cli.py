@@ -705,6 +705,23 @@ def _install_scripts_into(dst: Path, force: bool,
         print(f"Altium already loads scripts from {src}; nothing to copy.")
         return 0
 
+    project = src / "Altium_API.PrjScr"
+    try:
+        project_text = project.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        print(f"ERROR: cannot read source script project {project}: {exc}",
+              file=sys.stderr)
+        return 1
+    referenced = [line.partition("=")[2].strip()
+                  for line in project_text.splitlines()
+                  if line.startswith("DocumentPath=")]
+    if not referenced or any(
+            not name or Path(name).name != name or "\\" in name
+            or not (src / name).is_file() for name in referenced):
+        print(f"ERROR: source script project has missing or nonlocal files: "
+              f"{project}", file=sys.stderr)
+        return 1
+
     # An auto-accept harness (e.g. Gemini CLI) may allocate a pty -- so
     # sys.stdin.isatty() is True -- yet never feed the prompt, hanging input()
     # forever. Honor an env override so such harnesses can opt out of the
