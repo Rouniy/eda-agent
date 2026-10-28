@@ -3,11 +3,11 @@
 ## Fresh branch-difference queue, 2026-10-28
 
 - [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: port its ordinary
-  copper correction and loss-tangent stack write; deploy the guarded
-  `pcb_reset_stack_manager_model` tool and verify a reset copy across
-  Altium open/save. The saved-file reader detects additive or
-  non-conductive copper and stale manager thicknesses. The reset's source
-  and temporary file write are tested, but native persistence is pending.
+  copper correction and loss-tangent stack write; verify the guarded
+  `pcb_reset_stack_manager_model` on a copy with a visibly stale manager
+  model. The saved-file reader detects additive or non-conductive copper
+  and stale manager thicknesses. The reset is deployed and completed an
+  AD26.11 open/save/readback round trip on a disposable PcbDoc.
 - [x] Expose the forks' requested `delta_t_c` in Altium's
   `pcb_calc_track_current_capacity`, while retaining its fixed rise table
   and optional length/resistance result. The selected current uses the

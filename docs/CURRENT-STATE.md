@@ -19,10 +19,18 @@ an exact one-key check, a closed-board check in the public tool, and a
 post-write readback. It defaults to dry run. A temporary copy of the real
 RFSoC PcbDoc retained 13 readable stack layers after the key was renamed;
 the original SHA-256 stayed unchanged. Forty-five stack tests and 33
-tool-catalog/metadata tests pass. The public tool is source-tested but not
-yet served by the running MCP process. Native open/save acceptance of a
-reset copy remains pending. The donor's live copper correction and
+tool-catalog/metadata tests pass. The donor's live copper correction and
 loss-tangent stack write still need integration and native acceptance.
+
+After the commit, the Python MCP server was restarted from `main` without
+replacing the loaded DelphiScript units. Its catalog listed the new tool
+and `app_ping` confirmed script `.160` responding. An MCP dry run on the
+closed original reported one model. A temporary copy was reset through
+the live MCP tool, opened in AD26.11, saved (disk write observed), closed,
+and reread: neither the old nor the temporary renamed key remained, while
+all 13 V9 layer-name records survived. The temporary copy was removed;
+the original was not opened or written. This qualifies the tool's native
+file round trip, not a visibly stale Layer Stack Manager case.
 
 ## Rosen mechanical-layer read check, 2026-10-28
 
