@@ -143,7 +143,7 @@ The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), s
 ## Installation
 
 ```bash
-git clone https://github.com/salitronic/eda-agent
+git clone https://github.com/Rouniy/eda-agent
 cd eda-agent
 python -m pip install -e .
 ```

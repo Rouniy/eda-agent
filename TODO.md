@@ -2,6 +2,11 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Keep wheel update guidance and installation links on this fork.
+  `updates.check()` now points package installs to `Rouniy/eda-agent`;
+  package metadata and the README clone command point there too, while
+  metadata retains a separate upstream link. Update/status/fork checks
+  passed 26/26.
 - [x] Expose PCB text `FontName` as a read-only `obj_query` property.
   Script `.167` built with zero lint warnings/errors, the main Altium
   polling loop restarted, and native reads on the RFSoC transceiver board

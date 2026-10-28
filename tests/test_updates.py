@@ -154,6 +154,8 @@ def test_a_package_install_is_told_how(monkeypatch):
     monkeypatch.setattr(updates, "repo_root", lambda: None)
     info = updates.check(force=True)
     assert info["kind"] == "package" and "pip install --upgrade" in info["how"]
+    assert "github.com/Rouniy/eda-agent" in info["how"]
+    assert "github.com/salitronic/eda-agent" not in info["how"]
     assert updates.apply()["updated"] is False
 
 

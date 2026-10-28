@@ -30,7 +30,7 @@ from .noconsole import no_window
 
 REMOTE = "origin"
 BRANCH = "main"
-REPO_URL = "https://github.com/salitronic/eda-agent"
+REPO_URL = "https://github.com/Rouniy/eda-agent"
 
 #: How long a check is trusted before the next one reaches the network.
 CHECK_INTERVAL_S = 24 * 3600

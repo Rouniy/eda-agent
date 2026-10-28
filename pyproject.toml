@@ -92,9 +92,10 @@ web = [
 eda-agent = "eda_agent.server:main"
 
 [project.urls]
-Homepage = "https://github.com/salitronic/eda-agent"
-Repository = "https://github.com/salitronic/eda-agent"
-Issues = "https://github.com/salitronic/eda-agent/issues"
+Homepage = "https://github.com/Rouniy/eda-agent"
+Repository = "https://github.com/Rouniy/eda-agent"
+Issues = "https://github.com/Rouniy/eda-agent/issues"
+Upstream = "https://github.com/salitronic/eda-agent"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/eda_agent"]

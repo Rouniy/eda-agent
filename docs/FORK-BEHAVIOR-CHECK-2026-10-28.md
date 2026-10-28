@@ -9,6 +9,12 @@ when the point was `ee7589c9fc543d0b99bb142dc8ca12b618fffeab` via merge
 `338f615`. `MOREmbedded/main` was
 `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
 
+The package-install update hint, package repository/issue URLs, and README
+clone command now point to `Rouniy/eda-agent`; package metadata also names
+the original upstream. This prevents a wheel user following the update hint
+from replacing this fork with the upstream package. Update/status/fork tests
+passed 26/26.
+
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not
