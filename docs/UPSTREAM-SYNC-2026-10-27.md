@@ -64,6 +64,26 @@ would make clone/checkout depend on six external repositories without
 adding a callable feature. No submodule files were imported; the distinct
 research code and workflow from this fork remain in `main`.
 
+A fresh `fork-status --fetch --cached-forks --verify-fork-branches --json`
+matched 62/62 live fork default tips and 117/117 branch tips to cached
+refs. `upstream/main` is still `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`,
+the exact merge base of `main`, with zero upstream commits pending.
+Comparing Python test paths in 112 fork refs (including MOREmbedded) with
+the 691 tracked tests on `main` found ten absent paths. The six previously
+reviewed paths still have adapted coverage or a deliberate policy difference.
+The four additional paths are `mooreaa`'s placement and Rosen fixes and
+MOREmbedded's SDK and update tests. The first two have adapted source and
+native checks recorded below. The SDK and update capabilities are present
+under current modules. The older via-mask refusal test among the prior
+six was superseded by a native-verified pad-cache write, so restoring it
+would discard working functionality. Running MOREmbedded's
+original update tests against this checkout passed 38/50; its remaining
+assertions target the older `run_update`/`_deploy_from` API or manual
+reload advice. The current update/designator/SDK/relink focused set passed
+51 tests with one optional skip. Live `eda-agent update --status --fetch
+--from upstream --json` reported the remote, checkout, editable package,
+main script folder and compiled `.160` session current.
+
 ## 2026-10-28 refresh after script `.155`
 
 `python -m eda_agent fork-status --fetch --cached-forks
@@ -406,9 +426,11 @@ security-policy format, an empty benchmark package, and the
 
 The last is a deliberate behavioral difference: upstream commit
 `6486ac1` removed `SetWritesDesignator` to retain bulk renaming, and
-our `obj_batch_modify` describes the partial-write/netlist risk. We
-retain that functionality for now and track a safer preflight/verify
-design separately. This review did not make a native CAD edit.
+our `obj_batch_modify` describes the partial-write/netlist risk. The
+separate `sch_batch_rename_designators` now checks collisions and a
+project snapshot before writing, uses temporary unique names and reads
+the project back after each phase. Its native acceptance is recorded in
+`TODO.md`; this test-path review did not make a CAD edit.
 
 ## 2026-10-28 native parameter-scope follow-up
 
