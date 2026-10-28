@@ -924,6 +924,11 @@ _KEYS.update({chr(code).lower(): code for code in range(0x41, 0x5B)})
 _KEYS.update({chr(code): code for code in range(0x30, 0x3A)})
 _KEYS.update({f"num{n}": 0x60 + n for n in range(10)})
 
+# Keep refusals short while naming the supported key families.
+_KEYS_HELP = ("a-z, 0-9, num0-num9, enter, escape, tab, space, "
+              "backspace, delete, insert, arrows, home, end, "
+              "pageup, pagedown, f1-f12")
+
 #: Modifier virtual-key codes, held down around a key in a chord.
 _MODIFIERS = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10}
 

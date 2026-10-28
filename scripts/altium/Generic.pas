@@ -1574,6 +1574,13 @@ Begin
             Else NotePropertyDiag('unreadable', PropName);
         End
         Else If PropName = 'LibReference'       Then Result := Obj.LibReference
+        Else If ((PropName = 'ComponentDescription') Or
+                 (PropName = 'Description')) And
+                (Obj.ObjectId = eSchComponent) Then
+        Begin
+            Comp := Obj;
+            Result := Comp.ComponentDescription;
+        End
         Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
         Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
 
@@ -13883,7 +13890,12 @@ Begin
                                     Begin
                                         { A parameter named Description may be dropped
                                           on reload; set the component's native field. }
-                                        Try Comp.ComponentDescription := Val; Except End;
+                                        SchBeginModify(Comp);
+                                        Try
+                                            Comp.ComponentDescription := Val;
+                                        Finally
+                                            SchEndModify(Comp);
+                                        End;
                                     End
                                     Else If Key = 'Footprint' Then
                                     Begin

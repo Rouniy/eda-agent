@@ -1,5 +1,33 @@
 # Current integration state / agent handoff
 
+## Native Description persistence and capture QA, 2026-10-28
+
+The prior PIC24 batch DRC stalled Altium's UI and bridge. After its run
+ceased to respond, Altium was restarted; the bridge and HTTP MCP resumed.
+The script was later detached with no loaded or modified documents and
+Altium restarted again to load source `.125`. `eda-agent doctor` reported
+the native script responding at `.125`, a version match, and no critical
+failures. Ports 14701 (HTTP MCP) and 14700 (TCP relay) listen.
+
+On an isolated copy of `Docking_Connection.SchDoc`, bulk stamping J10's
+`Description` wrote `ComponentDescription` to the saved SchDoc, but
+`obj_query` returned empty because `GetSchProperty` had no component
+description read case. Script `.125` adds `Description` and
+`ComponentDescription` getters for components and wraps the bulk write
+in a component undo change. Native `obj_query` read the new value both
+immediately and after save/close/reopen. The independent saved-file
+parser agreed. The original schematic was not saved.
+
+`app_screenshot` completed on responsive Altium and wrote a 1936x1048
+PNG of the native main-window frame. The corresponding visible content
+capture was 1920x1032; this is consistent with the 16-pixel frame and
+confirms the exported PNG was not the former 2x OCR image.
+
+The focused UI test suite also exposed a missing `_KEYS_HELP` constant:
+invalid keystrokes would raise `NameError` while formatting a refusal.
+The fork's concise supported-key guidance is restored; 120 related
+tests now pass.
+
 ## Additional `mooreaa` stack and description fixes, 2026-10-28
 
 The legacy `pcb_apply_stackup_template(dry_run=False)` path now requires

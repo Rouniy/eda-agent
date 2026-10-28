@@ -3,8 +3,11 @@
 ## `mooreaa` UI corrections, 2026-10-28
 
 - [x] Guard the fab-stack template apply path behind legacy write opt-in.
-- [ ] Reload `.124` when the active Altium command finishes, then verify
-  `Description` persists on a disposable SchDoc after save/reopen.
+- [x] Reload `.124` after the stalled DRC was ended. On a disposable
+  SchDoc, `Description` persisted in the saved file, but `obj_query`
+  incorrectly read an empty value. Script `.125` adds the native getter
+  and component undo bracketing; immediate and save/reopen reads now
+  match the independent saved-file parser.
 
 - [x] Port and natively verify schematic deselection and full-sheet
   zoom on a disposable SchDoc; exact-path close also succeeded.
@@ -15,8 +18,12 @@
 - [x] Require an explicit project for checkpointing when selection is
   ambiguous; default GND-named template ports downward; keep exported
   screenshots at native size and enlarge only OCR inputs.
-- [ ] Verify `app_screenshot` pixels on a responsive Altium window. A
-  direct `PrintWindow` capture of the main window did not complete.
+- [x] Verify `app_screenshot` on a responsive Altium window: it returned
+  a 1936x1048 PNG for the native window frame, rather than a 2x OCR copy.
+  The earlier stalled capture overlapped the stalled DRC.
+- [x] Restore the fork's `_KEYS_HELP` text. Without it, unsupported
+  keystrokes raised `NameError` instead of explaining accepted keys;
+  the focused UI suite now passes 120 tests.
 
 ## Fresh `mooreaa` stack builder, 2026-10-28
 
