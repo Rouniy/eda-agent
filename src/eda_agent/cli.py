@@ -453,7 +453,7 @@ def cmd_update_status(*, fetch: bool = False, source: str = "",
                           f"remote {compare_remote} is not configured",
                           action="Choose a configured remote with --from.",
                           details={"available": state["upstream_missing"]}))
-    code = 1 if any(s.status in ("action", "unknown") for s in steps) else 0
+    code = 1 if any(s.needs_human for s in steps) else 0
     if as_json:
         print(json.dumps({"state": state, "steps": [asdict(s) for s in steps],
                           "exit_code": code}, indent=2))

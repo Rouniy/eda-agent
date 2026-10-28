@@ -7,6 +7,10 @@
   validates the alternate source and deploys into the existing Altium
   destination; a source already loaded there is left untouched. The
   update status hint names this exact command. Focused checks passed 35/35.
+- [x] Make `update --status` return an action exit code only for actionable
+  findings. An unavailable Altium session stays `unknown` in the report and
+  exits 0; a stale script deployment exits 1. Update/status tests passed
+  26/26.
 - [x] Record the current upstream sync point as
   `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, second parent of merge
   `63f7c16`. The last fork-status fetch found zero upstream commits

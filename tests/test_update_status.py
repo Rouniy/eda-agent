@@ -48,6 +48,26 @@ def test_unknown_altium_is_not_reported_as_everything_current():
     assert "Everything is current" not in report
 
 
+def test_unknown_altium_does_not_set_action_exit_code(monkeypatch, capsys):
+    monkeypatch.setattr(update, "gather_state",
+                        lambda **_kw: _state(registered_scripts=[]))
+    monkeypatch.setattr(update, "altium_runtime", lambda: None)
+    assert cli.cmd_update_status(as_json=True) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["exit_code"] == 0
+    assert any(step["status"] == "unknown" for step in report["steps"])
+
+
+def test_action_still_sets_update_status_exit_code(monkeypatch, capsys):
+    monkeypatch.setattr(update, "gather_state",
+                        lambda **_kw: _state(deployed_version="2026.10.27.90"))
+    monkeypatch.setattr(update, "altium_runtime", lambda: None)
+    assert cli.cmd_update_status(as_json=True) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["exit_code"] == 1
+    assert any(step["status"] == "action" for step in report["steps"])
+
+
 def test_status_json_does_not_apply_an_update(monkeypatch, capsys):
     monkeypatch.setattr(update, "gather_state", lambda **_kw: _state())
     monkeypatch.setattr(update, "altium_runtime", lambda: {

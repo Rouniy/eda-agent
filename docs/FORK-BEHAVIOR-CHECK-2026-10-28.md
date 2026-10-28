@@ -60,6 +60,8 @@ commits themselves were merged.
 | `prototrace` `961e6c3` | UTF-16 code units are JSON-escaped without truncation; schematic `ePolyline` is queryable | `CodeUnitToHex4`, `Generic.pas` object resolver; `test_unicode_and_detach_transport.py`, `test_symbol_writes_on_screen.py` |
 | `redbird98` `1ff554f`, `f3c2a5c`, `0b6433a`, `f293e80` | Fab statistics classify vias by `LowLayer`/`HighLayer`; DRC re-focuses the board; focus and exact-board resolution verify the selected document | `PCB_GetFabStats`, DRC and focus handlers, `ResolvePCBBoard`; `test_fab_stats_via_spans.py` and existing native batch DRC acceptance |
 | `redbird98/main` `a563269` | OutJob is activated before its container runs | `Project.pas`; `test_outjob_activation.py` |
+| `redbird98` `35ff5e0` | AD25-compatible Unicode transport uses UTF-8 request files with a BOM, Pascal stream decoding, and escaped Unicode in replies. This retains characters outside the GBK repertoire while avoiding `TEncoding.UTF8` in DelphiScript. AD25 runtime acceptance is still unverified on this AD26 host. | `altium_bridge.py`, `Main.pas`, `Utils.pas`; Unicode transport tests passed 24/24 |
+| `redbird98` `9874d21` | `proj_run_erc` returns the compiled violation rows by reading `generic.get_erc_violations` after the native compile, with paging and suppressed/No Report counts. Print-path exports are classified modal. | `generic.py`, `Generic.pas`, `metadata.py`; ERC/Unicode/print checks passed 38/38 |
 | `tisn1678065900-dot/boardquality` `21f0412` | The quality skill and all five `docs/pcb-quality` artifacts are already tracked | `skills/boardquality/SKILL.md`, `docs/pcb-quality/` |
 | `pieterpotgieter` `3e7369b` | Paste-enabled reads and writes have a product-version guard; current source extends measured support to AD25.8 | `PadPasteFlagSupported`; `test_pad_paste_flag_version_gate.py` passed 3/3; AD23 compile remains unverified here |
 | `mooreaa/main` placement-cleanup test | Font inference, placement tidy, live-pin filtering and port properties are present | 20/22 donor source tests pass; the two failures require an old exact source spelling: the current pin filter also checks query mode and non-library scope, while the public port width now forwards a decimal rather than an integer |
@@ -215,6 +217,11 @@ source before copying into the existing Altium destination, and treats a
 source that is already the destination as a no-op. This does not create a
 second runtime script project. Focused install/update checks passed 35/35.
 No claim of full CLI contract parity is made.
+
+The status command now follows the donor's distinction between an unknown
+Altium state and a step that needs action: unknown remains visible in the
+report but exits 0; a real action exits 1. Two focused regression cases
+cover both outcomes, and the update/status slice passed 26/26.
 
 `git merge-tree --write-tree HEAD morembedded/main` was also checked without
 touching the worktree. It reports 62 conflicts (45 content, 15 add/add,
