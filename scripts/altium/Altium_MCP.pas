@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.126';
+    SCRIPT_VERSION = '2026.10.28.127';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -9326,6 +9326,21 @@ End;
 { Params: project_path (optional)                                             }
 {..............................................................................}
 
+{ On saved/reopened PrjPcb files AD26 reports DM_Name='Variant' for every
+  variant. The distinct user-visible names persist as DM_Description values.
+  Use the description as the public name in that case. }
+Function ProjectVariantLabel(Variant : IProjectVariant) : String;
+Begin
+    Result := '';
+    If Variant = Nil Then Exit;
+    Try Result := Variant.DM_Name; Except End;
+    If (Result = '') Or (Result = 'Variant') Then
+        Try
+            If Variant.DM_Description <> '' Then
+                Result := Variant.DM_Description;
+        Except End;
+End;
+
 Function Proj_GetVariants(Params : String; RequestId : String) : String;
 Var
     ProjectPath : String;
@@ -9360,7 +9375,7 @@ Begin
         If Not First Then Data := Data + ',';
         First := False;
 
-        VarInfo := '{"name":"' + EscapeJsonString(Variant.DM_Name) + '"';
+        VarInfo := '{"name":"' + EscapeJsonString(ProjectVariantLabel(Variant)) + '"';
         VarInfo := VarInfo + ',"description":"' + EscapeJsonString(Variant.DM_Description) + '"';
 
         { Component variations }
@@ -9472,7 +9487,7 @@ Begin
         Variant := Project.DM_ProjectVariants(V);
         If V > 0 Then VariantsJson := VariantsJson + ',';
         If Variant <> Nil Then
-            VariantsJson := VariantsJson + '"' + EscapeJsonString(Variant.DM_Name) + '"'
+            VariantsJson := VariantsJson + '"' + EscapeJsonString(ProjectVariantLabel(Variant)) + '"'
         Else
             VariantsJson := VariantsJson + '""';
     End;
@@ -9555,7 +9570,7 @@ Begin
     Try
         Variant := Project.DM_CurrentProjectVariant;
         If Variant <> Nil Then
-            Result := BuildSuccessResponse(RequestId, '{"name":"' + EscapeJsonString(Variant.DM_Name) + '","description":"' + EscapeJsonString(Variant.DM_Description) + '"}')
+            Result := BuildSuccessResponse(RequestId, '{"name":"' + EscapeJsonString(ProjectVariantLabel(Variant)) + '","description":"' + EscapeJsonString(Variant.DM_Description) + '"}')
         Else
             Result := BuildSuccessResponse(RequestId, '{"name":"[No Variations]","description":"Base design, no variant active"}');
     Except
@@ -9598,9 +9613,10 @@ Begin
     For I := 0 To Project.DM_ProjectVariantCount - 1 Do
     Begin
         Variant := Project.DM_ProjectVariants(I);
-        If (Variant <> Nil) And (Variant.DM_Name = VariantName) Then
+        If (Variant <> Nil) And (ProjectVariantLabel(Variant) = VariantName) Then
         Begin
             Found := True;
+            VariantName := ProjectVariantLabel(Variant);
             Break;
         End;
     End;
@@ -9625,7 +9641,7 @@ Begin
     ActualName := '';
     Try
         Current := Project.DM_CurrentProjectVariant;
-        If Current <> Nil Then ActualName := Current.DM_Name;
+        If Current <> Nil Then ActualName := ProjectVariantLabel(Current);
     Except End;
 
     If ActualName = VariantName Then
@@ -9702,7 +9718,7 @@ Begin
     For I := 0 To PreCount - 1 Do
     Begin
         Variant := Project.DM_ProjectVariants(I);
-        If (Variant <> Nil) And (Variant.DM_Name = VariantName) Then
+        If (Variant <> Nil) And (ProjectVariantLabel(Variant) = VariantName) Then
         Begin
             Target := I;
             { Reported so the caller learns what the deletion cost. A      }
@@ -9741,7 +9757,7 @@ Begin
     For I := 0 To PostCount - 1 Do
     Begin
         Variant := Project.DM_ProjectVariants(I);
-        If (Variant <> Nil) And (Variant.DM_Name = VariantName) Then
+        If (Variant <> Nil) And (ProjectVariantLabel(Variant) = VariantName) Then
         Begin
             StillPresent := True;
             Break;

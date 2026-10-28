@@ -1,5 +1,29 @@
 # Current integration state / agent handoff
 
+## Silent per-variant schematic PDFs, 2026-10-28
+
+`proj_print_all_variants` no longer sends direct `project.export_pdf` for
+each variant. It stages the saved project and schematics separately per
+variant, configures the OutJob's variant choice and physical-document
+source, publishes silently, verifies the PDF and moves it to the requested
+folder. The original project variant is read back but never switched.
+Native QA on a disposable two-sheet project produced `AllFitted.pdf` and
+`NoJ10.pdf`, both two pages, without a modal. Rendered page 1 matched
+exactly; page 2 changed 12,000 pixels and red pixels increased from 1855
+to 2810 for the not-fitted variant. The source project was closed without
+saving. Variant lookup now uses the persisted Description when AD26
+reopens variants with the generic `DM_Name="Variant"`; script `.127` and
+HTTP MCP match. Pascal lint had zero findings; 136 focused tests passed.
+The deployed script source hashes (SHA-256) are `Main.pas`
+`8b6fabf4f10cab6aee01ae42eb2bab7bccd555f4549b2d67e0d348e7eb9146ce`
+and generated `Altium_MCP.pas`
+`59aed1ccec00e319e90cf4ca4e3ae305533770bd022e1ca8dc4e36c06cb9800a`.
+
+Altium's [OutJob documentation](https://www.altium.com/documentation/altium-designer/preparing-for-manufacture/output-jobs)
+confirms that variant choice belongs to the OutJob. The separate
+`proj_set_active_variant` process still failed native readback on AD26;
+this PDF workflow does not depend on it.
+
 ## Project-scoped save and PIC24 read-only parity, 2026-10-28
 
 Script `.126` restricts `proj_save` and `proj_close(save=true)` to modified

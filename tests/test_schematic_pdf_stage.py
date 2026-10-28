@@ -66,3 +66,26 @@ def test_rejects_a_noncolor_outjob_before_staging(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="Color"):
         stage_schematic_project(str(source), str(root / "result.pdf"))
     assert not (root / "_pdf_stage").exists()
+
+
+def test_variant_stage_preserves_project_definition_and_selects_output(tmp_path, monkeypatch):
+    source = tmp_path / "source" / "Sample.PrjPcb"
+    source.parent.mkdir()
+    (source.parent / "Top.SchDoc").write_bytes(b"schematic")
+    source.write_text(
+        "[Design]\nVersion=1.0\n"
+        "[Document1]\nDocumentPath=Top.SchDoc\n"
+        "[Variant1]\nName=NoJ10\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "screens"
+    monkeypatch.setenv("EDA_AGENT_SCHEMATIC_PDF_ROOT", str(root))
+    staged, _, _, _ = stage_schematic_project(
+        str(source), str(root / "result.pdf"), "NoJ10")
+    project = ConfigParser(interpolation=None)
+    project.read(staged, encoding="utf-8")
+    assert project["Variant1"]["Name"] == "NoJ10"
+    job = (staged.parent / "Documentation.OutJob").read_text(encoding="utf-8")
+    assert "VariantName=NoJ10" in job
+    assert "OutputVariantName1=NoJ10" in job
+    remove_stage(staged)

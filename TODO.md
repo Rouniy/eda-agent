@@ -9,9 +9,18 @@
   SchDocs: a clean `proj_save` left both hashes unchanged; editing J10 on A
   saved A while B stayed byte-identical; a second edit followed by
   `proj_close(save=true)` did the same. The temporary project was closed.
-- [ ] `proj_print_all_variants` still calls direct PDF print for every
-  variant, which can open a modal Preview SCH. Replace its loop with a
-  verified unattended variant export or a preflight refusal.
+- [x] `proj_print_all_variants` now stages each saved variant in its own
+  temporary project, selects it in a silent schematic OutJob, verifies
+  the PDF, and never switches the source project's active variant.
+  Native QA produced two 2-page PDFs (`AllFitted`, `NoJ10`) without a
+  dialog. Page 1 rendered identically; page 2 differed at 12,000 pixels
+  and the not-fitted variant had more red pixels. Script `.127` uses the
+  persisted variant Description when AD26 reloads `DM_Name` as `Variant`.
+  Pascal lint passed 12 files, and the focused variant suite passed 136.
+- [ ] `proj_set_active_variant` still dispatches
+  `WorkspaceManager:VariantManagement` without changing the active
+  variant on AD26.11. The native readback on the disposable project was
+  `[No Variations]` after requesting `NoJ10`; find a working editor API.
 
 ## `mooreaa` UI corrections, 2026-10-28
 

@@ -9,7 +9,7 @@ from ..units import MM_PER_MIL
 from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
-from .schematic_pdf import checked_output_path, remove_stage, stage_schematic_project
+from .schematic_pdf import checked_output_path, export_root, remove_stage, stage_schematic_project
 
 # Pads fetched per round-trip when verifying an ECO. pcb_get_pad_properties
 # windows its output, so a dense board needs paging -- reading only the
@@ -1204,7 +1204,8 @@ def register_project_tools(mcp):
         async with pdf_export_lock:
             return await _export_schematic_pdf(project_path, output_path)
 
-    async def _export_schematic_pdf(project_path: str, output_path: str) -> dict[str, Any]:
+    async def _export_schematic_pdf(project_path: str, output_path: str,
+                                    variant_name: str | None = None) -> dict[str, Any]:
         from pathlib import Path
         import os
         from pypdf import PdfReader
@@ -1213,7 +1214,7 @@ def register_project_tools(mcp):
         try:
             target = checked_output_path(output_path)
             staged_project, first_sheet, temporary_pdf, sheet_count = (
-                stage_schematic_project(project_path, output_path))
+                stage_schematic_project(project_path, output_path, variant_name))
         except (OSError, ValueError) as exc:
             return {"success": False, "error": {"code": "STAGING_FAILED", "message": str(exc)}}
 
@@ -1239,6 +1240,16 @@ def register_project_tools(mcp):
                 "application.set_active_document", {"file_path": str(first_sheet)})
             if not isinstance(focus, dict) or not focus.get("success"):
                 raise RuntimeError(f"could not focus staged SchDoc: {focus}")
+            if variant_name is not None:
+                staged_listing = await bridge.send_command_async(
+                    "project.get_variants", {"project_path": str(staged_project)})
+                staged_names = [v.get("name") for v in
+                                (staged_listing or {}).get("variants", [])
+                                if isinstance(v, dict)]
+                if variant_name not in staged_names:
+                    raise RuntimeError(
+                        f"staged project does not contain variant {variant_name}: "
+                        f"{staged_names}")
             run = await bridge.send_command_async(
                 "project.run_outjob",
                 {"outjob_path": str(staged_project.parent / "Documentation.OutJob"),
@@ -1271,6 +1282,8 @@ def register_project_tools(mcp):
                        "source_schdoc_count": sheet_count,
                        "page_order": page_order,
                        "order_note": "page_order is read from Altium's PDF sheet bookmarks"}
+            if variant_name is not None:
+                outcome["variant"] = variant_name
         except Exception as exc:
             outcome = {"success": False,
                        "error": {"code": "SCHEMATIC_PDF_EXPORT_FAILED", "message": str(exc)},
@@ -2596,10 +2609,11 @@ def register_project_tools(mcp):
         output_dir: str = "",
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Export a PDF for every project variant.
+        """Silently export one verified schematic PDF per saved variant.
 
-        One ``<variant>.pdf`` per variant, each made active in turn; the
-        original variant is restored at the end.
+        Each variant runs through a disposable copy of the project and a
+        variant-specific OutJob. The original project's active variant is
+        checked before and after, but never switched by this tool.
 
         Args:
             output_dir: Folder for the per-variant PDFs. Defaults to the
@@ -2608,89 +2622,90 @@ def register_project_tools(mcp):
                 project.
 
         Returns:
-            {"exported": [{variant, output_path, ok, error}], "count"} plus
-            ``restored``: the variant put back, or null if putting it
-            back FAILED: the project is then on another variant, and any
-            variant-sensitive call (a BOM, an export,
-            ``pcb_apply_dnp_paste_exclusion``) acts on the wrong set. A
-            failure also carries ``restore_error`` and a ``note``.
+            Per-variant PDF results, a count of PDFs actually written,
+            unattempted variants, and the original variant readback.
         """
         from pathlib import Path
-
+        from uuid import uuid4
+        from ..atomicfile import replace_with_retry
         from ..config import get_config
+        async with pdf_export_lock:
+            bridge = get_bridge()
+            if not project_path:
+                focused = await bridge.send_command_async("project.get_focused")
+                project_path = (focused or {}).get("project_path") if isinstance(focused, dict) else None
+            if not project_path or not Path(project_path).is_file():
+                return {"success": False, "error": "PROJECT_PATH_REQUIRED",
+                        "exported": [], "count": 0}
+            params = {"project_path": project_path}
+            listing = await bridge.send_command_async("project.get_variants", params)
+            if not isinstance(listing, dict) or not isinstance(listing.get("variants"), list):
+                return {"success": False, "error": "VARIANT_LIST_FAILED",
+                        "exported": [], "count": 0}
+            variants = [v.get("name") for v in listing["variants"]
+                        if isinstance(v, dict) and v.get("name")]
+            active = await bridge.send_command_async("project.get_active_variant", params)
+            original = active.get("name") if isinstance(active, dict) else None
+            base = Path(output_dir) if output_dir else get_config().workspace_dir
 
-        bridge = get_bridge()
-        params: dict[str, Any] = {}
-        if project_path:
-            params["project_path"] = project_path
+            def _safe(s: str) -> str:
+                return "".join(c if c.isalnum() or c in "-_." else "_" for c in s) or "variant"
 
-        listing = await bridge.send_command_async("project.get_variants", params)
-        variants = (listing or {}).get("variants", []) if isinstance(listing, dict) else []
-        active = await bridge.send_command_async("project.get_active_variant", params)
-        original = (active or {}).get("name") if isinstance(active, dict) else None
+            names = [_safe(v).casefold() for v in variants]
+            if len(names) != len(set(names)):
+                return {"success": False, "error": "VARIANT_FILENAME_COLLISION",
+                        "exported": [], "count": 0}
+            base.mkdir(parents=True, exist_ok=True)
+            exported: list[dict[str, Any]] = []
+            for vname in variants:
+                out_pdf = base / f"{_safe(vname)}.pdf"
+                intermediate = export_root() / f"_variant_{uuid4().hex}.pdf"
+                entry: dict[str, Any] = {"variant": vname,
+                                         "output_path": str(out_pdf),
+                                         "ok": False, "error": ""}
+                try:
+                    result = await _export_schematic_pdf(
+                        project_path, str(intermediate), variant_name=vname)
+                    if not isinstance(result, dict) or not result.get("success"):
+                        entry["error"] = str(result.get("error") if isinstance(result, dict)
+                                             else result)
+                    else:
+                        replace_with_retry(intermediate, out_pdf)
+                        entry["ok"] = True
+                        entry["page_count"] = result["page_count"]
+                except Exception as exc:
+                    entry["error"] = str(exc)
+                finally:
+                    try:
+                        intermediate.unlink(missing_ok=True)
+                    except OSError as exc:
+                        entry["cleanup_error"] = str(exc)
+                exported.append(entry)
+                if not entry["ok"]:
+                    break
 
-        base = Path(output_dir) if output_dir else get_config().workspace_dir
-        base.mkdir(parents=True, exist_ok=True)
-
-        def _safe(s: str) -> str:
-            return "".join(c if c.isalnum() or c in "-_." else "_" for c in s) or "variant"
-
-        exported: list[dict[str, Any]] = []
-        for var in variants:
-            vname = var.get("name") if isinstance(var, dict) else str(var)
-            if not vname:
-                continue
-            out_pdf = base / f"{_safe(vname)}.pdf"
-            entry: dict[str, Any] = {"variant": vname, "output_path": str(out_pdf),
-                                     "ok": False, "error": ""}
+            readback_error = ""
             try:
-                set_params = dict(params, variant_name=vname)
-                await bridge.send_command_async("project.set_active_variant", set_params)
-                res = await bridge.send_command_async(
-                    "project.export_pdf", {"output_path": str(out_pdf)}
-                )
-                entry["ok"] = bool(isinstance(res, dict) and res.get("success", True))
-                if isinstance(res, dict) and res.get("error"):
-                    entry["error"] = str(res["error"])
-            except Exception as exc:  # keep going across variants
-                entry["error"] = str(exc)
-            exported.append(entry)
-
-        # Restore the variant that was active before we started.
-        #
-        # Report whether that WORKED, not merely that it was attempted.
-        # This loop leaves the project on the last variant it touched,
-        # so a swallowed failure here hands back a project whose active
-        # variant is not the one the caller had, and every
-        # variant-sensitive operation after it acts on the wrong set:
-        # an export, a BOM, or pcb_apply_dnp_paste_exclusion stripping
-        # paste off the components the OTHER variant does not fit.
-        restored: Optional[str] = None
-        restore_error = ""
-        if original:
-            try:
-                await bridge.send_command_async(
-                    "project.set_active_variant", dict(params, variant_name=original)
-                )
-                restored = original
+                current = await bridge.send_command_async(
+                    "project.get_active_variant", params)
+                current_name = current.get("name") if isinstance(current, dict) else None
             except Exception as exc:
-                restore_error = str(exc)
-
-        result: dict[str, Any] = {
-            "exported": exported,
-            "count": sum(1 for e in exported if e["ok"]),
-            "restored": restored,
-        }
-        if restore_error:
-            result["restore_error"] = restore_error
-            result["active_variant_unknown"] = True
-            result["note"] = (
-                "the originally-active variant could not be restored, so "
-                "the project is left on the last variant exported. Set it "
-                "back with proj_set_active_variant before any "
-                "variant-sensitive operation."
-            )
-        return result
+                current_name = None
+                readback_error = str(exc)
+            report = {
+                "success": all(e["ok"] for e in exported) and len(exported) == len(variants),
+                "exported": exported,
+                "count": sum(e["ok"] for e in exported),
+                "not_run": variants[len(exported):],
+                "restored": original if original and current_name == original else None,
+                "original_variant": original,
+                "current_variant": current_name,
+                "source_snapshot": "saved_files",
+            }
+            if readback_error:
+                report["active_variant_unknown"] = True
+                report["readback_error"] = readback_error
+            return report
 
     @mcp.tool()
     async def proj_create_variant(

@@ -41,7 +41,8 @@ def _read_project(path: Path) -> ConfigParser:
     return project
 
 
-def stage_schematic_project(project_path: str, output_path: str) -> tuple[Path, Path, Path, int]:
+def stage_schematic_project(project_path: str, output_path: str,
+                            variant_name: str | None = None) -> tuple[Path, Path, Path, int]:
     """Copy only project schematics into a disposable project below _screens."""
     source = Path(project_path).resolve(strict=True)
     if source.suffix.lower() not in (".prjpcb", ".prjpcbd"):
@@ -69,6 +70,15 @@ def stage_schematic_project(project_path: str, output_path: str) -> tuple[Path, 
         validated_sheets.append((record, relative, original))
 
     job = TEMPLATE.read_text(encoding="utf-8")
+    if variant_name is not None:
+        if not variant_name or any(c in variant_name for c in "\r\n"):
+            raise ValueError("variant_name must be a nonempty single line")
+        if "VariantName=[No Variations]" not in job or \
+                "OutputVariantName1=[No Variations]" not in job:
+            raise ValueError("schematic PDF OutJob has no variant output selector")
+        job = job.replace("VariantName=[No Variations]", f"VariantName={variant_name}")
+        job = job.replace("OutputVariantName1=[No Variations]",
+                          f"OutputVariantName1={variant_name}")
     page_options = [line for line in job.splitlines() if line.startswith("PageOptions")]
     if len(page_options) != 1 or COLOR_PAGE_OPTION not in page_options[0]:
         raise ValueError("schematic PDF OutJob must explicitly use Color (PrintKind=0)")
