@@ -732,3 +732,9 @@ The adapter now uses `MM_PER_MIL`, and the unit-conversion and layout
 slice passed 61 tests with one optional skip. No other full-suite failure
 was reported; a new full run after this single-line repair remains to be
 recorded separately.
+
+The delivery guide from `yniantongtian-oss/release/0.5.0-deliverable-hardening`
+is now adapted as `docs/DELIVERY_ACCEPTANCE.md` and linked from the README.
+It names the current 3.11/3.12 test matrix, Pascal cross-validation,
+installed-wheel EasyEDA build, exact-SHA artifact and native editor check,
+without retaining the donor's old 0.5.0 version or separate EasyEDA CLI.

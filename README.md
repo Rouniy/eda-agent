@@ -6,6 +6,7 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 
 Local fork reliability work and acceptance gaps: [integration TODO](TODO.md).
 Exact upstream and MOREmbedded merge points: [integration baseline](docs/INTEGRATION-BASELINE.md).
+Release artifacts and exact-commit checks: [delivery acceptance](docs/DELIVERY_ACCEPTANCE.md).
 Agents: read [AGENTS.md](AGENTS.md) before using the upstream setup or connecting to Altium.
 Current deployment, evidence and next-agent memory: [current-state handoff](docs/CURRENT-STATE.md).
 
