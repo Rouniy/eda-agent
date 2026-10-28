@@ -46,6 +46,16 @@ The scan is a way to find missing tool surfaces; it does not compare
 arguments or semantics in shared functions, so the behavioral review
 remains open.
 
+The older `rabihnd/integration` names checked individually here have
+current paths: `lib_diag_footprint` maps to `lib_probe_footprint` for live
+3D-body diagnostics; `lib_set_label_format` to `lib_set_label_formats`;
+`diag_workspace` to `app_diag_workspace`; and its Win32 screenshot of a
+focused PcbLib can be requested through the general `app_screenshot`
+tool. The older screenshot captures the whole Altium window and does not
+guard an exact library path, so the current general capture is the more
+explicit way to inspect the editor view. This is a four-command sample,
+not a completed audit of the older all-in-one module.
+
 ## 2026-10-28 live refresh and plane-read repair
 
 `git fetch upstream main` returned
