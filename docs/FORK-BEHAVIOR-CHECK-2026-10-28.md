@@ -759,3 +759,9 @@ client, both tools still reached the real Altium bridge: the probe and
 report each returned `altium_running=true`,
 `process_scan_saw_altium=false`, script `.173`; the report measured
 44.2 ms and matched the bundled version.
+
+The complete Python suite on `4b43d58` then passed: 9,803 passed,
+165 skipped and one expected failure in 15:18, with zero failures.
+The 14 warnings are `PyMakeBuffer` deprecation notices from the Win32 UI
+tests. This includes the newly added direct-child diagnostic tests and
+the earlier zone-origin conversion repair.
