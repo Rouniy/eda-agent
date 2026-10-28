@@ -1,5 +1,25 @@
 # Current integration state / agent handoff
 
+## Workspace exact-result search, 2026-10-28
+
+Script `.131` repairs the `cad435` Workspace component resolver. Altium's
+`SearchItemRevisions` is a fuzzy search: the old handler used only
+`GetFirstItemRevision`, so a valid exact Component Item later in the
+result list was wrongly rejected. The handler now reads the returned
+`IInterfaceList`, scans up to 100 candidate revisions for the requested
+name, resolves the latest revision, and refuses distinct exact-name
+items as ambiguous. A full 100-result page is reported as truncated
+instead of silently claiming uniqueness. The installed SDK reflection
+confirms `IULB_ItemRevisionsResult.GetItemRevisions`,
+`IInterfaceList.GetCount/Get`, and `IULB_ItemRevision.GetComment`.
+The 12-file Pascal lint/build passed with no errors or warnings, and
+eight Workspace tool tests passed. Altium reloaded `.131` from the main
+script project; `app_ping` reports a matching bundled version and zero
+cast errors. The current Altium session has no Workspace server manager;
+the live call returned that existing explicit error and the polling loop
+remained responsive. Exact-match behavior
+still needs a connected Workspace for native acceptance.
+
 ## Populated-board xSignal create/delete acceptance, 2026-10-28
 
 On a disposable copy of the CW308 baseboard PcbDoc under Altium

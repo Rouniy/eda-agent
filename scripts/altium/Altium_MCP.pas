@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.130';
+    SCRIPT_VERSION = '2026.10.28.131';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -23384,10 +23384,12 @@ End;
 {..............................................................................}
 Function Lib_ResolveWorkspaceComponent(Params : String; RequestId : String) : String;
 Var
-    ComponentName, WorkspaceGuid, ItemGuid, RevisionGuid : String;
+    ComponentName, CandidateComment, WorkspaceGuid, ItemGuid, RevisionGuid : String;
     ItemRevisionId, ContentTypeGuid : String;
     ServerManagerProvider, ServerManager, Vault : Variant;
-    SearchResult, FoundRevision, LatestRevision : Variant;
+    SearchResult, Revisions, FoundRevision, CandidateRevision : Variant;
+    LatestRevision : Variant;
+    RevisionCount, I, ExactCount : Integer;
 Begin
     ComponentName := Trim(ExtractJsonValue(Params, 'component_name'));
     If ComponentName = '' Then
@@ -23401,7 +23403,9 @@ Begin
     ServerManager := Nil;
     Vault := Nil;
     SearchResult := Nil;
+    Revisions := Nil;
     FoundRevision := Nil;
+    CandidateRevision := Nil;
     LatestRevision := Nil;
 
     Try Client.StartServer('EDMSInterface'); Except End;
@@ -23458,7 +23462,7 @@ Begin
         SearchResult := Vault.SearchItemRevisions(
             '', '', ComponentName, '', '',
             'CB3C11C4-E317-11DF-B822-12313F0024A2',
-            '', '', 10, 0, Nil, Nil);
+            '', '', 100, 0, Nil, Nil);
     Except
         SearchResult := Nil;
     End;
@@ -23476,28 +23480,69 @@ Begin
         Exit;
     End;
 
-    Try FoundRevision := SearchResult.GetFirstItemRevision; Except FoundRevision := Nil; End;
-    If FoundRevision = Nil Then
+    { SearchItemRevisions is fuzzy. The first hit need not be the exact name. }
+    Try Revisions := SearchResult.GetItemRevisions; Except Revisions := Nil; End;
+    If Revisions = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_RESULTS_UNREADABLE',
+            'The Workspace search result list could not be read');
+        Exit;
+    End;
+    Try RevisionCount := Revisions.GetCount; Except RevisionCount := -1; End;
+    If RevisionCount < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_RESULTS_UNREADABLE',
+            'The Workspace search result count could not be read');
+        Exit;
+    End;
+    If RevisionCount = 100 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_SEARCH_TRUNCATED',
+            'The search returned 100 results; an exact and unique match cannot be verified');
+        Exit;
+    End;
+    If RevisionCount = 0 Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WORKSPACE_COMPONENT_NOT_FOUND',
             'No Component Item matching "' + ComponentName + '" was found');
         Exit;
     End;
 
-    Try LatestRevision := Vault.GetLastItemRevision(FoundRevision.GetItemGUID);
-    Except LatestRevision := Nil; End;
-    If LatestRevision = Nil Then
+    ExactCount := 0;
+    For I := 0 To RevisionCount - 1 Do
     Begin
-        Result := BuildErrorResponse(RequestId, 'WORKSPACE_REVISION_NOT_FOUND',
-            'The latest revision of "' + ComponentName + '" could not be resolved');
-        Exit;
+        Try FoundRevision := Revisions.Get(I); Except FoundRevision := Nil; End;
+        If FoundRevision = Nil Then Continue;
+        Try CandidateComment := FoundRevision.GetComment;
+        Except CandidateComment := ''; End;
+        If UpperCase(Trim(CandidateComment)) <> UpperCase(ComponentName) Then
+            Continue;
+        Try CandidateRevision := Vault.GetLastItemRevision(FoundRevision.GetItemGUID);
+        Except CandidateRevision := Nil; End;
+        If CandidateRevision = Nil Then Continue;
+        If UpperCase(Trim(CandidateRevision.GetComment)) <> UpperCase(ComponentName) Then
+            Continue;
+        If UpperCase(CandidateRevision.GetContentTypeGUID) <>
+           'CB3C11C4-E317-11DF-B822-12313F0024A2' Then Continue;
+        If ExactCount = 0 Then
+        Begin
+            LatestRevision := CandidateRevision;
+            ExactCount := 1;
+        End
+        Else If UpperCase(CandidateRevision.GetItemGUID) <>
+                UpperCase(LatestRevision.GetItemGUID) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'AMBIGUOUS_WORKSPACE_COMPONENT',
+                'More than one Component Item has the exact name "' +
+                ComponentName + '"');
+            Exit;
+        End;
     End;
-
-    If UpperCase(LatestRevision.GetComment) <> UpperCase(ComponentName) Then
+    If ExactCount = 0 Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_EXACT_WORKSPACE_MATCH',
-            'Workspace search returned "' + LatestRevision.GetComment
-            + '" instead of exact component "' + ComponentName + '"');
+            'No exact Component Item named "' + ComponentName +
+            '" was present among the Workspace search results');
         Exit;
     End;
 

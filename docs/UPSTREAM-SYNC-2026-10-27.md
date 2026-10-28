@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 cad435 Workspace exact search
+
+The `cad435` Workspace resolver's first-fuzzy-result limitation is fixed
+in script `.131`: it checks all returned candidate revisions for an exact
+Component Item name, rejects duplicate exact-name Items and identifies a
+full 100-result page as incomplete. The installed SDK exposes the list
+methods used; Pascal lint/build and eight focused tests passed. This
+session lacks a Workspace connection, so a live exact-match case remains
+unqualified. See `CURRENT-STATE.md` for the native refusal and scope.
+
 ## 2026-10-28 populated-board xSignal qualification
 
 The upstream xSignal create/delete family now has native AD26 evidence
