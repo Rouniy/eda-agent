@@ -79,8 +79,13 @@ six was superseded by a native-verified pad-cache write, so restoring it
 would discard working functionality. Running MOREmbedded's
 original update tests against this checkout passed 38/50; its remaining
 assertions target the older `run_update`/`_deploy_from` API or manual
-reload advice. The current update/designator/SDK/relink focused set passed
-51 tests with one optional skip. Live `eda-agent update --status --fetch
+reload advice. The original MOREmbedded SDK tests passed 12/12 against the
+current source after pointing their source-file lookup at this checkout.
+The original `mooreaa` small-fixes tests passed 15/18: two assert its old
+plain-string print refusal instead of our structured `PREVIEW_NOT_SILENT`,
+and one asserts the old `SameDocPath` source spelling. The current
+update/designator/SDK/relink focused set passed 51 tests with one optional
+skip. Live `eda-agent update --status --fetch
 --from upstream --json` reported the remote, checkout, editable package,
 main script folder and compiled `.160` session current.
 
