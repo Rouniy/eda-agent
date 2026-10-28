@@ -20,8 +20,12 @@
 - [ ] Reproduce the Rosen ECO "Footprint Not Found" case with a newly
   added project PcbLib footprint and compare an explicit-library relink;
   the donor tracked this as E1. An AD26.11 disposable project with a new
-  two-pad footprint passed ECO validation and added C1/C2, so the donor's
-  AD25/aliased-path condition remains to be reproduced.
+  two-pad footprint passed ECO validation and added C1/C2. A second
+  newly copied footprint in that project PcbLib, simultaneously installed
+  through a Q: alias, also validated and executed a C2 footprint swap.
+  Exact-board readback showed ECO_QA_ALIAS with pads 1 and 2. The placed
+  model stored the PcbLib basename even when relink was given the Q: path.
+  The donor's AD25-specific failure remains to be reproduced there.
 - [x] Open a closed primary PCB before `proj_sync_pcb` runs its modal ECO.
   Script `.160` verified exact board and project focus; native scratch ECO
   added C2 after the old path had refused with `WRONG_FOCUS`.

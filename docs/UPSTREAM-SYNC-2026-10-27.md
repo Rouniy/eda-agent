@@ -40,6 +40,20 @@ manual focus and added C2 with the expected footprint and two pads.
 The ECO class-member validation row looked red, but the execution log
 and exact-board class readback showed both C1 and C2 in `Only` after save.
 
+The E1 alias-path case was repeated on that disposable project in AD26.11:
+`Footprints_QA.PcbLib` was installed in Available Libraries through a
+temporary `Q:` substitution while the project used its original `C:`
+path. `lib_copy_footprint` created and saved `ECO_QA_ALIAS` in the project
+PcbLib during the session. `sch_relink_components` changed C2 to the new
+footprint with `footprint_library=Q:\Footprints_QA.PcbLib`; Altium stored
+the library basename. The ECO's sole footprint-change row validated and
+executed green. After exact-board focus, C2 read back as `ECO_QA_ALIAS`
+with two pads, designators 1 and 2. The scratch board was saved and its
+project closed; the Q: Available Library entry and substitution were
+removed. This narrows the open E1 condition to the donor's AD25 behavior
+or another unmodeled project setting; it does not justify a speculative
+source patch.
+
 ## 2026-10-28 refresh after script `.155`
 
 `python -m eda_agent fork-status --fetch --cached-forks
