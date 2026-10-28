@@ -112,3 +112,15 @@ remains as a fast diagnostic. Package metadata now names the KiCad and
 EasyEDA Pro backends documented in the README. Local TOML and matrix
 checks and 13 metadata/version tests passed; a hosted matrix result is
 still needed for native CI acceptance.
+
+After merging upstream `0bb1b315` (the second parent of `63f7c16`), a
+fresh `git fetch upstream` showed zero upstream commits pending. Two
+more divergent fork branches were reviewed by their distinct changes:
+
+| Divergent source | Current behavior and decision | Evidence |
+| --- | --- | --- |
+| `rabihnd/integration` `9c3fc81` | Multipart SchLib queries expose `OwnerPartId`; component graphics establish owner before insertion; label aliases, guarded property writes, delete/active-part tools, exact live part counts and batch rename reasons are present. Its forced `DoFileSave` during a component-list read is deliberately adapted: the current list identifies saved names and separately reports `unsaved_symbols` and stale saved names without writing the library. The donor's panel-cache issue remains unresolved in its own tracker. | Current `Generic.pas`, `Library.pas`, `library.py`; multipart, SchLib, catalogue checks: 40 passed, 2 skipped. |
+| `andrzej-sikora-elte/elte` `91d66fb`, `06fffff` | DbLib table and link flags and footprint model reads/writes are present. The current footprint writer selects an existing implementation and verifies its current flag, avoiding an unchecked model-name rewrite; fractional mil footprint pad placement is also present. | Current `Generic.pas`, library handlers; DbLib, footprint-model and decimal-mil checks: 50 passed, 1 skipped. |
+
+The skipped checks require a native editor or an optional local fixture;
+these offline runs do not establish native acceptance for every path.
