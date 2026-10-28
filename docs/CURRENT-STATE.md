@@ -1,5 +1,21 @@
 # Current integration state / agent handoff
 
+## Native variant switch and RFSoC DRC, 2026-10-28
+
+Script `.144` switches a project's active variant through
+`IProject.DM_SetCurrentProjectVariant` and verifies the result with
+`DM_CurrentProjectVariant`. A disposable AD26.11 project switched from
+`[No Variations]` to `NoJ10`, then `AllFitted`, and back to
+`[No Variations]`. Each API readback matched. The project was closed
+without saving. The earlier `WorkspaceManager:VariantManagement` process
+failed to switch this same project.
+
+Fresh native batch DRC on RFSoC `03_Altium_Antenna/Main.PcbDoc` and
+`01_Altium_Transceiver/Main.PcbDoc` produced zero rule violations on both
+boards. The antenna board had 32 net-tie verification warnings; the
+transceiver board had zero warnings. Both boards were closed without saving,
+and their requested `altium-drc-fresh.json` files contain `[]`.
+
 ## SchLib line vertex reads, 2026-10-28
 
 `generic.query_objects` formerly called the polyline vertex getter for
@@ -485,8 +501,8 @@ and generated `Altium_MCP.pas`
 
 Altium's [OutJob documentation](https://www.altium.com/documentation/altium-designer/preparing-for-manufacture/output-jobs)
 confirms that variant choice belongs to the OutJob. The separate
-`proj_set_active_variant` process still failed native readback on AD26;
-this PDF workflow does not depend on it.
+`proj_set_active_variant` was subsequently repaired using the direct
+`IProject` setter; see the native variant switch section above.
 
 ## Project-scoped save and PIC24 read-only parity, 2026-10-28
 

@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.142';
+    SCRIPT_VERSION = '2026.10.28.144';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -9610,18 +9610,21 @@ Begin
     Else Project := Workspace.DM_FocusedProject;
     If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
 
-    { Verify variant exists }
-    Found := False;
-    For I := 0 To Project.DM_ProjectVariantCount - 1 Do
-    Begin
-        Variant := Project.DM_ProjectVariants(I);
-        If (Variant <> Nil) And (ProjectVariantLabel(Variant) = VariantName) Then
+    { A nil variant selects the base design. The SDK exposes this setter on }
+    { IProject; the old VariantManagement process did not switch AD 26.11.   }
+    Found := VariantName = '[No Variations]';
+    Variant := Nil;
+    If Not Found Then
+        For I := 0 To Project.DM_ProjectVariantCount - 1 Do
         Begin
-            Found := True;
-            VariantName := ProjectVariantLabel(Variant);
-            Break;
+            Variant := Project.DM_ProjectVariants(I);
+            If (Variant <> Nil) And (ProjectVariantLabel(Variant) = VariantName) Then
+            Begin
+                Found := True;
+                VariantName := ProjectVariantLabel(Variant);
+                Break;
+            End;
         End;
-    End;
 
     If Not Found Then
     Begin
@@ -9629,18 +9632,16 @@ Begin
         Exit;
     End;
 
-    { Use RunProcess to switch variant via project options }
-    ResetParameters;
-    AddStringParameter('Action', 'SetCurrentVariant');
-    AddStringParameter('VariantName', VariantName);
-    RunProcess('WorkspaceManager:VariantManagement');
+    Try
+        Project.DM_SetCurrentProjectVariant(Variant);
+    Except
+        Result := BuildErrorResponse(RequestId, 'VARIANT_SWITCH_FAILED',
+            'IProject refused the requested active variant');
+        Exit;
+    End;
 
-    { READ BACK WHICH VARIANT IS CURRENT. The check above proves the name  }
-    { exists, which is not the same as the switch having happened, and     }
-    { this used to report success on the strength of that. The same        }
-    { VariantManagement process is documented here as unreliable for       }
-    { AddVariant, so taking its word on SetCurrentVariant was never safe.  }
-    ActualName := '';
+    { Read back the exact project's selection before reporting success. }
+    ActualName := '[No Variations]';
     Try
         Current := Project.DM_CurrentProjectVariant;
         If Current <> Nil Then ActualName := ProjectVariantLabel(Current);
@@ -9649,16 +9650,16 @@ Begin
     If ActualName = VariantName Then
         Result := BuildSuccessResponse(RequestId,
             '{"success":true,"variant_name":"' + EscapeJsonString(VariantName)
-            + '","verified":true}')
+            + '","verified":true,"project_file_name":"'
+            + EscapeJsonString(Project.DM_ProjectFileName) + '"}')
     Else
         Result := BuildSuccessResponse(RequestId,
             JsonObj(
                 JsonBool('success', False) + ',' +
                 JsonStr('variant_name', VariantName) + ',' +
                 JsonStr('current_variant', ActualName) + ',' +
-                JsonStr('reason', 'the switch was dispatched but the project '
-                    + 'still reports a different current variant. Set it in '
-                    + 'the Variant Management dialog.')
+                JsonStr('reason', 'the project still reports a different '
+                    + 'current variant after DM_SetCurrentProjectVariant')
             ));
 End;
 

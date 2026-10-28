@@ -57,10 +57,11 @@
   and the not-fitted variant had more red pixels. Script `.127` uses the
   persisted variant Description when AD26 reloads `DM_Name` as `Variant`.
   Pascal lint passed 12 files, and the focused variant suite passed 136.
-- [ ] `proj_set_active_variant` still dispatches
-  `WorkspaceManager:VariantManagement` without changing the active
-  variant on AD26.11. The native readback on the disposable project was
-  `[No Variations]` after requesting `NoJ10`; find a working editor API.
+- [x] `proj_set_active_variant` uses `IProject.DM_SetCurrentProjectVariant`
+  and reads back the selected project's current variant. On a disposable
+  two-variant project, AD26.11 switched to `NoJ10`, `AllFitted`, then
+  `[No Variations]`; each readback matched. The project was closed without
+  saving.
 
 ## `mooreaa` UI corrections, 2026-10-28
 

@@ -2577,11 +2577,13 @@ def register_project_tools(mcp):
         """Switch the active project variant.
 
         Args:
-            variant_name: Name of the variant to activate
+            variant_name: Name of the variant to activate, or
+                "[No Variations]" for the base design.
             project_path: Optional project path. If None, uses active project.
 
         Returns:
-            Dictionary confirming the switch
+            Dictionary confirming the switch after reading back the
+            current variant from the selected project.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"variant_name": variant_name}
