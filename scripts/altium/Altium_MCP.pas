@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.129';
+    SCRIPT_VERSION = '2026.10.28.130';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -5436,7 +5436,7 @@ Begin
     Else If MenuPath = 'Edit|Select All' Then
         ProcessName := 'Sch:SelectAll'
     Else If MenuPath = 'Edit|Deselect All' Then
-        ProcessName := 'Sch:DeSelectAll'
+        ProcessName := 'Sch:DeSelect'
     Else If MenuPath = 'View|Zoom Fit' Then
         ProcessName := 'Sch:ZoomFit'
     Else If MenuPath = 'Tools|Preferences' Then
@@ -5469,6 +5469,8 @@ Begin
     End;
 
     ResetParameters;
+    If MenuPath = 'Edit|Deselect All' Then
+        AddStringParameter('Action', 'All');
     RunProcess(ProcessName);
 
     { DISPATCHED, not "succeeded". RunProcess is fire and forget: it       }

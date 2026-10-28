@@ -2,6 +2,23 @@
 
 ## 2026-10-28 checkpoint follow-up
 
+The `vincent-himpe` footprint-primitive-selection and selected-pad/drill-type
+branch tests each pass 10/10 against current `main`; both capabilities are
+already present. The `mooreaa` port-cross-reference and placement-cleanup
+tests pass 35/39 when run from the fork: two port tests use a fake bridge
+that omits the active-document path our exact-sheet guard requires; two
+placement tests assert older source spellings instead of behavior. The
+current tools retain the port planner, per-part pin query and cleanup
+functions. Native CrossRef sheet acceptance remains open.
+
+The fork's `Sch:DeSelect` with `Action=All` was already used by
+`obj_deselect_all`. The display-side `app_run_menu('Edit|Deselect All')`
+still mapped to the old `Sch:DeSelectAll` process that left selections
+standing on AD25.8. Script `.130` sends the same corrected action through
+both routes. The 12-unit Pascal bundle built and the loaded Altium script
+reports `.130`; a selected-object UI readback for this menu alias remains
+to be done.
+
 `main` includes upstream tip `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`
 as its exact merge base; `main..upstream/main` has zero commits. The live
 fork check matched all 62/62 default tips and 117/117 branch tips to local
