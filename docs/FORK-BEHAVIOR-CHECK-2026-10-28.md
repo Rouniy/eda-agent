@@ -582,6 +582,32 @@ slice passed 104 tests with 11 fixture skips. This closes the name-level
 inventory, not the wider behavior audit of divergent commits or AD25 native
 acceptance.
 
+### Unchanged donor-test replay from `mooreaa/main`
+
+Four donor test files were run unchanged against the current code from
+temporary test paths, then removed. `test_added_altium_tools.py` passed
+86/111. Nineteen failures call board tools without the exact `board_path`
+(two xSignal writes additionally omit `expected_count`); two use the old
+`pcb_grow_pour(name=...)` and `pcb_physical_stack(style=...)` call shapes;
+three assert old Pascal source layout rather than the current equivalent
+read-only property or rule helper; and one expects no `expect_file` field
+on `pcb_pours_at`. The local corresponding files passed 129/129. The
+remaining donor assertions do not establish missing board operations.
+
+`test_pcb_stack_from_file.py` passed 21/24. Its three failures are exact
+response differences: the current check also reports a missing legacy
+chain before `no_dielectric`, describes the stale manager layer as
+`Top thickness: ...` rather than `Top: ...`, and requires an expected
+PcbDoc SHA-256 before an offline reset. The corresponding local stack
+tests pass. Donor PDF-export and port-crossref files passed 41/45. Their
+four failures expect an already-existing PDF path to be accepted or a
+port-reference edit without the current preview/confirm/hash gate. The
+three corresponding local stack, export and crossref files passed 46/46.
+None of these 32 donor failures
+justifies removing the current exact-board, file or edit guards; the
+unmodified tests remain useful evidence of changed call contracts, not
+proof of native behavior parity.
+
 At `main` `6cdb3af`, `fork-status --fetch --cached-forks
 --verify-fork-branches --json` refreshed origin, upstream and MOREmbedded.
 The upstream tip and merge base are both `0bb1b3154cca6e58a517b23edee3d7a108f1c232`;
