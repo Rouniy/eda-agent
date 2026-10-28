@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.178';
+    SCRIPT_VERSION = '2026.10.28.179';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -48159,17 +48159,24 @@ End;
 {..............................................................................}
 
 { Core body shared with the selection-scoped profile (see PCB_GetComponents). }
-Function PCB_GetViasForBoard(Board : IPCB_Board; RequestId : String) : String;
+Function PCB_GetViasForBoard(Board : IPCB_Board; Params, RequestId : String) : String;
 Var
     Iterator : IPCB_BoardIterator;
     Via : IPCB_Via;
-    JsonItems, NetName : String;
+    JsonItems, NetName, FilterNet : String;
     First : Boolean;
-    Count : Integer;
+    Count, Offset, Limit, Returned : Integer;
 Begin
     JsonItems := '';
     First := True;
     Count := 0;
+    Returned := 0;
+    FilterNet := ExtractJsonValue(Params, 'net');
+    Offset := StrToIntDef(ExtractJsonValue(Params, 'offset'), 0);
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 1000);
+    If Offset < 0 Then Offset := 0;
+    If Limit < 1 Then Limit := 1;
+    If Limit > 10000 Then Limit := 10000;
 
     Iterator := Board.BoardIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
@@ -48179,30 +48186,39 @@ Begin
     Via := Iterator.FirstPCBObject;
     While Via <> Nil Do
     Begin
-        If Not First Then JsonItems := JsonItems + ',';
-        First := False;
-
         Try
             If Via.Net <> Nil Then NetName := Via.Net.Name
             Else NetName := '';
         Except NetName := ''; End;
-
-        JsonItems := JsonItems + '{"x":' + FloatToJsonStr(CoordToMilsF(Via.x)) + ','
-            + '"y":' + FloatToJsonStr(CoordToMilsF(Via.y)) + ','
-            + '"size":' + FloatToJsonStr(CoordToMilsF(Via.Size)) + ','
-            + '"hole_size":' + FloatToJsonStr(CoordToMilsF(Via.HoleSize)) + ','
-            + JsonFloat('hole_size_mm', CoordToMM(Via.HoleSize)) + ','
-            + JsonFloat('size_mm', CoordToMM(Via.Size)) + ','
-            + '"net":"' + EscapeJsonString(NetName) + '",'
-            + '"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '",'
-            + '"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"}';
-        Inc(Count);
+        If (FilterNet = '') Or (NetName = FilterNet) Then
+        Begin
+            If (Count >= Offset) And (Returned < Limit) Then
+            Begin
+                If Not First Then JsonItems := JsonItems + ',';
+                First := False;
+                JsonItems := JsonItems + '{"x":' + FloatToJsonStr(CoordToMilsF(Via.x)) + ','
+                    + '"y":' + FloatToJsonStr(CoordToMilsF(Via.y)) + ','
+                    + '"size":' + FloatToJsonStr(CoordToMilsF(Via.Size)) + ','
+                    + '"hole_size":' + FloatToJsonStr(CoordToMilsF(Via.HoleSize)) + ','
+                    + JsonFloat('hole_size_mm', CoordToMM(Via.HoleSize)) + ','
+                    + JsonFloat('size_mm', CoordToMM(Via.Size)) + ','
+                    + '"net":"' + EscapeJsonString(NetName) + '",'
+                    + '"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '",'
+                    + '"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"}';
+                Inc(Returned);
+            End;
+            Inc(Count);
+        End;
         Via := Iterator.NextPCBObject;
     End;
     Board.BoardIterator_Destroy(Iterator);
 
     Result := BuildSuccessResponse(RequestId,
-        '{"vias":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+        '{"vias":[' + JsonItems + '],"count":' + IntToStr(Count)
+        + ',"offset":' + IntToStr(Offset) + ',"limit":' + IntToStr(Limit)
+        + ',"returned":' + IntToStr(Returned)
+        + ',"truncated":' + BoolToJsonStr(Count > Offset + Returned)
+        + ',"net":"' + EscapeJsonString(FilterNet) + '"}');
 End;
 
 Function PCB_GetVias(Params : String; RequestId : String) : String;
@@ -48215,7 +48231,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
-    Result := PCB_GetViasForBoard(Board, RequestId);
+    Result := PCB_GetViasForBoard(Board, Params, RequestId);
 End;
 
 {..............................................................................}
@@ -92646,7 +92662,7 @@ Begin
             Else If Command = 'pcb.get_differential_pairs' Then
                 Reply := PCB_GetDifferentialPairsForBoard(Board, RequestId)
             Else If Command = 'pcb.get_vias' Then
-                Reply := PCB_GetViasForBoard(Board, RequestId)
+                Reply := PCB_GetViasForBoard(Board, Params, RequestId)
             Else If Command = 'pcb.get_tracks' Then
                 { Rebuilt params: only the whitelisted filter and page fields
                   cross into the handler, never the caller's object. }

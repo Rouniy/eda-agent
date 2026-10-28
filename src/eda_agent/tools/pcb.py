@@ -8132,20 +8132,31 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_vias() -> dict[str, Any]:
-        """Get all vias on the active PCB board.
+    async def pcb_get_vias(
+        net: str = "", offset: int = 0, limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Read a bounded page of vias on the active PCB board.
 
         Returns via position, pad size, hole size, net assignment, and
-        start/end layer for every via on the board.
+        start/end layer. ``net`` selects one exact net name; ``offset``
+        and ``limit`` page large boards without building one huge response.
 
         Returns:
             Dictionary with "vias" array (each with x, y, size, hole_size,
-            net, low_layer, high_layer) and "count". Legacy size/hole_size
-            values are rounded integer mils. size_mm and hole_size_mm
-            retain sub-mil precision and are explicitly in millimeters.
+            net, low_layer, high_layer), total matching "count", "returned",
+            and "truncated". Size and coordinates retain fractional mils;
+            size_mm and hole_size_mm are explicitly in millimeters.
         """
+        if type(net) is not str:
+            return {"ok": False, "reason": "net must be a string"}
+        if type(offset) is not int or offset < 0:
+            return {"ok": False, "reason": "offset must be a nonnegative integer"}
+        if type(limit) is not int or not 1 <= limit <= 10000:
+            return {"ok": False, "reason": "limit must be an integer from 1 to 10000"}
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_vias", {})
+        result = await bridge.send_command_async(
+            "pcb.get_vias", {"net": net, "offset": str(offset), "limit": str(limit)},
+        )
         return result
 
     @mcp.tool()
@@ -9350,27 +9361,40 @@ def register_pcb_tools(mcp):
         """Audit routed length skew and layer-transition symmetry of a pair."""
         bridge = get_bridge()
         lengths = await bridge.send_command_async("pcb.get_trace_lengths", {})
-        vias = await bridge.send_command_async("pcb.get_vias", {})
+        positive_vias = await bridge.send_command_async(
+            "pcb.get_vias", {"net": positive_net, "limit": "1000"},
+        )
+        negative_vias = await bridge.send_command_async(
+            "pcb.get_vias", {"net": negative_net, "limit": "1000"},
+        )
         by_net = {
             str(item.get("net")): float(item.get("length_mils") or 0)
             for item in (lengths.get("trace_lengths") or [])
         }
         p_len, n_len = by_net.get(positive_net, 0.0), by_net.get(negative_net, 0.0)
-        p_vias = [v for v in (vias.get("vias") or []) if v.get("net") == positive_net]
-        n_vias = [v for v in (vias.get("vias") or []) if v.get("net") == negative_net]
+        p_via_count = positive_vias.get("count")
+        if positive_vias.get("net") != positive_net or type(p_via_count) is not int:
+            p_via_count = sum(
+                v.get("net") == positive_net for v in (positive_vias.get("vias") or [])
+            )
+        n_via_count = negative_vias.get("count")
+        if negative_vias.get("net") != negative_net or type(n_via_count) is not int:
+            n_via_count = sum(
+                v.get("net") == negative_net for v in (negative_vias.get("vias") or [])
+            )
         skew = abs(p_len - n_len)
         violations = []
         if skew > max_skew_mils:
             violations.append("length_skew")
-        if require_same_via_count and len(p_vias) != len(n_vias):
+        if require_same_via_count and p_via_count != n_via_count:
             violations.append("via_count_mismatch")
         return {
             "success": True, "positive_net": positive_net,
             "negative_net": negative_net, "positive_length_mils": p_len,
             "negative_length_mils": n_len, "skew_mils": skew,
             "max_skew_mils": max_skew_mils,
-            "positive_via_count": len(p_vias),
-            "negative_via_count": len(n_vias),
+            "positive_via_count": p_via_count,
+            "negative_via_count": n_via_count,
             "violations": violations, "passed": not violations,
             "note": "Track/arc length only; package pin delay is not included.",
         }

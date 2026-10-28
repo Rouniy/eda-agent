@@ -783,6 +783,23 @@ The 14 warnings are `PyMakeBuffer` deprecation notices from the Win32 UI
 tests. This includes the newly added direct-child diagnostic tests and
 the earlier zone-origin conversion repair.
 
+The branch's exact tip `b1d0fa199d6f38438dde2449191248360f70fd95`
+was subsequently merged into `main` by `02d6964`, preserving Git
+ancestry as well as the adapted behavior. Its extra explanatory comments
+were retained; the older duplicate changelog block was not. The donor
+probe/report tests and related local tests passed 42/42 after the merge.
+The latest 63-fork/120-branch refresh reports 53 nonancestor cached refs.
+
+Script `.179` stabilizes a large-board read encountered during native
+fork verification. The former unbounded `pcb_get_vias` response stalled
+Altium while serializing 22,617 vias. The current handler scans the board
+once, emits at most 1,000 rows by default, and returns a total count,
+offset, returned count and truncation flag. It accepts an exact net filter;
+the diff-pair audit reads the total count of each net, preserving the
+symmetry check on paged boards. A native first/last page and GND-filter
+read passed on that same board with the original file unchanged; the
+release verification records the numbers.
+
 The `yniantongtian-oss/upgrade/reliability-20261011` donor's EasyEDA
 delivery tests use its removed `easyeda_extension_cli.py` entry point.
 The current `eda_agent.easyeda_extension` already selects explicit

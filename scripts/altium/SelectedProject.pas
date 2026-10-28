@@ -3410,7 +3410,7 @@ Begin
             Else If Command = 'pcb.get_differential_pairs' Then
                 Reply := PCB_GetDifferentialPairsForBoard(Board, RequestId)
             Else If Command = 'pcb.get_vias' Then
-                Reply := PCB_GetViasForBoard(Board, RequestId)
+                Reply := PCB_GetViasForBoard(Board, Params, RequestId)
             Else If Command = 'pcb.get_tracks' Then
                 { Rebuilt params: only the whitelisted filter and page fields
                   cross into the handler, never the caller's object. }

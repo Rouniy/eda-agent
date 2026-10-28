@@ -1,5 +1,22 @@
 
-# Release verification: 2026.10.28.175
+# Release verification: 2026.10.28.179
+
+Script `.179` bounds `pcb_get_vias` to 1,000 rows per response by default,
+returns the total matching count and pagination metadata, and supports an
+exact net filter. This avoids constructing an unbounded JSON string for
+large boards. `pcb_audit_diff_pair` uses the total per-net counts so its
+via symmetry check remains complete. The native readback and Pascal build
+results for this revision: the 12-file Pascal lint/build had zero errors
+and warnings, and 14 focused tests passed. After restarting the one main
+script project and HTTP server, `app_ping` reported `.179` with
+`version_match=true`. On the read-only 22,617-via RF transceiver board,
+the first page returned 1,000 rows with `truncated=true`, offset 22,000
+returned 617 with `truncated=false`, and `net=GND` reported a total of
+22,042 with 10 rows requested. The board was closed without saving and
+its SHA-256 stayed `EC834DDA1339CFBD5323670BEB477D6CAED16776D01EBAE717E2932951CC0B53`.
+The full Python suite before this source change had 9,805 passes,
+165 skips, one expected failure, and one failure from this document's
+stale `.175` version; the version check passes after updating it.
 
 Script `.173` guards the impedance profile layer-name read on AD26.11.
 The 12-unit Pascal build had zero errors or warnings, 11 focused
@@ -186,7 +203,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.175` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.179` from `app_ping`.
 
 ## 2026.10.28.156 - Previous native checkpoint
 

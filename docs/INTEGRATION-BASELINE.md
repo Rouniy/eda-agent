@@ -70,3 +70,14 @@ tip, with `0` pending commits. `fork-status --fetch --cached-forks
 point while the current fork is stabilized. A native MCP ping on port 14701
 reported script `2026.10.28.178` and `version_match=true` after the
 net-lookup repair in `e75f3b6`.
+
+On the latest 2026-10-28 recheck, `main` and `origin/main` were
+`02d69644b12b2b104f5124e4e43247103f7c1903`. The child fork's
+`claude/determined-gould-ebb38e` tip
+`b1d0fa199d6f38438dde2449191248360f70fd95` is also an ancestor of
+`main`, recorded by merge `02d6964`. The upstream sync point remains
+`0bb1b315`; the child default remains `d495c4d` with zero pending
+commits. The fresh fork-status check matched all 63 direct fork defaults
+and all 120 live branch tips to their cached refs. Fifty-three cached
+refs have divergent ancestry; they are a review inventory, not a count
+of missing features.

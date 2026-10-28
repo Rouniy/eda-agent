@@ -91,6 +91,38 @@ async def test_audit_diff_pair_checks_skew_and_vias(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_vias_requests_a_bounded_page(monkeypatch):
+    tools, bridge = _registered(monkeypatch)
+    await tools["pcb_get_vias"](net="GND", offset=1000, limit=250)
+    assert bridge.calls[-1] == (
+        "pcb.get_vias", {"net": "GND", "offset": "1000", "limit": "250"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_diff_pair_audit_uses_total_counts_from_truncated_pages(monkeypatch):
+    from eda_agent.tools import pcb
+
+    class _PagedBridge(_Bridge):
+        async def send_command_async(self, command, params=None, timeout=None):
+            if command == "pcb.get_vias":
+                return {"vias": [{"net": params["net"]}],
+                        "net": params["net"],
+                        "count": 1001 if params["net"] == "DP" else 1000,
+                        "truncated": True}
+            return await super().send_command_async(command, params, timeout)
+
+    bridge = _PagedBridge()
+    monkeypatch.setattr(pcb, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    pcb.register_pcb_tools(mcp)
+    out = await mcp.tools["pcb_audit_diff_pair"]("DP", "DN")
+    assert out["positive_via_count"] == 1001
+    assert out["negative_via_count"] == 1000
+    assert "via_count_mismatch" in out["violations"]
+
+
+@pytest.mark.asyncio
 async def test_apply_impedance_rules_builds_width_and_gap(monkeypatch):
     tools, bridge = _registered(monkeypatch)
     out = await tools["pcb_apply_impedance_rules"](
