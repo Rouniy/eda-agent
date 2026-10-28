@@ -73,6 +73,21 @@ entry point, a raw copier that accepts a source lacking a `.PrjScr`, and
 an Altium-version mock of the older ping path. The current API checks the
 loaded project path as well as the compiled version.
 
+At `7d6045d`, the two donor-only test files were rerun unchanged against
+the current checkout. `MOREmbedded/main`'s SDK file passed 12/12. Its
+update file passed 43 checks, failed seven old-interface/source-spelling
+assertions, and raised one teardown assertion because its test left the
+shared bridge keepalive running. The seven expect `--pull` or a manual
+File > Run Script instruction instead of the current `update --yes` and
+`relaunch --restart` routes, reject the guarded `install-scripts --from`
+route, call the former `cmd_update(as_json)` and `_deploy_from` internals,
+or inspect `altium_version` instead of its delegated `altium_runtime`
+ping/logger guard. A live `eda-agent update --status --from upstream --json`
+returned parseable JSON with our remote current, upstream requiring review,
+and package, script folder and Altium session current. The process exited
+with status 1 for the upstream action step. Temporary donor files were
+removed; these results do not claim unchanged donor API spellings.
+
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not
