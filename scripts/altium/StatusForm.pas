@@ -1388,7 +1388,7 @@ Begin
             '. Use generic.* for object operations, pcb.* for PCB-specific ' +
             'commands, or audit.* for design-lint checks.');
     End;
-    Result := SheetCoverage(Result);
+    Result := SheetCoverage(Result, RequestId);
     Result := BoardFallbackNote(Result);
 End;
 

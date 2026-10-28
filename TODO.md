@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Project-wide sheet coverage from `redbird98`, 2026-10-28
+
+- [x] Return `SHEETS_NOT_LOADED` when every schematic in a project-wide
+  read is unavailable. Native script `.148` refused a disposable one-sheet
+  project whose sheet was closed; a two-sheet project with one sheet open
+  retained its data and reported `sheets_seen=2`, `sheets_skipped=1`.
+  The project was closed without another save.
+
 ## Fresh fork audit and PcbLib selection, 2026-10-28
 
 - [x] Refresh and verify all 117 fork branch tips; retain exact

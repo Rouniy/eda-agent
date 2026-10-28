@@ -59,6 +59,12 @@ _NO_HINT_NEEDED = {
     "NOT_A_MEMBER": "the project resolved fine and the document simply is "
                     "not in it, so there is no other document to point at. "
                     "The message names the path that was asked for.",
+    "NOT_A_COMPONENT_ITEM": "the exact Workspace match has the wrong item type; "
+                            "there is no alternate document namespace",
+    "NO_LIBRARY_FILE": "the requested PcbLib path does not exist on disk; "
+                       "the message names that path",
+    "WRONG_FOOTPRINT_ACTIVE": "the correct PcbLib is open, but Altium did not "
+                              "activate the requested footprint",
 }
 
 

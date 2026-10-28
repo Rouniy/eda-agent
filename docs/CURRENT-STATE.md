@@ -1,5 +1,25 @@
 # Current integration state / agent handoff
 
+## Fail closed when no project sheets are loaded, 2026-10-28
+
+The `redbird98` sheet-coverage guard exposed a real gap in the adapted
+shared dispatcher: when every project schematic was unloaded, an audit
+still returned a successful zero-count result with a warning. Script
+`.148` now returns `SHEETS_NOT_LOADED` before reporting findings in that
+case; a partial read still returns its data with `sheets_seen` and
+`sheets_skipped`. The guard is at the dispatch point for every handler
+that uses `ProjectSheet`.
+
+Native Altium 26.11.1.5 acceptance used a disposable project with a PCB
+left open to keep the project focused. With its only schematic closed,
+`audit_find_visible_supplier_pn` returned the new error and told the
+caller to run `proj_load_sheets`. After adding a second schematic and
+opening only one, the same audit returned `sheets_seen=2`,
+`sheets_skipped=1` and an explicit partial-coverage warning. The
+disposable project was closed with `save=false`. The 12-unit Pascal
+build had zero lint findings; `app_ping` confirmed loaded and bundled
+`.148` with no stale units.
+
 ## Live fork boundary and footprint selection, 2026-10-28
 
 `python -m eda_agent fork-status --fetch --cached-forks

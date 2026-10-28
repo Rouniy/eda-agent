@@ -24,7 +24,7 @@ def test_the_dispatcher_resets_and_reports_per_request():
     body = load(_SCRIPTS / "StatusForm.pas")["ProcessCommand"]
     reset = body.index("SheetsSkipped := 0;")
     route = body.index("Case Category Of")
-    report = body.index("Result := SheetCoverage(Result);")
+    report = body.index("Result := SheetCoverage(Result, RequestId);")
     assert reset < route < report
 
 
@@ -49,9 +49,9 @@ def test_no_project_loop_looks_a_sheet_up_uncounted():
             above = "\n".join(lines[max(0, i - 30):i])
             if re.search(r"DM_LogicalDocuments\(|GetCompiledDoc\(", above):
                 offenders.append(f"{pas.name}:{i + 1}")
-    # Two loops in Project.pas re-find sheets the same call already
-    # touched, and one counts skipped sheets itself.
-    allowed = {"Project.pas"}
+    # Project.pas re-finds sheets already touched. SelectedProject.pas
+    # rejects an unavailable sheet in its own exact-project gate.
+    allowed = {"Project.pas", "SelectedProject.pas"}
     left = [o for o in offenders if o.split(":")[0] not in allowed]
     assert not left, f"project loops still resolving sheets uncounted: {left}"
 
@@ -93,3 +93,11 @@ def test_the_python_mirror_matches_the_pascal():
                   "'Run proj_load_sheets and ask again.\"'",
                   "If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ','"):
         assert piece in body, piece
+
+
+def test_an_entirely_unloaded_project_is_not_reported_clean():
+    body = load(_SCRIPTS / "Main.pas")["SheetCoverage"]
+    assert body.index("If (SheetsSeen > 0) And (SheetsSkipped >= SheetsSeen) Then") < body.index(
+        "Added := '")
+    assert "BuildErrorResponse(RequestId, 'SHEETS_NOT_LOADED'" in body
+    assert "proj_load_sheets and ask again" in body

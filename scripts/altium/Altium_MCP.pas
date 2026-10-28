@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.147';
+    SCRIPT_VERSION = '2026.10.28.148';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -1798,31 +1798,6 @@ Begin
     Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
 End;
 
-{ The reply with the sheet counts added when a project-wide read skipped a   }
-{ sheet. Only a success whose data is an object is touched; an error, or a   }
-{ reply that read no project sheet, goes back unchanged.                     }
-Function SheetCoverage(Response : String) : String;
-Var
-    Marker, Added : String;
-    P : Integer;
-Begin
-    Result := Response;
-    If SheetsSkipped = 0 Then Exit;
-    Marker := '"success":true,"data":' + Chr(123);
-    P := Pos(Marker, Response);
-    If P = 0 Then Exit;
-    P := P + Length(Marker);
-    Added := '"sheets_seen":' + IntToStr(SheetsSeen)
-        + ',"sheets_skipped":' + IntToStr(SheetsSkipped)
-        + ',"sheets_warning":"' + IntToStr(SheetsSkipped) + ' of '
-        + IntToStr(SheetsSeen) + ' project sheets are not loaded in the editor '
-        + 'and were NOT read, so counts and findings cover only the rest. '
-        + 'Run proj_load_sheets and ask again."';
-    { A data object that was empty takes the fields without a comma. }
-    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
-    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
-End;
-
 {..............................................................................}
 { CROSS-DOCUMENT HINTS                                                        }
 {                                                                              }
@@ -1981,6 +1956,38 @@ End;
 Function BuildErrorResponse(RequestId : String; ErrorCode : String; ErrorMsg : String) : String;
 Begin
     Result := BuildErrorResponseDetailed(RequestId, ErrorCode, ErrorMsg, '');
+End;
+
+{ A project-wide read that skipped every sheet has no finding to report.    }
+{ Partially read projects retain their data with explicit coverage counts. }
+Function SheetCoverage(Response : String; RequestId : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If SheetsSkipped = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    If (SheetsSeen > 0) And (SheetsSkipped >= SheetsSeen) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SHEETS_NOT_LOADED',
+            'None of the project''s ' + IntToStr(SheetsSeen) + ' schematic '
+            + 'sheet(s) are loaded, so nothing was examined. Run '
+            + 'proj_load_sheets and ask again.');
+        Exit;
+    End;
+    P := P + Length(Marker);
+    Added := '"sheets_seen":' + IntToStr(SheetsSeen)
+        + ',"sheets_skipped":' + IntToStr(SheetsSkipped)
+        + ',"sheets_warning":"' + IntToStr(SheetsSkipped) + ' of '
+        + IntToStr(SheetsSeen) + ' project sheets are not loaded in the editor '
+        + 'and were NOT read, so counts and findings cover only the rest. '
+        + 'Run proj_load_sheets and ask again."';
+    { A data object that was empty takes the fields without a comma. }
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
 Procedure EnsureWorkspaceDir(Dummy : Integer);
@@ -92705,7 +92712,7 @@ Begin
             '. Use generic.* for object operations, pcb.* for PCB-specific ' +
             'commands, or audit.* for design-lint checks.');
     End;
-    Result := SheetCoverage(Result);
+    Result := SheetCoverage(Result, RequestId);
     Result := BoardFallbackNote(Result);
 End;
 
