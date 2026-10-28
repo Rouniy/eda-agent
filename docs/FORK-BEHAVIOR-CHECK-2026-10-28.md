@@ -124,3 +124,14 @@ more divergent fork branches were reviewed by their distinct changes:
 
 The skipped checks require a native editor or an optional local fixture;
 these offline runs do not establish native acceptance for every path.
+
+The direct child fork was refreshed again: `MOREmbedded/main` remains
+`032fb4b`, and `MOREmbedded/claude/project-thread-6aorpk` remains
+`5954a6f`. The latter branch's STEP/LibPkg/backup/footprint-file tools,
+rotation audit, fractional PCB layer thickness, registered-script-folder
+lookup, stackup templates, calculators, replacement-part review, profile
+seeding, fab-package check and performance command all have their source
+paths and public routes in `main`. Its focused library-file, rotation,
+stackup, replacement-part, calculator and performance tests passed 198/198.
+This establishes the checked behavior in those groups, not a blanket
+equivalence of every historical commit or a native CAD acceptance claim.
