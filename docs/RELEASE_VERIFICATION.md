@@ -4,9 +4,12 @@
 The `.164` source merges upstream `0bb1b315` as a Git parent, adding
 variant parameter values, rename/copy, and a variant-aware BOM while
 retaining this fork's existing project and safety tools. The Pascal
-lint and bundle build passed; the focused variant tests passed 13/13.
-Native `.164` script loading and the merged behavior on a disposable
-project remain to be checked before calling the runtime verified.
+lint and bundle build passed; the focused variant tests passed 13/13,
+and 76 related project/catalog tests passed. `eda-agent relaunch --restart`
+started the main `Altium_API.PrjScr` in AD 26.11.1.5; a fresh
+`application.ping` returned `.164` with zero cast errors. A read-only
+`project.get_variants` on the focused project returned an empty list.
+The merged writes and BOM remain to be checked on a disposable project.
 
 The `.163` results below are the last native acceptance evidence.
 
