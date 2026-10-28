@@ -1,5 +1,23 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 checkpoint follow-up
+
+`main` includes upstream tip `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`
+as its exact merge base; `main..upstream/main` has zero commits. The live
+fork check matched all 62/62 default tips and 117/117 branch tips to local
+refs. `MOREmbedded/main` remains `032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+
+Running `mooreaa`'s Rosen small-fixes tests against our source exposed one
+remaining behavioral gap: `app_checkpoint` treated Altium's synthetic
+`Free Documents` entry as a second open project and refused an unnamed
+checkpoint when exactly one real project was open. Commit `0614d73` filters
+that entry before deciding whether the project is ambiguous. The focused
+checkpoint tests passed 8/8, and the HTTP MCP server was restarted from
+`main`; Altium script `.129` still answers on port 14701. The other Rosen
+test failures in that external test run were response-contract differences
+or its temporary location making relative Pascal source paths invalid;
+they are not evidence of missing behavior.
+
 ## 2026-10-28 public-tool-name cross-check
 
 An AST inventory compared public function names in `src/eda_agent/tools`
