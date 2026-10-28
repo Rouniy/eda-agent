@@ -1036,6 +1036,10 @@ def register_pcb_tools(mcp):
     async def pcb_get_nets(board_path: str = "") -> dict[str, Any]:
         """Get all unique net names from the active or specified PCB board.
 
+        When several boards are open, call pcb_focus_board(board_path)
+        before passing that path. The native read refuses a different
+        selected board instead of returning its nets.
+
         Returns:
             Dictionary with "nets" array of net name strings and "count"
         """
@@ -10218,6 +10222,8 @@ def register_pcb_tools(mcp):
         With from_project, supply the exact PrjPcb path. Each net with a
         project colour receives it in one guarded board write; nets without
         a project colour are left unchanged. Omit nets to use all board nets.
+        With several boards open, call pcb_focus_board(board_path) first;
+        the exact-path guard rejects a different selected board.
         """
         if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
             return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}

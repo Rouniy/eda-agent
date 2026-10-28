@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Two-board project net-colour targeting, 2026-10-28
+
+Native script `.137` was tested with a disposable SODIMM project and its
+PcbDoc open beside a different DCDC board. The DCDC board held 74 nets;
+the SODIMM board held 229. While DCDC was selected, the direct
+`pcb_net_display(from_project=True, nets=None, dry_run=True)` call refused
+the SODIMM path with `Selected PCB path differs from board_path`. After
+`pcb_focus_board` selected the copied SODIMM PcbDoc, exact `pcb_get_nets`
+returned 229 names. The dry-run returned 229 rows with precisely the same
+name set and five project colours. No board was written; the copied
+project was closed without saving. The tool descriptions now state the
+focus requirement for multi-board sessions.
+
 ## Project-generated CrossRef native qualification, 2026-10-28
 
 On a disposable two-sheet `Multipart_QA.PrjPcb` copy with
@@ -1048,9 +1061,9 @@ in the reply. `pcb_net_display(from_project=True, nets=None)` sends the
 same path for its net inventory and rejects a mismatched reply before
 planning any colour write. Previously it read whichever PCB was current.
 Eight focused tests pass; Pascal lint/build scanned 12 units with zero
-errors or warnings. Native two-board acceptance awaits script `.109`.
-The broader legacy `test_added_altium_tools.py` has been reconciled with
-the exact-board wrapper contracts; native qualification is still pending.
+errors or warnings. Native two-board acceptance on script `.137` is
+recorded above. The broader legacy `test_added_altium_tools.py` has been
+reconciled with the exact-board wrapper contracts.
 
 ## Fractional schematic placements, 2026-10-27
 

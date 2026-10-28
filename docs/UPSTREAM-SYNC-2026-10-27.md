@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 two-board net-colour acceptance
+
+The upstream `pcb_net_display(from_project=True, nets=None)` path was
+checked natively with 229 copied-project board nets beside an unrelated
+74-net board. A call while the other board was selected refused the
+target path; after `pcb_focus_board`, the 229-row project-colour plan
+matched the copied board's exact net inventory and read five colours.
+The copied project closed without saving. The wrapper descriptions now
+make the multi-board focus requirement explicit.
+
 ## 2026-10-28 project-generated CrossRef qualification
 
 The `mooreaa` port-reference fix was exercised on an Altium-generated
@@ -1001,7 +1011,7 @@ open it could take the current board's names for the requested one. Source
 `.109` adds an optional exact board path to the inventory handler, returns
 the resolved path, and refuses a mismatched inventory before any display
 write. Eight focused tests and Pascal lint/build pass; native two-board
-acceptance is pending.
+acceptance is recorded above.
 
 Reviewing the older upstream xSignal checks exposed a conflicting delete
 selector: `pcb_delete_xsignals(names=[...], all=true)` passed through to
