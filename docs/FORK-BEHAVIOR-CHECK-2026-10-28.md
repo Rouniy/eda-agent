@@ -765,3 +765,13 @@ The complete Python suite on `4b43d58` then passed: 9,803 passed,
 The 14 warnings are `PyMakeBuffer` deprecation notices from the Win32 UI
 tests. This includes the newly added direct-child diagnostic tests and
 the earlier zone-origin conversion repair.
+
+The `yniantongtian-oss/upgrade/reliability-20261011` donor's EasyEDA
+delivery tests use its removed `easyeda_extension_cli.py` entry point.
+The current `eda_agent.easyeda_extension` already selects explicit
+source files, excludes old `.eext` packages, refuses a nonempty output
+folder without `--force`, and builds from a clean installed wheel as
+verified above. Its separate security-policy drift guard was absent.
+An adapted test now checks that `SECURITY.md` names the package's current
+version line and all three shipped EDA backends; the security and
+EasyEDA packaging slice passes 9/9.
