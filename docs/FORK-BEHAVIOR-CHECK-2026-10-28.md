@@ -751,4 +751,11 @@ ping, then an ungated ping if needed; they report the process scan separately
 as `process_scan_saw_altium` and time the attempt that answered. The donor
 test file and existing capability/doctor tests pass 31/31. A subsequent
 cached-ref audit matched 63/63 fork defaults and 120/120 branch heads.
-Live MCP verification of these two reports follows the Python server reload.
+After the Python MCP restart, `app_ping` matched `.173`; live
+`app_get_report` returned `altium_running=true`,
+`process_scan_saw_altium=true`, `version_match=true` and a 46.7 ms round
+trip. With the process scan deliberately hidden in a separate read-only
+client, both tools still reached the real Altium bridge: the probe and
+report each returned `altium_running=true`,
+`process_scan_saw_altium=false`, script `.173`; the report measured
+44.2 ms and matched the bundled version.
