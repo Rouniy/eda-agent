@@ -51,6 +51,18 @@ from eda_agent.config import get_config
 logger = logging.getLogger("eda_agent.web.dashboard")
 
 
+def publish_dashboard_url(workspace_dir: Path, host: str, port: int) -> str:
+    """Publish the bound dashboard address for Altium's Open Dashboard button."""
+    address = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    url = f"http://{address}:{port}/"
+    target = workspace_dir / "dashboard.url"
+    staged = workspace_dir / "dashboard.url.tmp"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    staged.write_text(url, encoding="utf-8")
+    replace_with_retry(staged, target)
+    return url
+
+
 # ---------------------------------------------------------------------------
 # Bridge helpers: call MCP tools synchronously from Flask handlers.
 # The dashboard runs in the same process as the MCP server, so get_bridge()
@@ -2035,6 +2047,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     import logging as _log
     _log.getLogger("werkzeug").setLevel(_log.WARNING)
     srv = make_server(args.host, args.port, app, threaded=True)
+    publish_dashboard_url(pid_path.parent, args.host, args.port)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

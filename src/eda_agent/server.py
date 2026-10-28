@@ -421,12 +421,13 @@ def _spawn_dashboard_background(host: str, port: int) -> "Optional[object]":
     def _run():
         try:
             from werkzeug.serving import make_server
-            from .web.dashboard import create_app
+            from .web.dashboard import create_app, publish_dashboard_url
             app = create_app()
             import logging as _log
             _log.getLogger("werkzeug").setLevel(_log.WARNING)
             srv = make_server(host, port, app, threaded=True)
             server_holder["srv"] = srv
+            publish_dashboard_url(get_config().workspace_dir, host, port)
             srv.serve_forever()
         except OSError as e:
             logger.warning("dashboard could not bind %s:%s (%s)",
@@ -497,7 +498,15 @@ def serve_mcp(no_dashboard: bool = False) -> int:
         logger.info("headless mode -- dashboard not started")
         dash = None
     else:
-        dash = _spawn_dashboard_background(host="127.0.0.1", port=8766)
+        port_text = os.environ.get("EDA_AGENT_DASHBOARD_PORT", "8766")
+        try:
+            dashboard_port = int(port_text)
+            if not 1 <= dashboard_port <= 65535:
+                raise ValueError
+        except ValueError:
+            logger.warning("invalid EDA_AGENT_DASHBOARD_PORT=%r; using 8766", port_text)
+            dashboard_port = 8766
+        dash = _spawn_dashboard_background(host="127.0.0.1", port=dashboard_port)
 
     try:
         mcp.run(transport="stdio")

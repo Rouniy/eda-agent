@@ -445,3 +445,11 @@ the current UI module through later upstream code. Its direct import had
 left a duplicate after the fork merge; the duplicate was removed while
 retaining the working import. Fifty-one foreground-guard, control-shape
 and dialog-automation checks passed.
+
+The `yniantongtian-oss` `733367c` dashboard-port change was a response
+to a local conflict on 8766. The current auto-start now accepts
+`EDA_AGENT_DASHBOARD_PORT`, and both auto-started and standalone dashboards
+publish their bound URL for Altium's Open Dashboard button. A standalone
+8877 instance answered HTTP 200 and wrote the correct URL; script `.169`
+passed Pascal lint/build and answered a fresh ping. The button click itself
+has not been exercised. The default remains 8766 for existing users.

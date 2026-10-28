@@ -1,5 +1,15 @@
 # Current integration state / agent handoff
 
+The main Altium script is now `.169`, loaded from the one source project,
+and answers ping on AD26.11.1.5. The dashboard writes its bound localhost
+URL to `dashboard.url`; the status form reads it for Open Dashboard. This
+adapts the `yniantongtian-oss` 8877 port fix without changing the default
+8766 for everyone. Set `EDA_AGENT_DASHBOARD_PORT=8877` for an auto-spawned
+dashboard when 8766 is occupied; standalone `dashboard --port 8877` also
+publishes the right URL. A standalone HTTP 200/URL-file check passed, as
+did the 12-file Pascal build and 24 focused checks. Native button-click
+acceptance remains open.
+
 Script `.168` is loaded in the main `Altium_API.PrjScr` and answered a fresh
 `application.ping` on AD26.11.1.5. It adds a deliberate `sdk-probe` route
 and generated schematic-component reads. On Main.SchDoc in the Pi Radio

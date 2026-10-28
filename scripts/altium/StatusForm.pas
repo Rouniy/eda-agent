@@ -1053,7 +1053,7 @@ End;
 { running we surface the hint instead of writing a sentinel nobody reads.   }
 Procedure btn_OpenWebClick(Sender : TObject);
 Var
-    SentinelPath : String;
+    SentinelPath, DashboardUrl : String;
 Begin
     If Not OpenWebEnabled Then
     Begin
@@ -1062,7 +1062,18 @@ Begin
     End;
     Try
         SentinelPath := WorkspaceDir + 'open_dashboard.url';
-        WriteFileContent(SentinelPath, 'http://127.0.0.1:8766/');
+        DashboardUrl := 'http://127.0.0.1:8766/';
+        { Python publishes the actual bound port after make_server succeeds. }
+        { An atomic rename keeps this read away from a half-written URL.     }
+        If FileExists(WorkspaceDir + 'dashboard.url') Then
+        Begin
+            DashboardUrl := Trim(ReadFileContent(WorkspaceDir + 'dashboard.url'));
+            If (Copy(DashboardUrl, 1, 17) <> 'http://127.0.0.1:')
+                And (Copy(DashboardUrl, 1, 17) <> 'http://localhost:')
+                And (Copy(DashboardUrl, 1, 13) <> 'http://[::1]:') Then
+                DashboardUrl := 'http://127.0.0.1:8766/';
+        End;
+        WriteFileContent(SentinelPath, DashboardUrl);
         Try lbl_LastErr.Caption := ''; Except End;
     Except End;
 End;

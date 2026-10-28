@@ -1,5 +1,15 @@
 
-# Release verification: 2026.10.28.168
+# Release verification: 2026.10.28.169
+
+Script `.169` lets the Altium status form open the dashboard at its actual
+bound port. The dashboard publishes `dashboard.url` only after binding; the
+status form reads that local URL when clicked. The auto-start port can be
+set with `EDA_AGENT_DASHBOARD_PORT` (default 8766). A standalone dashboard
+on 8877 answered HTTP 200 and published `http://127.0.0.1:8877/` in a
+temporary workspace. Pascal lint/build had zero findings, 24 focused
+dashboard/version checks passed, and the main AD26.11.1.5 script restarted
+and answered `application.ping` as `.169`. The button itself has not been
+clicked in this native check.
 
 Script `.168` adds the explicit `sdk-probe` command and generated
 `ISch_Component` read accessors. The 12-unit Pascal lint/build had zero
@@ -146,7 +156,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.168` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.169` from `app_ping`.
 At that earlier checkpoint, `app_ping` reported loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
