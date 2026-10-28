@@ -99,3 +99,9 @@ End;
     assert "AliasAsText" not in cov.reachable_heads("GetSchProperty", "ePin")
 
 
+def test_live_proven_pin_getters_are_scoped_to_pins():
+    delegated = cov.delegated_heads("GetSchProperty")
+    assert {"DescriptionString", "IdentifierString", "Handle"} <= delegated["ePin"]
+    assert "IdentifierString" not in delegated.get("ePort", set())
+
+

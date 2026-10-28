@@ -441,6 +441,8 @@ def register_generic_tools(mcp):
                 SCHEMATIC objects use the dotted spelling:
                 "Text,Location.X,Location.Y" for net labels
                 "Designator,Name,ConnectionX,ConnectionY" for pins.
+                Pins also expose the SDK's read-only DescriptionString,
+                IdentifierString, error/display flags, and custom text margins.
                 ConnectionX/ConnectionY are the pin's ELECTRICAL end --
                 the point a wire or net label must sit on to attach.
                 Location is the BODY-side root and is NOT the connection

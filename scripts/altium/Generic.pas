@@ -1587,6 +1587,31 @@ Begin
 End;
 { END GENERATED - SDK property probe. }
 
+{ ISch_Pin reads qualified on IC44-1 in AD26.11 before exposing them in   }
+{ obj_query. CompilationMasked remains outside this block.                 }
+Function GetSchPinGenerated(Obj : ISch_Pin; PropName : String;
+    Var Found : Boolean) : String;
+Begin
+    Result := '';
+    Found := False;
+    If PropName = 'DescriptionString' Then Result := Obj.GetState_DescriptionString
+    Else If PropName = 'Designator_CustomPosition_HorizontalMargin' Then Result := IntToStr(Obj.GetState_Designator_CustomPosition_HorizontalMargin)
+    Else If PropName = 'Designator_CustomPosition_VerticalMargin' Then Result := IntToStr(Obj.Designator_CustomPosition_VerticalMargin)
+    Else If PropName = 'Dimmed' Then Result := BoolToJsonStr(Obj.Dimmed)
+    Else If PropName = 'Disabled' Then Result := BoolToJsonStr(Obj.Disabled)
+    Else If PropName = 'DisplayError' Then Result := BoolToJsonStr(Obj.DisplayError)
+    Else If PropName = 'EnableDraw' Then Result := BoolToJsonStr(Obj.EnableDraw)
+    Else If PropName = 'ErrorString' Then Result := Obj.ErrorString
+    Else If PropName = 'Handle' Then Result := Obj.Handle
+    Else If PropName = 'IdentifierString' Then Result := Obj.GetState_IdentifierString
+    Else If PropName = 'LiveHighlightValue' Then Result := Obj.LiveHighlightValue
+    Else If PropName = 'Name_CustomPosition_HorizontalMargin' Then Result := IntToStr(Obj.GetState_Name_CustomPosition_HorizontalMargin)
+    Else If PropName = 'Name_CustomPosition_VerticalMargin' Then Result := IntToStr(Obj.Name_CustomPosition_VerticalMargin)
+    Else If PropName = 'WiringDiagramOriginUniqueId' Then Result := Obj.GetState_WiringDiagramOriginUniqueId
+    Else Exit;
+    Found := True;
+End;
+
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
     NoERC : ISch_NoERC;
@@ -1599,6 +1624,7 @@ Var
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
     SwapPin : ISch_Pin;
+    PinGenerated : ISch_Pin;
     Crn : TLocation;
     Have : Boolean;
     POrient, PLen, PCoord : Integer;
@@ -2074,6 +2100,12 @@ Begin
         Begin
             Comp := Obj;
             Result := GetSchComponentGenerated(Comp, PropName, Have);
+            If Not Have Then Result := '';
+        End
+        Else If Obj.ObjectId = ePin Then
+        Begin
+            PinGenerated := Obj;
+            Result := GetSchPinGenerated(PinGenerated, PropName, Have);
             If Not Have Then Result := '';
         End;
     Except
@@ -17258,10 +17290,11 @@ End;
 Function Gen_ProbeSdkProperties(Params : String; RequestId : String) : String;
 Var
     SchDoc : ISch_Document;
-    Iter : ISch_Iterator;
+    Iter, PinIter : ISch_Iterator;
     Comp, Target : ISch_Component;
-    Designator, DocPath, Wanted, Remaining, PropName, Val : String;
-    ResultsJson, UsedDesignator : String;
+    PinObj, TargetPin : ISch_Pin;
+    Designator, PinName, ObjectTypeName, DocPath, Wanted, Remaining, PropName, Val : String;
+    ResultsJson, UsedDesignator, InterfaceName : String;
     ProbeStatus : String;
     Found, Faulted : Boolean;
     CommaPos, NumOk, NumMissing : Integer;
@@ -17274,6 +17307,17 @@ Begin
         Exit;
     End;
     Designator := ExtractJsonValue(Params, 'designator');
+    PinName := ExtractJsonValue(Params, 'pin');
+    ObjectTypeName := LowerCase(ExtractJsonValue(Params, 'object_type'));
+    If ObjectTypeName = '' Then ObjectTypeName := 'component';
+    If (ObjectTypeName <> 'component') And (ObjectTypeName <> 'pin') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+            'object_type must be component or pin');
+        Exit;
+    End;
+    If ObjectTypeName = 'pin' Then InterfaceName := 'ISch_Pin'
+    Else InterfaceName := 'ISch_Component';
     DocPath    := ExtractJsonValue(Params, 'doc_path');
 
     If DocPath <> '' Then SchDoc := LoadedSchDocByPath(DocPath)
@@ -17314,6 +17358,33 @@ Begin
 
     UsedDesignator := '';
     Try UsedDesignator := Target.Designator.Text; Except End;
+    TargetPin := Nil;
+    If ObjectTypeName = 'pin' Then
+    Begin
+        PinIter := Target.SchIterator_Create;
+        Try
+            PinIter.AddFilter_ObjectSet(MkSet(ePin));
+            PinObj := PinIter.FirstSchObject;
+            While PinObj <> Nil Do
+            Begin
+                If (PinName = '') Or (PinObj.Designator = PinName) Then
+                Begin
+                    TargetPin := PinObj;
+                    Break;
+                End;
+                PinObj := PinIter.NextSchObject;
+            End;
+        Finally
+            Target.SchIterator_Destroy(PinIter);
+        End;
+        If TargetPin = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+                'No matching pin on the selected component');
+            Exit;
+        End;
+        PinName := TargetPin.Designator;
+    End;
 
     ResultsJson := '';
     NumOk := 0;
@@ -17346,7 +17417,10 @@ Begin
         { Except never runs and the debugger halts on the read, exactly   }
         { as it did before. If it does not, one run measures the lot.     }
         Try
-            Val := GetSchComponentGenerated(Target, PropName, Found);
+            If ObjectTypeName = 'pin' Then
+                Val := GetSchPinGenerated(TargetPin, PropName, Found)
+            Else
+                Val := GetSchComponentGenerated(Target, PropName, Found);
         Except
             Faulted := True;
             Found := False;
@@ -17383,7 +17457,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId, '{'
         + JsonStr('designator', UsedDesignator) + ','
-        + JsonStr('interface', 'ISch_Component') + ','
+        + JsonStr('interface', InterfaceName) + ','
+        + JsonStr('pin', PinName) + ','
         + JsonInt('exposed', NumOk) + ','
         + JsonInt('not_in_probe', NumMissing) + ','
         + JsonRaw('results', '[' + ResultsJson + ']') + '}');

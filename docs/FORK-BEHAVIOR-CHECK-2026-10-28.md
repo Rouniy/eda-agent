@@ -1021,3 +1021,13 @@ pin fields such as `ShowName`, `DefaultValue`, and `HiddenNetName` as missing.
 The corrected report reads 713/2176 reachable declarations (previously
 677/2176); this is a measurement correction, not 36 new runtime properties.
 The generator's candidate list now excludes those already handled fields.
+
+Script `.184` extends the child's SDK probe to `ISch_Pin` and exposes 14
+live-qualified pin reads through `obj_query`, including
+`DescriptionString`, `IdentifierString`, UI/error flags, text-position
+margins, and the object's SDK handle. On a disposable copy of
+`Z:\sinara\eem_fmc_carrier\PCB\I2C.SchDoc`, every candidate answered
+for IC44-1; a later `ePin` `obj_query` read the new fields with zero
+unknown, failed or unreadable properties. `CompilationMasked` was not
+included because its pin read has not been qualified. The copy was closed
+without saving. Corrected SDK coverage is 727/2176 declarations (33.4%).

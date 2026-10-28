@@ -1193,7 +1193,8 @@ def cmd_sdk_generate(*, object_type: str = "component", kind: str = "read",
     return 0
 
 
-def cmd_sdk_probe(*, designator: str = "", properties: str = "",
+def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
+                  pin: str = "", properties: str = "",
                   doc_path: str = "", as_json: bool = False,
                   sdk_json: str | None = None) -> int:
     """Ask the running Altium which DECLARED properties it actually exposes.
@@ -1232,7 +1233,7 @@ def cmd_sdk_probe(*, designator: str = "", properties: str = "",
             # Without the table this is the old behaviour: a list of
             # candidates, one of which may halt the debugger.
             table = None
-        _, take, _ = candidates_for(model, "component", "read", table)
+        _, take, _ = candidates_for(model, object_type, "read", table)
         names = [name for name, _prop in take]
 
     # A probe list built from today's table against yesterday's script
@@ -1254,9 +1255,11 @@ def cmd_sdk_probe(*, designator: str = "", properties: str = "",
               f"StartMCPServer again.", file=sys.stderr)
         return 1
 
-    params = {"properties": ",".join(names)}
+    params = {"properties": ",".join(names), "object_type": object_type}
     if designator:
         params["designator"] = designator
+    if pin:
+        params["pin"] = pin
     if doc_path:
         params["doc_path"] = doc_path
 
@@ -1283,7 +1286,8 @@ def cmd_sdk_probe(*, designator: str = "", properties: str = "",
     exposed = [r for r in rows if r.get("exposed")]
     print(f"Probed {len(rows)} declared properties on "
           f"{reply.get('interface', '?')} "
-          f"(component {reply.get('designator') or '?'})")
+          f"(component {reply.get('designator') or '?'}, "
+          f"pin {reply.get('pin') or '?'})")
     print(f"  {len(exposed)} of {len(rows)} answered "
           f"({100.0 * len(exposed) / len(rows):.0f}%)" if rows else "  nothing probed")
     print()

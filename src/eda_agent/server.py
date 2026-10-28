@@ -994,6 +994,9 @@ def main() -> int:
     probe_p = subparsers.add_parser(
         "sdk-probe", help="Ask running Altium which SDK properties it exposes.")
     probe_p.add_argument("--designator", default="", metavar="REF")
+    probe_p.add_argument("--object-type", choices=("component", "pin"),
+                         default="component")
+    probe_p.add_argument("--pin", default="", metavar="NUMBER")
     probe_p.add_argument("--properties", default="", metavar="A,B,C")
     probe_p.add_argument("--doc-path", default="", metavar="PATH")
     probe_p.add_argument("--json", action="store_true", dest="json_out")
@@ -1474,6 +1477,7 @@ def main() -> int:
                                    sdk_json=args.sdk_json)
     if args.command == "sdk-probe":
         return cli.cmd_sdk_probe(designator=args.designator,
+                                 object_type=args.object_type, pin=args.pin,
                                  properties=args.properties,
                                  doc_path=args.doc_path,
                                  as_json=args.json_out,
