@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## MOREmbedded uncapped fab snapshot above 5000 holes, 2026-10-28
+
+The native `pcb_get_fab_board_facts` path was run on
+`Z:\pi-radio\rfsoc-fr1-beamformer\03_Altium_Antenna\Main.PcbDoc` with
+script `.137`. It returned the exact board path, four copper layers,
+406.3999873 by 124.46 mm outline, zero drilled pads, 8355 drilled
+vias and `hole_count=8355`. The independent board statistics read
+`via_count=8355`, so the snapshot passed the former 5000-hole concern
+without truncation. The PcbDoc was closed without saving. No matching
+Gerber/Excellon package was present in that source folder; external
+package revision proof and a full >5000-hole package comparison remain
+open.
+
 ## MOREmbedded two-body bulk STEP edit, 2026-10-28
 
 The existing `lib_set_3d_body` bulk path was checked on a disposable
