@@ -82,6 +82,22 @@ NOT_TOOLS: dict[str, str] = {
     "pcb_": "the board namespace prefix, not a tool",
     "sch_": "the schematic namespace prefix, not a tool",
     "obj_": "the generic object namespace prefix, not a tool",
+    # Historical donor spellings in FORK-BEHAVIOR-CHECK. That document
+    # explicitly maps each one to an existing public route in this fork.
+    "lib_add_pin": "a donor spelling mapped to lib_add_pins",
+    "lib_add_symbol_line": "a donor spelling mapped to lib_add_symbol_lines",
+    "lib_set_label_format": "a donor spelling mapped to lib_set_label_formats",
+    "pcb_move_component": "a donor spelling mapped to pcb_move_components",
+    "pcb_place_component": "a donor spelling mapped to pcb_place_components",
+    "pcb_place_track": "a donor spelling mapped to pcb_place_tracks",
+    "sch_add_net_label": "a donor spelling mapped to sch_place_net_label",
+    "sch_attach_spice_model": "a donor spelling mapped to sim_attach_model",
+    "sch_attach_spice_primitive": "a donor spelling mapped to sim_attach_primitives",
+    "sch_attach_spice_primitives": "a donor spelling mapped to sim_attach_primitives",
+    "sch_get_simulation_readiness": "a donor spelling mapped to sim_get_readiness",
+    "lib_diag_footprint": "a donor spelling mapped to lib_get_footprint_primitives",
+    "lib_screenshot_footprint": "a donor spelling mapped to lib_render_footprint",
+    "lib_list_vault_libraries": "a donor spelling mapped to lib_list_available_libraries",
 }
 
 

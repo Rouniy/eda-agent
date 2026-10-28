@@ -2,6 +2,11 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Expose the upstream synchronization point and its actual first-parent
+  merge commit in `fork-status`, with a repository-level merge test. A fresh
+  upstream fetch confirmed point `0bb1b3154cca6e58a517b23edee3d7a108f1c232`,
+  merge `63f7c16ab8dd7c703ba9a82ca17b7f06cee1e370`, and zero upstream
+  commits pending.
 - [x] Add the direct child fork's deploy-from-folder path without changing
   the normal main-directory runtime. `install-scripts --from <checkout>`
   validates the alternate source and every project document before writing,

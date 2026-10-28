@@ -174,6 +174,17 @@ def fork_status(root: Path, *, remotes: tuple[str, ...] =
             entry["ahead"], entry["behind"] = map(int, counts)
             entry["tip_in_head"] = entry["tip"] == head or (
                 entry["behind"] == 0)
+            if remote == "upstream" and len(entry["merge_bases"]) == 1:
+                sync_point = entry["merge_bases"][0]
+                entry["sync_point"] = sync_point
+                entry["last_sync_merge"] = ""
+                for merge in _git(root, "rev-list", "--first-parent",
+                                  "--merges", "HEAD").splitlines():
+                    parents = _git(root, "rev-list", "--parents", "-n", "1",
+                                   merge).split()
+                    if sync_point in parents[2:]:
+                        entry["last_sync_merge"] = merge
+                        break
         except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
             entry["available"] = False
             entry["reason"] = str(exc)
@@ -214,6 +225,11 @@ def format_fork_status(report: dict[str, Any]) -> str:
             continue
         bases = ", ".join(item["merge_bases"]) or "none"
         lines.append(f"{name}: {item['tip']}; ahead {item['ahead']}, behind {item['behind']}; merge-base {bases}")
+        if name == "upstream" and item.get("sync_point"):
+            lines.append(f"  last synchronization point: {item['sync_point']}"
+                         + (f" (merged by {item['last_sync_merge']})"
+                            if item.get("last_sync_merge") else
+                            " (no matching first-parent merge found)"))
         if item.get("fetch_error"):
             lines.append(f"  fetch failed: {item['fetch_error']}; counts use cached refs")
     if "cached_forks" in report:

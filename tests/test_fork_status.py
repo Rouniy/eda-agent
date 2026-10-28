@@ -59,6 +59,33 @@ def test_status_distinguishes_exact_sync_commit_from_divergent_tips(tmp_path):
     assert "not refreshed by --fetch" in format_fork_status(with_forks)
 
 
+def test_upstream_sync_reports_the_actual_merge_commit(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init", "-b", "main")
+    _git(source, "config", "user.name", "Test")
+    _git(source, "config", "user.email", "test@example.invalid")
+    _commit(source, "shared.txt")
+    remote = tmp_path / "upstream.git"
+    subprocess.check_call(["git", "clone", "--bare", str(source), str(remote)])
+    local = tmp_path / "local"
+    subprocess.check_call(["git", "clone", str(remote), str(local)])
+    _git(local, "config", "user.name", "Test")
+    _git(local, "config", "user.email", "test@example.invalid")
+    _git(local, "remote", "add", "upstream", str(remote))
+    _commit(local, "local.txt")
+    upstream_tip = _commit(source, "upstream.txt")
+    _git(source, "push", str(remote), "main")
+    _git(local, "fetch", "upstream", "main")
+    _git(local, "merge", "--no-ff", "upstream/main", "-m", "Sync upstream")
+    merge = _git(local, "rev-parse", "HEAD")
+
+    entry = fork_status(local, remotes=("upstream",))["sources"]["upstream"]
+    assert entry["sync_point"] == upstream_tip
+    assert entry["last_sync_merge"] == merge
+    assert entry["behind"] == 0
+
+
 def test_live_fork_tip_check_distinguishes_stale_direct_and_current_child(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
