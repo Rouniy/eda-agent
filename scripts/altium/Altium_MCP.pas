@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.28.171';
+    SCRIPT_VERSION = '2026.10.28.172';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -84343,7 +84343,7 @@ Begin
     Designator := ExtractJsonValue(Params, 'designator');
     DocPath    := ExtractJsonValue(Params, 'doc_path');
 
-    If DocPath <> '' Then SchDoc := SchDocByPathLoading(DocPath)
+    If DocPath <> '' Then SchDoc := LoadedSchDocByPath(DocPath)
     Else SchDoc := SchServer.GetCurrentSchDocument;
 
     If SchDoc = Nil Then

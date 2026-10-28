@@ -17276,7 +17276,7 @@ Begin
     Designator := ExtractJsonValue(Params, 'designator');
     DocPath    := ExtractJsonValue(Params, 'doc_path');
 
-    If DocPath <> '' Then SchDoc := SchDocByPathLoading(DocPath)
+    If DocPath <> '' Then SchDoc := LoadedSchDocByPath(DocPath)
     Else SchDoc := SchServer.GetCurrentSchDocument;
 
     If SchDoc = Nil Then

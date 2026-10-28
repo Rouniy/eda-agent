@@ -6,9 +6,10 @@
   `032fb4b` ancestry merge. Their tip `d495c4d` is now the second parent
   of `ce7aab8`. The SDK symbol extractor, offline candidate generator,
   per-request perf attribution, type-scoped coverage accounting, and live
-  `sdk-probe`/generated Pascal block are ported. Script `.168` answered two
-  scoped native probes, including the `DescriptionString` getter. Review
-  the remaining generated accessors individually and investigate the
+  `sdk-probe`/generated Pascal block are ported. Script `.172` answered
+  all 29 generated component read accessors on IC44 in AD26.11 after its
+  explicit-path probe was fixed. Review these on more component kinds
+  and investigate the
   Altium process exit after a later document reopen. Windows event 1000
   records `c0000005` in `ADVPCB.DLL` at `0x3c1728`; the open request did
   not reach the bridge handler. The initiating background operation is

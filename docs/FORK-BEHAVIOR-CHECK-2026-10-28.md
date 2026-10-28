@@ -528,3 +528,16 @@ current command checks the loaded script-project path. On the fake state
 used by that last test, the live `.171` Altium project was correctly
 reported as different from the fake `/home/scripts` folder. These are
 specific compatibility differences, not eight proven missing features.
+
+## Generated SDK readback after the child merge
+
+The live `.171` `sdk-probe --doc-path` call exposed an undeclared
+`SchDocByPathLoading` identifier before probing any property and stopped
+the DelphiScript loop. The handler now uses `LoadedSchDocByPath`, which
+only resolves an already open sheet. Script `.172` passed Pascal lint/build,
+restarted in AD26.11.1.5, and answered the same probe on IC44 in
+`Z:\sinara\eem_fmc_carrier\PCB\I2C.SchDoc`. All 29 names in the generated
+`ISch_Component` block returned `exposed=true` across five batches.
+The sheet was closed without saving. This qualifies the accessors on that
+component and fixes the explicit-path probe; behavior with other component
+kinds remains a separate native check.

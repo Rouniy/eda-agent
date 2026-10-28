@@ -15,11 +15,21 @@ narrated.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from eda_agent import bridge as bridge_module
 from eda_agent import cli
 from eda_agent.diag import doctor
+from tests.pascal_source import load
+
+
+def test_native_probe_resolves_only_an_already_loaded_sheet():
+    pascal = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Generic.pas"
+    body = load(pascal, minimum=100)["Gen_ProbeSdkProperties"]
+    assert "LoadedSchDocByPath(DocPath)" in body
+    assert "SchDocByPathLoading" not in body
 
 
 @pytest.fixture

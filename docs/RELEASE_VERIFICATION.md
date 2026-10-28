@@ -1,5 +1,18 @@
 
-# Release verification: 2026.10.28.171
+# Release verification: 2026.10.28.172
+
+Script `.172` fixes the SDK probe's explicit `doc_path`: the handler now
+resolves an already loaded SchDoc through `LoadedSchDocByPath`. The prior
+`SchDocByPathLoading` identifier raised a native Altium modal and stopped
+the polling loop before any property was read. AD26.11.1.5 restarted the
+main script project and answered ping as `.172`. On
+`Z:\sinara\eem_fmc_carrier\PCB\I2C.SchDoc`, component IC44
+(`MCP23017-E/SS`), all 29 generated `ISch_Component` read accessors
+answered in five read-only batches. For example, `AliasCount=0`,
+`PartCountNoPart0=1`, `DesignatorLocked=false`, and
+`DescriptionString=Part IC44`. The sheet was closed without saving; its
+last-write time remained 2026-10-24 21:05:52. This proves the read paths
+on that one native component, not their meaning on every component kind.
 
 Script `.171` adds a focused-board-only resolver for the via soldermask
 handler. It refuses an absent focused board instead of falling back to a
@@ -168,7 +181,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.171` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.172` from `app_ping`.
 At that earlier checkpoint, `app_ping` reported loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
