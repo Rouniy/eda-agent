@@ -3311,8 +3311,9 @@ def register_generic_tools(mcp):
 
         Checked FIRST, so nothing changes on a bad target: a SchLib/IntLib
         given by full path must contain ``lib_ref``; a DbLib row must
-        exist, and its own symbol and footprint fill ``lib_ref`` and
-        ``footprint`` when they are not given. Every part is read back:
+        have a unique key in a complete lookup. Its own symbol and
+        footprint fill ``lib_ref`` and ``footprint`` when they are not
+        given. Every part is read back:
         ``parts`` has each one's link ``before`` and ``after``, and a
         field that did not take is named in ``not_applied``.
 
@@ -3363,6 +3364,13 @@ def register_generic_tools(mcp):
                         "reason": (f"{dblib_key!r} is not a row of "
                                    f"{dblib_table!r} in {library_path}; "
                                    f"nothing was changed"),
+                        "lookup": row}
+            if (type(row.get("match_count")) is not int
+                    or row["match_count"] != 1
+                    or row.get("scan_capped") is not False):
+                return {"success": False, "error": "DBLIB_ROW_AMBIGUOUS",
+                        "reason": ("the DbLib lookup did not establish a unique "
+                                   "row; nothing was changed"),
                         "lookup": row}
             lib_ref = lib_ref or str(row.get("symbol_ref") or "")
             prints = row.get("footprints") or []

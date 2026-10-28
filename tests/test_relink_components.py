@@ -157,7 +157,8 @@ def _call(monkeypatch, bridge, **kw):
 
 
 def test_a_database_row_fills_the_symbol_and_footprint(monkeypatch):
-    bridge = _Bridge(row={"found": True, "symbol_ref": "RES",
+    bridge = _Bridge(row={"found": True, "match_count": 1,
+                          "scan_capped": False, "symbol_ref": "RES",
                           "symbol_library": "Passives.SchLib",
                           "footprints": [{"ref": "0603",
                                           "library": "Passives.PcbLib"}]})
@@ -179,6 +180,18 @@ def test_a_missing_database_row_changes_nothing(monkeypatch):
                 dblib_key="NOPE")
     assert out["error"] == "DBLIB_ROW_NOT_FOUND"
     assert [c for c, _ in bridge.sent] == ["library.get_dblib_record"]
+
+
+def test_ambiguous_or_capped_database_row_changes_nothing(monkeypatch):
+    for match_count, scan_capped in [(2, False), (1, True)]:
+        bridge = _Bridge(row={"found": True, "match_count": match_count,
+                              "scan_capped": scan_capped,
+                              "symbol_ref": "RES"})
+        out = _call(monkeypatch, bridge, designators=["R1"],
+                    library_path=r"C:\libs\Parts.DbLib",
+                    dblib_table="Resistors", dblib_key="RC0603-10K")
+        assert out["error"] == "DBLIB_ROW_AMBIGUOUS"
+        assert [c for c, _ in bridge.sent] == ["library.get_dblib_record"]
 
 
 def test_bad_arguments_are_refused_before_sending(monkeypatch):

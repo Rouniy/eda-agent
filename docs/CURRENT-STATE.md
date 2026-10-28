@@ -1,5 +1,24 @@
 # Current integration state / agent handoff
 
+## IntLib relink persistence and DbLib uniqueness guard, 2026-10-28
+
+The `mooreaa` `sch_relink_components` IntLib path was checked on an
+isolated two-sheet project copy. A 21,504-byte IntLib was copied from
+the corpus, and Altium's `Extract` dialog produced one SchLib and one
+PcbLib in the scratch folder. The extracted SchLib named one symbol,
+`ABM8G-14.31818MHZ-B4Y-T`. Relinking copied `RQA1` to that IntLib
+passed the dry run, changed one part and read back `LibReference`,
+`SourceLibraryName` and `DesignItemId` with no `not_applied` fields.
+After exact-sheet save, project close and reopen, the same three fields
+still pointed to the IntLib. The scratch project was closed.
+
+The DbLib preflight previously accepted any `found=true` record, even
+when `match_count>1` meant the key was duplicated or `scan_capped=true`
+left uniqueness unknown. It now requires exactly one match and an
+uncapped lookup before writing. The focused 15-test suite covers both
+refusals. No DbLib file was found in the local `Z:` corpus for native
+DbLib acceptance.
+
 ## Two-board project net-colour targeting, 2026-10-28
 
 Native script `.137` was tested with a disposable SODIMM project and its
