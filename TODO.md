@@ -96,10 +96,18 @@
   copper/dielectric planner. On an isolated PcbDoc, a two-layer edit and
   an inserted four-layer stack persisted after save/close/reopen. Check
   plane identity and dielectric material in the final readback.
-- [ ] Qualify a failure after a partial stack edit and its recovery on a
-  project-backed board. The current tool leaves partial failures unsaved
-  and reports them explicitly; the populated-board preflight and successful
-  save/reopen path have passed.
+- [x] Qualify a failure after partial stack edits and recovery on a
+  project-backed board copy. A plan with two dielectrics where Altium had
+  one failed after eight native copper edits with `partial_unsaved=true`,
+  `applied=8` and the exact gap error. The board stayed open for inspection.
+  `proj_close(save=false)` discarded the in-memory work; the copied
+  PcbDoc hash stayed unchanged and reopen restored the saved stack.
+  A transport failure on the first attempted edit now sets
+  `native_state_unknown=true` and conservatively reports
+  `partial_unsaved=true`, even when no operation was acknowledged.
+  Readback failures after edits are returned as structured failures.
+  The focused failure test passes; a real transport-loss event has not
+  been induced in Altium.
 - [x] Port `pcb_stack_from_file` and compare V9 and legacy reads on the
   saved four-layer QA board: no findings or expected-stack mismatches.
   Gate legacy V7 writes behind explicit opt-in.

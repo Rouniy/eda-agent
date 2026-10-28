@@ -12,10 +12,12 @@ layer by itself, and no dielectric can be created any other way.
 """
 from __future__ import annotations
 
+import asyncio
 
 import pytest
 
 from eda_agent.design import stack_build
+from eda_agent.tools import pcb
 
 
 FOUR_LAYER = [
@@ -180,3 +182,55 @@ def test_nonfinite_or_nonpositive_thickness_is_refused(bad):
     with pytest.raises(stack_build.StackPlanError, match="finite and positive"):
         stack_build.normalise([_cu("Top"), {"kind": "dielectric",
                                 "thickness_mils": bad}, _cu("Bottom")])
+
+
+def test_first_native_write_timeout_reports_possible_unsaved_edit(monkeypatch):
+    path = r"C:\scratch\Stack.PcbDoc"
+    layers = [
+        {"name": "Top", "kind": "copper", "thickness_mils": 1},
+        {"name": "Dielectric 1", "kind": "dielectric", "thickness_mils": 4,
+         "dielectric_type": 1, "constant": 4, "material": "FR-4"},
+        {"name": "Bottom", "kind": "copper", "thickness_mils": 1},
+    ]
+
+    class Bridge:
+        def __init__(self):
+            self.calls = []
+
+        async def send_command_async(self, command, params, timeout=None):
+            self.calls.append((command, params))
+            if command == "application.get_open_documents":
+                return [{"file_path": path, "modified": False}]
+            if command == "pcb.physical_stack":
+                return {"board_path": path, "style": 0, "layer_count": 3,
+                        "total_thickness_mils": 6, "layers": layers}
+            if command == "pcb.stack_edit":
+                if params["op"] == "inspect":
+                    return {"board_path": path, "layers": [
+                        {"name": "Top", "layer_id": 1, "used_by_prims": True},
+                        {"name": "Bottom", "layer_id": 32, "used_by_prims": True}]}
+                raise TimeoutError("reply lost after native write")
+            return {}
+
+    class Mcp:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self, *args, **kwargs):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return register
+
+    bridge = Bridge()
+    monkeypatch.setattr(pcb, "get_bridge", lambda: bridge)
+    mcp = Mcp()
+    pcb.register_pcb_tools(mcp)
+    result = asyncio.run(mcp.tools["pcb_build_stack"](
+        path, [_cu("Top"), _d(4, "core"), _cu("Bottom")], dry_run=False))
+    assert result["ok"] is False
+    assert result["applied"] == 0
+    assert result["partial_unsaved"] is True
+    assert result["native_state_unknown"] is True
+    assert result["failure"]["error"] == "reply lost after native write"
+    assert not any(command.startswith("application.save") for command, _ in bridge.calls)

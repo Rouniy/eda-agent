@@ -5415,17 +5415,21 @@ def register_pcb_tools(mcp):
                     "copper_ops": copper_ops}
 
         applied: list[dict[str, Any]] = []
+        native_state_unknown = False
 
         async def run(ops: list[dict[str, str]]) -> dict[str, Any] | None:
+            nonlocal native_state_unknown
             for op in ops:
                 try:
                     reply = await bridge.send_command_async(
                         "pcb.stack_edit", {"board_path": board_path, **op}, timeout=120.0)
                 except Exception as exc:  # a timeout can leave an unknown native state
+                    native_state_unknown = True
                     return {"op": op, "error": str(exc)}
                 if (not isinstance(reply, dict) or reply.get("error")
                         or str(reply.get("board_path", "")).casefold() != board_path.casefold()
                         or (op["op"] == "remove" and reply.get("removed") is not True)):
+                    native_state_unknown = True
                     return {"op": op, "native_reply": reply}
                 applied.append(op)
             return None
@@ -5433,7 +5437,11 @@ def register_pcb_tools(mcp):
         all_ops = list(copper_ops)
         failure = await run(copper_ops)
         if failure is None:
-            middle = await pcb_physical_stack(board_path)
+            try:
+                middle = await pcb_physical_stack(board_path)
+            except Exception as exc:
+                native_state_unknown = True
+                middle = {"error": str(exc)}
             if not isinstance(middle, dict) or "layers" not in middle or middle.get("ok") is False:
                 failure = {"op": "read_copper", "native_reply": middle}
             else:
@@ -5444,14 +5452,22 @@ def register_pcb_tools(mcp):
                 else:
                     all_ops.extend(dielectric_ops)
                     failure = await run(dielectric_ops)
-        readback = await pcb_physical_stack(board_path)
+        try:
+            readback = await pcb_physical_stack(board_path)
+        except Exception as exc:
+            native_state_unknown = True
+            readback = {"error": str(exc)}
         if not isinstance(readback, dict) or "layers" not in readback or readback.get("ok") is False:
             failure = failure or {"op": "read_final", "native_reply": readback}
             mismatches: list[dict[str, Any]] = []
             section: list[dict[str, Any]] = []
         else:
-            final_inspect = await bridge.send_command_async(
-                "pcb.stack_edit", {"board_path": board_path, "op": "inspect"})
+            try:
+                final_inspect = await bridge.send_command_async(
+                    "pcb.stack_edit", {"board_path": board_path, "op": "inspect"})
+            except Exception as exc:
+                native_state_unknown = True
+                final_inspect = {"error": str(exc)}
             if (not isinstance(final_inspect, dict)
                     or str(final_inspect.get("board_path", "")).casefold() != board_path.casefold()
                     or not isinstance(final_inspect.get("layers"), list)):
@@ -5465,7 +5481,8 @@ def register_pcb_tools(mcp):
         return {"ok": ok, "dry_run": False, "board_path": board_path,
                 "ops": all_ops, "applied": len(applied), "failure": failure,
                 "mismatches": mismatches, "stack": section,
-                "partial_unsaved": not ok and bool(applied),
+                "partial_unsaved": not ok and (bool(applied) or native_state_unknown),
+                "native_state_unknown": native_state_unknown,
                 "next": ("inspect, then save the named PcbDoc and verify its saved stack"
                          if ok else "inspect the named PcbDoc and explicitly discard or repair edits")}
 

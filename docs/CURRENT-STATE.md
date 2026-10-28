@@ -2,6 +2,19 @@
 
 ## Populated-board stack builder acceptance, 2026-10-28
 
+Partial-failure recovery was also exercised on the same temporary,
+project-backed board. A plan demanding two dielectrics in a gap that
+Altium provided only one failed after eight native copper edits. The
+tool returned `ok=false`, `partial_unsaved=true`, `applied=8` and the
+specific insufficient-dielectric error. `proj_close(save=false)` left
+the saved PcbDoc hash unchanged; reopening restored the saved stack.
+This proves the deterministic planner-failure path. The Python wrapper
+also now treats an unacknowledged native edit or failed post-edit
+readback as an uncertain in-memory state: it returns
+`native_state_unknown=true` and `partial_unsaved=true` even if the first
+edit reply was lost. The failure-path test passed; no real transport
+loss was induced in Altium.
+
 The refreshed fork check matched 62/62 default tips and 117/117 branch
 tips; `upstream/main` is still the exact ancestor `ee7589c9` with zero
 pending commits. On a temporary copy of the CW308 baseboard project,
@@ -13,7 +26,7 @@ readback mismatches. Exact save/close/reopen retained the three planned
 FR-4 dielectric layers (core 12.6 mil, prepreg 5 mil, core 10 mil) and
 copper order. Offline `pcb_stack_from_file` found no V9/legacy issues
 and no mismatches against the plan. The copied project was closed.
-Failure after a partial native edit still needs a recovery acceptance run.
+An ambiguous transport failure now carries an explicit state warning.
 
 ## Sheet-symbol and sheet-entry geometry, 2026-10-28
 
