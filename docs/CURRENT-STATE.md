@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Layer tabs after stack build, 2026-10-28
+
+On a disposable four-layer PcbDoc, `pcb_build_stack` added a signal and
+plane layer and read back the requested six-layer physical stack, but the
+editor still showed four layer tabs. Reapplying the existing TopLayer
+visibility setting through `Pcb:DocumentPreferences` rebuilt the tabs.
+The Python tool now requests that refresh after copper inserts/removals,
+returns `view_refresh` with the API readback status, and tells callers to
+inspect the tabs before saving. A second fresh-copy run returned
+`view_refresh.api_confirmed=true` and the Altium window showed all six
+tabs without reopening. Both scratch edits were discarded.
+
 ## Layer visibility truthfulness, 2026-10-28
 
 Script `.139` and the Python tools now accept an optional exact `board_path`

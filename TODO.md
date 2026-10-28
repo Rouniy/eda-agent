@@ -6,8 +6,11 @@
   exact-board dry run, plan token, two-part top/bottom apply and persisted
   save/reopen readback on a disposable PCB. The SVG's optional origin labels
   are now visually distinct and off by default.
-- [ ] `pcb_build_stack` leaves old layer tabs until the board is reopened;
-  check whether an explicit view refresh can update them, otherwise warn.
+- [x] `pcb_build_stack` now refreshes layer tabs after copper inserts or
+  removals through Altium's DocumentPreferences process while preserving
+  TopLayer visibility. On a scratch four-to-six-layer build the native stack
+  read back six copper layers, the old four tabs remained before refresh,
+  and all six appeared after it without reopening the board.
 - [x] `pcb_get_layer_display` distinguishes the stored visibility setting
   from physical copper stack membership; `pcb_set_layer_visibility` refuses
   a copper layer absent from that stack. Native readback on a four-layer

@@ -5582,6 +5582,9 @@ def register_pcb_tools(mcp):
         the second phase fits those layers to the requested dielectric plan.
         A failed phase leaves the board open and unsaved for inspection or
         explicit discard. Save only after checking the returned stack.
+        When copper layers are inserted or removed, the tool asks Altium's
+        document preferences to rebuild the editor's layer tabs while
+        preserving the Top Layer's current visibility setting.
         """
         from ..design import stack_build
 
@@ -5687,12 +5690,41 @@ def register_pcb_tools(mcp):
                                                final_inspect["layers"])
             section = stack_build.board_section(readback["layers"])
         ok = failure is None and not mismatches
+        view_refresh: dict[str, Any] = {"requested": False}
+        if ok and any(op["op"] in ("insert", "remove") for op in copper_ops):
+            try:
+                display = await bridge.send_command_async(
+                    "pcb.get_layer_display", {"board_path": board_path})
+                if (not isinstance(display, dict)
+                        or str(display.get("board_path", "")).casefold() != board_path.casefold()):
+                    raise ValueError("could not read display settings for the exact board")
+                top = next((layer for layer in display.get("layers", [])
+                            if layer.get("layer") == "TopLayer"), None)
+                if not isinstance(top, dict) or type(top.get("visibility_setting")) is not bool:
+                    raise ValueError("Top Layer visibility setting is unavailable")
+                top_visible = top["visibility_setting"]
+                reply = await bridge.send_command_async(
+                    "pcb.set_layer_visibility",
+                    {"board_path": board_path, "layer": "TopLayer",
+                     "visible": "true" if top_visible else "false"})
+                view_refresh = {
+                    "requested": True,
+                    "api_confirmed": (
+                        isinstance(reply, dict)
+                        and str(reply.get("board_path", "")).casefold() == board_path.casefold()
+                        and reply.get("visibility_setting") is top_visible),
+                    "method": "Pcb:DocumentPreferences",
+                }
+            except Exception as exc:
+                view_refresh = {"requested": False, "error": str(exc)}
         return {"ok": ok, "dry_run": False, "board_path": board_path,
                 "ops": all_ops, "applied": len(applied), "failure": failure,
                 "mismatches": mismatches, "stack": section,
+                "view_refresh": view_refresh,
                 "partial_unsaved": not ok and (bool(applied) or native_state_unknown),
                 "native_state_unknown": native_state_unknown,
-                "next": ("inspect, then save the named PcbDoc and verify its saved stack"
+                "next": ("inspect layer tabs, then save the named PcbDoc and verify its saved stack; "
+                         "reopen the board if tabs remain stale"
                          if ok else "inspect the named PcbDoc and explicitly discard or repair edits")}
 
     @mcp.tool()
