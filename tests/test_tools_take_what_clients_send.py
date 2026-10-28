@@ -53,6 +53,20 @@ def test_one_layer_still_goes_as_before(monkeypatch):
     assert sent == [("pcb.set_layer_visibility", {"layer": "TopOverlay", "visible": "false"})]
 
 
+def test_layer_display_and_visibility_can_target_exact_board(monkeypatch):
+    sent = []
+    tools = _register(pcb_tools, pcb_tools.register_pcb_tools, monkeypatch, sent)
+    board = r"C:\scratch\Stack.PcbDoc"
+    asyncio.run(tools["pcb_get_layer_display"](board_path=board))
+    asyncio.run(tools["pcb_set_layer_visibility"](
+        layer="MidLayer2", visible=True, board_path=board))
+    assert sent == [
+        ("pcb.get_layer_display", {"board_path": board}),
+        ("pcb.set_layer_visibility", {
+            "layer": "MidLayer2", "visible": "true", "board_path": board}),
+    ]
+
+
 def test_press_takes_button_for_the_caption(monkeypatch):
     sent = []
     tools = _register(uiauto, uiauto.register_uiauto_tools, monkeypatch, sent)

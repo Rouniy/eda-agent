@@ -6876,6 +6876,7 @@ def register_pcb_tools(mcp):
         layer: str = "",
         visible: bool = True,
         layers: Optional[Any] = None,
+        board_path: str = "",
     ) -> dict[str, Any]:
         """Show or hide a PCB layer, or several.
 
@@ -6890,6 +6891,8 @@ def register_pcb_tools(mcp):
                 Other: "DrillGuide", "DrillDrawing", "MultiLayer",
                        "KeepOutLayer", "Mechanical1"-"Mechanical16"
             visible: True to show, False to hide
+            board_path: Exact open PcbDoc path, when supplied. Copper layers
+                absent from its physical stack are rejected.
 
         Returns:
             Dictionary with layer name and visibility state
@@ -6898,15 +6901,18 @@ def register_pcb_tools(mcp):
         names = _layer_names(layer, layers)
         if not names:
             return {"success": False, "error": "give a layer, or layers"}
+        base_params = {"visible": "true" if visible else "false"}
+        if board_path:
+            base_params["board_path"] = board_path
         if len(names) == 1:
             return await bridge.send_command_async(
                 "pcb.set_layer_visibility",
-                {"layer": names[0], "visible": "true" if visible else "false"})
+                {"layer": names[0], **base_params})
         results = []
         for name in names:
             results.append(await bridge.send_command_async(
                 "pcb.set_layer_visibility",
-                {"layer": name, "visible": "true" if visible else "false"}))
+                {"layer": name, **base_params}))
         failed = [n for n, r in zip(names, results)
                   if isinstance(r, dict) and r.get("success") is False]
         return {"success": not failed, "visible": visible, "layers": names,
@@ -8318,13 +8324,16 @@ def register_pcb_tools(mcp):
         return result or {}
 
     @mcp.tool()
-    async def pcb_get_layer_display() -> dict[str, Any]:
+    async def pcb_get_layer_display(board_path: str = "") -> dict[str, Any]:
         """Visibility and colour for every layer on the active board.
 
         Covers signal, plane, mechanical, mask, paste, silk, keepout and
         multilayer. Each entry gives the internal ``layer`` id, the user's
-        ``name`` for it, whether it is ``visible``, and its colour both as
-        Altium's raw integer and as ``color_hex``.
+        ``name`` for it, the stored ``visibility_setting`` (also returned
+        as ``visible`` for compatibility), ``in_physical_stack``, and its
+        colour both as Altium's raw integer and as ``color_hex``. For copper
+        layers absent from the physical stack, a true visibility setting
+        does not mean a layer tab exists in the PCB editor.
 
         Read this before recolouring: Altium stores a colour as a Windows
         TColor, which is byte-reversed against the #RRGGBB people write,
@@ -8335,7 +8344,8 @@ def register_pcb_tools(mcp):
             Dict with ``layers``, ``count`` and ``visible_count``.
         """
         bridge = get_bridge()
-        return await bridge.send_command_async("pcb.get_layer_display", {})
+        params = {"board_path": board_path} if board_path else {}
+        return await bridge.send_command_async("pcb.get_layer_display", params)
 
     @mcp.tool()
     async def pcb_set_layer_color(layer: str, color: str) -> dict[str, Any]:

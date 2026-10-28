@@ -7638,14 +7638,21 @@ Var
     LayerStack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
     Lyr : TLayer;
-    JsonItems, LyrNm, UserName : String;
-    First, Visible : Boolean;
+    JsonItems, LyrNm, UserName, ExpectedPath : String;
+    First, Visible, InStack : Boolean;
     Color, Count, Shown : Integer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If (ExpectedPath <> '') And (UpperCase(Board.FileName) <> UpperCase(ExpectedPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
         Exit;
     End;
 
@@ -7681,12 +7688,16 @@ Begin
             { The name the user gave the layer, which for a mechanical  }
             { layer is the only way to tell one from another.           }
             UserName := '';
+            InStack := False;
             If LayerStack <> Nil Then
             Begin
                 LayerObj := Nil;
                 Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except LayerObj := Nil; End;
                 If LayerObj <> Nil Then
+                Begin
                     Try UserName := LayerObj.Name; Except UserName := ''; End;
+                    Try InStack := LayerObj.IsInLayerStack; Except InStack := False; End;
+                End;
             End;
 
             If Not First Then JsonItems := JsonItems + ',';
@@ -7695,6 +7706,8 @@ Begin
                 + '{"layer":"' + EscapeJsonString(LyrNm) + '",'
                 + '"name":"' + EscapeJsonString(UserName) + '",'
                 + '"visible":' + BoolToJsonStr(Visible) + ','
+                + '"visibility_setting":' + BoolToJsonStr(Visible) + ','
+                + '"in_physical_stack":' + BoolToJsonStr(InStack) + ','
                 + '"color":' + IntToStr(Color) + ','
                 + '"color_hex":"' + ColorToHexRgb(Color) + '"}';
             Inc(Count);
@@ -7704,7 +7717,8 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"layers":[' + JsonItems + '],"count":' + IntToStr(Count)
-        + ',"visible_count":' + IntToStr(Shown) + '}');
+        + ',"visible_count":' + IntToStr(Shown)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 
 {..............................................................................}
@@ -7798,14 +7812,23 @@ End;
 Function PCB_SetLayerVisibility(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    LayerStr, VisibleStr, ProcessKey, LayerKey, ProcessValue : String;
+    LayerStack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    LayerStr, VisibleStr, ProcessKey, LayerKey, ProcessValue, ExpectedPath : String;
     LayerID : TLayer;
-    Visible : Boolean;
+    Visible, InStack : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If (ExpectedPath <> '') And (UpperCase(Board.FileName) <> UpperCase(ExpectedPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
         Exit;
     End;
 
@@ -7826,13 +7849,32 @@ Begin
         Exit;
     End;
     Visible := (LowerCase(VisibleStr) = 'true') Or (VisibleStr = '1');
+    LayerKey := GetLayerString(LayerID);
+    InStack := False;
+    If (LayerKey = 'TopLayer') Or (LayerKey = 'BottomLayer') Or
+       (Pos('MidLayer', LayerKey) = 1) Or
+       (Pos('InternalPlane', LayerKey) = 1) Then
+    Begin
+        LayerStack := Nil;
+        LayerObj := Nil;
+        Try LayerStack := Board.LayerStack_V7; Except End;
+        If LayerStack <> Nil Then
+            Try LayerObj := LayerStack.LayerObject_V7[LayerID]; Except End;
+        If LayerObj <> Nil Then
+            Try InStack := LayerObj.IsInLayerStack; Except End;
+        If Not InStack Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'LAYER_NOT_IN_STACK',
+                'Copper layer is absent from the board physical stack: ' + LayerKey);
+            Exit;
+        End;
+    End;
 
     { Altium's editor uses the DocumentPreferences process to apply layer    }
     { visibility. Writing LayerIsDisplayed alone changes API readback but did }
     { not change a single canvas pixel on AD 26.10.1, even after Redraw and    }
     { ViewManager_FullUpdate. Match the process parameter names in Altium's    }
     { published PCBLayer script.                                          }
-    LayerKey := GetLayerString(LayerID);
     ProcessKey := LayerKey;
     If LayerKey = 'TopLayer' Then ProcessKey := 'TopSignal';
     If LayerKey = 'BottomLayer' Then ProcessKey := 'BottomSignal';
@@ -7858,7 +7900,9 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"layer":"' + EscapeJsonString(GetLayerString(LayerID)) + '",'
-        + '"visible":' + BoolToJsonStr(Visible) + '}');
+        + '"visible":' + BoolToJsonStr(Visible) + ','
+        + '"visibility_setting":' + BoolToJsonStr(Visible) + ','
+        + '"board_path":"' + EscapeJsonString(Board.FileName) + '"}');
 End;
 
 {..............................................................................}

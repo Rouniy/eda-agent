@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Layer visibility truthfulness, 2026-10-28
+
+Script `.139` and the Python tools now accept an optional exact `board_path`
+for reading and setting layer display. Readback preserves `visible` for
+compatibility and adds `visibility_setting` and `in_physical_stack`. A true
+visibility setting on an unused copper layer does not create a view tab.
+The setter refuses copper layers absent from the board stack with
+`LAYER_NOT_IN_STACK`. On a disposable four-layer PcbDoc, MidLayer2 read
+`visibility_setting=true`, `in_physical_stack=false`, and the setter
+rejected it. The board was closed without saving. Build linted 12 Pascal
+files with zero findings; 30 focused Python tests passed. Altium and MCP
+were restarted; ping matched `.139`.
+
 ## `mooreaa` designator fitting, 2026-10-28
 
 Fetched new fork tip `a4be7fc` (previously `4cbae2a`): it adds

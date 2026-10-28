@@ -8,9 +8,11 @@
   are now visually distinct and off by default.
 - [ ] `pcb_build_stack` leaves old layer tabs until the board is reopened;
   check whether an explicit view refresh can update them, otherwise warn.
-- [ ] `pcb_set_layer_visibility` may report visible=true for a layer absent
-  from the current view tab set; distinguish stored visibility from the
-  active view's available tabs.
+- [x] `pcb_get_layer_display` distinguishes the stored visibility setting
+  from physical copper stack membership; `pcb_set_layer_visibility` refuses
+  a copper layer absent from that stack. Native readback on a four-layer
+  scratch PCB found MidLayer2 visible=true but in_physical_stack=false,
+  and the setter returned LAYER_NOT_IN_STACK (script `.139`).
 
 ## Sheet-symbol and entry geometry from `mooreaa`, 2026-10-28
 
