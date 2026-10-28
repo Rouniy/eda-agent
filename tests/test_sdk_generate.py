@@ -14,14 +14,16 @@ generator refusing to emit what it cannot express.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from eda_agent.sdk.generate import (BEGIN_MARKER, END_MARKER, Skipped,
                                     _reject, member_spelling, plan,
-                                    render_probe,
+                                    render_block, render_probe,
                                     render_write, replace_block)
-from eda_agent.sdk.reflect import Property, SdkModel
-from eda_agent.sdk.symbols import SymbolTable
+from eda_agent.sdk.reflect import Property, SdkModel, SdkUnavailable, load_sdk
+from eda_agent.sdk.symbols import SymbolsUnavailable, SymbolTable, load_symbols
 
 
 FAKE = {
@@ -266,5 +268,21 @@ def test_replace_block_swaps_only_between_the_markers():
     out = replace_block(src, f"{BEGIN_MARKER}\nnew body\n{END_MARKER}\n")
     assert out == f"before\n{BEGIN_MARKER}\nnew body\n{END_MARKER}\nafter\n"
     assert "old body" not in out
+
+
+def test_deployed_sdk_probe_matches_the_generator():
+    """Regeneration must retain the two live-proven DbLib flag accessors."""
+    try:
+        model = load_sdk()
+        table = load_symbols()
+    except (SdkUnavailable, SymbolsUnavailable):
+        pytest.skip("no reflected SDK or symbol table on this machine")
+    source = (Path(__file__).resolve().parents[1] / "scripts" / "altium"
+              / "Generic.pas").read_text(encoding="utf-8")
+    start = source.index(BEGIN_MARKER)
+    end = source.index(END_MARKER, start) + len(END_MARKER) + 1
+    block = source[start:end]
+    assert block == render_block(model, table)
+    assert "UseDBTableName" in block and "UseLibraryName" in block
 
 

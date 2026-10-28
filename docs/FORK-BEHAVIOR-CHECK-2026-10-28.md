@@ -675,3 +675,15 @@ restarted in AD26.11.1.5, and answered the same probe on IC44 in
 The sheet was closed without saving. This qualifies the accessors on that
 component and fixes the explicit-path probe; behavior with other component
 kinds remains a separate native check.
+
+## Direct-child test replay on current main
+
+Nine changed test files from `MOREmbedded/main` were replayed unchanged
+against the current source: 129/129 passed. The initial replay found two
+gaps. The release instructions still expected script `.172`; they now name
+the active `.173` and put previous full-version references under dated
+history headings. The deployed `Generic.pas` block also had two live-proven
+DbLib getters absent from a fresh generator render. The generator now keeps
+`UseDBTableName` and `UseLibraryName` in the block despite their overlap
+with the handwritten property handler, and a local parity test guards the
+deployed block. No Pascal code or loaded script changed in this replay.

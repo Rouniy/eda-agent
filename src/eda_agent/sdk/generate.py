@@ -280,6 +280,12 @@ END_MARKER = "{ END GENERATED - SDK property probe. }"
 #: this same constant, so the two cannot drift apart.
 BLOCK_ALLOW_GETTER = True
 
+# These two ISch_Component flags were measured through the live probe on
+# AD26.11. They are also served by the hand-written GetSchProperty branch,
+# but keep them in the generated probe so regeneration preserves the same
+# 29-accessor native check instead of silently dropping two working reads.
+BLOCK_PROBE_OVERLAP = frozenset({"UseDBTableName", "UseLibraryName"})
+
 
 def render_block(model: SdkModel,
                  table: SymbolTable | None = None,
@@ -297,7 +303,8 @@ def render_block(model: SdkModel,
     body = render_probe(
         model, "ISch_Component", "ISch_Component",
         function_name="GetSchComponentGenerated",
-        already=handled_heads("GetSchProperty"), table=table,
+        already=handled_heads("GetSchProperty") - BLOCK_PROBE_OVERLAP,
+        table=table,
         allow_getter=allow_getter).pascal
     return f"{BEGIN_MARKER}\n{body}{END_MARKER}\n"
 

@@ -1,5 +1,10 @@
 
-# Release verification: 2026.10.28.172
+# Release verification: 2026.10.28.173
+
+Script `.173` guards the impedance profile layer-name read on AD26.11.
+The 12-unit Pascal build had zero errors or warnings, 11 focused
+impedance tests passed, and the active main script answered `app_ping`
+as `2026.10.28.173`.
 
 Script `.172` fixes the SDK probe's explicit `doc_path`: the handler now
 resolves an already loaded SchDoc through `LoadedSchDocByPath`. The prior
@@ -181,7 +186,10 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.28.172` from `app_ping`.
+Expect `altium_script_version` = `2026.10.28.173` from `app_ping`.
+
+## 2026.10.28.156 - Previous native checkpoint
+
 At that earlier checkpoint, `app_ping` reported loaded and bundled `2026.10.28.156` on
 Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
 disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
@@ -209,7 +217,7 @@ The copy was closed without saving and its SHA-256 stayed unchanged.
 Script `.154` removed two unreachable duplicate `Name` branches in the
 generic PCB property setter; Pascal lint/build passed all 12 units.
 
-## Previous checkpoint: 2026.10.28.114
+## 2026.10.28.114 - Previous checkpoint
 
 The upstream probe-count merge loaded live on Altium 26.11.1.5 with zero
 cast errors. On the scratch Simulation Quick Start copy, `sim_get_probes`
@@ -237,7 +245,7 @@ The focused library had no such layer kinds. Both were closed without
 edits. The package-audit multi-library routing was subsequently checked
 live on `.113`; full independent package signoff remains separate.
 
-## Previous native verification: 2026.10.27.112
+## 2026.10.27.112 - Previous native verification
 
 At that checkpoint `altium_script_version` was `2026.10.27.112`.
 Source lint/build and focused tests passed. The restarted Altium
@@ -263,7 +271,7 @@ text, fractional coordinates and 90-degree orientation. Altium changed
 the font table ID from 1 to 2 for the rotated entry; both use Times New
 Roman 10. The file was closed and removed.
 
-## Previous native verification: 2026.10.27.94
+## 2026.10.27.94 - Previous native verification
 
 At that checkpoint, `altium_script_version` was `2026.10.27.94`.
 
@@ -4074,7 +4082,7 @@ than 5000 drilled holes remain to verify.
 The same call through the restarted HTTP MCP on port 14701 returned all
 three required checks and the same two outline errors; Altium's loaded
 DelphiScript stayed at `.53` because this patch changed only Python.
-## Workspace component integration (2026-10-27)
+## 2026.10.27.54 - Workspace component integration
 
 Script `2026.10.27.54` loaded in Altium 26.11.1.5 after an exact
 `application.stop_server` and relaunch from the main project directory.
@@ -4089,7 +4097,7 @@ test when a Workspace connection is available. Eight focused Workspace
 tests and the 25 fabrication tests passed; Pascal build/lint passed with
 zero errors and warnings.
 
-## Generic schematic object creation repair (2026-10-27)
+## 2026.10.27.55 - Generic schematic object creation repair
 
 Script `2026.10.27.55` loaded in Altium 26.11.1.5 with zero cast errors.
 The updated `Gen_CreateObject` removes duplicate property writes and
