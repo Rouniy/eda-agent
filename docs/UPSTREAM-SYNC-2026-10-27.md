@@ -5,8 +5,10 @@
 The `mooreaa` current-footprint pin-map write now has native persistence
 evidence on a disposable two-pin placed component: a swapped mapping
 survived exact save/close/reopen. Its out-of-range display-mode write was
-refused without changing the component. See `CURRENT-STATE.md` for the
-readbacks; a successful two-mode switch remains open.
+refused without changing the component. A separate copy with a two-mode
+library symbol accepted `DisplayMode` 0 to 1 on a newly placed part,
+and the mode survived exact save/close/reopen. See `CURRENT-STATE.md` for
+the readbacks and scope of the graphic check.
 
 ## 2026-10-28 polygon-read qualification
 

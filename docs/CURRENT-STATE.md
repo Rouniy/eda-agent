@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## Placed-part display-mode native persistence, 2026-10-28
+
+The remaining `mooreaa` `DisplayMode` write was accepted on a disposable
+copy of `Multipart_QA.PrjPcb`. A copy of its `RES` SchLib symbol gained an
+empty second display mode and was saved; placing a new `RQA2` on the copy
+of `Template_Value_QA.SchDoc` read back `DisplayModeCount=2` and
+`DisplayMode=0`. `obj_modify` changed it to 1 with no failed properties.
+Exact-sheet save observed a disk write, and after project close without
+another save and reopen, `obj_query` returned `DisplayMode=1`, count 2.
+The original QA sheet retained SHA-256
+`2d67b03d144a515e9b69dfed309a9eda0f95e5bd57c772a44b3b3d510b2ce3b9`.
+The temporary project and SchLib were closed. This checks the mode index
+and persistence; the second mode was intentionally empty, so no rendered
+graphic difference is claimed.
+
 ## Placed-part pin-map native persistence, 2026-10-28
 
 The `mooreaa` placed-component `FootprintPinMap` port was exercised on
@@ -1581,8 +1596,9 @@ writes are gated to `eSchComponent`; mode writes check the available range and
 read back, and pin-map writes require an old-map read, check the requested
 entries after Altium's merge and restore the old map on failure. The related
 source suite passed 22 tests; three FPC-dependent tests were skipped because
-`fpc` is unavailable here. Pascal lint/build passes. Native component
-acceptance is pending.
+`fpc` is unavailable here. Pascal lint/build passes. The later native
+pin-map and display-mode persistence checks are recorded at the top of
+this handoff.
 
 The `.7` source ports `mooreaa`'s corrected live-pin filter. Schematic ePin
 queries omit hidden copies from other parts and display modes unless the
