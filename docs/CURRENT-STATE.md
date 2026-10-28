@@ -24,9 +24,12 @@ by default even when their style is `bar`; three focused fixtures pass.
 `capture_png` defaults to native pixel size and only the OCR path asks
 for 2x scaling; 35 screenshot/dialog source tests pass. A direct live
 `PrintWindow` attempt on Altium's main window did not return before it
-was cancelled, so native pixel-size QA is still open. Altium subsequently
-showed `Responding=false` while its CPU time increased and another client's
-project request was active; no restart was attempted during that work.
+was cancelled, so native pixel-size QA is still open. Bridge trace shows
+another client had started `pcb.run_drc` and pressed Run in the modal
+checker; the native DRC remained active while Altium showed
+`Responding=false` and its CPU time increased. The screenshot attempt
+overlapped that run, so it does not establish a screenshot defect. No
+restart was attempted during the DRC.
 
 ## `mooreaa` UI corrections, 2026-10-28
 
