@@ -1,5 +1,16 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 xSignal class and HTTP restart correction
+
+The upstream xSignal class option now creates or reuses a Signal-kind
+board class and verifies the newly created pair in its indexed members.
+Two pairs were added to one class across two save/close/reopen cycles on
+a disposable populated board. The Python MCP wrapper rejects an
+unverified class assignment. The HTTP MCP self-restart now preserves
+`serve-altium-http.py` instead of switching to stdio; live port 14701
+and `app_ping` recovered after its own restart. See `CURRENT-STATE.md`
+for the native evidence and original-board hash.
+
 ## 2026-10-28 cad435 Workspace exact search
 
 The `cad435` Workspace resolver's first-fuzzy-result limitation is fixed
@@ -899,7 +910,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | `mooreaa` `dc36b7e`-`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests, Pascal lint/build and loaded `.12` runtime; native disposable-sheet acceptance pending |
 | `mooreaa` through `fc22136` (port AutoSize getter) | Return the native port AutoSize flag through generic queries, with a port-only type guard | Native `.12` query exposed the omission; loaded `.13` ePort query read back false, font 1 and width 400 on an isolated sheet |
 | MOREmbedded through `032fb4b` (`pcb_check_fab_output`) | Rework fab comparison around one exact-board, uncapped native snapshot and require all three core comparisons | 23 focused tests, Pascal lint/build, loaded `.14`; disposable PCB facts and wrong-path refusal passed; full export comparison pending |
-| Upstream `0a9ccd4`, `bb06837` (xSignals) | Read, create and delete xSignals on an exact PcbDoc; use count preconditions and verify native pair deltas | 28 focused tests, Pascal lint/build; AD26 populated-board create and targeted delete persisted after separate exact save/close/reopen cycles |
+| Upstream `0a9ccd4`, `bb06837` (xSignals) | Read, create and delete xSignals on an exact PcbDoc; use count preconditions and verify native pair deltas | AD26 populated-board create/delete persisted; script `.137` also created and reused a Signal-kind class with indexed member readback across saves; 117 related tests and Pascal lint/build passed |
 | Upstream `0a9ccd4` (same package) | Compare all placed components with native package equality on an exact PcbDoc, including unhashed parts, and expose comparison errors | Eight focused tests, Pascal lint/build, loaded `.17`; 147-part read returned 14 groups, R62 matched 51 others; board unmodified |
 | Upstream `bb06837` (net display) | Read and batch-set four per-net display flags on an exact PcbDoc, with old-state preflight, dry-run plan and readback | Six related tests, Pascal lint/build, loaded `.18`; one-net and two-net disposable writes read back; missing net/wrong board refused |
 | Upstream `5797fc0` (board grids) | Read and set six board grids and dot mode on an exact PcbDoc, validating all values before writes with old-state preflight and readback | Three focused tests, Pascal lint/build, loaded `.19`; disposable changes read back, exact-path save/reload persisted snap X; broad Save All side effect recorded in CURRENT-STATE |

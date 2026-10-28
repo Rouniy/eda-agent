@@ -61,6 +61,7 @@ def test_relative_board_path_is_refused_locally(monkeypatch):
 def test_create_requires_fresh_count_and_verifies_new_pair(monkeypatch):
     reply = {"board_path": PATH, "count_before": 1, "count_after": 2,
              "returned_pairs": True, "class_assigned": True,
+             "class_membership_verified": True,
              "created": [{"name": "U1.1-U2.2"}]}
     bridge = _Bridge(reply)
     monkeypatch.setattr(pcb, "get_bridge", lambda: bridge)
@@ -71,6 +72,8 @@ def test_create_requires_fresh_count_and_verifies_new_pair(monkeypatch):
     assert bridge.calls == [("pcb.create_xsignals", {
         "board_path": PATH, "expected_count": "1", "pins": "U1.1\tU2.2", "class_name": "CLK"})]
     bridge.reply = {**reply, "created": []}
+    assert asyncio.run(create(PATH, 1, ["U1.1", "U2.2"], "CLK"))["ok"] is False
+    bridge.reply = {**reply, "class_membership_verified": False}
     assert asyncio.run(create(PATH, 1, ["U1.1", "U2.2"], "CLK"))["ok"] is False
 
 

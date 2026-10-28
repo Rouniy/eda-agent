@@ -134,8 +134,25 @@ async def test_restart_mcp_server_schedules_delayed_exec(monkeypatch):
             started.append("started")
 
     monkeypatch.setattr(application.threading, "Thread", _Thread)
+    monkeypatch.setattr(application.sys, "orig_argv",
+                        [application.sys.executable, "-m", "eda_agent"])
     tools, _ = _tools(monkeypatch)
     out = await tools["app_restart_mcp_server"](delay_ms=750)
     assert out["restart_scheduled"] is True
     assert out["command"][-2:] == ["-m", "eda_agent"]
     assert started[-1] == "started"
+
+
+def test_restart_command_preserves_http_entrypoint():
+    from eda_agent.tools.application import _mcp_restart_command
+
+    command = _mcp_restart_command(
+        r"C:\Python\python.exe",
+        [r"C:\Python\python.exe", r"D:\ai\eda-agent\scripts\serve-altium-http.py",
+         "--port", "14701"],
+    )
+    assert command == [r"C:\Python\python.exe",
+                       r"D:\ai\eda-agent\scripts\serve-altium-http.py",
+                       "--port", "14701"]
+    assert _mcp_restart_command(r"C:\Python\python.exe",
+                                [r"C:\Python\python.exe", "-c", "print(1)"]) is None

@@ -1,5 +1,36 @@
 # Current integration state / agent handoff
 
+## xSignal class membership and HTTP restart, 2026-10-28
+
+Script `.137` repairs the upstream xSignal class path. On a populated
+disposable CW308 board, the former handler reported `class_assigned=true`
+after `AssignPinPairClass`, but no named class existed on the board. The
+first repair created a Signal-kind board class, which persisted, yet the
+string overload of `IsMember` returned false even when `MemberName[0]`
+was `NetR15_1_PP1`. The final handler creates or reuses the class, checks
+its indexed `MemberName` entries before adding the pair's primitive, and
+returns `class_membership_verified` only after that readback. Python now
+requires this field when `class_name` was requested; an unverified write
+is returned as `ok=false` with the native partial state.
+
+On a new clean copy, `R16.2` to `R15.1` created
+`NetR15_1_PP1` in `QA_XSIG_MEMBER` with `class_created=true` and
+`class_membership_verified=true`. Exact save/close/reopen retained the
+pair and class. A second pair, `J3.4` to `J3.6`, entered the same class
+with `class_created=false` and verified membership; after another exact
+save/close/reopen the board had both xSignals and the class. Creating a
+pair with no class still succeeded. The owner board SHA-256 remained
+`c4e1c9ab5b3a48931e2b57e1229ee9b652438579e2656d51c645c467f428cf85`.
+
+`app_restart_mcp_server` also now preserves the current Python entrypoint.
+Its old hard-coded `python -m eda_agent` restart dropped the HTTP 14701
+listener because this installation runs `serve-altium-http.py`; the
+existing supervisor recovered the listener. The updated tool reported
+the HTTP script command, restarted it, and `app_ping` then returned
+loaded/bundled `.137` with port 14701 listening. TCP 14700 stayed up.
+Pascal lint/build passed with zero errors and warnings; 117 related
+Python tests passed.
+
 ## Workspace exact-result search, 2026-10-28
 
 Script `.131` repairs the `cad435` Workspace component resolver. Altium's

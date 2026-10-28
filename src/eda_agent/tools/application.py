@@ -26,6 +26,19 @@ from .. import updates
 _VERSION_RE = re.compile(r"SCRIPT_VERSION\s*=\s*'([^']+)'")
 
 
+def _mcp_restart_command(executable: str, original_argv: list[str]) -> list[str] | None:
+    """Recreate the current stdio or HTTP entrypoint without changing transport."""
+    args = original_argv[1:]
+    if "-m" in args:
+        index = args.index("-m")
+        if index + 1 < len(args) and args[index + 1] == "eda_agent":
+            return [executable, *args]
+    if any(Path(arg.replace("\\", "/")).name.casefold() == "serve-altium-http.py"
+           for arg in args):
+        return [executable, *args]
+    return None
+
+
 def _current_altium_has_progress(bridge: Any, workspace: Path) -> bool:
     """Ignore command markers left by an earlier, crashed Altium process."""
     pid = bridge.process_manager.get_altium_pid()
@@ -1424,10 +1437,9 @@ def register_application_tools(mcp):
     async def app_restart_mcp_server(delay_ms: int = 1000) -> dict[str, Any]:
         """Restart the Python MCP process in place after returning a response.
 
-        The delayed ``exec`` preserves the stdio transport while re-importing
-        the installed package, so newly added Python tools become available
-        without user process management. MCP clients cache the tool list; the
-        newly registered tools may appear on the next agent turn/reconnect.
+        The delayed ``exec`` preserves the current stdio or HTTP entrypoint
+        while re-importing the package. MCP clients cache the tool list; newly
+        registered tools may appear on the next reconnect.
 
         This does not recompile Altium DelphiScript. If the script reports a
         version mismatch, restart ``StartMCPServer`` inside Altium separately.
@@ -1444,10 +1456,14 @@ def register_application_tools(mcp):
         if not executable or not os.path.isfile(executable):
             return {"success": False,
                     "reason": "Python executable could not be resolved"}
+        command = _mcp_restart_command(executable, list(getattr(sys, "orig_argv", [])))
+        if command is None:
+            return {"success": False,
+                    "reason": "Current MCP entrypoint could not be identified for restart"}
 
         def _restart() -> None:
             time.sleep(delay_ms / 1000.0)
-            os.execv(executable, [executable, "-m", "eda_agent"])
+            os.execv(executable, command)
 
         threading.Thread(
             target=_restart,
@@ -1458,7 +1474,7 @@ def register_application_tools(mcp):
             "success": True,
             "restart_scheduled": True,
             "delay_ms": delay_ms,
-            "command": [executable, "-m", "eda_agent"],
+            "command": command,
             "note": "Tool discovery refreshes after MCP reconnect.",
         }
 

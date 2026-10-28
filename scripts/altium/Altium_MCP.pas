@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.131';
+    SCRIPT_VERSION = '2026.10.28.137';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47918,11 +47918,59 @@ Begin
     Board.BoardIterator_Destroy(Iter);
 End;
 
+Function PCB_XSignalFindClass(Board : IPCB_Board; ClassName : String) : IPCB_ObjectClass;
+Var
+    Iter : IPCB_BoardIterator;
+    ObjClass : IPCB_ObjectClass;
+Begin
+    Result := Nil;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eClassObject));
+        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        ObjClass := Iter.FirstPCBObject;
+        While ObjClass <> Nil Do
+        Begin
+            If (UpperCase(ObjClass.Name) = UpperCase(ClassName)) And
+               (ObjClass.MemberKind = eClassMemberKind_Signal) Then
+            Begin
+                Result := ObjClass;
+                Break;
+            End;
+            ObjClass := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function PCB_XSignalClassHasName(ObjClass : IPCB_ObjectClass;
+                                 PairName : String; MaxMembers : Integer) : Boolean;
+Var
+    I : Integer;
+    Name : String;
+Begin
+    Result := False;
+    If ObjClass = Nil Then Exit;
+    For I := 0 To MaxMembers - 1 Do
+    Begin
+        Name := '';
+        Try Name := ObjClass.MemberName[I]; Except Break; End;
+        If UpperCase(Name) = UpperCase(PairName) Then
+        Begin
+            Result := True;
+            Exit;
+        End;
+    End;
+End;
+
 Function PCB_CreateXSignals(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Mgr : IPCB_PinPairsManager;
     PP : IPCB_PinPair;
+    SignalClass : IPCB_ObjectClass;
     Comp : IPCB_Component;
     Pad : IPCB_Pad;
     Pins : TInterfaceList;
@@ -47930,7 +47978,7 @@ Var
     PinStr, ClassName, Item, Desig, PadName, Missing, NewItems, BeforeNames : String;
     ExpectedPath, Why, ExpectedCountStr : String;
     TabPos, DotPos, I, Before, After, Found, ExpectedCount : Integer;
-    Classed : Boolean;
+    Classed, ClassCreated, ClassMember : Boolean;
 Begin
     ExpectedPath := ExtractJsonValue(Params, 'board_path');
     ExpectedCountStr := ExtractJsonValue(Params, 'expected_count');
@@ -48028,7 +48076,33 @@ Begin
             PCBServer.PostProcess;
         End;
         Classed := False;
+        ClassCreated := False;
+        SignalClass := Nil;
         If (ClassName <> '') And (Made <> Nil) Then
+        Begin
+            SignalClass := PCB_XSignalFindClass(Board, ClassName);
+            If SignalClass = Nil Then
+            Begin
+                PCBServer.PreProcess;
+                Try
+                    SignalClass := PCBServer.PCBClassFactoryByClassMember(
+                        eClassMemberKind_Signal);
+                    If SignalClass <> Nil Then
+                    Begin
+                        SignalClass.SuperClass := False;
+                        SignalClass.Name := ClassName;
+                        Board.AddPCBObject(SignalClass);
+                        PCBServer.SendMessageToRobots(Board.I_ObjectAddress,
+                            c_Broadcast, PCBM_BoardRegisteration,
+                            SignalClass.I_ObjectAddress);
+                        ClassCreated := True;
+                    End;
+                Finally
+                    PCBServer.PostProcess;
+                End;
+            End;
+        End;
+        If (ClassName <> '') And (Made <> Nil) And (SignalClass <> Nil) Then
         Begin
             Try
                 Mgr.AssignPinPairClass(Made, ClassName);
@@ -48039,12 +48113,27 @@ Begin
       primitive interfaces. The host owns this short-lived script list. }
     After := Mgr.PinPairsCount;
     NewItems := '';
+    ClassMember := Classed And (SignalClass <> Nil);
     For I := 0 To After - 1 Do
     Begin
         PP := Nil;
         Try PP := Mgr.PinPairs[I]; Except PP := Nil; End;
         If PP = Nil Then Continue;
         If Pos(#9 + PP.Name + #9, BeforeNames) > 0 Then Continue;
+        If ClassMember Then
+        Begin
+            Try
+                If Not PCB_XSignalClassHasName(SignalClass, PP.Name, After) Then
+                Begin
+                    PCBServer.PreProcess;
+                    Try SignalClass.AddMember(PP.CastToPrimitive);
+                    Finally PCBServer.PostProcess; End;
+                End;
+                ClassMember := PCB_XSignalClassHasName(SignalClass, PP.Name, After);
+            Except
+                ClassMember := False;
+            End;
+        End;
         If NewItems <> '' Then NewItems := NewItems + ',';
         NewItems := NewItems + PCB_XSignalJson(PP, I);
     End;
@@ -48055,7 +48144,9 @@ Begin
         + JsonInt('count_after', After) + ','
         + JsonBool('returned_pairs', Made <> Nil) + ','
         + JsonStr('class_name', ClassName) + ','
+        + JsonBool('class_created', ClassCreated) + ','
         + JsonBool('class_assigned', Classed) + ','
+        + JsonBool('class_membership_verified', ClassMember) + ','
         + JsonRaw('created', '[' + NewItems + ']')));
 End;
 

@@ -10108,7 +10108,7 @@ def register_pcb_tools(mcp):
                 or type(after) is not int or after <= expected_count
                 or not isinstance(created, list) or len(created) != after - expected_count
                 or not reply.get("returned_pairs")
-                or (class_name and not reply.get("class_assigned"))):
+                or (class_name and not reply.get("class_membership_verified"))):
             return {"ok": False, "reason": "xSignal creation was not fully verified",
                     "native_reply": reply}
         return reply
