@@ -1,5 +1,12 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 schematic menu qualification
+
+The `mooreaa` `Sch:DeSelect` alias behind `app_run_menu('Edit|Deselect All')`
+now has an independent native readback: a selected component's schematic
+`Selection` flag changed from true to false on a disposable sheet. The
+project was closed without saving. See `CURRENT-STATE.md` for the calls.
+
 ## 2026-10-28 live synchronization check
 
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
@@ -63,8 +70,7 @@ The fork's `Sch:DeSelect` with `Action=All` was already used by
 still mapped to the old `Sch:DeSelectAll` process that left selections
 standing on AD25.8. Script `.130` sends the same corrected action through
 both routes. The 12-unit Pascal bundle built and the loaded Altium script
-reports `.130`; a selected-object UI readback for this menu alias remains
-to be done.
+reports `.130`; the selected-object native readback is recorded above.
 
 `main` includes upstream tip `ee7589c9fc543d0b99bb142dc8ca12b618fffeab`
 as its exact merge base; `main..upstream/main` has zero commits. The live

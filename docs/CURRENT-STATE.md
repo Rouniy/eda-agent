@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Deselect All menu native readback, 2026-10-28
+
+The `mooreaa` corrected schematic deselection alias was checked in
+Altium 26.11.1.5, script `.130`, on a disposable four-component SchDoc.
+`obj_select(eSchComponent, Designator=RQA3)` reported one selected;
+`obj_query` read its schematic `Selection=true`. Calling
+`app_run_menu("Edit|Deselect All")` dispatched `Sch:DeSelect` with
+`Action=All`, and a second `obj_query` read `Selection=false`. The
+temporary project was closed without saving. Schematic selection uses
+the `Selection` property; `Selected` is the PCB property. The generic
+menu dispatcher still returns `outcome_verified=false`, so the separate
+property readback is the evidence that this specific action worked.
+
 ## Placed footprint-stamp native persistence, 2026-10-28
 
 The `mooreaa` placed-component `Footprint` stamp passed native acceptance
