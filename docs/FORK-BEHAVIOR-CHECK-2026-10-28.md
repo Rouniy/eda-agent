@@ -775,3 +775,30 @@ verified above. Its separate security-policy drift guard was absent.
 An adapted test now checks that `SECURITY.md` names the package's current
 version line and all three shipped EDA backends; the security and
 EasyEDA packaging slice passes 9/9.
+
+## Native free-library and footprint acceptance after the fork merge
+
+A fresh `eda-agent fork-status --fetch --cached-forks
+--verify-fork-branches --json` at `05ed05b` found `upstream/main`
+at the tagged sync point `0bb1b315` and `MOREmbedded/main` at the
+merged child tip `d495c4d`; neither has commits pending. All 63 direct
+fork default tips and all 120 live branch tips matched the cached refs.
+The 53 divergent cached refs still require behavior-level review; their
+presence alone does not establish an unported feature.
+
+On AD26.11.1.5, script `.174` created a free disposable PcbLib with
+`application.create_document(kind=PCBLIB, add_to_project=false)` and
+reported `focused=true`. `application.get_active_document` returned
+that exact path and `PCBLIB`. `library.create_footprint` added `FILL_QA`;
+`library.add_footprint_fills` added one 100 by 50 mil Top Overlay fill.
+`library.get_footprint_primitives` returned the native fill with bounds
+`(0, 0, 2.54, 1.27)` mm. After `application.save_document`, close and
+reopen, `library.get_footprints` still listed `FILL_QA` and the fill
+readback was identical. The library was closed and the scratch file
+removed. The earlier asynchronous `ScriptingSystem.DLL` exception did
+not recur in this sequence; its original cause remains unproven.
+
+The `.174` focus repair uses the current editor view's owner when the
+workspace focused-document pointer is empty. Pascal lint/build passed,
+and 38 focused document/context/version checks passed. The main
+Altium loop was restarted and answered the live native calls above.
