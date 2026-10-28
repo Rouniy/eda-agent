@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## mooreaa manager-model reset acceptance, 2026-10-28
+
+The last unverified `mooreaa/main` stack feature was exercised on a
+disposable copy in AD26.11. Changing Dielectric 1 loss tangent from 0.02
+to 0.017 and saving left the Layer Stack Manager's XML model at 0.02.
+`pcb_stack_from_file` reported `stack_manager_model_stale` with both
+numbers. On the closed copy, `reset_manager_model` with its expected
+SHA-256 renamed one model key. Reopen and save rebuilt the model;
+the stale warning disappeared. The copy was closed and removed. The
+ordinary-copper and loss-tangent writes were also accepted natively, so
+the `a4be7fc..5329cfe` capability delta is integrated and verified on
+AD26.11. AD25-specific Rosen observations remain a separate queue.
+
 ## mooreaa loss tangent, 2026-10-28
 
 `pcb_build_stack` now accepts a finite nonnegative dielectric
@@ -29,7 +42,7 @@ Native AD26.11 acceptance on another disposable PcbDoc inserted signal
 layer `EDA_TEST_COPPER` below Top Layer: the reply reported
 `ordinary_copper=true`, and physical-stack readback showed a 1.378 mil
 copper layer with additive=false and resistivity=0. The copy was closed
-without saving and removed. A visibly stale-manager-model reset remains.
+without saving and removed. The manager-model reset acceptance is above.
 
 ## MOREmbedded Pascal lint and live bridge, 2026-10-28
 

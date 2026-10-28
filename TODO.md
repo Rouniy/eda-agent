@@ -11,7 +11,7 @@
   were restarted; live net-class reads confirmed both option values.
   The branch's process-visibility doctor fix (`cbff5f9`) was integrated
   earlier with 75 focused tests and a live doctor pass.
-- [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: verify the guarded
+- [x] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: verify the guarded
   `pcb_reset_stack_manager_model` on a copy with a visibly stale manager
   model. Its ordinary-copper correction, additive/resistivity native reads
   and optional loss-tangent stack write are integrated in scripts `.162`
@@ -21,7 +21,9 @@
   The saved-file reader detects additive
   or non-conductive copper and stale manager thicknesses. The reset is
   deployed and completed an AD26.11 open/save/readback round trip on a
-  disposable PcbDoc.
+  disposable PcbDoc. A saved scratch edit produced a real
+  `stack_manager_model_stale` warning for Dielectric 1 loss tangent
+  (manager 0.02, physical stack 0.017); reset/reopen/save cleared it.
 - [x] Expose the forks' requested `delta_t_c` in Altium's
   `pcb_calc_track_current_capacity`, while retaining its fixed rise table
   and optional length/resistance result. The selected current uses the

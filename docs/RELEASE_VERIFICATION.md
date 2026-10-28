@@ -8,6 +8,10 @@ closed without saving and removed. Another disposable PcbDoc accepted
 `pcb.stack_edit insert` for `EDA_TEST_COPPER`, 1.378 mil: the reply said
 `ordinary_copper=true`, and the physical-stack readback reported a copper
 layer with additive=false and resistivity=0. That copy was also discarded.
+On a third scratch copy, a saved loss tangent change left the manager model
+at 0.02 while the physical stack held 0.017. The saved-file reader raised
+`stack_manager_model_stale`; resetting the model by exact SHA-256, then
+reopening and saving cleared the warning. This copy was also removed.
 
 Script `.162` makes inserted and edited copper ordinary rather than
 printed-electronics additive, and reports additive/resistivity flags in
