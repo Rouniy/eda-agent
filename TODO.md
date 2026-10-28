@@ -2,18 +2,18 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
-- [ ] Reconcile the 8 new commits on `MOREmbedded/main` after the
-  `032fb4b` ancestry merge. The fresh tip is `d495c4d`. The SDK symbol
-  extractor and offline candidate generator are ported and tested locally;
-  the per-request perf attribution is ported and checked against two live
-  ping calls. Type-scoped delegated-property accounting is ported and
-  tested; it changes no current coverage count until a generated block is
-  deployed. The live `sdk-probe` and generated Pascal block are now ported;
-  the `.168` bridge answered two scoped native probes, including a
-  `DescriptionString` getter. Review the remaining generated accessors
-  individually and record the unexplained Altium process exit after a
-  later document reopen. Do not treat the old child merge as the latest
-  child sync point.
+- [x] Reconcile the 8 new commits on `MOREmbedded/main` after the
+  `032fb4b` ancestry merge. Their tip `d495c4d` is now the second parent
+  of `ce7aab8`. The SDK symbol extractor, offline candidate generator,
+  per-request perf attribution, type-scoped coverage accounting, and live
+  `sdk-probe`/generated Pascal block are ported. Script `.168` answered two
+  scoped native probes, including the `DescriptionString` getter. Review
+  the remaining generated accessors individually and investigate the
+  unexplained Altium process exit after a later document reopen.
+- [ ] Refresh and audit the other fork branches. At the latest local scan,
+  53 of 111 cached `forks/*` refs are non-ancestors of `main`; ancestry
+  alone does not say whether their behavior is absent. Recheck live branch
+  tips and the remaining feature/compatibility gaps in the dated audit.
 - [x] Record the direct child `MOREmbedded/main` tip `032fb4b` as a true
   second parent after manual conflict resolution. Current production paths
   win where the auto-merge duplicated Pascal/Python handlers or removed

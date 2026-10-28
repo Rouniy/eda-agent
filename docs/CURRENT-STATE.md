@@ -10,8 +10,11 @@ Altium exited before processing the request. Altium was launched again,
 the same main script loop resumed, and `.168` ping succeeded. The cause of
 the exit remains unverified; do not infer that the accessor caused it.
 Type-scoped SDK coverage now reports 678/2176 declared properties. The
-new child-fork tip `d495c4d` still needs a Git ancestry merge after the
-behavior-level changes are reviewed.
+child-fork tip `d495c4d` is the second parent of merge `ce7aab8`.
+Fresh fetches found no commits pending from `upstream/main` or
+`MOREmbedded/main`; their merge bases are `0bb1b315` and `d495c4d`.
+Other cached fork branches still need behavior-level review: 53 of 111
+`forks/*` refs are not ancestors of `main`.
 
 PCB text `FontName` is now readable through `obj_query` on script `.167`.
 The main Altium loop was restarted and answered a ping. On
@@ -31,7 +34,8 @@ over 121 cached remote refs found 14 donor-only public tool names, each
 mapped to an existing operation; a production-path inventory found three
 alternative files, including the AD25 headless `StatusFormStub.pas` that
 still needs compatibility qualification. The child fork's `main` tip is
-not yet an ancestor of ours: a virtual merge reports 62 conflicts. See
+now an ancestor through `ce7aab8`; its earlier virtual merge reported 62
+conflicts, resolved through feature-level adaptation. See
 `FORK-BEHAVIOR-CHECK-2026-10-28.md` for checked behavior and limits.
 
 The earlier `ee7589c9` merge was a previous checkpoint, not the current
