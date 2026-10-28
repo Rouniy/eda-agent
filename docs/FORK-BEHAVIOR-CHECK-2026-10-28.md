@@ -40,6 +40,14 @@ Code config passed dry-run/add/remove; no real client config was touched.
 covered by `config._pointer_encoding`, the health check and
 `_read_response_json`; their focused tests passed 3/3.
 
+The issue-template security link now opens this fork's `SECURITY.md`
+(HTTP 200). GitHub's public private-vulnerability-reporting setting for
+`Rouniy/eda-agent` returned `enabled:false`; a fork-controlled private
+contact is still needed before the policy's upstream email can be changed.
+GitHub's Actions API showed no hosted runs for `build-windows-binary.yml`
+and no `tests.yml` runs on the latest commits at this check, so local tests
+remain the verification for those changes.
+
 `eda-agent fork-status --fetch --cached-forks --verify-fork-branches --json`
 matched all 118 live branch tips to cached refs. Fifty-four cached refs
 are not ancestors of `main`; that count measures divergent commits, not

@@ -2,6 +2,13 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Route GitHub's security-report link to this fork's policy page.
+  The `Rouniy/eda-agent/security/policy` URL returned HTTP 200.
+- [ ] Set a private Rouniy vulnerability-report channel in `SECURITY.md`.
+  GitHub's public API reports `private-vulnerability-reporting` disabled
+  on this repository; the policy still names the upstream email address.
+  Await a maintainer-controlled private channel before publishing a
+  different contact.
 - [x] Adapt `rabihnd/integration`'s Claude MCP setup helper to this
   checkout as `scripts/setup-mcp.ps1` and its `.cmd` wrapper. It discovers
   the installed executable or Python instead of assuming Python 3.12 in
