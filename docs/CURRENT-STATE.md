@@ -1,5 +1,18 @@
 # Current integration state / agent handoff
 
+## Populated-board xSignal create/delete acceptance, 2026-10-28
+
+On a disposable copy of the CW308 baseboard PcbDoc under Altium
+26.11.1.5, script `.130`, `pcb_get_xsignals` initially returned zero.
+`pcb_create_xsignals` with `expected_count=0` and pins `R16.2`,
+`R15.1` created `NetR15_1_PP1`: two nodes, one track, 69.0071 mil
+length, and no unrouted span. The pair survived exact-board save,
+close and reopen. `pcb_delete_xsignals` then deleted that exact name
+with `expected_count=1`; a second exact save/close/reopen returned zero
+pairs. This confirms both writes on a populated board, their count
+preconditions and persistence. The owner PcbDoc SHA-256 remained
+`c4e1c9ab5b3a48931e2b57e1229ee9b652438579e2656d51c645c467f428cf85`.
+
 ## cad435 PCB pad-designator native acceptance, 2026-10-28
 
 The `cad435/c7d55bb` pad-name feature was compared with current source
@@ -1563,8 +1576,8 @@ Altium 26.11.1.5 loaded/bundled `.16` with zero cast errors. A disposable
 PcbDoc reported zero xSignals; nonexistent pins were refused, a stale count
 was refused, and an empty delete left the count at zero. The disposable
 document was closed and its saved file removed. The original PCB is active
-and unmodified. Creating and deleting an actual xSignal on a populated
-disposable board still needs native acceptance. TCP 14700 and MCP 14701
+and unmodified. The populated-board write was accepted on 2026-10-28
+as recorded above. TCP 14700 and MCP 14701
 listen.
 
 The `.14` source integrates MOREmbedded's fab-output comparison as an

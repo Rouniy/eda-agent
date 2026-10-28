@@ -1,5 +1,13 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 populated-board xSignal qualification
+
+The upstream xSignal create/delete family now has native AD26 evidence
+on a disposable populated board. `R16.2` and `R15.1` formed one routed
+`NetR15_1_PP1` pair, which survived save/close/reopen; targeted deletion
+also survived save/close/reopen. The owner board hash stayed unchanged.
+See `CURRENT-STATE.md` for the exact counts and length.
+
 ## 2026-10-28 cad435 pad-name qualification
 
 `cad435/c7d55bb`'s pad-name read/write and PCB batch routing are already
@@ -881,7 +889,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | `mooreaa` `dc36b7e`-`fc22136` (placement styling and Value) | Inherit or set fonts on new schematic objects, hold fixed port width, normalize text-frame line breaks, update existing Value parameters and hide new ones | 70 related tests, Pascal lint/build and loaded `.12` runtime; native disposable-sheet acceptance pending |
 | `mooreaa` through `fc22136` (port AutoSize getter) | Return the native port AutoSize flag through generic queries, with a port-only type guard | Native `.12` query exposed the omission; loaded `.13` ePort query read back false, font 1 and width 400 on an isolated sheet |
 | MOREmbedded through `032fb4b` (`pcb_check_fab_output`) | Rework fab comparison around one exact-board, uncapped native snapshot and require all three core comparisons | 23 focused tests, Pascal lint/build, loaded `.14`; disposable PCB facts and wrong-path refusal passed; full export comparison pending |
-| Upstream `0a9ccd4`, `bb06837` (xSignals) | Read, create and delete xSignals on an exact PcbDoc; use count preconditions and verify native pair deltas | 28 focused tests, Pascal lint/build, loaded `.16`; disposable read and refusal/no-op checks passed; actual populated-board write pending |
+| Upstream `0a9ccd4`, `bb06837` (xSignals) | Read, create and delete xSignals on an exact PcbDoc; use count preconditions and verify native pair deltas | 28 focused tests, Pascal lint/build; AD26 populated-board create and targeted delete persisted after separate exact save/close/reopen cycles |
 | Upstream `0a9ccd4` (same package) | Compare all placed components with native package equality on an exact PcbDoc, including unhashed parts, and expose comparison errors | Eight focused tests, Pascal lint/build, loaded `.17`; 147-part read returned 14 groups, R62 matched 51 others; board unmodified |
 | Upstream `bb06837` (net display) | Read and batch-set four per-net display flags on an exact PcbDoc, with old-state preflight, dry-run plan and readback | Six related tests, Pascal lint/build, loaded `.18`; one-net and two-net disposable writes read back; missing net/wrong board refused |
 | Upstream `5797fc0` (board grids) | Read and set six board grids and dot mode on an exact PcbDoc, validating all values before writes with old-state preflight and readback | Three focused tests, Pascal lint/build, loaded `.19`; disposable changes read back, exact-path save/reload persisted snap X; broad Save All side effect recorded in CURRENT-STATE |
@@ -923,7 +931,7 @@ mismatch. A board with more than 5000 drilled holes has not yet been checked.
 
 | Source | Remaining block | Integration check |
 | --- | --- | --- |
-| Upstream `0a9ccd4`, `bb06837` | The named net, project-library, pin/pad property and shared-package source handlers are present; native acceptance of the less-used operations and xSignal writes remains | Verify per-document targeting and property readback on disposable designs |
+| Upstream `0a9ccd4`, `bb06837` | The named net, project-library, pin/pad property and shared-package source handlers are present; xSignal create/delete is now natively accepted, while less-used operations remain | Verify per-document targeting and property readback on disposable designs |
 | Upstream `5797fc0`, `bff741b`, `ce53d6e` | Find a persistent Altium API for numeric differential-pair impedance rule fields, plus broader project STEP export; placed-component STEP export, editor preferences, pours-at-point, board options and per-net jumper display are now present | Keep numeric writes disabled until exact save/reopen proves they survive; port other families with source tests, script build and disposable-board native checks |
 | MOREmbedded `84b682c`, upstream `5db72f2` | Multi-body STEP layer and Z-offset edits are now qualified on one disposable PcbLib; further qualify bulk edits and rotation on footprints containing unsupported polygon/dimension primitives | Preserve exact library/footprint identity, dry run and readback before a save |
 | Upstream `ed4ef59` | Use body height/standoff in footprint previews; restored footprint reader and STEP model association are natively qualified below | STEP model Z offset is now resolved from a matching clean saved PcbLib; compare further body types |
