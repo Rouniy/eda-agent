@@ -223,3 +223,16 @@ parent still requires a deliberate merge resolution and regression check.
 By contrast, `git merge-base main upstream/main` is exactly
 `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, which is the second parent
 of the completed upstream merge `63f7c16`.
+
+## Complete remote-path and public-name inventory
+
+A fresh inventory of 121 cached remote refs found only three production
+paths absent from `main`: `src/eda_agent/easyeda_extension_cli.py` (the
+current `eda_agent.easyeda_extension` module and CLI provide its build
+route), `scripts/ensure_loop.py` (the current bridge supervisor and
+`eda-agent relaunch` cover loop renewal), and `StatusFormStub.pas` (an
+AD25 headless script-project alternative, not yet qualified on AD25).
+The AST inventory of public tool names found the same 14 donor-only
+spellings listed above, with no new name from the refreshed branch refs.
+These inventories establish file/name coverage, not full behavioral
+equivalence of every divergent commit.

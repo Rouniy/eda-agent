@@ -1,13 +1,22 @@
 # Current integration state / agent handoff
 
-## Fresh fork behavior recheck, 2026-10-28
+## Latest upstream sync and fork audit, 2026-10-28
 
-The exact upstream sync point remains `ee7589c9`, recorded as merge
-`338f615`'s second parent, with zero upstream commits pending. A fresh
-`fork-status` run matched all 118 live branch tips; 54 cached refs have
-divergent history. Eleven named recent branch-tip capabilities were
-rechecked against current source; 122 focused tests passed. The table and
-limits of that evidence are in `FORK-BEHAVIOR-CHECK-2026-10-28.md`.
+The exact upstream sync point is
+`0bb1b3154cca6e58a517b23edee3d7a108f1c232`, the second parent of
+merge `63f7c16`; `git merge-base main upstream/main` returns that same
+commit, and the last fetched upstream had zero commits pending. The
+October 28 fork refresh matched all 118 live branch tips. An AST inventory
+over 121 cached remote refs found 14 donor-only public tool names, each
+mapped to an existing operation; a production-path inventory found three
+alternative files, including the AD25 headless `StatusFormStub.pas` that
+still needs compatibility qualification. The child fork's `main` tip is
+not yet an ancestor of ours: a virtual merge reports 62 conflicts. See
+`FORK-BEHAVIOR-CHECK-2026-10-28.md` for checked behavior and limits.
+
+The earlier `ee7589c9` merge was a previous checkpoint, not the current
+upstream sync point. Eleven branch-tip capabilities checked at that stage
+passed 122 focused tests; those results remain in the audit.
 
 ## mooreaa manager-model reset acceptance, 2026-10-28
 

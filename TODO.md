@@ -2,6 +2,11 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Record the current upstream sync point as
+  `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, second parent of merge
+  `63f7c16`. The last fork-status fetch found zero upstream commits
+  pending and matched 118/118 live branch tips. Older `ee7589c9`
+  references below describe earlier checkpoints.
 - [x] Reconcile `MOREmbedded/claude/determined-gould-ebb38e` commit
   `8ec0cd9`: import the Pascal bracket and undeclared-assignment checks.
   The donor's geometry-array refactor was already present in our `main`.
