@@ -1,5 +1,31 @@
 # Current integration state / agent handoff
 
+## Authored PCB classes and plane read, 2026-10-28
+
+Script `.146` adds `user_class_count` to `pcb_get_object_classes` while
+retaining `count` for all classes. Native Altium 26.11 reads found 17
+built-in superclasses and zero authored classes on a blank disposable
+PcbDoc; the CW308 baseboard had 23 total and six authored classes, with
+no membership probe errors in a three-second read. Both boards closed
+without saving. The 12-unit Pascal build had zero findings and 107
+related Python tests passed. `app_ping` confirmed loaded and bundled `.146`
+with no stale units. SHA-256 of source `Main.pas` is
+`28dfef7d0d871de3e1121d9d81d336b1b384143704af262b32b2bd0223a2619d`,
+`PCB.pas` is
+`7a0fbcf43e6984c29daed07ea93f2bf9be54d4f29636a55f0d0463762380fa5d`,
+and generated `Altium_MCP.pas` is
+`5fc6dc65dfbf2dde3fc3eae9224c771a6dc82ccbdc39193c91c4fb4a451af58c`.
+
+The CW308 baseboard's `pcb_get_internal_planes` reports one GND internal
+plane. `pcb_plane_connections` reads U1-1 and J1-19/17/2 on net GND and
+MH6.MOUNT with no net. These readings establish rule settings and net
+identity; they do not by themselves prove physical copper connection.
+
+The shared operating runbook named in `AGENTS.md` is unavailable at its
+GitHub URL and the sibling `PLT-hw` checkout is absent. The separate
+selected-project DRC runner still lacks its companion client in this
+checkout; the current batch DRC operates through the public HTTP MCP.
+
 ## Fresh batch DRC rule rows, 2026-10-28
 
 The Python `pcb_run_drc` tool now reads all rule rows from its confirmed

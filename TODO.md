@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Object-class inventory on blank and populated boards, 2026-10-28
+
+- [x] Distinguish Altium's built-in superclasses from authored classes in
+  `pcb_get_object_classes`. The new `user_class_count` is 0 on a blank
+  disposable PcbDoc even though `count` includes 17 built-ins. On the
+  CW308 baseboard it is 6 of 23 total classes, with no probe errors and a
+  three-second native read. Both boards were closed without saving.
+
 ## Batch DRC rule coverage, 2026-10-28
 
 - [x] Return every per-rule row from a confirmed fresh batch DRC HTML
@@ -1792,10 +1800,11 @@ either way: stop the bridge before quitting Altium.
        offline** (the simulator does not model object classes, so only the
        client-side summariser has unit tests  -  5 of them): that the script
        still **compiles**; that `pcb.get_object_classes` returns the five MIPI
-       pairs once that class exists; that a board with **no** classes returns
-       `count: 0` rather than erroring; and the per-class probe cost on a real
-       board, since it is O(classes x objects)  -  172 components and 114 nets
-       should be trivial, but measure rather than assume.
+       pairs once that class exists. A blank board actually has 17 built-in
+       superclasses, so `count` is 17 and `user_class_count` is 0. On the
+       CW308 baseboard the read found six authored classes among 23 total,
+       no probe errors, in three seconds. The specific MIPI membership
+       check remains open.
   3. **Component bounds in placements**: centers-only today; adding
      per-component bounding boxes would enable client-side overlap and
      zone-fit checks (e.g. cap-vs-connector-body during compaction).

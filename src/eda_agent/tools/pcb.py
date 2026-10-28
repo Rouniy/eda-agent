@@ -1296,7 +1296,9 @@ def register_pcb_tools(mcp):
 
         Returns:
             Dictionary with "object_classes" (each with name, super_class,
-            is_net_class, per-kind counts and member name arrays), "count",
+            is_net_class, per-kind counts and member name arrays), "count"
+            including Altium's built-in superclasses, "user_class_count"
+            excluding those superclasses,
             and "member_names_truncated" when a class exceeded the name cap.
         """
         bridge = get_bridge()

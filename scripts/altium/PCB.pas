@@ -437,7 +437,7 @@ Const
 Var
     ObjClass : IPCB_ObjectClass;
     JsonItems, Nets, Comps, Pairs, ItemName : String;
-    NetCount, CompCount, PairCount, ClassCount, Idx, Emitted : Integer;
+    NetCount, CompCount, PairCount, ClassCount, UserClassCount, Idx, Emitted : Integer;
     NetErr, CompErr, PairErr : Integer;
     IsNetClass, IsSuper, Truncated, AnyProbeErrors : Boolean;
 
@@ -580,6 +580,7 @@ Begin
     Truncated := False;
     AnyProbeErrors := False;
     ClassCount := 0;
+    UserClassCount := 0;
     Emitted := 0;
     Try ClassCount := CountClasses(Board); Except ClassCount := 0; End;
 
@@ -598,6 +599,7 @@ Begin
 
             Try ItemName := ObjClass.Name; Except End;
             Try IsSuper := ObjClass.SuperClass; Except End;
+            If Not IsSuper Then Inc(UserClassCount);
             Try IsNetClass := (ObjClass.MemberKind = eClassMemberKind_Net); Except End;
 
             NetErr := 0;
@@ -636,6 +638,7 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"object_classes":[' + JsonItems + '],"count":' + IntToStr(Emitted)
+        + ',"user_class_count":' + IntToStr(UserClassCount)
         + ',"classes_seen":' + IntToStr(ClassCount)
         + ',"any_probe_errors":' + BoolToJsonStr(AnyProbeErrors)
         + ',"member_names_truncated":' + BoolToJsonStr(Truncated)
