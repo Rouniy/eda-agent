@@ -1,5 +1,25 @@
 # Current integration state / agent handoff
 
+## MOREmbedded Pascal lint and live bridge, 2026-10-28
+
+The remaining `MOREmbedded/claude/determined-gould-ebb38e` commit
+`8ec0cd9` is reconciled. Its geometry-array conversion and missing
+declarations in `Generic.pas` were already represented by our current
+split units; the improved brace-comment parser, bracket check and
+undeclared-assignment check were adapted into `scripts/altium/lint.py`.
+The donor's 14 lint tests pass. The new check found `NetIter` and
+`LayerNum` undeclared in our `PCB.pas`. Both are declared, and both the
+ordinary and selected-project paths now honor `pcb_get_net_classes`'s
+`members` option. The monolith was regenerated. Pascal lint reports zero
+errors/warnings across 12 files; 20 focused lint/version tests pass.
+
+The live Altium 26.11.1.5 script was restarted to `.161`; `app_ping`
+reports matching source/runtime versions. On the open, unchanged DCDC
+board, `pcb_get_net_classes` returned four classes and `members_read`
+matched both `false` and `true`. The HTTP MCP server was restarted from
+`D:\ai\eda-agent` on 14701; the TCP relay still listens on 14700.
+No CAD document was saved for this check.
+
 ## New MOREmbedded diagnostic branch, 2026-10-28
 
 The live verifier found one new branch under our direct fork:

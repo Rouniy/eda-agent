@@ -3427,7 +3427,8 @@ Begin
             Else If Command = 'pcb.get_layer_primitive_counts' Then
                 Reply := PCB_GetLayerPrimitiveCountsForBoard(Board, RequestId)
             Else If Command = 'pcb.get_net_classes' Then
-                Reply := PCB_GetNetClassesForBoard(Board, RequestId)
+                Reply := PCB_GetNetClassesForBoard(Board,
+                    LowerCase(ExtractJsonValue(Params, 'members')) <> 'false', RequestId)
             Else If Command = 'pcb.get_object_classes' Then
                 Reply := PCB_GetObjectClassesForBoard(Board, RequestId)
             Else If Command = 'pcb.get_room_rules' Then

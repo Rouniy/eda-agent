@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.28.160';
+    SCRIPT_VERSION = '2026.10.28.161';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -37104,13 +37104,14 @@ End;
 {..............................................................................}
 
 { Core body shared with the selection-scoped profile (see PCB_GetComponents). }
-Function PCB_GetNetClassesForBoard(Board : IPCB_Board; RequestId : String) : String;
+Function PCB_GetNetClassesForBoard(Board : IPCB_Board; WantMembers : Boolean; RequestId : String) : String;
 Var
     Iterator : IPCB_BoardIterator;
+    NetIter : IPCB_BoardIterator;
     ObjClass : IPCB_ObjectClass;
     Net : IPCB_Net;
     JsonItems, Members, MembersStr : String;
-    First, WantMembers : Boolean;
+    First : Boolean;
     Count, MemberCount, ProbeErrors : Integer;
 Begin
     JsonItems := '';
@@ -37185,7 +37186,8 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
-    Result := PCB_GetNetClassesForBoard(Board, RequestId);
+    Result := PCB_GetNetClassesForBoard(Board,
+        LowerCase(ExtractJsonValue(Params, 'members')) <> 'false', RequestId);
 End;
 
 {..............................................................................}
@@ -43315,7 +43317,7 @@ Var
     LayerObj : IPCB_LayerObject_V7;
     JsonItems, LayerName, DielectricType : String;
     First : Boolean;
-    Count : Integer;
+    Count, LayerNum : Integer;
     CopperThickMils, DielectricHeightMils, DielectricConst : Double;
 Begin
     LayerStack := Board.LayerStack_V7;
@@ -91563,7 +91565,8 @@ Begin
             Else If Command = 'pcb.get_layer_primitive_counts' Then
                 Reply := PCB_GetLayerPrimitiveCountsForBoard(Board, RequestId)
             Else If Command = 'pcb.get_net_classes' Then
-                Reply := PCB_GetNetClassesForBoard(Board, RequestId)
+                Reply := PCB_GetNetClassesForBoard(Board,
+                    LowerCase(ExtractJsonValue(Params, 'members')) <> 'false', RequestId)
             Else If Command = 'pcb.get_object_classes' Then
                 Reply := PCB_GetObjectClassesForBoard(Board, RequestId)
             Else If Command = 'pcb.get_room_rules' Then

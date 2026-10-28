@@ -2,10 +2,15 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
-- [ ] Reconcile the other new `MOREmbedded/claude/determined-gould-ebb38e`
-  commit `8ec0cd9`: Pascal lint and monolith/split-unit refactor guards.
-  The branch's process-visibility doctor fix (`cbff5f9`) is integrated
-  with 75 focused tests and a live doctor pass.
+- [x] Reconcile `MOREmbedded/claude/determined-gould-ebb38e` commit
+  `8ec0cd9`: import the Pascal bracket and undeclared-assignment checks.
+  The donor's geometry-array refactor was already present in our `main`.
+  The new checks exposed two further undeclared locals in `PCB.pas`; both
+  are fixed, including the previously ignored net-class `members` option.
+  Pascal lint/build and 20 focused tests pass. Script `.161` and HTTP MCP
+  were restarted; live net-class reads confirmed both option values.
+  The branch's process-visibility doctor fix (`cbff5f9`) was integrated
+  earlier with 75 focused tests and a live doctor pass.
 - [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: port its ordinary
   copper correction and loss-tangent stack write; verify the guarded
   `pcb_reset_stack_manager_model` on a copy with a visibly stale manager
