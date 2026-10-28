@@ -1,5 +1,14 @@
 # Current integration state / agent handoff
 
+## Fresh fork behavior recheck, 2026-10-28
+
+The exact upstream sync point remains `ee7589c9`, recorded as merge
+`338f615`'s second parent, with zero upstream commits pending. A fresh
+`fork-status` run matched all 118 live branch tips; 54 cached refs have
+divergent history. Eleven named recent branch-tip capabilities were
+rechecked against current source; 122 focused tests passed. The table and
+limits of that evidence are in `FORK-BEHAVIOR-CHECK-2026-10-28.md`.
+
 ## mooreaa manager-model reset acceptance, 2026-10-28
 
 The last unverified `mooreaa/main` stack feature was exercised on a

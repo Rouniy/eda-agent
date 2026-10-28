@@ -90,6 +90,9 @@
   branch refs from the 62-default/117-branch live audit. Divergent Git
   history is not a missing-feature count; record each distinct capability
   against current source and native acceptance where it changes Altium.
+  The 2026-10-28 refresh matched 118/118 live branch tips; eleven named
+  branch-tip capabilities were rechecked against current source with 122
+  passing focused tests. See `docs/FORK-BEHAVIOR-CHECK-2026-10-28.md`.
 - [x] Review the other 14 donor-only tool argument pairs from the
   2026-10-28 signature scan. All have an existing equivalent route or
   are a nested helper rather than a public tool argument; the mapping
