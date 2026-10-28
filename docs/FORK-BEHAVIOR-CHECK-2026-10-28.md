@@ -208,11 +208,13 @@ current `eda-agent update --status --from <remote-or-folder> --json` already
 reports the checkout, installed package, deployed scripts and compiled
 Altium version. `eda-agent update --yes` separately updates the primary
 checkout. The donor failures include its older exact action text, its
-single-command `run_update` interface, a different `--check` exit-code
-contract, and deploying scripts *from another folder*. The last route is
-not present in our apply command; it is distinct from read-only `--from`
-and from the owner's main-directory script workflow. Current update/status
-tests pass 21/21. No claim of full CLI contract parity is made.
+single-command `run_update` interface and a different `--check` exit-code
+contract. The distinct deploy-from-folder operation is now available as
+`eda-agent install-scripts --from <checkout> --force`: it validates the
+source before copying into the existing Altium destination, and treats a
+source that is already the destination as a no-op. This does not create a
+second runtime script project. Focused install/update checks passed 35/35.
+No claim of full CLI contract parity is made.
 
 `git merge-tree --write-tree HEAD morembedded/main` was also checked without
 touching the worktree. It reports 62 conflicts (45 content, 15 add/add,

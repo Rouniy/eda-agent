@@ -521,13 +521,12 @@ def plan(state: dict[str, Any], *, pull: bool = False,
              if state.get("script_source_mode") == "editable checkout" else
              f"deployed {deployed} matches this tree")))
     else:
-        # Name the right source. install-scripts always copies from THIS
-        # tree, so advising it after --from would deploy the wrong files.
+        # Name the same source that the status comparison inspected.
         from_folder = bool(source_dir and state.get("source_ok"))
         where = (f"{state['source_dir']}'s" if from_folder
                  else "this tree's")
-        fix = ("Review and deploy the named source folder's scripts to "
-               "the Altium script project you use." if from_folder else
+        fix = (f"Run `python -m eda_agent install-scripts --from "
+               f"\"{state['source_dir']}\" --force`." if from_folder else
                "Run `python -m eda_agent install-scripts --force`.")
         steps.append(Step(
             "altium scripts", "action",

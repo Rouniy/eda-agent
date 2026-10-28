@@ -649,36 +649,61 @@ def _stamp_deployed_unit(path: Path) -> None:
         path.write_bytes(text.encode("utf-8"))
 
 
-def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
-    """Copy the bundled script project to a user-chosen directory.
+def cmd_install_scripts(dest: Optional[str] = None, force: bool = False,
+                        source: Optional[str] = None) -> int:
+    """Copy this checkout's, or a named checkout's, script project.
 
     Default destination: Altium's registered script project folder when
     unique, otherwise %USERPROFILE%\\EDA Agent\\scripts\\. Override with
-    --dest PATH.
+    --dest PATH. With --from CHECKOUT, read that checkout's scripts instead
+    of the package's bundled scripts.
 
     After the copy, the user opens `Altium_API.PrjScr` in Altium
     (File > Open, or via the Scripts panel) and runs `StartMCPServer`
     from `Dispatcher.pas`.
     """
+    source_scripts = None
+    if source:
+        from .diag.update import _source_dir_state
+
+        state = _source_dir_state(source)
+        if not state["source_ok"] or not state["source_scripts"]:
+            print("ERROR: source has no usable eda-agent script project: "
+                  + (state["source_problem"] or source), file=sys.stderr)
+            return 1
+        source_scripts = Path(state["source_scripts"])
+        if not (source_scripts / "Altium_API.PrjScr").is_file():
+            print(f"ERROR: source script project is missing: {source_scripts}",
+                  file=sys.stderr)
+            return 1
     if dest:
         targets = [Path(dest).expanduser().resolve()]
     else:
         targets = get_registered_scripts_dirs() or [get_fallback_scripts_dest()]
     status = 0
     for target in targets:
-        status = max(status, _install_scripts_into(target, force))
+        if source_scripts is None:
+            status = max(status, _install_scripts_into(target, force))
+        else:
+            status = max(status, _install_scripts_into(target, force,
+                                                       source_scripts))
     if len(targets) > 1:
         print(f"Installed into {len(targets)} folders that Altium installs "
               f"register: {', '.join(map(str, targets))}")
     return status
 
 
-def _install_scripts_into(dst: Path, force: bool) -> int:
-    src = get_bundled_scripts_path()
+def _install_scripts_into(dst: Path, force: bool,
+                          source_scripts: Optional[Path] = None) -> int:
+    src = source_scripts or get_bundled_scripts_path()
 
     if not src.exists():
         print(f"ERROR: bundled scripts directory not found: {src}", file=sys.stderr)
         return 1
+
+    if src.resolve() == dst.resolve():
+        print(f"Altium already loads scripts from {src}; nothing to copy.")
+        return 0
 
     # An auto-accept harness (e.g. Gemini CLI) may allocate a pty -- so
     # sys.stdin.isatty() is True -- yet never feed the prompt, hanging input()

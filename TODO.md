@@ -2,6 +2,11 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [x] Add the direct child fork's deploy-from-folder path without changing
+  the normal main-directory runtime. `install-scripts --from <checkout>`
+  validates the alternate source and deploys into the existing Altium
+  destination; a source already loaded there is left untouched. The
+  update status hint names this exact command. Focused checks passed 35/35.
 - [x] Record the current upstream sync point as
   `0bb1b3154cca6e58a517b23edee3d7a108f1c232`, second parent of merge
   `63f7c16`. The last fork-status fetch found zero upstream commits

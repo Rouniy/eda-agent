@@ -789,7 +789,7 @@ def main() -> int:
     # install-scripts
     install_p = subparsers.add_parser(
         "install-scripts",
-        help="Copy bundled scripts to a directory of your choice",
+        help="Copy scripts into Altium's registered project directory",
     )
     install_p.add_argument(
         "--dest",
@@ -799,6 +799,10 @@ def main() -> int:
         "--force",
         action="store_true",
         help="Overwrite existing scripts without prompting",
+    )
+    install_p.add_argument(
+        "--from", dest="source", metavar="CHECKOUT",
+        help="Read scripts from another eda-agent checkout; keep the usual Altium destination",
     )
 
     # easyeda-extension -- where the editor half is, and building it
@@ -1250,7 +1254,8 @@ def main() -> int:
     if args.command == "scripts-path":
         return cli.cmd_scripts_path()
     if args.command == "install-scripts":
-        return cli.cmd_install_scripts(dest=args.dest, force=args.force)
+        return cli.cmd_install_scripts(dest=args.dest, force=args.force,
+                                       source=args.source)
     if args.command == "easyeda-extension":
         return cli.cmd_easyeda_extension(args.action, out=args.out,
                                          force=args.force)
