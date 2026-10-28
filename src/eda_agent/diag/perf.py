@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,22 @@ def parse_activity_log(text: str) -> dict[str, dict[str, Any]]:
                            "tag": match["tag"],
                            "response_bytes": response_bytes}
     return out
+
+
+_ACTIVITY_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}),")
+
+
+def last_activity_at(text: str) -> datetime | None:
+    """Local timestamp of the latest complete, parseable handler log line."""
+    for line in reversed(text.splitlines()):
+        match = _ACTIVITY_STAMP.match(line.strip())
+        if not match:
+            continue
+        try:
+            return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S.%f")
+        except ValueError:
+            continue
+    return None
 
 
 def correlate(trace: dict[str, Call],

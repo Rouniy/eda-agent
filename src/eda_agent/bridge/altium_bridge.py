@@ -1577,9 +1577,17 @@ class AltiumBridge:
         except (AltiumTimeoutError, AltiumCommandError, Exception):
             return False
 
-    def ping_with_version(self) -> Optional[dict[str, Any]]:
+    def ping_with_version(
+        self, require_process: bool = True
+    ) -> Optional[dict[str, Any]]:
+        """Ping the script; doctor may bypass only the process-table gate."""
         try:
-            result = self.send_command("application.ping", timeout=3.0)
+            if require_process:
+                result = self.send_command("application.ping", timeout=3.0)
+            else:
+                # The diagnostic still uses the ordinary request/response
+                # protocol, but a hidden process must not prevent its ping.
+                result = self._execute_command("application.ping", {}, 3.0)
         except (AltiumTimeoutError, AltiumCommandError, Exception):
             return None
         if isinstance(result, dict):

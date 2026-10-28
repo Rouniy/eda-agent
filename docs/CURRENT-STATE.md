@@ -1,5 +1,24 @@
 # Current integration state / agent handoff
 
+## New MOREmbedded diagnostic branch, 2026-10-28
+
+The live verifier found one new branch under our direct fork:
+`MOREmbedded/claude/determined-gould-ebb38e` at `cbff5f9`, two commits
+after its unchanged `main` tip `032fb4b`. `upstream/main` remains the
+exact `ee7589c9` ancestor of our `main`, with zero upstream commits
+pending.
+
+The branch's process-visibility fix is adapted: `eda-agent doctor` uses
+the bridge's process scanner, tries a fixed diagnostic ping past the
+process-table gate if needed, and treats recent Altium activity as
+evidence weaker than a live ping but stronger than an absent process
+name. Ordinary bridge calls retain their gate. Seventy-five focused
+bridge/doctor/performance tests pass. A live `eda-agent doctor` on this
+host found Altium PID 23840, script `.160` responsive, version matched,
+and the read-only command canary passed; it exited with zero critical
+failures. The same new branch's Pascal lint/refactor commit remains to
+be reconciled separately.
+
 ## Fresh mooreaa stack diagnosis, 2026-10-28
 
 The live fork check found `mooreaa/main` advanced from `a4be7fc` to

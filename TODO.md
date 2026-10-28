@@ -2,6 +2,10 @@
 
 ## Fresh branch-difference queue, 2026-10-28
 
+- [ ] Reconcile the other new `MOREmbedded/claude/determined-gould-ebb38e`
+  commit `8ec0cd9`: Pascal lint and monolith/split-unit refactor guards.
+  The branch's process-visibility doctor fix (`cbff5f9`) is integrated
+  with 75 focused tests and a live doctor pass.
 - [ ] Finish `mooreaa/main` delta `a4be7fc..5329cfe`: port its ordinary
   copper correction and loss-tangent stack write; verify the guarded
   `pcb_reset_stack_manager_model` on a copy with a visibly stale manager

@@ -15,6 +15,7 @@ any naming scheme.
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -22,47 +23,92 @@ from eda_agent.diag.checks import Check, Severity, Status
 from eda_agent.diag.health import run_health_checks
 
 
-def _altium_process_running() -> Check:
-    """Look for the Altium executable in the running process list."""
+_PROCESS_CHECK = "altium process running"
+_ACTIVITY_WINDOW_S = 300.0
+_ACTIVITY_TAIL_BYTES = 65536
+
+
+def _altium_process_scan() -> tuple[Optional[bool], list[int], list[str]]:
+    """Use the same process scan that guards ordinary bridge commands."""
     try:
-        import psutil  # type: ignore
-    except ImportError:
-        return Check(
-            name="altium process running",
-            status=Status.SKIP,
-            message="psutil not installed, cannot enumerate processes",
-        )
+        from eda_agent.bridge.process_manager import AltiumProcessManager
+        manager = AltiumProcessManager()
+    except Exception:
+        return None, [], []
+    override = os.environ.get("EDA_AGENT_ALTIUM_PROCESS", "").strip()
+    if override:
+        manager.PROCESS_NAMES = [override]
+    names = list(manager.PROCESS_NAMES)
+    try:
+        running = manager.is_altium_running()
+    except Exception:
+        return None, [], names
+    try:
+        pids = [candidate.pid for candidate in manager.select_altium_process().candidates]
+    except Exception:
+        pids = []
+    return (True if pids else running), pids, names
 
-    target = os.environ.get("EDA_AGENT_ALTIUM_PROCESS", "X2.exe").lower()
-    matches: list[int] = []
-    for proc in psutil.process_iter(["pid", "name"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-        if name == target or name == target.replace(".exe", ""):
-            matches.append(proc.info.get("pid"))
 
-    if not matches:
-        return Check(
-            name="altium process running",
-            status=Status.FAIL,
-            message=f"no process named {target} found",
-            fix="Start Altium Designer.",
-        )
-    return Check(
-        name="altium process running",
-        status=Status.PASS,
-        message=f"pid(s): {matches}",
-    )
+def _tail_text(path: Path) -> str:
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        handle.seek(max(0, handle.tell() - _ACTIVITY_TAIL_BYTES))
+        return handle.read().decode("utf-8", errors="replace")
+
+
+def _recent_activity() -> Optional[float]:
+    """Age of a recent Altium handler-log entry, or None if unavailable."""
+    try:
+        from eda_agent.config import get_config
+        from eda_agent.diag.perf import last_activity_at
+        path = Path(get_config().workspace_dir) / "activity.log"
+        stamp = last_activity_at(_tail_text(path))
+    except Exception:
+        return None
+    if stamp is None:
+        return None
+    age = (datetime.now() - stamp).total_seconds()
+    if abs(age) > _ACTIVITY_WINDOW_S:
+        return None
+    return max(age, 0.0)
+
+
+def _check_altium_process(running: Optional[bool], pids: list[int],
+                          names: list[str], evidence: str) -> Check:
+    """Treat a process scan as weaker evidence than a live bridge ping."""
+    wanted = "/".join(names) if names else "the Altium executable"
+    if running:
+        where = f"pid(s): {pids}" if pids else "found by name; pid not readable"
+        return Check(name=_PROCESS_CHECK, status=Status.PASS, message=where)
+    if running is None:
+        return Check(name=_PROCESS_CHECK, status=Status.SKIP,
+                     message="process scan unavailable", severity=Severity.MINOR)
+    if evidence:
+        return Check(name=_PROCESS_CHECK, status=Status.WARN,
+                     message=f"no process named {wanted} visible, but {evidence}",
+                     severity=Severity.MINOR,
+                     details={"evidence": evidence, "process_names": names})
+    return Check(name=_PROCESS_CHECK, status=Status.FAIL,
+                 message=f"no process named {wanted} found and no bridge or log evidence",
+                 fix="Start Altium Designer.")
 
 
 def _ping_altium() -> Optional[dict]:
-    """Send a ping. Returns the response dict, or None on any failure."""
+    """Try the ordinary gated ping, then a diagnostic direct round trip."""
     try:
         from eda_agent.bridge import get_bridge
         bridge = get_bridge()
-        return bridge.ping_with_version()
+    except Exception:
+        return None
+    try:
+        result = bridge.ping_with_version()
+    except Exception:
+        result = None
+    if result is not None:
+        return result
+    try:
+        return bridge.ping_with_version(require_process=False)
     except Exception:
         return None
 
@@ -248,11 +294,19 @@ def run_doctor_checks(library_paths: Optional[Sequence[str]] = None) -> list[Che
     if any(c.status == Status.FAIL and c.severity == Severity.CRITICAL for c in checks):
         return checks
 
-    checks.append(_altium_process_running())
+    running, pids, names = _altium_process_scan()
+    ping = _ping_altium()
+    evidence = ""
+    if ping is not None:
+        evidence = f"the bridge answered a ping (script version {ping.get('script_version') or '?'})"
+    else:
+        age = _recent_activity()
+        if age is not None:
+            evidence = f"activity.log has an entry {age:.0f}s ago"
+    checks.append(_check_altium_process(running, pids, names, evidence))
     if checks[-1].status == Status.FAIL:
         return checks
 
-    ping = _ping_altium()
     checks.append(_check_script_responsive(ping))
     checks.append(_check_script_version_match(ping))
 
