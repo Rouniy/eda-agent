@@ -970,6 +970,24 @@ def main() -> int:
                        help="Read a reflected SDK from PATH instead of "
                             "reference/altium_sdk.json.")
 
+    symbols_p = subparsers.add_parser(
+        "sdk-symbols", help="Inspect names registered by Altium's scripting engine.")
+    symbols_p.add_argument("--refresh", action="store_true",
+                           help="Extract the table from the local ScriptingSystem.dll.")
+    symbols_p.add_argument("--name", default="", metavar="NAME",
+                           help="Check one member name.")
+    symbols_p.add_argument("--json", action="store_true", dest="json_out")
+    symbols_p.add_argument("--sdk-json", default=None, metavar="PATH")
+
+    generate_p = subparsers.add_parser(
+        "sdk-generate", help="Print guarded Pascal property candidates for review.")
+    generate_p.add_argument("--object-type", default="component")
+    generate_p.add_argument("--kind", choices=("read", "write"), default="read")
+    generate_p.add_argument("--allow-getter", action="store_true",
+                            help="Include names exposed only as GetState_Name.")
+    generate_p.add_argument("--json", action="store_true", dest="json_out")
+    generate_p.add_argument("--sdk-json", default=None, metavar="PATH")
+
     fork_p = subparsers.add_parser(
         "fork-status", help="Show exact Git synchronization points with forks.")
     fork_p.add_argument("--fetch", action="store_true",
@@ -1430,6 +1448,16 @@ def main() -> int:
         return cli.cmd_sdk_coverage(as_json=args.json_out,
                                     detail=args.detail,
                                     sdk_json=args.sdk_json)
+    if args.command == "sdk-symbols":
+        return cli.cmd_sdk_symbols(refresh=args.refresh, name=args.name,
+                                   as_json=args.json_out,
+                                   sdk_json=args.sdk_json)
+    if args.command == "sdk-generate":
+        return cli.cmd_sdk_generate(object_type=args.object_type,
+                                    kind=args.kind,
+                                    as_json=args.json_out,
+                                    sdk_json=args.sdk_json,
+                                    allow_getter=args.allow_getter)
     if args.command == "fork-status":
         import json as _json
         from pathlib import Path as _Path

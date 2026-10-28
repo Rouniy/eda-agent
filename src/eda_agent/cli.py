@@ -1096,6 +1096,89 @@ def cmd_sdk_coverage(*, as_json: bool = False, detail: int = 0,
     return 0
 
 
+def cmd_sdk_symbols(*, refresh: bool = False, name: str = "",
+                    as_json: bool = False, sdk_json: str | None = None) -> int:
+    """Read the scripting engine's registered names from its local DLL."""
+    import json as _json
+
+    from .sdk.reflect import SdkUnavailable, load_sdk
+    from .sdk.symbols import (SymbolsUnavailable, load_symbols,
+                              refresh as refresh_symbols)
+
+    try:
+        if refresh:
+            target = refresh_symbols(load_sdk(sdk_json).source)
+            if not as_json:
+                print(f"extracted to {target}")
+        table = load_symbols()
+    except (SdkUnavailable, SymbolsUnavailable) as missing:
+        print(str(missing), file=sys.stderr)
+        return 1
+
+    if name:
+        payload = {"name": name, "reach": table.reach(name),
+                   "source": table.source}
+    else:
+        payload = {"source": table.source,
+                   "extracted_at": table.extracted_at,
+                   "names": len(table.names),
+                   "getters": len(table.getters),
+                   "setters": len(table.setters),
+                   "min_reliable": table.min_reliable}
+    if as_json:
+        print(_json.dumps(payload, indent=2))
+    elif name:
+        print(f"{name}: {payload['reach']}")
+    else:
+        print(f"{payload['names']} registered names from {table.source}")
+        print(f"GetState: {payload['getters']}; SetState: {payload['setters']}")
+        print(f"Names shorter than {table.min_reliable} characters are unknown.")
+    return 0
+
+
+def cmd_sdk_generate(*, object_type: str = "component", kind: str = "read",
+                     as_json: bool = False, sdk_json: str | None = None,
+                     allow_getter: bool = False) -> int:
+    """Print candidate Pascal accessors; never edit the deployed script."""
+    import json as _json
+
+    from .sdk.generate import (candidates_for, render_probe, render_write)
+    from .sdk.coverage import handled_heads
+    from .sdk.reflect import SdkUnavailable, load_sdk
+    from .sdk.symbols import SymbolsUnavailable, load_symbols
+
+    try:
+        model = load_sdk(sdk_json)
+        table = load_symbols()
+        interface, take, skipped = candidates_for(
+            model, object_type, kind, table=table,
+            allow_getter=allow_getter)
+    except (SdkUnavailable, SymbolsUnavailable, KeyError) as missing:
+        print(str(missing), file=sys.stderr)
+        return 1
+    chain = "GetSchProperty" if kind == "read" else "SetSchProperty"
+    kwargs = {"already": handled_heads(chain), "table": table}
+    if kind == "read":
+        generated = render_probe(
+            model, interface, interface, function_name="SdkCandidateRead",
+            allow_getter=allow_getter, **kwargs)
+    else:
+        generated = render_write(
+            model, interface, interface, function_name="SdkCandidateWrite",
+            **kwargs)
+    if as_json:
+        print(_json.dumps({"interface": interface, "kind": kind,
+                           "included": [name for name, _ in take],
+                           "skipped": [item.__dict__ for item in skipped],
+                           "pascal": generated.pascal}, indent=2))
+    else:
+        print(generated.summary(), file=sys.stderr)
+        print("Candidate code for review; not installed or compiled.",
+              file=sys.stderr)
+        print(generated.pascal)
+    return 0
+
+
 def cmd_perf(*, as_json: bool, limit: int = 15) -> int:
     """Report caller, Altium handler, and queue/IPC time from existing logs."""
     import json as _json

@@ -294,6 +294,18 @@ dispatch without changing a design.
 
 ## Child-fork update command and merge shape
 
+After the two-parent merge of `032fb4b`, a fresh fetch found a newer direct
+child tip, `d495c4d`, eight commits ahead. Two new source modules,
+`sdk/symbols.py` and `sdk/generate.py`, are now adapted. `sdk-symbols`
+extracts the local engine's registered names; `sdk-generate` prints filtered
+Pascal candidates for review without editing the active script. On this
+AD26.11 installation the extraction found 44,094 names, and a component
+read plan offered 24 candidates while skipping 15. Sixty-seven focused
+SDK, source-header, fork-status and style checks passed. The donor's live
+probe handler and generated Pascal block have not yet been deployed, and
+its new perf attribution still needs review; `d495c4d` is not yet a parent
+of `main`.
+
 The direct child fork's `test_update_command.py` was run unchanged against
 the current source in a temporary test file: 38 passed and 12 failed. The
 current `eda-agent update --status --from <remote-or-folder> --json` already

@@ -58,6 +58,28 @@ Nothing generated from it is committed verbatim either.
 `--Dll PATH` points at a specific assembly, `--Out PATH` writes
 elsewhere, and `EDA_AGENT_SDK_JSON` overrides where the reader looks.
 
+## Scripting-engine names and candidate accessors
+
+The SDK assembly declares properties, while `ScriptingSystem.dll` records
+which names the DelphiScript engine registers. Extract its local symbol
+table and inspect a member with:
+
+```bash
+eda-agent sdk-symbols --refresh
+eda-agent sdk-symbols --name DescriptionString --json
+eda-agent sdk-generate --object-type component --kind read --json
+```
+
+The symbol table stays under the ignored `reference/` folder. A short
+name, such as `X`, is reported as `unknown` because the binary scan cannot
+separate it reliably from adjacent text. `sdk-generate` prints candidate
+Pascal code and skips properties that the SDK or symbol table cannot
+support. It does not modify the active script; each candidate still needs
+a successful live probe before deployment. On this AD26.11 installation,
+the extractor found 44,094 names and the filtered component read plan
+contains 24 candidates. These figures describe this local installation,
+not a portable coverage guarantee.
+
 ### What the reflection cannot read
 
 Windows PowerShell runs on .NET Framework, and a few EDP interfaces
