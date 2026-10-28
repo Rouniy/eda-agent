@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import psutil
 from pathlib import Path
 from typing import Any, Optional
 from .. import __version__ as _mcp_server_version
@@ -23,6 +24,24 @@ from .. import updates
 
 
 _VERSION_RE = re.compile(r"SCRIPT_VERSION\s*=\s*'([^']+)'")
+
+
+def _current_altium_has_progress(bridge: Any, workspace: Path) -> bool:
+    """Ignore command markers left by an earlier, crashed Altium process."""
+    pid = bridge.process_manager.get_altium_pid()
+    if pid is None:
+        return False
+    try:
+        started = psutil.Process(pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    for marker in workspace.glob("progress_*.json"):
+        try:
+            if marker.stat().st_mtime >= started:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
 
 _SESSION_REMINDER = {
     "__DATASHEET_FIRST__": (
@@ -641,7 +660,7 @@ def register_application_tools(mcp):
             launch_error = None
             if not script_loaded and sys.platform == "win32":
                 launcher = Path(__file__).resolve().parents[3] / "scripts" / "start-altium-bridge.ps1"
-                if any(get_config().workspace_dir.glob("progress_*.json")):
+                if _current_altium_has_progress(bridge, get_config().workspace_dir):
                     launch_error = "Altium is still processing a command"
                 elif await asyncio.to_thread(bridge._dialog_probe):
                     launch_error = "Altium has a modal dialog"
