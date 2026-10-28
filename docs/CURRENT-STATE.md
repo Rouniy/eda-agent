@@ -1,5 +1,32 @@
 # Current integration state / agent handoff
 
+## Live fork boundary and footprint selection, 2026-10-28
+
+`python -m eda_agent fork-status --fetch --cached-forks
+--verify-fork-branches --json` refreshed the remotes and matched all 117
+live fork branch tips to their cached refs. `upstream/main` remains
+`ee7589c9fc543d0b99bb142dc8ca12b618fffeab`, an ancestor of our
+`main` with zero upstream commits missing. The direct MOREmbedded tip is
+`032fb4b2088d9cfa8d95daad9572c9f1f49f3d41`.
+
+The `vincent-himpe/feature/library-select-primitives` selection feature
+(`9070755`) passed native Altium 26.11.1.5 readback on a disposable PcbLib.
+For `RESC160X80X55L30`, selecting Mechanical15 tracks returned six and
+`lib_get_footprint_primitives` marked exactly those six selected. Adding
+TopOverlay tracks with `clear=false` returned two new and eight total;
+both groups read back selected. A separate `identifier=RESC1608X05N`
+filter selected its single Mechanical13 3D body and the body reader
+reported `selected=true`. A distant box filter cleared selection with
+zero selected. The PcbLib was closed without saving.
+
+Running the fork's Rosen source tests against current `main` yielded 15
+passes and three assertion mismatches. The two print tests expect an older
+error shape; our tools refuse the non-silent preview with a structured
+`PREVIEW_NOT_SILENT` error. The close test expects `SameDocPath` by name;
+our `App_CloseDocument` checks canonical paths before `CloseDocument` and
+returns `PATH_MISMATCH`. These are behaviorally covered but the fork's
+source-spelling assertions are not directly reusable.
+
 ## Component-origin persistence and integration checks, 2026-10-28
 
 Script `.147` moves a component through Altium's `MoveByXY` before moving

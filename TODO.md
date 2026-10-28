@@ -1,5 +1,16 @@
 # Fork integration TODO
 
+## Fresh fork audit and PcbLib selection, 2026-10-28
+
+- [x] Refresh and verify all 117 fork branch tips; retain exact
+  `upstream/main=ee7589c9fc543d0b99bb142dc8ca12b618fffeab` as an
+  ancestor of `main` with zero upstream commits pending.
+- [x] Native-check the imported `lib_select_footprint_primitives` feature
+  from `vincent-himpe/feature/library-select-primitives` on a disposable
+  PcbLib: six Mechanical15 tracks, additive selection of two TopOverlay
+  tracks, and one 3D body by identifier all read back selected; close
+  without saving.
+
 ## Integration gate and RFSoC DRC, 2026-10-28
 
 - [x] Qualify the component-origin move in native Altium: on a scratch CW308
