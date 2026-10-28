@@ -294,9 +294,13 @@ def register_meta_tools(mcp):
             return report
 
         bridge = get_bridge()
-        running = bool(bridge.is_altium_running())
-        report["altium_running"] = running
-        report["bridge_response"] = bridge.ping_with_version() if running else None
+        response = bridge.ping_with_version()
+        if response is None:
+            response = bridge.ping_with_version(require_process=False)
+        scan_saw_altium = bool(bridge.is_altium_running())
+        report["altium_running"] = scan_saw_altium or response is not None
+        report["process_scan_saw_altium"] = scan_saw_altium
+        report["bridge_response"] = response
         try:
             inspector = _get_ui_inspector()
             report["windows_ui"] = {
@@ -1219,7 +1223,8 @@ def register_application_tools(mcp):
 
         Returns:
             Dictionary with mcp_server_version, bundled_script_version,
-            altium_running, altium_script_version, version_match,
+            altium_running, process_scan_saw_altium,
+            altium_script_version, version_match,
             round_trip_ms (None if Altium is down), workspace_dir,
             workspace_exists, and a file_counts breakdown.
         """
@@ -1251,22 +1256,27 @@ def register_application_tools(mcp):
                 pass
 
         bundled = _bundled_script_version()
-        running = bridge.is_altium_running()
         altium_ver: Optional[str] = None
         match = False
         round_trip_ms: Optional[float] = None
-        if running:
+        start = time.perf_counter()
+        ping = bridge.ping_with_version()
+        if ping is None:
             start = time.perf_counter()
-            ping = bridge.ping_with_version()
-            if ping is not None:
-                round_trip_ms = round((time.perf_counter() - start) * 1000.0, 1)
+            ping = bridge.ping_with_version(require_process=False)
+        if ping is not None:
+            round_trip_ms = round((time.perf_counter() - start) * 1000.0, 1)
+            if isinstance(ping, dict):
                 altium_ver = ping.get("script_version") or ""
                 match = bundled is not None and altium_ver == bundled
+        scan_saw_altium = bool(bridge.is_altium_running())
+        running = scan_saw_altium or ping is not None
 
         return {
             "mcp_server_version": _mcp_server_version,
             "bundled_script_version": bundled,
             "altium_running": running,
+            "process_scan_saw_altium": scan_saw_altium,
             "altium_script_version": altium_ver,
             "version_match": match,
             "round_trip_ms": round_trip_ms,

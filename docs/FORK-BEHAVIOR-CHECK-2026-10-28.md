@@ -738,3 +738,17 @@ is now adapted as `docs/DELIVERY_ACCEPTANCE.md` and linked from the README.
 It names the current 3.11/3.12 test matrix, Pascal cross-validation,
 installed-wheel EasyEDA build, exact-SHA artifact and native editor check,
 without retaining the donor's old 0.5.0 version or separate EasyEDA CLI.
+
+## Newly advanced direct-child diagnostics branch
+
+A live 63-fork/120-branch refresh found one new head:
+`MOREmbedded/claude/determined-gould-ebb38e` moved from `cbff5f9` to
+`b1d0fa1`. Its added `app_capability_probe` and `app_get_report` behavior
+was missing in `main`: both diagnosed Altium as absent when a process-table
+scan failed even if the bridge answered. The donor's unchanged test file
+initially failed 11/12 against our source. Both tools now try the normal
+ping, then an ungated ping if needed; they report the process scan separately
+as `process_scan_saw_altium` and time the attempt that answered. The donor
+test file and existing capability/doctor tests pass 31/31. A subsequent
+cached-ref audit matched 63/63 fork defaults and 120/120 branch heads.
+Live MCP verification of these two reports follows the Python server reload.
