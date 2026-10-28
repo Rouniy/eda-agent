@@ -9,6 +9,11 @@
   warnings and `report_rules_total_matches_header=true`. The board closed
   without saving. This does not yet expose the separate selected-project
   DRC runner described below.
+- [x] Expose Altium's explicit early-stop limit from the batch report.
+  A saved real report with 500 rule violations says DRC stopped after
+  exceeding 500; the parser returns `report_stopped_at_limit=true` and
+  `report_violation_limit=500` for that report. Row sums can still match
+  the header on an incomplete run.
 
 ## Internal-plane read contract, 2026-10-28
 

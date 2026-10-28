@@ -40,6 +40,14 @@ def test_batch_report_retains_zero_rule_rows_and_validates_the_sum(tmp_path):
     assert pcb._drc_report_rules(str(tmp_path / "missing.html")) is None
 
 
+def test_batch_report_exposes_altiums_early_stop(tmp_path):
+    report = tmp_path / "drc_batch_limited.html"
+    report.write_text('''
+<p class="error">ERROR : More than 500 violations detected, DRC was stopped</p>
+''', encoding="utf-8")
+    assert pcb._drc_report_stop_limit(str(report)) == 500
+
+
 @pytest.mark.asyncio
 async def test_run_drc_reports_truncation_and_fresh_totals(tmp_path, monkeypatch):
     report = tmp_path / "drc_batch_check.html"
@@ -76,5 +84,6 @@ async def test_run_drc_reports_truncation_and_fresh_totals(tmp_path, monkeypatch
         {"label": "Clearance Constraint (All),(All)", "violations": 125}]
     assert result["report_rule_count"] == 1
     assert result["report_rules_total_matches_header"] is True
+    assert result["report_stopped_at_limit"] is False
     assert result["violations_returned"] == 100
     assert result["violations_truncated"] is True

@@ -108,6 +108,22 @@ def _drc_report_rules(report_path: str) -> list[dict[str, Any]] | None:
     return rows
 
 
+def _drc_report_stop_limit(report_path: str) -> int | None:
+    """Read Altium's explicit maximum-violations stop from a batch report."""
+    path = Path(report_path)
+    if path.suffix.casefold() != ".html" or not path.is_file():
+        return None
+    try:
+        report = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(
+        r"More than\s+(\d+)\s+violations detected,\s*DRC was stopped",
+        report, re.IGNORECASE,
+    )
+    return int(match.group(1)) if match else None
+
+
 def _fab_board_facts(reply: dict[str, Any], expected_path: str) -> dict[str, Any]:
     """Accept only a complete, internally consistent exact-board snapshot."""
     if not isinstance(reply, dict) or reply.get("board_path", "").casefold() != expected_path.casefold():
@@ -1980,6 +1996,8 @@ def register_pcb_tools(mcp):
         A confirmed batch report also returns every rule row in
         ``report_rules`` and whether those rows sum to the report's active
         violation total. An absent rule row is not a passing rule check.
+        ``report_stopped_at_limit`` signals Altium's explicit early stop;
+        even matching row sums do not make that run complete.
 
         With ``allow_modal=True``, use the interactive Design Rule Checker
         instead. That dialog blocks the bridge until someone answers it.
@@ -1999,6 +2017,10 @@ def register_pcb_tools(mcp):
                         result["report_rules_total_matches_header"] = (
                             sum(row["violations"] for row in rules)
                             == counts["rule_violations"])
+                    stopped_limit = _drc_report_stop_limit(result["report_path"])
+                    result["report_stopped_at_limit"] = stopped_limit is not None
+                    if stopped_limit is not None:
+                        result["report_violation_limit"] = stopped_limit
             violations = result.get("violations")
             if isinstance(violations, list) and type(result.get("violation_count")) is int:
                 result["violations_returned"] = len(violations)

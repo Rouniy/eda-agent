@@ -9,8 +9,12 @@ the report's active violation total. A parser format mismatch leaves the
 rule list absent rather than claiming an empty list. On the RFSoC antenna
 board, the public tool returned 19 rule rows, zero active violations,
 32 net-tie warnings and a matching sum. The board closed without saving.
-Focused tests passed 32/32. The broader selected-project DRC runner remains
-open in `TODO.md`.
+The tool also surfaces the report's explicit maximum-violations stop:
+`report_stopped_at_limit` and, when stopped, `report_violation_limit`.
+A real saved Altium report states that DRC stopped above 500 violations;
+the parser read that limit as 500. A matching sum does not imply that such
+a run covered the whole board. Focused tests passed 33/33. The broader
+selected-project DRC runner remains open in `TODO.md`.
 
 ## Internal-plane tool contract and fresh fork check, 2026-10-28
 
