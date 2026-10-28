@@ -61,9 +61,21 @@ commits themselves were merged.
 | `redbird98` `1ff554f`, `f3c2a5c`, `0b6433a`, `f293e80` | Fab statistics classify vias by `LowLayer`/`HighLayer`; DRC re-focuses the board; focus and exact-board resolution verify the selected document | `PCB_GetFabStats`, DRC and focus handlers, `ResolvePCBBoard`; `test_fab_stats_via_spans.py` and existing native batch DRC acceptance |
 | `redbird98/main` `a563269` | OutJob is activated before its container runs | `Project.pas`; `test_outjob_activation.py` |
 | `tisn1678065900-dot/boardquality` `21f0412` | The quality skill and all five `docs/pcb-quality` artifacts are already tracked | `skills/boardquality/SKILL.md`, `docs/pcb-quality/` |
+| `mooreaa/main` placement-cleanup test | Font inference, placement tidy, live-pin filtering and port properties are present | 20/22 donor source tests pass; the two failures require an old exact source spelling: the current pin filter also checks query mode and non-library scope, while the public port width now forwards a decimal rather than an integer |
 
 The six focused test files for fractional mils, via spans, OutJob,
 Workspace placement, Unicode transport and IPC passed 77/77; the schematic
 object-spelling file passed another 8/8. This source
 and test review does not prove parity for every commit in those forks or
 settle the remaining divergent branches; continue by distinct behavior.
+
+A file-inventory comparison across divergent refs found no unmatched
+production path in most forks. The donor's separate
+`easyeda_extension_cli.py` is replaced by the tracked
+`eda_agent.easyeda_extension` module and `eda-agent easyeda-extension` CLI;
+its packaging tests pass 7/7 and the CLI resolves the source directory.
+`wizd/edev` has a distinct `StatusFormStub.pas` for an AD25 headless
+script project. This is a possible compatibility gap, not a proved missing
+runtime feature: the current AD26.11 script responds, but no AD25 host is
+available for a compile check. Review the stub and project wiring before
+claiming AD25 parity.

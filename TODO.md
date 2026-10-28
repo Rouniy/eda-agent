@@ -64,6 +64,10 @@
 - [ ] Recheck the `mooreaa` Rosen `pcb_get_mech_layer_names` dirty-on-read
   report on AD25. It stayed clean on a disposable CW308 copy in AD26.11,
   with unchanged SHA-256, but that does not settle the donor's AD25 case.
+- [ ] Review `wizd/edev`'s AD25 `StatusFormStub.pas` as a possible
+  headless compile route. Current AD26.11 works, but the current script
+  project has no equivalent stub and AD25 compile compatibility is not
+  established. Keep the main script project as the normal runtime.
 - [ ] Reproduce the Rosen ECO "Footprint Not Found" case with a newly
   added project PcbLib footprint and compare an explicit-library relink;
   the donor tracked this as E1. An AD26.11 disposable project with a new
