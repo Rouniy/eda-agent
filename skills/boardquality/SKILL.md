@@ -15,7 +15,7 @@ Full ruleset: [../../docs/pcb-quality/rules.en.md](../../docs/pcb-quality/rules.
 
 ## What this skill does not do
 
-It adds no stages and re-orders nothing. `design_next_action` still owns
+In Altium, it adds no stages and re-orders nothing. `design_next_action` still owns
 sequencing, `design_get_discipline` still owns the schematic planner, and
 `design_visual_review` still owns the render → look → critique loop. This
 skill supplies the numeric intent those need as input, and the geometric
@@ -34,12 +34,12 @@ actually go wrong:
    Every number computed downstream inherits the guess, and none of them
    get re-derived when the real value arrives.
 
-2. **Rules into the editor before geometry.** No track, via, or pour
+2. **Rules into the Altium editor before geometry.** No track, via, or pour
    until `design_synthesize_rules` (or `pcb_create_design_rule`) has put
    the constraints where `pcb_run_drc` enforces them. A constraint that
    lives only in the conversation is gone in a few turns.
 
-3. **Report what actually happened.** Paste real `pcb_run_drc` /
+3. **Report what actually happened in Altium.** Paste real `pcb_run_drc` /
    `design_lint_report` output. A quiet compromise reported as "done" is
    the one failure nobody catches.
 
@@ -63,7 +63,7 @@ Fixed geometry first, connectors, mounting holes, anything the enclosure
 determines, placed and **locked**, then blocks, then parts within
 blocks.
 
-Geometry that reads as designed: every origin on one declared grid
+In Altium, geometry that reads as designed: every origin on one declared grid
 (`audit_find_off_grid_components`), rotations in 90° multiples, like
 parts aligned at uniform pitch, polarized parts consistently oriented,
 even density across the board.
@@ -74,7 +74,7 @@ analog away from switchers and connectors; heat spread out.
 
 ## During `routing`
 
-45° or arcs, never square corners, never acute
+In Altium, use 45° or arcs, never square corners, never acute
 (`audit_find_acute_angles`). Constant width per net, taper where it must
 change. Groups routed together so parallel runs read as a bus. Continuous
 reference plane under every trace, crossing a plane split is prohibited;
@@ -83,7 +83,7 @@ from `pcb_calc_trace_width_for_current`, not from habit.
 
 ## During `pours_tuning`
 
-Pours are **stitched across their area**, not fenced along trace edges ,
+In Altium, pours are **stitched across their area**, not fenced along trace edges,
 a via fence leaves the copper between fences free to resonate as a patch.
 Use `pcb_place_stitching_vias` over the region, and derive the pitch:
 
@@ -91,7 +91,7 @@ Use `pcb_place_stitching_vias` over the region, and derive the pitch:
 λ_g = c / (f · √εr)      pitch ≤ λ_g/20 (strict), λ_g/10 (general)
 ```
 
-For digital use the edge-rate bandwidth (`f_knee ≈ 0.35 / t_r`), not the
+For Altium digital boards use the edge-rate bandwidth (`f_knee ≈ 0.35 / t_r`), not the
 clock. Show the substitution. Return via beside every layer-changing
 signal via. Re-run `pcb_run_drc` after every repour, a repour is a
 geometry change, not a cosmetic one.
@@ -105,7 +105,7 @@ marked, board name / revision / date present.
 
 ## Finishing
 
-Walk §10's extra rubric items in the `design_visual_review` loop, then
+In Altium, walk §10's extra rubric items in the `design_visual_review` loop, then
 the §11 sign-off checklist at `verification`. DRC violations mean not
 finished, list each one with its disposition rather than waiving in
 bulk.

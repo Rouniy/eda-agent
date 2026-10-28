@@ -8170,58 +8170,45 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_set_via_soldermask_relief(
-        expansion_mils: int = 4,
+        expansion_mils: float = 4,
         net: str = "",
     ) -> dict[str, Any]:
-        """REFUSED on this Altium build: the write crashes the engine.
+        """Open the solder mask round each via's barrel, measured from the
+        hole edge, on both sides.
 
-        Setting a via's soldermask expansion from script raises an access
-        violation inside ScriptingSystem.DLL on AD 26.10.1.6, measured
-        twice on a scratch board with three vias and nothing else, once
-        through BeginModify and once through SendMessageToRobots. The
-        engine shows a modal before any handler guard can run, so the
-        polling loop stops and the session needs a manual restart. The
-        handler refuses rather than attempt it: every caller who tried
-        lost their session and changed nothing on the board.
+        Every via, or those on ``net``, gets its mask expansion set as a
+        manual value with "from hole edge" on, so the opening is the hole
+        plus ``expansion_mils`` all round. Both sides are written: a via
+        stores a bottom value even while its sides are linked, and that
+        value takes effect if they are ever unlinked. Each via is read
+        back, and ``vias_verified`` counts those holding the value.
 
-        TENT VIAS WITH A RULE INSTEAD. Altium's own route is a Solder
-        Mask Expansion rule, which covers every via at once and survives
-        a repour, where a per-via write would not. Create it with
+        WRITTEN THROUGH THE VIA'S PAD CACHE. Assigning the expansion
+        straight onto a via crashes Altium's scripting engine (an access
+        violation in ScriptingSystem.DLL, measured on AD 26.10); the same
+        value written into the cache a via shares with pads takes and
+        reads back, so the handler only ever uses that route.
+
+        A Solder Mask Expansion rule scoped ``IsVia`` is the alternative
+        that also covers vias placed later:
         ``pcb_create_design_rule(rule_type="solder_mask_expansion",
-        scope="IsVia", value=<negative mils>)``. A negative expansion
-        contracts the mask opening; the rule is also editable by hand in
-        Design > Rules > Mask.
-
-        REFUSED HERE, NOT AT THE BRIDGE, on purpose. The handler refuses
-        too, but reaching it means sending the command, and a session
-        running a deployed script older than 2026.09.10.3 still has the
-        write in it. Sending would take down exactly the session this
-        exists to protect. Nothing is sent.
+        scope="IsVia", value=<mils>)``.
 
         Args:
-            expansion_mils: accepted and unused.
-            net: accepted and unused.
+            expansion_mils: Mask expansion from the hole edge, in mils.
+                Default 4.
+            net: Only vias on this net. Empty means every via.
 
         Returns:
-            An error dict with `NOT_SCRIPTABLE` and the rule route.
+            ``vias_matched``, ``vias_verified``, ``expansion_mils``,
+            ``net``, ``from_hole_edge``.
         """
-        return {
-            "success": False,
-            "error": "NOT_SCRIPTABLE",
-            "reason": (
-                "Writing a via soldermask expansion crashes the Altium "
-                "scripting engine on this build (access violation in "
-                "ScriptingSystem.DLL), which stops the polling loop and "
-                "needs a manual restart, so nothing was sent."
-            ),
-            "instead": (
-                "Tent vias with a Solder Mask Expansion rule scoped IsVia, "
-                "in Design > Rules > Mask. pcb_create_design_rule cannot "
-                "author that rule kind; app_run_menu opens the dialog and "
-                "app_drive_dialogs fills it in."
-            ),
-            "requested": {"expansion_mils": expansion_mils, "net": net},
-        }
+        params: dict[str, Any] = {"expansion_mils": format_length(expansion_mils)}
+        if net.strip():
+            params["net"] = net.strip()
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.set_via_soldermask_relief", params)
 
     @mcp.tool()
     async def pcb_set_via_tenting(

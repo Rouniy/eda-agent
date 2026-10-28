@@ -3616,8 +3616,11 @@ def register_project_tools(mcp):
         pressed. ``components_added_to_pcb`` and its siblings are recounts,
         so they catch a change in component PRESENCE and miss everything
         else an ECO carries: footprint swaps, designator and parameter
-        edits, net changes. Unchanged counts therefore mean "nothing was
-        added or removed", not "nothing happened". To learn what the dialog
+        edits, net changes. ``after_sync`` separately compares schematic
+        footprints with the board, lists schematic parts missing on the
+        board, and identifies board-only differential pairs the ECO removed.
+        Unchanged counts therefore mean "nothing was added or removed",
+        not "nothing happened". To learn what the dialog
         actually says, call ``app_list_open_dialogs``, which reads Altium
         over Win32 and so answers while the modal is blocking the bridge.
 
@@ -3637,7 +3640,8 @@ def register_project_tools(mcp):
             success, pcb_path, before/after mapping counts,
             components_added_to_pcb, components_removed_from_pcb,
             components_in_sync (component presence only), and
-            dialog_outcome_verified; plus ``pad_net_verification`` (with
+            dialog_outcome_verified; plus ``after_sync`` and
+            ``pad_net_verification`` (with
             ``pads_unbound``) when ``verify_pad_nets`` is set.
             On a bounded-wait expiry: ``success:false`` with
             ``error.code == "ECO_DIALOG_BLOCKING"``, the dialog inventory,
@@ -3660,6 +3664,8 @@ def register_project_tools(mcp):
                 pre_existing,
                 eco_fired=False,
             )
+
+        pairs_before = await _pair_names(bridge)
 
         # Bound the wait. The heartbeat is a presence marker written once,
         # not a tick, so a handler parked on a modal looks exactly like one
@@ -3692,6 +3698,8 @@ def register_project_tools(mcp):
 
         if not isinstance(result, dict):
             return result
+        if result.get("success") is True:
+            result["after_sync"] = await _after_sync(bridge, pairs_before)
         if verify_pad_nets:
             result["pad_net_verification"] = await _verify_pad_nets(bridge)
         return result

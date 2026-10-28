@@ -1,4 +1,19 @@
-# Release verification: 2026.10.28.114
+# Release verification: 2026.10.28.154
+
+Expect `altium_script_version` = `2026.10.28.154` from `app_ping`.
+Current `app_ping` reports loaded and bundled `2026.10.28.154` on
+Altium 26.11.1.5. The 12-unit Pascal build has zero findings, and a
+disposable PCB passed the exact-polygon dry-run and 1 mil grow check;
+the copy was closed without saving. Earlier checkpoints follow.
+
+Script `.153` restored per-via solder-mask expansion through the via's
+pad cache. On a disposable CW308 board, the only via of `NetJ3_3`
+returned one matched and one verified at 4 mil from the hole edge.
+The copy was closed without saving and its SHA-256 stayed unchanged.
+Script `.154` removed two unreachable duplicate `Name` branches in the
+generic PCB property setter; Pascal lint/build passed all 12 units.
+
+## Previous checkpoint: 2026.10.28.114
 
 The upstream probe-count merge loaded live on Altium 26.11.1.5 with zero
 cast errors. On the scratch Simulation Quick Start copy, `sim_get_probes`
@@ -336,7 +351,7 @@ works elsewhere cannot be an undeclared identifier:
 | 14, polygon pour options | `RemoveDead`, `RemoveNarrowNecks`, `RemoveIslandsByArea` | new here, and in two places at once | high, and it can stop the loop |
 | 15, 3D body on a board | `StandoffHeight` on a free body | only by step 5, itself unverified | highest, shared with step 5 |
 | 16, region kind | `Kind` on a region | read by four reference scripts, written by none | high, and it can stop the loop |
-| 17, component UniqueId | `UniqueId` on a placed component | no, nowhere | highest, and a wrong id costs the next Update PCB |
+| 17, component UniqueId | `UniqueId` on a placed component | yes, `Generic.pas`, `PCB.pas` and `SelectedProject.pas` now use it | highest, and a wrong id costs the next Update PCB |
 | 18, pin owner part | `OwnerPartId` | yes, by two independent reference scripts | medium, behavioural not declarative |
 | 6, mirrored text | `MirrorFlag` | yes, `PCB.pas` | lowest |
 | 20, bulk vias | `Size`, `HoleSize`, `LowLayer`, `HighLayer` on a via | yes, `PCB_PlaceVia` | low |
@@ -351,7 +366,7 @@ works elsewhere cannot be an undeclared identifier:
 | 25, DbLib connection | `ConnectionString`, `LoginPrompt`, `Connected` on an ADO connection | no, nowhere | highest, and it can stop the loop |
 | 25, DbLib query | `Connection` on an ADO query | no, nowhere | highest, and it can stop the loop |
 | 25, DbLib record key | `ParamByName`, `Value` on an ADO parameter | no, nowhere | high, and it can stop the loop |
-| 25, DbLib placement | `LoadComponentFromDatabaseLibrary` | no, nowhere | highest, and it edits the sheet |
+| 25, DbLib placement | `LoadComponentFromDatabaseLibrary` | yes, `Generic.pas` and `Library.pas` now use it | highest, and it edits the sheet |
 | 25, DbLib placement | `AddSchObject`, `SetState_Orientation` | yes, `Gen_PlaceSchComponentFromLibrary` | low |
 | 26, repour | `PolygonRepour` on the system options | no, nowhere | high, and it can stop the loop |
 | 26, ECO direction | `AddStringParameter` with `Action=UpdateMe` | yes, `Proj_UpdatePCB` | high, and executing it edits the board |
@@ -366,7 +381,7 @@ works elsewhere cannot be an undeclared identifier:
 | 28, results saved | `SetFileName`, `DoFileSave` on the results document | yes, `App_CreateDocument` | low |
 | 28, settings reload | `SupportsReload`, `DoFileLoad`, `UpdateModifiedDate` | no, nowhere | highest, and it can stop the loop |
 | 29, slotted hole | `HoleType`, `HoleWidth` on a library pad | only by `PCBGeneric.pas`, on a board pad, itself new | high, and it can stop the loop |
-| 29, pad mask expansion | `SolderMaskExpansion`, `SolderMaskExpansionValid` on a pad cache | yes, `PCB_SetViaSoldermaskRelief`, on a via's cache | medium, a library pad is new |
+| 29, pad mask expansion | `SolderMaskExpansion`, `SolderMaskExpansionValid` on a pad cache | yes, `Library.pas` and `PCB.pas` use pad caches; direct via expansion is refused after a script-engine crash | medium, a library pad is new |
 | 29, non-plated hole | `Plated` on a library pad | read in `PCB.pas`, written nowhere else | medium |
 | 29, pad paste expansion | `PasteMaskExpansion`, `PasteMaskExpansionValid`, `SetState_Cache` | yes, `PCB_MakePasteGrid` | low, but now on a library pad |
 | 29, paste windows | `SetOutlineContour`, `Replicate` on a region contour | yes, `PCB_PlaceRegion` | medium, a region in a footprint is new |
@@ -405,8 +420,8 @@ works elsewhere cannot be an undeclared identifier:
 | 32, footprint on a placed part | `ModelName` on a footprint implementation | yes, `Lib_SetModelName` | medium, now on a placed part rather than a library symbol |
 | 32, footprint link name | `EntityName` on a model datafile link | yes, `Lib_NormalizeImplementations` | low |
 | 37, via tenting | `SetState_IsTenting_Top`, `SetState_IsTenting_Bottom` on a footprint via | yes, `PCB_SetViaTenting` | low, written and read back live both ways; dropped silently unless the mask is manual |
-| 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | no, nowhere | low, written and read back live both ways; dropped silently unless the paste is manual |
-| 37, manual first | `SolderMaskExpansionValid`, `PasteMaskExpansionValid` set before the flag | yes, `PCB_SetViaSoldermaskRelief` | low |
+| 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | yes, `Library.pas` and `PCB.pas` now use it | low, written and read back live both ways; dropped silently unless the paste is manual |
+| 37, manual first | `SolderMaskExpansionValid`, `PasteMaskExpansionValid` set before the flag | yes, `Library.pas`; direct via expansion is refused after a script-engine crash | low |
 | 37, via sizes | `SizeOnLayer` written on a via, `HoleSize` | yes, `PCB.pas` | medium, the size write is new on a via; read back live in mm |
 | 37, grid switches | `SnapGridOn`, `VisibleGridOn` on a schematic | no, nowhere | low, switched off and on live and read back |
 | 37, pin labels | `ShowName`, `ShowDesignator` on a pin | yes, `Library.pas` | low |
@@ -439,7 +454,7 @@ works elsewhere cannot be an undeclared identifier:
 | 42, net clean-up | `CleanNet` on the board | no, nowhere | medium, edits routing; ran live |
 | 42, drill pairs | `IsBackdrill`, `PlotDrillGuide`, `PlotDrillDrawing` on a drill pair | no, nowhere | low, ran live and restored |
 | 42, part 3D | `SaveModelToFile` on a placed part | no, nowhere | low, writes a file only; ran live |
-| 42, fast lookup | `GetPcbComponentByRefDes` on the board | no, nowhere | medium, every designator lookup runs it first; ran live, with the walk behind it |
+| 42, fast lookup | `GetPcbComponentByRefDes` on the board | yes, `PCB.pas` and `SelectedProject.pas` now use it | medium, every designator lookup runs it first; ran live, with the walk behind it |
 | 42, generic board properties | `HolePositiveTolerance`, `MitreCorners`, `BorderWidth`, `EnablePinSwapping`, `BarCodeShowText`, `Multiline` | no, nowhere | low, ran live and read back |
 | 42, pin swapping | `SetState_SwapIdPart`, `SetState_SwapIdPin` on a symbol pin | no, nowhere | low, ran live and read back |
 | 42, symbol aliases | `Alias_Add`, `Alias_Remove` on a symbol | no, nowhere | low, ran live and read back |
@@ -488,12 +503,12 @@ works elsewhere cannot be an undeclared identifier:
 | 48, rule settings | `MaxHeight`, `VerticalGap`, `MinSetBack`, `NetAntennaeTolerance`, `FanoutStyle`, `CheckConnectedCopper` on rules | no, nowhere | low, ran live, read back and restored |
 | 48, wire tidy | `OptimizeUseOfPolylines` on a sheet | no, nowhere | medium, rewrites a sheet's wires; ran live, closed unsaved |
 | 48, pre-routes | `IsPreRoute`, `UserRouted` on tracks, arcs and vias | no, nowhere | low, ran live and cleared |
-| 48, paste openings | `PasteMaskExpansionMode`, `PasteMaskUsePercent`, `PasteMaskPercent`, `PasteMaskEnabled` on pads and vias | no, nowhere | low, ran live, board closed unsaved |
+| 48, paste openings | `PasteMaskExpansionMode`, `PasteMaskUsePercent`, `PasteMaskPercent`, `PasteMaskEnabled` on pads and vias | yes, `PCB.pas` and `PCBGeneric.pas` now use these properties | low, ran live, board closed unsaved |
 | 49, split lines | `CreateSplitLine`, `DeleteSplitLine`, `RebuildSplitBoardRegions` on the outline | yes, `RefreshBoardOutline` (rebuild) | high, rebuilds regions; refused on a board whose regions are not all from split lines; ran live |
 | 49, region settings | `Locked3D` on a board region | no, nowhere | low, ran live and read back |
 | 49, layer stacks | `CreateSubstack`, `RemoveSubstack`, `EnableLayer`, `DisableLayer`, `IsFlex` on the layer stack | no, nowhere | medium, changes the stack; ran live and restored |
 | 49, bend lines | `CreateBendingLine`, `DeleteBendingLine`, `FoldIndex` on a region's bend lines | no, nowhere | low, ran live and restored |
-| 50, dielectrics | `DielectricLossTangent`, `IsStiffener`, `DielectricHeight` on a dielectric or mask layer | no, nowhere | medium, changes the stack; ran live and restored |
+| 50, dielectrics | `DielectricLossTangent`, `DielectricHeight` on a dielectric or mask layer; the stiffener flag was refused after a failed persistence check | yes, `PCB.pas` and `SelectedProject.pas` now use the dielectric properties | medium, changes the stack; ran live and restored |
 | 50, stack style | `LayerStackStyle` on the master stack | no, nowhere | medium, ran live and restored |
 | 50, impedance profiles | `CreateImpedanceProfile`, `RemoveImpedanceProfile`, `CreateTraceImpedance`, `TraceMinWidth`, `UseSolderMask` | no, nowhere | low, ran live on a copy |
 | 50, layer order | `InsertInStackBelow`, `InsertInStackAbove` on the stack | no, nowhere | medium, ran live on a copy |

@@ -184,8 +184,7 @@ class AltiumBackend:
     async def run_erc(self) -> dict[str, Any]:
         bridge, AltiumError = await self._bridge()
         try:
-            raw = await bridge.send_command_async(
-                "generic.run_erc", {"limit": "200"})
+            raw = await bridge.send_command_async("generic.run_erc", {})
             # A script from before 2026.10.21 answers the run with a
             # message only; the list is read separately there.
             if not isinstance(raw, dict) or "violation_count" not in raw:

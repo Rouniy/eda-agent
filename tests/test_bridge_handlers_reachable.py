@@ -67,14 +67,6 @@ KNOWN_UNREACHABLE = {
     # scripting loop on the first track. It needs a two-pass snapshot before
     # it can be exposed safely.
     "fillet_corners",
-    # Deliberately unreachable from Python: the handler refuses, and
-    # pcb_set_via_soldermask_relief refuses locally rather than send to
-    # it. Reaching it means putting the command on the wire, and a
-    # session running a deployed script older than 2026.09.10.3 still
-    # has the write that takes the scripting engine down. The handler
-    # stays as the second layer, for tool_invoke and raw commands.
-    # See tests/test_via_soldermask_relief_is_refused.py.
-    "set_via_soldermask_relief",
     # The schematic emitter placed its junctions through this until
     # it stopped placing any: Altium draws its own at every T, in the
     # colour interactive wiring gives them (see AUTO JUNCTIONS in

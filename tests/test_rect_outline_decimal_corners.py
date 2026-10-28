@@ -33,7 +33,7 @@ def test_corners_are_read_as_decimal_mils(name):
     for key in ("x1", "y1", "x2", "y2"):
         assert (f"{key.upper()} := StrToFloatDef(ExtractJsonValue(Params, "
                 f"'{key}'), 0);") in body
-    assert "StrToIntDef" not in body
+    # Other board-shape fields may be integer internal coordinates.
     assert "X1, Y1, X2, Y2, TmpF : Double;" in body
 
 

@@ -19,7 +19,8 @@ def test_saved_comes_from_the_file_age_around_the_save():
     save = body.index("DoFileSave(")
     after = body.index("AgeAfter := FileAge(FilePath)")
     assert before < save < after
-    assert "Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore)" in body
+    assert "If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then" in body
+    assert "ForgetDocEdited(FilePath)" in body
 
 
 def test_it_touches_nothing_but_the_one_document():

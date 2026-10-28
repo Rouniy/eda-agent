@@ -1534,7 +1534,8 @@ def register_generic_tools(mcp):
                   "include_suppressed": "true" if include_suppressed else "false"}
         if project_path:
             params["project_path"] = project_path
-        run = await bridge.send_command_async("generic.run_erc", params)
+        run_params = {"project_path": project_path} if project_path else {}
+        run = await bridge.send_command_async("generic.run_erc", run_params)
         if isinstance(run, dict) and run.get("success") is False:
             return run
         # The native run reply reports the raw count and compile action;
@@ -2178,16 +2179,23 @@ def register_generic_tools(mcp):
         """
         if not style and not orientation:
             return {"success": False, "error": "style or orientation required"}
+        orientation = orientation.strip().lower()
+        if orientation and orientation not in ("landscape", "portrait"):
+            return {"success": False, "error": "orientation must be landscape or portrait"}
         bridge = get_bridge()
+        params = {
+            "style": style,
+            "custom_width": str(custom_width),
+            "custom_height": str(custom_height),
+        }
+        if orientation:
+            params["orientation"] = orientation
         result = await bridge.send_command_async(
             "generic.set_sheet_size",
-            {
-                "style": style,
-                "custom_width": str(custom_width),
-                "custom_height": str(custom_height),
-                "orientation": orientation,
-            },
+            params,
         )
+        if isinstance(result, dict) and result.get("success") is not False:
+            result["reopened"] = await _reopen_sheet(bridge)
         return result
 
     @mcp.tool()

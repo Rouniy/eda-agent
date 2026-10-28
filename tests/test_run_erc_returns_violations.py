@@ -76,8 +76,7 @@ def test_run_and_page_use_the_same_explicit_project(monkeypatch):
     assert out["suppressed_count"] == 201
     assert out["violations"][0]["detail"] == "one pin"
     assert bridge.sent == [
-        ("generic.run_erc", {"limit": "0", "include_suppressed": "true",
-                             "project_path": path}),
+            ("generic.run_erc", {"project_path": path}),
         ("generic.get_erc_violations", {"limit": "0",
                                         "include_suppressed": "true",
                                         "project_path": path}),

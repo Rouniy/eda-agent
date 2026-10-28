@@ -101,7 +101,7 @@ _CATEGORY_BY_PREFIX = (
 # handler, and a tool is only covered when EVERY command it sends is,
 # because one unanswered call ends the run just as surely.
 _SIMULATOR_TOOLS = frozenset({
-    "app_checkpoint", "app_context", "app_detach", "app_get_active_document",
+    "app_context", "app_detach", "app_get_active_document",
     "app_get_version",
     "app_list_documents", "app_restart_altium_bridge",
     "app_set_active_document", "app_visual_context",
@@ -133,11 +133,11 @@ _SIMULATOR_TOOLS = frozenset({
     "pcb_rebuild_connectivity", "pcb_route_diff_pair", "pcb_run_drc",
     "proj_add_document", "proj_annotate", "proj_compile",
     "proj_create", "proj_cross_probe", "proj_export_bom_html",
-    "proj_export_netlist", "proj_get_board_info",
+    "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
     "proj_get_bom", "proj_get_component_info", "proj_get_focused",
     "proj_get_nets", "proj_get_parameters", "proj_get_stats",
     "proj_list_documents", "proj_open", "proj_remove_document",
-    "proj_run_output", "proj_save", "proj_set_parameter",
+    "proj_run_outjob", "proj_run_output", "proj_save", "proj_set_parameter",
     "proj_visual_cross_probe",
 })
 # "parts" queries part providers (registries, local KiCad libraries)
@@ -224,7 +224,7 @@ _DESIGN_BRIDGE = frozenset(
 INTERACTION_OVERRIDES = {
     "lib_resolve_workspace_component": READONLY,
     # The via write is refused locally because it crashes the script engine.
-    "pcb_set_via_soldermask_relief": READONLY,
+    "pcb_set_via_soldermask_relief": SILENT,
     # Pure geometry computed in DelphiScript; no document state is read or
     # changed. Its verb does not match the generic readonly name rules.
     "obj_measure_distance": READONLY,

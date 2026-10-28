@@ -67,8 +67,7 @@ def test_the_tools_send_limit_and_offset(monkeypatch):
     assert bridge.params[0] == ("generic.get_erc_violations",
                                 {"limit": "0", "offset": "100",
                                  "include_suppressed": "false"})
-    assert bridge.params[1] == ("generic.run_erc", {"limit": "0",
-                                                    "include_suppressed": "false"})
+    assert bridge.params[1] == ("generic.run_erc", {})
     assert bridge.params[2] == ("generic.get_erc_violations", {"limit": "0",
                                                             "include_suppressed": "false"})
 

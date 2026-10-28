@@ -136,7 +136,8 @@ def test_a_polygon_name_is_read_and_written_and_an_empty_one_refused():
     setter = fns["SetPCBProperty"]
     start = setter.index("Else If (PropName = 'Name') And (Oid = ePolyObject) Then")
     branch = setter[start:setter.index("Else If PropName = 'StandoffHeight'", start)]
-    assert "If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;" in branch
+    assert "If Trim(Value) = '' Then Refused := True" in branch
+    assert "Else If Not PCBSetPoly(Obj, PropName, Value) Then Matched := False;" in branch
     writer = fns["PCBSetPoly"]
     arm = writer[writer.index("If PropName = 'Name' Then"):writer.index("If PropName = 'UseOctagons'")]
     assert re.search(r"If Trim\(Value\) = '' Then Exit;\s*Poly\.Name := Value;\s*Result := True;", arm)

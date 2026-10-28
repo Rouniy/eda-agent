@@ -47,6 +47,12 @@ class _FakeBridge:
                             "max_extensions": max_extensions}))
         handler = self.responses.get(command)
         if handler is None:
+            if command == "pcb.get_differential_pairs":
+                return {"pairs": []}
+            if command == "project.get_bom":
+                return {"components": []}
+            if command == "pcb.get_components":
+                return {"components": []}
             raise AssertionError(f"unexpected command: {command}")
         if isinstance(handler, Exception):
             raise handler
@@ -118,7 +124,7 @@ def test_bounds_the_wait_instead_of_inheriting_the_300s_ceiling(
 
     _run(tools["proj_sync_pcb"](wait_seconds=60, verify_pad_nets=False))
 
-    _, _, kwargs = bridge.calls[0]
+    _, _, kwargs = next(c for c in bridge.calls if c[0] == "project.update_pcb")
     assert kwargs["timeout"] == 10.0
     # 60 s budget over a 10 s poll window = 6 extensions, not the default 30.
     assert kwargs["max_extensions"] == 6
@@ -262,7 +268,7 @@ def test_verification_can_be_switched_off(tools, monkeypatch):
     res = _run(tools["proj_sync_pcb"](verify_pad_nets=False))
 
     assert "pad_net_verification" not in res
-    assert [c[0] for c in bridge.calls] == ["project.update_pcb"]
+    assert [c[0] for c in bridge.calls if c[0] == "project.update_pcb"] == ["project.update_pcb"]
 
 
 def test_verification_failure_is_reported_not_silently_passed(

@@ -206,9 +206,8 @@ def test_the_list_of_primitives_is_not_freed(source: str, name: str):
     assert f"{_list_name(body)}.Free" not in body
 
 
-def test_the_via_relief_refuses_the_crashing_write(source: str):
-    """The scripting engine crashes on this write, so the handler refuses it."""
+def test_the_via_relief_uses_the_cache_after_collection(source: str):
+    """The direct via property faults; the cache write follows the walk."""
     body = _body(source, "PCB_SetViaSoldermaskRelief")
     assert not re.search(r"\bVia\.SolderMaskExpansion\s*:=", body)
-    assert "BuildErrorResponse(RequestId, 'NOT_SCRIPTABLE'" in body
-    assert "Via.SetState_Cache := Cache;" not in body
+    assert body.index("Board.BoardIterator_Destroy(Iterator)") < body.index("Via.SetState_Cache := Cache;")

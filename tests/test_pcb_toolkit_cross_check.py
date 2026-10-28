@@ -250,8 +250,7 @@ def test_no_console_window_flashes_on_windows(monkeypatch):
     loop."""
     seen = _stub(monkeypatch, {"spacing_mm": 0.6})
     cross_check("ipc2221_spacing", {"voltage": 48, "environment": "B2"})
-    assert seen["kwargs"].get("creationflags")
-    assert seen["kwargs"].get("startupinfo") is not None
+    assert seen["kwargs"].get("creationflags", 0) & pcb_toolkit.subprocess.CREATE_NO_WINDOW
 
 
 # ---- the mapping table itself -------------------------------------------

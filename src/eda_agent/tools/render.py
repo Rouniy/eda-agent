@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 from ..bridge import get_bridge
 from ..config import get_config
+from ..units import MM_PER_MIL
 from ..render import (
     render_sch_svg, SchRenderOptions,
     render_pcb_svg, PcbRenderOptions,
@@ -316,7 +317,7 @@ def register_render_tools(mcp):
                 "height_px": height_px, "rect_mils": [x1, y1, x2, y2],
                 "layers": normalized,
                 "mils_per_pixel": (x2 - x1) / width_px,
-                "scale_px_per_mm": width_px / ((x2 - x1) * 0.0254),
+                "scale_px_per_mm": width_px / ((x2 - x1) * MM_PER_MIL),
                 "source": "Altium geometry; local SVG renderer"}
 
     @mcp.tool()

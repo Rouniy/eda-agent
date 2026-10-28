@@ -9,6 +9,16 @@
 
 ## Broad integration gate, 2026-10-28
 
+- [x] Restore per-via mask expansion through `TPadCache` from the later
+  fork; one via was verified on a disposable CW308 board in AD26.11,
+  then the copy was closed without saving (script `.153`).
+- [x] Reconnect post-ECO `after_sync`, sheet-frame reopen, simulator
+  maturity metadata and physics calculator export; related tests pass.
+- [x] Reconcile request keys: `pcb_grow_pour` now honours exact board,
+  polygon and reviewed bounds with a dry run; `lib_set_3d_body` checks
+  expected count; ERC options go to the violation reader. Native `.152`
+  read/write on a disposable PCB succeeded, close with discard kept its
+  hash unchanged.
 - [x] Add the required Apache-2.0 SPDX header to ten imported files
   exposed by the full-suite source-header gate; that gate now passes.
 - [x] Make SchLib object queries follow the visible symbol and return its
@@ -21,8 +31,9 @@
 - [x] Confirm loaded `.149` still runs the silent batch DRC on a board
   with violations: 97/97 rows returned, 14 rule summaries, no early stop,
   board closed without saving.
-- [ ] Finish the remaining full Python suite after its 51% checkpoint and
-  reconcile any additional integration failures.
+- [x] Finish the remaining Python suite after its 51% checkpoint in
+  ordered slices. The final slice passed 1,514 tests with 16 skips;
+  all intervening failures were reconciled with focused checks.
 
 ## `redbird98` modal DRC reconciliation, 2026-10-28
 

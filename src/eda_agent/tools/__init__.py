@@ -340,6 +340,7 @@ __all__ = [
     "register_eda_tools",
     "register_calc_tools",
     "register_pcb_calc_tools",
+    "register_physics_calc_tools",
     "register_stackup_tools",
     "register_plan_tools",
     "register_npi_tools",

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+from functools import cache
 
 import pytest
 
@@ -54,6 +55,7 @@ _IDENT = re.compile(r"`(\w+)`")
 _CITED = re.compile(r"`([\w.]+)`")
 
 
+@cache
 def _modules() -> dict[str, list[str]]:
     return {
         p.name: p.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -62,6 +64,7 @@ def _modules() -> dict[str, list[str]]:
     }
 
 
+@cache
 def _use_sites(ident: str) -> list[tuple[str, int, str]]:
     """Where `ident` is exercised, ignoring comments.
 

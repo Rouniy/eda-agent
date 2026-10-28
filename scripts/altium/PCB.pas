@@ -18745,33 +18745,117 @@ Begin
 End;
 
 Function PCB_SetViaSoldermaskRelief(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iterator : IPCB_BoardIterator;
+    Via : IPCB_Via;
+    Prim : IPCB_Primitive;
+    Matches : TInterfaceList;
+    Cache : TPadCache;
+    I : Integer;
+    NetFilter, NetName, ExpStr : String;
+    ExpMils : Double;
+    Exp : TCoord;
+    Matched, Verified : Integer;
+    Ok : Boolean;
 Begin
-    { THIS WRITE TAKES THE SCRIPTING ENGINE DOWN, MEASURED TWICE.
-      Setting SolderMaskExpansion / SolderMaskExpansionFromHoleEdge on an
-      IPCB_Via raises "Access violation in ScriptingSystem.DLL, read of
-      address 0x38" on AD 26.10.1.6. The fault is in the write itself: it
-      was measured once through Via.BeginModify and once through
-      SendMessageToRobots, on a scratch board holding three vias and
-      nothing else, and it is identical both ways. It is not catchable
-      either, because the engine shows a modal before any Except runs, so
-      the polling loop stops and the session needs a manual restart.
+    { ONE WRITE ON A VIA CRASHES THE SCRIPTING ENGINE, AND IT IS NOT THIS ONE.
+      Assigning SolderMaskExpansion straight onto an IPCB_Via raises an
+      access violation in ScriptingSystem.DLL (read of address 0x38) on
+      AD 26.10.1.6, through BeginModify or SendMessageToRobots alike, and
+      the engine shows its modal before any Except runs. Measured again on
+      2026-10-11 with nothing else on the board: that assignment still
+      faults, while SolderMaskExpansionFromHoleEdge assigned on the via and
+      the expansion written into the via's pad cache (GetState_Cache,
+      change, SetState_Cache) both take and read back. A via is a pad
+      underneath, and the cache record is TPadCache. So the value goes
+      through the cache, and SolderMaskExpansion is never assigned on a
+      via. Both sides are written, since the bottom value is stored even
+      while the sides are linked and takes effect when they are unlinked. }
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    NetFilter := ExtractJsonValue(Params, 'net');
+    ExpStr := ExtractJsonValue(Params, 'expansion_mils');
+    ExpMils := 4;
+    If ExpStr <> '' Then ExpMils := StrToFloatDef(ExpStr, -99999);
+    If ExpMils = -99999 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'expansion_mils is a number in mils');
+        Exit;
+    End;
+    Exp := MilsToCoordF(ExpMils);
 
-      The handler therefore does not attempt it. Refusing is not the
-      preferred answer anywhere in this bridge and is right here only
-      because the operation cannot complete: every caller who tried it
-      lost their session and changed nothing on the board.
+    { Collect first, write after the walk, as PCB_SetTrackWidth does: a  }
+    { primitive changed while the BoardIterator holds it corrupts the    }
+    { walk. The list is never freed, and each item comes back through a  }
+    { base IPCB_Primitive before it is narrowed to a via.                }
+    Matches := CreateObject(TInterfaceList);
+    Iterator := Board.BoardIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(eViaObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Via := Iterator.FirstPCBObject;
+        While Via <> Nil Do
+        Begin
+            NetName := '';
+            Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
+            If (NetFilter = '') Or (UpperCase(NetName) = UpperCase(NetFilter)) Then
+                Matches.Add(Via);
+            Via := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
 
-      Altium's own route for tenting is a Solder Mask Expansion rule
-      scoped IsVia, which covers every via at once and survives a
-      repour. PCB_CreateDesignRule builds that kind, so the pointer is
-      to a tool rather than to a dialog. }
-    Result := BuildErrorResponse(RequestId, 'NOT_SCRIPTABLE',
-        'Writing a via soldermask expansion crashes the Altium scripting '
-        + 'engine on this build (access violation in ScriptingSystem.DLL), '
-        + 'which stops the polling loop and needs a manual restart, so this '
-        + 'handler does not attempt it. Tent vias with a Solder Mask '
-        + 'Expansion rule instead: pcb_create_design_rule with '
-        + 'rule_type=solder_mask_expansion and scope=IsVia.');
+    Matched := Matches.Count;
+    Verified := 0;
+    PCBServer.PreProcess;
+    Try
+        For I := 0 To Matches.Count - 1 Do
+        Begin
+            Prim := Matches.Items[I];
+            If Prim = Nil Then Continue;
+            Via := Prim;
+            PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                PCBM_BeginModify, c_NoEventData);
+            Via.SolderMaskExpansionFromHoleEdge := True;
+            Cache := Via.GetState_Cache;
+            Cache.SolderMaskExpansion := Exp;
+            Cache.SolderMaskBottomExpansion := Exp;
+            Cache.SolderMaskExpansionValid := eCacheManual;
+            Via.SetState_Cache := Cache;
+            PCBServer.SendMessageToRobots(Via.I_ObjectAddress, c_Broadcast,
+                PCBM_EndModify, c_NoEventData);
+            Via.GraphicallyInvalidate;
+            Cache := Via.GetState_Cache;
+            Ok := Via.SolderMaskExpansionFromHoleEdge
+                And (Cache.SolderMaskExpansionValid = eCacheManual)
+                And (Abs(Cache.SolderMaskExpansion - Exp) <= 10)
+                And (Abs(Cache.SolderMaskBottomExpansion - Exp) <= 10);
+            If Ok Then Verified := Verified + 1;
+        End;
+    Finally
+        PCBServer.PostProcess;
+    End;
+
+    If Matched > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('vias_matched', Matched) + ','
+        + JsonInt('vias_verified', Verified) + ','
+        + JsonFloat('expansion_mils', ExpMils) + ','
+        + JsonStr('net', NetFilter) + ','
+        + JsonRaw('from_hole_edge', 'true') + ','
+        + JsonStr('note', 'Each via''s mask opening is measured from its hole '
+            + 'edge, on both sides, as a manual value on the via. A Solder '
+            + 'Mask Expansion rule scoped IsVia covers every via at once '
+            + 'instead, including vias placed later.')));
 End;
 Function PCB_SetMechLayerKind(Params : String; RequestId : String) : String;
 Var
@@ -23524,65 +23608,131 @@ Var
     Board : IPCB_Board;
     Iter : IPCB_BoardIterator;
     Poly, Found : IPCB_Polygon;
-    PourName, DistStr, Before : String;
+    BoardPath, Why, IndexStr, PourName, ExpectedLayer, LayerName : String;
+    DistStr, DryRunStr, Before, ExpectStr : String;
+    Wanted, Seen, PointCountBefore : Integer;
     Dist : Double;
+    Bounds : TCoordRect;
 Begin
-    PourName := ExtractJsonValue(Params, 'name');
+    BoardPath := ExtractJsonValue(Params, 'board_path');
+    IndexStr := ExtractJsonValue(Params, 'index');
+    PourName := ExtractJsonValue(Params, 'expected_name');
+    ExpectedLayer := ExtractJsonValue(Params, 'expected_layer');
     DistStr := ExtractJsonValue(Params, 'distance_mils');
-    If (PourName = '') Or (Not IsFloatStr(DistStr)) Then
+    DryRunStr := LowerCase(ExtractJsonValue(Params, 'dry_run'));
+    Wanted := StrToIntDef(IndexStr, -1);
+    If (BoardPath = '') Or (Wanted < 0) Or (PourName = '') Or
+        (ExpectedLayer = '') Or (Not IsFloatStr(DistStr)) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'name and distance_mils are required');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'board_path, index, expected_name, expected_layer and distance_mils are required');
         Exit;
     End;
     Dist := StrToFloatDef(DistStr, 0);
-    If Dist = 0 Then
+    If (Dist = 0) Or (Abs(Dist) > 1000) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'distance_mils is not 0');
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+            'distance_mils must be nonzero and at most 1000 mil');
         Exit;
     End;
-    Board := GetPCBBoardAnywhere(0);
+    Board := GetPCBBoardForMutation(Why);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', Why);
+        Exit;
+    End;
+    If UpperCase(Board.FileName) <> UpperCase(BoardPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Selected PCB path differs from board_path');
         Exit;
     End;
     Found := Nil;
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePolyObject));
-        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_LayerSet(AllLayers);
         Iter.AddFilter_Method(eProcessAll);
+        Seen := 0;
         Poly := Iter.FirstPCBObject;
-        While Poly <> Nil Do
+        While (Poly <> Nil) And (Seen < Wanted) Do
         Begin
-            If UpperCase(Poly.Name) = UpperCase(PourName) Then
-            Begin
-                Found := Poly;
-                Break;
-            End;
+            Inc(Seen);
             Poly := Iter.NextPCBObject;
         End;
+        Found := Poly;
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
     If Found = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No pour named ' + PourName);
+        Result := BuildErrorResponse(RequestId, 'POLYGON_NOT_FOUND',
+            'No polygon at index');
+        Exit;
+    End;
+    Try LayerName := GetLayerString(Found.Layer);
+    Except LayerName := 'Unknown'; End;
+    If (LowerCase(Found.Name) <> LowerCase(PourName)) Or
+        (LowerCase(LayerName) <> LowerCase(ExpectedLayer)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'POLYGON_CHANGED',
+            'Polygon name or layer differs from selector');
+        Exit;
+    End;
+    PointCountBefore := Found.PointCount;
+    If PointCountBefore < 3 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_POLYGON',
+            'Polygon has fewer than three points');
         Exit;
     End;
     Before := PourBoundsJson(Found);
-    PCBServer.PreProcess;
-    Try
-        PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
-        Found.GrowPolyshape(MilsToCoordF(Dist));
-        PCBServer.SendMessageToRobots(Found.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
-    Finally
-        PCBServer.PostProcess;
+    If DryRunStr = 'false' Then
+    Begin
+        If StrToIntDef(ExtractJsonValue(Params, 'expected_points'), -1) <>
+            PointCountBefore Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PLAN_CHANGED',
+                'Polygon point count changed since preview');
+            Exit;
+        End;
+        Bounds := Found.BoundingRectangle;
+        ExpectStr := ExtractJsonValue(Params, 'expected_left');
+        If (Not IsFloatStr(ExpectStr)) Or
+            (Abs(StrToFloatDef(ExpectStr, 0) - CoordToMilsF(Bounds.Left)) > 0.01) Then
+        Begin Result := BuildErrorResponse(RequestId, 'PLAN_CHANGED', 'Polygon left bound changed'); Exit; End;
+        ExpectStr := ExtractJsonValue(Params, 'expected_bottom');
+        If (Not IsFloatStr(ExpectStr)) Or
+            (Abs(StrToFloatDef(ExpectStr, 0) - CoordToMilsF(Bounds.Bottom)) > 0.01) Then
+        Begin Result := BuildErrorResponse(RequestId, 'PLAN_CHANGED', 'Polygon bottom bound changed'); Exit; End;
+        ExpectStr := ExtractJsonValue(Params, 'expected_right');
+        If (Not IsFloatStr(ExpectStr)) Or
+            (Abs(StrToFloatDef(ExpectStr, 0) - CoordToMilsF(Bounds.Right)) > 0.01) Then
+        Begin Result := BuildErrorResponse(RequestId, 'PLAN_CHANGED', 'Polygon right bound changed'); Exit; End;
+        ExpectStr := ExtractJsonValue(Params, 'expected_top');
+        If (Not IsFloatStr(ExpectStr)) Or
+            (Abs(StrToFloatDef(ExpectStr, 0) - CoordToMilsF(Bounds.Top)) > 0.01) Then
+        Begin Result := BuildErrorResponse(RequestId, 'PLAN_CHANGED', 'Polygon top bound changed'); Exit; End;
+        PCBServer.PreProcess;
+        Try
+            PCBServer.SendMessageToRobots(Found.I_ObjectAddress,
+                c_Broadcast, PCBM_BeginModify, c_NoEventData);
+            Found.GrowPolyshape(MilsToCoordF(Dist));
+            PCBServer.SendMessageToRobots(Found.I_ObjectAddress,
+                c_Broadcast, PCBM_EndModify, c_NoEventData);
+        Finally
+            PCBServer.PostProcess;
+        End;
+        Try Found.GraphicallyInvalidate; Except End;
+        MarkDocDirtyByPath(Board.FileName);
     End;
-    Try Found.GraphicallyInvalidate; Except End;
-    MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonStr('name', Found.Name) + ','
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('index', Wanted) + ','
+        + JsonStr('name', Found.Name) + ','
+        + JsonStr('layer', LayerName) + ','
+        + JsonInt('point_count_before', PointCountBefore) + ','
+        + JsonBool('dry_run', DryRunStr <> 'false') + ','
         + JsonRaw('distance_mils', FloatToJsonStr(Dist)) + ','
         + JsonRaw('bounds_before', Before) + ','
         + JsonRaw('bounds_after', PourBoundsJson(Found)) + ','

@@ -1,5 +1,56 @@
 # Current integration state / agent handoff
 
+## Final broad-gate cleanup, 2026-10-28
+
+The remaining top-level Python tests exposed two unreachable duplicate
+`Name` branches in `SetPCBProperty`; script `.154` removes them. Pascal
+lint/build passed 12 units with zero findings and 13 related tests
+passed. A complete suite run reached 51% with 4,926 passes, 95 skips
+and one expected failure; its stale ERC-call assertion was corrected.
+The remaining files were then run in ordered slices, ending with 1,514
+passes and 16 skips in the final slice. The generated tool reference
+was refreshed, and source tests for polygon and region names now check
+the reachable branches. No unresolved test failures remain in the
+segmented gate.
+
+## Via mask cache and merged feature checks, 2026-10-28
+
+Script `.153` restores per-via solder-mask expansion from the later
+fork's measured `TPadCache` route. The dangerous direct assignment to
+`IPCB_Via.SolderMaskExpansion` remains absent. On AD 26.11, a disposable
+CW308 board with one via on net `NetJ3_3` returned
+`vias_matched=1`, `vias_verified=1` for a 4 mil expansion. The board
+copy closed with discard and its SHA-256 remained unchanged. Pascal
+lint/build passed all 12 units with zero findings, 35 focused tests
+passed, and the restarted HTTP MCP and Altium bridge both report `.153`
+with no stale units. Ports 14700 and 14701 are listening.
+
+The wider test gate also restored the post-ECO `after_sync` comparison,
+sheet-frame save/reopen and normalized orientation, corrected simulator
+maturity metadata, exported the physics registrar, and centralized the
+render scale conversion. Their related focused tests pass. The broad
+suite is still being completed in slices.
+
+## Exact pour preview and request-key reconciliation, 2026-10-28
+
+The request-key audit found that Python's `pcb_grow_pour` preview and
+exact-target parameters were ignored by the native handler. Script `.152`
+now selects a polygon by the same index as `pcb_get_polygon_outline`,
+checks the board path, name, layer, point count and four bounds, and
+returns a dry-run plan without changing the board. It writes only when
+the reviewed plan still matches. The Python `proj_run_erc` wrapper now
+sends limit and suppression options only to the violation reader, which
+uses them; `Lib_Set3DBody` checks `expected_count` before a write.
+
+The 12-unit Pascal build had zero findings and 18 related Python tests
+passed. `app_ping` confirmed loaded/bundled `.152` without stale units.
+On a disposable CW308 PcbDoc, `pcb_grow_pour` previewed polygon 0
+`1V2_HEATSINK` on BottomLayer with 43 points and bounds
+`(5250,3530)..(6900,4460)` mil. A reviewed 1 mil grow moved its bounds
+to `(5249,3529)..(6901,4461)` mil; close with discard left the copy's
+SHA-256 unchanged. A deliberately stale bound was refused by the Python
+wrapper before reaching the native write.
+
 ## Visible SchLib query and broad test gate, 2026-10-28
 
 Script `.151` makes `obj_query(scope="active_doc")` read the symbol
@@ -20,6 +71,20 @@ It also found a duplicate `_encode_bindings_param` definition and a
 duplicate termination-default table in `tools/pcb.py`; the identical
 second copies are removed. The shadow-definition and netlist tests
 passed 36/36.
+
+Further broad tests found stale assumptions in the pcb-toolkit Windows
+console test and in the documentation tool-name scan. The former now
+checks the shared `CREATE_NO_WINDOW` flag; 35 focused tests passed. The
+latter distinguishes fields from tools and excludes the historical
+upstream-sync record that quotes retired tool names; 30 focused tests
+passed. The remaining suite is still running.
+
+The release-verification property table had eight claims about earlier
+code that no longer matched the merged handlers. It now identifies the
+current Pascal modules, records the refused direct via-mask write, and
+no longer ranks the non-persistent stiffener flag as a supported write.
+Its four table checks passed. Two other source checks were narrowed to
+the proven component-origin move and decimal-mil corner inputs.
 
 ## STEP-body footprint refresh and full-suite repair, 2026-10-28
 
@@ -1556,7 +1621,7 @@ on a disposable multipart SchLib is pending.
 
 Source `.101` restores five schematic graphic names in `SchTypeName`
 that upstream and MOREmbedded already return. Without them,
-`app_get_sheet_frame` reported `type_<id>` for polygons, arcs,
+the internal `generic.get_sheet_frame` command reported `type_<id>` for polygons, arcs,
 elliptical arcs, ellipses and Bezier curves. Five more accepted schematic
 types now receive readable names instead of numeric fallbacks. Source
 tests passed (71 related tests), and Pascal lint/build found zero errors

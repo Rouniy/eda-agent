@@ -19,7 +19,7 @@ class _Bridge:
     def __init__(self):
         self.pairs = [{"name": "USB_MCU"}, {"name": "USB_CONN"}]
 
-    async def send_command_async(self, command, params=None, timeout=None):
+    async def send_command_async(self, command, params=None, timeout=None, **kwargs):
         if command == "pcb.get_differential_pairs":
             return {"count": len(self.pairs), "pairs": list(self.pairs)}
         if command == "project.update_pcb":
@@ -67,12 +67,12 @@ def test_a_clean_sync_says_nothing(monkeypatch):
     bridge = _Bridge()
     bridge.pairs = []
 
-    async def send(command, params=None, timeout=None):
+    async def send(command, params=None, timeout=None, **kwargs):
         if command == "project.get_bom":
             return {"components": [{"designator": "R1", "footprint": "R0402"}]}
         if command == "pcb.get_components":
             return {"components": [{"designator": "R1", "footprint": "R0402"}]}
-        return await _Bridge.send_command_async(bridge, command, params, timeout)
+        return await _Bridge.send_command_async(bridge, command, params, timeout, **kwargs)
 
     bridge.send_command_async = send
     out = asyncio.run(_tools(bridge, monkeypatch)["proj_sync_pcb"]())

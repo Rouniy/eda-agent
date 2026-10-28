@@ -51,6 +51,6 @@ def test_native_preflights_board_and_preserves_pad_centroid():
     handler = load(source)["PCB_RecenterComponentOrigins"]
     for fragment in ("GetPCBBoardForMutation", "TARGET_CHANGED",
                      "PLAN_CHANGED", "expected_plan", "PadCount",
-                     "Prim.MoveByXY(-Dx, -Dy)", "Comp.X := Cx",
+                     "Prim.MoveByXY(-Dx, -Dy)", "Comp.MoveByXY(Dx, Dy)",
                      "Round(SumX / PadCount) = Cx"):
         assert fragment in handler

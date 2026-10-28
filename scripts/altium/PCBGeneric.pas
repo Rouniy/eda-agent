@@ -1929,16 +1929,6 @@ Begin
             End;
         End
 
-        Else If (PropName = 'Name') And (Oid = ePolyObject) Then
-        Begin
-            If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
-        End
-        Else If (PropName = 'Name') And (Oid = eRegionObject) Then
-        Begin
-            Rgn := Obj;
-            Rgn.Name := Value;
-        End
-
         { Polygon pour options. All three are declared on IPCB_Polygon with
           both a Read and a Write accessor, so they are settable; they were
           simply absent here. Setting one does NOT repour: the flags decide

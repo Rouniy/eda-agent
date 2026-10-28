@@ -13,7 +13,7 @@ def test_region_name_in_generic_properties():
     functions = load(ROOT / "PCBGeneric.pas", minimum=20)
     assert "If Oid = eRegionObject Then Begin Rgn := Obj; Result := Rgn.Name; End;" in functions["GetPCBProperty"]
     setter = functions["SetPCBProperty"]
-    assert "(PropName = 'Name') And (Oid = eRegionObject)" in setter
+    assert "(Oid = eRegionObject) And (PropName = 'Name')" in setter
     assert "Rgn.Name := Value;" in setter
 
 

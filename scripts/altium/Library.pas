@@ -16451,7 +16451,7 @@ Function Lib_Set3DBody(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpWanted, LayerStr, Addr, Seen : String;
     StandoffStr, OverallStr, OpacityStr, IndexStr, Before, After : String;
-    SavedStr, SavedFile, ModelFile, Skipped, ZWritten : String;
+    SavedStr, SavedFile, ModelFile, Skipped, ZWritten, ExpectedCountStr : String;
     Model : IPCB_Model;
     Workspace : IWorkspace;
     Doc : IDocument;
@@ -16473,6 +16473,7 @@ Begin
     LayerStr := Trim(ExtractJsonValue(Params, 'layer'));
     SavedStr := ExtractJsonValue(Params, 'saved_models');
     SavedCount := StrToIntDef(ExtractJsonValue(Params, 'saved_count'), -1);
+    ExpectedCountStr := ExtractJsonValue(Params, 'expected_count');
 
     If FpWanted = '' Then
     Begin
@@ -16593,6 +16594,13 @@ Begin
         End;
     Finally
         Footprint.GroupIterator_Destroy(GrpIter);
+    End;
+    If (ExpectedCountStr <> '') And
+        (StrToIntDef(ExpectedCountStr, -1) <> Total) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BODY_COUNT_CHANGED',
+            'Footprint 3D body count changed since the preview');
+        Exit;
     End;
     If SavedCount <> Total Then SavedStr := '';
 

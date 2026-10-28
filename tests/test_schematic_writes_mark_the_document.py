@@ -93,7 +93,11 @@ def test_the_mark_is_guarded_against_a_nil_document(functions):
             continue
         for line in body.splitlines():
             if "MarkDocDirtyByPath" in line:
-                assert "<> Nil" in line or "SrvDoc" in line, (
+                prefix = body[:body.index(line)]
+                guarded_early = re.search(
+                    r"If SchDoc = Nil Then\s*Begin(?:(?!End;).)*\bExit;",
+                    prefix, re.S)
+                assert "<> Nil" in line or "SrvDoc" in line or guarded_early, (
                     f"{name} marks without checking the document first: "
                     f"{line.strip()}")
 

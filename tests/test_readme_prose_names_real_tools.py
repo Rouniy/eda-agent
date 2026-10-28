@@ -36,9 +36,10 @@ _README = _ROOT / "README.md"
 def _prose_files() -> list[Path]:
     files = [_README, _ROOT / "CONTRIBUTING.md"]
     files += [p for p in sorted((_ROOT / "docs").glob("*.md"))
-              # Generated from the tool surface, and guarded for
-              # freshness by tests/test_gen_tool_reference.py.
-              if p.name != "TOOL_REFERENCE.md"]
+              # Generated tool reference has its own freshness gate. The
+              # upstream sync record quotes historical, retired tool names.
+              if p.name not in {"TOOL_REFERENCE.md",
+                                "UPSTREAM-SYNC-2026-10-27.md"}]
     return [p for p in files if p.exists()]
 
 #: A backticked token has to start with one of these to be treated as
@@ -55,6 +56,8 @@ NOT_TOOLS: dict[str, str] = {
     "part_count": "a parameter of lib_create_symbol",
     "part_id": "a parameter of sch_place_dblib_component",
     "part_id_applied": "a reply field of sch_place_dblib_component",
+    "lib_reference": "a schematic library component field and placement parameter",
+    "part_issues": "a reply field of sch_place_components_from_list",
     "pcb_only": "a reply field of the schematic/PCB comparison",
     "sch_only": "a reply field of the schematic/PCB comparison",
     # Names from the PLT companion runtime (PLT-hw tools/eda-agent/shared_server.py),
