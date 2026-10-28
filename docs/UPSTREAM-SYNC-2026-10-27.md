@@ -1,5 +1,15 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 mooreaa CrossRef native qualification
+
+The CrossRef planner read Altium `ConnectedEnd=1`, made a reviewed move
+on a disposable sheet, and confirmed the new position after exact save,
+close and reopen. Its first live apply exposed a string-format readback
+bug (`8420.0` versus Altium's `8420`); the Python tool now verifies
+coordinates numerically and the focused suite passes. The test used a
+manually placed CrossRef parameter; an Altium-generated project CrossRef
+still needs native acceptance. See `CURRENT-STATE.md` for the geometry.
+
 ## 2026-10-28 mooreaa live-pin native qualification
 
 The `mooreaa` visible-pin filter was checked on a disposable SchLib and
@@ -910,7 +920,7 @@ Inventory source: GitHub `repos/salitronic/eda-agent/forks?per_page=100`,
 | Upstream `5d79657` through `ce53d6e`, `ed4ef59` (footprint read) | Restore the native `library.get_footprint_primitives` handler, including body metadata, region shapes and layer names; restrict saved STEP extraction to a named footprint's live model files | 33 focused tests, Pascal lint/build, loaded `.3` runtime and no-target native dispatch; real PcbLib read still pending |
 | Upstream `ce53d6e` (PCB pours/options) | Look up polygon outlines at a board point and read/set the new-polygon name template; include board identity and require an expected file for writes | 28 related tests, Pascal lint/build, loaded `.4` runtime, and no-target native refusals; real-board acceptance pending |
 | `mooreaa` `ad8d5fa`, also in upstream by `ce53d6e` (font safety) | Guard generic `FontId` by actual schematic object type and expose `TextFontId` through typed sheet/harness entries | 22 related tests, Pascal lint/build, loaded `.5` runtime; native entry readback pending |
-| `mooreaa` `dc36b7e`-`fc22136` (port cross-references, partial) | Plan CrossRef positions from a port's read-only `ConnectedEnd` and wire geometry; require an exact sheet, a reviewed plan digest and per-reference readback for writes | 41 related tests, Pascal lint/build, loaded `.6` runtime and bad-path refusal; native sheet acceptance pending |
+| `mooreaa` `dc36b7e`-`fc22136` (port cross-references, partial) | Plan CrossRef positions from a port's read-only `ConnectedEnd` and wire geometry; require an exact sheet, a reviewed plan digest and per-reference readback for writes | AD26 disposable-sheet plan/apply persisted and read back after numeric-format fix; 21 focused tests pass; project-generated CrossRef acceptance pending |
 | `mooreaa` through `fc22136` (live pins) | Filter hidden part/display-mode copies from schematic ePin queries, preserving explicit `OwnerPart` inspection; use visible pins in CrossRef planning and its digest | 21 focused tests and Pascal lint/build; AD26 native two-mode/two-part sheet returned visible and explicit-owner counts 8/10/2 after save/reopen; CrossRef planner separately pending |
 | `mooreaa` `64a71c3` through `fc22136` (part properties) | Read and write a placed part's display mode and current PCB model pin map, with type guards and readback | 22 related source tests, Pascal lint/build; both writes persisted after exact save/close/reopen on disposable AD26 sheets; visual mode-graphic comparison pending |
 | `mooreaa` `053aff9` through `fc22136` (placement model choice) | Select a named PCB model the library symbol already carries on placement, verify all current flags and restore them on failure | Focused source tests and Pascal lint/build; AD26 placement accepted and persisted an available nondefault model, reported a missing model and kept the default; public tool accepts one or more placements |

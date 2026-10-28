@@ -1,5 +1,28 @@
 # Current integration state / agent handoff
 
+## Port CrossRef native apply and readback, 2026-10-28
+
+The `mooreaa` CrossRef planner was exercised on a disposable project copy
+under Altium 26.11.1.5, script `.137`. A horizontal 400-mil port at
+`(8000,4000)` had a wire from `(7800,4000)` to its origin and a test
+`CrossRef` parameter at `(7980,4000)`, justification 5. Altium's
+`ConnectedEnd` read 1. The dry run planned the unwired-end position
+`(8420,4000)`, justification 3, with no off-sheet warning. The reviewed
+plan digest was accepted and the parameter was changed in Altium.
+
+The first apply reply incorrectly said `failed=1`: its readback filter
+used `Location.X=8420.0`, while Altium returned `8420`. The Python tool
+now rereads named references and compares numeric X/Y within 0.01 mil,
+requiring one matching row and the expected justification. After the
+HTTP MCP restart, the same plan returned `applied=1`, `failed=0` and a
+separate `obj_query` read X=8420, Y=4000, justification 3. Exact-sheet
+save, project close and reopen left the plan with zero moves and one
+`ok` reference. The source QA sheet remained SHA-256
+`fa9931bba40abed643e1ae0093843419d106200473d32f2c0cc20b7d307e5661`.
+The reference was a deliberately created test parameter; native
+acceptance on a project-generated CrossRef is still open. Twenty-one
+focused tests pass, including normalized coordinate readback.
+
 ## mooreaa live-pin filtering on two modes and parts, 2026-10-28
 
 The corrected `mooreaa` ePin query filter now has native acceptance under

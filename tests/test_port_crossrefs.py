@@ -203,7 +203,8 @@ class _SheetBridge:
         if command == "generic.modify_objects":
             changes = dict(part.split("=", 1) for part in params["set"].split("|"))
             ref = self.rows["eParameter"][0]
-            ref["Location.X"] = float(changes["Location.X"])
+            moved_x = float(changes["Location.X"])
+            ref["Location.X"] = str(int(moved_x)) if moved_x.is_integer() else str(moved_x)
             ref["Justification"] = int(changes["Justification"])
             return {"matched": 1, "modified": True, "saved": False}
         return {}
@@ -290,6 +291,9 @@ async def test_apply_moves_only_the_reference(monkeypatch):
     assert ref_write["set"].endswith(f"|Justification={JUST_RUNS_RIGHT}")
     assert out["failed"] == [] and len(out["applied"]) == 1
     assert out["saved"] is False
+    ref_queries = [p for c, p in bridge.calls if c == "generic.query_objects"
+                   and p["object_type"] == "eParameter"]
+    assert ref_queries[-1]["filter"] == "Name=CrossRef"
 
 
 @pytest.mark.asyncio

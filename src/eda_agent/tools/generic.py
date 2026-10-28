@@ -2556,14 +2556,24 @@ def register_generic_tools(mcp):
                 failed.append({"port": m["port"], "result": res})
                 break
             try:
-                verify = await query("eParameter",
+                reread = await query("eParameter",
                                      "Name,Location.X,Location.Y,Justification",
-                                     f"Name=CrossRef|Location.X={m['to_x']}"
-                                     f"|Location.Y={m['from_y']}")
+                                     "Name=CrossRef")
             except ValueError as exc:
                 failed.append({"port": m["port"], "result": res,
                                "reason": f"readback failed: {exc}"})
                 break
+            verify = []
+            for ref in reread:
+                try:
+                    same_location = (
+                        abs(float(ref["Location.X"]) - float(m["to_x"])) <= 0.01
+                        and abs(float(ref["Location.Y"]) - float(m["from_y"])) <= 0.01
+                    )
+                except (KeyError, TypeError, ValueError):
+                    same_location = False
+                if same_location:
+                    verify.append(ref)
             landed = (len(verify) == 1 and
                       str(verify[0].get("Justification")) ==
                       str(m["to_justification"]))
