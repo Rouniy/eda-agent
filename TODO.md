@@ -79,6 +79,16 @@
 
 ## Fresh `mooreaa` stack builder, 2026-10-28
 
+- [x] Qualify the builder on a populated, project-backed board copy.
+  On a temporary CW308 baseboard project, a two-copper plan that would
+  remove occupied `Ground Plane` and `Internal Signal 3` was refused in
+  both dry-run and apply modes before edits; the copied PcbDoc hash stayed
+  unchanged. A four-copper plan preserving those layers applied 14
+  native operations and reported zero mismatches. After exact save and
+  reopen, Altium retained copper order and the three planned dielectric
+  names, types, thicknesses and FR-4 materials. The saved-file V9/legacy
+  checker returned `ok=true`, no findings and no expected mismatches.
+  The temporary project was closed.
 - [x] Fetch the new `mooreaa/main` tip `4cbae2a` and recheck all live
   fork refs: 62/62 default tips and 117/117 branch tips fresh. Upstream
   `ee7589c` remains the exact ancestor of `main` with zero pending commits.
@@ -86,9 +96,10 @@
   copper/dielectric planner. On an isolated PcbDoc, a two-layer edit and
   an inserted four-layer stack persisted after save/close/reopen. Check
   plane identity and dielectric material in the final readback.
-- [ ] Qualify stack-build failures and recovery on project-backed and
-  populated boards. The current tool leaves partial failures unsaved and
-  reports them explicitly.
+- [ ] Qualify a failure after a partial stack edit and its recovery on a
+  project-backed board. The current tool leaves partial failures unsaved
+  and reports them explicitly; the populated-board preflight and successful
+  save/reopen path have passed.
 - [x] Port `pcb_stack_from_file` and compare V9 and legacy reads on the
   saved four-layer QA board: no findings or expected-stack mismatches.
   Gate legacy V7 writes behind explicit opt-in.

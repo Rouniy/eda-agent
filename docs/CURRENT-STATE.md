@@ -1,5 +1,20 @@
 # Current integration state / agent handoff
 
+## Populated-board stack builder acceptance, 2026-10-28
+
+The refreshed fork check matched 62/62 default tips and 117/117 branch
+tips; `upstream/main` is still the exact ancestor `ee7589c9` with zero
+pending commits. On a temporary copy of the CW308 baseboard project,
+`pcb_build_stack` refused a two-layer plan that would remove occupied
+`Ground Plane` and `Internal Signal 3`, both as a dry run and when apply
+was requested. The copied PcbDoc hash remained unchanged. A plan that
+kept all four occupied copper layers applied 14 native edits with zero
+readback mismatches. Exact save/close/reopen retained the three planned
+FR-4 dielectric layers (core 12.6 mil, prepreg 5 mil, core 10 mil) and
+copper order. Offline `pcb_stack_from_file` found no V9/legacy issues
+and no mismatches against the plan. The copied project was closed.
+Failure after a partial native edit still needs a recovery acceptance run.
+
 ## Sheet-symbol and sheet-entry geometry, 2026-10-28
 
 Script `.129` repairs the `mooreaa` sheet-entry placement issue. A
