@@ -10125,6 +10125,8 @@ def register_pcb_tools(mcp):
         check_connected_copper: bool | None = None,
         min_hole_size_mils: int | None = None,
         max_hole_size_mils: int | None = None,
+        min_length_mils: float | None = None,
+        max_length_mils: float | None = None,
         min_via_size_mils: float | None = None,
         max_via_size_mils: float | None = None,
         preferred_via_size_mils: float | None = None,
@@ -10148,6 +10150,8 @@ def register_pcb_tools(mcp):
         - Width (kind 2): ``min_width_mils`` / ``max_width_mils`` /
           ``favored_width_mils`` (applied to every layer).
         - HoleSize (kind 42): ``min_hole_size_mils`` / ``max_hole_size_mils``.
+        - Length (kind 3): ``min_length_mils`` / ``max_length_mils``.
+          The reply includes the limits read back from Altium.
         - Routing Via: ``min_via_size_mils`` / ``max_via_size_mils`` /
           ``preferred_via_size_mils`` and the three ``*_via_hole_mils``.
           Checked as a set first (minimum <= preferred <= maximum, every
@@ -10229,6 +10233,7 @@ def register_pcb_tools(mcp):
                 relief_expansion_mils (plane only): the relief's settings.
             min_hole_size_mils / max_hole_size_mils: HoleSize
                 constraint limits.
+            min_length_mils / max_length_mils: Length rule limits.
 
         Returns:
             Dict with name, rule_kind, and properties_updated count.
@@ -10266,6 +10271,8 @@ def register_pcb_tools(mcp):
             ("dp_preferred_gap_mm", dp_preferred_gap_mm),
             ("min_hole_size_mils", min_hole_size_mils),
             ("max_hole_size_mils", max_hole_size_mils),
+            ("min_length_mils", min_length_mils),
+            ("max_length_mils", max_length_mils),
             ("min_via_size_mils", min_via_size_mils),
             ("max_via_size_mils", max_via_size_mils),
             ("preferred_via_size_mils", preferred_via_size_mils),
@@ -10308,6 +10315,11 @@ def register_pcb_tools(mcp):
                     "fanout_direction", "bga_fanout_direction", "bga_via_mode"):
             if key in params and float(params[key]) < 0:
                 return {"ok": False, "reason": f"{key} is 0 or more"}
+        for key in ("min_length_mils", "max_length_mils"):
+            if key in params and (not math.isfinite(float(params[key])) or float(params[key]) < 0):
+                return {"ok": False, "reason": f"{key} must be finite and 0 or more"}
+        if min_length_mils is not None and max_length_mils is not None and min_length_mils > max_length_mils:
+            return {"ok": False, "reason": "min_length_mils exceeds max_length_mils"}
         for key, value in (("width_impedance_driven", width_impedance_driven),
                            ("check_connected_copper", check_connected_copper)):
             if value is not None:

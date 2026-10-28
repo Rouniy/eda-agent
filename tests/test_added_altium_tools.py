@@ -855,6 +855,22 @@ def test_diff_pair_impedance_is_sent_read_back_and_refused(monkeypatch):
         "'\"dp_preferred_impedance\",'")
 
 
+def test_length_limits_validate_pair_and_reach_typed_rule(monkeypatch):
+    _, sent = _sent(pcb, "register_pcb_tools", monkeypatch, "pcb_set_rule_properties",
+                    name="NetLength", min_length_mils=100.5, max_length_mils=250)
+    assert sent == [("pcb.set_rule_properties", {
+        "name": "NetLength", "min_length_mils": "100.5", "max_length_mils": "250"})]
+    for limits in ({"min_length_mils": -1},
+                   {"min_length_mils": 300, "max_length_mils": 200}):
+        result, sent = _sent(pcb, "register_pcb_tools", monkeypatch,
+                             "pcb_set_rule_properties", name="NetLength", **limits)
+        assert sent == [] and result["ok"] is False
+    body = _body("PCB.pas", "PCB_SetRuleProperties")
+    assert "RuleLengthIter : IPCB_MaxMinLengthConstraint" in body
+    assert "RuleLengthIter.MinLimit = WantMinLen" in body
+    assert "RuleLengthIter.MaxLimit = WantMaxLen" in body
+
+
 def test_rules_say_when_the_schematic_defines_them():
     body = _body("PCB.pas", "PCB_GetDesignRulesForBoard")
     assert "Try FromSch := Rule.DefinedByLogicalDocument; Except" in body

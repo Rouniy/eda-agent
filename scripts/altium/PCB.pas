@@ -1569,6 +1569,7 @@ End;
 {     SilkToSilkClearance (55):  gap_mils, through each one's SetState_ pair   }
 {   - MaxMinWidth (kind 2):  min_width_mils / max_width_mils / favored_width_mils}
 {   - MaxMinHoleSize (kind 42):  min_hole_size_mils / max_hole_size_mils       }
+{   - MaxMinLength (kind 3):  min_length_mils / max_length_mils               }
 {                                                                               }
 { Empirically determined kind 52 from the runtime rule list; the published     }
 { TRuleKind enum stops at 51 (DifferentialPairsRouting). Kinds 52+ are newer   }
@@ -1591,6 +1592,7 @@ Var
     RuleClearIter : IPCB_ClearanceConstraint;
     RuleWidthIter : IPCB_MaxMinWidthConstraint;
     RuleHoleIter : IPCB_MaxMinHoleSizeConstraint;
+    RuleLengthIter : IPCB_MaxMinLengthConstraint;
     RuleViaIter : IPCB_RoutingViaStyleRule;
     RulePolyConn : IPCB_PolygonConnectStyleRule;
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
@@ -1609,6 +1611,9 @@ Var
     RuleSilkMaskIter : IPCB_SilkToSolderMaskClearanceRule;
     RuleSilkSilkIter : IPCB_SilkToSilkClearanceRule;
     RuleName, V, GapStr, MinWStr, MaxWStr, FavWStr, MinHStr, MaxHStr : String;
+    MinLenStr, MaxLenStr, LenReport, LenProblem : String;
+    WantMinLen, WantMaxLen : TCoord;
+    LenAsked, LenWritten : Integer;
     VMinS, VMaxS, VPrefS, VMinH, VMaxH, VPrefH, ViaReport, ViaDesc, ViaProblem : String;
     NMinS, NMaxS, NPrefS, NMinH, NMaxH, NPrefH : TCoord;
     ViaAsked, ViaWritten : Integer;
@@ -1737,6 +1742,8 @@ Begin
     FavWStr := ExtractJsonValue(Params, 'favored_width_mils');
     MinHStr := ExtractJsonValue(Params, 'min_hole_size_mils');
     MaxHStr := ExtractJsonValue(Params, 'max_hole_size_mils');
+    MinLenStr := ExtractJsonValue(Params, 'min_length_mils');
+    MaxLenStr := ExtractJsonValue(Params, 'max_length_mils');
     VMinS := ExtractJsonValue(Params, 'min_via_size_mils');
     VMaxS := ExtractJsonValue(Params, 'max_via_size_mils');
     VPrefS := ExtractJsonValue(Params, 'preferred_via_size_mils');
@@ -1967,6 +1974,74 @@ Begin
         Finally
             Board.BoardIterator_Destroy(Iter);
         End;
+    End;
+
+    { LENGTH RULE: constrain the complete min/max pair before writing. The  }
+    { typed iterator result is essential for DelphiScript interface access. }
+    LenReport := '';
+    LenAsked := 0;
+    LenWritten := 0;
+    If (MinLenStr <> '') Or (MaxLenStr <> '') Then
+    Begin
+        LenProblem := '';
+        If Kind <> eRule_MaxMinLength Then
+            LenProblem := 'length limits apply only to a Length rule';
+        If ((MinLenStr <> '') And (Not IsFloatStr(MinLenStr))) Or
+           ((MaxLenStr <> '') And (Not IsFloatStr(MaxLenStr))) Then
+            LenProblem := 'length limits must be numbers in mils';
+        If LenProblem = '' Then
+        Begin
+            Iter := Board.BoardIterator_Create;
+            Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Found := False;
+            Try
+                RuleLengthIter := Iter.FirstPCBObject;
+                While (RuleLengthIter <> Nil) And (Not Found) Do
+                Begin
+                    If (RuleLengthIter.RuleKind = eRule_MaxMinLength) And
+                       (RuleLengthIter.Name = RuleName) Then
+                    Begin
+                        Found := True;
+                        WantMinLen := RuleLengthIter.MinLimit;
+                        WantMaxLen := RuleLengthIter.MaxLimit;
+                        If MinLenStr <> '' Then WantMinLen := MilsToCoordF(StrToFloatDef(MinLenStr, 0));
+                        If MaxLenStr <> '' Then WantMaxLen := MilsToCoordF(StrToFloatDef(MaxLenStr, 0));
+                        If (WantMinLen < 0) Or (WantMaxLen < 0) Or
+                           (WantMinLen > WantMaxLen) Then
+                            LenProblem := 'length limits require 0 <= min <= max'
+                        Else
+                        Begin
+                            If MinLenStr <> '' Then
+                            Begin
+                                Inc(LenAsked);
+                                Try RuleLengthIter.MinLimit := WantMinLen; Except End;
+                                If RuleLengthIter.MinLimit = WantMinLen Then Inc(LenWritten);
+                            End;
+                            If MaxLenStr <> '' Then
+                            Begin
+                                Inc(LenAsked);
+                                Try RuleLengthIter.MaxLimit := WantMaxLen; Except End;
+                                If RuleLengthIter.MaxLimit = WantMaxLen Then Inc(LenWritten);
+                            End;
+                            UpdatedCount := UpdatedCount + LenWritten;
+                        End;
+                        LenReport := ',"length_limits_mils":{"min":' +
+                            FloatToJsonStr(CoordToMilsF(RuleLengthIter.MinLimit)) +
+                            ',"max":' + FloatToJsonStr(CoordToMilsF(RuleLengthIter.MaxLimit)) +
+                            '},"length_limits_written":' + IntToStr(LenWritten) +
+                            ',"length_limits_requested":' + IntToStr(LenAsked);
+                    End;
+                    If Not Found Then RuleLengthIter := Iter.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
+            End;
+            If Not Found Then LenProblem := 'Length rule not found by typed iterator';
+        End;
+        If LenProblem <> '' Then
+            LenReport := LenReport + ',"length_note":"' + EscapeJsonString(LenProblem) + '"';
     End;
 
     { THE ROUTING VIA RULE'S SIZES, through a typed local assigned straight }
@@ -2400,7 +2475,7 @@ Begin
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Kind) + ','
         + '"properties_updated":' + IntToStr(UpdatedCount)
-        + GapReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport + '}');
+        + GapReport + LenReport + ViaReport + ConnReport + DiffReport + ImpReport + XReport + '}');
 End;
 
 {..............................................................................}
