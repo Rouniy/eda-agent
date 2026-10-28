@@ -25,6 +25,9 @@ The same dry run prints the correct `StartMCPServer` command, and all
 25 relaunch and restart-queue tests pass. An explicit `--prjscr` still
 selects another project when requested. The running `.156` bridge was
 left in place because this check did not require an actual restart.
+An ordinary `eda-agent relaunch` then pinged the live loop and returned
+"already answers a ping; nothing was started"; ports 14700 and 14701
+remained listening.
 
 ## Generic DbLib field writes, 2026-10-28
 
