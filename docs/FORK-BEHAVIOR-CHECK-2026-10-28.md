@@ -839,3 +839,20 @@ and both active and open-document reads reported `modified=true`.
 removed. Pascal lint/build passed and 33 focused tests passed. This
 repairs the dirty-state signal needed by clients using the fork's
 footprint writers.
+
+## Native keepout restriction persistence
+
+The `vincent-himpe/feature/keepout-restrictions` property path was
+checked on script `.175` in AD26.11.1.5. A disposable free PcbDoc
+received one netless Top Layer track from `(1000,1000)` to
+`(1100,1000)` mil. An initial `generic.query_objects` returned
+`IsKeepout=false` and all five restriction flags `false`.
+`generic.modify_objects` set `IsKeepout=true`,
+`IsKeepoutForCopper=true`, `IsKeepoutForSMDPad=true`, and the Track,
+Via and TH Pad restrictions to `false`; it reported one match and no
+failed or unreadable properties. A read before save returned those
+values and `application.get_active_document` reported `modified=true`.
+After save, close and reopen, another query returned the same six
+flags. The board was closed and its scratch file removed. This proves
+native property read/write persistence on this AD26 build; a polygon
+repour or DRC effect was not tested in this run.
