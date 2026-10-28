@@ -1,5 +1,19 @@
 # Current integration state / agent handoff
 
+## Placed-part pin-map native persistence, 2026-10-28
+
+The `mooreaa` placed-component `FootprintPinMap` port was exercised on
+`RQA1` in a disposable copy of `Multipart_QA.PrjPcb` under Altium
+26.11.1.5, script `.130`. Its old map `(2:2),(1:1)` changed to
+`(2:1),(1:2)`, read back immediately, and persisted after exact-sheet
+`app_save_document`, project close without another save, project reopen,
+and sheet reopen. The source QA sheet stayed at SHA-256
+`25e7c99c611c4ab62a0c3de6c393b8a89c25356b35ef1c255725f679ddc6545b`.
+The same component has one display mode. Writing `DisplayMode=1` returned
+`success=false`, identified `DisplayMode` as failed and left mode 0 and
+the old pin map intact. A successful switch between two available modes
+still needs a separate native case.
+
 ## Polygon point and board-options native reads, 2026-10-28
 
 The earlier upstream `pcb_pours_at` and `pcb_board_options` ports now have

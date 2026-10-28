@@ -1,5 +1,13 @@
 # Upstream and fork sync checkpoint - 2026-10-27
 
+## 2026-10-28 mooreaa placed-part qualification
+
+The `mooreaa` current-footprint pin-map write now has native persistence
+evidence on a disposable two-pin placed component: a swapped mapping
+survived exact save/close/reopen. Its out-of-range display-mode write was
+refused without changing the component. See `CURRENT-STATE.md` for the
+readbacks; a successful two-mode switch remains open.
+
 ## 2026-10-28 polygon-read qualification
 
 The upstream `pcb_pours_at` port passed a populated-board native check:
