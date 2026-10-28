@@ -721,3 +721,14 @@ immediately after `set_active_document`; current main also reads back the
 focused document and refuses placement on a mismatch. The current
 Workspace and live-sheet test slice passed 46/46. This is a stricter
 selection check, not an absent Workspace placement route.
+
+## Full-suite stabilization after zone-origin integration
+
+The complete Python suite on `df28d1d` finished with 9,789 passed,
+165 skipped, one expected failure and one failure. The failure was a
+duplicate mil-to-mm literal introduced in the recent zone-origin layout
+adapter; the repository requires that factor to come from `eda_agent.units`.
+The adapter now uses `MM_PER_MIL`, and the unit-conversion and layout
+slice passed 61 tests with one optional skip. No other full-suite failure
+was reported; a new full run after this single-line repair remains to be
+recorded separately.

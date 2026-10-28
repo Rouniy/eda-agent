@@ -58,6 +58,7 @@ from eda_agent.design.motifs import (
 )
 from eda_agent.design.plan import DesignPlan, Net, Part, Zone
 from eda_agent.design.router import _segment_crosses_rect
+from eda_agent.units import MM_PER_MIL
 from eda_agent.design.sugiyama import has_anchors, sugiyama_layout
 
 
@@ -738,7 +739,7 @@ def _apply_zone_offsets(
             grid_hi = math.floor(hi / SNAP_GRID_MILS) * SNAP_GRID_MILS
             if grid_lo > grid_hi:
                 break
-            wanted = round(mm / 0.0254 / SNAP_GRID_MILS) * SNAP_GRID_MILS
+            wanted = round(mm / MM_PER_MIL / SNAP_GRID_MILS) * SNAP_GRID_MILS
             shifts.append(max(grid_lo, min(grid_hi, wanted)))
         if len(shifts) != 2:
             continue
