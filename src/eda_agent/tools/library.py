@@ -2066,8 +2066,7 @@ def register_library_tools(mcp):
         push_button, and the three-pin nmos, pmos, npn and pnp. Two-pin
         parts have pin 1 on the left and pin 2 on the right; a transistor
         has its gate/base on the left and the other two leaving the top
-        and bottom. Glyph detail is emitted in raw mils, so it keeps its
-        sub-100-mil shape while every pin stays on the 100-mil grid.
+        and bottom. Pins stay on the 100-mil grid.
 
         Args:
             name: Component name (e.g. "R_0402").
@@ -2299,12 +2298,9 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Add a rectangle to the current symbol body.
 
-        ADD THE BODY BEFORE THE PINS. Altium exposes no z-order on
-        schematic primitives, so drawing order is insertion order and
-        there is no send-to-back to correct it afterwards. A rectangle
-        given a `fill_color` is SOLID, and one added after the pins paints
-        over the pin names; the only fix is rebuilding the symbol. Build
-        order is body, then pins, then anything drawn on top.
+        ADD THE BODY BEFORE THE PINS: drawing order is insertion order,
+        and a filled rectangle added after the pins paints over their
+        names (the only fix is rebuilding the symbol).
 
         Args:
             x1: First corner X in mils
@@ -2405,12 +2401,7 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Add MANY lines to the current symbol body in ONE call.
 
-        PREFER THIS over adding lines one at a time (there is no singular
-        variant). A 12-line LED diode glyph drawn line-by-line would be 12
-        LLM turns + 12 IPC round-trips + 12 redraw passes; this tool does
-        it in one turn
-        with a single PreProcess/PostProcess pair and one editor
-        redraw at the end.
+        One Altium transaction for the whole list.
 
         Args:
             lines: list of dicts, each with keys ``x1``, ``y1``,
@@ -2464,8 +2455,7 @@ def register_library_tools(mcp):
         """Create a new PCB footprint in the active library.
 
         A name the library already has (ignoring case) is refused with
-        NAME_EXISTS: a second footprint of the same name would be
-        unreachable, every lookup by name finding the first.
+        NAME_EXISTS.
 
         Args:
             name: Footprint name
@@ -3174,10 +3164,9 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Add many through-stack vias to a footprint in ONE call.
 
-        A via grid under an exposed pad is 9 to 50 vias: one call places
-        them all, settles the footprint once, and replies with what was
-        placed and what was not. Positions are relative to the footprint
-        origin. Same rules as lib_add_footprint_via.
+        One call for a whole via grid; a list of one adds a single via.
+        Positions are relative to the footprint origin; the via spans top
+        to bottom.
 
         Args:
             vias: list of ``{"x": .., "y": ..}``, each with an optional
@@ -3375,10 +3364,9 @@ def register_library_tools(mcp):
         to a local-stack via in the same call. The mask expansions are set
         through the pad cache.
 
-        Tenting only persists while the via's mask expansion is manual
-        (measured on Altium 26.11). A via whose mask follows the design
-        rules is switched to a manual expansion at the value it already
-        has before tenting is written, and ``mask_made_manual`` says so.
+        Tenting holds only on a manual mask expansion, so a rule-driven
+        via is switched to a manual expansion at its current value first
+        (``mask_made_manual``).
 
         Args:
             x, y: The via centre, relative to the footprint origin.
@@ -3507,8 +3495,8 @@ def register_library_tools(mcp):
         footprint_name: str = "",
         units: str = "mil",
     ) -> dict[str, Any]:
-        """Add MANY pads to the current footprint in ONE call. PREFER THIS
-        over looping lib_add_footprint_pad. Coordinates are not snapped.
+        """Add pads to the current footprint in ONE call (a list of one adds
+        a single pad). Coordinates are not snapped.
 
         Args:
             pads: List of pad dicts, each with:
@@ -3640,8 +3628,8 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Add MANY tracks to the current footprint in ONE call.
 
-        PREFER THIS over looping `lib_add_footprint_track`: one call,
-        one undo step and one save for a whole outline.
+        One call, one undo step and one save for a whole outline; a list
+        of one adds a single track.
 
         Args:
             tracks: ``{x1, y1, x2, y2, width (default 10), layer
@@ -3928,10 +3916,7 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Enumerate every footprint in a PcbLib.
 
-        PcbLib counterpart to ``lib_get_components`` for SchLibs. Walks
-        the PCB library with ``IPCB_Library.LibraryIterator_Create``
-        and returns one entry per footprint with its name and
-        description.
+        The PcbLib counterpart of ``lib_get_components``.
 
         Args:
             library_path: Optional .PcbLib path to focus first.
@@ -4289,16 +4274,10 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Convert every TrueType ``.Designator`` in a PcbLib to a stroke font.
 
-        A TrueType PCB text will not persist a position change made through
-        ``XLocation``: the write reads back changed, then Altium recomputes the
-        position from the TrueType layout on reload and it reverts. That is why a
-        handful of designators per library refuse to centre. ``Bold``/``Italic``
-        are TrueType-only attributes (a stroke text cannot be bold), so a bold or
-        italic designator is the reliable TrueType tell.
-
-        This clears ``UseTTFonts``, ``Bold`` and ``Italic`` on each such
-        designator, reads back to confirm, saves, and reloads. Afterwards those
-        designators are stroke and ``lib_fix_designators`` can centre them.
+        A TrueType designator's position reverts on reload, so it cannot be
+        centred. This clears ``UseTTFonts``, ``Bold`` and ``Italic``, reads
+        back, saves and reloads; ``lib_fix_designators`` can then centre
+        them.
 
         Returns ``{library_path, designators, converted, names, saved}``.
         """
@@ -4327,11 +4306,8 @@ def register_library_tools(mcp):
     async def lib_reload_library(library_path: str) -> dict[str, Any]:
         """Close and reopen a PcbLib so Altium rebuilds its caches from disk.
 
-        ``IPCB_Text.BoundingRectangle`` is populated when the document loads and
-        is NOT refreshed when a text moves or is resized, not even by
-        ``GraphicallyInvalidate``. Anything that reads a text's extent after
-        writing to it therefore gets the OLD box. Reload between a write and the
-        next read.
+        A text's extent is not refreshed after it moves or is resized until
+        the library is reloaded, so reload between a write and the next read.
 
         SAVE FIRST: this does not save, and closing a dirty document loses the
         edits or raises a prompt. ``lib_fix_designators`` already does this.
@@ -4350,9 +4326,7 @@ def register_library_tools(mcp):
 
         Read-only. Returns the footprint origin and bounding rectangle, the pad
         extents, and the ``.Designator`` anchor, bounding rectangle, size and
-        width: all in native TCoord. Use it to establish what
-        ``IPCB_Text.BoundingRectangle`` actually measures before trusting it to
-        centre anything.
+        width, in Altium's internal units.
 
         Returns ``{footprint, fp_x, fp_y, fp_rect, pad_count, pad_rect,
         desig_anchor, desig_rect, desig_size, desig_width, desig_text}``.
@@ -4583,23 +4557,9 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Set one footprint's Height directly, up or down.
 
-        The sweep can only derive a height from a 3D body, which leaves
-        two cases it cannot serve: a part with no model, and a part
-        whose model is wrong. There was no setter at all before this, so
-        a footprint carrying an absurd height could be read and not
-        corrected.
-
-        WHY TOO TALL IS WORSE THAN TOO SHORT. Footprint.Height drives
-        placement-collision DRC. A footprint claiming 50mm when the part
-        is 3mm fails against everything near it and blocks placements
-        that are fine. A too-low height only fails to catch a real
-        collision. The first floods the report and gets the rule
-        switched off; the second is quiet.
-
-        ZERO IS ACCEPTED AND IS NOT NEUTRAL. It disables the rule for
-        that footprint rather than relaxing it, so nothing is ever
-        flagged against it however tall the real part is. The reply says
-        so when zero is written.
+        For a part with no 3D model, or a wrong one. The height drives the
+        height-clearance DRC: too tall flags parts that are fine, and ZERO
+        DISABLES the check for that footprint (the reply says so).
 
         Args:
             height_mm: the height in MILLIMETRES, not mils. Must be
@@ -4644,10 +4604,8 @@ def register_library_tools(mcp):
             component_name: Name of the schematic component, made current
                 first. Empty uses the current component.
             footprint_name: Name of the footprint to link
-            footprint_library: NOT APPLIED (kept for old callers). The
-                footprint is bound by name with an empty location, since
-                a .PcbLib path there wedges AD26: install the library and
-                keep footprint names unambiguous.
+            footprint_library: Not applied: the footprint is bound by
+                name, so install its library and keep names unambiguous.
             replace: remove existing footprint models before adding (default True)
 
         Returns:
@@ -4683,8 +4641,7 @@ def register_library_tools(mcp):
         component body (drives the 3D view and height DRC).
 
         The footprint's existing 3D bodies are removed first
-        (``replace_existing``, reported as ``replaced_bodies``); a link
-        used to add the new body beside the old one.
+        (``replace_existing``, reported as ``replaced_bodies``).
 
         Args:
             component_name: Footprint name (empty: the current footprint).
@@ -4694,9 +4651,7 @@ def register_library_tools(mcp):
             offset_y: Y offset in mils.
             offset_z: Standoff height in mils (lifts the body).
             rotation_x, rotation_y, rotation_z: degrees, set on the
-                model before it is bound to the body (the body itself has
-                no rotation a script can set; assigning one halted the
-                bridge). A script cannot read a model's rotation back, so
+                model before it is bound to the body. It cannot be read back, so
                 ``applied.rotation`` says it was written, not checked.
             replace_existing: remove the footprint's 3D bodies before
                 linking (default True); False adds this one beside them,
@@ -4738,9 +4693,7 @@ def register_library_tools(mcp):
 
         Enumerates every footprint in the PcbLib, scans `model_dir` for
         .step/.stp files, and links each footprint whose name matches a model
-        file's stem (case-insensitive). Builds on lib_link_3d_model so the
-        same caveat applies: offsets/rotations are not set, adjust in the
-        library if a model needs repositioning.
+        file's stem (case-insensitive). No offset or rotation is set.
 
         Args:
             model_dir: Folder containing .step/.stp model files.
@@ -6004,12 +5957,10 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Reassign pins of a multi-part symbol to a sub-part, or to Part Zero.
 
-        ``owner_part_id=0`` is Altium's Part Zero: the pin belongs to
-        the package as a whole instead of to one sub-part. That is the
-        documented placement for a multi-part component's supply pins.
-        A sub-part-owned supply pin is redrawn at every instance origin,
-        and where the gate pitch is only twice the pin length those
-        copies land on each other and the netlist merges the two rails.
+        ``owner_part_id=0`` is Part Zero: the pin belongs to the package,
+        not one sub-part, which is where supply pins go. A supply pin
+        owned by a sub-part is drawn at every instance and can short two
+        rails where instances sit close.
 
         Changes the library only. Placed instances pick it up on the
         next Update From Libraries, which produces an ECO.
@@ -6193,13 +6144,8 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Export a PcbLib footprint to a KiCad ``.kicad_mod`` file.
 
-        Reads the footprint's pads from the active (or named) PCB library and
-        writes a KiCad 6+ S-expression footprint: one pad each
-        (designator -> number, position, size, shape, drill, layer set).
-        Through-hole pads (hole > 0) get a drill and the all-copper layer set;
-        SMD pads get the side's Cu/Paste/Mask set. Altium mils convert to mm
-        and the y axis is flipped (Altium y-up -> KiCad y-down). This is the
-        footprint counterpart to ``lib_export_kicad_symbol``.
+        A KiCad 6+ footprint of the pads (number, position, size, shape,
+        drill, layer set), in mm with the y axis flipped.
 
         Args:
             footprint_name: Footprint to export. If empty, exports the
@@ -6327,10 +6273,8 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Copy one footprint (all pads/primitives) into a PcbLib, optionally renaming.
 
-        Footprint analog of lib_copy_component: full-copies the footprint with
-        no delete. source_library defaults to the focused PcbLib; dest_library
-        defaults to the source. A same-library copy requires a different
-        new_name. Errors if new_name already exists in dest unless overwrite.
+        A same-library copy needs a different new_name; an existing
+        new_name in dest is refused unless overwrite.
 
         Args:
             source_name: the footprint to copy.
@@ -6592,10 +6536,8 @@ def register_library_tools(mcp):
     async def lib_install_library(library_path: str) -> dict[str, Any]:
         """Register a library with the environment's Available Libraries.
 
-        Installs an .IntLib / .SchLib / .PcbLib so its parts resolve by
-        lib-ref across the workspace (the step after authoring a library).
-        A .PvLib (pad/via library) is installed into the PCB editor's own
-        list of pad/via libraries instead.
+        An .IntLib / .SchLib / .PcbLib, so its parts resolve by name. A
+        .PvLib goes into the PCB editor's pad/via libraries instead.
 
         Args:
             library_path: absolute path to the library file.
@@ -6614,9 +6556,8 @@ def register_library_tools(mcp):
 
         Altium writes the Workspace name onto every managed part it
         places. This reads it from the active sheet, then from the other
-        sheets that are already open; it never opens one. A Workspace has
-        been seen under two names on one design, so a part addressed by
-        kind 4 (VaultName) is preferred and ``other_kind`` says when only
+        sheets that are already open; it never opens one. A part addressed
+        by kind 4 (VaultName) is preferred; ``other_kind`` says when only
         another kind was found.
 
         Returns:
@@ -6650,10 +6591,8 @@ def register_library_tools(mcp):
         parts sharing a name are both shown rather than the first one
         being picked.
 
-        It does not search the whole Workspace: that needs Altium's EDMS
-        interfaces, whose methods no reference documents, and a call this
-        Altium lacks would stop the bridge. A part not yet used in the
-        design has to be looked up in Altium's Components panel.
+        It does not search the whole Workspace: a part not yet used in
+        the design has to be looked up in Altium's Components panel.
 
         Args:
             name: The comment, library reference or Design Item ID.
@@ -6681,8 +6620,8 @@ def register_library_tools(mcp):
         its identity, and throws it away again; nothing reaches a sheet.
         The kind asked for is tried first, then the others. The library
         manager's lookups (library path, lifecycle state, revisions,
-        placement parameters) are reported alongside, as they come back.
-        A part number is not looked up here, so bring the Design Item ID.
+        placement parameters) are reported alongside. Give the Design
+        Item ID, not a part number.
 
         Args:
             design_item_id: The component's Design Item ID.
@@ -6738,11 +6677,8 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Delete one symbol from a schematic library (.SchLib).
 
-        Removes the component whose LibReference is ``component_name`` and
-        marks the library dirty for deferred save (flushed by app_save_all).
-        Deletes a single named part; if the name is not found the call
-        errors (COMPONENT_NOT_FOUND) rather than silently doing nothing.
-        There is no wildcard mass-delete.
+        Removes one named component; save with app_save_all. An unknown
+        name is COMPONENT_NOT_FOUND.
 
         Args:
             component_name: the component's LibReference (its library name).
@@ -6827,9 +6763,9 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Delete primitives inside ONE footprint of a PCB library.
 
-        The only library-scoped primitive delete: ``obj_delete`` and
-        ``pcb_delete_object`` act on a BOARD, and aimed at a library they
-        can delete from some other open PcbDoc. The library, footprint
+        The library-scoped delete: ``obj_delete`` and ``pcb_delete_object``
+        act on a BOARD, and aimed at a library can delete from another
+        open PcbDoc. The library, footprint
         and type or layer must all match. Pads are kept unless
         ``include_pads``. A footprint on screen is edited with another
         made current, then shown again (``was_current``).
@@ -6909,7 +6845,7 @@ def register_library_tools(mcp):
                 same names as ``layer``. A body already on one of them is
                 counted as already on the layer. Every other body moves.
                 An unknown name refuses the whole call, and nothing moves.
-                Empty keeps the old behaviour: every body moves.
+                Empty: every body moves.
 
         Does NOT save the library. A mechanical layer the library has not
         enabled is accepted, with ``layer_enabled`` false and a
@@ -7085,8 +7021,7 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Check a PCB library's footprints, as Altium's Component Rule Check.
 
-        Altium runs that check only from its dialog, so the same checks
-        run here on each footprint: duplicate_pads (one pad name used
+        The same checks, run here without the dialog: duplicate_pads (one pad name used
         twice), duplicate_primitives (the same object drawn twice on one
         layer), missing_pad_names, mirrored_component (primitives on the
         bottom side only), offset_reference (the origin outside the
@@ -7288,8 +7223,7 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Write a library report: every symbol or footprint on one page.
 
-        Altium's Library Report runs only from its dialog, so this reads
-        the library through Altium and writes one HTML page: for a
+        One HTML page, read through Altium without its dialog: for a
         .SchLib each symbol's description, designator, parts, pins,
         models and parameters; for a .PcbLib each footprint's
         description and pads. One read per entry, so a large library
@@ -7416,12 +7350,9 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Write the STEP model of a footprint's 3D body to a file, through Altium.
 
-        Altium re-encodes the model on the way out (measured on AD 26.11:
-        a 268 KB embedded original came out as a 117 KB Open CASCADE
-        file), so this gives the GEOMETRY, not the vendor's file. Use
-        lib_extract_embedded_models for the original bytes; use this one
-        when the library is not saved yet, or the model is linked rather
-        than embedded.
+        Altium re-encodes the model, so this gives the GEOMETRY, not the
+        vendor's file: lib_extract_embedded_models gives the original
+        bytes. Use this one for an unsaved library or a linked model.
 
         Args:
             footprint_name: The footprint whose model to write.
@@ -7543,14 +7474,8 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Delete one footprint from a PCB library (.PcbLib).
 
-        Finds the footprint by name, removes and deregisters it, and MARKS
-        the .PcbLib dirty. It does NOT write to disk: this bridge defers
-        saves, and `app_save_all` (or `proj_save` on the LibPkg) is what
-        flushes them. Reported: this said it saved, the footprint was still
-        in the file and the timestamp unchanged until an explicit save.
-
-        Deletes a single named footprint; if the name is not found the call
-        errors (FOOTPRINT_NOT_FOUND). No wildcard mass-delete.
+        Marks the library changed; does NOT write to disk: save with
+        `app_save_all`. An unknown name is FOOTPRINT_NOT_FOUND.
 
         Args:
             footprint_name: the footprint's name in the library.
@@ -7715,12 +7640,9 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Read-only dump of a PcbLib footprint's name-bearing fields.
 
-        Use this to locate where an old name persists after a rename. On a
-        PcbLib footprint, Name and Pattern are the SAME property (renaming Name
-        writes both), and the footprint's only metadata is Name, Description,
-        Height. So a leftover old name lives in a child primitive: this returns
-        every text primitive's object_id and text, plus name/description/
-        height_mils/primitive_count. Nothing is written.
+        Finds where an old name persists after a rename: every text
+        primitive with its object_id, plus name, description, height and
+        primitive count.
 
         Args:
             footprint_name: the footprint name.
@@ -7853,11 +7775,9 @@ def register_library_tools(mcp):
             mask_from_hole_edge: Measure the mask from the drill edge,
                 not the copper (mechanical holes and slots).
             paste_top_enabled: Switch the top paste opening on or off
-                (not its size). Altium 26.11 keeps this only while the
-                paste expansion is manual, so a rule-driven one is made
-                manual at its current value first, and ``note`` says so.
-                Before Altium Designer 25 the flag does not exist: the
-                write is refused per pad and reads give null.
+                (not its size). It holds only on a manual paste expansion,
+                so a rule-driven one is made manual first (``note``).
+                Before Altium Designer 25 the flag does not exist.
 
         Returns:
             ``pads_changed``, ``pads_with_a_failed_write``, ``note``,
@@ -8401,10 +8321,6 @@ def register_library_tools(mcp):
         (the name the library's stack gives it, plus ``layer_id``), in mm
         from the footprint's origin: the frame the ``lib_add_footprint_*``
         writers take. Pads are in ``lib_get_pad_geometry``. Read-only.
-        Each primitive is listed once. Altium's own iterator yields one
-        just added to the footprint on screen twice until that footprint
-        is shown again; the footprint writers here show it again after
-        each write, and this read skips a repeat either way.
 
         Args:
             footprint_name: The footprint name in the library.
@@ -8957,13 +8873,10 @@ def register_library_tools(mcp):
     async def lib_easyeda_search(query: str, limit: int = 20) -> dict[str, Any]:
         """Search LCSC / EasyEDA for parts by MPN or description.
 
-        EXPECT THIS TO FAIL, and not for lack of credentials: the
-        service's search routes no longer answer (checked live), and no
-        login would restore them. Search LCSC in a browser instead and
-        import by id, which still works:
-        lib_easyeda_import(lcsc_id="C1234", ...). When it does answer it
-        gives candidates only. HTTPS with a host allowlist;
-        EASYEDA_API_BASE overrides the endpoint.
+        EXPECT THIS TO FAIL: the service's search routes do not answer.
+        Search LCSC in a browser and import by id instead
+        (lib_easyeda_import(lcsc_id="C1234", ...)). EASYEDA_API_BASE
+        overrides the endpoint.
 
         Args:
             query: MPN, keyword, or description fragment.
@@ -9264,12 +9177,10 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Unpin a SchLib's symbols from their source-library provenance.
 
-        Library-side sibling of ``sch_clear_source_library``. Symbols
-        copied from another library keep SourceLibraryName,
-        TargetFileName and DesignItemId pointing at it, and placements
-        then land in <Not Found>. This clears the first, sets the second
-        to '*' and the third to LibReference: the provenance part of
-        lib_normalize_implementations, alone. Save with app_save_all.
+        Symbols copied from another library keep pointing at it, and
+        placements land in <Not Found>. This clears SourceLibraryName,
+        sets TargetFileName to '*' and DesignItemId to LibReference.
+        Save with app_save_all.
 
         Args:
             library_path: absolute .SchLib path; empty = focused library.
@@ -9361,14 +9272,10 @@ def register_library_tools(mcp):
     async def lib_inspect_cse_zip(zip_path: str) -> dict[str, Any]:
         """Identify the library members of a Component Search Engine zip.
 
-        Stage 5 of the autonomous flow (library readiness,
-        reference/autonomy-roadmap.md): a SamacSys / Component Search
-        Engine download carries the symbol, footprint and 3D model for an
-        MPN in one zip. This tool reads the archive WITHOUT extracting
-        anything: which member is the .SchLib, which the .PcbLib, which
-        the STEP model, the best-effort MPN, and any members attempting
-        path traversal (``suspicious``). Inspect first, then stage the
-        files with ``lib_extract_cse_zip``. Pure Python, no Altium.
+        Reads a SamacSys / Component Search Engine zip WITHOUT extracting:
+        which member is the .SchLib, the .PcbLib and the STEP model, the
+        MPN, and any member attempting path traversal (``suspicious``).
+        Then stage the files with ``lib_extract_cse_zip``. Offline.
 
         Args:
             zip_path: Absolute path to the downloaded zip.
@@ -9388,16 +9295,11 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Extract a Component Search Engine zip and build its install plan.
 
-        Stage 5 of the autonomous flow (library readiness,
-        reference/autonomy-roadmap.md): stages the recognized members
-        (.SchLib / .PcbLib / STEP) flattened into ``dest_dir`` and returns
-        an ordered ``install_plan`` whose steps are exact
-        ``lib_install_library`` / ``lib_link_footprint`` /
-        ``lib_link_3d_model`` parameter dicts -- dispatch them in order to
-        make the part placeable. Any archive member with an absolute path,
-        drive letter, or ``..`` segment rejects the WHOLE archive before
-        anything is written. Extraction is pure Python; only the install
-        plan touches Altium when dispatched.
+        Writes the .SchLib, .PcbLib and STEP into ``dest_dir`` and returns
+        an ordered ``install_plan`` of ``lib_install_library`` /
+        ``lib_link_footprint`` / ``lib_link_3d_model`` calls; run them in
+        order. A member with an absolute path, drive letter or ``..``
+        rejects the WHOLE archive before anything is written.
 
         Args:
             zip_path: Absolute path to the downloaded zip.
