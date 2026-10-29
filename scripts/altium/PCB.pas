@@ -25544,6 +25544,37 @@ Begin
     Result := Entry;
 End;
 
+{ The solder mask of one pad or via: tenting per side, whether the        }
+{ expansion runs from the hole edge, and the expansion when it is set on  }
+{ the object by hand (null when the board's mask rule decides it). The    }
+{ sliver check needs every opening the mask will have.                    }
+Function LmMaskJson(Obj : IPCB_Primitive) : String;
+Var
+    Cache : TPadCache;
+    TentTop, TentBot, FromHole : Boolean;
+    Manual : String;
+    Bottom : Integer;
+Begin
+    TentTop := False;
+    TentBot := False;
+    FromHole := False;
+    Try TentTop := Obj.GetState_IsTenting_Top; Except TentTop := False; End;
+    Try TentBot := Obj.GetState_IsTenting_Bottom; Except TentBot := False; End;
+    Try FromHole := Obj.SolderMaskExpansionFromHoleEdge; Except FromHole := False; End;
+    Manual := 'null';
+    Try
+        Cache := Obj.GetState_Cache;
+        If Cache.SolderMaskExpansionValid = eCacheManual Then
+        Begin
+            Bottom := Cache.SolderMaskExpansion;
+            If Cache.UseSeparateExpansions Then Bottom := Cache.SolderMaskBottomExpansion;
+            Manual := '[' + IntToStr(Cache.SolderMaskExpansion) + ',' + IntToStr(Bottom) + ']';
+        End;
+    Except Manual := 'null'; End;
+    Result := ',"tent":[' + BoolToJsonStr(TentTop) + ',' + BoolToJsonStr(TentBot)
+        + '],"from_hole":' + BoolToJsonStr(FromHole) + ',"mask":' + Manual;
+End;
+
 Function LmPadsSection(Board : IPCB_Board; Offset : Integer; Limit : Integer) : String;
 Var
     Iter : IPCB_BoardIterator;
@@ -25654,7 +25685,7 @@ Begin
                         + ',"hole_type":"' + HoleStr
                         + '","hole_width":' + IntToStr(Pad.HoleWidth)
                         + ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation)
-                        + ',"plated":' + BoolToJsonStr(Pad.Plated) + '}';
+                        + ',"plated":' + BoolToJsonStr(Pad.Plated) + LmMaskJson(Pad) + '}';
                     Inc(Emitted);
                 End;
                 Inc(Idx);
@@ -25818,7 +25849,7 @@ Begin
                         + ',' + IntToStr(Via.Size) + ',' + IntToStr(Via.HoleSize) + ']'
                         + ',"low":"' + GetLayerString(Via.LowLayer)
                         + '","high":"' + GetLayerString(Via.HighLayer)
-                        + '","sizes":[' + Sizes + ']' + Common;
+                        + '","sizes":[' + Sizes + ']' + LmMaskJson(Via) + Common;
                 End;
                 If Obj.ObjectId = eRegionObject Then
                 Begin

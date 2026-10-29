@@ -1,5 +1,5 @@
 
-# Release verification: 2026.10.29.186
+# Release verification: 2026.10.29.187
 
 Script `.186` merges `MOREmbedded/main` `5933c00` (including upstream
 `75df990`) into the Rouniy main line. The 12-file Pascal build has zero
@@ -224,7 +224,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.29.186` from `app_ping`.
+Expect `altium_script_version` = `2026.10.29.187` from `app_ping`.
 
 ## 2026.10.28.156 - Previous native checkpoint
 
@@ -1786,6 +1786,7 @@ undeclared one stops the polling loop:
 | `Pad.IsPadRemoved(Layer)` | pads section |
 | `Via.IntersectLayer(Layer)`, `Via.SizeOnLayer(Layer)` | copper section |
 | `Obj.Polygon`, and that polygon's `Name` and `Net` | copper section |
+| `GetState_IsTenting_Top`, `GetState_IsTenting_Bottom`, `SolderMaskExpansionFromHoleEdge` and `GetState_Cache` on a pad (read elsewhere only on vias) | pads section, `LmMaskJson` |
 
 Open any board and run each section in turn, the riskiest first:
 
@@ -1818,6 +1819,12 @@ that they arrived:
   lists every signal layer it spans, and on a removed layer the size is
   the hole size. A through-hole pad's copper entry for such a layer ends
   in `true`.
+* Every pad and via carries `tent` (top, bottom), `from_hole` and
+  `mask`. A via shown tented in its properties reads `tent` true on
+  that side; a pad with a hand-set solder mask expansion reads it in
+  `mask` (internal units, top then bottom), and `mask` is null on one
+  that follows the mask rule. The sliver check counts on these: a board
+  read by an older script says mask slivers were not checked.
 * `pcb.get_layout_model section=copper limit=50 trace=true` answers as
   without `trace`, and `workspace/layout_trace.log` gains a line
   `copper offset=0 limit=50`, then per object its index, `kind=`, and a
@@ -3798,8 +3805,8 @@ and native `pcb.stack_edit` path.
 Not checked live: `sch_tidy_port_references` moving a reference (the
 scratch project had cross-references off).
 
-Run live on AD 26.11.1.5 on scratch copies. Run again with script
-2026.10.28.56 after the commands were rewritten: on StackTest.PcbDoc the
+Run live on AD 26.11.1.5 on scratch copies. Run again with the 28 October
+script after the commands were rewritten: on StackTest.PcbDoc the
 5-copper stack went to a 4-copper one (an empty layer dropped, a
 dielectric trimmed, every layer renamed) and back (a signal layer added
 between two planes, which kept both), each read back with no mismatch
@@ -3854,7 +3861,7 @@ the ECO focus check (it raises Altium's ECO dialog), declared class
 members (the test directive did not join a net).
 
 Run live on AD 26.11.1.5 on scratch copies.
-Run again with script 2026.10.28.56 after the commands were rewritten:
+Run again with the 28 October script after the commands were rewritten:
 the RoundLED GND pour read 12 corners and 6 arcs, closed, with a wrong
 name and a bad index refused; a line read 2 vertices, both ends and
 `VertexLast`; the sheet symbol and its two entries sat where item 4
@@ -3904,6 +3911,33 @@ and the naming policy on a real company policy.
 Run on AD 26.11.1.5 on scratch copies.
 
 ---
+
+## 59. The Saving switch on the bridge dashboard
+
+The Saving button in the dashboard's button grid, beside Detach, turns
+every save the bridge makes on or off. It starts as "Saving on"; off, it reads
+"Saving OFF" and turns amber. The
+state is kept in `saving.json` in the workspace, so a restart of the
+bridge or of Altium keeps it, and `app_ping` reports `saving_allowed`.
+
+Off, the commands whose job is writing a file are refused with
+`SAVING_OFF` (save, save all, project save, create document, add sheet,
+make library, save copy as, simulation settings save, project close with
+save, a Save menu item or process). A command that saves on the side runs,
+writes nothing, and its reply lists `not_saved`. A library reload that
+would drop unsaved edits is skipped. The Python side refuses its own writes
+(project file cleanup, simulation settings, checkpoint restore) and the
+interface routes to File > Save, a Save button and Ctrl+S.
+
+Run live on AD 26.11.1.5 with the 28 October script on the scratch
+Live1023 project: the button wrote `{"saving":"off"}` and turned amber;
+`app_save_document`, `app_save_all`, `proj_save` and a save-first
+`proj_close` were refused, `app_send_keys("ctrl+s")` and
+`app_click_menu("File|Save")` were refused before sending anything;
+`proj_add_document` and `proj_remove_document` ran and listed
+`Live1023.PrjPcb` as not saved; a detach after a net label wrote nothing;
+no file in the folder changed. After a bridge restart the button still
+read off. Switched back on, `app_save_document` wrote the scratch sheet.
 
 ## Still open, and not blocking
 

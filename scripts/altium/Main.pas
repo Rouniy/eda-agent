@@ -14,7 +14,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.29.186';
+    SCRIPT_VERSION = '2026.10.29.187';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -52,6 +52,7 @@ Const
     SESSION_SLOT_MS = 30000;
 
     CONFIG_FILE = 'mcp_config.json';
+    SAVING_FILE = 'saving.json';
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
     SCHM_PrimitiveRegistration = 1;
@@ -118,6 +119,18 @@ Var
       A free document is reached once per project walk, and the second
       visit would report a library it had just written as left alone. }
     SavePassSeen : String;
+    { 'edited' while application.stop_server saves: only documents the
+      editor marks modified or a tool recorded are written, and
+      CleanLeftAlone counts the rest. '' (as at startup) is the forced
+      flush app_save_all relies on. See SaveOneDocByDocRef. }
+    SaveScope : String;
+    CleanLeftAlone : Integer;
+    { The dashboard's Saving switch. False (saving allowed) unless the     }
+    { switch was turned off; kept in SAVING_FILE so it outlasts a restart. }
+    { SavesHeld and HeldFiles count what the current command did not write. }
+    SavingOff : Boolean;
+    SavesHeld : Integer;
+    HeldFiles : String;
     LastCompiledProject : IProject;
     { How the last SmartCompile call for the current request was satisfied:
       'delegated' (shared dispatcher already compiled this selection),
@@ -864,6 +877,25 @@ Begin
         Why := 'The only open board, ' + OnePath + ', could not be opened.';
 End;
 
+{ SaveHeldBack - True when the dashboard's Saving switch is off, in which   }
+{ case the caller must not write Path. Every save the bridge makes asks    }
+{ this first. Each one held back is counted for the reply, so a command    }
+{ that edited something says its edit is still only in Altium.             }
+Function SaveHeldBack(Path : String) : Boolean;
+Var
+    Name : String;
+Begin
+    Result := SavingOff;
+    If Not Result Then Exit;
+    SavesHeld := SavesHeld + 1;
+    Name := ExtractFileName(Path);
+    If (Name <> '') And (Pos('|' + Name + '|', '|' + HeldFiles + '|') = 0) Then
+    Begin
+        If HeldFiles <> '' Then HeldFiles := HeldFiles + '|';
+        HeldFiles := HeldFiles + Name;
+    End;
+End;
+
 { Save every modified IServerDocument the workspace knows about, both     }
 { project-attached docs and free-floating docs (libraries opened           }
 { standalone, scratch docs). Free docs live inside the synthetic           }
@@ -913,6 +945,28 @@ Begin
             Exit;
         End;
 
+        { STOPPING THE BRIDGE WRITES ONLY WHAT WAS EDITED. The forced flush   }
+        { below rewrote every clean schematic open in Altium on each detach. }
+        { An edit the Modified flag missed is not lost by skipping it: the   }
+        { editor still holds it and asks on close.                           }
+        If SaveScope = 'edited' Then
+        Begin
+            If (Not ServerDoc.Modified) And (Not DocWasEdited(Path)) Then
+            Begin
+                CleanLeftAlone := CleanLeftAlone + 1;
+                Exit;
+            End;
+        End;
+
+        { Saving switched off: nothing is written, and only a document with }
+        { something to write is reported as held back.                      }
+        If SavingOff Then
+        Begin
+            If ServerDoc.Modified Or DocWasEdited(Path) Then
+                If SaveHeldBack(Path) Then Exit;
+            Exit;
+        End;
+
         { Unconditional flush, Modified flag does not always propagate from   }
         { ProcessControl.PostProcess to the IServerDocument layer in newer    }
         { Altium builds, so checking it can leave docs unsaved. DoFileSave    }
@@ -947,6 +1001,7 @@ Begin
     Path := '';
     Try Path := Project.DM_ProjectFullPath; Except End;
     If (Path = '') Or (Not FileExists(Path)) Then Exit;
+    If SaveHeldBack(Path) Then Exit;
     ProjDoc := Nil;
     Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
     If ProjDoc = Nil Then Exit;
@@ -972,7 +1027,10 @@ Begin
     Try
         ProjectServerDoc := Client.GetDocumentByPath(Project.DM_ProjectFullPath);
         If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
-            Try ProjectServerDoc.DoFileSave(''); Except End;
+            If Not SaveHeldBack(Project.DM_ProjectFullPath) Then
+            Begin
+                Try ProjectServerDoc.DoFileSave(''); Except End;
+            End;
     Except End;
 End;
 
@@ -2014,6 +2072,36 @@ Begin
         WorkspaceDir := ResolveDefaultWorkspaceDir(0);
     If Not DirectoryExists(WorkspaceDir) Then
         ForceDirectories(WorkspaceDir);
+End;
+
+{ The command refused because saving is switched off. What says why the  }
+{ command cannot run without writing a file.                            }
+Function SavingOffError(RequestId : String; What : String) : String;
+Begin
+    Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+        What + ' Saving is switched off on the bridge dashboard, so nothing '
+        + 'was written. Turn the Saving switch back on there to save.');
+End;
+
+{ The Saving switch outlasts a restart of the bridge and of Altium: it is  }
+{ read from SAVING_FILE in the workspace when the pump starts. No file, or }
+{ one that does not say off, means saving is allowed.                     }
+Procedure LoadSavingSwitch(Dummy : Integer);
+Var
+    Content : String;
+Begin
+    SavingOff := False;
+    If Not FileExists(WorkspaceDir + SAVING_FILE) Then Exit;
+    Content := ReadFileContent(WorkspaceDir + SAVING_FILE);
+    SavingOff := LowerCase(ExtractJsonValue(Content, 'saving')) = 'off';
+End;
+
+Procedure StoreSavingSwitch(Dummy : Integer);
+Begin
+    If SavingOff Then
+        WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"off"}')
+    Else
+        WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"on"}');
 End;
 
 {..............................................................................}

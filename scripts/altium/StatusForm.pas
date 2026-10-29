@@ -9,7 +9,9 @@
 {   - Inline last-error display                                                }
 {   - Prominent "Open Dashboard" button (writes a sentinel the Python bridge  }
 {     watches and opens the user's default browser at the web dashboard)      }
-{   - Pause / Cancel-current / Renew / Clear / Detach action row              }
+{   - Pause / Cancel-current / Renew / Clear / Detach action row, and the   }
+{     Saving switch, which stops every save the bridge makes (kept across   }
+{     restarts in saving.json in the workspace)                             }
 {   - Filter box + Hide-pings / Only->100ms / Always-on-top toggles           }
 {   - Log tab with newest-on-top entries, request-ID column, inline error    }
 {     detail rows, free-text filter                                            }
@@ -78,21 +80,24 @@ Var
     ProbeStartMs     : Cardinal;
 
 
-{ Static UI constants. Modern dark palette intended for the StatusForm.   }
+{ Static UI constants: Altium's dark theme, read off AD 26.11's own      }
+{ panels, status bar and buttons, so the form looks like one of them.    }
 { DelphiScript color literals are BGR-ordered Cardinals (8 hex digits      }
 { after the $); a malformed 7-digit literal bombs the parser without an   }
 { obvious error location, so always double-count.                          }
 Const
-    COLOR_BG_BASE       = $001A1B1E;
-    COLOR_BG_CARD       = $0025262B;
-    COLOR_BG_ELEVATED   = $002E2F35;
-    COLOR_ACCENT_BLUE   = $00FF9E4A;   { #4A9EFF in BGR }
+    COLOR_BG_BASE       = $00353535;   { panel body }
+    COLOR_BG_CARD       = $00404040;   { title strip, tab strip, status bar }
+    COLOR_BG_ELEVATED   = $00545454;   { button }
+    COLOR_BG_HOVER      = $00646464;   { button under the mouse }
+    COLOR_BG_LOG        = $002B2B2B;   { log and input fields }
+    COLOR_ACCENT_BLUE   = $00FFB363;   { #63B3FF in BGR }
     COLOR_ACCENT_AMBER  = $00589EE0;   { #E09E58 in BGR }
     COLOR_ACCENT_RED    = $005C5CFF;   { #FF5C5C in BGR }
     COLOR_ACCENT_GREEN  = $006BC464;   { #64C46B in BGR }
-    COLOR_TEXT_BODY     = $00E1E2E6;
-    COLOR_TEXT_MUTED    = $008B8E96;
-    COLOR_TEXT_FAINT    = $00696C73;
+    COLOR_TEXT_BODY     = $00E5E5E5;
+    COLOR_TEXT_MUTED    = $00A0A0A0;
+    COLOR_TEXT_FAINT    = $00808080;
 
     MAX_LOG_LINES       = 2000;
     SPINNER_FRAMES      = 4;
@@ -184,6 +189,18 @@ Begin
     RefreshSelectedLabel(0);
 End;
 
+{ The notice line under the figures takes no room until there is something }
+{ to say: the last error, or why Dashboard did nothing.                     }
+Procedure ShowNotice(Text : String);
+Begin
+    Try lbl_LastErr.Caption := Text; Except End;
+    Try
+        If Text = '' Then pnl_ErrBar.Height := 0
+        Else pnl_ErrBar.Height := 16;
+    Except End;
+End;
+
+
 Function PadLeft(S : String; Width : Integer) : String;
 Begin
     Result := S;
@@ -218,20 +235,6 @@ Begin
     Else
         Result := '\';
     End;
-End;
-
-
-{ Hidden from the Run Script dialog by its argument; Dummy is never
-  read. See KnownPCBPropertyList in PCBGeneric for why. }
-Function FilledDot(Dummy : Integer) : String;
-Begin
-    Result := '[x]';
-End;
-
-{ Hidden from the Run Script dialog by its argument; Dummy is never read. }
-Function HollowDot(Dummy : Integer) : String;
-Begin
-    Result := '[ ]';
 End;
 
 
@@ -442,10 +445,9 @@ Begin
     Begin
         Try
             If ErrorDetail <> '' Then
-                lbl_LastErr.Caption := '! '
-                    + Command + ': ' + ErrorDetail
+                ShowNotice('! ' + Command + ': ' + ErrorDetail)
             Else
-                lbl_LastErr.Caption := '! last error: ' + Command;
+                ShowNotice('! last error: ' + Command);
         Except End;
     End;
 End;
@@ -547,18 +549,21 @@ Begin
     Try
         If NewEnabled Then
         Begin
-            btn_OpenWeb.Color := COLOR_ACCENT_BLUE;
-            btn_OpenWeb.Font.Color := $00FFFFFF;
+            btn_OpenWeb.Color := COLOR_BG_ELEVATED;
+            btn_OpenWeb.Font.Color := COLOR_TEXT_BODY;
+            Try ico_OpenWeb.Font.Color := COLOR_TEXT_BODY; Except End;
             btn_OpenWeb.Cursor := crHandPoint;
-            btn_OpenWeb.Caption := 'Open Dashboard';
+            btn_OpenWeb.Hint := 'Open the web dashboard';
         End
         Else
         Begin
             btn_OpenWeb.Color := COLOR_BG_CARD;
             btn_OpenWeb.Font.Color := COLOR_TEXT_FAINT;
+            Try ico_OpenWeb.Font.Color := COLOR_TEXT_FAINT; Except End;
             btn_OpenWeb.Cursor := crDefault;
-            btn_OpenWeb.Caption := 'Open Dashboard  (not running)';
+            btn_OpenWeb.Hint := 'The web dashboard is not running';
         End;
+        btn_OpenWeb.ShowHint := True;
     Except End;
 End;
 
@@ -787,10 +792,25 @@ End;
 Procedure SetCheckCaption(Pnl : TPanel; Checked : Boolean; LabelText : String);
 Begin
     Try
+        Pnl.Caption := LabelText;
         If Checked Then
-            Pnl.Caption := '  ' + FilledDot(0) + '  ' + LabelText
+        Begin
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+        End
         Else
-            Pnl.Caption := '  ' + HollowDot(0) + '  ' + LabelText;
+        Begin
+            Pnl.Color := COLOR_BG_BASE;
+            Pnl.Font.Color := COLOR_TEXT_MUTED;
+        End;
+    Except End;
+End;
+
+Procedure LeaveToggle(Pnl : TPanel; Checked : Boolean);
+Begin
+    Try
+        If Checked Then Pnl.Color := COLOR_BG_ELEVATED
+        Else Pnl.Color := COLOR_BG_BASE;
     Except End;
 End;
 
@@ -810,14 +830,37 @@ Begin
     OwnPanelColours(pnl_KPIs);      OwnPanelColours(pnl_K1);
     OwnPanelColours(pnl_K2);        OwnPanelColours(pnl_K3);
     OwnPanelColours(pnl_K4);        OwnPanelColours(pnl_ErrBar);
-    OwnPanelColours(pnl_Primary);   OwnPanelColours(btn_OpenWeb);
+    OwnPanelColours(btn_OpenWeb);
     OwnPanelColours(pnl_Controls);  OwnPanelColours(btn_Pause);
     OwnPanelColours(btn_Renew);     OwnPanelColours(btn_ClearLog);
     OwnPanelColours(btn_Detach);    OwnPanelColours(chk_HidePings);
     OwnPanelColours(chk_OnlySlow);  OwnPanelColours(chk_OnTop);
     OwnPanelColours(pnl_TabBar);    OwnPanelColours(tab_Log);
     OwnPanelColours(tab_Perf);      OwnPanelColours(pnl_Footer);
-    OwnPanelColours(btn_CopyCmd);
+    OwnPanelColours(btn_CopyCmd);   OwnPanelColours(btn_Saving);
+End;
+
+
+{ Saving allowed: an ordinary button. Off: amber, so it cannot be missed }
+{ while edits are piling up unsaved in Altium.                           }
+Procedure PaintSavingSwitch(Dummy : Integer);
+Begin
+    Try
+        If SavingOff Then
+        Begin
+            btn_Saving.Caption := 'Saving OFF';
+            btn_Saving.Color := COLOR_ACCENT_AMBER;
+            btn_Saving.Font.Color := $00111111;
+            ico_Saving.Font.Color := $00111111;
+        End
+        Else
+        Begin
+            btn_Saving.Caption := 'Saving on';
+            btn_Saving.Color := COLOR_BG_ELEVATED;
+            btn_Saving.Font.Color := COLOR_TEXT_BODY;
+            ico_Saving.Font.Color := COLOR_TEXT_BODY;
+        End;
+    Except End;
 End;
 
 
@@ -845,9 +888,10 @@ Begin
         OpenWebEnabled  := False;
 
         OwnAllPanelColours(0);
-        SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
-        SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  '>100ms');
-        SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'pin');
+        SetCheckCaption(chk_HidePings, HidePingsFlag, 'Hide pings');
+        SetCheckCaption(chk_OnlySlow,  OnlySlowFlag,  'Slow only');
+        SetCheckCaption(chk_OnTop,     AlwaysOnTopFlag, 'On top');
+        PaintSavingSwitch(0);
         ApplyAlwaysOnTop(0);
 
         ResetPerfStats(0);
@@ -1004,7 +1048,7 @@ End;
 Procedure btn_ClearLogClick(Sender : TObject);
 Begin
     Try mmo_Log.Lines.Clear; Except End;
-    Try lbl_LastErr.Caption := ''; Except End;
+    ShowNotice('');
 End;
 
 Procedure btn_PauseClick(Sender : TObject);
@@ -1016,6 +1060,8 @@ Begin
             btn_Pause.Caption := 'Resume';
             btn_Pause.Color := COLOR_ACCENT_AMBER;
             btn_Pause.Font.Color := $00111111;
+            Try ico_Pause.Visible := False; Except End;
+            Try ico_Resume.Visible := True; Except End;
             pnl_StatusDot.Color := COLOR_TEXT_FAINT;
             lbl_Status.Caption := 'paused';
             lbl_Status.Font.Color := COLOR_TEXT_MUTED;
@@ -1023,8 +1069,10 @@ Begin
         Else
         Begin
             btn_Pause.Caption := 'Pause';
-            btn_Pause.Color := $002A2C32;
+            btn_Pause.Color := COLOR_BG_ELEVATED;
             btn_Pause.Font.Color := COLOR_TEXT_BODY;
+            Try ico_Resume.Visible := False; Except End;
+            Try ico_Pause.Visible := True; Except End;
             If Not InFlightActive Then
             Begin
                 pnl_StatusDot.Color := COLOR_ACCENT_GREEN;
@@ -1057,7 +1105,7 @@ Var
 Begin
     If Not OpenWebEnabled Then
     Begin
-        Try lbl_LastErr.Caption := 'no dashboard running - copy the command below'; Except End;
+        ShowNotice('no dashboard running - copy the command below');
         Exit;
     End;
     Try
@@ -1102,7 +1150,7 @@ Procedure chk_HidePingsClick(Sender : TObject);
 Begin
     Try
         HidePingsFlag := Not HidePingsFlag;
-        SetCheckCaption(chk_HidePings, HidePingsFlag, 'pings');
+        SetCheckCaption(chk_HidePings, HidePingsFlag, 'Hide pings');
         RebuildVisibleLog(0);
     Except End;
 End;
@@ -1111,7 +1159,7 @@ Procedure chk_OnlySlowClick(Sender : TObject);
 Begin
     Try
         OnlySlowFlag := Not OnlySlowFlag;
-        SetCheckCaption(chk_OnlySlow, OnlySlowFlag, '>100ms');
+        SetCheckCaption(chk_OnlySlow, OnlySlowFlag, 'Slow only');
         RebuildVisibleLog(0);
     Except End;
 End;
@@ -1120,8 +1168,23 @@ Procedure chk_OnTopClick(Sender : TObject);
 Begin
     Try
         AlwaysOnTopFlag := Not AlwaysOnTopFlag;
-        SetCheckCaption(chk_OnTop, AlwaysOnTopFlag, 'pin');
+        SetCheckCaption(chk_OnTop, AlwaysOnTopFlag, 'On top');
         ApplyAlwaysOnTop(0);
+    Except End;
+End;
+
+{ The Saving switch. Turning it off stops every save the bridge makes, and }
+{ the choice is written to the workspace so a restart keeps it.           }
+Procedure btn_SavingClick(Sender : TObject);
+Begin
+    Try
+        SavingOff := Not SavingOff;
+        StoreSavingSwitch(0);
+        PaintSavingSwitch(0);
+        If SavingOff Then
+            mmo_Log.Lines.Insert(0, '      saving switched OFF: the bridge writes no documents')
+        Else
+            mmo_Log.Lines.Insert(0, '      saving switched on');
     Except End;
 End;
 
@@ -1135,74 +1198,85 @@ End;
 { Hover handlers ============================================================ }
 
 Procedure btn_DetachEnter(Sender : TObject);
-Begin Try btn_Detach.Color := $00D05050; Except End; End;
+Begin Try btn_Detach.Color := $004040E0; Except End; End;
 Procedure btn_DetachLeave(Sender : TObject);
-Begin Try btn_Detach.Color := $00B14545; Except End; End;
+Begin Try btn_Detach.Color := $003030C8; Except End; End;
 
 Procedure btn_ClearLogEnter(Sender : TObject);
-Begin Try btn_ClearLog.Color := $003A3C42; Except End; End;
+Begin Try btn_ClearLog.Color := COLOR_BG_HOVER; Except End; End;
 Procedure btn_ClearLogLeave(Sender : TObject);
-Begin Try btn_ClearLog.Color := $002A2C32; Except End; End;
+Begin Try btn_ClearLog.Color := COLOR_BG_ELEVATED; Except End; End;
 
 Procedure btn_PauseEnter(Sender : TObject);
 Begin
     Try
-        If PausedFlag Then btn_Pause.Color := $00B388F0
-        Else btn_Pause.Color := $003A3C42;
+        If PausedFlag Then btn_Pause.Color := $0070B4F0
+        Else btn_Pause.Color := COLOR_BG_HOVER;
     Except End;
 End;
 Procedure btn_PauseLeave(Sender : TObject);
 Begin
     Try
         If PausedFlag Then btn_Pause.Color := COLOR_ACCENT_AMBER
-        Else btn_Pause.Color := $002A2C32;
+        Else btn_Pause.Color := COLOR_BG_ELEVATED;
     Except End;
 End;
 
+Procedure btn_SavingEnter(Sender : TObject);
+Begin
+    Try
+        If SavingOff Then btn_Saving.Color := $0070B4F0
+        Else btn_Saving.Color := COLOR_BG_HOVER;
+    Except End;
+End;
+Procedure btn_SavingLeave(Sender : TObject);
+Begin
+    PaintSavingSwitch(0);
+End;
+
 Procedure btn_RenewEnter(Sender : TObject);
-Begin Try btn_Renew.Color := $003A3C42; Except End; End;
+Begin Try btn_Renew.Color := COLOR_BG_HOVER; Except End; End;
 Procedure btn_RenewLeave(Sender : TObject);
-Begin Try btn_Renew.Color := $002A2C32; Except End; End;
+Begin Try btn_Renew.Color := COLOR_BG_ELEVATED; Except End; End;
 
 Procedure btn_OpenWebEnter(Sender : TObject);
 Begin
     If OpenWebEnabled Then
-        Try btn_OpenWeb.Color := $00FFAE6A; Except End;
+        Try btn_OpenWeb.Color := COLOR_BG_HOVER; Except End;
 End;
 Procedure btn_OpenWebLeave(Sender : TObject);
 Begin
     If OpenWebEnabled Then
-        Try btn_OpenWeb.Color := COLOR_ACCENT_BLUE; Except End
+        Try btn_OpenWeb.Color := COLOR_BG_ELEVATED; Except End
     Else
         Try btn_OpenWeb.Color := COLOR_BG_CARD; Except End;
 End;
 
 Procedure chk_HidePingsEnter(Sender : TObject);
-Begin Try chk_HidePings.Color := $00252630; Except End; End;
+Begin Try chk_HidePings.Color := COLOR_BG_HOVER; Except End; End;
 Procedure chk_HidePingsLeave(Sender : TObject);
-Begin Try chk_HidePings.Color := COLOR_BG_BASE; Except End; End;
+Begin LeaveToggle(chk_HidePings, HidePingsFlag); End;
 
 Procedure chk_OnlySlowEnter(Sender : TObject);
-Begin Try chk_OnlySlow.Color := $00252630; Except End; End;
+Begin Try chk_OnlySlow.Color := COLOR_BG_HOVER; Except End; End;
 Procedure chk_OnlySlowLeave(Sender : TObject);
-Begin Try chk_OnlySlow.Color := COLOR_BG_BASE; Except End; End;
+Begin LeaveToggle(chk_OnlySlow, OnlySlowFlag); End;
 
 Procedure chk_OnTopEnter(Sender : TObject);
-Begin Try chk_OnTop.Color := $00252630; Except End; End;
+Begin Try chk_OnTop.Color := COLOR_BG_HOVER; Except End; End;
 Procedure chk_OnTopLeave(Sender : TObject);
-Begin Try chk_OnTop.Color := COLOR_BG_BASE; Except End; End;
+Begin LeaveToggle(chk_OnTop, AlwaysOnTopFlag); End;
 
 Procedure tab_LogEnter(Sender : TObject);
 Begin
     Try
-        If mmo_Log.Visible Then tab_Log.Color := $00252630
-        Else tab_Log.Color := $002A2C32;
+        If Not mmo_Log.Visible Then tab_Log.Color := $004A4A4A;
     Except End;
 End;
 Procedure tab_LogLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Log.Visible Then tab_Log.Color := COLOR_BG_BASE
+        If mmo_Log.Visible Then tab_Log.Color := COLOR_BG_LOG
         Else tab_Log.Color := COLOR_BG_CARD;
     Except End;
 End;
@@ -1210,14 +1284,13 @@ End;
 Procedure tab_PerfEnter(Sender : TObject);
 Begin
     Try
-        If mmo_Perf.Visible Then tab_Perf.Color := $00252630
-        Else tab_Perf.Color := $002A2C32;
+        If Not mmo_Perf.Visible Then tab_Perf.Color := $004A4A4A;
     Except End;
 End;
 Procedure tab_PerfLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Perf.Visible Then tab_Perf.Color := COLOR_BG_BASE
+        If mmo_Perf.Visible Then tab_Perf.Color := COLOR_BG_LOG
         Else tab_Perf.Color := COLOR_BG_CARD;
     Except End;
 End;
@@ -1228,8 +1301,8 @@ Begin
     Try
         mmo_Log.Visible := True;
         mmo_Perf.Visible := False;
-        tab_Log.Color := COLOR_BG_BASE;
-        tab_Log.Font.Color := COLOR_ACCENT_BLUE;
+        tab_Log.Color := COLOR_BG_LOG;
+        tab_Log.Font.Color := COLOR_TEXT_BODY;
         tab_Perf.Color := COLOR_BG_CARD;
         tab_Perf.Font.Color := COLOR_TEXT_MUTED;
     Except End;
@@ -1241,8 +1314,8 @@ Begin
         RefreshPerfPanel(0);
         mmo_Log.Visible := False;
         mmo_Perf.Visible := True;
-        tab_Perf.Color := COLOR_BG_BASE;
-        tab_Perf.Font.Color := COLOR_ACCENT_BLUE;
+        tab_Perf.Color := COLOR_BG_LOG;
+        tab_Perf.Font.Color := COLOR_TEXT_BODY;
         tab_Log.Color := COLOR_BG_CARD;
         tab_Log.Font.Color := COLOR_TEXT_MUTED;
     Except End;
@@ -1352,6 +1425,109 @@ Begin
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
+{ SavingRefusal - with the Saving switch off, the error for a command whose  }
+{ whole job is writing a file, or whose close would drop unsaved edits. ''  }
+{ when the command may run. Commands that only save on the side still run: }
+{ SaveHeldBack stops their writes and SavingNote reports them.             }
+Function SavingRefusal(Command : String; Params : String; RequestId : String) : String;
+Var
+    Named : String;
+Begin
+    Result := '';
+    If Not SavingOff Then Exit;
+    If (Command = 'application.save_all') Or (Command = 'project.save_all')
+        Or (Command = 'application.save_document') Or (Command = 'project.save') Then
+    Begin
+        Result := SavingOffError(RequestId, 'This command saves documents.');
+        Exit;
+    End;
+    If (Command = 'application.reload_document')
+        And (LowerCase(ExtractJsonValue(Params, 'save_before_close')) = 'true') Then
+    Begin
+        Result := SavingOffError(RequestId, 'Reloading with save_before_close writes the document.');
+        Exit;
+    End;
+    If (Command = 'application.create_document') Or (Command = 'generic.add_sheet') Then
+    Begin
+        Result := SavingOffError(RequestId, 'A new document is created by writing its file.');
+        Exit;
+    End;
+    If (Command = 'pcb.make_library') Or (Command = 'pcb.make_pad_via_library') Then
+    Begin
+        Result := SavingOffError(RequestId, 'The library is made by writing a new file.');
+        Exit;
+    End;
+    If (Command = 'pcb.save_copy_as')
+        And (LowerCase(ExtractJsonValue(Params, 'check_only')) <> 'true') Then
+    Begin
+        Result := SavingOffError(RequestId, 'A copy is made by saving the board to a new file.');
+        Exit;
+    End;
+    If (Command = 'generic.simcfg_document')
+        And (LowerCase(ExtractJsonValue(Params, 'action')) = 'save') Then
+    Begin
+        Result := SavingOffError(RequestId, 'This saves the simulation settings file.');
+        Exit;
+    End;
+    If (Command = 'project.close') And (ExtractJsonValue(Params, 'save') <> 'false') Then
+    Begin
+        Result := SavingOffError(RequestId, 'Closing with save writes the project first; '
+            + 'pass save=false to close without saving. Nothing was closed.');
+        Exit;
+    End;
+    If Command = 'application.execute_menu' Then
+    Begin
+        If Pos('SAVE', UpperCase(ExtractJsonValue(Params, 'menu_path'))) > 0 Then
+            Result := SavingOffError(RequestId, 'This menu item saves.');
+        Exit;
+    End;
+    If (Command = 'application.run_process') Or (Command = 'generic.run_process') Then
+    Begin
+        Named := ExtractJsonValue(Params, 'process_name') + ExtractJsonValue(Params, 'process');
+        If Pos('SAVE', UpperCase(Named)) > 0 Then
+            Result := SavingOffError(RequestId, 'The process ' + Named + ' saves.');
+    End;
+End;
+
+{ SavingNote - a command that edited a document while saving was off says  }
+{ what it did not write: the edit is in Altium and nowhere on disk. Only a }
+{ success whose data is an object is touched, as in BoardFallbackNote.      }
+Function SavingNote(Response : String) : String;
+Var
+    Marker, Added, Names, Rest, Name : String;
+    P, Bar : Integer;
+Begin
+    Result := Response;
+    If SavesHeld = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Names := '';
+    Rest := HeldFiles;
+    While Rest <> '' Do
+    Begin
+        Bar := Pos('|', Rest);
+        If Bar = 0 Then
+        Begin
+            Name := Rest;
+            Rest := '';
+        End
+        Else
+        Begin
+            Name := Copy(Rest, 1, Bar - 1);
+            Rest := Copy(Rest, Bar + 1, Length(Rest));
+        End;
+        If Names <> '' Then Names := Names + ',';
+        Names := Names + '"' + EscapeJsonString(Name) + '"';
+    End;
+    Added := '"saving_off":true,"not_saved":[' + Names + ']'
+        + ',"saving_note":"Saving is switched off on the bridge dashboard, so '
+        + 'these were not written. The edits are in Altium only."';
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
     Category, Action : String;
@@ -1386,6 +1562,10 @@ Begin
     BoardFallbackPath := '';
     BoardFallbackFrom := '';
     BoardMissWhy := '';
+    SavesHeld := 0;
+    HeldFiles := '';
+    Result := SavingRefusal(Command, Params, RequestId);
+    If Result <> '' Then Exit;
     Case Category Of
         'application': Result := HandleApplicationCommand(Action, Params, RequestId);
         'project':     Result := HandleProjectCommand(Action, Params, RequestId);
@@ -1401,6 +1581,7 @@ Begin
     End;
     Result := SheetCoverage(Result, RequestId);
     Result := BoardFallbackNote(Result);
+    Result := SavingNote(Result);
 End;
 
 {..............................................................................}
@@ -2010,6 +2191,7 @@ Begin
     EnsureWorkspaceDir(0);
     LoadMCPConfig(0);
     If SELECTED_PROJECT_READ_ONLY Then InitSelectedProject(0);
+    LoadSavingSwitch(0);
     { Startup purge: nothing on disk can belong to a live exchange, because no
       pump was running to serve it. Responses are purged here but NOT in
       CleanupMCPServer(0) -- on shutdown a client may still be reading one. }
