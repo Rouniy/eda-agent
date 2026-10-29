@@ -3275,8 +3275,8 @@ the board's stack match a wanted one through `copper_layers`,
 Not checked live: `sch_tidy_port_references` moving a reference (the
 scratch project had cross-references off).
 
-Run live on AD 26.11.1.5 on scratch copies. Run again with script
-2026.10.28.56 after the commands were rewritten: on StackTest.PcbDoc the
+Run live on AD 26.11.1.5 on scratch copies. Run again with the 28 October
+script after the commands were rewritten: on StackTest.PcbDoc the
 5-copper stack went to a 4-copper one (an empty layer dropped, a
 dielectric trimmed, every layer renamed) and back (a signal layer added
 between two planes, which kept both), each read back with no mismatch
@@ -3331,7 +3331,7 @@ the ECO focus check (it raises Altium's ECO dialog), declared class
 members (the test directive did not join a net).
 
 Run live on AD 26.11.1.5 on scratch copies.
-Run again with script 2026.10.28.56 after the commands were rewritten:
+Run again with the 28 October script after the commands were rewritten:
 the RoundLED GND pour read 12 corners and 6 arcs, closed, with a wrong
 name and a bad index refused; a line read 2 vertices, both ends and
 `VertexLast`; the sheet symbol and its two entries sat where item 4
@@ -3399,7 +3399,7 @@ would drop unsaved edits is skipped. The Python side refuses its own writes
 (project file cleanup, simulation settings, checkpoint restore) and the
 interface routes to File > Save, a Save button and Ctrl+S.
 
-Run live on AD 26.11.1.5 with script 2026.10.28.57 on the scratch
+Run live on AD 26.11.1.5 with the 28 October script on the scratch
 Live1023 project: the button wrote `{"saving":"off"}` and turned amber;
 `app_save_document`, `app_save_all`, `proj_save` and a save-first
 `proj_close` were refused, `app_send_keys("ctrl+s")` and
