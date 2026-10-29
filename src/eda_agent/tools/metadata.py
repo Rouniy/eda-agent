@@ -62,6 +62,8 @@ INTERACTIONS = (READONLY, SILENT, MODAL, PARTIAL)
 # --- category derivation ----------------------------------------------------
 # Ordered longest-prefix-first so ``application`` wins over ``app_`` etc.
 _CATEGORY_BY_PREFIX = (
+    ("altium365_", "altium365"),
+    ("footprint_", "library"),
     ("physics_calc_", "engineering"),
     ("app_", "application"),
     ("proj_", "project"),
@@ -101,47 +103,47 @@ _CATEGORY_BY_PREFIX = (
 # handler, and a tool is only covered when EVERY command it sends is,
 # because one unanswered call ends the run just as surely.
 _SIMULATOR_TOOLS = frozenset({
-    "app_context", "app_detach", "app_get_active_document",
-    "app_get_version",
+    "app_checkpoint", "app_context", "app_detach",
+    "app_get_active_document", "app_get_version",
     "app_list_documents", "app_restart_altium_bridge",
     "app_set_active_document", "app_visual_context",
     "audit_find_missing_decoupling",
     "audit_find_pin_net_name_mismatches",
     "audit_find_unconnected_ic_pins", "design_lint_report",
-    "eng_eco_preview_live",
-    "lib_add_footprint_arc", "lib_add_footprint_pad",
-    "lib_add_footprint_pads", "lib_add_footprint_track",
-    "lib_add_footprint_tracks", "lib_add_pins",
-    "lib_add_symbol_polygon", "lib_add_symbol_rectangle", "lib_add_symbol_text",
-    "lib_batch_rename", "lib_batch_set_params", "lib_create_3d_model",
-    "lib_create_footprint",
+    "eng_eco_preview_live", "lib_add_footprint_arc",
+    "lib_add_footprint_pad", "lib_add_footprint_pads",
+    "lib_add_footprint_track", "lib_add_footprint_tracks",
+    "lib_add_pins", "lib_add_symbol_polygon",
+    "lib_add_symbol_rectangle", "lib_add_symbol_text",
+    "lib_batch_rename", "lib_batch_set_params",
+    "lib_create_3d_model", "lib_create_footprint",
     "lib_create_ic_symbol", "lib_create_standard_footprint",
-    "lib_create_symbol", "lib_delete_footprint_primitives", "lib_diff_libraries",
+    "lib_create_symbol", "lib_create_symbol_in_parts",
+    "lib_delete_footprint_primitives", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components",
-    "lib_link_3d_model", "lib_link_footprint",
-    "obj_batch_delete", "obj_batch_modify",
-    "obj_create", "obj_delete", "obj_deselect_all", "obj_get_font_id",
-    "obj_get_font_spec", "obj_modify", "obj_query", "obj_run_process",
-    "obj_select", "obj_zoom", "obj_zoom_to_xy", "pcb_bind_pad_nets",
+    "lib_link_3d_model", "lib_link_footprint", "obj_batch_delete",
+    "obj_batch_modify", "obj_create", "obj_delete",
+    "obj_deselect_all", "obj_get_font_id", "obj_get_font_spec",
+    "obj_modify", "obj_query", "obj_run_process", "obj_select",
+    "obj_zoom", "obj_zoom_to_xy", "pcb_bind_pad_nets",
     "pcb_build_from_project", "pcb_create_nets_from_list",
     "pcb_get_board_outline", "pcb_get_board_statistics",
     "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
-    "pcb_get_unrouted_nets",
-    "pcb_get_vias", "pcb_move_components",
-    "pcb_place_diff_pair_vias", "pcb_place_tracks", "pcb_place_via",
-    "pcb_plan_bga_fanout", "pcb_plan_return_vias",
-    "pcb_rebuild_connectivity", "pcb_reset_stack_manager_model",
-    "pcb_route_diff_pair", "pcb_run_drc",
-    "proj_add_document", "proj_annotate", "proj_compile",
-    "proj_create", "proj_cross_probe", "proj_export_bom_html",
-    "proj_export_netlist", "proj_export_pdf", "proj_get_board_info",
-    "proj_get_bom", "proj_get_component_info", "proj_get_focused",
-    "proj_get_nets", "proj_get_parameters", "proj_get_stats",
-
-    "proj_list_documents", "proj_list_variants", "proj_open",
+    "pcb_get_unrouted_nets", "pcb_get_vias", "pcb_make_layer_stack",
+    "pcb_move_components", "pcb_place_diff_pair_vias",
+    "pcb_place_tracks", "pcb_place_via", "pcb_plan_bga_fanout",
+    "pcb_plan_return_vias", "pcb_rebuild_connectivity",
+    "pcb_reset_stack_manager_model", "pcb_route_diff_pair",
+    "pcb_run_drc", "proj_add_document", "proj_annotate",
+    "proj_close", "proj_compile", "proj_create", "proj_cross_probe",
+    "proj_export_bom_html", "proj_export_netlist",
+    "proj_export_pdf", "proj_get_board_info", "proj_get_bom",
+    "proj_get_component_info", "proj_get_focused", "proj_get_nets",
+    "proj_get_parameters", "proj_get_stats", "proj_list_documents",
+    "proj_list_open", "proj_list_variants", "proj_open",
     "proj_remove_document", "proj_run_outjob", "proj_run_output",
     "proj_save", "proj_set_parameter", "proj_visual_cross_probe",
-
+    "sch_tidy_port_references",
 })
 # "parts" queries part providers (registries, local KiCad libraries)
 # and never touches the Altium bridge, so it works with no Altium
@@ -322,6 +324,23 @@ INTERACTION_OVERRIDES = {
     # writes nothing. The lib_ prefix says nothing about that, and the
     # default would publish an audit as a tool that edits the library.
     "lib_audit_footprint_vs_package": READONLY,
+    # Read Altium 365 or the user's policy files, or read a library and
+    # report; none of them changes anything. The Altium 365 changes
+    # (publish, release, set parameters) keep the SILENT default.
+    "altium365_check_setup": READONLY, "altium365_list_workspaces": READONLY,
+    "altium365_list_projects": READONLY, "altium365_get_project": READONLY,
+    "altium365_list_library_folders": READONLY, "altium365_list_components": READONLY,
+    "altium365_get_component": READONLY, "altium365_read_object": READONLY,
+    "altium365_describe_type": READONLY, "altium365_run_query": READONLY,
+    "footprint_read_ipc_name": READONLY, "lib_verify_ipc_names": READONLY,
+    "lib_check_naming": READONLY, "lib_make_name": READONLY,
+    "lib_read_pin_table": READONLY, "design_check_company_rules": READONLY,
+    "design_read_rules_export": READONLY, "design_phase_gate": READONLY,
+    "design_phase_standing": READONLY,
+    # Appends to the product's ledger of stage answers in the workspace.
+    "design_phase_answer": SILENT,
+    # Writes the deck and its results into a run folder in the workspace.
+    "design_simulate_deck": SILENT,
 }
 
 # --- explicit maturity overrides -------------------------------------------

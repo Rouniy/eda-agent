@@ -1075,3 +1075,36 @@ The complete Python suite after the `.185` pad-batch change passed:
 9,815 passed, 165 skipped, one expected failure, zero failures (15m30s).
 The README link edit was made while that run was in progress; both linked
 files were checked separately on disk and `git diff --check` passed.
+
+## 2026-10-29: direct child and upstream head merged
+
+`MOREmbedded/main` at `5933c004b99753b060a79652504fcc3598a98a0a`
+was merged into the existing `Rouniy/eda-agent` `main` worktree. Its ancestry
+contains `upstream/main` at `75df9907a8ece15a2a0d20952fb67edd09e6d46d`.
+The previous upstream synchronization tag remains at `0bb1b315`; the new
+`upstream-sync-2026-10-29` tag marks the exact upstream parent now present
+in the Git graph. No second Altium script project was created.
+
+The merged feature groups include library making/checking and supplier links,
+physical stack planning, schematic placement and DbLib batches, phase gates,
+company conventions, Altium 365 access, simulator deck runs, and the updated
+DRC/library reports. The direct child's public MCP tool names were compared
+with this tree: none are missing (four apparent differences were tools already
+registered from another module). The stack entry point delegates to the
+existing `pcb_build_stack` and its exact-board native `pcb.stack_edit` path.
+The 3D-body centre extension retains `dry_run=True` by default. Native
+registration fixes cover xSignal class membership, hidden multi-part pins,
+font inheritance, and document-close project retention.
+
+The full Python suite after integration yielded 10,089 passes, 165 skips,
+one expected failure and a single release-document version mismatch. That
+mismatch was corrected and its exact test passed. Four donor-focused files
+passed 144/144; the combined regression slice passed 211 with two skips.
+The 12-unit Pascal bundle builds with zero lint errors and warnings. Native
+Altium validation of the newly merged commands is still separate from these
+source and simulator tests.
+
+The latest live fork inventory matched 63/64 direct-fork default tips and
+119/122 branch tips to their cached refs. The three stale branch refs and one
+stale default tip prevent a claim that *every* wider fork is current; they do
+not affect the freshly fetched `MOREmbedded/main` or `upstream/main` heads.

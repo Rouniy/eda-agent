@@ -19,7 +19,7 @@ def test_new_objects_infer_font_before_creation_and_use_typed_writes():
         ("Gen_PlaceSheetEntry", "eSheetEntry", "Entry.TextFontID := FontToUse"),
     ):
         body = _routine(source, handler)
-        assert body.index(f"PlacementFontId(SchDoc, {kind}, Params)") < body.index(
+        assert body.index(f"NewObjectFontId(SchDoc, {kind}, Params)") < body.index(
             "SchObjectFactory(")
         assert write in body
     entry = _routine(source, "Gen_PlaceSheetEntry")
@@ -43,7 +43,7 @@ def test_width_and_text_line_breaks_are_applied_in_native_order():
 
 def test_value_stamps_update_existing_parameter_and_hide_new_ones():
     source = _source()
-    setter = _routine(source, "SetExistingCompParamText")
+    setter = _routine(source, "SetOwnCompParamText")
     assert "SetState_IterationDepth(eIterateFirstLevel)" in setter
     assert "SchObjectFactory" not in setter
     creator = _routine(source, "SetCompParamText")
@@ -53,7 +53,7 @@ def test_value_stamps_update_existing_parameter_and_hide_new_ones():
     for handler, comp in (("Gen_SetSchComponentParameters", "TargetComp"),
                           ("Gen_SetSchComponentsParameters", "Comp")):
         body = _routine(source, handler)
-        assert f"SetExistingCompParamText({comp}, 'Value', Val)" in body
+        assert f"SetOwnCompParamText({comp}, 'Value', Val)" in body
 
 
 @pytest.mark.asyncio
@@ -64,7 +64,7 @@ async def test_port_and_text_frame_forward_requested_style(monkeypatch):
     monkeypatch.setattr(g, "get_bridge", lambda: bridge)
     captured = _capture(g, "register_generic_tools")
     await captured["sch_place_port"]("DATA", 100, 200, width=420, font_id=7)
-    assert bridge.calls[-1][1]["width"] == "420.0"
+    assert bridge.calls[-1][1]["width"] == "420"
     assert bridge.calls[-1][1]["font_id"] == "7"
     await captured["sch_place_text_frame"](0, 0, 500, 200, "A\\nB", font_id=7)
     assert bridge.calls[-1][1]["text"] == "A\\nB"

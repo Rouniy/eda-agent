@@ -4694,6 +4694,8 @@ Begin
 End;
 
 { Member names of a compiled object class: nets by name, parts by designator. }
+{ DM_Members answers the member's NAME (Altium's SDK declares a string), not }
+{ an object: read as one, every member came back empty.                    }
 Function ClassMembersJson(Cls : IObjectClass) : String;
 Var
     I : Integer;
@@ -4703,8 +4705,6 @@ Begin
     For I := 0 To Cls.DM_MemberCount - 1 Do
     Begin
         Name := '';
-        { IObjectClass.DM_Members returns a WideString member name, not an
-          IDMObject. Calling DM_NetName on it raises a DelphiScript modal. }
         Try Name := Cls.DM_Members(I); Except Name := ''; End;
         If Name = '' Then Continue;
         If Result <> '' Then Result := Result + ',';
@@ -5336,6 +5336,63 @@ Begin
         + JsonStr('out_path', OutPath) + ','
         + JsonBool('add_to_project', AddIt) + ','
         + JsonBool('in_project', Project.DM_IndexOfSourceDocument(OutPath) >= 0)));
+End;
+
+{..............................................................................}
+{ Proj_MakeIntegratedLibrary - Design > Make Integrated Library: an IntLib of  }
+{ every part the project places, symbols and footprints together             }
+{ (IntegratedLibrary:CreateLibraryFromProject). MEASURED on AD 26.11.1.5: no   }
+{ dialog; Altium writes <project>.IntLib in the project folder. The process   }
+{ acts on the focused project, so one of its open documents is focused first. }
+{ Params: project_path (optional).                                            }
+{..............................................................................}
+Function Proj_MakeIntegratedLibrary(Params : String; RequestId : String) : String;
+Var
+    ProjectPath, DocPath : String;
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    D : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    ServerDoc := Nil;
+    DocPath := '';
+    For D := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(D); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Try ServerDoc := Client.GetDocumentByPath(Doc.DM_FullPath); Except ServerDoc := Nil; End;
+        If ServerDoc <> Nil Then
+        Begin
+            DocPath := Doc.DM_FullPath;
+            Break;
+        End;
+    End;
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED',
+            'No document of the project is open. Call proj_load_sheets first.');
+        Exit;
+    End;
+    Try ServerDoc.Focus; Except End;
+    If UpperCase(Workspace.DM_FocusedProject.DM_ProjectFullPath)
+        <> UpperCase(Project.DM_ProjectFullPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOCUSED',
+            'Could not focus the project through ' + DocPath + '; nothing was made.');
+        Exit;
+    End;
+    RunProcess('IntegratedLibrary:CreateLibraryFromProject');
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('project', Project.DM_ProjectFullPath) + ','
+        + JsonStr('focused_document', DocPath)));
 End;
 
 {..............................................................................}
@@ -6180,7 +6237,7 @@ Begin
         FocusedKind := '';
     End;
     If (FocusedKind <> 'PCB') Or
-        (UpperCase(FocusedPath) <> UpperCase(PcbPath)) Then
+        (PathKey(FocusedPath) <> PathKey(PcbPath)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WRONG_FOCUS',
             'The project''s PCB could not be focused (the focused document is '
@@ -6193,8 +6250,8 @@ Begin
     FocusedProject := Nil;
     Try FocusedProject := Workspace.DM_FocusedProject; Except End;
     If (FocusedProject = Nil) Or
-        (UpperCase(FocusedProject.DM_ProjectFullPath) <>
-         UpperCase(Project.DM_ProjectFullPath)) Then
+        (PathKey(FocusedProject.DM_ProjectFullPath) <>
+         PathKey(Project.DM_ProjectFullPath)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WRONG_PROJECT_FOCUSED',
             'Opening the PCB changed the focused project; ECO was not fired');
@@ -7185,6 +7242,7 @@ Begin
         'get_net_items':     Result := Proj_GetNetItems(Params, RequestId);
         'project_setup':     Result := Proj_ProjectSetup(Params, RequestId);
         'make_schematic_library': Result := Proj_MakeSchematicLibrary(Params, RequestId);
+        'make_integrated_library': Result := Proj_MakeIntegratedLibrary(Params, RequestId);
         'get_declared_design_objects': Result := Proj_GetDeclaredDesignObjects(Params, RequestId);
         'delete_variant':    Result := Proj_DeleteVariant(Params, RequestId);
         'set_parameter_variation': Result := Proj_SetParameterVariation(Params, RequestId);

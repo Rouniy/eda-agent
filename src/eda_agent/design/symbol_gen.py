@@ -55,20 +55,28 @@ def generate_ic_symbol(
     min_inner_width: int = _MIN_INNER,
     pin_length: int = PIN_LENGTH,
     pin_spacing: int = PIN_PITCH,
+    pin_pitch: int | None = None,
     char_width: int = _CHAR_W,
     body_padding: int = _NAME_GAP // 2,
 ) -> SymbolGeometry:
     """Lay out an IC symbol from left/right pin groups.
 
     Each pin dict needs ``designator`` and ``name``; ``electrical_type``
-    (default "passive") is passed through. Left pins are placed top->down
+    (default "passive") and ``hidden`` are passed through. ``None`` in a
+    side's list keeps that row free, which spaces pin groups apart. Left
+    pins are placed top->down
     starting at the origin row; right pins likewise on the far side. The
     body width is sized to clear the pin-name text on both sides.
+    ``pin_length`` and ``pin_pitch`` stay on the 100-mil grid.
 
     Returns a :class:`SymbolGeometry`. Raises if both sides are empty.
     """
-    if pin_length <= 0 or pin_spacing <= 0 or char_width <= 0 or body_padding < 0:
-        raise ValueError("pin_length, pin_spacing and char_width must be positive; body_padding must be nonnegative")
+    if pin_pitch is not None:
+        if pin_pitch <= 0 or pin_pitch % GRID:
+            raise ValueError("pin_pitch must be a positive multiple of the grid")
+        pin_spacing = pin_pitch
+    if pin_length <= 0 or pin_length % GRID or pin_spacing <= 0 or char_width <= 0 or body_padding < 0:
+        raise ValueError("pin_length must be a positive grid multiple; pin_spacing and char_width must be positive; body_padding must be nonnegative")
     if not any(p is not None for p in (*left_pins, *right_pins)):
         raise ValueError("need at least one pin on a side")
 
@@ -128,6 +136,7 @@ def generate_ic_symbol(
             "hidden": bool(p.get("hidden", False)),
         })
 
+    # One pitch of margin above the first row and below the last.
     rows = max(len(left_pins), len(right_pins))
     body_bottom = -rows * pin_spacing   # one row of margin
     body = {

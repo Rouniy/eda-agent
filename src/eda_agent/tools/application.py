@@ -336,7 +336,7 @@ def register_meta_tools(mcp):
         Filters (all optional, AND-combined):
             category: core, application, project, library, generic,
                 schematic, pcb, audit, design, engineering, simulation, routing, meta,
-                parts, profile (and kicad on the KiCad backend; the EasyEDA tools
+                parts, profile, altium365 (and kicad on the KiCad backend; the EasyEDA tools
                 file under the same subject headings as Altium's, so
                 "pcb" means the same thing on either). "core" holds the
                 EDA-agnostic main flow (review_design, get_board_info,
@@ -844,6 +844,20 @@ def register_application_tools(mcp):
         return await get_bridge().send_command_async(
             "application.close_document", params, timeout=120.0)
 
+    async def _other_open_projects(besides: str) -> list[str]:
+        """Projects open in Altium other than ``besides``; empty when the
+        list cannot be read, since it only informs the reply."""
+        import os
+        try:
+            reply = await get_bridge().send_command_async("project.get_open_projects", {})
+        except Exception:  # noqa: BLE001
+            return []
+        rows = reply.get("projects", []) if isinstance(reply, dict) else []
+        kinds = (".prjpcb", ".prjscr", ".libpkg", ".prjmbd")
+        return [path for path in (str(r.get("project_path", "")) for r in rows)
+                if path.lower().endswith(kinds)
+                and os.path.normcase(path) != os.path.normcase(besides)]
+
     @mcp.tool()
     async def app_checkpoint(label: str = "", save_first: bool = True,
                              project_path: str = "") -> dict[str, Any]:
@@ -863,7 +877,8 @@ def register_application_tools(mcp):
                 project must be open; focus is not used to choose among many.
 
         Returns:
-            The checkpoint manifest summary (id, created, file_count, ...).
+            The checkpoint manifest summary (id, created, file_count, ...),
+            ``project`` (the one snapshotted) and ``other_open_projects``.
             With ``save_first``, also ``saved``: True when the flush
             worked, False with ``save_error`` and a ``note`` when it did
             not. A checkpoint is still taken either way, but one taken
@@ -892,6 +907,10 @@ def register_application_tools(mcp):
             return {"error": "name project_path when zero or multiple projects are open",
                     "open_projects": paths, "checkpoint": None}
         project_dir, project_file = os.path.split(project_path)
+        snapshot_of = project_path
+        wanted = os.path.normcase(os.path.normpath(snapshot_of))
+        others = [path for path in paths
+                  if os.path.normcase(os.path.normpath(path)) != wanted]
         if save_first:
             # THE PROJECT BEING CHECKPOINTED, not the workspace. save_all
             # wrote every open document, other projects' included, to
@@ -913,7 +932,8 @@ def register_application_tools(mcp):
         from pathlib import Path
         store = _checkpoint_store()
         info = store.create(Path(project_dir), project_file=project_file or "", label=label)
-        result: dict[str, Any] = {"checkpoint": info.summary()}
+        result: dict[str, Any] = {"checkpoint": info.summary(), "project": snapshot_of,
+                                  "other_open_projects": others}
         if save_first:
             result["saved"] = saved
             if not saved:
@@ -1352,6 +1372,12 @@ def register_application_tools(mcp):
             Dictionary with kind, file_path, saved, focused,
             added_to_project and member_of (project paths).
         """
+        # A missing folder made Altium raise a modal save error that holds
+        # the bridge until someone answers it; refused here first.
+        folder = os.path.dirname(file_path)
+        if os.path.isabs(file_path) and folder and not os.path.isdir(folder):
+            return {"success": False, "error": "NOT_SAVED",
+                    "reason": f"the folder does not exist: {folder}"}
         bridge = get_bridge()
         params: dict[str, Any] = {
             "kind": kind,

@@ -45,6 +45,7 @@ End;
 { punched, 2 laser, 3 plasma); IsVirtualPin and a part's FlippedOnLayer    }
 { (its "flip on layer" option, not its side) are read only. A text's       }
 { BorderSpaceType is Altium's number for how its inverted border is sized. }
+{ A text's FontName (its TrueType font) is read only here.                  }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
 Begin
     Result := 0;

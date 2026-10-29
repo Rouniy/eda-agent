@@ -312,6 +312,44 @@ Begin
     Result := BuildSuccessResponse(RequestId, '{"success":true,"file_path":"' + EscapeJsonString(ServerDoc.FileName) + '"}');
 End;
 
+{ A path in one spelling: back slashes, lower case. }
+Function PathKey(Path : String) : String;
+Begin
+    Result := LowerCase(StringReplace(Path, '/', '\', MkSet(rfReplaceAll)));
+End;
+
+{ True when an open project has the document among its own. The project   }
+{ keeps its sheets apart from the editor tab, so an unsaved change can     }
+{ outlive the tab being closed (seen on AD 26.11).                         }
+Function DocBelongsToOpenProject(FilePath : String) : Boolean;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Member : IDocument;
+    P, D : Integer;
+    Wanted : String;
+Begin
+    Result := False;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Wanted := PathKey(FilePath);
+    P := 0;
+    While (Not Result) And (P < Workspace.DM_ProjectCount) Do
+    Begin
+        Project := Nil;
+        Try Project := Workspace.DM_Projects(P); Except Project := Nil; End;
+        D := 0;
+        While (Project <> Nil) And (Not Result) And (D < Project.DM_LogicalDocumentCount) Do
+        Begin
+            Member := Nil;
+            Try Member := Project.DM_LogicalDocuments(D); Except Member := Nil; End;
+            If Member <> Nil Then Result := PathKey(Member.DM_FullPath) = Wanted;
+            Inc(D);
+        End;
+        Inc(P);
+    End;
+End;
+
 { Close ONE document, found by its full path, whatever has the focus.        }
 { WorkspaceManager:CloseObject acts on the FOCUSED object, not the one named: }
 { a close by path once closed a different project. This closes the document }
@@ -321,39 +359,6 @@ End;
 { With discard, the modified flag is cleared first to avoid a save prompt. }
 { An open project's DM cache can still retain unsaved sheet state after the }
 { editor tab closes; report that the discard is unverified in that case.   }
-Function AppOpenProjectHoldsSheet(FilePath : String) : Boolean;
-Var
-    Workspace : IWorkspace;
-    Project : IProject;
-    Doc : IDocument;
-    I, J : Integer;
-    Want, Have : String;
-Begin
-    Result := False;
-    Workspace := GetWorkspace;
-    If Workspace = Nil Then Exit;
-    Want := UpperCase(CanonicalPathValue('path', FilePath));
-    For I := 0 To Workspace.DM_ProjectCount - 1 Do
-    Begin
-        Project := Nil;
-        Try Project := Workspace.DM_Projects(I); Except End;
-        If Project = Nil Then Continue;
-        For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
-        Begin
-            Doc := Nil;
-            Try Doc := Project.DM_LogicalDocuments(J); Except End;
-            If Doc = Nil Then Continue;
-            Have := '';
-            Try Have := Doc.DM_FullPath; Except End;
-            If UpperCase(CanonicalPathValue('path', Have)) = Want Then
-            Begin
-                Result := True;
-                Exit;
-            End;
-        End;
-    End;
-End;
-
 Function App_CloseDocument(Params : String; RequestId : String) : String;
 Var
     FilePath, DiscardNote : String;
@@ -375,10 +380,9 @@ Begin
     End;
     { GetDocumentByPath can resolve a phantom path to a differently named
       open document. Never close that other document on the caller's behalf. }
-    If UpperCase(CanonicalPathValue('path', ServerDoc.FileName)) <>
-       UpperCase(CanonicalPathValue('path', FilePath)) Then
+    If PathKey(ServerDoc.FileName) <> PathKey(FilePath) Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'PATH_MISMATCH',
+        Result := BuildErrorResponse(RequestId, 'OTHER_DOCUMENT',
             'Altium resolved ' + FilePath + ' to a different open document: '
             + ServerDoc.FileName + '. Nothing was closed.');
         Exit;
@@ -403,7 +407,7 @@ Begin
     ProjectRetainsSheet := False;
     If Closed And Discard And (WasModified Or WasEdited)
         And (LowerCase(ExtractFileExt(FilePath)) = '.schdoc') Then
-        ProjectRetainsSheet := AppOpenProjectHoldsSheet(FilePath);
+        ProjectRetainsSheet := DocBelongsToOpenProject(FilePath);
     If Closed Then ForgetDocEdited(FilePath);
     DiscardNote := '';
     If ProjectRetainsSheet Then
@@ -414,6 +418,7 @@ Begin
         + ',"discarded":' + BoolToJsonStr(Discard And (WasModified Or WasEdited)
             And Not ProjectRetainsSheet)
         + ',"project_retains_sheet":' + BoolToJsonStr(ProjectRetainsSheet)
+        + ',"project_may_hold_edit":' + BoolToJsonStr(ProjectRetainsSheet)
         + ',"discard_note":"' + EscapeJsonString(DiscardNote) + '"'
         + ',"file_path":"' + EscapeJsonString(FilePath) + '"}');
 End;
@@ -922,6 +927,7 @@ Var
     Project : IProject;
     AddToProject, Saved, Added, Focused : Boolean;
     ProjSaved : Boolean;
+    AgeBefore : Integer;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
     FilePath := ExtractJsonValue(Params, 'file_path');
@@ -967,6 +973,16 @@ Begin
     End;
     If DocName = '' Then DocName := ExtractFileName(FilePath);
 
+    { NO FOLDER, NO DOCUMENT. Saving into a folder that is not there put up }
+    { Altium's "Save file error" dialog (AD 26.11), and the polling loop    }
+    { waits on it until someone clicks OK.                                  }
+    If Not DirectoryExists(ExtractFilePath(FilePath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+            'Nothing was created: there is no folder ' + ExtractFilePath(FilePath));
+        Exit;
+    End;
+
     { A DOCUMENT ALREADY OPEN AT THIS PATH IS REFUSED. Creating a blank over }
     { it raised "object accessed after being destroyed" in ADVPCB and halted }
     { the script (a PcbLib, 2026-10-20). The caller wants the open one.      }
@@ -1006,12 +1022,17 @@ Begin
       reason, fall back to WorkspaceManager:SaveObject with an explicit
       FileName, that path is effectively Save-As, which is what we
       want for a previously-unsaved document. }
+    { An old file at the path is overwritten, so only a new file time   }
+    { shows that the save happened.                                     }
+    AgeBefore := -1;
+    If FileExists(FilePath) Then
+        Try AgeBefore := FileAge(FilePath); Except AgeBefore := -1; End;
     Saved := False;
     Try ServerDoc.SetFileName(FilePath); Except End;
     Try
         ServerDoc.SetModified(True);
         ServerDoc.DoFileSave('');
-        Saved := FileExists(FilePath);
+        Saved := FileExists(FilePath) And (FileAge(FilePath) <> AgeBefore);
     Except Saved := False; End;
     If Not Saved Then
     Begin
@@ -1021,7 +1042,7 @@ Begin
             AddStringParameter('ObjectKind', 'Document');
             AddStringParameter('FileName', FilePath);
             RunProcess('WorkspaceManager:SaveObject');
-            Saved := FileExists(FilePath);
+            Saved := FileExists(FilePath) And (FileAge(FilePath) <> AgeBefore);
         Except Saved := False; End;
     End;
 

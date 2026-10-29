@@ -34,6 +34,8 @@ import json
 import os
 import shutil
 import subprocess
+
+from ..noconsole import no_window
 from typing import Any, Optional
 
 from ..noconsole import no_window

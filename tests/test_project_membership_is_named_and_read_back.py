@@ -120,9 +120,10 @@ def _run(module, register, tool, monkeypatch, *args, **kw):
     return bridge.params
 
 
-def test_the_create_tool_sends_the_project(monkeypatch):
+def test_the_create_tool_sends_the_project(monkeypatch, tmp_path):
+    # A real folder: a missing one is refused before anything is sent.
     sent = _run(app_tools, "register_application_tools", "app_create_document",
-                monkeypatch, "SCH", r"C:\t\x.SchDoc",
+                monkeypatch, "SCH", str(tmp_path / "x.SchDoc"),
                 project_path=r"C:\t\Scratch.PrjPcb")
     assert sent["project_path"] == r"C:\t\Scratch.PrjPcb"
 
