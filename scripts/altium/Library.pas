@@ -412,6 +412,8 @@ Begin
     { Resolve to an absolute path or give up honestly.                       }
     LibPath := ResolveLoadedDocPath(LibPath);
     If LibPath = '' Then Exit;
+    { Saving switched off: the reopen below would drop what is not saved. }
+    If SaveHeldBack(LibPath) Then Exit;
 
     { Flush this document only. }
     Try

@@ -24,6 +24,7 @@ import asyncio
 import sys
 from typing import Any
 
+from ..saving import button_saves, keys_save, menu_saves, refused, saving_off
 from ..ui import controls, dialog_driver, dialog_report, menu, windows
 
 #: Menu path per target. The only thing that still differs between the
@@ -49,6 +50,12 @@ _MENU_EXPECT = {
     "schematic": "Update From Librar",
     "pcb": "Update From PCB Librar",
 }
+
+
+def _saving_refused(what: str) -> dict[str, Any]:
+    """The interface tools answer in ok/reason form."""
+    reply = refused(what)
+    return {"ok": False, "error": reply["error"], "reason": reply["message"]}
 
 
 def _dialog_state(hwnd):
@@ -406,6 +413,8 @@ def register_uiauto_tools(mcp):
             submenu is a failure. ``retried`` and ``first_read`` show a
             level read twice.
         """
+        if not list_only and menu_saves(menu_path) and saving_off():
+            return _saving_refused("This menu item saves.")
         if not menu.available():
             return {"ok": False, "reason": (
                 "menu driving needs pywin32 and comtypes on Windows")}
@@ -507,6 +516,8 @@ def register_uiauto_tools(mcp):
         button_caption = button_caption or button
         if not button_caption:
             return {"ok": False, "reason": "give the button's caption"}
+        if button_saves(button_caption) and saving_off():
+            return _saving_refused("This button saves.")
         pid, problem = _altium_pid()
         if problem:
             return problem
@@ -747,6 +758,8 @@ def register_uiauto_tools(mcp):
             succeeded, so a command that opened something nobody could
             answer does not read as a success.
         """
+        if menu_saves(menu_path) and saving_off():
+            return _saving_refused("This menu item saves.")
         pid, problem = _altium_pid()
         if problem:
             return problem
@@ -1024,6 +1037,8 @@ def register_uiauto_tools(mcp):
         """
         from ..ui import windows as win
 
+        if keys_save(sequence) and saving_off():
+            return _saving_refused("Ctrl+S saves the document in front.")
         pid, problem = _altium_pid()
         if problem is not None:
             return problem

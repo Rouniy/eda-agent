@@ -1,4 +1,4 @@
-# Release verification: 2026.10.28.56
+# Release verification: 2026.10.29.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -397,7 +397,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.28.56`, `version_match` =
+Expect `altium_script_version` = `2026.10.29.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.7.1`.
 
 Those are two different versions and they fail differently.
@@ -3374,6 +3374,33 @@ and the naming policy on a real company policy.
 Run on AD 26.11.1.5 on scratch copies.
 
 ---
+
+## 59. The Saving switch on the bridge dashboard
+
+The Saving button in the dashboard's button grid, beside Detach, turns
+every save the bridge makes on or off. It starts as "Saving on"; off, it reads
+"Saving OFF" and turns amber. The
+state is kept in `saving.json` in the workspace, so a restart of the
+bridge or of Altium keeps it, and `app_ping` reports `saving_allowed`.
+
+Off, the commands whose job is writing a file are refused with
+`SAVING_OFF` (save, save all, project save, create document, add sheet,
+make library, save copy as, simulation settings save, project close with
+save, a Save menu item or process). A command that saves on the side runs,
+writes nothing, and its reply lists `not_saved`. A library reload that
+would drop unsaved edits is skipped. The Python side refuses its own writes
+(project file cleanup, simulation settings, checkpoint restore) and the
+interface routes to File > Save, a Save button and Ctrl+S.
+
+Run live on AD 26.11.1.5 with script 2026.10.28.57 on the scratch
+Live1023 project: the button wrote `{"saving":"off"}` and turned amber;
+`app_save_document`, `app_save_all`, `proj_save` and a save-first
+`proj_close` were refused, `app_send_keys("ctrl+s")` and
+`app_click_menu("File|Save")` were refused before sending anything;
+`proj_add_document` and `proj_remove_document` ran and listed
+`Live1023.PrjPcb` as not saved; a detach after a net label wrote nothing;
+no file in the folder changed. After a bridge restart the button still
+read off. Switched back on, `app_save_document` wrote the scratch sheet.
 
 ## Still open, and not blocking
 

@@ -843,6 +843,9 @@ def register_application_tools(mcp):
         Returns:
             {restored, removed, missing_blobs}.
         """
+        from ..saving import refused, saving_off
+        if saving_off():
+            return refused("A restore overwrites the project's files.")
         project_dir, _project_file, err = await _resolve_project_dir()
         if err:
             return err
@@ -883,7 +886,8 @@ def register_application_tools(mcp):
         if isinstance(reply, dict) and reply.get("stopped") is True:
             out = {"attached": False, "stopped": True,
                    "message": "Detached from Altium Designer and stopped MCP server"}
-            for key in ("edited_saved", "clean_left_alone"):
+            for key in ("edited_saved", "clean_left_alone",
+                        "saving_off", "not_saved", "saving_note"):
                 if key in reply:
                     out[key] = reply[key]
             return out
@@ -914,9 +918,11 @@ def register_application_tools(mcp):
             Altium loaded scripts from elsewhere), ``loop_workspace_dir``
             (the folder the answering loop takes requests from) and
             ``server_workspace_dir`` (this server's), ``unit_stamps``,
-            ``stale_units``, ``unstamped_units``, ``other_servers`` (other
-            eda-agent servers on this workspace) and ``warnings``.
+            ``stale_units``, ``unstamped_units``, ``saving_allowed`` (False
+            while the dashboard's Saving switch is off), ``other_servers``
+            (other eda-agent servers on this workspace) and ``warnings``.
         """
+        from ..saving import saving_off
         bridge = get_bridge()
         script_path = _bundled_script_path()
         servers, duplicate = _other_servers()
@@ -997,6 +1003,8 @@ def register_application_tools(mcp):
             # reports it. Empty from a script older than 2026.10.21.
             "loop_workspace_dir": result.get("workspace_dir") or "",
             "server_workspace_dir": _server_workspace_dir(),
+            # The dashboard's Saving switch: False means every save is refused.
+            "saving_allowed": not saving_off(),
             **stamp_fields,
             "other_servers": servers,
             "warnings": warnings,

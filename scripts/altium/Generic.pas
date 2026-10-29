@@ -11284,7 +11284,7 @@ Begin
     OldAge := -1;
     Try If FileExists(After) Then OldAge := FileAge(After); Except End;
     ServerDoc := Client.GetDocumentByPath(After);
-    If ServerDoc <> Nil Then
+    If (ServerDoc <> Nil) And (Not SaveHeldBack(After)) Then
     Begin
         Try ServerDoc.SetFileName(After); Except End;
         Try
@@ -11370,7 +11370,7 @@ Begin
     OldAge := -1;
     Try If FileExists(After) Then OldAge := FileAge(After); Except End;
     ServerDoc := Client.GetDocumentByPath(After);
-    If ServerDoc <> Nil Then
+    If (ServerDoc <> Nil) And (Not SaveHeldBack(After)) Then
     Begin
         Try ServerDoc.SetFileName(After); Except End;
         Try
