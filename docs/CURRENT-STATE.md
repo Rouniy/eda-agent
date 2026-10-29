@@ -1,11 +1,22 @@
 # Current integration state / agent handoff
 
-The main Altium script is now `.186`, loaded from the one source project
-`D:\AI\eda-agent\scripts\altium\Altium_API.PrjScr`, and answers ping on
-AD26.11.1.5 with `version_match=true` and no stale units. The Python MCP
-service on 14701 was restarted from this `main` and advertises 808 Altium
-tools, including the merged phase, DbLib, pour-outline and stack commands.
-The separate TCP relay on 14700 answers `/health` as `ready`.
+The main Altium script is now `.189`, loaded from the one source project
+`D:\AI\eda-agent\scripts\altium\Altium_API.PrjScr`. A direct HTTP MCP
+`app_ping` on AD26.11.1.5 returned `version_match=true`,
+`script_location_match=true`, and no warnings. The supervised Python MCP
+service on 14701 was restarted from this `main`; it advertises 808 tools
+and 12 prompts. The separate TCP relay on 14700 answers `/health` as `ready`.
+
+On 2026-10-29, upstream `e5fb6b2` and direct child `dbaef87` became second
+parents of merge commits `cfb1346` and `d91a1cb`. Both have zero commits
+pending against `main`. The new upstream sync tag is
+`upstream-sync-2026-10-29-e5fb6b2`. Their changes include a saving switch,
+MCP prompts, DRC/sliver and placement checks, dashboard request IDs, and
+script deployment based on code differences. A native restart exposed a
+duplicate `SaveScope` declaration missed by the source linter; `c637428`
+removed it, and `.189` compiled and answered ping. The full Python suite
+then passed: 10,161 passed, 169 skipped, one expected failure (22m11s).
+Native feature acceptance beyond the restart/ping remains separate.
 Script `.172` fixes `sdk-probe --doc-path`; all 29 generated component
 read accessors answered on IC44 in a read-only AD26.11 check. The sheet
 was closed without saving. Broader component kinds and AD25 still need

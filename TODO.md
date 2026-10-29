@@ -1,5 +1,22 @@
 # Fork integration TODO
 
+## Latest integration and verification, 2026-10-29
+
+- [x] Merge upstream `e5fb6b2` and MOREmbedded `dbaef87` as real second
+  parents of `main`; tag the upstream sync point. Both freshly fetched
+  heads have zero pending commits.
+- [x] Repair the native `SaveScope` redeclaration found on the first
+  Altium restart. Script `.189` answers `app_ping` with matching versions
+  and no warnings; the supervised MCP service advertises 808 tools and
+  12 prompts, and TCP 14700 reports ready.
+- [x] Run the full Python suite after both merges and the native repair:
+  10,161 passed, 169 skipped, one expected failure, zero failures.
+- [ ] Qualify newly merged saving-switch, sliver/placement and dashboard
+  behavior on disposable Altium documents. Source tests and a live ping
+  do not establish those native behaviors.
+- [ ] Revisit the wider divergent-fork behavior audit. The 53 cached
+  nonancestor refs are an inventory for review, not 53 missing features.
+
 ## Fresh branch-difference queue, 2026-10-28
 
 - [x] Reconcile the 8 new commits on `MOREmbedded/main` after the

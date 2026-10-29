@@ -4,18 +4,15 @@ The current `main` builds on these two exact Git commits:
 
 | Source | Integrated tip | Merge into `Rouniy/main` |
 | --- | --- | --- |
-| `salitronic/eda-agent` (`upstream/main`) | `0bb1b3154cca6e58a517b23edee3d7a108f1c232` | `63f7c16ab8dd7c703ba9a82ca17b7f06cee1e370` (second parent) |
-| `MOREmbedded/eda-agent` (`morembedded/main`) | `d495c4d8802c0b7259068c2f414b7b23bfdf6ee6` | `ce7aab8fe1db6c0e804f142512246e2f0c4b4d13` (second parent) |
+| `salitronic/eda-agent` (`upstream/main`) | `e5fb6b28b2ad30a65b9e64189c4e03ba8ab6b022` | `cfb1346` (second parent) |
+| `MOREmbedded/eda-agent` (`morembedded/main`) | `dbaef87269e28c44aaee41399fdfb636681e40b6` | `d91a1cb` (second parent) |
 
 Both exact tips are ancestors of our `main`, so Git records the sync
-points without relying on a manually maintained version number. At the
-2026-10-28 integration both source tips were current. A later fetch on
-the same day found `upstream/main` at
-`75df9907a8ece15a2a0d20952fb67edd09e6d46d`, one commit after the
-integrated tip; `morembedded/main` still has zero commits pending. The
-annotated tag `upstream-sync-2026-10-28` points to the exact upstream
-commit `0bb1b315` and is pushed to `origin`, so `git log --graph --all`
-shows the integration boundary directly. GitHub also records
+points without relying on a manually maintained version number. The
+annotated tag `upstream-sync-2026-10-29-e5fb6b2` points to the latest
+upstream commit in this integration. Earlier tags retain the prior
+checkpoints, including `upstream-sync-2026-10-28` at `0bb1b315`.
+GitHub also records
 `Rouniy/eda-agent` as a fork of `salitronic/eda-agent`. The
 upstream merge incorporated variant management and BOM support; the
 MOREmbedded merge incorporated its SDK and diagnostics lineage with local
@@ -33,7 +30,8 @@ git rev-list --count main..upstream/main
 git rev-list --count main..morembedded/main
 ```
 
-The two merge-base outputs must equal the integrated tips in the table.
+The two merge-base outputs must equal the integrated tips in the table
+after fetching these exact heads.
 The two `rev-list` counts show new source commits that have not been
 merged. Upstream advances may be reviewed later; stabilization of the
 current `main` does not depend on automatically merging them. For feature
