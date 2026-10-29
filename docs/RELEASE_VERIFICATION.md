@@ -1,5 +1,5 @@
 
-# Release verification: 2026.10.29.187
+# Release verification: 2026.10.29.188
 
 Script `.186` merges `MOREmbedded/main` `5933c00` (including upstream
 `75df990`) into the Rouniy main line. The 12-file Pascal build has zero
@@ -224,7 +224,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.29.187` from `app_ping`.
+Expect `altium_script_version` = `2026.10.29.188` from `app_ping`.
 
 ## 2026.10.28.156 - Previous native checkpoint
 
