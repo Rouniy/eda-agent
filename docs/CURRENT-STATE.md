@@ -1,9 +1,11 @@
 # Current integration state / agent handoff
 
-The main Altium script is now `.177`, loaded from the one source project,
-and answers ping on AD26.11.1.5. The Python MCP service on 14701 was
-restarted from this `main` and advertises 766 tools without the stale-server
-warning; the separate TCP relay on 14700 answers `/health` as `ready`.
+The main Altium script is now `.186`, loaded from the one source project
+`D:\AI\eda-agent\scripts\altium\Altium_API.PrjScr`, and answers ping on
+AD26.11.1.5 with `version_match=true` and no stale units. The Python MCP
+service on 14701 was restarted from this `main` and advertises 808 Altium
+tools, including the merged phase, DbLib, pour-outline and stack commands.
+The separate TCP relay on 14700 answers `/health` as `ready`.
 Script `.172` fixes `sdk-probe --doc-path`; all 29 generated component
 read accessors answered on IC44 in a read-only AD26.11 check. The sheet
 was closed without saving. Broader component kinds and AD25 still need
@@ -3428,3 +3430,28 @@ Altium activity; it is pinned to 60 minutes via mcp_config.json, but the
 the pin cannot yet be relied on: treat the effective timeout as possibly ten
 minutes until the anomaly is resolved. Never replace loaded scripts or auto-dismiss/save/kill
 Altium to complete tests. No write permissions were enabled by this publication.
+
+## 2026-10-29 integration and live handoff
+
+`main` merge `3cce6bc9c67ced46e9515d515ae2e8ae9d51ad68` has parents
+`3eb61540a9ba8a9ace02fb4fef77d22553976cfc` (our prior main) and
+`5933c004b99753b060a79652504fcc3598a98a0a` (`MOREmbedded/main`).
+The upstream merge base is `75df9907a8ece15a2a0d20952fb67edd09e6d46d`,
+marked by `upstream-sync-2026-10-29`; both the merge and tag were pushed to
+`Rouniy/eda-agent`. The working tree was clean after the merge.
+
+The final full-suite run had 10,089 passes, 165 skips and one expected
+failure; its only failure was a stale version in the release procedure.
+That was corrected, and the exact version test passed. The 12-unit Pascal
+bundle built with zero lint errors and warnings. The running Altium bridge
+was restarted from the main script project and answered `app_ping` with
+script and bundle `.186`, `version_match=true`, `script_location_match=true`,
+no stale units and no warnings. Before restart, the only loaded design
+document was unmodified. HTTP MCP on 14701 restarted under its supervisor,
+listed 808 Altium tools including the merged commands, and its live
+`app_ping` answered. The TCP 14700 relay returned HTTP 200 `ready`.
+
+The direct child and upstream heads are integrated. The wider fork inventory
+still has one default and three branch tips whose cached refs did not match
+the latest live query, so it is not a claim that every third-party fork is
+fully synchronized.

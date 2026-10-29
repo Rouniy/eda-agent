@@ -6,7 +6,11 @@ Script `.186` merges `MOREmbedded/main` `5933c00` (including upstream
 lint errors or warnings; the merged tool surface passed 10,089 tests,
 165 skips and one expected failure. The new `pcb_make_layer_stack` tool
 uses the existing `pcb_build_stack` implementation, and 3D-body centre
-edits retain the default dry-run guard.
+edits retain the default dry-run guard. After restarting the one main Altium script project,
+`app_ping` reported script and bundle `.186`, `version_match=true`, no stale
+units and no warnings. MCP on 14701 listed 808 Altium tools; the separate
+14700 relay answered HTTP 200 `ready`. Native tests of individual new
+write commands on disposable designs remain separate.
 
 Script `.185` lets `obj_batch_modify` use `Designator` for a PCB pad while
 continuing to reject schematic component designator writes and unsupported
