@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.29.188';
+    SCRIPT_VERSION = '2026.10.29.189';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -128,12 +128,8 @@ Var
       A free document is reached once per project walk, and the second
       visit would report a library it had just written as left alone. }
     SavePassSeen : String;
-    { 'edited' while application.stop_server saves: only documents the
-      editor marks modified or a tool recorded are written, and
-      CleanLeftAlone counts the rest. '' (as at startup) is the forced
-      flush app_save_all relies on. See SaveOneDocByDocRef. }
-    SaveScope : String;
-    CleanLeftAlone : Integer;
+    { SaveScope and CleanLeftAlone are declared with the other per-command
+      diagnostics below and shared with project-scoped saves. }
     { The dashboard's Saving switch. False (saving allowed) unless the     }
     { switch was turned off; kept in SAVING_FILE so it outlasts a restart. }
     { SavesHeld and HeldFiles count what the current command did not write. }
@@ -928,19 +924,6 @@ Begin
     If ServerDoc = Nil Then Exit;
     If Pos('|' + UpperCase(Path) + '|', SavePassSeen) > 0 Then Exit;
     SavePassSeen := SavePassSeen + '|' + UpperCase(Path) + '|';
-
-        { Detach may flush only documents with actual unsaved editor changes  }
-        { or changes tracked by our tools. A clean schematic or board must   }
-        { not be rewritten merely because it is open. app_save_all uses the   }
-        { full pass and does not set SaveScope.                              }
-        If SaveScope = 'edited' Then
-        Begin
-            If (Not ServerDoc.Modified) And (Not DocWasEdited(Path)) Then
-            Begin
-                CleanLeftAlone := CleanLeftAlone + 1;
-                Exit;
-            End;
-        End;
 
         { A LIBRARY NO TOOL EDITED IS LEFT ALONE. Libraries are opened to
           read from and copy out of far more often than they are edited, and
