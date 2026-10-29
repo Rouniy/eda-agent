@@ -1232,6 +1232,7 @@ undeclared one stops the polling loop:
 | `Pad.IsPadRemoved(Layer)` | pads section |
 | `Via.IntersectLayer(Layer)`, `Via.SizeOnLayer(Layer)` | copper section |
 | `Obj.Polygon`, and that polygon's `Name` and `Net` | copper section |
+| `GetState_IsTenting_Top`, `GetState_IsTenting_Bottom`, `SolderMaskExpansionFromHoleEdge` and `GetState_Cache` on a pad (read elsewhere only on vias) | pads section, `LmMaskJson` |
 
 Open any board and run each section in turn, the riskiest first:
 
@@ -1264,6 +1265,12 @@ that they arrived:
   lists every signal layer it spans, and on a removed layer the size is
   the hole size. A through-hole pad's copper entry for such a layer ends
   in `true`.
+* Every pad and via carries `tent` (top, bottom), `from_hole` and
+  `mask`. A via shown tented in its properties reads `tent` true on
+  that side; a pad with a hand-set solder mask expansion reads it in
+  `mask` (internal units, top then bottom), and `mask` is null on one
+  that follows the mask rule. The sliver check counts on these: a board
+  read by an older script says mask slivers were not checked.
 * `pcb.get_layout_model section=copper limit=50 trace=true` answers as
   without `trace`, and `workspace/layout_trace.log` gains a line
   `copper offset=0 limit=50`, then per object its index, `kind=`, and a
