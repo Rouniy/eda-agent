@@ -2130,7 +2130,7 @@ End;
 {     across_then_down  = sort by Y descending, then X ascending              }
 {     across_then_up    = sort by Y ascending,  then X ascending              }
 {     none              = reset all to "<prefix>?"                            }
-{ - Wrap each doc in SchServer.ProcessControl.PreProcess/PostProcess for      }
+{ - Wrap each doc in SchBeginEdit/SchEndEdit for                              }
 {   undo support, then GraphicallyInvalidate.                                 }
 {..............................................................................}
 
@@ -2296,7 +2296,7 @@ Begin
             { -------- Order = 'none': just reset designators to "<prefix>?" -------- }
             If Order = 'none' Then
             Begin
-                SchServer.ProcessControl.PreProcess(SchDoc, '');
+                SchBeginEdit(SchDoc, '');
                 Iterator := SchDoc.SchIterator_Create;
                 Try
                     Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
@@ -2404,7 +2404,7 @@ Begin
         Begin
             SchDoc := SchServer.GetSchDocumentByPath(TouchedDocs[I]);
             If SchDoc <> Nil Then
-                SchServer.ProcessControl.PreProcess(SchDoc, '');
+                SchBeginEdit(SchDoc, '');
         End;
 
         For I := 0 To Total - 1 Do
@@ -2460,7 +2460,7 @@ Begin
             Try SchDoc := SchServer.GetSchDocumentByPath(TouchedDocs[I]); Except End;
             If SchDoc <> Nil Then
             Begin
-                Try SchServer.ProcessControl.PostProcess(SchDoc, 'Edit'); Except End;
+                Try SchEndEdit(SchDoc, 'Edit'); Except End;
                 Try SchDoc.GraphicallyInvalidate; Except End;
             End;
             Try MarkDocDirtyByPath(TouchedDocs[I]); Except End;
@@ -6477,7 +6477,7 @@ Begin
       SCHM_EndModify / SCHM_PrimitiveRegistration broadcasts bracket
       the actual property write and registration. }
     Found := False;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         Iterator := SchDoc.SchIterator_Create;
         Iterator.SetState_IterationDepth(eIterateFirstLevel);
@@ -6514,7 +6514,7 @@ Begin
             SchRegisterObject(SchDoc, Parameter);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
     End;
 
     { Persist directly to disk via the IServerDocument API. MarkDocDirtyByPath
@@ -7040,7 +7040,7 @@ Begin
     End;
 
     Count := 0;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
 
     Iterator := SchDoc.SchIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
@@ -7061,7 +7061,7 @@ Begin
     End;
     SchDoc.SchIterator_Destroy(Iterator);
 
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     Result := BuildSuccessResponse(RequestId,
@@ -7671,7 +7671,7 @@ Begin
                     Inc(SheetsSkipped)
                 Else
                 Begin
-                    SchServer.ProcessControl.PreProcess(SchDoc, '');
+                    SchBeginEdit(SchDoc, '');
                     Try
                         For P := 0 To PCount - 1 Do
                         Begin
@@ -7716,7 +7716,7 @@ Begin
                             End;
                         End;
                     Finally
-                        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+                        SchEndEdit(SchDoc, 'Edit');
                     End;
                     Try MarkDocDirtyByPath(FullPath); Except End;
                     Try SchDoc.GraphicallyInvalidate; Except End;

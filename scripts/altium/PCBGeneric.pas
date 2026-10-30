@@ -2431,7 +2431,7 @@ Begin
         Finally
             Board.BoardIterator_Destroy(Iterator);
         End;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             For I := 0 To Victims.Count - 1 Do
             Begin
@@ -2455,7 +2455,7 @@ Begin
                 Inc(TotalMatched);
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         Exit;
     End;
@@ -2481,7 +2481,7 @@ Begin
         Finally
             Board.BoardIterator_Destroy(Iterator);
         End;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             For I := 0 To Victims.Count - 1 Do
             Begin
@@ -2502,7 +2502,7 @@ Begin
                 Inc(TotalMatched);
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         Exit;
     End;

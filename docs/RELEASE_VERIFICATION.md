@@ -1910,11 +1910,11 @@ Taking the routing up first, on a saved copy of a public example board:
   (`pcb_lock_net_routing`) is still there and counted in `kept_locked`.
 * `pcb_unroute nets=["NOT_A_NET"]` answers with an error and removes
   nothing; with another board focused it refuses the same way.
-* `obj_batch_delete` with a board type (`eViaObject`,
+* `obj_delete` with `items` of a board type (`eViaObject`,
   `filter=InComponent=false|Net=<a net>`) deletes them and reports a
   `results` row with the count; a board type with `scope=project` is
   reported as `scope_not_supported`, not skipped in silence.
-  `obj_batch_modify` takes the same board types.
+  `obj_modify` with `items` takes the same board types.
 * Undo (Ctrl+Z) in Altium after `pcb_unroute` puts the routing back.
 * `obj_query object_type=eConnectionObject properties=Net,X1,Y1,X2,Y2,Layer1,Layer2`
   lists one row per ratsnest line, as many as `pcb_get_unrouted_nets`
@@ -3948,6 +3948,14 @@ read off. Switched back on, `app_save_document` wrote the scratch sheet.
 
 ## Still open, and not blocking
 
+* **Redo doubles a placed schematic object.** Measured 2026-10-30 on a
+  scratch sheet: one `sch_place_net_label` call, Undo (0 labels), Redo, 2
+  labels at the same spot; ten in one list call came back as 20. The
+  handlers register each new object twice, `RegisterSchObjectInContainer`
+  and then the `SCHM_PrimitiveRegistration` robot message, and Altium's
+  Redo replays both (44 sites). Undo itself removes the object once.
+  Which of the two to drop needs a live check that Undo still takes it.
+
 * **#23** font size: the importer places symbol text but not its height.
   Altium's font size is not in mils and the conversion is undocumented,
   so the source range is reported rather than guessed. Calibrating it
@@ -4030,12 +4038,12 @@ Repeatable acceptance, on a disposable schematic only:
    coordinates. Expect empty unsupported fields, unreadable diagnostics, and
    unchanged valid coordinates. Neither call may open a modal or stop polling.
    Do the same for `IsHidden` and `Text` on a wire.
-4. Attempt those writes with `obj_modify` and `obj_batch_modify`. Expect
+4. Attempt those writes with `obj_modify`, single and with `items`. Expect
    failure diagnostics, unchanged objects, and no modal. These operations
    preflight the complete assignment list for known unsupported Text,
    IsHidden and TextColor pairs before writing any other field. Unknown
    names outside that preflight retain the existing partial-write semantics.
-5. Attempt each unsupported pair through `obj_create` and `obj_batch_create`.
+5. Attempt each unsupported pair through `obj_create`, single and with `items`.
    Verify failed objects are absent. In a batch containing invalid, valid,
    invalid, and valid items, expect two creations, two indexed failures and
    no property diagnostic leaking from one item into another.

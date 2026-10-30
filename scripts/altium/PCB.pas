@@ -274,7 +274,7 @@ Begin
     Board.BoardIterator_Destroy(Iter);
 
     { Remove by re-finding each name (don't hold net refs across removal). }
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To ToDelete.Count - 1 Do
         Begin
@@ -286,7 +286,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Connected.Free;
@@ -716,14 +716,14 @@ Begin
     // Create new class if it doesn't exist
     If Not ClassExists Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         NetClass := PCBServer.PCBClassFactoryByClassMember(eClassMemberKind_Net);
         NetClass.SuperClass := False;
         NetClass.Name := ClassName;
         Board.AddPCBObject(NetClass);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, NetClass.I_ObjectAddress);
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     // Add nets to the class
@@ -744,9 +744,9 @@ Begin
         End;
         If NetName <> '' Then
         Begin
-            PCBServer.PreProcess;
+            PcbBeginEdit(0);
             NetClass.AddMemberByName(NetName);
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
             Inc(AddedCount);
         End;
     End;
@@ -986,7 +986,7 @@ Begin
     ItemsJson := '';
     First := True;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Iter := Board.BoardIterator_Create;
         Try
@@ -1065,7 +1065,7 @@ Begin
             Board.BoardIterator_Destroy(Iter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Result := BuildSuccessResponse(RequestId,
@@ -1666,7 +1666,7 @@ Begin
     { -- Metadata path: writes against the base IPCB_Rule. priority is NOT    }
     { included, it is a read-only function and writing to it crashes the      }
     { engine. See the docstring above for details.                            }
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
@@ -1698,7 +1698,7 @@ Begin
         PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     { -- Constraint values: per-kind iterator with typed iterator-returned    }
@@ -3510,7 +3510,7 @@ Begin
     { IPCB_Group interface"). Direct assignment is the documented API. The   }
     { previous OleStr->Double crash was the locale-dependent StrToFloat in   }
     { the rotation path; fixed in Utils.pas StrToFloatDef.                    }
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
@@ -3536,7 +3536,7 @@ Begin
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -3606,7 +3606,7 @@ Begin
     First := True;
     Remaining := Mapping;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While Length(Remaining) > 0 Do
         Begin
@@ -3690,7 +3690,7 @@ Begin
             ItemsJson := ItemsJson + JsonObj(EntryJson);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Try Board.GraphicallyInvalidate; Except End;
@@ -4007,7 +4007,7 @@ Begin
         End;
 
         { 5. Replicate + transform + re-net the source routing. }
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Iter := Board.BoardIterator_Create;
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
@@ -4073,7 +4073,7 @@ Begin
             End;
             Board.BoardIterator_Destroy(Iter);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
 
         { 6. Rebuild connectivity so ratsnest / highlighting reflect the copies. }
@@ -4246,7 +4246,7 @@ Begin
         End;
 
         { Deselect every board component, then select the matched ones. }
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Iter := Board.BoardIterator_Create;
             Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
@@ -4260,7 +4260,7 @@ Begin
             End;
             Board.BoardIterator_Destroy(Iter);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         Try Board.ViewManager_FullUpdate; Except End;
 
@@ -4454,7 +4454,7 @@ Begin
         MapJson := '[';
         First := True;
         K := 0;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             GrpIter := Footprint.GroupIterator_Create;
             Try
@@ -4482,7 +4482,7 @@ Begin
                 Footprint.GroupIterator_Destroy(GrpIter);
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         MapJson := MapJson + ']';
 
@@ -4563,7 +4563,7 @@ Begin
     Else StepDeg := 360.0 / Count;
 
     Copied := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For K := 1 To Count - 1 Do
         Begin
@@ -4589,7 +4589,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     Try Board.ViewManager_FullUpdate; Except End;
 
@@ -4695,7 +4695,7 @@ Begin
 
     Scaled := 0;
     Skipped := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To SelCount - 1 Do
         Begin
@@ -4774,7 +4774,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     Try Board.ViewManager_FullUpdate; Except End;
 
@@ -4855,7 +4855,7 @@ Begin
     MatchedComp := 0;
     UpdatedComp := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { Pass 1: walk track / arc / via, lock those whose net matches. }
         Iter := Board.BoardIterator_Create;
@@ -4948,7 +4948,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Try Board.GraphicallyInvalidate; Except End;
@@ -5136,7 +5136,7 @@ Begin
         End;
     End;
 
-    If Not DryRun Then PCBServer.PreProcess;
+    If Not DryRun Then PcbBeginEdit(0);
     Try
         For CandIdx := 0 To Cands.Count - 1 Do
         Begin
@@ -5218,7 +5218,7 @@ Begin
 
         End;
     Finally
-        If Not DryRun Then PCBServer.PostProcess;
+        If Not DryRun Then PcbEndEdit(0);
         Cands.Free;
     End;
 
@@ -5297,7 +5297,7 @@ Begin
     UpdatedNames := 0;
     UpdatedComments := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Iter := Board.BoardIterator_Create;
         Try
@@ -5338,7 +5338,7 @@ Begin
             Board.BoardIterator_Destroy(Iter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Try Board.GraphicallyInvalidate; Except End;
@@ -5481,7 +5481,7 @@ Begin
     Failed := 0;
     Listed := 0;
     Items := '';
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Comps.Count - 1 Do
         Begin
@@ -5534,7 +5534,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Try Board.GraphicallyInvalidate; Except End;
@@ -5675,7 +5675,7 @@ Begin
 
         { Per-component PreProcess+PostProcess (same as singular). Each move   }
         { is structurally a singular move, just inside one IPC turn.           }
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
@@ -5711,7 +5711,7 @@ Begin
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
 
         { The nets of its pads, for the ratsnest below. }
@@ -7057,7 +7057,7 @@ Begin
         End;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If RefObj = Nil Then
         Begin
@@ -7072,7 +7072,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -7139,13 +7139,13 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Try LayerStack.RemoveFromStack(LayerObj); Except End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -7264,7 +7264,7 @@ Begin
     ConstStr := ExtractJsonValue(Params, 'dielectric_constant');
     Material := ExtractJsonValue(Params, 'dielectric_material');
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If NewName <> '' Then
             Try LayerObj.Name := NewName; Except End;
@@ -7290,7 +7290,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     { Read back rather than trusting the write. Every assignment above is late }
@@ -7508,13 +7508,13 @@ Begin
     Try ResolvedName := LayerObj.Name; Except End;
 
     Route := '';
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Try Board.InternalPlaneNetName[TargetLayer] := NetObj.Name; Except End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     NetBack := '';
@@ -7524,13 +7524,13 @@ Begin
 
     If Not Applied Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Try LayerObj.Net := NetObj; Except End;
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         Try
             If LayerObj.Net <> Nil Then NetBack := LayerObj.Net.Name;
@@ -7574,14 +7574,14 @@ Begin
             Split := Splits.Items[I];
             If (Split.Net = Nil) Or (SplitsSeen = 1) Then
             Begin
-                PCBServer.PreProcess;
+                PcbBeginEdit(0);
                 Try
                     Split.BeginModify;
                     Try Split.Net := NetObj; Except End;
                     Split.EndModify;
                     Split.GraphicallyInvalidate;
                 Finally
-                    PCBServer.PostProcess;
+                    PcbEndEdit(0);
                 End;
                 If Split.Net <> Nil Then
                     If UpperCase(Split.Net.Name) = UpperCase(NetStr) Then Inc(SplitsSet);
@@ -8503,7 +8503,7 @@ Begin
     Cleared := 0;
     If Clean Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             For I := 0 To Polys.Count - 1 Do
             Begin
@@ -8530,7 +8530,7 @@ Begin
                 End;
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
     End;
 
@@ -8563,7 +8563,7 @@ Begin
             Begin
                 Before := PolygonCopper(Poly, AreaBefore, ExactBefore);
                 Ok := True;
-                PCBServer.PreProcess;
+                PcbBeginEdit(0);
                 Try
                     Poly.BeginModify;
                     Poly.SetState_CopperPourInvalid;
@@ -8573,7 +8573,7 @@ Begin
                 Except
                     Ok := False;
                 End;
-                PCBServer.PostProcess;
+                PcbEndEdit(0);
                 After := PolygonCopper(Poly, AreaAfter, ExactAfter);
                 If Ok Then Inc(Rebuilt) Else Inc(Failed);
                 Items := Items + ',"rebuilt":' + BoolToJsonStr(Ok)
@@ -8700,7 +8700,7 @@ Begin
     DidStandoff := False;
     DidMove := False;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Body := PCBServer.PCBObjectFactory(eComponentBodyObject, eNoDimension,
             eCreate_Default);
@@ -8779,7 +8779,7 @@ Begin
                 DidStandoff := True;
             Except End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     { READ THE POSITION BACK. The placement is the one thing a caller cannot
@@ -8894,14 +8894,14 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Body := AddExtrudedBody(Board, PointsStr, 'mil', 0, 0, Layer,
             MilsToCoordF(Standoff), MilsToCoordF(Overall),
             ExtractJsonValue(Params, 'color'), ExtractJsonValue(Params, 'opacity'),
             ExtractJsonValue(Params, 'identifier'), Applied);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Body = Nil Then
     Begin
@@ -8984,7 +8984,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
         If Via = Nil Then
@@ -9015,7 +9015,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Via.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -9081,7 +9081,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
         If Track = Nil Then
@@ -9114,7 +9114,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Track.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -9401,7 +9401,7 @@ Begin
     BadLayers := '';
     Remaining := ViasStr;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While Length(Remaining) > 0 Do
         Begin
@@ -9503,7 +9503,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -9565,7 +9565,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
         If Arc = Nil Then
@@ -9594,7 +9594,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Arc.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -9673,7 +9673,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         TextObj := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
         If TextObj = Nil Then
@@ -9696,7 +9696,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, TextObj.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -9760,7 +9760,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Fill := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default);
         If Fill = Nil Then
@@ -9789,7 +9789,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Fill.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -9942,7 +9942,7 @@ Begin
     { Indexed properties also use function-call form: RuleWidth.MinWidth(L)    }
     { not RuleWidth.MinWidth[L], bracket form is rejected in DelphiScript.    }
     Rule := Nil;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If RuleTypeStr = 'clearance' Then
         Begin
@@ -10102,7 +10102,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Rule.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -10195,13 +10195,13 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Rule.I_ObjectAddress);
         Board.RemovePCBObject(Rule);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -10325,7 +10325,7 @@ Begin
 
     Try OldLayer := GetLayerString(Comp.Layer); Except OldLayer := 'Unknown'; End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
@@ -10339,7 +10339,7 @@ Begin
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Try NewLayer := GetLayerString(Comp.Layer); Except NewLayer := 'Unknown'; End;
@@ -10526,7 +10526,7 @@ Begin
         CenterY := (MinY + MaxY) / 2;
 
         { Second pass: apply alignment. }
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             For I := 0 To Resolved.Count - 1 Do
             Begin
@@ -10560,7 +10560,7 @@ Begin
                     PCBM_EndModify, c_NoEventData);
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
 
         MarkDocDirtyByPath(Board.FileName);
@@ -10727,7 +10727,7 @@ Begin
     NewX := Round(OldX / GridSize) * GridSize;
     NewY := Round(OldY / GridSize) * GridSize;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
@@ -10741,7 +10741,7 @@ Begin
         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -11356,13 +11356,13 @@ Begin
     Try FoundLayer := Layer2String(FoundObj.Layer); Except End;
     BRect := FoundObj.BoundingRectangle;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, FoundObj.I_ObjectAddress);
         Board.RemovePCBObject(FoundObj);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     ConnRebuilt := RebuildPCBConnectivity(Board);
@@ -13162,7 +13162,7 @@ Begin
         Board.BoardIterator_Destroy(Iterator);
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Matches.Count - 1 Do
         Begin
@@ -13180,7 +13180,7 @@ Begin
             Except End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     { Do NOT Free a TInterfaceList holding board-primitive interface refs --
       releasing them through the COM marshaller faults in oleaut32 (read of
@@ -13819,7 +13819,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(FoundPoly.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
@@ -13920,7 +13920,7 @@ Begin
         PCBServer.SendMessageToRobots(FoundPoly.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -14107,7 +14107,7 @@ Begin
     End;
     If ScopeExpr = '' Then ScopeExpr := 'All';
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Rule := PCBServer.PCBRuleFactory(eRule_ConfinementConstraint);
         Rule.Name := RoomName;
@@ -14132,7 +14132,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Rule.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -14393,7 +14393,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'radius must be positive');
             Exit;
         End;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Board.BoardOutline.PointCount := 4;
             For K := 0 To 3 Do
@@ -14415,7 +14415,7 @@ Begin
             Board.BoardOutline.Validate;
             RefreshBoardOutline(Board);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         MarkDocDirtyByPath(Board.FileName);
         Result := BuildSuccessResponse(RequestId,
@@ -14461,7 +14461,7 @@ Begin
                 Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'a polygon needs three points or more');
                 Exit;
             End;
-            PCBServer.PreProcess;
+            PcbBeginEdit(0);
             Try
                 Board.BoardOutline.PointCount := N;
                 For K := 0 To N - 1 Do
@@ -14493,7 +14493,7 @@ Begin
                 Board.BoardOutline.Validate;
                 RefreshBoardOutline(Board);
             Finally
-                PCBServer.PostProcess;
+                PcbEndEdit(0);
             End;
         Finally
             Xs.Free;
@@ -14516,7 +14516,7 @@ Begin
     Cx1 := MilsToCoordF(X1);  Cy1 := MilsToCoordF(Y1);
     Cx2 := MilsToCoordF(X2);  Cy2 := MilsToCoordF(Y2);
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { IPCB_BoardOutline inherits from IPCB_Polygon. Per the verified
           DelphiScript idiom, you assign a
@@ -14539,7 +14539,7 @@ Begin
         { Without this the outline's cached size kept the old rectangle. }
         RefreshBoardOutline(Board);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -14617,7 +14617,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Polygon := PCBServer.PCBObjectFactory(ePolyObject, eNoDimension, eCreate_Default);
         If Polygon = Nil Then
@@ -14678,7 +14678,7 @@ Begin
         { before the polygon joined the board, the name stayed empty.       }
         Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -14784,7 +14784,7 @@ Begin
             Board.BoardIterator_Destroy(Iter);
         End;
 
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             For I := 0 To Outline.PointCount - 1 Do
             Begin
@@ -14838,7 +14838,7 @@ Begin
                 Inc(Added);
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
     Finally
         Have.Free;
@@ -14911,7 +14911,7 @@ Begin
     End;
 
     N := Outline.PointCount;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Polygon := PCBServer.PCBObjectFactory(ePolyObject, eNoDimension, eCreate_Default);
         If Polygon = Nil Then
@@ -14961,7 +14961,7 @@ Begin
         { before the polygon joined the board, the name stayed empty.       }
         Try If Polygon.Name = '' Then Polygon.Name := Polygon.GetDefaultName; Except End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
@@ -15037,7 +15037,7 @@ Begin
     End;
 
     PlacedCount := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { Positions are X1 + n * Pitch, not a running sum, so a decimal pitch }
         { does not drift; the 1e-6 mil slack keeps the last column when the  }
@@ -15072,7 +15072,7 @@ Begin
             Iy := Y1 + Ny * Pitch;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -15129,7 +15129,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         DiffPair := PCBServer.PCBObjectFactory(eDifferentialPairObject, eNoDimension, eCreate_Default);
         If DiffPair = Nil Then
@@ -15146,7 +15146,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, DiffPair.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -15255,7 +15255,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Region := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
         If Region = Nil Then
@@ -15334,7 +15334,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Region.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -15698,7 +15698,7 @@ Begin
 
     Step := (EndVal - StartVal) / (Count - 1);
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Count - 1 Do
         Begin
@@ -15724,7 +15724,7 @@ Begin
                 PCBM_EndModify, c_NoEventData);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -15791,7 +15791,7 @@ Begin
         TextY := (Y1 + Y2) / 2;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Dim := PCBServer.PCBObjectFactory(eDimensionObject, eLinearDimension, eCreate_Default);
         If Dim = Nil Then
@@ -15818,7 +15818,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Dim.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -15893,7 +15893,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
         If Pad = Nil Then
@@ -15924,7 +15924,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Pad.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -16019,7 +16019,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Comp := PCBServer.PCBObjectFactory(eComponentObject, eNoDimension, eCreate_Default);
         If Comp = Nil Then
@@ -16084,7 +16084,7 @@ Begin
             Comp.GroupIterator_Destroy(GrpIter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -16175,7 +16175,7 @@ Begin
     FailedCount := 0;
     BadLayers := '';
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Remaining := PlacementsStr;
         While Remaining <> '' Do
@@ -16319,7 +16319,7 @@ Begin
             PlacedCount := PlacedCount + 1;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -16573,7 +16573,7 @@ Begin
     BoardPath := Board.FileName;
     Sigs := TStringList.Create;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While Remaining <> '' Do
         Begin
@@ -16862,7 +16862,7 @@ Begin
             First := False;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         Sigs.Free;
     End;
 
@@ -16982,7 +16982,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Dim := PCBServer.PCBObjectFactory(eDimensionObject, eAngularDimension, eCreate_Default);
         If Dim = Nil Then
@@ -17000,7 +17000,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Dim.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -17044,7 +17044,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Dim := PCBServer.PCBObjectFactory(eDimensionObject, eRadialDimension, eCreate_Default);
         If Dim = Nil Then
@@ -17063,7 +17063,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Dim.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -17131,7 +17131,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Try Emb.Layer := TargetLayer; Except End;
         Try Emb.XLocation := MilsToCoordF(X); Except End;
@@ -17150,7 +17150,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Emb.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -17279,7 +17279,7 @@ Begin
     FirstPlaced := True;
     FirstSkipped := True;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         NetIter := Board.BoardIterator_Create;
         Try
@@ -17374,7 +17374,7 @@ Begin
             Board.BoardIterator_Destroy(NetIter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     If Placed > 0 Then MarkDocDirtyByPath(Board.FileName);
@@ -17645,7 +17645,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -17735,7 +17735,7 @@ Begin
     ItemsJson := '';
     First := True;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Iterator := Board.BoardIterator_Create;
         Try
@@ -17812,7 +17812,7 @@ Begin
             Board.BoardIterator_Destroy(Iterator);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Try Board.GraphicallyInvalidate; Except End;
@@ -18007,7 +18007,7 @@ Begin
     Total := 0;
     Cleared := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Iter := Board.BoardIterator_Create;
         Try
@@ -18046,7 +18046,7 @@ Begin
             Board.BoardIterator_Destroy(Iter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     If Cleared > 0 Then MarkDocDirtyByPath(Board.FileName);
@@ -18403,7 +18403,7 @@ Begin
     First := True;
     SaveNeeded := False;
 
-    If Not DryRun Then PCBServer.PreProcess;
+    If Not DryRun Then PcbBeginEdit(0);
     Try
         Iter := Nil;
         Try
@@ -18762,7 +18762,7 @@ Begin
             Try Board.BoardIterator_Destroy(Iter); Except End;
         End;
     Finally
-        If Not DryRun Then PCBServer.PostProcess;
+        If Not DryRun Then PcbEndEdit(0);
     End;
 
     If SaveNeeded Then
@@ -19043,7 +19043,7 @@ Begin
     Changed := 0;
     Failed := 0;
     Items := '';
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Targets.Count - 1 Do
         Begin
@@ -19093,7 +19093,7 @@ Begin
                 + ',"ok":' + BoolToJsonStr(Ok) + '}';
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Targets.Count > 0 Then MarkDocDirtyByPath(Board.FileName);
 
@@ -19369,7 +19369,7 @@ Begin
     First := True;
     PairApplied := False;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { 'Not Set' is the one kind several layers may share, so it never    }
         { displaces anything. Nor does a paired kind, which no layer holds.   }
@@ -19457,7 +19457,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     { Read back rather than trusting the write. The assignment is late bound  }
@@ -19928,7 +19928,7 @@ Begin
         If XStr <> '' Then WantX := MilsToCoordF(StrToFloatDef(XStr, 0));
         If YStr <> '' Then WantY := MilsToCoordF(StrToFloatDef(YStr, 0));
 
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_BeginModify, c_NoEventData);
@@ -19952,7 +19952,7 @@ Begin
             PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                 PCBM_EndModify, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         Applied := Applied + 1;
 
@@ -20177,7 +20177,7 @@ Begin
     WasOnline := True;
     Try WasOnline := PCBServer.SystemOptions.DoOnlineDRC; Except End;
     Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Comps.Count - 1 Do
         Begin
@@ -20238,7 +20238,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         Try PCBServer.SystemOptions.DoOnlineDRC := WasOnline; Except End;
     End;
 
@@ -20333,7 +20333,7 @@ Begin
 
     BeforeLen := CoordToMilsF(Net.RoutedLength);
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Bumps - 1 Do
         Begin
@@ -20364,7 +20364,7 @@ Begin
             X := X + 2 * Step;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     ResetParameters;
@@ -20439,7 +20439,7 @@ Begin
     ToolC := MilsToCoord(118);
     Inset := Border / 2;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { Embedded-board array (the panel core). Emb is the subtype so the    }
         { RowCount/ColCount/Spacing members resolve.                          }
@@ -20482,7 +20482,7 @@ Begin
             NewFiducial(Board, MilsToCoordF(Inset), MilsToCoordF(PanH - Inset), FidC, eTopLayer);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     { Convert the selected rail tracks into the actual board outline. }
@@ -20524,7 +20524,7 @@ Begin
 
     Removed := 0;
     Guard := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         FoundOne := True;
         While FoundOne And (Guard < 100000) Do
@@ -20578,7 +20578,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -20733,7 +20733,7 @@ Begin
     MinX := MinX - Margin; MinY := MinY - Margin;
     MaxX := MaxX + Margin; MaxY := MaxY + Margin;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Trk := NewTrack(MinX, MinY, MaxX, MinY, RailW, MechL); Board.AddPCBObject(Trk); Trk.Selected := True;
         Trk := NewTrack(MaxX, MinY, MaxX, MaxY, RailW, MechL); Board.AddPCBObject(Trk); Trk.Selected := True;
@@ -20741,7 +20741,7 @@ Begin
         Trk := NewTrack(MinX, MaxY, MinX, MinY, RailW, MechL); Board.AddPCBObject(Trk); Trk.Selected := True;
         Try Board.LayerIsDisplayed[MechL] := True; Except End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     ResetParameters;
@@ -20936,7 +20936,7 @@ Begin
     NoRing := 0;
     NoRule := 0;
     Failed := 0;
-    If Not DryRun Then PCBServer.PreProcess;
+    If Not DryRun Then PcbBeginEdit(0);
     Try
         For I := 0 To Matches.Count - 1 Do
         Begin
@@ -21008,7 +21008,7 @@ Begin
             HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
         End;
     Finally
-        If Not DryRun Then PCBServer.PostProcess;
+        If Not DryRun Then PcbEndEdit(0);
     End;
 
     If (Not DryRun) And (Changed + Failed > 0) Then MarkDocDirtyByPath(Board.FileName);
@@ -21165,7 +21165,7 @@ Begin
     Failed := 0;
     Children := 0;
     Filtered := 0;
-    If Not DryRun Then PCBServer.PreProcess;
+    If Not DryRun Then PcbBeginEdit(0);
     Try
         For I := 0 To Matches.Count - 1 Do
         Begin
@@ -21219,7 +21219,7 @@ Begin
             HistAdd(After, ViaSizeKey(Via.Size, Via.HoleSize));
         End;
     Finally
-        If Not DryRun Then PCBServer.PostProcess;
+        If Not DryRun Then PcbEndEdit(0);
     End;
 
     If (Not DryRun) And (Changed + Failed > 0) Then MarkDocDirtyByPath(Board.FileName);
@@ -21279,7 +21279,7 @@ Begin
     End;
     Copied := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Iter := Board.BoardIterator_Create;
         Try
@@ -21305,7 +21305,7 @@ Begin
             Board.BoardIterator_Destroy(Iter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -21414,7 +21414,7 @@ Begin
     NewMx := Round(nx);
     NewMy := Round(ny);
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PCBServer.SendMessageToRobots(Best.I_ObjectAddress, c_Broadcast,
             PCBM_BeginModify, c_NoEventData);
@@ -21423,7 +21423,7 @@ Begin
         PCBServer.SendMessageToRobots(Best.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     MarkDocDirtyByPath(Board.FileName);
 
@@ -21612,7 +21612,7 @@ Begin
         End;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Victims.Count - 1 Do
         Begin
@@ -21636,7 +21636,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Board.GraphicalView_ZoomRedraw;
@@ -21731,11 +21731,11 @@ Begin
             End;
             If A <> Nil Then
             Begin
-                PCBServer.PreProcess;
+                PcbBeginEdit(0);
                 Try
                     Board.RemovePCBObject(A);
                 Finally
-                    PCBServer.PostProcess;
+                    PcbEndEdit(0);
                 End;
                 SliverDeleted := SliverDeleted + 1;
                 DidWork := True;
@@ -21849,7 +21849,7 @@ Begin
 
             If MergeA <> Nil Then
             Begin
-                PCBServer.PreProcess;
+                PcbBeginEdit(0);
                 Try
                     NewT := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
                     NewT.Layer := NewLayer;
@@ -21863,7 +21863,7 @@ Begin
                     Board.RemovePCBObject(MergeA);
                     Board.RemovePCBObject(MergeB);
                 Finally
-                    PCBServer.PostProcess;
+                    PcbEndEdit(0);
                 End;
                 Merged := Merged + 1;
                 DidWork := True;
@@ -21939,7 +21939,7 @@ Begin
     Placed := 0; Scanned := 0;
     MaxPads := 5000; MaxScan := 200000;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Gy := BR.Bottom + MarginC;
         While (Gy <= BR.Top - MarginC) And (Placed < MaxPads) And (Scanned < MaxScan) Do
@@ -21980,7 +21980,7 @@ Begin
             Gy := Gy + PitchC;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -22044,7 +22044,7 @@ Begin
     ViaHole := StrToFloatDef(ExtractJsonValue(Params, 'via_hole_mils'), 28);
     Moved := 0; ViasAdded := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { move pass: layer change does not alter the iterated set, so in-place }
         Iter := Board.BoardIterator_Create;
@@ -22117,7 +22117,7 @@ Begin
             Board.BoardIterator_Destroy(Iter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
@@ -22211,7 +22211,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Target.BeginModify;
         Target.PointCount := 2 * N;
@@ -22260,7 +22260,7 @@ Begin
         Target.EndModify;
         Target.GraphicallyInvalidate;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     OrigList.Free;
 
@@ -22328,7 +22328,7 @@ Begin
     CreatedCount := 0;
     ExistingCount := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Remaining := NetsStr;
         While Remaining <> '' Do
@@ -22364,7 +22364,7 @@ Begin
             CreatedCount := CreatedCount + 1;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     Existing.Free;
@@ -22729,11 +22729,11 @@ Begin
         Exit;
     End;
     Before := NetRoutingCount(Board, Net);
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Board.CleanNet(Net);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     After := NetRoutingCount(Board, Net);
     Try Board.ViewManager_FullUpdate; Except End;
@@ -22903,7 +22903,7 @@ Begin
         Board.BoardIterator_Destroy(Iter);
     End;
     If (Result <> Nil) Or (Not Make) Then Exit;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Result := PCBServer.PCBClassFactoryByClassMember(eClassMemberKind_Signal);
         If Result <> Nil Then
@@ -22915,7 +22915,7 @@ Begin
                 PCBM_BoardRegisteration, Result.I_ObjectAddress);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 End;
 
@@ -23051,7 +23051,7 @@ Begin
         End;
     End;
     Items := '';
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Comps.Count - 1 Do
         Begin
@@ -23082,7 +23082,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Comps.Count > 0 Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -24473,7 +24473,7 @@ Begin
         End;
         Idx := StrToInt(IdxStr);
     End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If (Op = 'split') Or (Op = 'unsplit') Then
         Begin
@@ -24613,7 +24613,7 @@ Begin
             Exit;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Changed Then
     Begin
@@ -24671,7 +24671,7 @@ Begin
             Exit;
         End;
     End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If Op = 'create' Then
         Begin
@@ -24734,7 +24734,7 @@ Begin
             Exit;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Changed Then
     Begin
@@ -25000,7 +25000,7 @@ Begin
     Bound := 0;
     Failed := 0;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Remaining := BindingsStr;
         While Length(Remaining) > 0 Do
@@ -25098,7 +25098,7 @@ Begin
             Bound := Bound + 1;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     CompsJson := '';
@@ -26626,11 +26626,11 @@ Begin
     End;
     Before := 0;
     Try Before := PvLib.GetState_Count; Except End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         PvLib.AddTemplateByPrimitive(Found);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     After := 0;
     Try After := PvLib.GetState_Count; Except End;
@@ -26881,7 +26881,7 @@ Begin
     DrcWasOn := False;
     Try DrcWasOn := PCBServer.SystemOptions.DoOnlineDRC; Except End;
     Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Op := NextBatchOp(Ops);
         While Op <> '' Do
@@ -26909,7 +26909,7 @@ Begin
             Op := NextBatchOp(Ops);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         Try PCBServer.SystemOptions.DoOnlineDRC := DrcWasOn; Except End;
     End;
     Try Board.GraphicallyInvalidate; Except End;
@@ -27316,7 +27316,7 @@ Begin
     TotalMissing := 0;
     ReadbackOff := 0;
     WireOff := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { One pass per kind: T A V X F R P, then the outline. }
         For KindNo := 1 To 7 Do
@@ -28180,7 +28180,7 @@ Begin
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         Lines.Free;
     End;
     Try Board.ViewManager_FullUpdate; Except End;
@@ -28803,17 +28803,17 @@ Begin
     Problem := '';
     If Action = 'set' Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Try Prims.SetOrNewValueByName(PName, PValue); Except Problem := 'the value was not taken'; End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
     End;
     If Action = 'remove' Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Try
                 If Not Prims.TryRemoveByName(PName) Then Problem := 'no parameter of that name';
@@ -28821,7 +28821,7 @@ Begin
                 Problem := 'the parameter was not removed';
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
     End;
@@ -28915,7 +28915,7 @@ Begin
     End;
     Problem := '';
     Body := Nil;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Body := PCBServer.PCBObjectFactory(eComponentBodyObject, eNoDimension, eCreate_Default);
         If Body <> Nil Then
@@ -28956,7 +28956,7 @@ Begin
         Else
             Problem := 'no body could be created';
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
     Try Board.GraphicallyInvalidate; Except End;
@@ -29012,7 +29012,7 @@ Begin
     Problem := '';
     Added := 0;
     Count := -1;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Dim := PCBServer.PCBObjectFactory(eDimensionObject, eBaselineDimension, eCreate_Default);
         If Dim = Nil Then
@@ -29047,7 +29047,7 @@ Begin
                 PCBM_BoardRegisteration, Dim.I_ObjectAddress);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Problem = '' Then MarkDocDirtyByPath(Board.FileName);
     Try Board.GraphicallyInvalidate; Except End;
