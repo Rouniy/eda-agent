@@ -1890,7 +1890,8 @@ Var
     Obj : IPCB_LayerObject_V7;
     Names, ThisName : String;
     Lyr : TLayer;
-    Count : Integer;
+    Count, Num : Integer;
+    Enabled : Boolean;
 Begin
     Names := '';
     Count := 0;
@@ -1917,13 +1918,22 @@ Begin
             Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
         End;
 
-        For Lyr := eMechanical1 To eMechanical16 Do
+        { Mechanical1 to 16 as before; past 16 only the enabled ones, as a    }
+        { board can hold up to 1024 and a layer used there was left out.     }
+        For Num := 1 To 1024 Do
         Begin
-            If Count < 64 Then
+            If Count >= 64 Then Break;
+            Lyr := MechLayerFromNumber(Num);
+            If Lyr <> eNoLayer Then
             Begin
                 Obj := Nil;
                 Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
-                If Obj <> Nil Then
+                Enabled := Num <= 16;
+                If (Obj <> Nil) And Not Enabled Then
+                Begin
+                    Try Enabled := Obj.MechanicalLayerEnabled; Except Enabled := False; End;
+                End;
+                If (Obj <> Nil) And Enabled Then
                 Begin
                     ThisName := '';
                     Try ThisName := Obj.Name; Except ThisName := ''; End;
@@ -1946,7 +1956,7 @@ Begin
         Result := 'Layers on this board: ' + Names
             + '. Canonical tokens are also accepted (TopLayer, MidLayer1, '
             + 'InternalPlane1, TopOverlay, TopPaste, TopSolder, MultiLayer, '
-            + 'KeepOutLayer, Mechanical1..16).';
+            + 'KeepOutLayer, Mechanical1 and up).';
 End;
 {..............................................................................}
 { Paired mechanical layer kinds.                                               }

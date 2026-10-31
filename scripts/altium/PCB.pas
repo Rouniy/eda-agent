@@ -19520,8 +19520,9 @@ End;
 {..............................................................................}
 { PCB_GetMechLayerNames - List the enabled (displayed) mechanical layers with  }
 { their custom names. Uses only proven accessors (LayerStack_V7 /              }
-{ LayerObject_V7[] / LayerIsDisplayed) -- ILayer.MechanicalLayer(i) and        }
-{ MechanicalLayerEnabled are undeclared in this script binding.               }
+{ LayerObject_V7[] / LayerIsDisplayed). ILayer.MechanicalLayer(i) is         }
+{ undeclared in this binding; MechanicalLayerEnabled is read through a local  }
+{ typed IPCB_LayerObject_V7.                                                  }
 {..............................................................................}
 
 { Name, enable and kind the mechanical layers of the OPEN BOARD.              }
