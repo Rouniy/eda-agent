@@ -39,6 +39,21 @@ def test_a_layer_the_legacy_set_cannot_hold_is_matched_by_name():
     assert section.index("If Wanted And Wide Then") < match < section.index("Inc(Idx);")
 
 
+def test_a_layer_past_mechanical16_is_walked_alone():
+    # walking the whole V7 set and matching by name read every object of the
+    # board for one mechanical layer: ~3 s on a 10,000-object board against
+    # 0.1 s for a layer the legacy set holds
+    section = _pcb("LmCopperSection")
+    narrow = section.index("If (OnLayer <> eNoLayer) And Not Wide Then")
+    wide = section.index("Else If Wide Then", narrow)
+    own = section.index("OneLayer := LayerSet.CreateLayerSet;", wide)
+    include = section.index("OneLayer.Include(OnLayer);", own)
+    used = section.index("Iter.AddFilter_IPCB_LayerSet(OneLayer);", include)
+    every = section.index("Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);", used)
+    assert every < section.index("Iter.FirstPCBObject")
+    assert "OneLayer : IPCB_LayerSet;" in section
+
+
 def test_layers_are_named_past_mechanical16():
     section = _pcb("LmCopperSection")
     assert "Common := ',\"layer\":\"' + LayerDisplayName(Obj.Layer)" in section

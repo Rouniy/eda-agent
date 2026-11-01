@@ -25756,6 +25756,7 @@ Var
     Idx, Emitted, I : Integer;
     Items, Entry, Common, PolyPts, Body, OwnerName, OwnerNet, Sizes : String;
     More, Keepout, InPoly, Wanted, Wide : Boolean;
+    OneLayer : IPCB_LayerSet;
     Passes : TStringList;
     P : Integer;
     Rest, Kind : String;
@@ -25792,38 +25793,40 @@ Begin
     If Passes.Count = 0 Then Passes.Add('all');
     For P := 0 To Passes.Count - 1 Do
     Begin
-    If More Then Break;
-    Iter := Board.BoardIterator_Create;
-    Try
-        { One object type per pass; 'all' is the unnarrowed read. A read of }
-        { polygons then never walks the tracks: on a 10,000-object board the }
-        { pours came last, and a reader that wanted them read everything.    }
-        Kind := Trim(Passes[P]);
-        If Kind = 'track' Then Iter.AddFilter_ObjectSet(MkSet(eTrackObject))
-        Else If Kind = 'arc' Then Iter.AddFilter_ObjectSet(MkSet(eArcObject))
-        Else If Kind = 'via' Then Iter.AddFilter_ObjectSet(MkSet(eViaObject))
-        Else If Kind = 'region' Then Iter.AddFilter_ObjectSet(MkSet(eRegionObject))
-        Else If Kind = 'fill' Then Iter.AddFilter_ObjectSet(MkSet(eFillObject))
-        Else If Kind = 'polygon' Then Iter.AddFilter_ObjectSet(MkSet(ePolyObject))
-        Else
-            Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
-                eRegionObject, eFillObject, ePolyObject));
-        { The legacy layer set stops at Mechanical16: the V7 set reaches  }
-        { every mechanical layer (issue #149). A layer the legacy set     }
-        { cannot hold is matched by name while walking the whole V7 set.  }
-        Wide := (OnLayer <> eNoLayer) And (GetLayerString(OnLayer) = 'Unknown');
-        If (OnLayer <> eNoLayer) And Not Wide Then
-            Iter.AddFilter_LayerSet(MkSet(OnLayer))
-        Else
-            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-        Iter.AddFilter_Method(eProcessAll);
-        Obj := Iter.FirstPCBObject;
-        While Obj <> Nil Do
-        Begin
-            { Selected only: an object not selected is not counted either, }
-            { so offset and limit page through the selection itself.       }
-            Wanted := True;
-            If SelectedOnly Then
+        If More Then Break;
+        Iter := Board.BoardIterator_Create;
+        Try
+            { One object type per pass; 'all' is the unnarrowed read. A read of }
+            { polygons then never walks the tracks: on a 10,000-object board the }
+            { pours came last, and a reader that wanted them read everything.    }
+            Kind := Trim(Passes[P]);
+            If Kind = 'track' Then Iter.AddFilter_ObjectSet(MkSet(eTrackObject))
+            Else If Kind = 'arc' Then Iter.AddFilter_ObjectSet(MkSet(eArcObject))
+            Else If Kind = 'via' Then Iter.AddFilter_ObjectSet(MkSet(eViaObject))
+            Else If Kind = 'region' Then Iter.AddFilter_ObjectSet(MkSet(eRegionObject))
+            Else If Kind = 'fill' Then Iter.AddFilter_ObjectSet(MkSet(eFillObject))
+            Else If Kind = 'polygon' Then Iter.AddFilter_ObjectSet(MkSet(ePolyObject))
+            Else
+                Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+                    eRegionObject, eFillObject, ePolyObject));
+            { The legacy layer set stops at Mechanical16: the V7 set reaches  }
+            { every mechanical layer (issue #149). A layer the legacy set     }
+            { cannot hold gets a V7 set of its own, so the board hands out    }
+            { that layer only; the match by name below stays as a guard.      }
+            Wide := (OnLayer <> eNoLayer) And (GetLayerString(OnLayer) = 'Unknown');
+            If (OnLayer <> eNoLayer) And Not Wide Then
+                Iter.AddFilter_LayerSet(MkSet(OnLayer))
+            Else If Wide Then
+            Begin
+                OneLayer := LayerSet.CreateLayerSet;
+                OneLayer.Include(OnLayer);
+                Iter.AddFilter_IPCB_LayerSet(OneLayer);
+            End
+            Else
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Obj := Iter.FirstPCBObject;
+            While Obj <> Nil Do
             Begin
                 Wanted := False;
                 Try Wanted := Obj.Selected; Except Wanted := False; End;
