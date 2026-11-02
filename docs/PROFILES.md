@@ -31,6 +31,7 @@ profile/
   erc_levels.json            # the project's ERC matrix (the default set)
   erc_levels/                 # named ERC sets, each able to extend another
     strict.json                #   (one policy per file)
+  phase_gates.json           # enabled stages for the optional design_phase_* tools
   modes/                      # design modes (see DESIGN_MODES.md)
     nxp_redraw.json            #   (one mode per file)
   templates/                  # plain files, copied as-is
@@ -46,7 +47,7 @@ reuse formats that already existed before profiles did -- see
 `company_goals.json`, and `engineering/rules.py` / `design/fab_profile.py` for
 the other two. `footprint_defaults.json`, `footprint_policy.json`,
 `document_settings.json`, `design_rules.json`, `erc_levels.json`,
-`erc_levels/` and `templates/` are new, documented
+`erc_levels/`, `phase_gates.json` and `templates/` are new, documented
 below.
 
 ## How a profile is found
@@ -384,6 +385,14 @@ entirely would make a profile that sets it look ignored. It is also the one
 section that reads the **active** profile rather than `profile_dir`, so
 pointing `profile_dir` elsewhere refuses it by name instead of writing
 another profile's units.
+
+## `phase_gates.json`
+
+List the NPI stages for the optional `design_phase_*` tools, for example
+`{"stages": ["evt", "dvt", "pvt"]}`. An empty list leaves those tools
+unadvertised. Use `eda-agent phases-show`, `phases-enable` and
+`phases-disable` to inspect or change this setting. `EDA_AGENT_PHASES`
+or `--phases` overrides it for one run. See [NPI phase gates](NPI_PHASE_GATES.md).
 
 ## `templates/<name>/` and `templates/documents/`
 

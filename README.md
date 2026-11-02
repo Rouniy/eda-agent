@@ -371,6 +371,10 @@ design revision. The gate lists checks to run and records the results;
 it does not run Altium tools automatically. See
 [NPI phase gates](docs/NPI_PHASE_GATES.md).
 
+The optional `design_phase_*` tools use the stages selected with
+`eda-agent phases-enable`; they are hidden by default. The existing
+`design_npi_*` programme journal remains available separately.
+
 ## Design modes
 
 Use `eda-agent mode-list` to see the built-in scopes, such as schematic-only,

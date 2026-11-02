@@ -788,6 +788,10 @@ def main() -> int:
         "--mode", default=None, metavar="MODE",
         help="Design mode for runs that do not name one; see mode-list.",
     )
+    parser.add_argument(
+        "--phases", default=None, metavar="STAGES",
+        help="NPI stages to enable for this run, comma-separated or 'none'.",
+    )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     # serve -- default when no args given
@@ -1119,6 +1123,15 @@ def main() -> int:
     mode_init_p.add_argument("--force", action="store_true",
                              help="Replace an existing file.")
 
+    phases_show_p = subparsers.add_parser(
+        "phases-show", help="Show enabled NPI stages and their source.")
+    phases_show_p.add_argument("--json", action="store_true", dest="json_out")
+    phases_enable_p = subparsers.add_parser(
+        "phases-enable", help="Enable NPI stages in the active profile.")
+    phases_enable_p.add_argument("stages", nargs="*", metavar="STAGE")
+    subparsers.add_parser(
+        "phases-disable", help="Disable NPI stages in the active profile.")
+
     # dashboard -- local web UI for the MCP bridge
     # --- calculators -------------------------------------------------
     # Generated from cli.CALC_COMMANDS so a flag cannot drift from the
@@ -1345,15 +1358,43 @@ def main() -> int:
         os.environ["EDA_AGENT_MODE"] = args.mode.strip()
     requested = getattr(args, "backend", None)
     requested_toolset = getattr(args, "toolset", None)
+    requested_phases = getattr(args, "phases", None)
     needs_backend = bool(requested) and requested != ACTIVE_BACKEND
     needs_toolset = (bool(requested_toolset)
                      and requested_toolset != ACTIVE_TOOLSET)
-    if ((needs_backend or needs_toolset)
+    needs_phases = False
+    if requested_phases is not None:
+        from .design.phase_gates import parse_stages as _parse_stages
+        try:
+            wanted = _parse_stages(requested_phases)
+        except ValueError as exc:
+            print(f"--phases: {exc}", file=sys.stderr)
+            return 2
+        # Compared parsed, not as typed: "evt,dvt" and "dvt evt" ask for
+        # the same thing and neither should reload over the other. Read
+        # before the variable is set, or it would be comparing the
+        # request against itself.
+        in_force = _profile.get_phase_stages()
+        # "none" has to survive as itself: an empty value means "the
+        # profile decides", which is the opposite of what was asked.
+        os.environ["EDA_AGENT_PHASES"] = requested_phases.strip() or "none"
+        # Only serving needs the reload. The tool surface is chosen at
+        # import, so the line above is too late for it; every other
+        # command reads the setting when it runs and is already correct.
+        #
+        # And re-execing for them would cost them their output: os.execv
+        # on Windows does not replace this process, it starts a detached
+        # one and exits, so `--phases evt phases-show` printed nothing at
+        # all and returned 0.
+        needs_phases = args.command in (None, "serve") and wanted != in_force
+    if ((needs_backend or needs_toolset or needs_phases)
             and not os.environ.get("_EDA_AGENT_BACKEND_REEXEC")):
         if needs_backend:
             os.environ["EDA_AGENT_BACKEND"] = requested
         if needs_toolset:
             os.environ["EDA_AGENT_TOOLSET"] = requested_toolset
+        # EDA_AGENT_PHASES is already set above, for the commands that
+        # need it without a reload.
         os.environ["_EDA_AGENT_BACKEND_REEXEC"] = "1"
         os.execv(sys.executable,
                  [sys.executable, "-m", "eda_agent.server", *sys.argv[1:]])
@@ -1622,6 +1663,13 @@ def main() -> int:
         return cli.cmd_mode_use(args.name, clear=args.clear)
     if args.command == "mode-init":
         return cli.cmd_mode_init(args.name, extends=args.extends, force=args.force)
+    if args.command == "phases-show":
+        return cli.cmd_phases_show(as_json=args.json_out)
+    if args.command == "phases-enable":
+        return cli.cmd_phases_enable(args.stages)
+    if args.command == "phases-disable":
+        return cli.cmd_phases_disable()
+
     if args.command == "calc-cross-check":
         return cli.cmd_calc_cross_check(args.calculator, args.arg,
                                         as_json=args.json_out)
