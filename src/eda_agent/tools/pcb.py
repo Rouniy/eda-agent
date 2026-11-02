@@ -9376,6 +9376,73 @@ def register_pcb_tools(mcp):
             "pcb.get_polygon_outline", params)
 
     @mcp.tool()
+    async def pcb_get_pour_copper(index: int, name: str = "") -> dict[str, Any]:
+        """The copper one pour poured: every piece with its outline and holes.
+
+        Args:
+            index: The pour's ``index`` from pcb_get_polygons.
+            name: Its ``name`` there. Positions shift as pours are added or
+                removed, so a pour at ``index`` with another name is refused
+                (POUR_CHANGED). Names repeat on many boards, so the index
+                is what picks the pour.
+
+        Returns:
+            ``index``, ``name``, ``net``, ``layer``, ``pieces``, ``holes``,
+            ``vertices``, ``area_sqmils`` (copper less its holes) and
+            ``copper``: one entry per poured region with ``outlines`` and
+            ``holes`` (each a list of [x, y] in mils, arcs as Altium
+            flattened them) and its ``area_sqmils``. ``strokes`` counts the
+            tracks and arcs of a hatched pour, which pcb_get_copper reads.
+        """
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            return {"ok": False, "reason": "index counts from 0"}
+        ask = {"index": str(index)}
+        if name.strip():
+            ask["name"] = name.strip()
+        return await get_bridge().send_command_async("pcb.pour_copper", ask)
+
+    @mcp.tool()
+    async def pcb_get_copper(
+        kinds: str = "",
+        layer: str = "",
+        selected: bool = False,
+        offset: int = 0,
+        limit: int = 1500,
+    ) -> dict[str, Any]:
+        """Read the board's tracks, arcs, vias, regions, fills and pours with
+        their geometry, a page at a time. Pours carry their outline in
+        ``pts`` (``[x, y]`` per vertex, ``[x, y, cx, cy, r, a1, a2]`` where
+        the edge is an arc). Unlike the other tools, lengths here are in
+        Altium's internal units: divide by ``coord_per_mil`` in the reply.
+
+        Args:
+            kinds: Comma list of track, arc, via, region, fill, polygon;
+                read in that order. Empty reads every kind in one pass. An
+                unknown kind is refused (BAD_KINDS).
+            layer: One layer name, Mechanical17 and up included. Unknown is
+                refused (UNKNOWN_LAYER) with the board's layer names.
+            selected: Only the selected objects; offset and limit page
+                through the selection.
+            offset, limit: Paging; ``more`` says whether another page is
+                left.
+
+        Returns:
+            ``copper`` (one entry per object: ``k`` its kind, ``layer``,
+            ``net``, ``comp``, ``keepout`` and its geometry), ``offset``,
+            ``count`` and ``more``.
+        """
+        if offset < 0 or limit <= 0:
+            return {"ok": False, "reason": "offset is 0 or more and limit more than 0"}
+        ask = {"section": "copper", "offset": str(offset), "limit": str(limit)}
+        if kinds.strip():
+            ask["kinds"] = kinds.strip()
+        if layer.strip():
+            ask["layer"] = layer.strip()
+        if selected:
+            ask["selected"] = "true"
+        return await get_bridge().send_command_async("pcb.get_layout_model", ask)
+
+    @mcp.tool()
     async def pcb_grow_pour(
         board_path: str, index: int, expected_name: str, expected_layer: str,
         distance_mils: float, expected_bounds: Optional[dict[str, float]] = None,
