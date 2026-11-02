@@ -1917,6 +1917,8 @@ def register_design_tools(mcp) -> None:
                     board = await asyncio.to_thread(read_live_board, expect_file)
                 except WrongBoard as exc:
                     return {"ok": False, "error": str(exc)}
+                except Exception as exc:  # noqa: BLE001 - reported to the caller
+                    return {"ok": False, "error": f"board read failed: {exc}"}
                 source = "live"
             loops = await asyncio.to_thread(analyze_loops, board, pin_names,
                                             kinds)
@@ -2243,6 +2245,8 @@ def register_design_tools(mcp) -> None:
                 board = await asyncio.to_thread(read_live_board, expect_file)
             except WrongBoard as exc:
                 return {"ok": False, "error": str(exc)}
+            except Exception as exc:  # noqa: BLE001 - reported to the caller
+                return {"ok": False, "error": f"board read failed: {exc}"}
             source = "live"
         result = await asyncio.to_thread(
             smart_drc, board, spacing_mils=spacing_mils, probe_mils=probe_mils,
