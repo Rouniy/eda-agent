@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.10.198';
+    SCRIPT_VERSION = '2026.11.10.199';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -4720,15 +4720,20 @@ End;
 { string it was handed. Silently retargeting the top layer is the bug.          }
 {                                                                              }
 { Resolution order, first hit wins:                                            }
-{   1. the copper stack's own layer names - exactly what get_layer_stackup      }
-{      reports - compared with spaces stripped and case folded, so a renamed    }
-{      plane or signal layer resolves;                                          }
-{   2. the mechanical layers' names, read the same way; they are not part of    }
-{      the FirstLayer/NextLayer walk;                                           }
-{   3. the canonical token, but ONLY when GetLayerString round-trips it. That   }
+{   1. the canonical token, but ONLY when GetLayerString round-trips it. That   }
 {      round-trip is the guard: without it the eTopLayer Else branch comes      }
 {      back as a confident wrong answer for any typo at all;                    }
-{   4. Mechanical17..1024, which have no canonical token.                       }
+{   2. MechanicalN / MechN, N up to 1024, by number;                            }
+{   3. the copper stack's own layer names - exactly what get_layer_stackup      }
+{      reports - compared with spaces stripped and case folded, so a renamed    }
+{      plane or signal layer resolves;                                          }
+{   4. the mechanical layers' names, read the same way; they are not part of    }
+{      the FirstLayer/NextLayer walk.                                           }
+{ The tokens come first because they cost nothing, and 3 and 4 read a name    }
+{ off every layer to 1024: ~0.7 s on AD 25.8 for a token whose layer carries  }
+{ another user name ("TopLayer" for a top copper named "L1 (TOP)"), paid by   }
+{ every call that named it. A user name that spells ANOTHER layer's token     }
+{ (Mechanical3 renamed "Mechanical15") now resolves to the token's layer.     }
 {..............................................................................}
 
 { Spaces stripped and case folded: the form every comparison below uses, so    }
@@ -4744,12 +4749,29 @@ Var
     Obj : IPCB_LayerObject_V7;
     Stripped, Wanted, ThisName : String;
     Candidate, Lyr, Hit : TLayer;
-    MechNum : Integer;
+    MechNum, MechN : Integer;
 Begin
     Result := eNoLayer;
     Stripped := StripChar(Trim(LayerName), ' ');
     If Stripped = '' Then Exit;
     Wanted := UpperCase(Stripped);
+
+    Candidate := GetLayerFromString(Stripped);
+    If UpperCase(GetLayerString(Candidate)) = Wanted Then
+    Begin
+        Result := Candidate;
+        Exit;
+    End;
+
+    If Copy(Wanted, 1, 4) = 'MECH' Then
+    Begin
+        MechNum := ParseMechLayerNumber(Stripped);
+        If MechNum > 0 Then
+        Begin
+            Result := MechLayerFromNumber(MechNum);
+            If Result <> eNoLayer Then Exit;
+        End;
+    End;
 
     If LayerStack <> Nil Then
     Begin
@@ -4772,8 +4794,10 @@ Begin
             Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
         End;
 
-        For Lyr := eMechanical1 To eMechanical16 Do
+        For MechN := 1 To 1024 Do
         Begin
+            Lyr := MechLayerFromNumber(MechN);
+            If Lyr = eNoLayer Then Continue;
             Obj := Nil;
             Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
             If Obj <> Nil Then
@@ -4787,19 +4811,6 @@ Begin
                 End;
             End;
         End;
-    End;
-
-    Candidate := GetLayerFromString(Stripped);
-    If UpperCase(GetLayerString(Candidate)) = Wanted Then
-    Begin
-        Result := Candidate;
-        Exit;
-    End;
-
-    If Copy(Wanted, 1, 4) = 'MECH' Then
-    Begin
-        MechNum := ParseMechLayerNumber(Stripped);
-        If MechNum > 0 Then Result := MechLayerFromNumber(MechNum);
     End;
 End;
 
@@ -4816,6 +4827,83 @@ Begin
         Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
     End;
     Result := ResolveLayerIdInStack(LayerStack, LayerName);
+End;
+
+{ ResolveLayerId once per NAME per call, for the handlers that place a list. }
+{ The resolver matches user names first: the whole stack, then every       }
+{ mechanical layer up to 1024, reading each one's name. A canonical token  }
+{ whose layer carries another user name ("TopLayer" for a top copper named }
+{ "L1 (TOP)", or "Mechanical15") is only tried after all of that. Measured  }
+{ on AD 25.8: ~0.7 s for each such name, ~20 ms for a user name that hits;  }
+{ a track's own creation is ~5 ms. Called per row, 1000 tracks on TopLayer }
+{ held Altium for 12 minutes. Cache holds Chr(1) KEY Chr(2) ordinal Chr(1) }
+{ per name seen, KEY in the resolver's own normalised form, so the answer  }
+{ is the one the resolver gives. The caller starts it empty for each call: }
+{ a layer renamed between calls is resolved afresh.                         }
+{ The name AS GIVEN is stored too and looked up first: normalising walks   }
+{ the name a character at a time in script, ~7 ms a row measured live, and }
+{ a list repeats one spelling.                                             }
+Function CachedLayerAt(Cache : String; Key : String) : Integer;
+Var
+    P, Q : Integer;
+    Tail : String;
+Begin
+    Result := -1;
+    P := Pos(Chr(1) + Key + Chr(2), Cache);
+    If P = 0 Then Exit;
+    Tail := Copy(Cache, P + Length(Key) + 2, Length(Cache));
+    Q := Pos(Chr(1), Tail);
+    Result := StrToIntDef(Copy(Tail, 1, Q - 1), 0);
+End;
+
+Function ResolveLayerIdCached(Board : IPCB_Board; LayerName : String;
+    Var Cache : String) : TLayer;
+Var
+    Key : String;
+    Hit : Integer;
+Begin
+    Hit := CachedLayerAt(Cache, LayerName);
+    If Hit >= 0 Then
+    Begin
+        Result := Hit;
+        Exit;
+    End;
+    Key := NormalizeLayerName(LayerName);
+    Hit := CachedLayerAt(Cache, Key);
+    If Hit >= 0 Then Result := Hit
+    Else
+    Begin
+        Result := ResolveLayerId(Board, LayerName);
+        Cache := Cache + Chr(1) + Key + Chr(2) + IntToStr(Result) + Chr(1);
+    End;
+    If LayerName <> Key Then
+        Cache := Cache + Chr(1) + LayerName + Chr(2) + IntToStr(Result) + Chr(1);
+End;
+
+{ A PROGRAMMATIC SELECTION IGNORES THE EDITOR'S SELECTION FILTER.           }
+{                                                                            }
+{ The Selection Filter (the per-type toggles in the Properties panel) also   }
+{ applies to Prim.Selected := True: for a type switched off there the        }
+{ assignment is silently refused. Every caller that selects and then acts on }
+{ the selection (a process such as PCB:Clear, or a count of what is now     }
+{ selected) then did nothing for that type and still reported success.      }
+{ Measured: with Tracks off in the filter a track was not selected, with     }
+{ SelectedObjects_FilterDisabled True it was. A PcbLib passes its Board.     }
+{ Off returns the previous value; Restore puts it back, always from a        }
+{ Finally, so the user's filter is left as it was found.                     }
+
+Function PcbSelectFilterOff(Board : IPCB_Board) : Boolean;
+Begin
+    Result := False;
+    If Board = Nil Then Exit;
+    Try Result := Board.SelectedObjects_FilterDisabled; Except Result := False; End;
+    Try Board.SelectedObjects_FilterDisabled := True; Except End;
+End;
+
+Procedure PcbSelectFilterRestore(Board : IPCB_Board; Was : Boolean);
+Begin
+    If Board = Nil Then Exit;
+    Try Board.SelectedObjects_FilterDisabled := Was; Except End;
 End;
 
 { The names this board actually answers to, appended to an UNKNOWN_LAYER       }
@@ -49304,6 +49392,28 @@ End;
 { save so N tracks cost ~1x the overhead of placing one.                       }
 {..............................................................................}
 
+{ A list row's layer: "current" (any case) is the editor's current layer,  }
+{ read once by the caller (CurLayer), with no lookup; empty is Empty; any   }
+{ other name goes through the per-call cache.                               }
+Function ListRowLayer(Board : IPCB_Board; LayerStr : String; Empty : TLayer;
+    CurLayer : TLayer; Var Cache : String) : TLayer;
+Begin
+    If LayerStr = '' Then Result := Empty
+    Else If LowerCase(Trim(LayerStr)) = 'current' Then Result := CurLayer
+    Else Result := ResolveLayerIdCached(Board, LayerStr, Cache);
+End;
+
+{ The layer a list call took for "current", and how many objects went there: }
+{ the user may click another layer tab between calls, so the reply names it. }
+{ Empty when no object asked for it.                                         }
+Function CurrentLayerJson(CurLayer : TLayer; OnCurrent : Integer) : String;
+Begin
+    Result := '';
+    If OnCurrent <= 0 Then Exit;
+    Result := '"current_layer":"' + EscapeJsonString(LayerDisplayName(CurLayer))
+        + '","on_current_layer":' + IntToStr(OnCurrent) + ',';
+End;
+
 Function PCB_PlaceTracks(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -49315,9 +49425,11 @@ Var
     PipePos, CommaPos, Placed, Failed, SkippedExisting, NetMissing, FieldIdx : Integer;
     TX1, TY1, TX2, TY2 : Double;   { sub-mil coordinates: local patch 2026-09-18 }
     TWidth : Double;               { a 0.1 mm rule is 3.937 mil, not an integer }
-    LayerStr, NetStr, BadLayers, ExistingNetStr, TrackKey, P1, P2 : String;
-    FoundNet : IPCB_Net;
-    TrackLayer : TLayer;
+    LayerStr, NetStr, BadLayers, BadNets, ExistingNetStr, TrackKey, P1, P2 : String;
+    FoundNet, LastNet : IPCB_Net;
+    TrackLayer, CurLayer : TLayer;
+    LayerCache, LastNetName : String;
+    OnCurrent : Integer;
     ConnRebuilt : Boolean;
     { 7 named locals instead of `Array[0..6] Of String` - fixed-size       }
     { string arrays as function locals corrupt the function return slot   }
@@ -49343,7 +49455,18 @@ Begin
     SkippedExisting := 0;
     NetMissing := 0;
     BadLayers := '';
+    BadNets := '';
     Remaining := TracksStr;
+    { Each name is looked up once per call, not once per track: a lookup }
+    { costs several times the track (see ResolveLayerIdCached), and the  }
+    { net search walks every net on the board.                            }
+    LayerCache := '';
+    LastNetName := '';
+    LastNet := Nil;
+    { layer "current" = the editor's current layer, read here once. An  }
+    { empty layer stays the top layer, as it always was.                }
+    Try CurLayer := Board.CurrentLayer; Except CurLayer := eNoLayer; End;
+    OnCurrent := 0;
 
     { Build a board-wide exact-track index once. Route retries are common and
       previously produced coincident duplicate copper. Coordinates are mils,
@@ -49436,12 +49559,13 @@ Begin
             P1 := FloatToJsonStr(TX1) + ',' + FloatToJsonStr(TY1);
             P2 := FloatToJsonStr(TX2) + ',' + FloatToJsonStr(TY2);
             If P2 < P1 Then Begin TrackKey := P1; P1 := P2; P2 := TrackKey; End;
-            If LayerStr = '' Then TrackLayer := eTopLayer
-            Else TrackLayer := ResolveLayerId(Board, LayerStr);
+            TrackLayer := ListRowLayer(Board, LayerStr, eTopLayer, CurLayer, LayerCache);
             If TrackLayer = eNoLayer Then
             Begin
                 Inc(Failed);
-                BadLayers := BadLayers + LayerStr + ',';
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
                 Continue;
             End;
             TrackKey := P1 + '>' + P2 + ',' + FloatToJsonStr(TWidth) + ','
@@ -49455,15 +49579,25 @@ Begin
             { An unresolvable name used to fall through to eTopLayer, so one   }
             { typo in a batch quietly stacked that track on the top layer.     }
             { Skip it and name the layer in the response instead.              }
-            If LayerStr = '' Then TrackLayer := eTopLayer
-            Else TrackLayer := ResolveLayerId(Board, LayerStr);
-            If TrackLayer = eNoLayer Then
+            { A net the board does not have: skipped and named, as a layer is. }
+            FoundNet := Nil;
+            If NetStr <> '' Then
             Begin
-                Inc(Failed);
-                If BadLayers = '' Then BadLayers := LayerStr
-                Else If Pos(LayerStr, BadLayers) = 0 Then
-                    BadLayers := BadLayers + ', ' + LayerStr;
-                Continue;
+                If NetStr <> LastNetName Then
+                Begin
+                    LastNet := FindNetByName(Board, NetStr);
+                    LastNetName := NetStr;
+                End;
+                FoundNet := LastNet;
+                If FoundNet = Nil Then
+                Begin
+                    Inc(Failed);
+                    Inc(NetMissing);
+                    If BadNets = '' Then BadNets := NetStr
+                    Else If Pos(NetStr, BadNets) = 0 Then
+                        BadNets := BadNets + ', ' + NetStr;
+                    Continue;
+                End;
             End;
 
             Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
@@ -49481,13 +49615,6 @@ Begin
 
             Track.Layer := TrackLayer;
 
-            FoundNet := Nil;
-            If NetStr <> '' Then
-            Begin
-                FoundNet := FindNetByName(Board, NetStr);
-                If FoundNet = Nil Then Inc(NetMissing);
-            End;
-
             Board.AddPCBObject(Track);
             If FoundNet <> Nil Then BindPrimitiveToNet(FoundNet, Track);
             { Register EACH track with the board's robots. This used to be a  }
@@ -49503,6 +49630,7 @@ Begin
 
             ExistingKeys.Add(TrackKey);
             Inc(Placed);
+            If LowerCase(Trim(LayerStr)) = 'current' Then Inc(OnCurrent);
         End;
       Finally
           PcbEndEdit(0);
@@ -49522,6 +49650,8 @@ Begin
           + '"failed":' + IntToStr(Failed) + ','
           + '"nets_not_found":' + IntToStr(NetMissing) + ','
           + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
+          + '"unknown_nets":"' + EscapeJsonString(BadNets) + '",'
+          + CurrentLayerJson(CurLayer, OnCurrent)
           + '"connectivity_rebuilt":' + BoolToJsonStr(ConnRebuilt) + '}');
     Finally
         ExistingKeys.Free;
@@ -49541,12 +49671,13 @@ Function PCB_PlaceVias(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Via : IPCB_Via;
-    ViasStr, ViaStr, Remaining, Token, BadLayers : String;
+    ViasStr, ViaStr, Remaining, Token, BadLayers, BadNets : String;
     PipePos, CommaPos, Placed, Failed, FieldIdx : Integer;
     VX, VY, VSize, VHole : Double;
     LowLayer, HighLayer : TLayer;
-    FoundNet : IPCB_Net;
+    FoundNet, LastNet : IPCB_Net;
     F0, F1, F2, F3, F4, F5, F6 : String;
+    LayerCache, LastNetName : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -49565,7 +49696,12 @@ Begin
     Placed := 0;
     Failed := 0;
     BadLayers := '';
+    BadNets := '';
     Remaining := ViasStr;
+    { One lookup per name per call: see PCB_PlaceTracks. }
+    LayerCache := '';
+    LastNetName := '';
+    LastNet := Nil;
 
     PcbBeginEdit(0);
     Try
@@ -49624,9 +49760,9 @@ Begin
             VHole := StrToFloatDef(F3, 28);
 
             If F4 = '' Then LowLayer := eTopLayer
-            Else LowLayer := ResolveLayerId(Board, F4);
+            Else LowLayer := ResolveLayerIdCached(Board, F4, LayerCache);
             If F5 = '' Then HighLayer := eBottomLayer
-            Else HighLayer := ResolveLayerId(Board, F5);
+            Else HighLayer := ResolveLayerIdCached(Board, F5, LayerCache);
             If (LowLayer = eNoLayer) Or (HighLayer = eNoLayer) Then
             Begin
                 Inc(Failed);
@@ -49640,6 +49776,26 @@ Begin
                         BadLayers := BadLayers + ', ' + F4 + '/' + F5;
                 End;
                 Continue;
+            End;
+
+            { A net the board does not have: skipped and named, as a layer is. }
+            FoundNet := Nil;
+            If F6 <> '' Then
+            Begin
+                If F6 <> LastNetName Then
+                Begin
+                    LastNet := FindNetByName(Board, F6);
+                    LastNetName := F6;
+                End;
+                FoundNet := LastNet;
+                If FoundNet = Nil Then
+                Begin
+                    Inc(Failed);
+                    If BadNets = '' Then BadNets := F6
+                    Else If Pos(F6, BadNets) = 0 Then
+                        BadNets := BadNets + ', ' + F6;
+                    Continue;
+                End;
             End;
 
             Via := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
@@ -49656,12 +49812,7 @@ Begin
             Via.LowLayer := LowLayer;
             Via.HighLayer := HighLayer;
 
-            If F6 <> '' Then
-            Begin
-                FoundNet := FindNetByName(Board, F6);
-                If FoundNet <> Nil Then
-                    BindPrimitiveToNet(FoundNet, Via);
-            End;
+            If FoundNet <> Nil Then BindPrimitiveToNet(FoundNet, Via);
 
             Board.AddPCBObject(Via);
             Inc(Placed);
@@ -49677,7 +49828,522 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(Placed) + ','
         + '"failed":' + IntToStr(Failed) + ','
-        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '"}');
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
+        + '"unknown_nets":"' + EscapeJsonString(BadNets) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_PlaceArcs - many arcs in one call, one edit, one broadcast, as          }
+{ PCB_PlaceTracks does for tracks. Param 'arcs' is a pipe-separated list;     }
+{ each arc is 9 comma-separated fields:                                      }
+{   x_center,y_center,radius,start_angle,end_angle,width,layer,net,keepout   }
+{ in decimal mils and degrees. A field left empty takes the call's own       }
+{ 'width' / 'layer' / 'net' / 'keepout' param, else the PCB_PlaceArc         }
+{ default (width 10, start 0, end 360, no net; keepout on for the Keep-Out   }
+{ layer). No layer at all, or "current", is the editor's CURRENT layer, read }
+{ once and named in the reply (a click on another layer tab between calls    }
+{ moves it). An unknown layer or net skips that arc and is named.            }
+{..............................................................................}
+
+Function PCB_PlaceArcs(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Arc : IPCB_Arc;
+    ArcsStr, ArcStr, Remaining, Token : String;
+    DefWidth, DefLayer, DefNet, DefKeep : String;
+    LayerStr, NetStr, KeepStr, BadLayers, BadNets : String;
+    LayerCache, LastNetName : String;
+    PipePos, CommaPos, Placed, Failed, BadGeometry, FieldIdx, OnCurrent : Integer;
+    AX, AY, ARad, ASA, AEA, AWidth : Double;
+    ArcLayer, CurLayer : TLayer;
+    FoundNet, LastNet : IPCB_Net;
+    { Named locals: fixed-size string arrays as function locals corrupt  }
+    { the return slot in DelphiScript (see PCB_PlaceTracks).             }
+    F0, F1, F2, F3, F4, F5, F6, F7, F8 : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    ArcsStr := ExtractJsonValue(Params, 'arcs');
+    If ArcsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'arcs parameter required');
+        Exit;
+    End;
+    DefWidth := ExtractJsonValue(Params, 'width');
+    DefLayer := ExtractJsonValue(Params, 'layer');
+    DefNet := ExtractJsonValue(Params, 'net');
+    DefKeep := ExtractJsonValue(Params, 'keepout');
+
+    Placed := 0;
+    Failed := 0;
+    BadGeometry := 0;
+    BadLayers := '';
+    BadNets := '';
+    LayerCache := '';
+    LastNetName := '';
+    LastNet := Nil;
+    Remaining := ArcsStr;
+    { No layer (or "current") = the editor's current layer, read once. }
+    Try CurLayer := Board.CurrentLayer; Except CurLayer := eNoLayer; End;
+    OnCurrent := 0;
+
+    PcbBeginEdit(0);
+    Try
+        While Length(Remaining) > 0 Do
+        Begin
+            PipePos := Pos('|', Remaining);
+            If PipePos = 0 Then
+            Begin
+                ArcStr := Remaining;
+                Remaining := '';
+            End
+            Else
+            Begin
+                ArcStr := Copy(Remaining, 1, PipePos - 1);
+                Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            End;
+
+            If ArcStr = '' Then Continue;
+
+            F0 := '';
+            F1 := '';
+            F2 := '';
+            F3 := '';
+            F4 := '';
+            F5 := '';
+            F6 := '';
+            F7 := '';
+            F8 := '';
+            FieldIdx := 0;
+            While (ArcStr <> '') And (FieldIdx <= 8) Do
+            Begin
+                CommaPos := Pos(',', ArcStr);
+                If CommaPos = 0 Then
+                Begin
+                    Token := ArcStr;
+                    ArcStr := '';
+                End
+                Else
+                Begin
+                    Token := Copy(ArcStr, 1, CommaPos - 1);
+                    ArcStr := Copy(ArcStr, CommaPos + 1, Length(ArcStr));
+                End;
+                Case FieldIdx Of
+                    0: F0 := Token;
+                    1: F1 := Token;
+                    2: F2 := Token;
+                    3: F3 := Token;
+                    4: F4 := Token;
+                    5: F5 := Token;
+                    6: F6 := Token;
+                    7: F7 := Token;
+                    8: F8 := Token;
+                End;
+                Inc(FieldIdx);
+            End;
+
+            If F5 = '' Then F5 := DefWidth;
+            LayerStr := F6;
+            If LayerStr = '' Then LayerStr := DefLayer;
+            NetStr := F7;
+            If NetStr = '' Then NetStr := DefNet;
+            KeepStr := F8;
+            If KeepStr = '' Then KeepStr := DefKeep;
+
+            AX := StrToFloatDef(F0, 0);
+            AY := StrToFloatDef(F1, 0);
+            ARad := StrToFloatDef(F2, 0);
+            ASA := StrToFloatDef(F3, 0);
+            AEA := StrToFloatDef(F4, 360);
+            AWidth := StrToFloatDef(F5, 10);
+            If (ARad <= 0) Or (AWidth < 0) Then
+            Begin
+                Inc(Failed);
+                Inc(BadGeometry);
+                Continue;
+            End;
+
+            ArcLayer := ListRowLayer(Board, LayerStr, CurLayer, CurLayer, LayerCache);
+            If ArcLayer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+
+            FoundNet := Nil;
+            If NetStr <> '' Then
+            Begin
+                If NetStr <> LastNetName Then
+                Begin
+                    LastNet := FindNetByName(Board, NetStr);
+                    LastNetName := NetStr;
+                End;
+                FoundNet := LastNet;
+                If FoundNet = Nil Then
+                Begin
+                    Inc(Failed);
+                    If BadNets = '' Then BadNets := NetStr
+                    Else If Pos(NetStr, BadNets) = 0 Then
+                        BadNets := BadNets + ', ' + NetStr;
+                    Continue;
+                End;
+            End;
+
+            Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
+            If Arc = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            Arc.XCenter := MilsToCoordF(AX);
+            Arc.YCenter := MilsToCoordF(AY);
+            Arc.Radius := MilsToCoordF(ARad);
+            Arc.StartAngle := ASA;
+            Arc.EndAngle := AEA;
+            Arc.LineWidth := MilsToCoordF(AWidth);
+            Arc.Layer := ArcLayer;
+            { As PCB_PlaceArc: '1' or '0'; empty = on for the Keep-Out layer. }
+            If (KeepStr = '1') Or ((KeepStr = '') And (ArcLayer = eKeepOutLayer)) Then
+                Arc.IsKeepout := True;
+
+            If FoundNet <> Nil Then
+                BindPrimitiveToNet(FoundNet, Arc);
+
+            Board.AddPCBObject(Arc);
+            Inc(Placed);
+            If (LayerStr = '') Or (LowerCase(Trim(LayerStr)) = 'current') Then
+                Inc(OnCurrent);
+        End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PcbEndEdit(0);
+    End;
+
+    If Placed > 0 Then MarkDocDirtyByPath(Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":' + IntToStr(Placed) + ','
+        + '"failed":' + IntToStr(Failed) + ','
+        + '"bad_geometry":' + IntToStr(BadGeometry) + ','
+        + CurrentLayerJson(CurLayer, OnCurrent)
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
+        + '"unknown_nets":"' + EscapeJsonString(BadNets) + '"}');
+End;
+
+{..............................................................................}
+{ PCB_PlacePads - many free pads from ONE template: every pad is the same     }
+{ pad, moved, turned and named. The template is the call's own params:        }
+{   shape        round (default) / rect / oct / roundrect                     }
+{   corner_radius roundrect corner, percent of half the shorter side (25)     }
+{   x_size, y_size (60 mil), hole_size (0 = SMD), hole_length (a slot when    }
+{   above hole_size, along the pad's X), hole_rotation, plated=false,        }
+{   mask_expansion, paste_expansion (manual, through the pad cache),         }
+{   layer (empty or "current" = the editor's current layer, named in the    }
+{   reply), net, units (mil / mm, for every length)                          }
+{ and 'pads' is a pipe-separated list of x,y,rotation,name,layer,net, the    }
+{ last four optional (a row's layer / net override the template's). A pad   }
+{ with a hole goes on MultiLayer, as Lib_AddFootprintPads does. An unknown   }
+{ layer or net skips that pad and is named. Each layer and net is looked up  }
+{ once per call. One edit, one broadcast.                                    }
+{..............................................................................}
+
+Function PCB_PlacePads(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pad : IPCB_Pad;
+    PadsStr, PadStr, Remaining, Token, UnitsStr : String;
+    Shape, DefLayer, DefNet, LayerStr, NetStr, BadLayers, BadNets : String;
+    PlatedStr, PasteStr, MaskStr, LayerCache, LastNetName : String;
+    PipePos, CommaPos, Placed, Failed, FieldIdx, Total : Integer;
+    CornerPct, Slots, Unplated, Expanded, PropFailed : Integer;
+    X, Y, Rot, XSize, YSize, HoleSize, SlotLen, HoleRot : Double;
+    PadLayer, CurLayer : TLayer;
+    OnCurrent : Integer;
+    FoundNet, LastNet : IPCB_Net;
+    Cache : TPadCache;
+    F0, F1, F2, F3, F4, F5 : String;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+
+    UnitsStr := ExtractJsonValue(Params, 'units');
+    If UnitsProblem(UnitsStr) <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_UNITS', UnitsProblem(UnitsStr));
+        Exit;
+    End;
+    PadsStr := ExtractJsonValue(Params, 'pads');
+    If PadsStr = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'pads parameter required');
+        Exit;
+    End;
+
+    { The template, read and checked once. }
+    Shape := LowerCase(ExtractJsonValue(Params, 'shape'));
+    If Shape = '' Then Shape := 'round';
+    If (Shape = 'rectangular') Or (Shape = 'rectangle') Then Shape := 'rect';
+    If Shape = 'octagonal' Then Shape := 'oct';
+    If (Shape = 'rounded') Or (Shape = 'circle') Or (Shape = 'oval') Or (Shape = 'obround') Then
+        Shape := 'round';
+    If (Shape = 'rounded_rectangular') Or (Shape = 'rounded_rectangle') Then
+        Shape := 'roundrect';
+    If (Shape <> 'rect') And (Shape <> 'oct') And (Shape <> 'round') And (Shape <> 'roundrect') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_SHAPE',
+            'Unknown pad shape: ' + Shape + '. Use round, rect, oct or roundrect.');
+        Exit;
+    End;
+    CornerPct := StrToIntDef(ExtractJsonValue(Params, 'corner_radius'), 25);
+    If (CornerPct < 0) Or (CornerPct > 100) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_CORNER',
+            'corner_radius is a percentage, 0 to 100.');
+        Exit;
+    End;
+    XSize := StrToFloatDef(ExtractJsonValue(Params, 'x_size'), MilsInUnits(60, UnitsStr));
+    YSize := StrToFloatDef(ExtractJsonValue(Params, 'y_size'), MilsInUnits(60, UnitsStr));
+    HoleSize := StrToFloatDef(ExtractJsonValue(Params, 'hole_size'), 0);
+    SlotLen := StrToFloatDef(ExtractJsonValue(Params, 'hole_length'), 0);
+    HoleRot := StrToFloatDef(ExtractJsonValue(Params, 'hole_rotation'), 0);
+    PlatedStr := LowerCase(ExtractJsonValue(Params, 'plated'));
+    PasteStr := ExtractJsonValue(Params, 'paste_expansion');
+    MaskStr := ExtractJsonValue(Params, 'mask_expansion');
+    DefLayer := ExtractJsonValue(Params, 'layer');
+    DefNet := ExtractJsonValue(Params, 'net');
+    If (XSize <= 0) Or (YSize <= 0) Or (HoleSize < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_SIZE',
+            'x_size and y_size must be above 0, hole_size 0 or more.');
+        Exit;
+    End;
+
+    Placed := 0;
+    Failed := 0;
+    Total := 0;
+    Slots := 0;
+    Unplated := 0;
+    Expanded := 0;
+    PropFailed := 0;
+    BadLayers := '';
+    BadNets := '';
+    LayerCache := '';
+    LastNetName := '';
+    LastNet := Nil;
+    Remaining := PadsStr;
+    { No layer (or "current") = the editor's current layer, read once. }
+    Try CurLayer := Board.CurrentLayer; Except CurLayer := eNoLayer; End;
+    OnCurrent := 0;
+
+    PcbBeginEdit(0);
+    Try
+        While Length(Remaining) > 0 Do
+        Begin
+            PipePos := Pos('|', Remaining);
+            If PipePos = 0 Then
+            Begin
+                PadStr := Remaining;
+                Remaining := '';
+            End
+            Else
+            Begin
+                PadStr := Copy(Remaining, 1, PipePos - 1);
+                Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
+            End;
+
+            If PadStr = '' Then Continue;
+            Inc(Total);
+
+            F0 := '';
+            F1 := '';
+            F2 := '';
+            F3 := '';
+            F4 := '';
+            F5 := '';
+            FieldIdx := 0;
+            While (PadStr <> '') And (FieldIdx <= 5) Do
+            Begin
+                CommaPos := Pos(',', PadStr);
+                If CommaPos = 0 Then
+                Begin
+                    Token := PadStr;
+                    PadStr := '';
+                End
+                Else
+                Begin
+                    Token := Copy(PadStr, 1, CommaPos - 1);
+                    PadStr := Copy(PadStr, CommaPos + 1, Length(PadStr));
+                End;
+                Case FieldIdx Of
+                    0: F0 := Token;
+                    1: F1 := Token;
+                    2: F2 := Token;
+                    3: F3 := Token;
+                    4: F4 := Token;
+                    5: F5 := Token;
+                End;
+                Inc(FieldIdx);
+            End;
+
+            X := StrToFloatDef(F0, 0);
+            Y := StrToFloatDef(F1, 0);
+            Rot := StrToFloatDef(F2, 0);
+            LayerStr := F4;
+            If LayerStr = '' Then LayerStr := DefLayer;
+            NetStr := F5;
+            If NetStr = '' Then NetStr := DefNet;
+
+            If HoleSize > 0 Then PadLayer := eMultiLayer
+            Else PadLayer := ListRowLayer(Board, LayerStr, CurLayer, CurLayer, LayerCache);
+            If PadLayer = eNoLayer Then
+            Begin
+                Inc(Failed);
+                If BadLayers = '' Then BadLayers := LayerStr
+                Else If Pos(LayerStr, BadLayers) = 0 Then
+                    BadLayers := BadLayers + ', ' + LayerStr;
+                Continue;
+            End;
+
+            FoundNet := Nil;
+            If NetStr <> '' Then
+            Begin
+                If NetStr <> LastNetName Then
+                Begin
+                    LastNet := FindNetByName(Board, NetStr);
+                    LastNetName := NetStr;
+                End;
+                FoundNet := LastNet;
+                If FoundNet = Nil Then
+                Begin
+                    Inc(Failed);
+                    If BadNets = '' Then BadNets := NetStr
+                    Else If Pos(NetStr, BadNets) = 0 Then
+                        BadNets := BadNets + ', ' + NetStr;
+                    Continue;
+                End;
+            End;
+
+            Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+            If Pad = Nil Then
+            Begin
+                Inc(Failed);
+                Continue;
+            End;
+
+            Pad.X := CoordFromUnits(X, UnitsStr);
+            Pad.Y := CoordFromUnits(Y, UnitsStr);
+            Pad.TopXSize := CoordFromUnits(XSize, UnitsStr);
+            Pad.TopYSize := CoordFromUnits(YSize, UnitsStr);
+            Pad.HoleSize := CoordFromUnits(HoleSize, UnitsStr);
+            Pad.Rotation := Rot;
+            { Layer before the shape: the roundrect setters are per layer. }
+            Pad.Layer := PadLayer;
+            If F3 <> '' Then Pad.Name := F3;
+
+            If Shape = 'rect' Then Pad.TopShape := eRectangular
+            Else If Shape = 'oct' Then Pad.TopShape := eOctagonal
+            Else If Shape = 'roundrect' Then
+            Begin
+                SetPadRoundRect(Pad, CornerPct);
+                { A simple pad is drawn with its TOP shape on every layer: on }
+                { BottomLayer the per-layer setter alone left it round       }
+                { (measured live, read back "round").                         }
+                If (PadLayer <> eTopLayer) And (PadLayer <> eMultiLayer) Then
+                Begin
+                    Pad.SetState_StackShapeOnLayer(eTopLayer, eRoundedRectangular);
+                    Pad.SetState_StackCRPctOnLayer(eTopLayer, CornerPct);
+                End;
+            End
+            Else Pad.TopShape := eRounded;
+
+            If (HoleSize > 0) And (SlotLen > HoleSize) Then
+            Begin
+                Try
+                    Pad.HoleType := eSlotHole;
+                    Pad.HoleWidth := CoordFromUnits(SlotLen, UnitsStr);
+                    Pad.HoleRotation := HoleRot;
+                    Inc(Slots);
+                Except
+                    Inc(PropFailed);
+                End;
+            End;
+
+            If (HoleSize > 0) And ((PlatedStr = 'false') Or (PlatedStr = '0')) Then
+            Begin
+                Try
+                    Pad.Plated := False;
+                    Inc(Unplated);
+                Except
+                    Inc(PropFailed);
+                End;
+            End;
+
+            If (PasteStr <> '') Or (MaskStr <> '') Then
+            Begin
+                Try
+                    Cache := Pad.GetState_Cache;
+                    If PasteStr <> '' Then
+                    Begin
+                        Cache.PasteMaskExpansionValid := eCacheManual;
+                        Cache.PasteMaskExpansion := CoordFromUnits(StrToFloatDef(PasteStr, 0), UnitsStr);
+                    End;
+                    If MaskStr <> '' Then
+                    Begin
+                        Cache.SolderMaskExpansionValid := eCacheManual;
+                        Cache.SolderMaskExpansion := CoordFromUnits(StrToFloatDef(MaskStr, 0), UnitsStr);
+                    End;
+                    Pad.SetState_Cache := Cache;
+                    Inc(Expanded);
+                Except
+                    Inc(PropFailed);
+                End;
+            End;
+
+            If FoundNet <> Nil Then
+                BindPrimitiveToNet(FoundNet, Pad);
+
+            Board.AddPCBObject(Pad);
+            Inc(Placed);
+            If (HoleSize <= 0) And ((LayerStr = '')
+                Or (LowerCase(Trim(LayerStr)) = 'current')) Then
+                Inc(OnCurrent);
+        End;
+        PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+            PCBM_BoardRegisteration, c_NoEventData);
+    Finally
+        PcbEndEdit(0);
+    End;
+
+    If Placed > 0 Then MarkDocDirtyByPath(Board.FileName);
+    If UnitsAreMM(UnitsStr) Then UnitsStr := 'mm' Else UnitsStr := 'mil';
+
+    Result := BuildSuccessResponse(RequestId,
+        '{"placed":' + IntToStr(Placed) + ','
+        + '"failed":' + IntToStr(Failed) + ','
+        + '"total":' + IntToStr(Total) + ','
+        + '"shape":"' + Shape + '",'
+        + '"units":"' + UnitsStr + '",'
+        + '"slots":' + IntToStr(Slots) + ','
+        + '"unplated":' + IntToStr(Unplated) + ','
+        + '"expansions":' + IntToStr(Expanded) + ','
+        + '"property_failures":' + IntToStr(PropFailed) + ','
+        + CurrentLayerJson(CurLayer, OnCurrent)
+        + '"unknown_layers":"' + EscapeJsonString(BadLayers) + '",'
+        + '"unknown_nets":"' + EscapeJsonString(BadNets) + '"}');
 End;
 
 {..............................................................................}
@@ -72104,6 +72770,8 @@ Begin
         'place_tracks':            Result := PCB_PlaceTracks(Params, RequestId);
         'place_vias':              Result := PCB_PlaceVias(Params, RequestId);
         'place_arc':               Result := PCB_PlaceArc(Params, RequestId);
+        'place_arcs':              Result := PCB_PlaceArcs(Params, RequestId);
+        'place_pads':              Result := PCB_PlacePads(Params, RequestId);
         'place_text':              Result := PCB_PlaceText(Params, RequestId);
         'place_fill':              Result := PCB_PlaceFill(Params, RequestId);
         'start_polygon_placement': Result := PCB_StartPolygonPlacement(Params, RequestId);
