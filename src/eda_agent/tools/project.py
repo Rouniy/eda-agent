@@ -9,6 +9,8 @@ from ..units import MM_PER_MIL
 from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
+from ..ui import change_order
+from .answering import send_answering
 
 from .schematic_pdf import checked_output_path, export_root, remove_stage, stage_schematic_project
 
@@ -264,6 +266,29 @@ def _netlist_nodes(pins: list) -> tuple[list[tuple[str, str, str, str]], int]:
             seen.add(row)
             nodes.append(row)
     return nodes, dropped
+
+
+def _record_change_order(result, driven) -> list[str]:
+    """Put what was done to the change order on the reply, with the lines
+    that failed and the raw rows moved out of the way; the failed lines."""
+    if not isinstance(result, dict) or driven is None:
+        return []
+    failed = change_order.failed_lines(driven)
+    rows = driven.pop("read", None)
+    filtered = driven.pop("read_filtered", None)
+    if filtered:
+        driven["failed_lines"] = failed
+        driven["failed_lines_note"] = (
+            "read from the dialog by OCR with Only Show Errors ticked: the "
+            "rows that fit in the dialog, a long line sometimes split in "
+            "two, names with 0/O and 1/l slips")
+    elif rows is not None:
+        driven["failed_lines"] = None
+        driven["failed_lines_note"] = (
+            "Only Show Errors could not be ticked, so which lines failed "
+            "was not read")
+    result["change_order"] = driven
+    return failed
 
 
 def register_project_tools(mcp):
@@ -4140,6 +4165,60 @@ def register_project_tools(mcp):
         if verify_pad_nets:
             result["pad_net_verification"] = await _verify_pad_nets(bridge)
         return result
+
+    @mcp.tool()
+    async def proj_update_from_libraries(target: str = "schematic",
+                                         document_path: str = "") -> dict[str, Any]:
+        """Update the project's parts from their libraries: Tools > Update
+        From Libraries (symbols, parameters, models) or Update From PCB
+        Libraries (the board's footprints). Run as Altium's own process,
+        so neither the menu nor the focus is touched.
+
+        With Dialogs Automatic (Config tab) every dialog is answered: the
+        wizard finishes with its options as set, a count of footprints no
+        library has is answered Yes (its sentence kept in
+        ``change_order.passed``), and the change order is executed, its
+        failed lines read, and closed. With Manual the wizard is left to
+        you and the bridge waits until it closes.
+
+        Args:
+            target: "schematic" or "pcb".
+            document_path: a sheet (schematic) or the board (pcb) of the
+                project, focused first. Default: the document in front.
+
+        Returns:
+            ``document``, ``updated`` (a change order was executed) and
+            ``change_order``: ``done``, ``passed`` and ``failed_lines``.
+        """
+        if target not in change_order.LIBRARY_UPDATE:
+            return {"ok": False, "reason": 'target is "schematic" or "pcb"'}
+        bridge = get_bridge()
+        if document_path:
+            await bridge.send_command_async("application.set_active_document",
+                                            {"file_path": document_path})
+        doc = await bridge.send_command_async("application.get_active_document", {})
+        kind = str((doc or {}).get("document_kind", "")).upper() if isinstance(doc, dict) else ""
+        want = "SCH" if target == "schematic" else "PCB"
+        if kind != want:
+            return {"ok": False, "error": "WRONG_FOCUS", "document": (doc or {}).get("file_path"),
+                    "reason": f"a {'sheet' if want == 'SCH' else 'board'} of the project "
+                              f"must be in front (document_path), not {kind or 'nothing'}"}
+        result, driven = await send_answering(
+            bridge, "generic.run_process", change_order.library_update_params(target),
+            change_order.TITLE, change_order.STEPS, timeout=900.0,
+            on_the_way=change_order.library_on_the_way())
+        out: dict[str, Any] = {"ok": isinstance(result, dict) and result.get("success") is not False,
+                               "target": target, "document": doc.get("file_path")}
+        _record_change_order(out, driven)
+        if driven is None:
+            out["note"] = ("Dialogs is Manual (Config tab): the wizard was left to you "
+                           "and has been closed")
+        else:
+            out["updated"] = bool(driven.get("appeared")
+                                  and "Execute Changes" in (driven.get("done") or []))
+            if not driven.get("appeared"):
+                out["note"] = "no change order appeared: nothing to update"
+        return out
 
     @mcp.tool()
     async def proj_sync_schematic() -> dict[str, Any]:

@@ -622,6 +622,139 @@ def _scope_refusal(expr: str, **extra: Any) -> Optional[dict[str, Any]]:
             "suggested_scope": fixed, **extra}
 
 
+def create_rule_params(name: str, rule_type: str = "clearance", value: float = 10,
+                       max_value: Optional[float] = None,
+                       favored_value: Optional[float] = None,
+                       max_uncoupled_length: Optional[float] = None, scope: str = "",
+                       net_scope: str = "different_nets", allowed: Optional[bool] = None,
+                       connect_style: str = "direct") -> dict[str, Any]:
+    """pcb.create_design_rule's request, or a refusal (which has no name)."""
+    if scope:
+        refusal = _scope_refusal(scope, created=False)
+        if refusal:
+            return refusal
+    params: dict[str, Any] = {"name": name, "rule_type": rule_type,
+                              "value": str(value), "net_scope": net_scope}
+    if max_value is not None:
+        params["max_value"] = str(max_value)
+    if favored_value is not None:
+        params["favored_value"] = str(favored_value)
+    if max_uncoupled_length is not None:
+        params["max_uncoupled_length"] = str(max_uncoupled_length)
+    if scope:
+        params["scope"] = scope
+    if allowed is not None:
+        params["allowed"] = "true" if allowed else "false"
+    if rule_type in ("polygon_connect", "plane_connect"):
+        params["connect_style"] = connect_style
+    limit_keys = {
+        "length": ("min_length_mils", "max_length_mils"),
+        "signal_impedance": ("min_signal_impedance_ohms", "max_signal_impedance_ohms"),
+        "flight_time_rising": ("max_flight_time_ns", None),
+        "flight_time_falling": ("max_flight_time_ns", None),
+    }.get(rule_type)
+    if limit_keys:
+        if value <= 0 and rule_type != "length":
+            return {"ok": False, "reason": f"{rule_type} takes a value more than 0"}
+        params[limit_keys[0]] = str(value)
+        if limit_keys[1] and max_value is not None:
+            params[limit_keys[1]] = str(max_value)
+    return params
+
+
+def source_pcblib(library: str) -> Optional[str]:
+    """The .PcbLib a footprint is loaded from. An integrated library is
+    replaced by its source .PcbLib of the same name, found beside it or up
+    to three folders above (an IntLib package builds into "Project Outputs
+    for <name>"); None when there is none. Anything else is returned as
+    given."""
+    import os
+    if not library.lower().endswith(".intlib"):
+        return library
+    stem = os.path.splitext(os.path.basename(library))[0].lower()
+    folder = os.path.dirname(library)
+    for _ in range(4):
+        try:
+            for name in os.listdir(folder):
+                if name.lower() == stem + ".pcblib":
+                    return os.path.join(folder, name)
+        except OSError:
+            pass
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            break
+        folder = parent
+    return None
+
+
+#: Altium's internal units per mil.
+#: Design > Netlist > Update Free Primitives From Component Pads asks first.
+#: MEASURED (AD 25.8): a box titled exactly "Confirm" with this text and
+#: Yes / No, raised inside RunProcess, so the handler waits on it.
+_FREE_NETS_TITLE = "Confirm"
+_FREE_NETS_TEXT = "Update free-primitives nets"
+_FREE_NETS_TIMEOUT = 600.0
+
+
+def _is_free_nets_prompt(title: str, text: str) -> bool:
+    """True only for the update's own Confirm box, by title AND text."""
+    return (title or "").strip() == _FREE_NETS_TITLE and _FREE_NETS_TEXT in text
+
+
+def _answer_free_nets_prompt(pid, done, state, poll: float = 0.1) -> None:
+    """Press Yes on the update's Confirm box once it shows. Runs in a thread.
+
+    Every dialog of the process is read; Yes is pressed only on one whose
+    title is "Confirm" and whose text names the update. Any other dialog is
+    left alone, and recorded in ``state["left"]``. Stops when ``done`` is
+    set or after one press.
+    """
+    from ..ui import uia, windows
+
+    passed = set()
+    while not done.is_set():
+        for dialog in windows.dialogs(pid):
+            hwnd = dialog.hwnd
+            if hwnd in passed:
+                continue
+            title = dialog.title or ""
+            read = uia.describe_window(hwnd, depth=4, limit=100)
+            names = [str(e.get("name", "")) for e in read.get("elements", [])]
+            names += [str(getattr(c, "text", "") or "")
+                      for c in getattr(dialog, "controls", []) or []]
+            text = " ".join(names)
+            if (title.strip() == _FREE_NETS_TITLE
+                    and _FREE_NETS_TEXT not in text):
+                # Altium draws this box's message in owner-drawn panels:
+                # neither the controls nor UI Automation expose it, so it
+                # is read the way the bridge reads a blocking dialog, by OCR.
+                from ..ui import dialog_report
+                try:
+                    seen = dialog_report.describe_dialog(dialog)
+                except Exception:  # unreadable: not known to be ours
+                    seen = {}
+                text += " " + " ".join(
+                    str(t) for t in (seen.get("message") or [])
+                    + (seen.get("ocr_text") or []))
+            if not _is_free_nets_prompt(title, text):
+                passed.add(hwnd)
+                state["left"].append(title)
+                continue
+            pressed = uia.invoke(hwnd, "Yes")
+            if not pressed.get("ok"):
+                state["reason"] = ("the Confirm box was found but Yes could "
+                                   "not be pressed: "
+                                   + str(pressed.get("reason", "")))
+                return
+            state["answered"] = True
+            windows.wait_for_close(hwnd, timeout=5.0)
+            return
+        done.wait(poll)
+
+
+_COORDS_PER_MIL = 10000
+
+
 def _outline_ring(outline: Any, step_deg: float = 5.0) -> list[tuple[float, float]]:
     """Turn the board outline, including arc edges, into a polygon in mils."""
     if not isinstance(outline, dict):
@@ -5444,7 +5577,10 @@ def register_pcb_tools(mcp):
         Args:
             designators: The parts to refresh, e.g. ``["C12", "J3"]``.
             library_path: The .PcbLib to load from. Empty uses each
-                part's own SourceFootprintLibrary.
+                part's own SourceFootprintLibrary; for an integrated
+                library that is its source .PcbLib, found beside it or up
+                to three folders above (an IntLib is never opened: Altium
+                asks to install or extract it).
             board_path: Focus this .PcbDoc first. Omit for the board in
                 front.
             dry_run: Report what would be refreshed and change nothing.
@@ -5485,11 +5621,31 @@ def register_pcb_tools(mcp):
         held: dict[str, set] = {}
         refused: list[dict[str, Any]] = []
         passing: list[str] = []
+        library_of: dict[str, str] = {}
+        plan_items: dict[str, dict] = {}
         for item in plan["items"]:
             if not item.get("ok"):
                 refused.append(item)
                 continue
             lib = item.get("library") or ""
+            # A part can name its library without a folder: look beside
+            # the board, where a project keeps its own libraries.
+            if lib and not os.path.isabs(lib) and board:
+                beside = os.path.join(os.path.dirname(str(board)), lib)
+                if os.path.isfile(beside):
+                    lib = beside
+            source = source_pcblib(lib)
+            if source is None:
+                refused.append({**item, "ok": False, "reason": (
+                    f"{lib!r} is an integrated library and no source .PcbLib of "
+                    "that name was found beside it; opening it would ask to "
+                    "install or extract it, so pass library_path=<its .PcbLib>")})
+                continue
+            if source != lib:
+                item = {**item, "integrated_library": lib}
+            if source != item.get("library"):
+                item = {**item, "library": source}
+            lib = source
             if not os.path.isfile(lib):
                 refused.append({**item, "ok": False, "reason": (
                     f"{lib!r} is not a library file on disk, so the "
@@ -5505,23 +5661,39 @@ def register_pcb_tools(mcp):
                     f"{item.get('pattern')} is not in {lib}")})
                 continue
             passing.append(item["designator"])
+            library_of[item["designator"]] = lib
+            plan_items[item["designator"]] = item
         if held and board:
             await bridge.send_command_async(
                 "pcb.focus_board", {"board_path": board})
 
         if dry_run or not passing:
-            items = [i for i in plan["items"]
-                     if i["designator"] in passing] + refused
+            items = [plan_items[d] for d in passing] + refused
             return {"updated": 0, "would_update": len(passing),
                     "failed": len(refused), "dry_run": dry_run,
                     "board": board, "items": items}
-        done = await bridge.send_command_async(
-            "pcb.update_footprints_from_library",
-            {"designators": "|".join(passing), "library_path": library_path,
-             "dry_run": "false"}, timeout=300.0)
-        if isinstance(done, dict) and "items" in done:
-            done["items"] = done["items"] + refused
-            done["failed"] = done.get("failed", 0) + len(refused)
+        # One call per library, always a .PcbLib: the handler loads every
+        # part it is given from one library_path, and a part's own source
+        # can be an IntLib, which Altium asks to install or extract.
+        groups: dict[str, list[str]] = {}
+        for d in passing:
+            groups.setdefault(library_of[d], []).append(d)
+        done: dict[str, Any] = {"updated": 0, "failed": 0, "items": [], "board": board}
+        for lib, names_in in groups.items():
+            reply = await bridge.send_command_async(
+                "pcb.update_footprints_from_library",
+                {"designators": "|".join(names_in), "library_path": lib,
+                 "dry_run": "false"}, timeout=300.0)
+            if not isinstance(reply, dict) or "items" not in reply:
+                return reply
+            done["updated"] += reply.get("updated", 0)
+            done["failed"] += reply.get("failed", 0)
+            done["items"] += reply["items"]
+            for key in ("board", "note", "warnings"):
+                if key in reply and key != "board":
+                    done.setdefault(key, reply[key])
+        done["items"] += refused
+        done["failed"] += len(refused)
         return done
 
     @mcp.tool()
@@ -7971,6 +8143,7 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_place_tracks(
         tracks: list[dict[str, Any]],
+        board_path: str = "",
     ) -> dict[str, Any]:
         """Place many track segments on the active PCB in ONE IPC round-trip.
 
@@ -7984,6 +8157,9 @@ def register_pcb_tools(mcp):
                 the editor's current layer, see pcb_layer_view),
                 net_name (optional, empty = no net; a net the board does
                 not have skips the track)
+            board_path: The board to place on, taken by its path and
+                refused when it is not open; empty acts on the board in
+                front, which another session can change between calls.
 
             Example:
                 [
@@ -8021,10 +8197,10 @@ def register_pcb_tools(mcp):
             net = str(t.get("net_name", ""))
             parts.append(f"{x1},{y1},{x2},{y2},{width},{layer},{net}")
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "pcb.place_tracks", {"tracks": "|".join(parts)}
-        )
-        return result
+        params = {"tracks": "|".join(parts)}
+        if board_path:
+            params["board_path"] = board_path
+        return await bridge.send_command_async("pcb.place_tracks", params)
 
     @mcp.tool()
     async def pcb_plan_bga_fanout(
@@ -8127,6 +8303,7 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_place_vias(
         vias: list[dict[str, Any]],
+        board_path: str = "",
     ) -> dict[str, Any]:
         """Place many vias on the active PCB in ONE IPC round-trip.
 
@@ -8139,6 +8316,9 @@ def register_pcb_tools(mcp):
                 (default 28), low_layer (default "TopLayer"), high_layer
                 (default "BottomLayer"), net (optional, empty = no net);
                 size_mm and hole_size_mm in place of size and hole_size
+            board_path: The board to place on, taken by its path and
+                refused when it is not open; empty acts on the board in
+                front, which another session can change between calls.
 
         Returns:
             Dictionary with "placed" and "failed" counts and
@@ -8160,8 +8340,10 @@ def register_pcb_tools(mcp):
                 str(v.get("net", "")),
             ]))
         bridge = get_bridge()
-        return await bridge.send_command_async(
-            "pcb.place_vias", {"vias": "|".join(parts)})
+        params = {"vias": "|".join(parts)}
+        if board_path:
+            params["board_path"] = board_path
+        return await bridge.send_command_async("pcb.place_vias", params)
 
     @mcp.tool()
     async def pcb_audit_placement_plan(
@@ -8237,6 +8419,7 @@ def register_pcb_tools(mcp):
         layer: str = "",
         net: str = "",
         keepout: Optional[bool] = None,
+        board_path: str = "",
     ) -> dict[str, Any]:
         """Place many arcs on the active PCB in ONE call and one Altium edit.
 
@@ -8258,6 +8441,9 @@ def register_pcb_tools(mcp):
                 arc on a net the board does not have is skipped
             keepout: Mark the arcs keep-outs. Omitted: on for
                 "KeepOutLayer", off elsewhere.
+            board_path: The board to place on, taken by its path and
+                refused when it is not open; empty acts on the board in
+                front, which another session can change between calls.
 
         Returns:
             "placed" and "failed" counts, "bad_geometry" (radius not above
@@ -8284,6 +8470,8 @@ def register_pcb_tools(mcp):
             params["net"] = _list_field(net, "net")
         if keepout is not None:
             params["keepout"] = "1" if keepout else "0"
+        if board_path:
+            params["board_path"] = board_path
         bridge = get_bridge()
         return await bridge.send_command_async("pcb.place_arcs", params)
 
@@ -8303,6 +8491,7 @@ def register_pcb_tools(mcp):
         layer: str = "",
         net: str = "",
         units: str = "mil",
+        board_path: str = "",
     ) -> dict[str, Any]:
         """Place many free pads that are all ONE pad, moved, turned and
         named, in ONE call and one Altium edit.
@@ -8331,6 +8520,9 @@ def register_pcb_tools(mcp):
             net: Net for every pad that gives none; a pad on a net the
                 board does not have is skipped
             units: "mil" (default) or "mm" for every length
+            board_path: The board to place on, taken by its path and
+                refused when it is not open; empty acts on the board in
+                front, which another session can change between calls.
 
         Returns:
             "placed", "failed", "total", "slots", "unplated",
@@ -8374,6 +8566,8 @@ def register_pcb_tools(mcp):
             params["net"] = _list_field(net, "net")
         if normalise_units(units) == "mm":
             params["units"] = "mm"
+        if board_path:
+            params["board_path"] = board_path
         bridge = get_bridge()
         return await bridge.send_command_async("pcb.place_pads", params)
 

@@ -1988,8 +1988,11 @@ Begin
     DurationMs := GetTickCount - StartMs;
     StatusTotalAltiumMs := StatusTotalAltiumMs + DurationMs;
 
-    AppendLog(FormatLogStamp(0) + ',' + IntToStr(DurationMs) + ',' + Command + ',' + ResultTag
-              + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
+    { The dashboard's cockpit polls pcb.cockpit_state every few seconds;  }
+    { logged, it would bury every other line. Only a failed one is kept.  }
+    If (Command <> 'pcb.cockpit_state') Or (ResultTag <> 'OK') Then
+        AppendLog(FormatLogStamp(0) + ',' + IntToStr(DurationMs) + ',' + Command + ',' + ResultTag
+                  + ',' + IntToStr(Length(ResponseContent)) + ',' + Copy(ResponseContent, 1, 200));
 
     { Surface the error message to the dashboard (inline detail row + last- }
     { error banner) when the response is success=false. ExtractJsonValue   }
@@ -2019,7 +2022,9 @@ Begin
             If (DashCode <> '') Then DashDetail := DashCode;
         End;
     End;
-    AppendLogLine(Command, DurationMs, DashIsError, RequestId, DashDetail);
+    { Nor in the status window's list: a cockpit poll that worked is noise. }
+    If (Command <> 'pcb.cockpit_state') Or DashIsError Then
+        AppendLogLine(Command, DurationMs, DashIsError, RequestId, DashDetail);
 
     ResetInFlight(0);
 
