@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## Workspace prerequisites, 2026-11-10
+
+- [x] Port the per-tool-call Altium session queue, preserving the existing
+  bridge timeout extension and source access flags. Related tests: 86 passed;
+  `.198` Pascal build: zero lint errors/warnings.
+- [ ] Qualify queued calls, dashboard interactions and stop/restart natively
+  on disposable documents before deployment.
+- [ ] Port group arc/pad placement and OCR row reads before enabling the
+  donor workbench and Workspace view.
+
 ## Optional NPI stages, 2026-11-10
 
 - [x] Port explicit phase selection from the donor while retaining Rouniy's

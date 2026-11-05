@@ -1,5 +1,14 @@
 # Current integration state / agent handoff
 
+## Session queue prerequisite, 2026-11-10 (offline checks complete)
+
+The `backport-morembedded-workspace` branch adds the donor per-tool-call
+session queue needed by the dashboard workbench. Rouniy's bridge timeout
+extension and restricted source flags were preserved. 86 related Python tests
+pass, the `.198` Pascal bundle builds with zero lint errors/warnings, and six
+version checks pass. Native queue/lifecycle acceptance is outstanding; the
+loaded runtime was not changed.
+
 ## Optional NPI stages, 2026-11-10 (offline checks complete)
 
 The separate `backport-morembedded-phases` branch extends design modes with
