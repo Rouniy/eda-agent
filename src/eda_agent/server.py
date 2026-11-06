@@ -784,6 +784,10 @@ def main() -> int:
               "limit tool count or are slow to load hundreds of schemas. "
               "Equivalent to setting EDA_AGENT_TOOLSET."),
     )
+    parser.add_argument(
+        "--mode", default=None, metavar="MODE",
+        help="Design mode for runs that do not name one; see mode-list.",
+    )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     # serve -- default when no args given
@@ -1095,6 +1099,26 @@ def main() -> int:
              "has are overwritten; anything else already there is left "
              "alone (this merges, it does not replace the directory).")
 
+    # mode-* -- design modes: presets for the kind of run (design/modes.py)
+    subparsers.add_parser("mode-list", help="List the design modes and which is selected.")
+    mode_show_p = subparsers.add_parser(
+        "mode-show", help="Show one design mode in full (default: the selected one).")
+    mode_show_p.add_argument("name", nargs="?", default=None)
+    mode_show_p.add_argument("--json", action="store_true", dest="json_out",
+                             help="Emit machine-readable JSON.")
+    mode_use_p = subparsers.add_parser(
+        "mode-use", help="Select the design mode runs use when they name none.")
+    mode_use_p.add_argument("name", nargs="?", default=None)
+    mode_use_p.add_argument("--clear", action="store_true",
+                            help="Forget the selection (back to full_design).")
+    mode_init_p = subparsers.add_parser(
+        "mode-init", help="Scaffold a design mode in the active profile's modes/.")
+    mode_init_p.add_argument("name")
+    mode_init_p.add_argument("--extends", default=None, metavar="MODE",
+                             help="Base it on this mode, e.g. reference_redraw.")
+    mode_init_p.add_argument("--force", action="store_true",
+                             help="Replace an existing file.")
+
     # dashboard -- local web UI for the MCP bridge
     # --- calculators -------------------------------------------------
     # Generated from cli.CALC_COMMANDS so a flag cannot drift from the
@@ -1317,6 +1341,8 @@ def main() -> int:
     # an exec loop if the child somehow disagrees.
     # --toolset needs the same treatment for the same reason: the surface
     # is chosen at import, so changing it after parsing is too late.
+    if getattr(args, "mode", None):
+        os.environ["EDA_AGENT_MODE"] = args.mode.strip()
     requested = getattr(args, "backend", None)
     requested_toolset = getattr(args, "toolset", None)
     needs_backend = bool(requested) and requested != ACTIVE_BACKEND
@@ -1588,7 +1614,14 @@ def main() -> int:
         return cli.cmd_profile_validate(name=args.name, here=args.here)
     if args.command == "profile-new-project":
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
-
+    if args.command == "mode-list":
+        return cli.cmd_mode_list()
+    if args.command == "mode-show":
+        return cli.cmd_mode_show(args.name, as_json=args.json_out)
+    if args.command == "mode-use":
+        return cli.cmd_mode_use(args.name, clear=args.clear)
+    if args.command == "mode-init":
+        return cli.cmd_mode_init(args.name, extends=args.extends, force=args.force)
     if args.command == "calc-cross-check":
         return cli.cmd_calc_cross_check(args.calculator, args.arg,
                                         as_json=args.json_out)

@@ -53,7 +53,7 @@ from .profile import register_profile_tools
 from .resource_catalog import register_resource_catalog_tools
 from .conventions import register_convention_tools
 from .altium365 import register_altium365_tools
-from .requests import register_request_prompts
+from .requests import register_mode_prompts, register_request_prompts
 
 # Recognised backends. "altium" is the default and stays the full historical
 # suite; "kicad" exposes only the KiCad-native tools; "easyeda" drives
@@ -109,8 +109,10 @@ OFFLINE_DESIGN_TOOLS = (
     "design_get_laminate",
     "design_get_stackup",
     "design_get_discipline",
+    "design_get_mode",
     "design_list_circuit_blocks",
     "design_list_fab_vendors",
+    "design_list_modes",
     "design_list_stackups",
     "design_load_fab_profile",
     "design_next_action",
@@ -245,6 +247,8 @@ def register_backend(
     # The canned requests go on the real server under either toolset: a
     # minimal server hides tools, not the prompts a user picks from.
     register_request_prompts(mcp, name)
+    # One prompt per design mode, to start a run in it (design/modes.py).
+    register_mode_prompts(mcp)
     return name
 
 
@@ -395,6 +399,7 @@ __all__ = [
     "register_convention_tools",
     "register_altium365_tools",
     "register_request_prompts",
+    "register_mode_prompts",
     "register_project_tools",
     "register_library_tools",
     "register_generic_tools",
