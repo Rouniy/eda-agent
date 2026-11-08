@@ -2436,6 +2436,7 @@ Var
     FootprintBefore, FootprintAfter : String;
     FootprintChoice : Integer;
 Begin
+    BeginPropertyWrite(0);
     { Measured on a live document: callers using modify_objects /             }
     { batch_modify                                                            }
     { with a pipe-combined set like `Location.X=200|Orientation=2` on an ePin }
@@ -2909,6 +2910,7 @@ Begin
 
     If Result = 0 Then NotePropertyDiag('unknown', PropName)
     Else If Result = -1 Then NotePropertyDiag('failed', PropName);
+    EndPropertyWrite(Result);
 End;
 
 {..............................................................................}
@@ -4038,7 +4040,8 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create'))
+                And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -4104,7 +4107,8 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create'))
+                And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
