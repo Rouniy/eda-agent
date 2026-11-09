@@ -193,20 +193,32 @@ def test_a_dry_run_writes_nothing(monkeypatch, tmp_path):
 def test_apply_writes_the_differing_types_by_kind(monkeypatch, tmp_path):
     bridge = _Bridge(_matrix(*_PROJECT))
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        profile_dir=_profile(tmp_path), dry_run=False))
+        profile_dir=_profile(tmp_path), dry_run=False, project_path="C:/p/Board.PrjPcb"))
     assert got["ok"] is True and got["written"] == 1
     assert bridge.writes[0] == ("project.set_erc_levels",
-                                {"levels": "1=no_report"})
+                                {"levels": "1=no_report",
+                                 "project_path": "C:/p/Board.PrjPcb"})
+
+
+def test_apply_requires_the_exact_project_path(monkeypatch, tmp_path):
+    bridge = _Bridge(_matrix(*_PROJECT))
+    apply = _tools(monkeypatch, bridge)["proj_erc_apply"]
+    for project_path in ("", "C:/p/Other.PrjPcb", "Board.PrjPcb"):
+        got = asyncio.run(apply(profile_dir=_profile(tmp_path),
+                                dry_run=False, project_path=project_path))
+        assert got["ok"] is False
+        assert "project_path" in got["reason"]
+    assert bridge.writes == []
 
 
 def test_applying_twice_writes_nothing_the_second_time(monkeypatch, tmp_path):
     bridge = _Bridge(_matrix(*_PROJECT))
     tools = _tools(monkeypatch, bridge)
     asyncio.run(tools["proj_erc_apply"](profile_dir=_profile(tmp_path),
-                                        dry_run=False))
+                                        dry_run=False, project_path="C:/p/Board.PrjPcb"))
     before = len(bridge.writes)
     again = asyncio.run(tools["proj_erc_apply"](profile_dir=_profile(tmp_path),
-                                                dry_run=False))
+                                                dry_run=False, project_path="C:/p/Board.PrjPcb"))
     assert again["in_step"] is True and again["written"] == 0
     assert len(bridge.writes) == before
 
@@ -214,7 +226,7 @@ def test_applying_twice_writes_nothing_the_second_time(monkeypatch, tmp_path):
 def test_the_project_is_saved_because_the_matrix_lives_in_it(monkeypatch, tmp_path):
     bridge = _Bridge(_matrix(*_PROJECT))
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        profile_dir=_profile(tmp_path), dry_run=False))
+        profile_dir=_profile(tmp_path), dry_run=False, project_path="C:/p/Board.PrjPcb"))
     assert got["saved"] is True
     assert ("application.save_document",
             {"file_path": "C:/p/Board.PrjPcb"}) in bridge.writes
@@ -223,7 +235,7 @@ def test_the_project_is_saved_because_the_matrix_lives_in_it(monkeypatch, tmp_pa
 def test_save_false_leaves_the_change_unsaved(monkeypatch, tmp_path):
     bridge = _Bridge(_matrix(*_PROJECT))
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        profile_dir=_profile(tmp_path), dry_run=False, save=False))
+        profile_dir=_profile(tmp_path), dry_run=False, project_path="C:/p/Board.PrjPcb", save=False))
     assert got["saved"] is False
     assert not any(c == "application.save_document" for c, _ in bridge.writes)
 
@@ -231,7 +243,7 @@ def test_save_false_leaves_the_change_unsaved(monkeypatch, tmp_path):
 def test_a_type_the_set_does_not_name_is_never_written(monkeypatch, tmp_path):
     bridge = _Bridge(_matrix(*_PROJECT))
     asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        profile_dir=_profile(tmp_path), dry_run=False))
+        profile_dir=_profile(tmp_path), dry_run=False, project_path="C:/p/Board.PrjPcb"))
     written = [w for c, w in bridge.writes if c == "project.set_erc_levels"]
     assert "0=" not in str(written) and "3=" not in str(written)
 
@@ -239,7 +251,7 @@ def test_a_type_the_set_does_not_name_is_never_written(monkeypatch, tmp_path):
 def test_unlisted_pins_the_rest_of_the_matrix(monkeypatch, tmp_path):
     bridge = _Bridge(_matrix(*_PROJECT))
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        profile_dir=_profile(tmp_path), dry_run=False, unlisted="no_report"))
+        profile_dir=_profile(tmp_path), dry_run=False, project_path="C:/p/Board.PrjPcb", unlisted="no_report"))
     assert got["written"] == 3, got["change"]
     assert "0=no_report" in bridge.writes[0][1]["levels"]
 
@@ -248,7 +260,7 @@ def test_an_unknown_type_leaves_the_apply_not_ok(monkeypatch, tmp_path):
     bridge = _Bridge(_matrix(*_PROJECT))
     directory = _profile(tmp_path, {"levels": {"Net has no namne": "error"}})
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        profile_dir=directory, dry_run=False))
+        profile_dir=directory, dry_run=False, project_path="C:/p/Board.PrjPcb"))
     assert got["ok"] is False and got["unknown"]
     assert bridge.writes == [], "nothing resolved, so nothing to write"
 
@@ -258,7 +270,7 @@ def test_a_long_matrix_is_written_in_more_than_one_call(monkeypatch, tmp_path):
     bridge = _Bridge(_matrix(*rows))
     directory = _profile(tmp_path, {"levels": {}, "unlisted": "error"})
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        profile_dir=directory, dry_run=False))
+        profile_dir=directory, dry_run=False, project_path="C:/p/Board.PrjPcb"))
     calls = [w for c, w in bridge.writes if c == "project.set_erc_levels"]
     assert len(calls) == 2
     assert got["written"] == erc_tools.WRITE_CHUNK + 5
@@ -266,7 +278,7 @@ def test_a_long_matrix_is_written_in_more_than_one_call(monkeypatch, tmp_path):
 
 def test_a_refusal_from_plan_is_passed_through_by_apply(monkeypatch, tmp_path):
     got = asyncio.run(_tools(monkeypatch, _Bridge())["proj_erc_apply"](
-        profile_dir=str(tmp_path), dry_run=False))
+        profile_dir=str(tmp_path), dry_run=False, project_path="C:/p/Board.PrjPcb"))
     assert got["ok"] is False and "erc_levels.json" in got["reason"]
 
 
@@ -275,7 +287,7 @@ def test_levels_inline_and_empty_pins_the_whole_matrix(monkeypatch):
     is how somebody asks for the whole matrix at one level."""
     bridge = _Bridge(_matrix(*_PROJECT))
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        levels={}, unlisted="warning", dry_run=False))
+        levels={}, unlisted="warning", dry_run=False, project_path="C:/p/Board.PrjPcb"))
     assert got["written"] == 2, got["change"]
     assert "2=warning" in bridge.writes[0][1]["levels"]
     assert "3=warning" in bridge.writes[0][1]["levels"]
@@ -284,7 +296,7 @@ def test_levels_inline_and_empty_pins_the_whole_matrix(monkeypatch):
 def test_a_change_the_write_cannot_carry_is_reported_not_dropped(monkeypatch):
     bridge = _Bridge([{"kind": None, "description": "Odd", "level": "warning"}])
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        levels={"Odd": "error"}, dry_run=False))
+        levels={"Odd": "error"}, dry_run=False, project_path="C:/p/Board.PrjPcb"))
     assert [u["description"] for u in got["unwritable"]] == ["Odd"]
     assert got["ok"] is False and bridge.writes == []
 
@@ -303,7 +315,7 @@ def test_a_refused_write_is_counted_as_failed_not_as_nothing(monkeypatch, tmp_pa
 
     bridge = _Refusing(_matrix(*_PROJECT))
     got = asyncio.run(_tools(monkeypatch, bridge)["proj_erc_apply"](
-        profile_dir=_profile(tmp_path), dry_run=False))
+        profile_dir=_profile(tmp_path), dry_run=False, project_path="C:/p/Board.PrjPcb"))
     assert got["ok"] is False
     assert got["written"] == 0 and got["failed"] == 1
     assert "read-only" in got["results"][0]["problem"]

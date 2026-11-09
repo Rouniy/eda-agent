@@ -143,7 +143,7 @@ def register_erc_tools(mcp):
             profile_dir: Read the set from this directory instead.
             levels: The levels inline instead of reading any file.
             unlisted: Override the set's own ``unlisted``.
-            project_path: The .PrjPcb; default the focused project.
+            project_path: The .PrjPcb; default the focused project for reads.
 
         Returns:
             ``in_step``, ``change`` (each with the kind a write would use),
@@ -196,7 +196,8 @@ def register_erc_tools(mcp):
             profile_dir: Read the set from this directory instead.
             levels: The levels inline instead of reading any file.
             unlisted: Override the set's own ``unlisted``.
-            project_path: The .PrjPcb; default the focused project.
+            project_path: Absolute .PrjPcb path required for writes. It must
+                match the project returned by the diff read.
             dry_run: True (the default) reports what would change and
                 writes nothing. Pass False to write.
             save: Save the project afterwards, so the matrix persists. The
@@ -230,6 +231,17 @@ def register_erc_tools(mcp):
             diff["failed"] = 0
             diff["results"] = []
             diff["ok"] = not blocked
+            return diff
+        expected = Path(project_path) if project_path else None
+        actual = diff.get("project", "")
+        if (expected is None or not expected.is_absolute()
+                or expected.suffix.casefold() != ".prjpcb"
+                or str(expected).casefold().replace("\\", "/")
+                != str(actual).casefold().replace("\\", "/")):
+            diff.update({"ok": False, "written": 0, "failed": 0,
+                         "results": [], "reason": (
+                             "ERC writes require an absolute project_path "
+                             "matching the project returned by Altium")})
             return diff
         from .profile_apply import is_real_project
         if not is_real_project(diff.get("project", "")):

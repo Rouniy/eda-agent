@@ -4,9 +4,10 @@
 
 - [x] Require an explicit `.PrjPcb` for profile-wide ERC writes and separate
   `would_apply` from actual writes in dry-run results.
-- [ ] Reconcile standalone `proj_erc_apply` with the selected-project write
-  gate; it still permits writing to a focused real project without an
-  explicit `project_path`.
+- [x] Require standalone `proj_erc_apply` to name the absolute `.PrjPcb`
+  returned by the diff read before any write.
+- [ ] Reconcile profile writes with the selected-project capability and
+  approval gate before native acceptance or deployment.
 - [ ] Add the dashboard assertion when the donor Workspace view is ported.
 
 ## Profile rules/ERC follow-up, 2026-11-09
