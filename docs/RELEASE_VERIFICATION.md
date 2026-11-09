@@ -1,7 +1,7 @@
 
-# Release verification: 2026.11.09.194 candidate
+# Release verification: 2026.11.09.195 candidate
 
-The backport branch builds script `2026.11.09.194`. Native Altium acceptance
+The backport branch builds script `2026.11.09.195`. Native Altium acceptance
 and deployment for this candidate remain pending. The notes below retain the
 last completed live verification and must not be read as acceptance of this
 candidate.
@@ -229,7 +229,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.11.09.194` from `app_ping` after an
+Expect `altium_script_version` = `2026.11.09.195` from `app_ping` after an
 operator installs and starts this candidate. This native check is pending.
 
 ## 2026.10.28.156 - Previous native checkpoint

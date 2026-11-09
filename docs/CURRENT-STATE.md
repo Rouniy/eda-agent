@@ -1,5 +1,15 @@
 # Current integration state / agent handoff
 
+## Profile rules/ERC worktree, 2026-11-09 (offline checks complete)
+
+The separate `backport-morembedded-integration` branch extends the PCB stage
+with profile-driven board rule planning/application, project ERC matrix sets,
+and whole-profile application. Nine impacted/version test modules pass (196
+tests), and the `.195` Pascal bundle builds with zero lint errors or warnings.
+The donor NPI stage-enablement logic is deferred for a separate reconciliation
+with Rouniy's existing phase gates. Native acceptance and selected-project
+write-gate review remain outstanding; no runtime was deployed.
+
 ## PCB text and pour worktree, 2026-11-09 (offline checks complete)
 
 The separate `backport-morembedded-pcb` branch extends the bulk/board-read

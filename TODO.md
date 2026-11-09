@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Profile rules/ERC follow-up, 2026-11-09
+
+- [x] Port profile-driven board rules, ERC sets, and whole-profile apply.
+  Impacted/version tests: 196 passed; `.195` Pascal build: zero errors/warnings.
+- [ ] Reconcile donor NPI stage settings with Rouniy's existing phase gates.
+- [ ] Review selected-project write gates and run native acceptance on
+  disposable documents before deployment of profile writes.
+
 ## PCB text and pour follow-up, 2026-11-09
 
 - [x] Port board-text properties and frame sizing, plus poured-copper readback.
