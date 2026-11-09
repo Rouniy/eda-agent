@@ -1,5 +1,17 @@
 # Fork integration TODO
 
+## Foundation worktree follow-up, 2026-11-09
+
+- [ ] Reconcile bulk transaction boundaries in existing Rouniy Pascal
+  handlers before advertising one-undo-step `items` calls for them.
+- [ ] Verify the named SchLib component scope walks the selected symbol,
+  including hidden pins and the requested part.
+- [ ] Keep synchronous offline engineering/profile tools outside Altium IPC
+  bulk claims and update the surface assertion accordingly.
+- [ ] Rebuild `.192` script bundle and run impacted and full Python tests
+  after these changes. Native acceptance remains separate.
+
+
 ## MOREmbedded backport, 2026-11-09
 
 - [x] Fetch `MOREmbedded/main` at `3af39ffd` and isolate integration in

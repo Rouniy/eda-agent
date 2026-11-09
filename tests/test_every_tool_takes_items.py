@@ -169,6 +169,10 @@ def test_every_advertised_tool_that_should_take_items_does():
             assert not has, f"{t.name} takes its own list; a second is noise"
             assert any("array" in str(p) for p in props.values()), (
                 f"{t.name} is listed as taking a list and takes none")
+        elif t.name.startswith(("eng_", "profile_")):
+            # This fork adds synchronous offline engineering and profile
+            # commands. They cannot join an Altium IPC bulk transaction.
+            continue
         elif not has:
             lacking.append(t.name)
     assert not lacking, f"no bulk form: {lacking}"

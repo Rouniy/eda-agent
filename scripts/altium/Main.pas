@@ -137,6 +137,18 @@ Var
       messages remain the authority on compile health. }
     LastCompileAction : String;
 
+    { Transaction state for batched PCB and schematic operations. }
+    PcbEditDepth : Integer;
+    SchEditOpen : String;
+    SchBulkHold : Boolean;
+    SchHeld : Boolean;
+    SchHeldDoc : ISch_Document;
+    SchHeldPath : String;
+
+    { Current library component scope selected by the request. }
+    LibScopeName : String;
+    LibScopePart : Integer;
+
     { Silent cast-failure counter, incremented every time a defensive       }
     { Try/Except in an iteration helper swallows an interface cast that      }
     { ObjectId-checking should have ruled out. Surfaced via application.ping }

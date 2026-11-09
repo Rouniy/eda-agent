@@ -1,5 +1,17 @@
 # Current integration state / agent handoff
 
+## Foundation worktree, 2026-11-09 (not ready to merge)
+
+The separate `backport-morembedded-foundation` branch contains donor SDK
+reach, folded tool families, script-crash recovery, and the first bulk-tool
+framework through `c33bb096`. Its Pascal lint passes after restoring eight
+shared transaction-state declarations. Focused tests passed 94 for SDK/restart,
+69 for tool families/catalog, and 24 for crash recovery. The new bulk-tool
+tests still fail on legacy Rouniy handlers that open their own edit transactions,
+on the library component scope walk, and on synchronous offline tools that do
+not accept `items`. This branch is a work in progress; no runtime was deployed.
+
+
 On 2026-11-09, the `MOREmbedded/main` tip was fetched at `3af39ffd`. It has
 251 commits beyond the current Rouniy `main` and about 496 changed files.
 The isolated `backport-morembedded-20261109` worktree carries the first
