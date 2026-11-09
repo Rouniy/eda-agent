@@ -5,7 +5,9 @@
 The separate `backport-morembedded-profilefix` branch adds the donor guard
 that refuses a profile-wide ERC write without an explicit `.PrjPcb` path,
 distinguishes dry-run `would_apply` from completed writes, and reports
-`modified:false` when `obj_modify` made no change. The donor dashboard
+`modified:false` when `obj_modify` made no change. The `.197` Pascal bundle
+builds with zero lint errors/warnings; 108 impacted tests pass after the
+full-suite follow-up fixes. The donor dashboard
 assertion was deferred because Rouniy does not yet carry that workspace view.
 Standalone `proj_erc_apply` now also requires an absolute `.PrjPcb` path
 matching the project returned by the diff read. The remaining selected-project
