@@ -17,7 +17,11 @@ deployment. No runtime was deployed.
 The separate `backport-morembedded-integration` branch extends the PCB stage
 with profile-driven board rule planning/application, project ERC matrix sets,
 and whole-profile application. Nine impacted/version test modules pass (196
-tests), and the `.195` Pascal bundle builds with zero lint errors or warnings.
+tests). A full Python run found 10,480 passes, 205 skips, one expected
+failure, and three failures: a malformed `LmCopperSection` block from conflict
+resolution plus two stale rounded tool-count claims. All three were corrected;
+the 41 implicated structure/count tests pass. The `.196` Pascal bundle is
+the candidate for this stage.
 The donor NPI stage-enablement logic is deferred for a separate reconciliation
 with Rouniy's existing phase gates. Native acceptance and selected-project
 write-gate review remain outstanding; no runtime was deployed.
