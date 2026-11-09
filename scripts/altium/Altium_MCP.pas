@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.09.195';
+    SCRIPT_VERSION = '2026.11.09.196';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -4841,6 +4841,12 @@ End;
 Var
     _PropertyDiagStr : String;
     _DeleteFaultStr : String;
+    { Writes that landed, and whether the property write under way was      }
+    { refused. A refused write made obj_modify answer modified:true while   }
+    { nothing changed (a note's ShowBorder, FontId=0; 2026-11-08), because  }
+    { modified counted matched objects, not writes.                         }
+    _PropertyWrites : Integer;
+    _PropCallRefused : Boolean;
 
 { Buffer is a String, not a TStringList. DelphiScript drops class-method  }
 { visibility on TStringList declared at module scope (Undeclared          }
@@ -4854,6 +4860,8 @@ Procedure ResetPropertyDiag(Dummy : Integer);
 Begin
     _PropertyDiagStr := '';
     _DeleteFaultStr := '';
+    _PropertyWrites := 0;
+    _PropCallRefused := False;
 End;
 
 { Why a delete loop stopped early. The objects removed before it stopped are }
@@ -4869,6 +4877,9 @@ Procedure NotePropertyDiag(Kind : String; PropName : String);
 Var
     Entry : String;
 Begin
+    { Before the dedup exit: the same refusal on a second object is still a }
+    { refusal of THAT write, though it is recorded once.                    }
+    If Kind <> 'unreadable' Then _PropCallRefused := True;
     Entry := Kind + ':' + PropName;
     { Bracket the buffer with '|' on both sides so a Pos check finds an      }
     { exact record (and not e.g. "unknown:Foo" matching inside "...Foobar"). }
@@ -4877,6 +4888,55 @@ Begin
         _PropertyDiagStr := Entry
     Else
         _PropertyDiagStr := _PropertyDiagStr + '|' + Entry;
+End;
+
+{ Bracket one property write: a write counts only when it reported success }
+{ and nothing in it was refused (a branch can note a refusal and still     }
+{ fall through to success).                                                 }
+Procedure BeginPropertyWrite(Dummy : Integer);
+Begin
+    _PropCallRefused := False;
+End;
+
+Procedure EndPropertyWrite(Outcome : Integer);
+Begin
+    If (Outcome = 1) And Not _PropCallRefused Then Inc(_PropertyWrites);
+End;
+
+{ True when a modify wrote nothing at all: no write landed and every       }
+{ property it asked for is recorded as unknown or failed. Conservative: a  }
+{ property neither counted nor refused keeps the reply at modified:true.   }
+Function NothingWasWritten(SetStr : String) : Boolean;
+Var
+    Remaining, Pair, Nm, Diag : String;
+    P : Integer;
+Begin
+    Result := False;
+    If _PropertyWrites > 0 Then Exit;
+    If Trim(SetStr) = '' Then Exit;
+    Diag := '|' + _PropertyDiagStr + '|';
+    Remaining := SetStr;
+    While Length(Remaining) > 0 Do
+    Begin
+        P := Pos('|', Remaining);
+        If P = 0 Then
+        Begin
+            Pair := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Pair := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining));
+        End;
+        P := Pos('=', Pair);
+        If P = 0 Then Continue;
+        Nm := Trim(Copy(Pair, 1, P - 1));
+        If Nm = '' Then Continue;
+        If (Pos('|unknown:' + Nm + '|', Diag) = 0)
+            And (Pos('|failed:' + Nm + '|', Diag) = 0) Then Exit;
+    End;
+    Result := True;
 End;
 
 Function RenderPropertyDiagJson(Dummy : Integer): String;
@@ -74381,6 +74441,7 @@ Var
     FootprintBefore, FootprintAfter : String;
     FootprintChoice : Integer;
 Begin
+    BeginPropertyWrite(0);
     { Measured on a live document: callers using modify_objects /             }
     { batch_modify                                                            }
     { with a pipe-combined set like `Location.X=200|Orientation=2` on an ePin }
@@ -74854,6 +74915,7 @@ Begin
 
     If Result = 0 Then NotePropertyDiag('unknown', PropName)
     Else If Result = -1 Then NotePropertyDiag('failed', PropName);
+    EndPropertyWrite(Result);
 End;
 
 {..............................................................................}
@@ -75983,7 +76045,8 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create'))
+                And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;
@@ -76049,7 +76112,8 @@ Begin
         If Saved Then SavedStr := 'true' Else SavedStr := 'false';
         Result := BuildSuccessResponse(RequestId,
             '{"matched":' + IntToStr(TotalMatched) + ',"saved":' + SavedStr
-            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create')))
+            + ',"modified":' + BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or (Mode = 'create'))
+                And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))
             + ModifyOutcomeJson(0) + '}');
     End;
 End;

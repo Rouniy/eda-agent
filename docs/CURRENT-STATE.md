@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Profile safety follow-up, 2026-11-09 (offline checks in progress)
+
+The separate `backport-morembedded-profilefix` branch adds the donor guard
+that refuses a profile-wide ERC write without an explicit `.PrjPcb` path,
+distinguishes dry-run `would_apply` from completed writes, and reports
+`modified:false` when `obj_modify` made no change. The donor dashboard
+assertion was deferred because Rouniy does not yet carry that workspace view.
+Standalone `proj_erc_apply` still permits a focused real project; the
+selected-project write gate must be reviewed before native acceptance or
+deployment. No runtime was deployed.
+
 ## Profile rules/ERC worktree, 2026-11-09 (offline checks complete)
 
 The separate `backport-morembedded-integration` branch extends the PCB stage

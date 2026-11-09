@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## Profile safety follow-up, 2026-11-09
+
+- [x] Require an explicit `.PrjPcb` for profile-wide ERC writes and separate
+  `would_apply` from actual writes in dry-run results.
+- [ ] Reconcile standalone `proj_erc_apply` with the selected-project write
+  gate; it still permits writing to a focused real project without an
+  explicit `project_path`.
+- [ ] Add the dashboard assertion when the donor Workspace view is ported.
+
 ## Profile rules/ERC follow-up, 2026-11-09
 
 - [x] Port profile-driven board rules, ERC sets, and whole-profile apply.
