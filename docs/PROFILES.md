@@ -31,7 +31,6 @@ profile/
   erc_levels.json            # the project's ERC matrix (the default set)
   erc_levels/                 # named ERC sets, each able to extend another
     strict.json                #   (one policy per file)
-  phase_gates.json           # which NPI stages this owner runs (default: none)
   templates/                  # plain files, copied as-is
     default/                   #   a whole project (profile-new-project)
       ...
@@ -45,7 +44,7 @@ reuse formats that already existed before profiles did -- see
 `company_goals.json`, and `engineering/rules.py` / `design/fab_profile.py` for
 the other two. `footprint_defaults.json`, `footprint_policy.json`,
 `document_settings.json`, `design_rules.json`, `erc_levels.json`,
-`erc_levels/`, `phase_gates.json` and `templates/` are new, documented
+`erc_levels/` and `templates/` are new, documented
 below.
 
 ## How a profile is found
@@ -383,33 +382,6 @@ entirely would make a profile that sets it look ignored. It is also the one
 section that reads the **active** profile rather than `profile_dir`, so
 pointing `profile_dir` elsewhere refuses it by name instead of writing
 another profile's units.
-
-## `phase_gates.json`
-
-```json
-{
-  "stages": ["evt", "dvt", "pvt"]
-}
-```
-
-Which [NPI stages](NPI_PHASE_GATES.md) this owner runs. An empty list is
-the default, and it leaves the three `design_phase_*` tools unadvertised
-rather than advertised and refusing.
-
-It is a profile setting because which gates a programme runs follows the
-company rather than the board in front of you, and a project-local
-profile commits it with the project, so a team shares one answer. Set it
-with `eda-agent phases-enable evt dvt pvt`, which preserves anything else
-in the file; `eda-agent phases-show` says which setting is deciding.
-
-`EDA_AGENT_PHASES` and `--phases` overrule it for one run, which is how
-an MCP client with an `env` block and no profile directory reaches it.
-The stages take the same spellings everywhere, plus `all` and `none`;
-`none` exists because an empty variable means "the profile decides", so
-without the word a shell could enable stages over a profile but never
-disable them.
-
-The tool surface is chosen at startup, so a change takes a restart.
 
 ## `templates/<name>/` and `templates/documents/`
 
