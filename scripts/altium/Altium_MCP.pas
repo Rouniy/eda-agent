@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.09.192';
+    SCRIPT_VERSION = '2026.11.09.193';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -47464,6 +47464,294 @@ Begin
 End;
 
 {..............................................................................}
+{ PCB_LayerView - What the board view shows, and changes to it, in one call   }
+{ (issue #153).                                                                }
+{                                                                              }
+{ get_layer_display walks the legacy layer range, which stops at              }
+{ Mechanical16, and set_layer_visibility takes one layer at a time. A caller  }
+{ that wants to put a view back the way the user had it (a working view for   }
+{ one task, then the user's own) needs the rest of what the editor shows:     }
+{ the current layer, single layer mode, and for a mechanical layer whether    }
+{ it stays drawn in single layer mode (the Ctrl+click lock in the View        }
+{ Configuration panel, DisplayInSingleLayerMode).                             }
+{                                                                              }
+{ Params, all optional, applied in this order:                                }
+{   show, hide     comma lists of layers to display / hide                    }
+{   lock, unlock   comma lists of MECHANICAL layers to keep drawn / not in     }
+{                  single layer mode                                           }
+{   current_layer  the layer to make current                                   }
+{   single_layer_mode  true / false                                            }
+{ A layer is a name ResolveLayerId knows, "Mechanical21", or the user's name  }
+{ of any mechanical layer, Mechanical17 and up included. Every write is read  }
+{ back; one that did not take is listed in not_applied, a name that resolves  }
+{ to nothing in unknown_layers. The reply always lists every layer: the       }
+{ legacy range as get_layer_display does, then each ENABLED mechanical layer  }
+{ from 17 up. View state only: the document is not marked modified.          }
+{..............................................................................}
+
+Function LvNextItem(Var Rest : String) : String;
+Var
+    C : Integer;
+Begin
+    C := Pos(',', Rest);
+    If C > 0 Then
+    Begin
+        Result := Trim(Copy(Rest, 1, C - 1));
+        Rest := Copy(Rest, C + 1, Length(Rest));
+    End
+    Else
+    Begin
+        Result := Trim(Rest);
+        Rest := '';
+    End;
+End;
+
+{ The layer a caller named, or eNoLayer. ResolveLayerId covers the stack and  }
+{ the user names of Mechanical1-16; the user names above 16 are matched here. }
+Function LvResolve(Board : IPCB_Board; LayerStack : IPCB_LayerStack_V7;
+    Name : String) : TLayer;
+Var
+    Obj : IPCB_LayerObject_V7;
+    Lyr : TLayer;
+    N : Integer;
+    Wanted, ThisName : String;
+Begin
+    Result := ResolveLayerId(Board, Name);
+    If Result <> eNoLayer Then Exit;
+    If LayerStack = Nil Then Exit;
+    Wanted := NormalizeLayerName(Name);
+    If Wanted = '' Then Exit;
+    For N := 17 To 1024 Do
+    Begin
+        Lyr := MechLayerFromNumber(N);
+        If Lyr = eNoLayer Then Exit;
+        Obj := Nil;
+        Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
+        If Obj <> Nil Then
+        Begin
+            ThisName := '';
+            Try ThisName := Obj.Name; Except ThisName := ''; End;
+            If (ThisName <> '') And (NormalizeLayerName(ThisName) = Wanted) Then
+            Begin
+                Result := Lyr;
+                Exit;
+            End;
+        End;
+    End;
+End;
+
+{ One layer of the reply. Lock is read only on a mechanical layer.            }
+Function LvLayerJson(Board : IPCB_Board; LayerStack : IPCB_LayerStack_V7;
+    Lyr : TLayer; Mech : Boolean) : String;
+Var
+    Obj : IPCB_LayerObject_V7;
+    MechObj : IPCB_MechanicalLayer;
+    UserName, LockJson : String;
+    Visible, Locked : Boolean;
+Begin
+    UserName := '';
+    Visible := False;
+    LockJson := '';
+    Try Visible := Board.LayerIsDisplayed[Lyr]; Except Visible := False; End;
+    If LayerStack <> Nil Then
+    Begin
+        Obj := Nil;
+        Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
+        If Obj <> Nil Then
+            Try UserName := Obj.Name; Except UserName := ''; End;
+        If Mech Then
+        Begin
+            MechObj := Nil;
+            Try MechObj := LayerStack.LayerObject_V7[Lyr]; Except MechObj := Nil; End;
+            If MechObj <> Nil Then
+            Begin
+                Locked := False;
+                Try
+                    Locked := MechObj.DisplayInSingleLayerMode;
+                    LockJson := ',"single_layer_lock":' + BoolToJsonStr(Locked);
+                Except
+                    LockJson := '';
+                End;
+            End;
+        End;
+    End;
+    Result := '{"layer":"' + EscapeJsonString(LayerDisplayName(Lyr)) + '",'
+        + '"name":"' + EscapeJsonString(UserName) + '",'
+        + '"visible":' + BoolToJsonStr(Visible) + LockJson + '}';
+End;
+
+Function LvIsMech(Lyr : TLayer) : Boolean;
+Begin
+    { By name, so Mechanical17 and up count too (LayerDisplayName). }
+    Result := ParseMechLayerNumber(LayerDisplayName(Lyr)) > 0;
+End;
+
+Function LvAddNote(List : String; Item : String) : String;
+Begin
+    Result := List;
+    If Result <> '' Then Result := Result + ',';
+    Result := Result + '"' + EscapeJsonString(Item) + '"';
+End;
+
+Function PCB_LayerView(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Opts : IPCB_SystemOptions;
+    LayerStack : IPCB_LayerStack_V7;
+    MechObj : IPCB_MechanicalLayer;
+    Lyr, Cur, WantCur : TLayer;
+    Pass, N : Integer;
+    Rest, Item, Want, Items, NotApplied, Unknown, SlmStr : String;
+    Show, Lock, Got, Enabled, Slm, Changed : Boolean;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Opts := Nil;
+    Try Opts := PCBServer.SystemOptions; Except Opts := Nil; End;
+    LayerStack := Nil;
+    Try LayerStack := Board.LayerStack_V7; Except LayerStack := Nil; End;
+
+    NotApplied := '';
+    Unknown := '';
+    Changed := False;
+
+    { show / hide, then lock / unlock }
+    For Pass := 1 To 4 Do
+    Begin
+        If Pass = 1 Then Rest := ExtractJsonValue(Params, 'show')
+        Else If Pass = 2 Then Rest := ExtractJsonValue(Params, 'hide')
+        Else If Pass = 3 Then Rest := ExtractJsonValue(Params, 'lock')
+        Else Rest := ExtractJsonValue(Params, 'unlock');
+        Show := Pass = 1;
+        Lock := Pass = 3;
+        While Rest <> '' Do
+        Begin
+            Item := LvNextItem(Rest);
+            If Item = '' Then Continue;
+            Lyr := LvResolve(Board, LayerStack, Item);
+            If Lyr = eNoLayer Then
+            Begin
+                Unknown := LvAddNote(Unknown, Item);
+                Continue;
+            End;
+            If Pass <= 2 Then
+            Begin
+                Try Board.LayerIsDisplayed[Lyr] := Show; Except End;
+                Got := Not Show;
+                Try Got := Board.LayerIsDisplayed[Lyr]; Except End;
+                If Got <> Show Then NotApplied := LvAddNote(NotApplied, Item + ': visible')
+                Else Changed := True;
+            End
+            Else
+            Begin
+                If Not LvIsMech(Lyr) Then
+                Begin
+                    NotApplied := LvAddNote(NotApplied,
+                        Item + ': lock exists on mechanical layers only');
+                    Continue;
+                End;
+                MechObj := Nil;
+                If LayerStack <> Nil Then
+                    Try MechObj := LayerStack.LayerObject_V7[Lyr]; Except MechObj := Nil; End;
+                Got := Not Lock;
+                If MechObj <> Nil Then
+                Begin
+                    Try MechObj.DisplayInSingleLayerMode := Lock; Except End;
+                    Try Got := MechObj.DisplayInSingleLayerMode; Except End;
+                End;
+                If Got <> Lock Then NotApplied := LvAddNote(NotApplied, Item + ': lock')
+                Else Changed := True;
+            End;
+        End;
+    End;
+
+    { The current layer is checked AFTER the view update below: Altium   }
+    { accepts a layer that is not shown, reads it back, then falls back   }
+    { to another one when the layer tabs are rebuilt (seen live on a      }
+    { mechanical layer that was not enabled).                             }
+    WantCur := eNoLayer;
+    Want := ExtractJsonValue(Params, 'current_layer');
+    If Want <> '' Then
+    Begin
+        Lyr := LvResolve(Board, LayerStack, Want);
+        If Lyr = eNoLayer Then
+            Unknown := LvAddNote(Unknown, Want)
+        Else
+        Begin
+            Try Board.CurrentLayer := Lyr; Except End;
+            WantCur := Lyr;
+            Changed := True;
+        End;
+    End;
+
+    SlmStr := LowerCase(Trim(ExtractJsonValue(Params, 'single_layer_mode')));
+    If (SlmStr = 'true') Or (SlmStr = 'false') Then
+    Begin
+        If Opts = Nil Then
+            NotApplied := LvAddNote(NotApplied, 'single_layer_mode: no system options')
+        Else
+        Begin
+            Try Opts.SingleLayerMode := (SlmStr = 'true'); Except End;
+            Got := Not (SlmStr = 'true');
+            Try Got := Opts.SingleLayerMode; Except End;
+            If Got <> (SlmStr = 'true') Then
+                NotApplied := LvAddNote(NotApplied, 'single_layer_mode')
+            Else Changed := True;
+        End;
+    End;
+
+    If Changed Then
+    Begin
+        Try Board.ViewManager_UpdateLayerTabs; Except End;
+        Try Board.ViewManager_FullUpdate; Except End;
+    End;
+
+    { the reply: the legacy range, then every enabled mechanical layer above 16 }
+    Items := '';
+    For Lyr := eTopLayer To eMultiLayer Do
+    Begin
+        If GetLayerString(Lyr) <> 'Unknown' Then
+        Begin
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + LvLayerJson(Board, LayerStack, Lyr, LvIsMech(Lyr));
+        End;
+    End;
+    If LayerStack <> Nil Then
+        For N := 17 To 1024 Do
+        Begin
+            Lyr := MechLayerFromNumber(N);
+            If Lyr = eNoLayer Then Break;
+            MechObj := Nil;
+            Try MechObj := LayerStack.LayerObject_V7[Lyr]; Except MechObj := Nil; End;
+            If MechObj = Nil Then Continue;
+            Enabled := False;
+            Try Enabled := MechObj.MechanicalLayerEnabled; Except Enabled := False; End;
+            If Not Enabled Then Continue;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + LvLayerJson(Board, LayerStack, Lyr, True);
+        End;
+
+    Cur := eNoLayer;
+    Try Cur := Board.CurrentLayer; Except Cur := eNoLayer; End;
+    If (WantCur <> eNoLayer) And (Cur <> WantCur) Then
+        NotApplied := LvAddNote(NotApplied, Want + ': current layer');
+    Slm := False;
+    If Opts <> Nil Then
+        Try Slm := Opts.SingleLayerMode; Except Slm := False; End;
+
+    Result := BuildSuccessResponse(RequestId, '{'
+        + '"current_layer":"' + EscapeJsonString(LayerDisplayName(Cur)) + '",'
+        + '"single_layer_mode":' + BoolToJsonStr(Slm) + ','
+        + '"layers":[' + Items + '],'
+        + '"not_applied":[' + NotApplied + '],'
+        + '"unknown_layers":[' + Unknown + ']}');
+End;
+
+{..............................................................................}
 { PCB_SetLayerColor - Recolour one layer.                                     }
 { Params: layer, color (#RRGGBB)                                              }
 {..............................................................................}
@@ -54131,7 +54419,7 @@ Begin
         + '"poured":' + BoolToJsonStr(PolygonCopper(Polygon, CopperSqMils, CopperExact) > 0) + ','
         + '"repour_mode":"' + RepourModeName(0) + '",'
         + '"name":"' + EscapeJsonString(Polygon.Name) + '",'
-        + '"layer":"' + EscapeJsonString(GetLayerString(Polygon.Layer)) + '",'
+        + '"layer":"' + EscapeJsonString(LayerDisplayName(Polygon.Layer)) + '",'
         + '"net":"' + EscapeJsonString(NetStr) + '"}');
 End;
 
@@ -65150,8 +65438,33 @@ Begin
     End;
 End;
 
+{ LmCopperKinds - The object kinds a copper read may be narrowed to, as the  }
+{ "k" each entry carries. An empty list is every kind, read as before.       }
+Function LmNextKind(Var Rest : String) : String;
+Var
+    C : Integer;
+Begin
+    C := Pos(',', Rest);
+    If C > 0 Then
+    Begin
+        Result := Trim(Copy(Rest, 1, C - 1));
+        Rest := Copy(Rest, C + 1, Length(Rest));
+    End
+    Else
+    Begin
+        Result := Trim(Rest);
+        Rest := '';
+    End;
+End;
+
+Function LmCopperKindKnown(Kind : String) : Boolean;
+Begin
+    Result := (Kind = 'track') Or (Kind = 'arc') Or (Kind = 'via')
+        Or (Kind = 'region') Or (Kind = 'fill') Or (Kind = 'polygon');
+End;
+
 Function LmCopperSection(Board : IPCB_Board; Offset : Integer; Limit : Integer;
-    Trace : Boolean) : String;
+    Trace : Boolean; Kinds : String; OnLayer : TLayer; SelectedOnly : Boolean) : String;
 Var
     Iter : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
@@ -65169,7 +65482,11 @@ Var
     Lyr : TLayer;
     Idx, Emitted, I : Integer;
     Items, Entry, Common, PolyPts, Body, OwnerName, OwnerNet, Sizes : String;
-    More, Keepout, InPoly : Boolean;
+    More, Keepout, InPoly, Wanted, Wide : Boolean;
+    OneLayer : IPCB_LayerSet;
+    Passes : TStringList;
+    P : Integer;
+    Rest, Kind : String;
 Begin
     Items := '';
     Idx := 0;
@@ -65191,15 +65508,63 @@ Begin
         End;
     End;
     If Trace Then LmTrace('copper offset=' + IntToStr(Offset) + ' limit=' + IntToStr(Limit));
-    Iter := Board.BoardIterator_Create;
-    Try
-        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
-            eRegionObject, eFillObject, ePolyObject));
-        Iter.AddFilter_LayerSet(AllLayers);
-        Iter.AddFilter_Method(eProcessAll);
-        Obj := Iter.FirstPCBObject;
-        While Obj <> Nil Do
-        Begin
+    { One pass per kind asked for, in the order given; no kinds is ONE pass  }
+    { over every kind, so the unnarrowed read keeps its order and paging.    }
+    Passes := TStringList.Create;
+    Rest := Kinds;
+    While Rest <> '' Do
+    Begin
+        Kind := LmNextKind(Rest);
+        If Kind <> '' Then Passes.Add(Kind);
+    End;
+    If Passes.Count = 0 Then Passes.Add('all');
+    For P := 0 To Passes.Count - 1 Do
+    Begin
+        If More Then Break;
+        Iter := Board.BoardIterator_Create;
+        Try
+            { One object type per pass; 'all' is the unnarrowed read. A read of }
+            { polygons then never walks the tracks: on a 10,000-object board the }
+            { pours came last, and a reader that wanted them read everything.    }
+            Kind := Trim(Passes[P]);
+            If Kind = 'track' Then Iter.AddFilter_ObjectSet(MkSet(eTrackObject))
+            Else If Kind = 'arc' Then Iter.AddFilter_ObjectSet(MkSet(eArcObject))
+            Else If Kind = 'via' Then Iter.AddFilter_ObjectSet(MkSet(eViaObject))
+            Else If Kind = 'region' Then Iter.AddFilter_ObjectSet(MkSet(eRegionObject))
+            Else If Kind = 'fill' Then Iter.AddFilter_ObjectSet(MkSet(eFillObject))
+            Else If Kind = 'polygon' Then Iter.AddFilter_ObjectSet(MkSet(ePolyObject))
+            Else
+                Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+                    eRegionObject, eFillObject, ePolyObject));
+            { The legacy layer set stops at Mechanical16: the V7 set reaches  }
+            { every mechanical layer (issue #149). A layer the legacy set     }
+            { cannot hold gets a V7 set of its own, so the board hands out    }
+            { that layer only; the match by name below stays as a guard.      }
+            Wide := (OnLayer <> eNoLayer) And (GetLayerString(OnLayer) = 'Unknown');
+            If (OnLayer <> eNoLayer) And Not Wide Then
+                Iter.AddFilter_LayerSet(MkSet(OnLayer))
+            Else If Wide Then
+            Begin
+                OneLayer := LayerSet.CreateLayerSet;
+                OneLayer.Include(OnLayer);
+                Iter.AddFilter_IPCB_LayerSet(OneLayer);
+            End
+            Else
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Obj := Iter.FirstPCBObject;
+            While Obj <> Nil Do
+            Begin
+                Wanted := False;
+                Try Wanted := Obj.Selected; Except Wanted := False; End;
+            End;
+            If Wanted And Wide Then
+            Begin
+                Try Wanted := LayerDisplayName(Obj.Layer) = LayerDisplayName(OnLayer);
+                Except Wanted := False; End;
+            End;
+            If Wanted Then
+            Begin
             If Idx >= Offset Then
             Begin
                 If Emitted >= Limit Then
@@ -65228,7 +65593,7 @@ Begin
                     End;
                 End;
                 If Trace Then LmTrace(IntToStr(Idx) + ' common');
-                Common := ',"layer":"' + GetLayerString(Obj.Layer)
+                Common := ',"layer":"' + LayerDisplayName(Obj.Layer)
                     + '","net":"' + EscapeJsonString(LmNetName(Obj))
                     + '","comp":"' + EscapeJsonString(LmOwner(Obj))
                     + '","keepout":' + BoolToJsonStr(Keepout)
@@ -65327,11 +65692,14 @@ Begin
                 Inc(Emitted);
             End;
             Inc(Idx);
+            End;
             Obj := Iter.NextPCBObject;
         End;
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
+    End;
+    Passes.Free;
     SigLayers.Free;
     Body := '"copper":[' + Items + '],"offset":' + IntToStr(Offset)
         + ',"count":' + IntToStr(Emitted) + ',"more":' + BoolToJsonStr(More);
@@ -65560,6 +65928,8 @@ Var
     Board : IPCB_Board;
     Section, Body, Response : String;
     Offset, Limit : Integer;
+    Kinds, KindList, KindOne, LayerStr, Bad : String;
+    OnLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -65579,8 +65949,46 @@ Begin
     If Section = 'components' Then Body := LmComponentsSection(Board);
     If Section = 'pads' Then Body := LmPadsSection(Board, Offset, Limit);
     If Section = 'copper' Then
+    Begin
+        { kinds, layer and selected narrow the copper read. A kind or layer }
+        { not known is refused, not dropped: a typo must not read as "none".}
+        Kinds := LowerCase(Trim(ExtractJsonValue(Params, 'kinds')));
+        KindList := '';
+        Bad := '';
+        While Kinds <> '' Do
+        Begin
+            KindOne := LmNextKind(Kinds);
+            If KindOne = '' Then Continue;
+            If LmCopperKindKnown(KindOne) Then
+            Begin
+                If KindList <> '' Then KindList := KindList + ',';
+                KindList := KindList + KindOne;
+            End
+            Else
+                Bad := Bad + ' ' + KindOne;
+        End;
+        If Bad <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_KINDS',
+                'kinds takes track, arc, via, region, fill, polygon; got' + Bad);
+            Exit;
+        End;
+        OnLayer := eNoLayer;
+        LayerStr := Trim(ExtractJsonValue(Params, 'layer'));
+        If LayerStr <> '' Then
+        Begin
+            OnLayer := ResolveLayerId(Board, LayerStr);
+            If OnLayer = eNoLayer Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER',
+                    'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(Board));
+                Exit;
+            End;
+        End;
         Body := LmCopperSection(Board, Offset, Limit,
-            LowerCase(ExtractJsonValue(Params, 'trace')) = 'true');
+            LowerCase(ExtractJsonValue(Params, 'trace')) = 'true', KindList, OnLayer,
+            LowerCase(ExtractJsonValue(Params, 'selected')) = 'true');
+    End;
     If Section = 'rules' Then Body := LmRulesSection(Board);
     If Section = 'classes' Then Body := LmClassesSection(Board);
 
@@ -70856,6 +71264,7 @@ Begin
         'get_selected_objects':    Result := PCB_GetSelectedObjects(Params, RequestId);
         'select_component':        Result := PCB_SelectComponent(Params, RequestId);
         'set_layer_visibility':    Result := PCB_SetLayerVisibility(Params, RequestId);
+        'layer_view':              Result := PCB_LayerView(Params, RequestId);
         'repour_polygons':         Result := PCB_RepourPolygons(Params, RequestId);
         'place_via':               Result := PCB_PlaceVia(Params, RequestId);
         'place_3d_body':           Result := PCB_Place3DBody(Params, RequestId);

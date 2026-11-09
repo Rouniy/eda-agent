@@ -1,5 +1,15 @@
 # Fork integration TODO
 
+## Bulk and board-read follow-up, 2026-11-09
+
+- [x] Port typed `tool_invoke` arguments, `items` forwarding, narrow copper
+  reads, Mechanical17+ filtering, and combined board-view handling. Focused
+  tests: 52 passed; `.193` Pascal build: zero errors/warnings.
+- [ ] Reconcile donor rule-limit, paged-via and save-report changes with
+  Rouniy handlers (`99b79120`); the direct cherry-pick conflicts in nine files.
+- [ ] Run native acceptance on disposable documents before deploying the
+  new script bundle, especially bulk undo and board-view writes.
+
 ## Foundation worktree follow-up, 2026-11-09
 
 - [x] Reconcile bulk transaction boundaries in existing Rouniy Pascal

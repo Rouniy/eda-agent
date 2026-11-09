@@ -1,5 +1,16 @@
 # Current integration state / agent handoff
 
+## Bulk and board-read worktree, 2026-11-09 (offline checks complete)
+
+The separate `backport-morembedded-bulk` branch extends the foundation with
+typed `tool_invoke` arguments and `items` forwarding, narrowed layout-model
+copper reads, Mechanical17+ layer filtering, and a combined board-view read/write
+tool. The five focused/version test modules pass (52 tests), and the `.193`
+Pascal bundle builds with zero lint errors and warnings. The larger donor
+rule-limit/save-report commit has substantial conflicts with Rouniy handlers
+and remains pending; its trial cherry-pick was aborted. Native acceptance on
+disposable Altium documents remains outstanding. No runtime was deployed.
+
 ## Foundation worktree, 2026-11-09 (offline checks complete; native acceptance pending)
 
 The separate `backport-morembedded-foundation` branch contains donor SDK
