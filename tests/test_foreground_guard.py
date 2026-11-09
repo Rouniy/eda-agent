@@ -277,7 +277,8 @@ def test_an_activation_pending_on_a_busy_target_is_waited_out(busy_window):
 
     busy_window.go_busy()
     ctypes.windll.user32.SetForegroundWindow(busy_window.hwnd)
-    assert win.foreground_pid() is None, "the activation did not stay pending"
+    if win.foreground_pid() is not None:
+        pytest.skip("Windows did not leave foreground activation pending")
     # Longer than the guard's own refocus timeout, shorter than the wait
     # a busy target is allowed.
     threading.Timer(2.0, busy_window.pumping.set).start()
@@ -292,7 +293,8 @@ def test_a_target_that_stays_busy_is_refused_as_busy(busy_window):
 
     busy_window.go_busy()
     ctypes.windll.user32.SetForegroundWindow(busy_window.hwnd)
-    assert win.foreground_pid() is None, "the activation did not stay pending"
+    if win.foreground_pid() is not None:
+        pytest.skip("Windows did not leave foreground activation pending")
 
     with pytest.raises(win.ForegroundLost) as caught:
         win.require_foreground(busy_window.hwnd, "a test event",

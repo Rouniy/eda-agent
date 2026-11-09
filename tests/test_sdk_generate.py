@@ -25,6 +25,8 @@ from eda_agent.sdk.generate import (BEGIN_MARKER, END_MARKER, Skipped,
 from eda_agent.sdk.reflect import Property, SdkModel, SdkUnavailable, load_sdk
 from eda_agent.sdk.symbols import SymbolsUnavailable, SymbolTable, load_symbols
 
+GENERIC = Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Generic.pas"
+
 
 FAKE = {
     "schema": 1,

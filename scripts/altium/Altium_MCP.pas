@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.29.189';
+    SCRIPT_VERSION = '2026.11.09.191';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -4472,7 +4472,8 @@ Var
     Obj : IPCB_LayerObject_V7;
     Names, ThisName : String;
     Lyr : TLayer;
-    Count : Integer;
+    Count, Num : Integer;
+    Enabled : Boolean;
 Begin
     Names := '';
     Count := 0;
@@ -4499,13 +4500,22 @@ Begin
             Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
         End;
 
-        For Lyr := eMechanical1 To eMechanical16 Do
+        { Mechanical1 to 16 as before; past 16 only the enabled ones, as a    }
+        { board can hold up to 1024 and a layer used there was left out.     }
+        For Num := 1 To 1024 Do
         Begin
-            If Count < 64 Then
+            If Count >= 64 Then Break;
+            Lyr := MechLayerFromNumber(Num);
+            If Lyr <> eNoLayer Then
             Begin
                 Obj := Nil;
                 Try Obj := LayerStack.LayerObject_V7[Lyr]; Except Obj := Nil; End;
-                If Obj <> Nil Then
+                Enabled := Num <= 16;
+                If (Obj <> Nil) And Not Enabled Then
+                Begin
+                    Try Enabled := Obj.MechanicalLayerEnabled; Except Enabled := False; End;
+                End;
+                If (Obj <> Nil) And Enabled Then
                 Begin
                     ThisName := '';
                     Try ThisName := Obj.Name; Except ThisName := ''; End;
@@ -4528,7 +4538,7 @@ Begin
         Result := 'Layers on this board: ' + Names
             + '. Canonical tokens are also accepted (TopLayer, MidLayer1, '
             + 'InternalPlane1, TopOverlay, TopPaste, TopSolder, MultiLayer, '
-            + 'KeepOutLayer, Mechanical1..16).';
+            + 'KeepOutLayer, Mechanical1 and up).';
 End;
 {..............................................................................}
 { Paired mechanical layer kinds.                                               }
@@ -36741,8 +36751,13 @@ Begin
     If PropName = 'Name' Then
     Begin
         If Trim(Value) = '' Then Exit;
+        { A pour with Auto Naming on builds its name from layer, net and    }
+        { index again and the assigned one is lost, while the write answered }
+        { success (issue #150). Typing a name in the Polygon Pour dialog     }
+        { unticks Auto Naming; do the same, then report what the pour holds. }
+        Try Poly.AutoGenerateName := False; Except End;
         Poly.Name := Value;
-        Result := True;
+        Result := Poly.Name = Value;
         Exit;
     End;
     If PropName = 'UseOctagons' Then
@@ -58233,8 +58248,9 @@ End;
 {..............................................................................}
 { PCB_GetMechLayerNames - List the enabled (displayed) mechanical layers with  }
 { their custom names. Uses only proven accessors (LayerStack_V7 /              }
-{ LayerObject_V7[] / LayerIsDisplayed) -- ILayer.MechanicalLayer(i) and        }
-{ MechanicalLayerEnabled are undeclared in this script binding.               }
+{ LayerObject_V7[] / LayerIsDisplayed). ILayer.MechanicalLayer(i) is         }
+{ undeclared in this binding; MechanicalLayerEnabled is read through a local  }
+{ typed IPCB_LayerObject_V7.                                                  }
 {..............................................................................}
 
 { Name, enable and kind the mechanical layers of the OPEN BOARD.              }
