@@ -6126,7 +6126,7 @@ Begin
         Exit;
     End;
     Removed := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         FoundOne := True;
         While FoundOne Do
@@ -6162,7 +6162,7 @@ Begin
             End;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
@@ -6230,7 +6230,7 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
             'Not a PCB property: ' + BadProps + '. Available: '
-            + KnownPCBPropertyList + '.');
+            + KnownPCBPropertyList(0) + '.');
         Exit;
     End;
 
@@ -6956,7 +6956,7 @@ Begin
         If RefObj = Nil Then
         Begin Result := BuildErrorResponse(RequestId, 'NO_REFERENCE', AboveName + BelowName); Exit; End;
     End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         TargetObj := Stack.LayerObject_V7[TargetId];
         If TargetObj = Nil Then
@@ -6972,7 +6972,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     AfterOrder := PCB_CopperOrderJson(Stack);
     AfterCount := 0;
@@ -9207,7 +9207,7 @@ Begin
     Board.BoardIterator_Destroy(ExistingIter);
 
     Try
-      PCBServer.PreProcess;
+      PcbBeginEdit(0);
       Try
         While Length(Remaining) > 0 Do
         Begin
@@ -9339,7 +9339,7 @@ Begin
             Inc(Placed);
         End;
       Finally
-          PCBServer.PostProcess;
+          PcbEndEdit(0);
       End;
 
       { Recompute connectivity before returning so pcb_get_unrouted_nets is   }
@@ -10388,7 +10388,7 @@ Begin
     End;
 
     Requested := 0; Changed := 0; Already := 0; Missing := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         While Remaining <> '' Do
         Begin
@@ -10425,7 +10425,7 @@ Begin
             Inc(Changed);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     If Changed > 0 Then MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
@@ -11710,11 +11710,11 @@ Begin
             Exit;
         End;
         Made := Nil;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Made := Mgr.CreateFromPins(Pins);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         Classed := False;
         ClassCreated := False;
@@ -11724,7 +11724,7 @@ Begin
             SigClass := PCB_XSignalFindClass(Board, ClassName);
             If SigClass = Nil Then
             Begin
-                PCBServer.PreProcess;
+                PcbBeginEdit(0);
                 Try
                     SigClass := PCBServer.PCBClassFactoryByClassMember(
                         eClassMemberKind_Signal);
@@ -11739,7 +11739,7 @@ Begin
                         ClassCreated := True;
                     End;
                 Finally
-                    PCBServer.PostProcess;
+                    PcbEndEdit(0);
                 End;
             End;
         End;
@@ -11767,9 +11767,9 @@ Begin
             Try
                 If Not ClassListsMember(SigClass, PP.CastToPrimitive) Then
                 Begin
-                    PCBServer.PreProcess;
+                    PcbBeginEdit(0);
                     Try SigClass.AddMember(PP.CastToPrimitive);
-                    Finally PCBServer.PostProcess; End;
+                    Finally PcbEndEdit(0); End;
                 End;
             Except End;
         End;
@@ -11856,7 +11856,7 @@ Begin
     End;
     NamesStr := #9 + UpperCase(NamesStr) + #9;
     Deleted := '';
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := Before - 1 DownTo 0 Do
         Begin
@@ -11871,7 +11871,7 @@ Begin
             Deleted := Deleted + '"' + EscapeJsonString(Name) + '"';
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     After := Mgr.PinPairsCount;
     If After <> Before Then MarkDocDirtyByPath(Board.FileName);
@@ -12203,7 +12203,7 @@ Begin
     End;
     If Writing Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             For I := 0 To Names.Count - 1 Do
             Begin
@@ -12224,7 +12224,7 @@ Begin
                 End;
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
     End;
     Applied := 0;
@@ -12460,7 +12460,7 @@ Begin
     NotApplied := '';
     If Writing Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Keys := 'snap_x,snap_y,track,via,visible,visible_big';
             While Keys <> '' Do
@@ -12523,7 +12523,7 @@ Begin
                 End;
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
     End;
     AfterJson := PCB_GridsJson(Board);
@@ -12706,13 +12706,13 @@ Begin
         Exit;
     End;
     BeforeJson := PCB_DrillPairJson(Pair, PairIdx);
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If BackStr <> '' Then Pair.IsBackdrill := (BackStr = 'true');
         If DrawStr <> '' Then Pair.PlotDrillDrawing := (DrawStr = 'true');
         If GuideStr <> '' Then Pair.PlotDrillGuide := (GuideStr = 'true');
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     AfterJson := PCB_DrillPairJson(Pair, PairIdx);
     If BeforeJson <> AfterJson Then MarkDocDirtyByPath(Board.FileName);
@@ -12796,9 +12796,9 @@ Begin
             Exit;
         End;
     End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try Board.AddLayerPair(LowLayer, HighLayer);
-    Finally PCBServer.PostProcess; End;
+    Finally PcbEndEdit(0); End;
     After := Board.DrillLayerPairsCount;
     If After <> Before Then MarkDocDirtyByPath(Board.FileName);
     Items := PCB_DrillPairsJson(Board, Returned, Unreadable);
@@ -15465,7 +15465,7 @@ Begin
         Finally
             Board.BoardIterator_Destroy(Iter);
         End;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
           For I := 0 To Objects.Count - 1 Do
           Begin
@@ -15490,7 +15490,7 @@ Begin
             End;
           End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
     { DelphiScript faults when releasing a TInterfaceList of board refs. }
     RebuildPCBConnectivity(Board);
@@ -15547,7 +15547,7 @@ Begin
         Exit;
     End;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Region := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
         If Region = Nil Then
@@ -15596,7 +15596,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, Region.I_ObjectAddress);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     MarkDocDirtyByPath(Board.FileName);
     Result := BuildSuccessResponse(RequestId,
@@ -17599,7 +17599,7 @@ Begin
     GridXPad := Round(GridXPad * 10000) / 10000;
     GridYPad := Round(GridYPad * 10000) / 10000;
 
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         { The side-specific paste enable flag persists across a PcbDoc save.
           A cache-only negative expansion does not, so the flag is essential. }
@@ -19198,7 +19198,7 @@ Begin
 
     Matched := Matches.Count;
     Verified := 0;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         For I := 0 To Matches.Count - 1 Do
         Begin
@@ -19224,7 +19224,7 @@ Begin
             If Ok Then Verified := Verified + 1;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
 
     If Matched > 0 Then MarkDocDirtyByPath(Board.FileName);
@@ -24141,7 +24141,7 @@ Begin
         If (Not IsFloatStr(ExpectStr)) Or
             (Abs(StrToFloatDef(ExpectStr, 0) - CoordToMilsF(Bounds.Top)) > 0.01) Then
         Begin Result := BuildErrorResponse(RequestId, 'PLAN_CHANGED', 'Polygon top bound changed'); Exit; End;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             PCBServer.SendMessageToRobots(Found.I_ObjectAddress,
                 c_Broadcast, PCBM_BeginModify, c_NoEventData);
@@ -24149,7 +24149,7 @@ Begin
             PCBServer.SendMessageToRobots(Found.I_ObjectAddress,
                 c_Broadcast, PCBM_EndModify, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         Try Found.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(Board.FileName);
@@ -29147,7 +29147,7 @@ Begin
     Begin Result := BuildErrorResponse(RequestId, 'NOT_SUBSEGMENT', 'The fragment must lie on the original segment'); Exit; End;
     Parent := FoundTrack.Component; ParentName := '';
     If Parent <> Nil Then ParentName := Parent.Name.Text;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         NewTrack := FoundTrack.Replicate;
         If NewTrack = Nil Then
@@ -29158,7 +29158,7 @@ Begin
         Board.AddPCBObject(NewTrack);
         If Parent <> Nil Then PCBServer.SendMessageToRobots(Parent.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, NewTrack.I_ObjectAddress);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, NewTrack.I_ObjectAddress);
-    Finally PCBServer.PostProcess; End;
+    Finally PcbEndEdit(0); End;
     Result := BuildSuccessResponse(RequestId,
         '{"created":true,"saved":false,"address":"' + IntToStr(NewTrack.I_ObjectAddress)
         + '","component":"' + EscapeJsonString(ParentName) + '"}');
@@ -29292,7 +29292,7 @@ Begin
         Begin Result := BuildErrorResponse(RequestId, 'STALE_PLAN', 'Some planned addresses are missing; no changes applied'); Exit; End;
         If ApplyNow Then
         Begin
-            PCBServer.PreProcess;
+            PcbBeginEdit(0);
             Try
                 For I := 0 To Lines.Count-1 Do
                 Begin
@@ -29335,7 +29335,7 @@ Begin
                     Finally Track.EndModify; End;
                     Changed := Changed + 1;
                 End;
-            Finally PCBServer.PostProcess; End;
+            Finally PcbEndEdit(0); End;
         End;
         Result := BuildSuccessResponse(RequestId, '{"validated":' + IntToStr(Found)
             + ',"already_applied":' + IntToStr(Already) + ',"changed":' + IntToStr(Changed)
@@ -29582,7 +29582,7 @@ Begin
                     'require min_ohms <= preferred_ohms <= max_ohms');
                 Exit;
             End;
-            PCBServer.PreProcess;
+            PcbBeginEdit(0);
             Try
                 PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
                     PCBM_BeginModify, c_NoEventData);
@@ -29593,7 +29593,7 @@ Begin
                 PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
                     PCBM_EndModify, c_NoEventData);
             Finally
-                PCBServer.PostProcess;
+                PcbEndEdit(0);
             End;
         End;
         AfterJson := PCB_PairImpedanceJson(Rule);
@@ -29894,13 +29894,13 @@ Begin
     NewStyle := StrToInt(StyleS);
     If NewStyle <> OldStyle Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             MLS.LayerStackStyle := NewStyle;
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
     End;
     If MLS.LayerStackStyle <> NewStyle Then
@@ -29984,7 +29984,7 @@ Begin
        Or ((LowerCase(ExtractJsonValue(Params, 'expect_stiffener')) <> 'true')
            And (LowerCase(ExtractJsonValue(Params, 'expect_stiffener')) <> 'false')) Then
     Begin Result := BuildErrorResponse(RequestId, 'STALE_LAYER', 'dielectric changed; read again'); Exit; End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If TypeS <> '' Then DL.DielectricType := StrToInt(TypeS);
         If MatS <> '' Then DL.DielectricMaterial := MatS;
@@ -29994,7 +29994,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     AfterJson := PCB_DielectricState(DL);
     If BeforeJson <> AfterJson Then MarkDocDirtyByPath(Board.FileName);
@@ -30089,7 +30089,7 @@ Begin
     If (NewName <> '') And (UpperCase(NewName) <> UpperCase(ProfName)) And
        (PCB_FindImpedanceProfile(Stack, NewName) <> Nil) Then
     Begin Result := BuildErrorResponse(RequestId, 'ALREADY_EXISTS', NewName); Exit; End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         If Op = 'remove' Then Stack.RemoveImpedanceProfile(P)
         Else
@@ -30108,7 +30108,7 @@ Begin
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     AfterCount := Stack.GetImpedanceProfileCount;
     If Op = 'remove' Then AfterJson := 'null'
@@ -30241,7 +30241,7 @@ Begin
         If (ExtractJsonValue(Params, 'expect_profile_token') <> ProfileToken)
            Or (ExtractJsonValue(Params, 'expect_state_token') <> BeforeToken) Then
         Begin Result := BuildErrorResponse(RequestId, 'STALE_PROFILE_LAYER', 'profile or layer state changed'); Exit; End;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             If T = Nil Then
             Begin
@@ -30279,7 +30279,7 @@ Begin
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
     End;
     AfterToken := PCB_ImpTraceState(T);
@@ -30581,7 +30581,7 @@ Begin
             Dx := Cx - OldX;
             Dy := Cy - OldY;
             Moved := False;
-            PCBServer.PreProcess;
+            PcbBeginEdit(0);
             Try
                 PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                     PCBM_BeginModify, c_NoEventData);
@@ -30611,7 +30611,7 @@ Begin
             Except
                 Inc(Failed);
             End;
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
             If Moved Then
             Begin
                 AfterX := Comp.X;
@@ -30860,14 +30860,14 @@ Begin
                 'The V7 stack has no layer object for ' + RefName + ' or the new layer');
             Exit;
         End;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             If Where = 'above' Then LS7.InsertInStackAbove(RefObj, NewObj)
             Else LS7.InsertInStackBelow(RefObj, NewObj);
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         NewL := Nil;
         L := MLS.First(eLayerClass_Physical);
@@ -30884,7 +30884,7 @@ Begin
         End;
         EL := NewL;
         Ordinary := False;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             If Name <> '' Then NewL.Name := Name;
             If ThickS <> '' Then EL.CopperThickness := MilsToCoordF(StrToFloatDef(ThickS, 0));
@@ -30892,7 +30892,7 @@ Begin
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         MarkDocDirtyByPath(Board.FileName);
         Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -30954,13 +30954,13 @@ Begin
             Exit;
         End;
         Removed := False;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Removed := MLS.RemoveLayer(L);
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         MarkDocDirtyByPath(Board.FileName);
         Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -30978,7 +30978,7 @@ Begin
             Exit;
         End;
         DL := L;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             If NewName <> '' Then L.Name := NewName;
             If TypeS <> '' Then DL.DielectricType := StrToInt(TypeS);
@@ -30989,7 +30989,7 @@ Begin
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         MarkDocDirtyByPath(Board.FileName);
         Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -31003,7 +31003,7 @@ Begin
     Begin
         EL := L;
         Ordinary := False;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             If NewName <> '' Then L.Name := NewName;
             If ThickS <> '' Then EL.CopperThickness := MilsToCoordF(StrToFloatDef(ThickS, 0));
@@ -31011,7 +31011,7 @@ Begin
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, c_NoEventData);
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
         MarkDocDirtyByPath(Board.FileName);
         Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -31233,7 +31233,7 @@ Begin
         WasOnline := True;
         Try WasOnline := PCBServer.SystemOptions.DoOnlineDRC; Except End;
         Try PCBServer.SystemOptions.DoOnlineDRC := False; Except End;
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Iter := Board.BoardIterator_Create;
             Try
@@ -31280,7 +31280,7 @@ Begin
                 Board.BoardIterator_Destroy(Iter);
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
             Try PCBServer.SystemOptions.DoOnlineDRC := WasOnline; Except End;
         End;
     Finally

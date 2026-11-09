@@ -832,7 +832,7 @@ Begin
         Partial := False;
         If Apply And (WouldWrite > 0) Then
         Begin
-            SchServer.ProcessControl.PreProcess(TargetDoc, '');
+            SchBeginEdit(TargetDoc, '');
             Try
                 For J := 0 To OpDes.Count - 1 Do
                 Begin
@@ -870,7 +870,7 @@ Begin
                     End;
                 End;
             Finally
-                Try SchServer.ProcessControl.PostProcess(TargetDoc, 'Edit'); Except End;
+                Try SchEndEdit(TargetDoc, 'Edit'); Except End;
                 Try TargetDoc.GraphicallyInvalidate; Except End;
                 { A write that leaves the document clean did not happen as far   }
                 { as Save and compile are concerned (upstream 69374c2).          }
@@ -1298,7 +1298,7 @@ Begin
                     NewY := StrToInt(OpY[J]);
                     NewR := StrToInt(OpR[J]);
                     Touched := True;
-                    PCBServer.PreProcess;
+                    PcbBeginEdit(0);
                     Try
                         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                             PCBM_BeginModify, c_NoEventData);
@@ -1308,7 +1308,7 @@ Begin
                         PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
                             PCBM_EndModify, c_NoEventData);
                     Finally
-                        PCBServer.PostProcess;
+                        PcbEndEdit(0);
                     End;
                     OpBX[J] := IntToStr(Comp.x);
                     OpBY[J] := IntToStr(Comp.y);
@@ -2081,7 +2081,7 @@ Begin
         If Apply And (WouldPlace > 0) Then
         Begin
             Try
-                PCBServer.PreProcess;
+                PcbBeginEdit(0);
                 Try
                     For J := 0 To VNet.Count - 1 Do
                     Begin
@@ -2164,7 +2164,7 @@ Begin
                         End;
                     End;
                 Finally
-                    PCBServer.PostProcess;
+                    PcbEndEdit(0);
                 End;
             Finally
                 If Touched Then MarkDocDirtyByPath(PcbPath);
@@ -3004,7 +3004,7 @@ Begin
                     Fields := IFields[J];
                     Problem := '';
                     Touched := True;
-                    PCBServer.PreProcess;
+                    PcbBeginEdit(0);
                     Try
                         If Kind = 'layer' Then
                         Begin
@@ -3172,7 +3172,7 @@ Begin
                             IPrio[J] := SetupRulePriority(Rule);
                         End;
                     Finally
-                        PCBServer.PostProcess;
+                        PcbEndEdit(0);
                     End;
                     If Problem <> '' Then
                     Begin

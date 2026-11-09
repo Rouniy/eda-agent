@@ -37,7 +37,8 @@ def test_each_scope_clears_the_symbol_the_last_one_named():
 
 def test_the_walk_is_the_named_symbol_fetched_through_the_library():
     body = _generic("ProcessSchDocObjects")
-    assert "If ObjRef = LibScopeName Then ScopeComp := LastCreatedLibComponent;" in body
+    assert "If LibScopeName <> '' Then\n            LibComp := LastCreatedLibComponent" in body
+    assert "If (LibScopeName <> '') And (SymbolRef <> LibScopeName) Then Exit;" in body
     # MEASURED 2026.10.30.6: with LookupLibComponent called from Generic the
     # whole unit read as undeclared in Altium (HandleGenericCommand), every
     # generic command halted the loop, and no compile error was shown.
@@ -45,15 +46,16 @@ def test_the_walk_is_the_named_symbol_fetched_through_the_library():
     calls = [line for line in code.splitlines()
              if "LookupLibComponent(" in line.split("{", 1)[0]]
     assert not calls, calls
-    assert re.search(r"If ParamsOfSymbol Or OwnWalk Then\s*Iterator := LibComp\.SchIterator_Create", body)
-    assert re.search(r"If ParamsOfSymbol Or OwnWalk Then\s*LibComp\.SchIterator_Destroy", body)
+    assert "Iterator := LibComp.SchIterator_Create" in body
+    assert "LibComp.SchIterator_Destroy(Iterator)" in body
     # Parts: the one asked for and the shared part 0, unless the filter asks.
     assert "(ObjPart <> 0) And (ObjPart <> WantPart)" in body
-    assert "If OwnWalk And (Pos('OwnerPart', FilterStr) = 0) Then" in body
+    assert "If (ObjPart <> 0) And (ObjPart <> WantPart) Then" in body
 
 
 def test_a_component_scope_matches_only_the_named_symbol():
     body = _generic("ProcessSchDocObjects")
-    check = body.index("If (ScopeComp <> Nil) And (ObjTypeInt = eSchComponent) Then")
-    assert "If ObjRef <> LibScopeName Then Counted := False;" in body[check:check + 300]
-    assert body.index("Counted := False;", check) < body.index("MatchesFilter(Obj, FilterStr)", check)
+    assert "Iterator := SchLib.SchLibIterator_Create" in body
+    check = body.index("If ObjTypeInt = eSchComponent Then")
+    assert "If SymbolRef <> LibScopeName Then ScopeEligible := False;" in body[check:]
+    assert body.index("ScopeEligible := False;", check) < body.index("MatchesFilter(Obj, FilterStr)", check)

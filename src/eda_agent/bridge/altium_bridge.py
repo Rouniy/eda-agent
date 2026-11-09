@@ -1702,7 +1702,10 @@ class AltiumBridge:
         collector = bulk.current()
         if collector is not None and refuse_command(command) is None:
             return await collector.submit(command, params or {}, timeout)
-        return await self.send_command_direct(command, params, timeout)
+        if max_extensions is None:
+            return await self.send_command_direct(command, params, timeout)
+        return await self.send_command_direct(
+            command, params, timeout, max_extensions=max_extensions)
 
     async def send_bulk_async(
         self,
@@ -1764,6 +1767,7 @@ class AltiumBridge:
         command: str,
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
+        max_extensions: Optional[int] = None,
     ) -> Any:
         """Send one request now, collector or not."""
         refusal = refuse_command(command)

@@ -351,8 +351,8 @@ one design. They apply in every session.
    tools.
 
 6. **ECO (schematic → PCB) opens a blocking review dialog.** Before opening
-   it, read board rules and counts. Use `app_click_menu` with
-   `expect_dialog="Engineering Change Order"`; inspect it, then use
+   it, read board rules and counts. Use `app_menu` with `how="click"`;
+   inspect the Engineering Change Order dialog, then use
    `app_press_dialog_button` for Execute Changes and Close.
 
 7. **`pcb_place_components` has two modes.** *Geometry only* (footprint +

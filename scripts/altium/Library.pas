@@ -1997,7 +1997,7 @@ Begin
             'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
         Exit;
     End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
 
     Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
     If Pad <> Nil Then
@@ -11968,7 +11968,7 @@ Begin
         End;
         If OldName = '*' Then
         Begin
-            SchServer.ProcessControl.PreProcess(SchDoc, 'Replace footprint model');
+            SchBeginEdit(SchDoc, 'Replace footprint model');
             Guard := 1000;
             While Guard > 0 Do
             Begin
@@ -12000,7 +12000,7 @@ Begin
                 Try Target.IsCurrent := True; Except End;
                 Try Target.AddDataFileLink(NewName, '', 'PCBLib'); Except End;
             End;
-            SchServer.ProcessControl.PostProcess(SchDoc, 'Replace footprint model');
+            SchEndEdit(SchDoc, 'Replace footprint model');
             Try SchDoc.GraphicallyInvalidate; Except End;
             MarkDocDirtyByPath(LibPath);
             Result := BuildSuccessResponse(RequestId, '{"success":true,"component":"'
@@ -12029,7 +12029,7 @@ Begin
             Result := BuildErrorResponse(RequestId, 'MODEL_NOT_FOUND', 'No matching model on placed component ' + CompName);
             Exit;
         End;
-        SchServer.ProcessControl.PreProcess(SchDoc, 'Set model name');
+        SchBeginEdit(SchDoc, 'Set model name');
         SchBeginModify(Target);
         Try Target.ModelName := NewName; Except End;
         LinkCount := 0;
@@ -12041,7 +12041,7 @@ Begin
             If Link <> Nil Then Try Link.EntityName := NewName; Except End;
         End;
         SchEndModify(Target);
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Set model name');
+        SchEndEdit(SchDoc, 'Set model name');
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(LibPath);
         RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
@@ -12409,7 +12409,7 @@ Begin
         End;
 
         Updated := 0;
-        SchServer.ProcessControl.PreProcess(SchDoc, 'Set model source');
+        SchBeginEdit(SchDoc, 'Set model source');
         ImplIter := Component.SchIterator_Create;
         Try
             ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
@@ -12441,7 +12441,7 @@ Begin
         Finally
             Component.SchIterator_Destroy(ImplIter);
         End;
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Set model source');
+        SchEndEdit(SchDoc, 'Set model source');
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(LibPath);
         RespJson := '{"success":true,"component":"' + EscapeJsonString(CompName) + '"'
@@ -17032,7 +17032,7 @@ Begin
             'Could not create an embedded STEP body from ' + ModelPath);
         Exit;
     End;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         Try
             Footprint.AddPCBObject(Body);
@@ -17065,7 +17065,7 @@ Begin
             Exit;
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
     End;
     BRect := Body.BoundingRectangle;
     CentreX := (CoordToMM(BRect.Left - Footprint.X)
@@ -17233,7 +17233,7 @@ Begin
     Failed := False;
     If Changed = 1 Then
     Begin
-        PCBServer.PreProcess;
+        PcbBeginEdit(0);
         Try
             Try
                 PCBServer.SendMessageToRobots(TargetBody.I_ObjectAddress,
@@ -17245,7 +17245,7 @@ Begin
                 Failed := True;
             End;
         Finally
-            PCBServer.PostProcess;
+            PcbEndEdit(0);
         End;
     End;
     If Failed Then
@@ -21731,7 +21731,7 @@ Begin
     Notes := '';
     PadsJson := '';
     SeenPads := TStringList.Create;
-    PCBServer.PreProcess;
+    PcbBeginEdit(0);
     Try
         GrpIter := Target.GroupIterator_Create;
         Try
@@ -22014,7 +22014,7 @@ Begin
             Target.GroupIterator_Destroy(GrpIter);
         End;
     Finally
-        PCBServer.PostProcess;
+        PcbEndEdit(0);
         Try SeenPads.Free; Except End;
     End;
 

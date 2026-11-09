@@ -464,7 +464,7 @@ def test_xsignal_delete_sends_and_refuses(monkeypatch):
     # Deleting while walking forward would skip the one after each delete.
     body = _body("PCB.pas", "PCB_DeleteXSignals")
     assert body.index("If All And (NamesStr <> '') Then") < body.index(
-        "PCBServer.PreProcess;")
+        "PcbBeginEdit(0);")
     assert "For I := Before - 1 DownTo 0 Do" in body
 
 

@@ -3508,10 +3508,10 @@ Var
     Sym : ISch_SheetSymbol;
     SchLib : ISch_Lib;
     LibComp : ISch_Component;
-    Removed, ParamsOfSymbol, OnlyShown, Skip : Boolean;
+    Removed, ParamsOfSymbol, OnlyShown, Skip, ScopeEligible : Boolean;
     ObjJson, SymbolRef : String;
     First : Boolean;
-    MaxIter, LastAddr, ThisAddr, SameTries : Integer;
+    MaxIter, LastAddr, ThisAddr, SameTries, ObjPart, WantPart : Integer;
     UnshownPins : TStringList;
     PinObj : ISch_Pin;
 Begin
@@ -3528,7 +3528,9 @@ Begin
         { A read describes the symbol on screen. The last-created fallback }
         { is retained for writes, since a newly added symbol can be absent }
         { from CurrentSchComponent until the editor changes its display.   }
-        If Mode = 'query' Then
+        If LibScopeName <> '' Then
+            LibComp := LastCreatedLibComponent
+        Else If Mode = 'query' Then
         Begin
             LibComp := Nil;
             Try LibComp := SchLib.CurrentSchComponent; Except End;
@@ -3539,29 +3541,55 @@ Begin
         If LibComp = Nil Then Exit;
         SymbolRef := '';
         Try SymbolRef := LibComp.LibReference; Except End;
+        If (LibScopeName <> '') And (SymbolRef <> LibScopeName) Then Exit;
+        WantPart := LibScopePart;
+        If WantPart < 1 Then WantPart := 1;
 
         If (Mode = 'modify') Or (Mode = 'delete') Then
-            SchServer.ProcessControl.PreProcess(SchLib, '');
+            SchBeginEdit(SchLib, '');
 
         If Mode = 'delete' Then
         Begin
             MaxIter := 100000;
             While MaxIter > 0 Do
             Begin
-                Iterator := LibComp.SchIterator_Create;
+                If ObjTypeInt = eSchComponent Then
+                    Iterator := SchLib.SchLibIterator_Create
+                Else
+                    Iterator := LibComp.SchIterator_Create;
                 Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
                 FoundObj := Nil;
                 Obj := Iterator.FirstSchObject;
                 While Obj <> Nil Do
                 Begin
-                    If MatchesFilter(Obj, FilterStr) Then
+                    ScopeEligible := True;
+                    If LibScopeName <> '' Then
+                    Begin
+                        If ObjTypeInt = eSchComponent Then
+                        Begin
+                            SymbolRef := '';
+                            Try SymbolRef := Obj.LibReference; Except End;
+                            If SymbolRef <> LibScopeName Then ScopeEligible := False;
+                        End
+                        Else
+                        Begin
+                            ObjPart := 0;
+                            Try ObjPart := Obj.OwnerPartId; Except End;
+                            If (ObjPart <> 0) And (ObjPart <> WantPart) Then
+                                ScopeEligible := False;
+                        End;
+                    End;
+                    If ScopeEligible And MatchesFilter(Obj, FilterStr) Then
                     Begin
                         FoundObj := Obj;
                         Break;
                     End;
                     Obj := Iterator.NextSchObject;
                 End;
-                LibComp.SchIterator_Destroy(Iterator);
+                If ObjTypeInt = eSchComponent Then
+                    SchLib.SchLibIterator_Destroy(Iterator)
+                Else
+                    LibComp.SchIterator_Destroy(Iterator);
                 If FoundObj = Nil Then Break;
                 Try LibComp.RemoveSchObject(FoundObj); Except End;
                 Inc(TotalMatched);
@@ -3571,13 +3599,33 @@ Begin
         End
         Else
         Begin
-            Iterator := LibComp.SchIterator_Create;
+            If ObjTypeInt = eSchComponent Then
+                Iterator := SchLib.SchLibIterator_Create
+            Else
+                Iterator := LibComp.SchIterator_Create;
             Iterator.AddFilter_ObjectSet(MkSet(ObjTypeInt));
             Obj := Iterator.FirstSchObject;
             While Obj <> Nil Do
             Begin
                 If (Limit > 0) And (TotalMatched >= Limit) Then Break;
-                If MatchesFilter(Obj, FilterStr) Then
+                ScopeEligible := True;
+                If LibScopeName <> '' Then
+                Begin
+                    If ObjTypeInt = eSchComponent Then
+                    Begin
+                        SymbolRef := '';
+                        Try SymbolRef := Obj.LibReference; Except End;
+                        If SymbolRef <> LibScopeName Then ScopeEligible := False;
+                    End
+                    Else
+                    Begin
+                        ObjPart := 0;
+                        Try ObjPart := Obj.OwnerPartId; Except End;
+                        If (ObjPart <> 0) And (ObjPart <> WantPart) Then
+                            ScopeEligible := False;
+                    End;
+                End;
+                If ScopeEligible And MatchesFilter(Obj, FilterStr) Then
                 Begin
                     If Mode = 'query' Then
                     Begin
@@ -3606,12 +3654,15 @@ Begin
                 End;
                 Obj := Iterator.NextSchObject;
             End;
-            LibComp.SchIterator_Destroy(Iterator);
+            If ObjTypeInt = eSchComponent Then
+                SchLib.SchLibIterator_Destroy(Iterator)
+            Else
+                LibComp.SchIterator_Destroy(Iterator);
         End;
 
         If (Mode = 'modify') Or (Mode = 'delete') Then
         Begin
-            SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+            SchEndEdit(SchLib, 'Edit');
             MarkLibDirty(SchLib);
         End;
         Exit;
@@ -4505,10 +4556,10 @@ Begin
                 'Object not created; property writes failed: ' + _PropertyDiagStr);
             Exit;
         End;
-        SchServer.ProcessControl.PreProcess(SchLib, '');
+        SchBeginEdit(SchLib, '');
         Component.AddSchObject(NewObj);
         SchRegisterObject(Component, NewObj);
-        SchServer.ProcessControl.PostProcess(SchLib, 'Edit');
+        SchEndEdit(SchLib, 'Edit');
         MarkLibDirty(SchLib);
     End
     Else
@@ -4536,7 +4587,7 @@ Begin
                 'Object not created; property writes failed: ' + _PropertyDiagStr);
             Exit;
         End;
-        SchServer.ProcessControl.PreProcess(SchDoc, '');
+        SchBeginEdit(SchDoc, '');
         SchDoc.RegisterSchObjectInContainer(NewObj);
         SchRegisterObject(SchDoc, NewObj);
         SchEndEdit(SchDoc, 'Edit');
@@ -8136,10 +8187,10 @@ Begin
     Lbl.Text := TextStr;
     Lbl.Orientation := Rotation;
     If FontToUse > 0 Then Lbl.FontId := FontToUse;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     SchDoc.RegisterSchObjectInContainer(Lbl);
     SchRegisterObject(SchDoc, Lbl);
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
     MarkDocDirtyByPath(SchDoc.DocumentName);
     Result := BuildSuccessResponse(RequestId,
@@ -13313,7 +13364,7 @@ Begin
     Remaining := PlaceStr;
     FailedRefdes := '';
     Forms := '';
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         While True Do
         Begin
@@ -13397,7 +13448,7 @@ Begin
             FailedRefdes := FailedRefdes + Desig + ':' + UsedForm;
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
         If Placed > 0 Then SchDoc.GraphicallyInvalidate;
     End;
     ResponseBody := '{"placed":' + IntToStr(Placed)
@@ -17849,6 +17900,7 @@ Begin
         'get_sch_component_pins': Result := Gen_GetSchComponentPins(Params, RequestId);
         'get_component_models': Result := Gen_GetComponentModels(Params, RequestId);
         'place_net_label':  Result := Gen_PlaceNetLabel(Params, RequestId);
+        'autoposition_labels': Result := Gen_AutopositionLabels(Params, RequestId);
         'place_free_text':  Result := Gen_PlaceFreeText(Params, RequestId);
         'stub_pins':        Result := Gen_StubPins(Params, RequestId);
         'set_net_tie':      Result := Gen_SetNetTie(Params, RequestId);

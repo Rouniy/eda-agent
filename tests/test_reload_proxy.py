@@ -11,6 +11,7 @@ so a restart shows as a new id, and "slow" takes a second to answer.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -63,10 +64,13 @@ class Client:
         fake.write_text(FAKE_SERVER)
         driver = tmp_path / "driver.py"
         driver.write_text(DRIVER)
+        env = dict(os.environ)
+        source = str(Path(__file__).resolve().parents[1] / "src")
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (source, env.get("PYTHONPATH"))))
         self.proc = subprocess.Popen(
             [sys.executable, str(driver), str(self.watched), str(fake)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL)
+            stderr=subprocess.PIPE, env=env)
         self.next_id = 0
 
     def send(self, method, notify=False):
@@ -79,7 +83,10 @@ class Client:
         return msg.get("id")
 
     def read(self):
-        return json.loads(self.proc.stdout.readline())
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError(self.proc.stderr.read().decode(errors="replace"))
+        return json.loads(line)
 
     def call(self, method):
         request_id = self.send(method)
@@ -150,7 +157,6 @@ def test_a_server_that_fails_to_start_says_why_and_recovers(client):
     (client.watched / "broken").write_text("")
     client.change_source()
     client.read()  # the list-changed notice
-    time.sleep(0.5)
     reply = client.call("tools/list")
     assert "half-written edit" in reply["error"]["message"]
     (client.watched / "broken").unlink()

@@ -122,7 +122,7 @@ def test_place_tracks_rebuilds_after_postprocess_not_inside_it():
     # A rebuild issued while PCBServer is still mid-transaction cannot see
     # the finished state.
     src = _handler(PCB_PAS, "PCB_PlaceTracks")
-    assert src.index("PCBServer.PostProcess") < src.index(
+    assert src.index("PcbEndEdit(0)") < src.index(
         "RebuildPCBConnectivity(Board)")
 
 
