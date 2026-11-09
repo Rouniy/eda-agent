@@ -1,5 +1,27 @@
 # Fork integration TODO
 
+## MOREmbedded backport, 2026-11-09
+
+- [x] Fetch `MOREmbedded/main` at `3af39ffd` and isolate integration in
+  `backport-morembedded-20261109`; keep the dirty `main` checkout untouched.
+- [x] Port the first independent fixes: multi-monitor pointer gestures,
+  foreground activation, comtypes warning, polygon naming, mechanical-layer
+  hints, SDK generator exclusions, shared Part Zero pins, netlist export,
+  board-read error reporting, and hole-to-hole DRC. Pascal bundle lint passes.
+- [x] Review the full Python run: 10,175 passed, 174 skipped, one expected
+  failure, and one stale release-document version assertion. The document
+  now names `.191`; all six version-consistency tests pass. No second full
+  run was needed for this documentation-only repair.
+- [ ] Reconcile the remaining donor changes by dependency: bridge and tool
+  foundations; profile/rules/ERC; design modes; dashboard/workspace;
+  optional Rust compute; latest native-verification fixes. A donor commit
+  is only done when its behavior and tests are present, not merely ancestral.
+- [ ] Preserve the selected-project access gates, Rouniy update and security
+  links, and the existing locally edited source files when preparing final
+  integration into `main`.
+- [ ] Run native acceptance on disposable Altium documents before deployment.
+
+
 ## Latest integration and verification, 2026-10-29
 
 - [x] Merge upstream `e5fb6b2` and MOREmbedded `dbaef87` as real second

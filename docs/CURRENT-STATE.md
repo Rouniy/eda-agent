@@ -1,5 +1,22 @@
 # Current integration state / agent handoff
 
+On 2026-11-09, the `MOREmbedded/main` tip was fetched at `3af39ffd`. It has
+251 commits beyond the current Rouniy `main` and about 496 changed files.
+The isolated `backport-morembedded-20261109` worktree carries the first
+independent backport batch, through `60004e1b`. Its focused checks passed
+123 tests, skipped 3, and the 12-unit Pascal bundle lint/build reported zero
+errors and warnings. The full Python suite reported 10,175 passed, 174
+skipped, one expected failure, and one stale release-document version check;
+after the document was corrected, all six version-consistency tests passed.
+A trial whole-tree
+merge was aborted after 102 Pascal lint errors; its result was not kept.
+Two sampled commits depend on donor-only tools (`fd72413c`, `4248ce89`), and
+the design-mode commit `3fc626e7` depends on donor profile, phase-gate and
+CLI foundations. They remain in the queue. The linked shared-project runbook
+is absent from the sibling checkouts and its GitHub URL returned 404; no
+Altium runtime or installed script was changed for this backport.
+
+
 The main Altium script is now `.189`, loaded from the one source project
 `D:\AI\eda-agent\scripts\altium\Altium_API.PrjScr`. A direct HTTP MCP
 `app_ping` on AD26.11.1.5 returned `version_match=true`,

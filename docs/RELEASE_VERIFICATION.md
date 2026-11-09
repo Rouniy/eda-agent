@@ -1,5 +1,10 @@
 
-# Release verification: 2026.10.29.189
+# Release verification: 2026.11.09.191 candidate
+
+The backport branch builds script `2026.11.09.191`. Native Altium acceptance
+and deployment for this candidate remain pending. The notes below retain the
+last completed live verification and must not be read as acceptance of this
+candidate.
 
 Script `.186` merges `MOREmbedded/main` `5933c00` (including upstream
 `75df990`) into the Rouniy main line. The 12-file Pascal build has zero
@@ -224,7 +229,8 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.10.29.189` from `app_ping`.
+Expect `altium_script_version` = `2026.11.09.191` from `app_ping` after an
+operator installs and starts this candidate. This native check is pending.
 
 ## 2026.10.28.156 - Previous native checkpoint
 
