@@ -1,5 +1,12 @@
 # Fork integration TODO
 
+## PCB text and pour follow-up, 2026-11-09
+
+- [x] Port board-text properties and frame sizing, plus poured-copper readback.
+  Impacted/version tests: 193 passed; `.194` Pascal build: zero errors/warnings.
+- [ ] Qualify the board-text writes and polygon readback natively on disposable
+  documents before deploying the new script bundle.
+
 ## Bulk and board-read follow-up, 2026-11-09
 
 - [x] Port typed `tool_invoke` arguments, `items` forwarding, narrow copper

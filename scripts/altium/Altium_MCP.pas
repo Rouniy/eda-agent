@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.09.193';
+    SCRIPT_VERSION = '2026.11.09.194';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -36646,7 +36646,13 @@ End;
 { punched, 2 laser, 3 plasma); IsVirtualPin and a part's FlippedOnLayer    }
 { (its "flip on layer" option, not its side) are read only. A text's       }
 { BorderSpaceType is Altium's number for how its inverted border is sized. }
-{ A text's FontName (its TrueType font) is read only here.                  }
+{ A text's TextKind is 0 stroke, 1 TrueType, 2 barcode; FontID picks the   }
+{ stroke font (1 Default, 2 Sans Serif, 3 Serif); FontName is the TrueType }
+{ font and Bold / Italic are TrueType only. InvRectWidth / InvRectHeight   }
+{ are read only: Altium sizes the inverted box itself (text + margin) and  }
+{ ignores a written size; on a multiline text the box is the frame, so    }
+{ the frame (MultilineTextWidth / Height) is what makes a label larger.   }
+{ InvertedTTTextBorder is the margin, a minimum the box never goes below. }
 Function ExtraPCBPropertyOwner(PropName : String) : Integer;
 Begin
     Result := 0;
@@ -36667,8 +36673,11 @@ Begin
             (PropName = 'InvertedTTTextBorder') Or
             (PropName = 'TTFInvertedTextJustify') Or
             (PropName = 'TTFOffsetFromInvertedRect') Or
-            (PropName = 'ConvertedString') Or (PropName = 'FontName') Or
-            (PropName = 'BorderSpaceType') Then Result := 3
+            (PropName = 'ConvertedString') Or (PropName = 'BorderSpaceType') Or
+            (PropName = 'FontName') Or (PropName = 'TextKind') Or
+            (PropName = 'FontID') Or (PropName = 'Bold') Or
+            (PropName = 'Italic') Or (PropName = 'InvRectWidth') Or
+            (PropName = 'InvRectHeight') Then Result := 3
     Else If (PropName = 'TextHeight') Or (PropName = 'TextWidth') Or
             (PropName = 'TextLineWidth') Or (PropName = 'TextGap') Or
             (PropName = 'TextPosition') Or (PropName = 'TextDimensionUnit') Or
@@ -36807,8 +36816,14 @@ Begin
         Else If PropName = 'TTFInvertedTextJustify' Then Result := IntToStr(Txt.TTFInvertedTextJustify)
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Result := FloatToJsonStr(CoordToMilsF(Txt.TTFOffsetFromInvertedRect))
         Else If PropName = 'ConvertedString' Then Result := Txt.ConvertedString
+        Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType)
         Else If PropName = 'FontName' Then Result := Txt.FontName
-        Else If PropName = 'BorderSpaceType' Then Result := IntToStr(Txt.BorderSpaceType);
+        Else If PropName = 'TextKind' Then Result := IntToStr(Txt.TextKind)
+        Else If PropName = 'FontID' Then Result := IntToStr(Txt.FontID)
+        Else If PropName = 'Bold' Then Result := BoolToJsonStr(Txt.Bold)
+        Else If PropName = 'Italic' Then Result := BoolToJsonStr(Txt.Italic)
+        Else If PropName = 'InvRectWidth' Then Result := FloatToJsonStr(CoordToMilsF(Txt.InvRectWidth))
+        Else If PropName = 'InvRectHeight' Then Result := FloatToJsonStr(CoordToMilsF(Txt.InvRectHeight));
     End
     Else If Oid = eDimensionObject Then
     Begin
@@ -36907,8 +36922,8 @@ Begin
     Result := -1;
     If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
        (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or
-       (PropName = 'FontName') Or
-       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Then Exit;
+       (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Or
+       (PropName = 'InvRectWidth') Or (PropName = 'InvRectHeight') Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
         And (LowerCase(Value) = 'unset') Then
@@ -36939,8 +36954,9 @@ Begin
         (PropName = 'ExpandOutline') Or (PropName = 'AutoGenerateName') Or
         (PropName = 'JumpersVisible') Or (PropName = 'OverrideColor') Or
         (PropName = 'PasteMaskUsePercent') Or (PropName = 'PasteMaskEnabled') Or
-        (PropName = 'IsPreRoute') Or (PropName = 'UserRouted');
-    IsText := (PropName = 'BarCodeFontName') Or (PropName = 'TextFormat') Or
+        (PropName = 'IsPreRoute') Or (PropName = 'UserRouted') Or
+        (PropName = 'Bold') Or (PropName = 'Italic');
+    IsText := (PropName = 'BarCodeFontName') Or (PropName = 'FontName') Or (PropName = 'TextFormat') Or
         (PropName = 'TextPrefix') Or (PropName = 'TextSuffix') Or
         (PropName = 'FootprintDescription') Or (PropName = 'DefaultPCB3DModel') Or
         (PropName = 'SwapID_Pad') Or (PropName = 'SwapID_Part') Or
@@ -36955,7 +36971,8 @@ Begin
         (PropName = 'ChannelOffset') Or (PropName = 'GroupNum') Or
         (PropName = 'OwnerPart_ID') Or (PropName = 'PasteMaskExpansionMode') Or
         (PropName = 'SolderMaskExpansionMode') Or (PropName = 'DrillType') Or
-        (PropName = 'BorderSpaceType');
+        (PropName = 'BorderSpaceType') Or (PropName = 'TextKind') Or
+        (PropName = 'FontID');
     B := False;
     F := 0;
     N := 0;
@@ -37046,7 +37063,28 @@ Begin
         Else If PropName = 'InvertedTTTextBorder' Then Txt.InvertedTTTextBorder := MilsToCoordF(F)
         Else If PropName = 'TTFInvertedTextJustify' Then Txt.TTFInvertedTextJustify := N
         Else If PropName = 'TTFOffsetFromInvertedRect' Then Txt.TTFOffsetFromInvertedRect := MilsToCoordF(F)
-        Else If PropName = 'BorderSpaceType' Then Txt.BorderSpaceType := N;
+        Else If PropName = 'BorderSpaceType' Then Txt.BorderSpaceType := N
+        { An empty font name or a kind / stroke font Altium does not have is }
+        { refused rather than written. A TrueType kind keeps the legacy       }
+        { UseTTFonts flag in step, as Altium's own dialog does.               }
+        Else If PropName = 'FontName' Then
+        Begin
+            If Trim(Value) = '' Then Exit;
+            Txt.FontName := Value;
+        End
+        Else If PropName = 'TextKind' Then
+        Begin
+            If N > 2 Then Exit;
+            Txt.TextKind := N;
+            Txt.UseTTFonts := N = 1;
+        End
+        Else If PropName = 'FontID' Then
+        Begin
+            If (N < 1) Or (N > 3) Then Exit;
+            Txt.FontID := N;
+        End
+        Else If PropName = 'Bold' Then Txt.Bold := B
+        Else If PropName = 'Italic' Then Txt.Italic := B;
     End
     Else If Owner = 4 Then
     Begin
@@ -38909,6 +38947,7 @@ Begin
         + 'DefaultPCB3DModel, PackageSpecificHash, JumperID, SwapID_Pad, SwapID_Part, '
         + 'Inverted, UseInvertedRectangle, InvertedTTTextBorder, '
         + 'TTFInvertedTextJustify, TTFOffsetFromInvertedRect, ConvertedString, FontName, '
+        + 'TextKind, FontID, Bold, Italic, InvRectWidth, InvRectHeight, '
         + 'DrawRemovedNecks, DrawRemovedIslands, DrawDeadCopper, ExpandOutline, '
         + 'AutoGenerateName, SourceDescription, JumpersVisible, ChannelOffset, '
         + 'GroupNum, SwappedPadName, OwnerPart_ID, OverrideColor, Texture, '
@@ -49343,13 +49382,109 @@ End;
 {         stroke (mils, optional; Altium's default when empty)              }
 {..............................................................................}
 
+{ A text justification by name -> Altium's TTextAutoposition ordinal, the    }
+{ anchor of a multiline text inside its frame: 1 top left, 2 centre left,    }
+{ 3 bottom left, 4 top centre, 5 centre, 6 bottom centre, 7 top right,       }
+{ 8 centre right, 9 bottom right. -1 for a name that is not one of them.     }
+Function TextJustifyCode(Name : String) : Integer;
+Begin
+    Name := LowerCase(Name);
+    If Name = 'top_left' Then Result := 1
+    Else If Name = 'center_left' Then Result := 2
+    Else If Name = 'bottom_left' Then Result := 3
+    Else If Name = 'top_center' Then Result := 4
+    Else If Name = 'center' Then Result := 5
+    Else If Name = 'bottom_center' Then Result := 6
+    Else If Name = 'top_right' Then Result := 7
+    Else If Name = 'center_right' Then Result := 8
+    Else If Name = 'bottom_right' Then Result := 9
+    Else Result := -1;
+End;
+
+{ Where on its frame a justification sits, as a fraction of the frame:     }
+{ 0 left / bottom, 0.5 centre, 1 right / top.                              }
+Function TextJustifyFracX(Code : Integer) : Double;
+Begin
+    If Code >= 7 Then Result := 1
+    Else If Code >= 4 Then Result := 0.5
+    Else Result := 0;
+End;
+
+Function TextJustifyFracY(Code : Integer) : Double;
+Var
+    Row : Integer;
+Begin
+    Row := (Code - 1) Mod 3;
+    If Row = 0 Then Result := 1
+    Else If Row = 1 Then Result := 0.5
+    Else Result := 0;
+End;
+
+{ The width of the text's longest line, in mils, measured on the placed }
+{ text itself: each line set as its text in turn (a single-line text      }
+{ draws CR LF on one row, so the whole text cannot be measured at once),   }
+{ its box read, the full text put back. 0 when no box reads.               }
+Function TextLongestLineMils(TextObj : IPCB_Text; S : String) : Double;
+Var
+    Rest, Line : String;
+    P : Integer;
+    Box : TCoordRect;
+    W : Double;
+Begin
+    Result := 0;
+    Rest := S;
+    While Rest <> '' Do
+    Begin
+        P := Pos(#10, Rest);
+        If P > 0 Then
+        Begin
+            Line := Copy(Rest, 1, P - 1);
+            Rest := Copy(Rest, P + 1, Length(Rest));
+        End
+        Else
+        Begin
+            Line := Rest;
+            Rest := '';
+        End;
+        If Copy(Line, Length(Line), 1) = #13 Then
+            Line := Copy(Line, 1, Length(Line) - 1);
+        If Line <> '' Then
+        Begin
+            TextObj.BeginModify;
+            TextObj.Text := Line;
+            TextObj.EndModify;
+            Box := TextObj.BoundingRectangle;
+            W := CoordToMilsF(Box.Right - Box.Left);
+            If W > Result Then Result := W;
+        End;
+    End;
+    TextObj.BeginModify;
+    TextObj.Text := S;
+    TextObj.EndModify;
+End;
+
+{ 1 true, 0 false, -1 not given, -2 neither. }
+Function TextFlag(S : String) : Integer;
+Begin
+    S := LowerCase(S);
+    If S = '' Then Result := -1
+    Else If S = 'true' Then Result := 1
+    Else If S = 'false' Then Result := 0
+    Else Result := -2;
+End;
+
 Function PCB_PlaceText(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     TextObj : IPCB_Text;
     TextStr, XStr, YStr, LayerStr, HeightStr, RotStr, StrokeStr : String;
+    KindStr, StrokeFontStr, FontNameStr, JustStr, FrameWStr, FrameHStr : String;
+    MarginStr, Extra : String;
     TX, TY : Double;
     TRot, THeight, TStroke : Double;
+    FrameW, FrameH, Margin, FX, FY, Ang : Double;
+    Kind, StrokeFontNo, Just, BoldF, ItalicF, InvF : Integer;
+    Box : TCoordRect;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -49391,6 +49526,79 @@ Begin
         Exit;
     End;
 
+    { The text's own style, all optional (issue: text properties on create). }
+    { A justification makes the text MULTILINE: Altium justifies a text only }
+    { inside its frame, and a single-line text ignores the setting. x / y is }
+    { then the point the justification names, e.g. the centre for center.   }
+    KindStr := LowerCase(ExtractJsonValue(Params, 'kind'));
+    StrokeFontStr := LowerCase(ExtractJsonValue(Params, 'stroke_font'));
+    FontNameStr := ExtractJsonValue(Params, 'font_name');
+    BoldF := TextFlag(ExtractJsonValue(Params, 'bold'));
+    ItalicF := TextFlag(ExtractJsonValue(Params, 'italic'));
+    InvF := TextFlag(ExtractJsonValue(Params, 'inverted'));
+    JustStr := ExtractJsonValue(Params, 'justification');
+    FrameWStr := ExtractJsonValue(Params, 'frame_width');
+    FrameHStr := ExtractJsonValue(Params, 'frame_height');
+    MarginStr := ExtractJsonValue(Params, 'margin');
+
+    If KindStr = '' Then Kind := -1
+    Else If KindStr = 'stroke' Then Kind := 0
+    Else If KindStr = 'truetype' Then Kind := 1
+    Else Kind := -2;
+    { A TrueType-only setting asks for a TrueType text. }
+    If (Kind = -1) And ((FontNameStr <> '') Or (BoldF = 1) Or (ItalicF = 1) Or
+       (InvF = 1)) Then Kind := 1;
+    If StrokeFontStr = '' Then StrokeFontNo := 0
+    Else If StrokeFontStr = 'default' Then StrokeFontNo := 1
+    Else If StrokeFontStr = 'sans_serif' Then StrokeFontNo := 2
+    Else If StrokeFontStr = 'serif' Then StrokeFontNo := 3
+    Else StrokeFontNo := -1;
+    If JustStr = '' Then Just := 0 Else Just := TextJustifyCode(JustStr);
+    FrameW := StrToFloatDef(FrameWStr, 0);
+    FrameH := StrToFloatDef(FrameHStr, 0);
+    Margin := StrToFloatDef(MarginStr, 0);
+
+    If (Kind = -2) Or (StrokeFontNo < 0) Or (Just < 0) Or (BoldF = -2) Or
+       (ItalicF = -2) Or (InvF = -2) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'kind is stroke or truetype; stroke_font default, sans_serif or serif; '
+            + 'justification top_left, top_center, top_right, center_left, center, '
+            + 'center_right, bottom_left, bottom_center or bottom_right; bold, italic '
+            + 'and inverted true or false');
+        Exit;
+    End;
+    If ((FrameWStr <> '') And (Not IsFloatStr(FrameWStr))) Or
+       ((FrameHStr <> '') And (Not IsFloatStr(FrameHStr))) Or
+       ((MarginStr <> '') And (Not IsFloatStr(MarginStr))) Or
+       (FrameW < 0) Or (FrameH < 0) Or (Margin < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'frame_width, frame_height and margin are mils, not below zero');
+        Exit;
+    End;
+    If ((FrameWStr <> '') Or (FrameHStr <> '')) And (Just = 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'a frame needs a justification: it is where the text sits in it');
+        Exit;
+    End;
+    { Bold, italic and inverted are TrueType only: refused on a stroke text  }
+    { rather than written and silently ignored by Altium.                    }
+    If (Kind = 0) And ((BoldF = 1) Or (ItalicF = 1) Or (InvF = 1) Or
+       (FontNameStr <> '')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'bold, italic, inverted and font_name are TrueType only (kind truetype)');
+        Exit;
+    End;
+    If (Kind = 1) And (StrokeFontNo > 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_VALUE',
+            'stroke_font is for a stroke text, not kind truetype');
+        Exit;
+    End;
+
     If LayerStr = '' Then TargetLayer := eTopOverlay
     Else TargetLayer := ResolveLayerId(Board, LayerStr);
     If TargetLayer = eNoLayer Then
@@ -49414,7 +49622,17 @@ Begin
         TextObj.Text := TextStr;
         TextObj.Size := MilsToCoordF(THeight);
         If TStroke > 0 Then TextObj.Width := MilsToCoordF(TStroke);
-        TextObj.Rotation := TRot;
+        If Kind >= 0 Then
+        Begin
+            TextObj.TextKind := Kind;
+            TextObj.UseTTFonts := Kind = 1;
+        End;
+        If StrokeFontNo > 0 Then TextObj.FontID := StrokeFontNo;
+        If FontNameStr <> '' Then TextObj.FontName := FontNameStr;
+        If BoldF >= 0 Then TextObj.Bold := BoldF = 1;
+        If ItalicF >= 0 Then TextObj.Italic := ItalicF = 1;
+        If InvF >= 0 Then TextObj.Inverted := InvF = 1;
+        If MarginStr <> '' Then TextObj.InvertedTTTextBorder := MilsToCoordF(Margin);
 
         TextObj.Layer := TargetLayer;
 
@@ -49422,11 +49640,85 @@ Begin
 
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, TextObj.I_ObjectAddress);
+
+        { Justified: framed, then the frame moved so the justification     }
+        { point lands on x / y, and turned about it. Altium grows a frame    }
+        { smaller than the text (plus the margin of an inverted text, whose  }
+        { filled box IS the frame) only when the edit is closed, so the     }
+        { frame is read again after EndModify and the text moved once more  }
+        { when it grew. MEASURED: a 60 x 20 frame became 209.8 x 52.6 at     }
+        { EndModify and, placed from the asked size, sat 75 mil off. With no }
+        { frame WIDTH given the frame is as wide as the longest line,        }
+        { measured on the text (+ 1 mil): Altium wraps a line at its spaces  }
+        { when the frame is narrower, and grows a narrower frame only to the }
+        { longest WORD (a 1 mil frame put every word on its own line).       }
+        { MEASURED: a frame from that width up keeps every line whole.       }
+        { No frame height: 1 mil, grown by Altium to the lines.              }
+        If Just > 0 Then
+        Begin
+            If FrameW <= 0 Then
+            Begin
+                FrameW := TextLongestLineMils(TextObj, TextStr);
+                If FrameW > 0 Then FrameW := FrameW + 1 Else FrameW := 1;
+            End;
+            TextObj.BeginModify;
+            If FrameH <= 0 Then FrameH := 1;
+            TextObj.Multiline := True;
+            TextObj.MultilineTextWidth := MilsToCoordF(FrameW);
+            TextObj.MultilineTextHeight := MilsToCoordF(FrameH);
+            TextObj.MultilineTextAutoPosition := Just;
+            Ang := TRot * 3.14159265358979 / 180.0;
+            FX := TextJustifyFracX(Just) * FrameW;
+            FY := TextJustifyFracY(Just) * FrameH;
+            TextObj.XLocation := MilsToCoordF(TX - (FX * Cos(Ang) - FY * Sin(Ang)));
+            TextObj.YLocation := MilsToCoordF(TY - (FX * Sin(Ang) + FY * Cos(Ang)));
+            TextObj.Rotation := TRot;
+            TextObj.EndModify;
+            If (TextObj.MultilineTextWidth <> MilsToCoordF(FrameW)) Or
+               (TextObj.MultilineTextHeight <> MilsToCoordF(FrameH)) Then
+            Begin
+                FrameW := CoordToMilsF(TextObj.MultilineTextWidth);
+                FrameH := CoordToMilsF(TextObj.MultilineTextHeight);
+                FX := TextJustifyFracX(Just) * FrameW;
+                FY := TextJustifyFracY(Just) * FrameH;
+                TextObj.BeginModify;
+                TextObj.XLocation := MilsToCoordF(TX - (FX * Cos(Ang) - FY * Sin(Ang)));
+                TextObj.YLocation := MilsToCoordF(TY - (FX * Sin(Ang) + FY * Cos(Ang)));
+                TextObj.EndModify;
+            End;
+            TextObj.GraphicallyInvalidate;
+        End
+        Else
+        Begin
+            TextObj.BeginModify;
+            TextObj.Rotation := TRot;
+            TextObj.EndModify;
+        End;
     Finally
         PcbEndEdit(0);
     End;
 
     MarkDocDirtyByPath(Board.FileName);
+
+    { Everything read back off the placed text. }
+    Box := TextObj.BoundingRectangle;
+    Extra := ',"kind":' + IntToStr(TextObj.TextKind)
+        + ',"font_id":' + IntToStr(TextObj.FontID)
+        + ',"font_name":"' + EscapeJsonString(TextObj.FontName) + '"'
+        + ',"bold":' + BoolToJsonStr(TextObj.Bold)
+        + ',"italic":' + BoolToJsonStr(TextObj.Italic)
+        + ',"multiline":' + BoolToJsonStr(TextObj.Multiline)
+        + ',"justification":' + IntToStr(TextObj.MultilineTextAutoPosition)
+        + ',"frame_width":' + FloatToJsonStr(CoordToMilsF(TextObj.MultilineTextWidth))
+        + ',"frame_height":' + FloatToJsonStr(CoordToMilsF(TextObj.MultilineTextHeight))
+        + ',"inverted":' + BoolToJsonStr(TextObj.Inverted)
+        + ',"margin":' + FloatToJsonStr(CoordToMilsF(TextObj.InvertedTTTextBorder))
+        + ',"location":[' + FloatToJsonStr(CoordToMilsF(TextObj.XLocation)) + ','
+        + FloatToJsonStr(CoordToMilsF(TextObj.YLocation)) + ']'
+        + ',"bounds":[' + FloatToJsonStr(CoordToMilsF(Box.Left)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box.Bottom)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box.Right)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box.Top)) + ']';
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -49435,8 +49727,9 @@ Begin
         + '"y":' + FloatToJsonStr(TY) + ','
         + '"height":' + FloatToJsonStr(CoordToMilsF(TextObj.Size)) + ','
         + '"stroke":' + FloatToJsonStr(CoordToMilsF(TextObj.Width)) + ','
-        + '"rotation":' + FloatToJsonStr(TRot) + ','
-        + '"layer":"' + EscapeJsonString(GetLayerString(TextObj.Layer)) + '"}');
+        + '"rotation":' + FloatToJsonStr(TextObj.Rotation) + ','
+        + '"layer":"' + EscapeJsonString(GetLayerString(TextObj.Layer)) + '"'
+        + Extra + '}');
 End;
 
 {..............................................................................}
@@ -53245,6 +53538,141 @@ Begin
             + FloatToJsonStr(CoordToMilsF(Last.vy)) + ']')
         + ',' + JsonBool('closes_on_first', (Corners > 0) And (Last.vx = First.vx)
             And (Last.vy = First.vy))));
+End;
+
+{..............................................................................}
+{ PCB_PourCopper - the copper one pour poured: each region it holds, as the   }
+{ region's own geometric polygon (its outline and every hole, in mils, with  }
+{ the area). Read through a typed IPCB_Region: the geometric polygon of a     }
+{ REGION is declared in this binding, the one of an IPCB_Polygon is not.      }
+{ Its contours count from 0 and say which are holes, so no index base has to }
+{ be guessed (cf. RegionCopperSqMils). A hatched pour's copper is tracks and  }
+{ arcs, which are counted, not drawn: pcb_get_copper reads those.             }
+{ Params: index (pcb_get_polygons' order), name (optional; refused when the  }
+{ pour at index has another, since positions shift as pours come and go).    }
+{..............................................................................}
+Function PourContourJson(Contour : Pgpc_vertex_list) : String;
+Var
+    J : Integer;
+Begin
+    Result := '';
+    For J := 0 To Contour.Count - 1 Do
+    Begin
+        If J > 0 Then Result := Result + ',';
+        Result := Result + '[' + FloatToJsonStr(CoordToMilsF(Contour.x(J))) + ','
+            + FloatToJsonStr(CoordToMilsF(Contour.y(J))) + ']';
+    End;
+    Result := '[' + Result + ']';
+End;
+
+Function PCB_PourCopper(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Pour : IPCB_Polygon;
+    Iter : IPCB_GroupIterator;
+    Region : IPCB_Region;
+    Stroke : IPCB_Primitive;
+    Shape : IPCB_GeometricPolygon;
+    Contour : Pgpc_vertex_list;
+    Wanted, Passed, I, Pieces, Holes, Vertices, Strokes : Integer;
+    Expected, Net, OnLayer, Rows, Outlines, HoleRows : String;
+    Area, PieceArea : Double;
+Begin
+    Wanted := StrToIntDef(ExtractJsonValue(Params, 'index'), -1);
+    If Wanted < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'index counts from 0');
+        Exit;
+    End;
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Pour := PourAtPosition(Board, Wanted, Passed);
+    If Pour = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND',
+            'The board has ' + IntToStr(Passed) + ' pours, none at ' + IntToStr(Wanted));
+        Exit;
+    End;
+    Expected := Trim(ExtractJsonValue(Params, 'name'));
+    If (Expected <> '') And (UpperCase(Expected) <> UpperCase(Pour.Name)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'POUR_CHANGED',
+            'Pour ' + IntToStr(Wanted) + ' is now ' + Pour.Name + ', not ' + Expected
+            + '; read pcb_get_polygons again');
+        Exit;
+    End;
+    Net := '';
+    Try If Pour.Net <> Nil Then Net := Pour.Net.Name; Except Net := ''; End;
+    OnLayer := 'Unknown';
+    Try OnLayer := GetLayerString(Pour.Layer); Except End;
+
+    Rows := '';
+    Pieces := 0;
+    Holes := 0;
+    Vertices := 0;
+    Area := 0;
+    Iter := Pour.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+        Region := Iter.FirstPCBObject;
+        While Region <> Nil Do
+        Begin
+            Inc(Pieces);
+            Shape := Region.GeometricPolygon;
+            Outlines := '';
+            HoleRows := '';
+            PieceArea := 0;
+            For I := 0 To Shape.Count - 1 Do
+            Begin
+                Contour := Shape.Contour(I);
+                Vertices := Vertices + Contour.Count;
+                If Shape.IsHole(I) Then
+                Begin
+                    Inc(Holes);
+                    PieceArea := PieceArea - Contour.Area / 100000000.0;
+                    HoleRows := HoleRows + ',' + PourContourJson(Contour);
+                End
+                Else
+                Begin
+                    PieceArea := PieceArea + Contour.Area / 100000000.0;
+                    Outlines := Outlines + ',' + PourContourJson(Contour);
+                End;
+            End;
+            Area := Area + PieceArea;
+            Rows := Rows + ',' + JsonObj(
+                JsonRaw('outlines', '[' + Copy(Outlines, 2, Length(Outlines)) + ']')
+                + ',' + JsonRaw('holes', '[' + Copy(HoleRows, 2, Length(HoleRows)) + ']')
+                + ',' + JsonFloat('area_sqmils', PieceArea));
+            Region := Iter.NextPCBObject;
+        End;
+    Finally
+        Pour.GroupIterator_Destroy(Iter);
+    End;
+
+    Strokes := 0;
+    Iter := Pour.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+        Stroke := Iter.FirstPCBObject;
+        While Stroke <> Nil Do
+        Begin
+            Inc(Strokes);
+            Stroke := Iter.NextPCBObject;
+        End;
+    Finally
+        Pour.GroupIterator_Destroy(Iter);
+    End;
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(JsonInt('index', Wanted)
+        + ',' + JsonStr('name', Pour.Name) + ',' + JsonStr('net', Net)
+        + ',' + JsonStr('layer', OnLayer) + ',' + JsonInt('pieces', Pieces)
+        + ',' + JsonInt('holes', Holes) + ',' + JsonInt('vertices', Vertices)
+        + ',' + JsonFloat('area_sqmils', Area) + ',' + JsonInt('strokes', Strokes)
+        + ',' + JsonRaw('copper', '[' + Copy(Rows, 2, Length(Rows)) + ']')));
 End;
 
 {..............................................................................}
@@ -71304,6 +71732,7 @@ Begin
         'rebuild_connectivity':    Result := PCB_RebuildConnectivity(Params, RequestId);
         'get_polygons':            Result := PCB_GetPolygons(Params, RequestId);
         'pour_outline':            Result := PCB_PourOutline(Params, RequestId);
+        'pour_copper':             Result := PCB_PourCopper(Params, RequestId);
         'calc_polygon_area':       Result := PCB_CalcPolygonArea(Params, RequestId);
         'set_via_soldermask_relief': Result := PCB_SetViaSoldermaskRelief(Params, RequestId);
         'set_via_tenting': Result := PCB_SetViaTenting(Params, RequestId);

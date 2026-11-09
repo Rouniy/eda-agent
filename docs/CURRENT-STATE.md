@@ -1,5 +1,14 @@
 # Current integration state / agent handoff
 
+## PCB text and pour worktree, 2026-11-09 (offline checks complete)
+
+The separate `backport-morembedded-pcb` branch extends the bulk/board-read
+stage with board-text font, style, kind and justification handling, improved
+text-frame sizing, and readback of a polygon's poured copper including holes.
+Five impacted/version test modules pass (193 tests), and the `.194` Pascal
+bundle builds with zero lint errors or warnings. Native acceptance on
+disposable Altium documents remains outstanding. No runtime was deployed.
+
 ## Bulk and board-read worktree, 2026-11-09 (offline checks complete)
 
 The separate `backport-morembedded-bulk` branch extends the foundation with
