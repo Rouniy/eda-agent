@@ -1,5 +1,14 @@
 # Current integration state / agent handoff
 
+## Optional NPI stages, 2026-11-10 (offline checks complete)
+
+The separate `backport-morembedded-phases` branch extends design modes with
+profile- and CLI-controlled `design_phase_*` tools, hidden by default. Rouniy's
+existing `design_npi_*` programme journal remains separate. 744 related tests
+pass; direct `phases-show`, `--phases evt phases-show` and `mode-list` commands
+also run from this worktree. The Pascal runtime remains `.197`; no runtime was
+deployed. Full-suite and native acceptance remain pending.
+
 ## Design-mode worktree, 2026-11-10 (offline checks complete)
 
 The separate `backport-morembedded-modes` branch extends profile safety with

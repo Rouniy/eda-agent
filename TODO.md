@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## Optional NPI stages, 2026-11-10
+
+- [x] Port explicit phase selection from the donor while retaining Rouniy's
+  existing NPI journal. Related tests: 744 passed; direct read-only CLI
+  commands checked.
+- [ ] Run the full suite after the next dependent block and review native
+  behaviour on disposable documents before deployment.
+
 ## Design modes, 2026-11-10
 
 - [x] Port design-mode presets and profile modes, preserve the Rouniy CLI,
