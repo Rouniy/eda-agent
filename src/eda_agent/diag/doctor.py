@@ -33,7 +33,7 @@ def _altium_process_scan() -> tuple[Optional[bool], list[int], list[str]]:
     try:
         from eda_agent.bridge.process_manager import AltiumProcessManager
         manager = AltiumProcessManager()
-    except Exception:
+    except Exception:  # diagnostics must still report when process discovery fails
         return None, [], []
     override = os.environ.get("EDA_AGENT_ALTIUM_PROCESS", "").strip()
     if override:
@@ -41,11 +41,11 @@ def _altium_process_scan() -> tuple[Optional[bool], list[int], list[str]]:
     names = list(manager.PROCESS_NAMES)
     try:
         running = manager.is_altium_running()
-    except Exception:
+    except Exception:  # an unavailable process scan is an unknown state
         return None, [], names
     try:
         pids = [candidate.pid for candidate in manager.select_altium_process().candidates]
-    except Exception:
+    except Exception:  # candidate enumeration can fail independently of the scan
         pids = []
     return (True if pids else running), pids, names
 
@@ -64,7 +64,7 @@ def _recent_activity() -> Optional[float]:
         from eda_agent.diag.perf import last_activity_at
         path = Path(get_config().workspace_dir) / "activity.log"
         stamp = last_activity_at(_tail_text(path))
-    except Exception:
+    except Exception:  # an unreadable log is reported as no activity
         return None
     if stamp is None:
         return None
@@ -99,17 +99,19 @@ def _ping_altium() -> Optional[dict]:
     try:
         from eda_agent.bridge import get_bridge
         bridge = get_bridge()
-    except Exception:
+    except Exception:  # no bridge to ping; reported as no reply
         return None
     try:
         result = bridge.ping_with_version()
-    except Exception:
+    except Exception:  # retried below without the process check
         result = None
     if result is not None:
         return result
     try:
+        # A loop that answers while the process check says otherwise is
+        # still a loop; this is what finds it.
         return bridge.ping_with_version(require_process=False)
-    except Exception:
+    except Exception:  # the check reports no reply; that is what was found
         return None
 
 

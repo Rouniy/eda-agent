@@ -23,6 +23,29 @@ Two file shapes are genuinely new here (nothing already reads them):
   - document_settings.json  -- {"schematic_units", "pcb_units",
                                "schematic_snap_grid_mil",
                                "schematic_visible_grid_mil"}
+  - design_rules.json       -- {"fab_profile", "class_current_a", ...}: the
+                               TARGETS pcb_rules_plan synthesizes the board's
+                               Altium design rules from, never the computed
+                               rules themselves
+  - erc_levels.json         -- {"levels": {violation type: level}}: the ERC
+                               matrix (Project Options > Error Reporting)
+                               this owner's projects carry. Named variants
+                               live in erc_levels/<name>.json and may
+                               "extends" one another, which is how a company
+                               base policy and a per-workspace narrowing of
+                               it stay two files rather than two copies.
+  - phase_gates.json        -- {"stages": ["evt", "dvt", "pvt"]}, which NPI
+                               stages this owner runs. Absent means none,
+                               and the phase tools are not advertised.
+  - preferences.json        -- the Altium panel's Config-tab keys
+                               (value_format, value_unit, keep_in_view,
+                               dialogs, and the safety switches) plus
+                               default_mode, for this owner. How it combines
+                               with the panel's own file is in
+                               eda_agent.preferences.
+  - modes/<name>.json       -- design modes (design.modes): presets for a
+                               kind of run, e.g. a company's variant of
+                               reference_redraw
   - templates/<name>/       -- plain files, copied as-is by
                                `eda-agent profile-new-project`
 
@@ -148,6 +171,21 @@ class ActiveProfile:
     footprint_defaults: dict = field(default_factory=dict)
     footprint_policy: dict = field(default_factory=dict)
     document_settings: dict = field(default_factory=dict)
+    #: design_rules.json -- the TARGETS a board's Altium design rules are
+    #: synthesized from (fab profile name, per-class current, differential
+    #: impedance), not the computed rules. rule_synthesis asserts that every
+    #: number it emits traces to a profile field or a verified calculator,
+    #: and storing the output here would let a stored number drift away from
+    #: the calculator that justified it.
+    design_rules: dict = field(default_factory=dict)
+    #: erc_levels.json -- the default ERC set, as written. Kept raw rather
+    #: than resolved, because resolving follows "extends" across files and
+    #: a set naming a base that is not there has to be an error the tool
+    #: reports, not an empty dict every caller silently accepts.
+    erc_levels: dict = field(default_factory=dict)
+    phase_gates: dict = field(default_factory=dict)
+    #: preferences.json -- value format, safety switches, default_mode.
+    preferences: dict = field(default_factory=dict)
     naming_path: Path | None = None
     company_goals_path: Path | None = None
     rules_dir: Path | None = None
@@ -172,19 +210,36 @@ class ActiveProfile:
             "footprint_defaults": self.footprint_defaults,
             "footprint_policy": self.footprint_policy,
             "document_settings": self.document_settings,
+            "phase_gates": self.phase_gates,
+            "preferences": self.preferences,
+            "has_erc_levels": bool(self.erc_levels),
+            "erc_sets": self.erc_sets(),
             "has_naming": self.naming_path is not None,
             "has_company_goals": self.company_goals_path is not None,
             "rulesets": self.rulesets(),
             "fab_profiles": self.fab_profile_names(),
             "templates": self.template_names(),
             "document_templates": [t["name"] for t in self.document_templates()],
+            "modes": self.mode_names(),
             "errors": list(self.errors),
         }
+
+    def mode_names(self) -> list[str]:
+        """The design modes this profile adds or changes (modes/*.json)."""
+        d = self.directory / "modes"
+        return sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
 
     def rulesets(self) -> list[str]:
         if not self.rules_dir or not self.rules_dir.is_dir():
             return []
         return sorted(p.stem for p in self.rules_dir.glob("*.json"))
+
+    def erc_sets(self) -> list[str]:
+        """The named ERC sets in ``erc_levels/``. The profile's own
+        ``erc_levels.json`` is not one of them: it is the default, reached
+        by naming no set at all."""
+        from .design.erc_matrix import set_names
+        return set_names(self.directory)
 
     def fab_profile_names(self) -> list[str]:
         if not self.fab_profiles_dir or not self.fab_profiles_dir.is_dir():
@@ -244,6 +299,10 @@ def load_profile(directory: Path) -> ActiveProfile:
     footprint_defaults = read("footprint_defaults.json")
     footprint_policy = read("footprint_policy.json")
     document_settings = read("document_settings.json")
+    design_rules = read("design_rules.json")
+    erc_levels = read("erc_levels.json")
+    phase_gates = read("phase_gates.json")
+    preferences = read("preferences.json")
 
     naming_path = directory / "naming.json"
     company_goals_path = directory / "company_goals.json"
@@ -257,6 +316,10 @@ def load_profile(directory: Path) -> ActiveProfile:
         footprint_defaults=footprint_defaults,
         footprint_policy=footprint_policy,
         document_settings=document_settings,
+        design_rules=design_rules,
+        erc_levels=erc_levels,
+        phase_gates=phase_gates,
+        preferences=preferences,
         naming_path=naming_path if naming_path.exists() else None,
         company_goals_path=company_goals_path if company_goals_path.exists() else None,
         rules_dir=rules_dir if rules_dir.is_dir() else None,
@@ -365,6 +428,116 @@ def check_document_settings(data: dict) -> list[str]:
     return problems
 
 
+def check_erc_sets(directory: Path) -> list[str]:
+    """Every ERC set in a profile, each resolved the way the tools resolve it.
+
+    One function rather than a per-file check, because a set is only valid
+    in the company of the sets it ``extends``: a file that is perfect on
+    its own but names a base that is not there sets nothing, and the point
+    of ``profile-validate`` is to say so before somebody applies it to a
+    project and wonders why half their policy is missing.
+    """
+    from .design.erc_matrix import DEFAULT_FILENAME, read_set, set_names
+
+    root = Path(directory)
+    names = [""] if (root / DEFAULT_FILENAME).is_file() else []
+    names += set_names(root)
+    problems: list[str] = []
+    for name in names:
+        got = read_set(root, name)
+        reason = str(got.get("reason"))
+        # A base set is read once on its own and again through every set
+        # that extends it, so the same broken line arrives once per
+        # dependant. Reported once, in the order first met.
+        if not got.get("ok") and reason not in problems:
+            problems.append(reason)
+    return problems
+
+
+_PHASE_GATE_KEYS = frozenset({"stages"})
+
+#: Overrules a profile's phase_gates.json, the way EDA_AGENT_BACKEND
+#: overrules the backend. Empty or unset means "the profile decides";
+#: "none" is how a shell turns the gate off over a profile that turned
+#: it on, which an empty value cannot say.
+PHASE_STAGES_ENV = "EDA_AGENT_PHASES"
+
+
+def check_phase_gates(data: dict) -> list[str]:
+    from .design.phase_gates import parse_stages
+
+    problems = _unknown_keys(data, _PHASE_GATE_KEYS, "phase_gates.json")
+    if "stages" in data:
+        try:
+            parse_stages(data["stages"])
+        except ValueError as exc:
+            problems.append(f"phase_gates.json: {exc}")
+    return problems
+
+
+def get_phase_stages(start: Path | None = None) -> tuple[str, ...]:
+    """The NPI stages in force: the environment, else the profile, else none.
+
+    Reads ONLY phase_gates.json rather than going through load_profile():
+    this runs while the tool surface is being built, and loading the whole
+    profile to reach one file would read four others for nothing.
+
+    A value that is not a list of stages degrades to the default rather
+    than raising, as every profile setting does -- a typo must not leave
+    the server without a tool surface -- and profile-validate is where the
+    same value is reported loudly.
+    """
+    from .design.phase_gates import DEFAULT_STAGES, parse_stages
+
+    raw: object = os.environ.get(PHASE_STAGES_ENV, "")
+    if not str(raw).strip():
+        directory = resolve_profile_dir(start)
+        if directory is None:
+            return DEFAULT_STAGES
+        data, _error = _read_json_lenient(directory / "phase_gates.json")
+        if "stages" not in data:
+            return DEFAULT_STAGES
+        raw = data["stages"]
+    try:
+        return parse_stages(raw)
+    except ValueError:
+        return DEFAULT_STAGES
+
+
+def describe_phase_stages(start: Path | None = None) -> dict:
+    """What get_phase_stages resolved, where it came from, and what it ignored.
+
+    get_phase_stages swallows a bad value so a typo cannot leave the server
+    without tools. Something has to say it out loud, or the typo is
+    invisible until someone wonders where their stages went; this is what
+    `eda-agent phases-show` prints.
+
+    Returns ``{"stages", "source", "raw", "problem", "path"}``. ``source``
+    is "environment", "profile" or "default"; ``problem`` is empty when the
+    value parsed.
+    """
+    from .design.phase_gates import DEFAULT_STAGES, parse_stages
+
+    raw: object = os.environ.get(PHASE_STAGES_ENV, "")
+    source = "environment"
+    path: Path | None = None
+    if not str(raw).strip():
+        directory = resolve_profile_dir(start)
+        path = directory / "phase_gates.json" if directory else None
+        data = {} if directory is None else _read_json_lenient(path)[0]
+        if "stages" not in data:
+            return {"stages": list(DEFAULT_STAGES), "source": "default",
+                    "raw": None, "problem": "", "path": str(path) if path else ""}
+        raw, source = data["stages"], "profile"
+    try:
+        stages = parse_stages(raw)
+    except ValueError as exc:
+        return {"stages": list(DEFAULT_STAGES), "source": source, "raw": raw,
+                "problem": str(exc), "path": str(path) if path else ""}
+    return {"stages": list(stages), "source": source, "raw": raw,
+            "problem": "", "path": str(path) if path else ""}
+
+
 def get_pad_corner_radius_pct(start: Path | None = None) -> int:
     """The active profile's pad corner radius %, or Altium's own default.
 
@@ -390,3 +563,156 @@ def get_footprint_defaults(start: Path | None = None) -> dict:
         return {}
     data, _error = _read_json_lenient(directory / "footprint_defaults.json")
     return data
+
+
+# ------------------------------------------------------------ where, and which
+#
+# The CLI and the dashboard both answer "which profile applies here, and
+# why" and both switch the central one. Each answer lives here once, so a
+# button on the dashboard can never do something `profile-use` would not.
+
+
+def central_profile_names() -> list[str]:
+    """Every profile under ~/.eda-agent/profiles/, sorted."""
+    root = central_profiles_root()
+    return sorted(d.name for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
+
+
+def central_active_name() -> str:
+    """The name ``active_profile`` holds, or "" when it holds none."""
+    pointer = active_profile_pointer()
+    try:
+        return pointer.read_text(encoding="utf-8").strip() if pointer.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def resolution(start: Path | None = None) -> dict:
+    """Which step of the resolution order decided, and what the others hold.
+
+    ``source`` is "environment", "project", "central" or "none". The other
+    steps are reported too, because the question a person asks after
+    switching profiles is "why is it still the old one", and the answer is
+    always one of the steps above the one they changed.
+    """
+    override = os.environ.get(_ENV_OVERRIDE, "")
+    project = find_project_profile(start or Path.cwd())
+    central_name = central_active_name()
+    central_dir = central_profiles_root() / central_name if central_name else None
+    directory = resolve_profile_dir(start)
+    if override:
+        source = "environment" if directory is not None else "none"
+    elif project is not None:
+        source = "project"
+    elif directory is not None:
+        source = "central"
+    else:
+        source = "none"
+    return {
+        "source": source,
+        "directory": str(directory) if directory else "",
+        "environment": {"variable": _ENV_OVERRIDE, "value": override,
+                        "usable": bool(override) and Path(override).is_dir()},
+        "project": str(project) if project else "",
+        "central": {"name": central_name,
+                    "directory": str(central_dir) if central_dir else "",
+                    "exists": bool(central_dir) and central_dir.is_dir(),
+                    "root": str(central_profiles_root())},
+        "start": str((start or Path.cwd()).resolve()),
+    }
+
+
+def use_central_profile(name: str) -> Path:
+    """Make ``name`` the centrally active profile; its directory.
+
+    Raises ValueError for a name that is not a profile under the central
+    root. A name with a path separator in it is refused rather than
+    resolved: the pointer file holds a name, not a path.
+    """
+    if not name or name in (".", "..") or any(c in name for c in "/\\:"):
+        raise ValueError(f"{name!r} is not a profile name")
+    target = central_profiles_root() / name
+    if not target.is_dir():
+        raise ValueError(f"no profile named {name!r} at {target}. "
+                         f"Run `eda-agent profile-init {name}` first.")
+    pointer = active_profile_pointer()
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(name, encoding="utf-8")
+    return target
+
+
+def follow_env(previous: Path | None, current: ActiveProfile | None) -> bool:
+    """After a switch inside a running server, move the naming/IPC-goals
+    pointer apply_env set at startup onto the new profile. True if moved.
+
+    Only a value apply_env itself wrote (the previous profile's directory)
+    is touched: one the person set in their own environment always wins,
+    exactly as it does at startup.
+    """
+    var = _IPC_DIR_ENV_VARS[0]
+    value = os.environ.get(var, "")
+    if any(os.environ.get(v) for v in _IPC_DIR_ENV_VARS[1:]):
+        return False
+    if value and (previous is None or Path(value) != Path(previous)):
+        return False
+    wanted = ""
+    if current is not None and (current.naming_path or current.company_goals_path):
+        wanted = str(current.directory)
+    if wanted == value:
+        return False
+    if wanted:
+        os.environ[var] = wanted
+    else:
+        os.environ.pop(var, None)
+    return True
+
+
+def validate_profile(directory: Path) -> list[str]:
+    """Every problem in a profile, as `profile-validate` reports them.
+
+    Loading degrades rather than raising (so a typo cannot break startup or
+    pad authoring), which makes this the place those problems surface. The
+    same checks the consumers apply, so "valid" here means the tools will
+    accept it rather than refuse at the point of use.
+    """
+    from .design.fab_profile import load_fab_profile
+    from .engineering.naming import NamingPolicy
+    from .engineering.rules import validate_ruleset
+
+    p = load_profile(Path(directory))
+    errors: list[str] = list(p.errors)
+    errors += check_footprint_defaults(p.footprint_defaults)
+    errors += check_document_settings(p.document_settings)
+    errors += check_phase_gates(p.phase_gates)
+    errors += check_erc_sets(p.directory)
+    from .design.modes import load_modes
+    modes, mode_problems = load_modes(p.directory)
+    errors += mode_problems
+    if p.preferences:
+        from .preferences import check_profile_preferences
+        errors += check_profile_preferences(p.preferences, set(modes))
+
+    if p.naming_path:
+        try:
+            NamingPolicy(path=p.naming_path)
+        except Exception as exc:  # noqa: BLE001 -- report, never raise
+            errors.append(f"naming.json: {exc}")
+
+    if p.rules_dir:
+        for rs_path in sorted(p.rules_dir.glob("*.json")):
+            try:
+                validate_ruleset(json.loads(rs_path.read_text(encoding="utf-8")))
+            except Exception as exc:  # noqa: BLE001
+                # "ruleset invalid" alone names no line to fix; the
+                # per-rule reasons travel in the error's details.
+                details = getattr(exc, "details", None) or {}
+                reasons = details.get("errors") if isinstance(details, dict) else None
+                suffix = f" ({'; '.join(map(str, reasons))})" if reasons else ""
+                errors.append(f"rules/{rs_path.name}: {exc}{suffix}")
+
+    if p.fab_profiles_dir:
+        for fp_path in sorted(p.fab_profiles_dir.glob("*.json")):
+            result = load_fab_profile(str(fp_path))
+            if not result.get("ok"):
+                errors.append(f"fab_profiles/{fp_path.name}: {result.get('reason')}")
+    return errors

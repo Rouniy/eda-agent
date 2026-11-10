@@ -95,12 +95,12 @@ def test_an_automatic_criterion_names_tools_and_a_manual_one_does_not():
 
 @pytest.fixture(scope="module")
 def registered_tools() -> set[str]:
-    from mcp.server.fastmcp import FastMCP
+    from eda_agent.tools.registry import ToolRegistry
     from eda_agent.tools import register_backend
 
-    mcp = FastMCP("test")
-    register_backend(mcp, "altium")
-    return {t.name for t in asyncio.run(mcp.list_tools())}
+    registry = ToolRegistry()
+    register_backend(registry, "altium")
+    return set(registry.names) | set(registry.hidden)
 
 
 def test_every_tool_a_criterion_names_actually_exists(registered_tools):

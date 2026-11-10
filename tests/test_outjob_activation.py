@@ -36,7 +36,7 @@ def _routine(unit: str, name: str) -> str:
 def test_proj_run_outjob_activates_the_outjob_before_running():
     body = _routine("Project.pas", "Proj_RunOutJob")
     show = body.index("Client.ShowDocument(OutJobDoc)")
-    run = body.index("RunProcess('WorkspaceManager:")
+    run = body.index("RunProcess('WorkspaceManager:Print')")
     assert show < run, "the OutJob must be shown before the container runs"
     assert "Client.OpenDocument('OUTPUTJOB'" in body
 

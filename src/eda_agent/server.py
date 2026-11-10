@@ -3,6 +3,7 @@
 """EDA Agent MCP Server - Main entry point + CLI subcommands."""
 
 import argparse
+import functools
 import logging
 import os
 import sys
@@ -208,9 +209,8 @@ _ENGINE_PARAGRAPHS = {
 _UI_AUTOMATION_ALTIUM = (
     "API FIRST, THEN THE INTERFACE, WITHOUT ASKING. The app_ tools that\n"
     "press buttons, pick menus and type into Altium's dialogs\n"
-    "(app_click_menu, app_run_ui_command, app_press_dialog_button,\n"
-    "app_drive_dialogs, app_set_dialog_control, app_canvas and the rest)\n"
-    "come second to an API tool. When an API tool seems to fail or be\n"
+    "(app_menu, app_ui, app_press_dialog_button, app_drive_dialogs and\n"
+    "the rest) come second to an API tool. When an API tool seems to fail or be\n"
     "missing, the cause has usually been a wrong argument or a tool that\n"
     "was not found, and driving a dialog instead has ended with Altium\n"
     "crashed, so first {reach} with what you are trying to do. When there\n"
@@ -230,6 +230,18 @@ _UI_AUTOMATION_PARAGRAPHS = {
     "both": _UI_AUTOMATION_ALTIUM,
     "easyeda": "",
     "kicad": "",
+}
+
+
+#: The units sentence. KiCad's tools take millimetres, as its files and API
+#: do, and every distance argument names its unit.
+_UNITS = {
+    "altium": "Coordinates are in mils throughout.\n",
+    "easyeda": "Coordinates are in mils throughout.\n",
+    "kicad": ("Coordinates are in millimetres on KiCad, as in its files: every\n"
+              "distance argument says so (x_mm, width_mm).\n"),
+    "both": ("Coordinates are in mils, except on the kicad_ tools, which take\n"
+             "millimetres and say so in each argument (x_mm, width_mm).\n"),
 }
 
 
@@ -258,6 +270,19 @@ def build_server_instructions(
     ui = _UI_AUTOMATION_PARAGRAPHS.get(
         (backend or DEFAULT_BACKEND).strip().lower(), _UI_AUTOMATION_ALTIUM)
     ui = ui.replace("{reach}", reach)
+    altium = (backend or DEFAULT_BACKEND).strip().lower() in ("altium", "both")
+    items = (
+        "ONE CALL FOR MANY. Nearly every tool takes items: a list of its own\n"
+        "arguments, one dict per item, with arguments given beside it\n"
+        "applying to all. Twenty arcs, ten pin renames or a column of net\n"
+        + ("labels are one call and one undo step in Altium, not twenty.\n"
+           "The reply gives each item's result in order and says which\n"
+           "failed; items run before a failure stay applied.\n"
+           if altium else
+           "labels are one call, not twenty. The reply lists each item's\n"
+           "result in order.\n")
+        + "A single call works as it always has.\n"
+        "\n")
     return (
         "Tools are grouped by the DOCUMENT they act on, and mixing them up\n"
         "is the most common error here: lib_ acts on a .PcbLib or .SchLib,\n"
@@ -276,7 +301,7 @@ def build_server_instructions(
         "category.\n"
         "\n"
         + ui
-        + engine +
+        + engine + items +
         "Coordinates are in mils throughout, on every backend.\n"
         "\n"
         "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
@@ -313,15 +338,67 @@ def compact_text_blocks(blocks):
     return out
 
 
-class _CompactFastMCP(FastMCP):
-    """FastMCP whose tool results carry compact JSON text.
+def add_update_notice(result, news):
+    """Put ``news`` under ``update`` on a tool result: in the structured
+    copy and in the JSON text copy when the reply is an object, else as a
+    text block of its own. A reply that already says ``update`` is kept."""
+    import json
+    from mcp.types import TextContent
+    blocks, structured = (result if isinstance(result, tuple) else (result, None))
+    if not isinstance(blocks, list):
+        return result
+    if isinstance(structured, dict) and "update" not in structured:
+        structured = {**structured, "update": news}
+    out, placed = [], False
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if not placed and isinstance(text, str) and text[:1] == "{":
+            try:
+                body = json.loads(text)
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                body.setdefault("update", news)
+                block = block.model_copy(update={"text": json.dumps(body)})
+                placed = True
+        out.append(block)
+    if not placed:
+        out.append(TextContent(type="text", text=json.dumps({"update": news})))
+    return (out, structured) if isinstance(result, tuple) else out
 
-    structuredContent is left exactly as FastMCP builds it: Claude Code
-    reads that copy, and only the text copy carried the indentation.
+
+class _CompactFastMCP(FastMCP):
+    """FastMCP whose tool results carry compact JSON text, and the news of
+    a newer eda-agent on the first reply after it is found; requests are
+    read from a private copy of standard input (stdin_handle.py).
+
+    structuredContent is left as FastMCP builds it apart from that news:
+    Claude Code reads that copy, and only the text copy carried the
+    indentation.
     """
 
+    async def run_stdio_async(self) -> None:
+        from io import TextIOWrapper
+
+        import anyio
+        from mcp.server.stdio import stdio_server
+
+        from .stdin_handle import private_stdin
+
+        stdin = anyio.wrap_file(TextIOWrapper(private_stdin(), encoding="utf-8",
+                                              errors="replace"))
+        async with stdio_server(stdin=stdin) as (read_stream, write_stream):
+            await self._mcp_server.run(read_stream, write_stream,
+                                       self._mcp_server.create_initialization_options())
+
     async def call_tool(self, name, arguments):
-        result = await super().call_tool(name, arguments)
+        from .bridge.altium_bridge import tool_call
+        from .updates import notice_once
+        with tool_call():
+            result = await super().call_tool(name, arguments)
+        news = notice_once()
+        if news:
+            result = add_update_notice(result, news)
         if isinstance(result, tuple):
             return (compact_text_blocks(result[0]), result[1])
         if isinstance(result, list):
@@ -383,6 +460,44 @@ def _dashboard_disabled_via_env() -> bool:
     return False
 
 
+def _take_over_dashboard(host: str, port: int, owner_pid: int,
+                         wait: float = 6.0) -> bool:
+    """Ask the dashboard holding the port to stop when this copy's code is
+    newer, and wait for the port. False when it is as new or newer, or too
+    old to be asked (it predates the handover and keeps the port until its
+    session ends)."""
+    import json
+    import time
+    import urllib.request
+    from .web.dashboard import code_stamp
+    base = f"http://{host}:{port}"
+    try:
+        with urllib.request.urlopen(base + "/api/dashboard/info", timeout=2) as r:
+            theirs = float(json.loads(r.read()).get("code") or 0)
+    except Exception:                                    # noqa: BLE001
+        logger.info("dashboard on port %s (pid %s) is too old to hand over", port, owner_pid)
+        return False
+    mine = code_stamp()
+    if mine <= theirs:
+        return False
+    try:
+        req = urllib.request.Request(base + "/api/dashboard/yield", method="POST",
+                                     data=json.dumps({"code": mine}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            if not json.loads(r.read()).get("yielding"):
+                return False
+    except Exception:                                    # noqa: BLE001
+        return False
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if _probe_port_owner(host, port) in (None, os.getpid()):
+            logger.info("dashboard on port %s handed over by pid %s", port, owner_pid)
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def _spawn_dashboard_background(host: str, port: int) -> "Optional[object]":
     """Start the local web dashboard on a background thread.
 
@@ -409,7 +524,7 @@ def _spawn_dashboard_background(host: str, port: int) -> "Optional[object]":
     # `eda-agent dashboard` -- skip with an info log. The MCP server
     # works fine without an in-process dashboard.
     owner_pid = _probe_port_owner(host, port)
-    if owner_pid is not None and owner_pid != os.getpid():
+    if owner_pid is not None and owner_pid != os.getpid()             and not _take_over_dashboard(host, port, owner_pid):
         logger.info(
             "dashboard already running on port %s (pid %s) -- not "
             "spawning another. http://%s:%s/", port, owner_pid, host, port,
@@ -431,6 +546,8 @@ def _spawn_dashboard_background(host: str, port: int) -> "Optional[object]":
                 publish_dashboard_url(get_config().workspace_dir, host, port)
             except OSError as exc:
                 logger.warning("dashboard bound but could not publish URL: %s", exc)
+            from .web import dashboard as _dash
+            _dash.SHUTDOWN["stop"] = srv.shutdown
             srv.serve_forever()
         except OSError as e:
             logger.warning("dashboard could not bind %s:%s (%s)",
@@ -487,9 +604,14 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     # at once are allowed. app_ping and app_get_status repeat the warning.
     from . import server_registry, updates
     server_registry.register(config.workspace_dir)
-    # Once a day at most, in the background: a newer eda-agent is then
-    # reported by app_ping and app_context, never installed unasked.
+    # Once a day at most, in the background, while the server runs: a newer
+    # eda-agent is then reported on the next tool reply and by app_ping and
+    # app_context, never installed unasked.
     updates.start_background_check()
+    # Altium never runs the panel's own wheel events, so the server scrolls
+    # the Config tab while the cursor is over it.
+    from .ui import panel_wheel
+    panel_wheel.start()
     duplicate = server_registry.duplicate_warning(
         server_registry.others(config.workspace_dir))
     if duplicate:
@@ -697,25 +819,115 @@ def _run_netlist(args) -> int:
     return 1 if triggered else 0
 
 
-def main() -> int:
-    """CLI entry point.
+def command_groups() -> list[tuple[str, tuple[str, ...]]]:
+    """Section headings for `eda-agent --help`, in the order shown.
 
-    Subcommands:
-      serve             -- run the MCP server (default when no args given)
-      scripts-path      -- print the path to the bundled DelphiScript files
-      install-scripts   -- copy bundled scripts to a chosen directory
-      easyeda-extension -- locate or build the EasyEDA extension
-      relaunch          -- start the bridge script in the running Altium
-
-    IMPORTANT: when invoked with no arguments, this MUST start the MCP
-    server on stdio -- MCP-compatible clients rely on that behaviour.
+    argparse has no notion of grouping subcommands: every add_parser
+    lands in one flat list in call order, and at 43 commands that list
+    reads as one undifferentiated block. Only membership lives here --
+    the one-line help strings stay on the parsers that declare them, so
+    there is nothing to keep in sync but the names, and
+    test_cli_command_groups fails on a name that is in neither place.
     """
-    # Lazy import, but earlier than the dispatch below needs it: the
-    # calculator subcommands are GENERATED from cli.CALC_COMMANDS, so
-    # the table has to exist before the parser is built. Still cheap --
-    # cli pulls in os/shutil/sys/pathlib only, and everything heavier
-    # in it is imported inside the function that needs it, so the
-    # no-argument MCP stdio path is unaffected.
+    # Generated from the same table the parser generates them from, so
+    # adding a calculator does not also mean editing this list.
+    from . import cli
+
+    return [
+        ("Server and setup", (
+            "serve", "install-scripts", "scripts-path", "relaunch",
+            "update", "easyeda-extension",
+        )),
+        ("Diagnostics", (
+            "doctor", "health", "perf", "compute-status", "fork-status",
+        )),
+        ("Browser UIs", (
+            "dashboard", "stop-dashboard", "vote",
+        )),
+        ("Altium SDK reach", (
+            "sdk-coverage", "sdk-probe", "sdk-symbols", "sdk-generate",
+        )),
+        ("Owner profiles", (
+            "profile-init", "profile-list", "profile-show", "profile-use",
+            "profile-validate", "profile-new-project",
+            "phases-show", "phases-enable", "phases-disable",
+        )),
+        ("Design modes", (
+            "mode-list", "mode-show", "mode-use", "mode-init",
+        )),
+        ("Offline analysis (no running Altium)", (
+            "review", "bom", "netlist",
+        )),
+        ("Engineering calculators", (
+            "calc", *cli.CALC_COMMANDS, "calc-cross-check",
+        )),
+        ("Fab capabilities and materials", (
+            "stackup-vendors", "stackup-show", "stackup-profile",
+            "laminates", "fab-inspect",
+        )),
+        ("Altium 365", (
+            "altium365-login", "altium365-logout", "a365-login", "a365-logout",
+        )),
+        ("Experimental", (
+            "eco-execute",
+        )),
+    ]
+
+
+class GroupedCommandHelp(argparse.HelpFormatter):
+    """Print the command list in sections instead of one flat run.
+
+    The only hook argparse gives is the pseudo-action list its
+    subparsers action carries, so this intercepts that one action and
+    lays its entries out under headings. Everything else -- options, the
+    usage line, each subcommand's own --help -- formats exactly as
+    argparse would.
+
+    A command in no group still prints, under "Other". Dropping it would
+    hide a command from the only listing anyone reads, and silently
+    hiding it is worse than listing it in the wrong place.
+    """
+
+    def __init__(self, prog, groups=(), **kwargs):
+        super().__init__(prog, **kwargs)
+        self._groups = list(groups)
+
+    def _format_action(self, action):
+        if not self._groups or not isinstance(
+                action, argparse._SubParsersAction):
+            return super()._format_action(action)
+        left = {entry.dest: entry for entry in action._get_subactions()}
+        sections = []
+        for title, names in self._groups:
+            listed = [left.pop(name) for name in names if name in left]
+            if listed:
+                sections.append((title, listed))
+        if left:
+            sections.append(("Other", list(left.values())))
+        out = []
+        for title, listed in sections:
+            out.append("%*s%s:\n" % (self._current_indent, "", title))
+            self._indent()
+            for entry in listed:
+                out.append(super()._format_action(entry))
+            self._dedent()
+            out.append("\n")
+        return "".join(out)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Every CLI command, in one place, so a test can enumerate them.
+
+    Split out of main() for exactly that: command_groups() names the
+    commands it lays out, and without a parser to ask, nothing could
+    check that the two still agree.
+    """
+    # Lazy import, but earlier than the parser needs it: the calculator
+    # subcommands are GENERATED from cli.CALC_COMMANDS, so the table has
+    # to exist before the parser is built. Still cheap -- cli pulls in
+    # os/shutil/sys/pathlib only, and everything heavier in it is
+    # imported inside the function that needs it, so the no-argument MCP
+    # stdio path is unaffected.
     from . import cli
 
     parser = argparse.ArgumentParser(
@@ -724,6 +936,10 @@ def main() -> int:
             "MCP server bridge for Altium Designer. "
             "Run with no arguments to start the MCP server on stdio."
         ),
+        # partial, because argparse builds the formatter itself and
+        # calls it with prog= only. The groups have to ride along.
+        formatter_class=functools.partial(
+            GroupedCommandHelp, groups=command_groups()),
     )
     # The bug-report template and CONTRIBUTING both ask reporters for
     # `eda-agent --version`. Without this the flag was an argparse error,
@@ -765,12 +981,30 @@ def main() -> int:
               "EDA_AGENT_BACKEND."),
     )
     parser.add_argument(
+        # Read per call, not at import, so unlike --backend it needs no
+        # re-exec: setting the variable before anything runs is enough.
+        "--compute", choices=("python", "rust", "auto"), default=None,
+        help=("Which implementation runs the CPU-heavy loops (default: "
+              "python). 'rust' uses the optional eda-agent-compute wheel "
+              "and refuses to start without it; 'auto' uses it when "
+              "installed. Same results either way. Equivalent to setting "
+              "EDA_AGENT_COMPUTE. See docs/RUST_COMPUTE.md."),
+    )
+    parser.add_argument(
         "--toolset", choices=TOOLSETS, default=None,
         help=("How many tools to advertise (default: full). 'minimal' "
               "exposes only tool_catalog and tool_invoke, keeping every "
               "other tool reachable through them, for MCP clients that "
               "limit tool count or are slow to load hundreds of schemas. "
               "Equivalent to setting EDA_AGENT_TOOLSET."),
+    )
+    parser.add_argument(
+        "--mode", default=None, metavar="MODE",
+        help="Design mode for runs that do not name one; see mode-list.",
+    )
+    parser.add_argument(
+        "--phases", default=None, metavar="STAGES",
+        help="NPI stages to enable for this run, comma-separated or 'none'.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
@@ -926,6 +1160,12 @@ def main() -> int:
         help="Emit machine-readable JSON instead of the text report.",
     )
 
+    # compute-status -- which A* implementation would run, and why
+    subparsers.add_parser(
+        "compute-status",
+        help="Show whether the Rust compute wheel is installed and in use",
+    )
+
     # eco-execute -- EXPERIMENTAL, UNVERIFIED: auto-press the ECO dialog
     eco_p = subparsers.add_parser(
         "eco-execute",
@@ -1033,7 +1273,7 @@ def main() -> int:
     # profile-* -- per-workspace owner profile (naming/rules/fab/footprint
     # conventions, document units & grid, project templates). See profile.py
     # and docs/PROFILES.md. Flat hyphenated verbs, same style as
-    # scripts-path/install-scripts and a365-login/a365-logout -- this
+    # scripts-path/install-scripts and altium365-login/altium365-logout -- this
     # codebase has no nested-subcommand precedent to follow instead.
     profile_init_p = subparsers.add_parser(
         "profile-init",
@@ -1082,6 +1322,35 @@ def main() -> int:
         help="Copy into a non-empty destination. Files the template also "
              "has are overwritten; anything else already there is left "
              "alone (this merges, it does not replace the directory).")
+
+    # mode-* -- design modes: presets for the kind of run (design/modes.py)
+    subparsers.add_parser("mode-list", help="List the design modes and which is selected.")
+    mode_show_p = subparsers.add_parser(
+        "mode-show", help="Show one design mode in full (default: the selected one).")
+    mode_show_p.add_argument("name", nargs="?", default=None)
+    mode_show_p.add_argument("--json", action="store_true", dest="json_out",
+                             help="Emit machine-readable JSON.")
+    mode_use_p = subparsers.add_parser(
+        "mode-use", help="Select the design mode runs use when they name none.")
+    mode_use_p.add_argument("name", nargs="?", default=None)
+    mode_use_p.add_argument("--clear", action="store_true",
+                            help="Forget the selection (back to full_design).")
+    mode_init_p = subparsers.add_parser(
+        "mode-init", help="Scaffold a design mode in the active profile's modes/.")
+    mode_init_p.add_argument("name")
+    mode_init_p.add_argument("--extends", default=None, metavar="MODE",
+                             help="Base it on this mode, e.g. reference_redraw.")
+    mode_init_p.add_argument("--force", action="store_true",
+                             help="Replace an existing file.")
+
+    phases_show_p = subparsers.add_parser(
+        "phases-show", help="Show enabled NPI stages and their source.")
+    phases_show_p.add_argument("--json", action="store_true", dest="json_out")
+    phases_enable_p = subparsers.add_parser(
+        "phases-enable", help="Enable NPI stages in the active profile.")
+    phases_enable_p.add_argument("stages", nargs="*", metavar="STAGE")
+    subparsers.add_parser(
+        "phases-disable", help="Disable NPI stages in the active profile.")
 
     # dashboard -- local web UI for the MCP bridge
     # --- calculators -------------------------------------------------
@@ -1176,18 +1445,10 @@ def main() -> int:
               "(needs EDA_AGENT_NEXAR_APP_ID). The workspace route needs no "
               "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
     )
-
-    # sdk-reach -- how much of Altium's SDK the property tools reach
-    sdk_p = subparsers.add_parser(
-        "sdk-reach",
-        help=("Count the properties Altium's SDK declares on each object type "
-              "and the share obj_query/obj_modify reach. Reads the SDK index in "
-              "reference/altium_sdk (or EDA_AGENT_SDK_INDEX)."),
+    subparsers.add_parser(
+        "altium365-logout",
+        help="Forget the saved Nexar login of altium365-login.",
     )
-    sdk_p.add_argument("--detail", type=int, default=0, metavar="N",
-                       help="List up to N properties not reached, per type.")
-    sdk_p.add_argument("--json", action="store_true",
-                       help="Every type with every name not reached, as JSON.")
 
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
@@ -1279,15 +1540,36 @@ def main() -> int:
     # calc -- the offline engineering calculators, without an MCP client.
     calc_p = subparsers.add_parser(
         "calc",
-        help=("Run an engineering calculator: `eda-agent calc fusing-current "
-              "seconds=1 area_sq_mils=103`. `eda-agent calc` lists them; "
-              "`eda-agent calc NAME --help` shows a calculator's inputs."),
+        help=("Run an engineering calculator by name: `eda-agent calc "
+              "fusing-current width_mils=10`. Bare `eda-agent calc` "
+              "lists them with the inputs each one takes."),
     )
     calc_p.add_argument("name", nargs="?", help="Calculator name.")
     calc_p.add_argument("inputs", nargs="*", metavar="KEY=VALUE",
                         help="Inputs, named as the calculator's arguments.")
     calc_p.add_argument("--json", action="store_true", help="Emit JSON.")
 
+    return parser
+
+
+def main() -> int:
+    """CLI entry point.
+
+    Subcommands:
+      serve             -- run the MCP server (default when no args given)
+      scripts-path      -- print the path to the bundled DelphiScript files
+      install-scripts   -- copy bundled scripts to a chosen directory
+      easyeda-extension -- locate or build the EasyEDA extension
+      relaunch          -- start the bridge script in the running Altium
+
+    IMPORTANT: when invoked with no arguments, this MUST start the MCP
+    server on stdio -- MCP-compatible clients rely on that behaviour.
+    """
+    # build_parser() imports this too; the dispatch below needs it in
+    # its own scope. Both are the same cached module object.
+    from . import cli
+
+    parser = build_parser()
     args = parser.parse_args()
 
     # Resolve the active profile (see profile.py) before anything else runs,
@@ -1305,20 +1587,57 @@ def main() -> int:
     # an exec loop if the child somehow disagrees.
     # --toolset needs the same treatment for the same reason: the surface
     # is chosen at import, so changing it after parsing is too late.
+    if getattr(args, "mode", None):
+        os.environ["EDA_AGENT_MODE"] = args.mode.strip()
     requested = getattr(args, "backend", None)
     requested_toolset = getattr(args, "toolset", None)
+    requested_phases = getattr(args, "phases", None)
     needs_backend = bool(requested) and requested != ACTIVE_BACKEND
     needs_toolset = (bool(requested_toolset)
                      and requested_toolset != ACTIVE_TOOLSET)
-    if ((needs_backend or needs_toolset)
+    needs_phases = False
+    if requested_phases is not None:
+        from .design.phase_gates import parse_stages as _parse_stages
+        try:
+            wanted = _parse_stages(requested_phases)
+        except ValueError as exc:
+            print(f"--phases: {exc}", file=sys.stderr)
+            return 2
+        # Compared parsed, not as typed: "evt,dvt" and "dvt evt" ask for
+        # the same thing and neither should reload over the other. Read
+        # before the variable is set, or it would be comparing the
+        # request against itself.
+        in_force = _profile.get_phase_stages()
+        # "none" has to survive as itself: an empty value means "the
+        # profile decides", which is the opposite of what was asked.
+        os.environ["EDA_AGENT_PHASES"] = requested_phases.strip() or "none"
+        # Only serving needs the reload. The tool surface is chosen at
+        # import, so the line above is too late for it; every other
+        # command reads the setting when it runs and is already correct.
+        #
+        # And re-execing for them would cost them their output: os.execv
+        # on Windows does not replace this process, it starts a detached
+        # one and exits, so `--phases evt phases-show` printed nothing at
+        # all and returned 0.
+        needs_phases = args.command in (None, "serve") and wanted != in_force
+    if ((needs_backend or needs_toolset or needs_phases)
             and not os.environ.get("_EDA_AGENT_BACKEND_REEXEC")):
         if needs_backend:
             os.environ["EDA_AGENT_BACKEND"] = requested
         if needs_toolset:
             os.environ["EDA_AGENT_TOOLSET"] = requested_toolset
+        # EDA_AGENT_PHASES is already set above, for the commands that
+        # need it without a reload.
         os.environ["_EDA_AGENT_BACKEND_REEXEC"] = "1"
         os.execv(sys.executable,
                  [sys.executable, "-m", "eda_agent.server", *sys.argv[1:]])
+
+    if (args.command is None or args.command == "serve") \
+            and os.environ.get("EDA_AGENT_RELOAD") == "1":
+        # Development: a proxy runs the server as a child and restarts it
+        # when the source changes, so the client never reconnects.
+        from .devproxy import main as reload_main
+        return reload_main(sys.argv[1:])
 
     if args.command is None or args.command == "serve":
         # Honour the flag whether it was given at the top level
@@ -1433,20 +1752,15 @@ def main() -> int:
         except Altium365Error as exc:
             print(f"Not signed in: {exc}")
             return 1
-    if args.command == "sdk-reach":
-        import json
-        from .diag import sdk_reach
-        path = sdk_reach.index_path()
-        if not path.is_file():
-            print(f"No SDK index at {path}. It is made from an Altium install "
-                  "(reference/altium_sdk/dump_sdk.ps1); set EDA_AGENT_SDK_INDEX "
-                  "to point at one.")
+    if args.command == "altium365-logout":
+        from .altium365 import forget_login, read_environment
+        path = read_environment().saved_login
+        try:
+            gone = forget_login(path)
+        except OSError as exc:
+            print(f"Could not remove {path}: {exc}")
             return 1
-        rows = sdk_reach.measure(sdk_reach.SdkIndex(path))
-        if args.json:
-            print(json.dumps(sdk_reach.as_dict(rows), indent=2))
-        else:
-            print(sdk_reach.report(rows, args.detail))
+        print(f"Signed out: removed {path}." if gone else "No saved Nexar login.")
         return 0
     if args.command == "review":
         return _run_review(args)
@@ -1569,6 +1883,20 @@ def main() -> int:
         return cli.cmd_profile_validate(name=args.name, here=args.here)
     if args.command == "profile-new-project":
         return cli.cmd_profile_new_project(args.template, args.dest, force=args.force)
+    if args.command == "mode-list":
+        return cli.cmd_mode_list()
+    if args.command == "mode-show":
+        return cli.cmd_mode_show(args.name, as_json=args.json_out)
+    if args.command == "mode-use":
+        return cli.cmd_mode_use(args.name, clear=args.clear)
+    if args.command == "mode-init":
+        return cli.cmd_mode_init(args.name, extends=args.extends, force=args.force)
+    if args.command == "phases-show":
+        return cli.cmd_phases_show(as_json=args.json_out)
+    if args.command == "phases-enable":
+        return cli.cmd_phases_enable(args.stages)
+    if args.command == "phases-disable":
+        return cli.cmd_phases_disable()
 
     if args.command == "calc-cross-check":
         return cli.cmd_calc_cross_check(args.calculator, args.arg,

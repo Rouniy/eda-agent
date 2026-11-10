@@ -56,6 +56,29 @@ def _docs() -> dict[str, str]:
             for t in asyncio.run(reg.list_tools())}
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _every_recipe_visible():
+    """Measure the guide whole, including the recipes behind a setting.
+
+    The NPI phase gate is off by default, and guidance_for withholds a
+    recipe whose tools this server is not advertising. That is the right
+    behaviour -- sending a caller to a tool that is not there is the
+    failure this guide exists to prevent -- and it would make "is this
+    board ready for dvt" unscorable here. Turning it on measures the
+    guide; the withholding itself is measured in
+    test_tool_guide_names_real_tools.py.
+    """
+    import os
+
+    before = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    yield
+    if before is None:
+        os.environ.pop("EDA_AGENT_PHASES", None)
+    else:
+        os.environ["EDA_AGENT_PHASES"] = before
+
+
 @pytest.fixture(scope="module")
 def docs() -> dict[str, str]:
     d = _docs()
@@ -140,6 +163,7 @@ QUESTIONS = [
     ("set a pin's package length", {"lib_set_pin_timing"}),
     ("write a library report", {"lib_library_report"}),
     ("read the outline of a polygon pour with its arcs", {"pcb_get_pour_outline"}),
+    ("read the poured copper of one pour with its holes", {"pcb_get_pour_copper"}),
     ("swap the designators R1 and R2 across the project",
      {"sch_rename_designators"}),
     ("place several parts from a dblib", {"sch_place_dblib_rows"}),

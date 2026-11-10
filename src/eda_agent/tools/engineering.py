@@ -265,6 +265,11 @@ def _trace_ltspice(project: str, run_id: str, trace_name: str) -> dict:
     return _ltspice_runner().get_trace(project, run_id, trace_name)
 
 
+
+
+_CONFIRM_REPLACE_PARAMETERS = "REPLACE ALL PARAMETERS"
+
+
 def a365_config() -> A365Policy:
     """Resolve which Altium 365 route to use, and refuse to guess.
 
@@ -303,17 +308,12 @@ def a365_config() -> A365Policy:
                       token_store=store)
 
 
+
 @cache
 def _a365_client() -> a365.NexarClient:
     return a365.NexarClient(a365_config(),
                             client_secret=os.environ.get("EDA_AGENT_NEXAR_CLIENT_SECRET"))
 
-
-#: Exact confirmation string Booster 3.2's own replace_existing guard requires
-#: (altium_ai/service.py: "replace_existing deletes ALL parameters ... set
-#: confirm_replace to 'REPLACE ALL PARAMETERS' to proceed"). Kept verbatim
-#: rather than inventing a different phrase for the same guard.
-_CONFIRM_REPLACE_PARAMETERS = "REPLACE ALL PARAMETERS"
 
 
 def _a365_update_parameters(component_id: str, parameters: list[dict], release_note: str,
@@ -332,12 +332,14 @@ def _a365_update_parameters(component_id: str, parameters: list[dict], release_n
     return {"new_component_id": res["new_component_id"], "parameters_verified": len(parameters)}
 
 
+
 def _a365_publish_model(kind: str, workspace_url: str, folder_id: str, name: str,
                         file_path: str) -> dict:
     if kind not in ("symbol", "footprint"):
         raise ValueError("kind must be 'symbol' or 'footprint'")
     naming.NamingPolicy().validate(kind, name)
     return _a365_client().create_model(kind, workspace_url, folder_id, name, Path(file_path))
+
 
 
 def register_engineering_tools(mcp, *, altium: bool = False) -> None:
@@ -528,157 +530,6 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
         """Read a waveform from a previous LTspice batch run."""
         return _result(_trace_ltspice, project, run_id, trace_name)
 
-    @mcp.tool()
-    def eng_a365_workspaces() -> dict:
-        """List Altium 365 workspaces visible to the configured Nexar account."""
-        return _result(lambda: {"workspaces": _a365_client().workspaces()})
-
-    @mcp.tool()
-    def eng_a365_workspace_infos() -> dict:
-        """Like eng_a365_workspaces, plus each workspace's id and description."""
-        return _result(lambda: {"workspaces": _a365_client().workspace_infos()})
-
-    @mcp.tool()
-    def eng_a365_projects(workspace_url: str, name_contains: str = "",
-                          limit: int = 200) -> dict:
-        """List projects in an allowed Altium 365 workspace."""
-        return _result(lambda: _a365_client().projects(workspace_url, name_contains, limit))
-
-    @mcp.tool()
-    def eng_a365_project(project_id: str) -> dict:
-        """Read one Altium 365 project by Nexar ID."""
-        return _result(lambda: _a365_client().project(project_id))
-
-    @mcp.tool()
-    def eng_a365_library_folders(workspace_url: str) -> dict:
-        """List library folders in an allowed Altium 365 workspace."""
-        return _result(lambda: {"folders": _a365_client().library_folders(workspace_url)})
-
-    @mcp.tool()
-    def eng_a365_library_components(workspace_url: str,
-                                     name_contains: str = "") -> dict:
-        """Search library component names in an allowed Altium 365 workspace."""
-        return _result(lambda: {"components": _a365_client().library_components(
-            workspace_url, name_contains)})
-
-    @mcp.tool()
-    def eng_a365_library_components_params(workspace_url: str) -> dict:
-        """List library components in an allowed Altium 365 workspace, each with its parameters."""
-        return _result(lambda: {"components": _a365_client().library_components_params(workspace_url)})
-
-    @mcp.tool()
-    def eng_a365_component(component_id: str) -> dict:
-        """Read an Altium 365 managed component by Nexar ID."""
-        return _result(lambda: _a365_client().component(component_id))
-
-    @mcp.tool()
-    def eng_a365_entity(query_field: str, entity_id: str, max_fields: int = 60) -> dict:
-        """Schema-driven read of any Altium 365 des*ById entity.
-
-        query_field must look like e.g. desFootprintById: selects the
-        entity's scalar fields as reported by the live Nexar schema, so
-        no field names are guessed. Use when there is no dedicated
-        eng_a365_* reader for the entity kind you need.
-        """
-        return _result(lambda: _a365_client().entity(query_field, entity_id, max_fields))
-
-    @mcp.tool()
-    def eng_a365_query(query: str, variables: dict | None = None) -> dict:
-        """Run a read-only GraphQL query against Altium 365.
-
-        Goes to Nexar, or straight to the workspace when
-        EDA_AGENT_A365_DOMAIN is set. The direct route reaches the
-        contexts Nexar does not proxy (comments, threads, tasks,
-        workflows, script executions); use eng_a365_schema to find what
-        a given workspace actually exposes rather than guessing a field
-        name. Mutations are refused here whichever route is in use.
-        """
-        return _result(lambda: _a365_client().execute(query, variables))
-
-    @mcp.tool()
-    def eng_a365_schema(type_name: str = "Query") -> dict:
-        """List the fields of one type in the live Altium 365 schema.
-
-        Introspection, so the answer comes from the workspace rather
-        than from this package's idea of the schema. Start at "Query" to
-        see what can be read, "Mutation" for what can be written, then
-        name a type from those to go deeper. The same browser Altium
-        ships at /api/voyager shows this graphically.
-        """
-        return _result(lambda: _a365_client().type_fields(type_name))
-
-    @mcp.tool()
-    def eng_a365_doctor() -> dict:
-        """Check the connected schema has the fields the built-in queries use.
-
-        Works on either route. On the direct route it is the quickest
-        confirmation that the domain and token are right, since it fails
-        with an authentication error rather than an empty result.
-        """
-        return _result(lambda: _a365_client().doctor())
-
-    @mcp.tool()
-    def eng_a365_publish_model(kind: str, workspace_url: str, folder_id: str, name: str,
-                              file_path: str, confirm: bool = False) -> dict:
-        """Publish a symbol or footprint file to an Altium 365 managed library.
-
-        kind is 'symbol' or 'footprint'; file_path is the local file to
-        upload (via Nexar's File Service, then linked into folder_id). name
-        is checked against the owner naming policy before publishing.
-
-        Requires confirm=True: this writes a new model to the managed
-        library.
-        """
-        if not confirm:
-            return {"ok": False, "reason": "confirm=True is required: this publishes a "
-                    "new model to the Altium 365 managed library"}
-        return _result(_a365_publish_model, kind, workspace_url, folder_id, name, file_path)
-
-    @mcp.tool()
-    def eng_a365_release_component(input_obj: dict, confirm: bool = False) -> dict:
-        """Release an Altium 365 managed component (desReleaseComponent).
-
-        input_obj is the release mutation's input object (workspaceUrl,
-        componentItemName, and the release fields Nexar's own examples
-        show), passed through as-is rather than guessing an undocumented
-        input type name (see a365.py's release_mutation/gql_literal).
-
-        Requires confirm=True: this releases a component revision in the
-        managed library.
-        """
-        if not confirm:
-            return {"ok": False, "reason": "confirm=True is required: this releases a "
-                    "component revision in the Altium 365 managed library"}
-        return _result(lambda: _a365_client().release_component(input_obj))
-
-    @mcp.tool()
-    def eng_a365_update_parameters(component_id: str, parameters: list[dict], release_note: str,
-                                   replace_existing: bool = False, confirm_replace: str = "",
-                                   confirm: bool = False) -> dict:
-        """Add or change parameters of an Altium 365 library component (new revision).
-
-        parameters is a list of {"name", "value"}. replace_existing=True
-        deletes ALL existing parameters first (documented Nexar behavior)
-        and additionally requires confirm_replace set to the exact string
-        'REPLACE ALL PARAMETERS' - ported from Altium Booster 3.2's own
-        guard for this specific operation, kept verbatim rather than
-        inventing a different phrase for the same protection.
-
-        Verifies the write by reading the new component revision back and
-        confirming every requested parameter matches, rather than trusting
-        the mutation's own success response (same discipline as this
-        project's eco_verify: a write that reports success is not the same
-        as a write that happened).
-
-        Requires confirm=True: this writes a new component revision to the
-        managed library.
-        """
-        if not confirm:
-            return {"ok": False, "reason": "confirm=True is required: this writes a new "
-                    "component revision to the Altium 365 managed library"}
-        return _result(_a365_update_parameters, component_id, parameters, release_note,
-                      replace_existing, confirm_replace)
-
     if altium:
         @mcp.tool()
         async def eng_compare_live_ipc_footprint(footprint_name: str, spec: dict,
@@ -867,3 +718,168 @@ def register_engineering_tools(mcp, *, altium: bool = False) -> None:
                 return payload
             except (AltiumAIError, KeyError, TypeError, ValueError, OSError) as exc:
                 return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    def eng_a365_workspaces() -> dict:
+        """List Altium 365 workspaces visible to the configured Nexar account."""
+        return _result(lambda: {"workspaces": _a365_client().workspaces()})
+
+
+    @mcp.tool()
+    def eng_a365_workspace_infos() -> dict:
+        """Like eng_a365_workspaces, plus each workspace's id and description."""
+        return _result(lambda: {"workspaces": _a365_client().workspace_infos()})
+
+
+    @mcp.tool()
+    def eng_a365_projects(workspace_url: str, name_contains: str = "",
+                          limit: int = 200) -> dict:
+        """List projects in an allowed Altium 365 workspace."""
+        return _result(lambda: _a365_client().projects(workspace_url, name_contains, limit))
+
+
+    @mcp.tool()
+    def eng_a365_project(project_id: str) -> dict:
+        """Read one Altium 365 project by Nexar ID."""
+        return _result(lambda: _a365_client().project(project_id))
+
+
+    @mcp.tool()
+    def eng_a365_library_folders(workspace_url: str) -> dict:
+        """List library folders in an allowed Altium 365 workspace."""
+        return _result(lambda: {"folders": _a365_client().library_folders(workspace_url)})
+
+
+    @mcp.tool()
+    def eng_a365_library_components(workspace_url: str,
+                                     name_contains: str = "") -> dict:
+        """Search library component names in an allowed Altium 365 workspace."""
+        return _result(lambda: {"components": _a365_client().library_components(
+            workspace_url, name_contains)})
+
+
+    @mcp.tool()
+    def eng_a365_library_components_params(workspace_url: str) -> dict:
+        """List library components in an allowed Altium 365 workspace, each with its parameters."""
+        return _result(lambda: {"components": _a365_client().library_components_params(workspace_url)})
+
+
+    @mcp.tool()
+    def eng_a365_component(component_id: str) -> dict:
+        """Read an Altium 365 managed component by Nexar ID."""
+        return _result(lambda: _a365_client().component(component_id))
+
+
+    @mcp.tool()
+    def eng_a365_entity(query_field: str, entity_id: str, max_fields: int = 60) -> dict:
+        """Schema-driven read of any Altium 365 des*ById entity.
+
+        query_field must look like e.g. desFootprintById: selects the
+        entity's scalar fields as reported by the live Nexar schema, so
+        no field names are guessed. Use when there is no dedicated
+        eng_a365_* reader for the entity kind you need.
+        """
+        return _result(lambda: _a365_client().entity(query_field, entity_id, max_fields))
+
+
+    @mcp.tool()
+    def eng_a365_query(query: str, variables: dict | None = None) -> dict:
+        """Run a read-only GraphQL query against Altium 365.
+
+        Goes to Nexar, or straight to the workspace when
+        EDA_AGENT_A365_DOMAIN is set. The direct route reaches the
+        contexts Nexar does not proxy (comments, threads, tasks,
+        workflows, script executions); use eng_a365_schema to find what
+        a given workspace actually exposes rather than guessing a field
+        name. Mutations are refused here whichever route is in use.
+        """
+        return _result(lambda: _a365_client().execute(query, variables))
+
+
+    @mcp.tool()
+    def eng_a365_schema(type_name: str = "Query") -> dict:
+        """List the fields of one type in the live Altium 365 schema.
+
+        Introspection, so the answer comes from the workspace rather
+        than from this package's idea of the schema. Start at "Query" to
+        see what can be read, "Mutation" for what can be written, then
+        name a type from those to go deeper. The same browser Altium
+        ships at /api/voyager shows this graphically.
+        """
+        return _result(lambda: _a365_client().type_fields(type_name))
+
+
+    @mcp.tool()
+    def eng_a365_doctor() -> dict:
+        """Check the connected schema has the fields the built-in queries use.
+
+        Works on either route. On the direct route it is the quickest
+        confirmation that the domain and token are right, since it fails
+        with an authentication error rather than an empty result.
+        """
+        return _result(lambda: _a365_client().doctor())
+
+
+    @mcp.tool()
+    def eng_a365_publish_model(kind: str, workspace_url: str, folder_id: str, name: str,
+                              file_path: str, confirm: bool = False) -> dict:
+        """Publish a symbol or footprint file to an Altium 365 managed library.
+
+        kind is 'symbol' or 'footprint'; file_path is the local file to
+        upload (via Nexar's File Service, then linked into folder_id). name
+        is checked against the owner naming policy before publishing.
+
+        Requires confirm=True: this writes a new model to the managed
+        library.
+        """
+        if not confirm:
+            return {"ok": False, "reason": "confirm=True is required: this publishes a "
+                    "new model to the Altium 365 managed library"}
+        return _result(_a365_publish_model, kind, workspace_url, folder_id, name, file_path)
+
+
+    @mcp.tool()
+    def eng_a365_release_component(input_obj: dict, confirm: bool = False) -> dict:
+        """Release an Altium 365 managed component (desReleaseComponent).
+
+        input_obj is the release mutation's input object (workspaceUrl,
+        componentItemName, and the release fields Nexar's own examples
+        show), passed through as-is rather than guessing an undocumented
+        input type name (see a365.py's release_mutation/gql_literal).
+
+        Requires confirm=True: this releases a component revision in the
+        managed library.
+        """
+        if not confirm:
+            return {"ok": False, "reason": "confirm=True is required: this releases a "
+                    "component revision in the Altium 365 managed library"}
+        return _result(lambda: _a365_client().release_component(input_obj))
+
+
+    @mcp.tool()
+    def eng_a365_update_parameters(component_id: str, parameters: list[dict], release_note: str,
+                                   replace_existing: bool = False, confirm_replace: str = "",
+                                   confirm: bool = False) -> dict:
+        """Add or change parameters of an Altium 365 library component (new revision).
+
+        parameters is a list of {"name", "value"}. replace_existing=True
+        deletes ALL existing parameters first (documented Nexar behavior)
+        and additionally requires confirm_replace set to the exact string
+        'REPLACE ALL PARAMETERS' - ported from Altium Booster 3.2's own
+        guard for this specific operation, kept verbatim rather than
+        inventing a different phrase for the same protection.
+
+        Verifies the write by reading the new component revision back and
+        confirming every requested parameter matches, rather than trusting
+        the mutation's own success response (same discipline as this
+        project's eco_verify: a write that reports success is not the same
+        as a write that happened).
+
+        Requires confirm=True: this writes a new component revision to the
+        managed library.
+        """
+        if not confirm:
+            return {"ok": False, "reason": "confirm=True is required: this writes a new "
+                    "component revision to the Altium 365 managed library"}
+        return _result(_a365_update_parameters, component_id, parameters, release_note,
+                      replace_existing, confirm_replace)

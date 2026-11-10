@@ -577,6 +577,89 @@ Begin
     Else Result := Lowest;
 End;
 
+{ NextTurn -- copied VERBATIM from Main.pas (test_session_slots checks it). }
+Function NextTurn(Keys : String; Marks : String; Current : String; HoldCall : String;
+    HoldMs : Integer; IdleMs : Integer; KeepMaxMs : Integer; GraceMs : Integer;
+    CallEnded : Integer) : String;
+Var
+    RestK, RestM, Key, Mark, Fore, CurMark : String;
+    Bar, ForeCount, Elapsed : Integer;
+    CurPending, AnyFore : Boolean;
+Begin
+    Result := '';
+    AnyFore := False;
+    RestK := Keys;
+    While RestK <> '' Do
+    Begin
+        Bar := Pos('|', RestK);
+        If Bar = 0 Then
+        Begin
+            Key := RestK;
+            RestK := '';
+        End
+        Else
+        Begin
+            Key := Copy(RestK, 1, Bar - 1);
+            RestK := Copy(RestK, Bar + 1, Length(RestK));
+        End;
+        If (Key <> '') And (Pos('.bg', Key) = 0) Then AnyFore := True;
+    End;
+    Fore := '';
+    ForeCount := 0;
+    CurPending := False;
+    CurMark := '';
+    RestK := Keys;
+    RestM := Marks;
+    While RestK <> '' Do
+    Begin
+        Bar := Pos('|', RestK);
+        If Bar = 0 Then
+        Begin
+            Key := RestK;
+            RestK := '';
+        End
+        Else
+        Begin
+            Key := Copy(RestK, 1, Bar - 1);
+            RestK := Copy(RestK, Bar + 1, Length(RestK));
+        End;
+        Bar := Pos('|', RestM);
+        If Bar = 0 Then
+        Begin
+            Mark := RestM;
+            RestM := '';
+        End
+        Else
+        Begin
+            Mark := Copy(RestM, 1, Bar - 1);
+            RestM := Copy(RestM, Bar + 1, Length(RestM));
+        End;
+        If (Key <> '') And ((Not AnyFore) Or (Pos('.bg', Key) = 0)) Then
+        Begin
+            If Fore <> '' Then Fore := Fore + '|';
+            Fore := Fore + Key;
+            Inc(ForeCount);
+            If Key = Current Then
+            Begin
+                CurPending := True;
+                CurMark := Mark;
+            End;
+        End;
+    End;
+    If ForeCount = 0 Then Exit;
+    Elapsed := 1;
+    If (HoldCall <> '') And (HoldMs < KeepMaxMs) Then
+    Begin
+        If CurPending Then
+        Begin
+            If CurMark = HoldCall Then Elapsed := 0;
+        End
+        Else If (CallEnded = 0) And (IdleMs < GraceMs) Then
+            Exit;
+    End;
+    Result := PickSession(Fore, Current, Elapsed, 1);
+End;
+
 { SessionFocusAction -- copied VERBATIM from Main.pas (test_session_document checks it). }
 Function SessionFocusAction(Pin : String; Current : String) : String;
 Begin
@@ -970,40 +1053,6 @@ Begin
     Else If Orient = 3 Then Result := RootY - PinLen;
 End;
 
-{ --- From Dispatcher.pas. Kept byte-identical to the original; }
-{ tests/test_netlist_cache_staleness.py fails if they diverge.  }
-Function ActionHasPrefix(Verb : String; Prefix : String) : Boolean;
-Begin
-    Result := Copy(Verb, 1, Length(Prefix)) = Prefix;
-End;
-
-Function CommandIsReadOnly(Command : String) : Boolean;
-Var
-    Verb : String;
-    DotPos : Integer;
-Begin
-    Verb := LowerCase(Trim(Command));
-    DotPos := Pos('.', Verb);
-    If DotPos > 0 Then Verb := Copy(Verb, DotPos + 1, Length(Verb) - DotPos);
-
-    Result := ActionHasPrefix(Verb, 'get_')
-           Or ActionHasPrefix(Verb, 'list_')
-           Or ActionHasPrefix(Verb, 'query')
-           Or ActionHasPrefix(Verb, 'read_')
-           Or ActionHasPrefix(Verb, 'find_')
-           Or ActionHasPrefix(Verb, 'count')
-           Or ActionHasPrefix(Verb, 'audit_')
-           Or ActionHasPrefix(Verb, 'check_')
-           Or ActionHasPrefix(Verb, 'calc_')
-           Or ActionHasPrefix(Verb, 'export_')
-           Or ActionHasPrefix(Verb, 'render_')
-           Or ActionHasPrefix(Verb, 'probe_')
-           Or ActionHasPrefix(Verb, 'inspect_')
-           Or ActionHasPrefix(Verb, 'diff_')
-           Or ActionHasPrefix(Verb, 'compare_')
-           Or (Verb = 'ping');
-End;
-
 function B64Decode(S : String) : String;
 begin
   { Convention: '_' means empty string (avoids empty base64 fields) }
@@ -1084,14 +1133,6 @@ begin
                                     StrToInt(B64Decode(Parts[3]))));
     end
 
-    { --- CommandIsReadOnly: args = command --- }
-    else if FnName = 'CommandIsReadOnly' then
-    begin
-      if CommandIsReadOnly(B64Decode(Parts[1])) then
-        ResultStr := 'true'
-      else
-        ResultStr := 'false';
-    end
 
     { --- ExtractJsonValue: args = json_str, key --- }
     else if FnName = 'ExtractJsonValue' then
@@ -1117,6 +1158,17 @@ begin
       ResultStr := PickSession(B64Decode(Parts[1]), B64Decode(Parts[2]),
                                StrToInt(B64Decode(Parts[3])),
                                StrToInt(B64Decode(Parts[4])));
+    end
+
+    { --- NextTurn: args = keys, marks, current, hold_call, hold_ms, idle_ms,
+          keep_max_ms, grace_ms, call_ended --- }
+    else if FnName = 'NextTurn' then
+    begin
+      ResultStr := NextTurn(B64Decode(Parts[1]), B64Decode(Parts[2]),
+                            B64Decode(Parts[3]), B64Decode(Parts[4]),
+                            StrToInt(B64Decode(Parts[5])), StrToInt(B64Decode(Parts[6])),
+                            StrToInt(B64Decode(Parts[7])), StrToInt(B64Decode(Parts[8])),
+                            StrToInt(B64Decode(Parts[9])));
     end
 
     { --- SessionFocusAction: args = pin, current --- }

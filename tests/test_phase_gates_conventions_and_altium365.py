@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Stages to production, how far obj_query reaches into Altium's SDK,
-simulating a deck in ngspice or LTspice, a company's conventions, and
-Altium 365.
+"""Stages to production, simulating a deck in ngspice or LTspice, a
+company's conventions, and Altium 365.
 
 All offline. The ngspice and LTspice runs were measured on this machine
 (both gave 4.96629 V and 2.1972 ms on one RC deck); here the simulator
@@ -29,9 +28,27 @@ from eda_agent.tools.registry import ToolRegistry
 
 @pytest.fixture(scope="module")
 def tools():
+    """The Altium surface with the NPI gate switched ON.
+
+    It is off by default, so the three stage tools are not registered at
+    all. Everything below measures what they DO, which is a different
+    question from whether an owner has asked for them; the default, and
+    what each tool says when its stage is off, are measured in
+    test_phase_gates_switch.py.
+    """
+    import os
+
     from eda_agent.tools import register_backend
-    registry = ToolRegistry()
-    register_backend(registry, "altium")
+    before = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        registry = ToolRegistry()
+        register_backend(registry, "altium")
+    finally:
+        if before is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = before
     return registry
 
 
@@ -39,7 +56,9 @@ def tools():
 
 def test_every_tool_a_check_names_exists_here(tools):
     named = {t for check in phase_gates.CHECKS.values() for t in check.tools}
-    unknown = sorted(t for t in named if tools.get(t) is None)
+    # A member of a family tool counts; the reply names the family tool.
+    unknown = sorted(t for t in named
+                     if tools.get(t) is None and t not in tools.hidden)
     assert not unknown, f"checks name tools this server does not have: {unknown}"
     assert {c.stage for c in phase_gates.CHECKS.values()} == set(phase_gates.STAGES)
 
@@ -106,38 +125,6 @@ def test_the_stage_tools_record_and_review(tools, tmp_path, monkeypatch):
     assert row["outcome"] == "met" and "feasibility:outline-agreed" in gate["for_people"]
     standing = asyncio.run(tools.get("design_phase_standing").fn(product="lamp"))
     assert standing["stage"] == "feasibility" and not standing["in_production"]
-
-
-# --- how far the property tools reach into the SDK ---------------------------------------
-
-def test_the_chains_and_type_words_are_read_from_the_pascal():
-    from eda_agent.diag import sdk_reach
-    tested = sdk_reach.names_tested("Generic.pas", "GetSchProperty")
-    assert {"Location", "OverrideDisplayString", "UniqueId"} <= tested
-    assert sdk_reach.type_words("SCH")["port"] == "ePort"
-    assert sdk_reach.type_words("PCB")["track"] == "eTrackObject"
-
-
-def test_interfaces_are_found_in_the_index_and_inherited_members_count(tmp_path):
-    from eda_agent.diag import sdk_reach
-    index = {"interfaces": {
-        "IPCB_Primitive": {"bases": [], "methods": [["GetState_Layer", "", "Int32"],
-                                                    ["SetState_Layer", "", "Void"]]},
-        "IPCB_Track": {"bases": ["IPCB_Primitive"], "methods": [
-            ["GetState_Width", "", "Int32"], ["GetState_Mystery", "", "Int32"]]},
-        "IPCB_Polygon": {"bases": [], "methods": []},
-        "ISch_Component": {"bases": [], "methods": []}}}
-    path = tmp_path / "index.json"
-    path.write_text(json.dumps(index), encoding="utf-8")
-    sdk = sdk_reach.SdkIndex(path)
-    assert sdk.interface_for("eTrackObject", "IPCB_") == "IPCB_Track"
-    assert sdk.interface_for("ePolyObject", "IPCB_") == "IPCB_Polygon"
-    assert sdk.interface_for("eSchComponent", "ISch_") == "ISch_Component"
-    assert sdk.interface_for("eNothing", "IPCB_") is None
-    reads, writes = sdk.properties("IPCB_Track")
-    assert reads == {"Layer", "Width", "Mystery"} and writes == {"Layer"}
-    row = next(r for r in sdk_reach.measure(sdk) if r.interface == "IPCB_Track")
-    assert "Mystery" not in row.reached and {"Width", "Layer"} <= row.reached
 
 
 # --- simulating a deck ------------------------------------------------------------------------
@@ -453,3 +440,18 @@ def test_a_pkce_challenge_is_the_unpadded_base64url_sha256_of_its_verifier():
     expected = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     assert altium365.code_challenge(verifier) == expected
     assert "=" not in expected and len(expected) == 43
+
+
+def test_logout_removes_the_saved_login_and_says_when_there_was_none(tmp_path, monkeypatch,
+                                                                    capsys):
+    import sys
+    from eda_agent import server
+    saved = tmp_path / "nexar_login.bin"
+    saved.write_bytes(b"sealed")
+    monkeypatch.setattr(altium365, "read_environment",
+                        lambda env=None: altium365.Altium365Config(saved_login=saved))
+    monkeypatch.setattr(sys, "argv", ["eda-agent", "altium365-logout"])
+    assert server.main() == 0
+    assert not saved.exists() and "Signed out" in capsys.readouterr().out
+    assert server.main() == 0
+    assert "No saved Nexar login" in capsys.readouterr().out

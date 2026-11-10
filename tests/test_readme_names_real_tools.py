@@ -50,6 +50,25 @@ _NOT_TOOLS: set[str] = set()
 
 
 def _registered_tools() -> set[str]:
+    # A register_* function may also gate tools behind a setting rather
+    # than a keyword flag (the NPI phase gates, off until an owner asks
+    # for them). Same reasoning as the keyword flags below: a tool the
+    # walk cannot see reads as "not registered", and the catalog entry
+    # for it reads as a promise the code does not keep.
+    import os
+
+    was = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        return _walk_registrars()
+    finally:
+        if was is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = was
+
+
+def _walk_registrars() -> set[str]:
     captured: set[str] = set()
 
     class _Mcp:
@@ -92,7 +111,9 @@ def _registered_tools() -> set[str]:
                         fn(_Mcp(), **flags)
                     except Exception:  # noqa: BLE001 - a backend may decline
                         pass
-    return captured
+    # Family dispatchers are created dynamically after member registration.
+    from eda_agent.tools.folds import FOLDS
+    return captured | set(FOLDS)
 
 
 #: A catalog section, the same anchor test_readme_tool_counts.py uses.

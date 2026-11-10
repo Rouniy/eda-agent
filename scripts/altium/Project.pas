@@ -187,7 +187,12 @@ Begin
     ServerDoc := Nil;
     Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
     If ServerDoc = Nil Then Exit;
-    Try ServerDoc.SetModified(False); Except End;
+    Try
+        ServerDoc.SetModified(False);
+    Except
+        NoteWriteFailed('clear the modified flag');
+        Exit;
+    End;
     Result := True;
 End;
 
@@ -1766,6 +1771,7 @@ Var
     PcbComp : IPCB_Component;
     I, J, DocCount : Integer;
     UsePhysical, Found : Boolean;
+    FilterWas : Boolean;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     Target := ExtractJsonValue(Params, 'target');
@@ -1835,10 +1841,13 @@ Begin
             AddStringParameter('Scope', 'All');
             RunProcess('PCB:DeSelect');
         Except End;
+        { Components switched off in the Selection Filter would otherwise }
+        { not be selected, and PCB:Jump would have nothing to go to.      }
+        FilterWas := PcbSelectFilterOff(Board);
         BoardIter := Board.BoardIterator_Create;
         Try
             BoardIter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            BoardIter.AddFilter_LayerSet(AllLayers);
+            BoardIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             BoardIter.AddFilter_Method(eProcessAll);
             PcbComp := BoardIter.FirstPCBObject;
             While (PcbComp <> Nil) And (Not Found) Do
@@ -1846,14 +1855,15 @@ Begin
                 Try
                     If PcbComp.Name.Text = Designator Then
                     Begin
-                        Try PcbComp.Selected := True; Except End;
+                        Try PcbComp.Selected := True; Except NoteWriteFailed('select the part on the board'); End;
                         Found := True;
                     End;
-                Except End;
+                Except { a part whose designator cannot be read is skipped } End;
                 PcbComp := BoardIter.NextPCBObject;
             End;
         Finally
             Board.BoardIterator_Destroy(BoardIter);
+            PcbSelectFilterRestore(Board, FilterWas);
         End;
         Try Board.GraphicallyInvalidate; Except End;
         { Pan/zoom the view to the now-selected component. PCB:Jump with     }
@@ -1941,10 +1951,10 @@ Begin
                             SchComp := SchObj;
                             If SchComp.Designator.Text = Designator Then
                             Begin
-                                Try SchComp.Selection := True; Except End;
+                                Try SchComp.Selection := True; Except NoteWriteFailed('select the part on the sheet'); End;
                                 Break;
                             End;
-                        Except End;
+                        Except { not a component: skipped } End;
                         SchObj := SchIter.NextSchObject;
                     End;
                 Finally
@@ -2130,7 +2140,7 @@ End;
 {     across_then_down  = sort by Y descending, then X ascending              }
 {     across_then_up    = sort by Y ascending,  then X ascending              }
 {     none              = reset all to "<prefix>?"                            }
-{ - Wrap each doc in SchServer.ProcessControl.PreProcess/PostProcess for      }
+{ - Wrap each doc in SchBeginEdit/SchEndEdit for                              }
 {   undo support, then GraphicallyInvalidate.                                 }
 {..............................................................................}
 
@@ -2296,7 +2306,7 @@ Begin
             { -------- Order = 'none': just reset designators to "<prefix>?" -------- }
             If Order = 'none' Then
             Begin
-                SchServer.ProcessControl.PreProcess(SchDoc, '');
+                SchBeginEdit(SchDoc, '');
                 Iterator := SchDoc.SchIterator_Create;
                 Try
                     Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
@@ -2315,6 +2325,7 @@ Begin
                             Else
                                 Inc(SkipCount);
                         Except
+                            NoteWriteFailed('annotate: reset a designator');
                         End;
                         Obj := Iterator.NextSchObject;
                     End;
@@ -2404,7 +2415,7 @@ Begin
         Begin
             SchDoc := SchServer.GetSchDocumentByPath(TouchedDocs[I]);
             If SchDoc <> Nil Then
-                SchServer.ProcessControl.PreProcess(SchDoc, '');
+                SchBeginEdit(SchDoc, '');
         End;
 
         For I := 0 To Total - 1 Do
@@ -2446,6 +2457,7 @@ Begin
                     Inc(RenameCount);
                 End;
             Except
+                NoteWriteFailed('annotate: write a designator');
             End;
         End;
 
@@ -2460,7 +2472,7 @@ Begin
             Try SchDoc := SchServer.GetSchDocumentByPath(TouchedDocs[I]); Except End;
             If SchDoc <> Nil Then
             Begin
-                Try SchServer.ProcessControl.PostProcess(SchDoc, 'Edit'); Except End;
+                Try SchEndEdit(SchDoc, 'Edit'); Except End;
                 Try SchDoc.GraphicallyInvalidate; Except End;
             End;
             Try MarkDocDirtyByPath(TouchedDocs[I]); Except End;
@@ -2612,6 +2624,629 @@ Begin
     End;
 End;
 
+{ SDK REACH: STEP EXPORTER SETTINGS, ONE OUTPUT WITHOUT AN OUTJOB, CHANNELS,  }
+{ WHERE A PART'S MODELS RESOLVE, LIBRARY LOOKUPS, THE OUTPUT PANEL AND       }
+{ GENERATED DOCUMENTS. Members are read inside Try; read_errors counts what }
+{ this build would not give.                                                 }
+
+{ The STEP exporter's settings as JSON members (no braces). }
+Function StepOptionsJson(Exporter : IPCB_Board3DModelExporter) : String;
+Var
+    Folded, MechHoles, ElecHoles, FreeHoles, Barrels, Cover : Boolean;
+    Rate, Comps, Models, Holes, Copper, SuffixType, Misses : Integer;
+    Suffix : String;
+Begin
+    Folded := False; MechHoles := False; ElecHoles := False; FreeHoles := False;
+    Barrels := False; Cover := False;
+    Rate := 0; Comps := 0; Models := 0; Holes := 0; Copper := 0; SuffixType := 0;
+    Suffix := ''; Misses := 0;
+    Try Folded := Exporter.GetState_ExportFoldedBoard; Except Inc(Misses); End;
+    Try Rate := Exporter.GetState_ExportFoldedBoardRate; Except Inc(Misses); End;
+    Try Comps := Exporter.GetState_ExportComponentOptions; Except Inc(Misses); End;
+    Try Models := Exporter.GetState_ExportModelsOption; Except Inc(Misses); End;
+    Try Holes := Exporter.GetState_ExportHolesOption; Except Inc(Misses); End;
+    Try Copper := Exporter.GetState_ExportCopperOption; Except Inc(Misses); End;
+    Try MechHoles := Exporter.GetState_IncludeMechanicalPadHoles; Except Inc(Misses); End;
+    Try ElecHoles := Exporter.GetState_IncludeElectricalPadHoles; Except Inc(Misses); End;
+    Try FreeHoles := Exporter.GetState_IncludeFreePadHoles; Except Inc(Misses); End;
+    Try Barrels := Exporter.GetState_ExportPadAndViaBarrelsOnly; Except Inc(Misses); End;
+    Try Cover := Exporter.GetState_IncludeCoverLayer; Except Inc(Misses); End;
+    Try SuffixType := Exporter.GetState_ComponentSuffixType; Except Inc(Misses); End;
+    Try Suffix := Exporter.GetState_ComponentSuffix; Except Inc(Misses); End;
+    Result := JsonBool('folded', Folded) + ','
+        + JsonInt('fold_rate', Rate) + ','
+        + JsonInt('component_option', Comps) + ','
+        + JsonInt('models_option', Models) + ','
+        + JsonInt('holes_option', Holes) + ','
+        + JsonInt('copper_option', Copper) + ','
+        + JsonBool('mechanical_pad_holes', MechHoles) + ','
+        + JsonBool('electrical_pad_holes', ElecHoles) + ','
+        + JsonBool('free_pad_holes', FreeHoles) + ','
+        + JsonBool('barrels_only', Barrels) + ','
+        + JsonBool('cover_layer', Cover) + ','
+        + JsonInt('component_suffix_type', SuffixType) + ','
+        + JsonStr('component_suffix', Suffix) + ','
+        + JsonInt('read_errors', Misses);
+End;
+
+{ Write the STEP settings Params names; returns the names that did not take. }
+Function ApplyStepOptions(Exporter : IPCB_Board3DModelExporter; Params : String) : String;
+Var
+    V : String;
+Begin
+    Result := '';
+    V := LowerCase(ExtractJsonValue(Params, 'folded'));
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_ExportFoldedBoard(V = 'true'); Except Result := Result + 'folded '; End;
+    End;
+    V := ExtractJsonValue(Params, 'fold_rate');
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_ExportFoldedBoardRate(StrToIntDef(V, 0)); Except Result := Result + 'fold_rate '; End;
+    End;
+    V := ExtractJsonValue(Params, 'component_option');
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_ExportComponentOptions(StrToIntDef(V, 0)); Except Result := Result + 'component_option '; End;
+    End;
+    V := ExtractJsonValue(Params, 'models_option');
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_ExportModelsOption(StrToIntDef(V, 0)); Except Result := Result + 'models_option '; End;
+    End;
+    V := ExtractJsonValue(Params, 'holes_option');
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_ExportHolesOption(StrToIntDef(V, 0)); Except Result := Result + 'holes_option '; End;
+    End;
+    V := ExtractJsonValue(Params, 'copper_option');
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_ExportCopperOption(StrToIntDef(V, 0)); Except Result := Result + 'copper_option '; End;
+    End;
+    V := LowerCase(ExtractJsonValue(Params, 'mechanical_pad_holes'));
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_IncludeMechanicalPadHoles(V = 'true'); Except Result := Result + 'mechanical_pad_holes '; End;
+    End;
+    V := LowerCase(ExtractJsonValue(Params, 'electrical_pad_holes'));
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_IncludeElectricalPadHoles(V = 'true'); Except Result := Result + 'electrical_pad_holes '; End;
+    End;
+    V := LowerCase(ExtractJsonValue(Params, 'free_pad_holes'));
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_IncludeFreePadHoles(V = 'true'); Except Result := Result + 'free_pad_holes '; End;
+    End;
+    V := LowerCase(ExtractJsonValue(Params, 'barrels_only'));
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_ExportPadAndViaBarrelsOnly(V = 'true'); Except Result := Result + 'barrels_only '; End;
+    End;
+    V := LowerCase(ExtractJsonValue(Params, 'cover_layer'));
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_IncludeCoverLayer(V = 'true'); Except Result := Result + 'cover_layer '; End;
+    End;
+    V := ExtractJsonValue(Params, 'component_suffix_type');
+    If V <> '' Then
+    Begin
+        Try Exporter.SetState_ComponentSuffixType(StrToIntDef(V, 0)); Except Result := Result + 'component_suffix_type '; End;
+    End;
+    If ExtractJsonValue(Params, 'set_component_suffix') = 'true' Then
+    Begin
+        Try Exporter.SetState_ComponentSuffix(ExtractJsonValue(Params, 'component_suffix')); Except Result := Result + 'component_suffix '; End;
+    End;
+    Result := Trim(Result);
+End;
+
+{..............................................................................}
+{ Proj_StepOptions - read, or set, the settings Altium's STEP exporter keeps  }
+{ (the ones File > Export > STEP 3D last used), with no export.             }
+{..............................................................................}
+Function Proj_StepOptions(Params : String; RequestId : String) : String;
+Var
+    Exporter : IPCB_Board3DModelExporter;
+    NotTaken : String;
+Begin
+    Exporter := Nil;
+    Try Exporter := PCBServer.Board3DModelExporter; Except Exporter := Nil; End;
+    If Exporter = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED',
+            'This Altium build gives scripts no 3D model exporter');
+        Exit;
+    End;
+    NotTaken := ApplyStepOptions(Exporter, Params);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        StepOptionsJson(Exporter) + ','
+        + JsonStr('not_taken', NotTaken)));
+End;
+
+{..............................................................................}
+{ Proj_GetChannels - multi-channel designs as Altium compiled them: every    }
+{ sheet instance with its channel index, prefix, room and instance name.    }
+{..............................................................................}
+Function Proj_GetChannels(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Physical : IDocument;
+    ProjectPath, Items, Sheet, Name, Path, Room, Prefix : String;
+    I, Count, ChanIdx, Inst, Style, Misses : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+    Style := -1;
+    Misses := 0;
+    Try Style := Project.DM_ChannelRoomNamingStyle; Except Inc(Misses); End;
+    Count := 0;
+    Try Count := Project.DM_PhysicalDocumentCount; Except Count := 0; End;
+    Items := '';
+    For I := 0 To Count - 1 Do
+    Begin
+        Physical := Nil;
+        Try Physical := Project.DM_PhysicalDocuments(I); Except Physical := Nil; End;
+        If Physical = Nil Then Continue;
+        Sheet := ''; Name := ''; Path := ''; Room := ''; Prefix := ''; ChanIdx := -1; Inst := -1;
+        Try Sheet := Physical.DM_FileName; Except Inc(Misses); End;
+        Try Name := Physical.DM_PhysicalInstanceName; Except Inc(Misses); End;
+        Try Path := Physical.DM_PhysicalInstancePath; Except Inc(Misses); End;
+        Try Room := Physical.DM_PhysicalRoomName; Except Inc(Misses); End;
+        Try Prefix := Physical.DM_ChannelPrefix; Except Inc(Misses); End;
+        Try ChanIdx := Physical.DM_ChannelIndex; Except Inc(Misses); End;
+        Try Inst := Physical.DM_CurrentInstanceNumber; Except Inc(Misses); End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonStr('sheet', Sheet) + ','
+            + JsonStr('instance', Name) + ','
+            + JsonStr('path', Path) + ','
+            + JsonStr('room', Room) + ','
+            + JsonStr('channel_prefix', Prefix) + ','
+            + JsonInt('channel_index', ChanIdx) + ','
+            + JsonInt('instance_number', Inst));
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('room_naming_style', Style) + ','
+        + JsonInt('sheet_instances', Count) + ','
+        + JsonInt('read_errors', Misses) + ','
+        + JsonRaw('instances', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ Proj_ComponentModels - where each compiled part's models resolve: model    }
+{ name and type, each datafile's library, entity and kind, the full path     }
+{ Altium finds for it (empty when it finds none), integrated or not.        }
+{ Params: project_path, designator (optional), limit (default 300).          }
+{..............................................................................}
+Function HierItemJson(Item : INetItem; Var Misses : Integer) : String;
+Var
+    Name, NetName, Electric : String;
+Begin
+    Name := ''; NetName := ''; Electric := '';
+    Try Name := Item.DM_PortName; Except Inc(Misses); End;
+    Try NetName := Item.DM_NetName; Except Inc(Misses); End;
+    Try Electric := Item.DM_ElectricalString; Except Inc(Misses); End;
+    If Name = '' Then Name := NetName;
+    Result := JsonObj(JsonStr('name', Name) + ','
+        + JsonStr('net', NetName) + ','
+        + JsonStr('io', Electric));
+End;
+
+{..............................................................................}
+{ Proj_GetHierarchy - the compiled sheet hierarchy: every schematic with    }
+{ its parents, the ports it offers up, and the sheet symbols on it with     }
+{ their file, sheet name, entries and how many child sheets the compiler   }
+{ found for them (0: the file is not in the project).                       }
+{..............................................................................}
+
+Function Proj_GetHierarchy(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc, TopDoc, ParentDoc : IDocument;
+    Sym : ISheetSymbol;
+    Item : INetItem;
+    ProjectPath, Items, TopName, FileName, Kind, Parents, Ports, Syms, Entries : String;
+    SymFile, SymName, PName : String;
+    I, J, K, Misses, Children, Sheets : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+    Misses := 0;
+    TopName := '';
+    TopDoc := Nil;
+    Try TopDoc := Project.DM_TopLevelLogicalDocument; Except Inc(Misses); End;
+    If TopDoc <> Nil Then
+    Begin
+        Try TopName := TopDoc.DM_FileName; Except Inc(Misses); End;
+    End;
+    Items := '';
+    Sheets := 0;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(I); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Kind := '';
+        Try Kind := UpperCase(Doc.DM_DocumentKind); Except End;
+        If Kind <> 'SCH' Then Continue;
+        Inc(Sheets);
+        FileName := '';
+        Try FileName := Doc.DM_FileName; Except Inc(Misses); End;
+
+        Parents := '';
+        Try
+            For J := 0 To Doc.DM_ParentDocumentCount - 1 Do
+            Begin
+                ParentDoc := Nil; PName := '';
+                Try ParentDoc := Doc.DM_ParentDocuments(J); Except ParentDoc := Nil; End;
+                If ParentDoc = Nil Then Continue;
+                Try PName := ParentDoc.DM_FileName; Except End;
+                If Parents <> '' Then Parents := Parents + ',';
+                Parents := Parents + '"' + EscapeJsonString(PName) + '"';
+            End;
+        Except Inc(Misses); End;
+
+        Ports := '';
+        Try
+            For J := 0 To Doc.DM_PortCount - 1 Do
+            Begin
+                Item := Nil;
+                Try Item := Doc.DM_Ports(J); Except Item := Nil; End;
+                If Item = Nil Then Continue;
+                If Ports <> '' Then Ports := Ports + ',';
+                Ports := Ports + HierItemJson(Item, Misses);
+            End;
+        Except Inc(Misses); End;
+
+        Syms := '';
+        Try
+            For J := 0 To Doc.DM_SheetSymbolCount - 1 Do
+            Begin
+                Sym := Nil;
+                Try Sym := Doc.DM_SheetSymbols(J); Except Sym := Nil; End;
+                If Sym = Nil Then Continue;
+                SymFile := ''; SymName := ''; Children := -1;
+                Try SymFile := Sym.DM_SheetSymbolFileName; Except Inc(Misses); End;
+                Try SymName := Sym.DM_LogicalDesignator; Except Inc(Misses); End;
+                Try Children := Sym.DM_ChildSheetCount; Except Inc(Misses); End;
+                Entries := '';
+                Try
+                    For K := 0 To Sym.DM_SheetEntryCount - 1 Do
+                    Begin
+                        Item := Nil;
+                        Try Item := Sym.DM_SheetEntries(K); Except Item := Nil; End;
+                        If Item = Nil Then Continue;
+                        If Entries <> '' Then Entries := Entries + ',';
+                        Entries := Entries + HierItemJson(Item, Misses);
+                    End;
+                Except Inc(Misses); End;
+                If Syms <> '' Then Syms := Syms + ',';
+                Syms := Syms + JsonObj(JsonStr('sheet_name', SymName) + ','
+                    + JsonStr('file', SymFile) + ','
+                    + JsonInt('child_sheets', Children) + ','
+                    + JsonRaw('entries', '[' + Entries + ']'));
+            End;
+        Except Inc(Misses); End;
+
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonStr('file', FileName) + ','
+            + JsonRaw('parents', '[' + Parents + ']') + ','
+            + JsonRaw('ports', '[' + Ports + ']') + ','
+            + JsonRaw('sheet_symbols', '[' + Syms + ']'));
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('top', TopName) + ','
+        + JsonInt('sheet_count', Sheets) + ','
+        + JsonInt('read_errors', Misses) + ','
+        + JsonRaw('sheets', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ Proj_ComponentModels - where each compiled part's models resolve: model    }
+{ name and type, each datafile's library, entity and kind, the full path     }
+{ Altium finds for it (empty when it finds none), integrated or not.        }
+{ Params: project_path, designator (optional), limit (default 300).          }
+{..............................................................................}
+
+Function Proj_ComponentModels(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    Comp : IComponent;
+    Impl : IComponentImplementation;
+    ProjectPath, Want, Items, Models, Files, Desig, MName, MType, Loc, Ent, Kind, Full, Dummy : String;
+    I, J, F, NFiles, Listed, Limit, Missing, Misses : Integer;
+    Integrated, Current : Boolean;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Want := UpperCase(ExtractJsonValue(Params, 'designator'));
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 300);
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+    Doc := Nil;
+    Try Doc := Project.DM_DocumentFlattened; Except Doc := Nil; End;
+    If Doc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FLAT_NETLIST', 'Project has no compiled design (compile it first).');
+        Exit;
+    End;
+    Items := '';
+    Listed := 0;
+    Missing := 0;
+    Misses := 0;
+    For I := 0 To Doc.DM_ComponentCount - 1 Do
+    Begin
+        If Listed >= Limit Then Break;
+        Comp := Nil;
+        Try Comp := Doc.DM_Components(I); Except Comp := Nil; End;
+        If Comp = Nil Then Continue;
+        Desig := '';
+        Try Desig := Comp.DM_PhysicalDesignator; Except End;
+        If (Want <> '') And (UpperCase(Desig) <> Want) Then Continue;
+        Models := '';
+        For J := 0 To Comp.DM_ImplementationCount - 1 Do
+        Begin
+            Impl := Nil;
+            Try Impl := Comp.DM_Implementations(J); Except Impl := Nil; End;
+            If Impl = Nil Then Continue;
+            MName := ''; MType := ''; Integrated := False; Current := False; NFiles := 0;
+            Try MName := Impl.DM_ModelName; Except Inc(Misses); End;
+            Try MType := Impl.DM_ModelType; Except Inc(Misses); End;
+            Try Integrated := Impl.DM_IntegratedModel; Except Inc(Misses); End;
+            Try Current := Impl.DM_IsCurrent; Except Inc(Misses); End;
+            Try NFiles := Impl.DM_DatafileCount; Except Inc(Misses); End;
+            Files := '';
+            For F := 0 To NFiles - 1 Do
+            Begin
+                Loc := ''; Ent := ''; Kind := ''; Full := ''; Dummy := '';
+                Try Loc := Impl.DM_DatafileLocation(F); Except Inc(Misses); End;
+                Try Ent := Impl.DM_DatafileEntity(F); Except Inc(Misses); End;
+                Try Kind := Impl.DM_DatafileKind(F); Except Inc(Misses); End;
+                Try Full := Impl.DM_DatafileFullPath(F, Ent, Kind, Dummy); Except Inc(Misses); End;
+                If (Full = '') And (Not Integrated) Then Inc(Missing);
+                If Files <> '' Then Files := Files + ',';
+                Files := Files + JsonObj(JsonStr('library', Loc) + ','
+                    + JsonStr('entity', Ent) + ','
+                    + JsonStr('kind', Kind) + ','
+                    + JsonStr('found_at', Full));
+            End;
+            If Models <> '' Then Models := Models + ',';
+            Models := Models + JsonObj(JsonStr('name', MName) + ','
+                + JsonStr('type', MType) + ','
+                + JsonBool('current', Current) + ','
+                + JsonBool('integrated', Integrated) + ','
+                + JsonRaw('datafiles', '[' + Files + ']'));
+        End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonStr('designator', Desig) + ','
+            + JsonRaw('models', '[' + Models + ']'));
+        Inc(Listed);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('components', Listed) + ','
+        + JsonInt('datafiles_not_found', Missing) + ','
+        + JsonInt('read_errors', Misses) + ','
+        + JsonRaw('parts', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ Proj_LibraryLookup - Altium's own library manager, asked directly.          }
+{ action locate: library, component -> where Altium finds the part.        }
+{ action contents: library_path -> each part with its model count, and per    }
+{ model whether it has a footprint and its first datafile path.               }
+{ action extract: library_path (an IntLib), destination -> its sources.      }
+{..............................................................................}
+Function Proj_LibraryLookup(Params : String; RequestId : String) : String;
+Var
+    Action, Lib, CompName, Dest, Found, Dummy, Items, Name, PathStr, Problem : String;
+    I, Count, Models, Limit, Libs : Integer;
+    HasPcb, Known : Boolean;
+Begin
+    Action := LowerCase(ExtractJsonValue(Params, 'action'));
+    Lib := ExtractJsonValue(Params, 'library');
+    CompName := ExtractJsonValue(Params, 'component');
+    Dest := ExtractJsonValue(Params, 'destination');
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 500);
+    Problem := '';
+    If Action = 'locate' Then
+    Begin
+        If CompName = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'component is required');
+            Exit;
+        End;
+        Found := ''; Dummy := '';
+        Try Found := IntegratedLibraryManager.GetComponentLocation(Lib, CompName, Dummy); Except Problem := 'the library manager raised an error'; End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('component', CompName) + ','
+            + JsonStr('library', Lib) + ','
+            + JsonBool('found', Found <> '') + ','
+            + JsonStr('location', Found) + ','
+            + JsonStr('problem', Problem)));
+        Exit;
+    End;
+    If Action = 'contents' Then
+    Begin
+        If Lib = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'library is required (a full path)');
+            Exit;
+        End;
+        Count := -1;
+        Try Count := IntegratedLibraryManager.GetComponentCount(Lib); Except Count := -1; End;
+        If Count < 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_READ', 'The library manager could not read ' + Lib);
+            Exit;
+        End;
+        { The manager reads only the libraries it holds: installed ones and   }
+        { those of open projects. Another file reads as zero parts.          }
+        Known := False;
+        Libs := 0;
+        Try Libs := IntegratedLibraryManager.AvailableLibraryCount; Except Libs := 0; End;
+        For I := 0 To Libs - 1 Do
+        Begin
+            PathStr := '';
+            Try PathStr := IntegratedLibraryManager.AvailableLibraryPath(I); Except End;
+            If SameText(PathStr, Lib) Then Known := True;
+        End;
+        If (Count = 0) And Not Known Then
+            Problem := 'Altium''s library manager reads only libraries it has installed or that an open project uses; install this one first (lib_install_library)';
+        Items := '';
+        For I := 0 To Count - 1 Do
+        Begin
+            If I >= Limit Then Break;
+            Name := ''; Models := 0; HasPcb := False; PathStr := '';
+            Try Name := IntegratedLibraryManager.GetComponentName(Lib, I); Except End;
+            Try Models := IntegratedLibraryManager.GetModelCount(Lib, I); Except End;
+            Try HasPcb := IntegratedLibraryManager.ComponentHasModelOfType(Lib, I, 'PCBLIB'); Except End;
+            If Models > 0 Then
+            Begin
+                Try PathStr := IntegratedLibraryManager.GetDatafilePath(Lib, I, 0, 0); Except End;
+            End;
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + JsonObj(JsonStr('name', Name) + ','
+                + JsonInt('models', Models) + ','
+                + JsonBool('has_footprint', HasPcb) + ','
+                + JsonStr('first_datafile', PathStr));
+        End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('library', Lib) + ','
+            + JsonInt('component_count', Count) + ','
+            + JsonBool('known_to_manager', Known) + ','
+            + JsonBool('truncated', Count > Limit) + ','
+            + JsonStr('problem', Problem) + ','
+            + JsonRaw('components', '[' + Items + ']')));
+        Exit;
+    End;
+    If Action = 'extract' Then
+    Begin
+        If (Lib = '') Or (Dest = '') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'library and destination are required');
+            Exit;
+        End;
+        Try IntegratedLibraryManager.ExtractSourcesToPath(Lib, Dest); Except Problem := 'the library manager raised an error'; End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('library', Lib) + ','
+            + JsonStr('destination', Dest) + ','
+            + JsonBool('done', Problem = '') + ','
+            + JsonStr('problem', Problem)));
+        Exit;
+    End;
+    Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'action is locate, contents or extract');
+End;
+
+{..............................................................................}
+{ Proj_OutputPanel - the lines in Altium's Output panel, newest last.        }
+{ Params: last (how many, default 100), clear 'true' empties it after.      }
+{..............................................................................}
+Function Proj_OutputPanel(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Items, Line : String;
+    I, Count, Last, First : Integer;
+Begin
+    Last := StrToIntDef(ExtractJsonValue(Params, 'last'), 100);
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    Count := -1;
+    Try Count := Workspace.DM_GetOutputLineCount; Except Count := -1; End;
+    If Count < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_SUPPORTED', 'This Altium build gives scripts no Output panel');
+        Exit;
+    End;
+    First := Count - Last;
+    If First < 0 Then First := 0;
+    Items := '';
+    For I := First To Count - 1 Do
+    Begin
+        Line := '';
+        Try Line := Workspace.DM_GetOutputLine(I); Except End;
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + '"' + EscapeJsonString(Line) + '"';
+    End;
+    If LowerCase(ExtractJsonValue(Params, 'clear')) = 'true' Then
+    Begin
+        Try Workspace.DM_ClearOutputLines; Except End;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('line_count', Count) + ','
+        + JsonRaw('lines', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ Proj_AddGeneratedDocument - list a file the project produced (a report, a }
+{ STEP, a PDF) under its Generated folder. Params: project_path, file_path.  }
+{..............................................................................}
+Function Proj_AddGeneratedDocument(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc : IDocument;
+    ProjectPath, FilePath, Problem, Have : String;
+    I, Before, After : Integer;
+    Listed : Boolean;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Exit;
+    End;
+    If Not FileExists(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_FOUND', 'No file at ' + FilePath);
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    Before := -1;
+    Try Before := Project.DM_GeneratedDocumentCount; Except Before := -1; End;
+    Problem := '';
+    Try Project.DM_AddGeneratedDocument(FilePath); Except Problem := 'the project raised an error'; End;
+    After := -1;
+    Try After := Project.DM_GeneratedDocumentCount; Except After := -1; End;
+    Listed := False;
+    For I := 0 To After - 1 Do
+    Begin
+        Doc := Nil;
+        Have := '';
+        Try Doc := Project.DM_GeneratedDocuments(I); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Try Have := Doc.DM_FullPath; Except End;
+        If UpperCase(Have) = UpperCase(FilePath) Then Listed := True;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('listed', Listed) + ','
+        + JsonInt('generated_before', Before) + ','
+        + JsonInt('generated_after', After) + ','
+        + JsonStr('problem', Problem)));
+End;
+
 {..............................................................................}
 { Proj_ExportSTEPApi - write the board's 3D model through Altium's own        }
 { exporter object (PCBServer.Board3DModelExporter.ExportBoard3DModel), with   }
@@ -2625,7 +3260,7 @@ End;
 {..............................................................................}
 Function Proj_ExportSTEPApi(Params : String; RequestId : String) : String;
 Var
-    OutputPath, Problem : String;
+    OutputPath, Problem, NotTaken : String;
     Board : IPCB_Board;
     Exporter : IPCB_Board3DModelExporter;
     Proj : IProject;
@@ -2655,6 +3290,9 @@ Begin
     Proj := ProjectHoldingDoc(Board.FileName);
     AgeBefore := -1;
     Try If FileExists(OutputPath) Then AgeBefore := FileAge(OutputPath); Except End;
+    { The exporter keeps its settings between runs: any given here stay   }
+    { for the next export too, as they do in the dialog.                   }
+    NotTaken := ApplyStepOptions(Exporter, Params);
     Problem := '';
     Try
         Exporter.ExportBoard3DModel(OutputPath, Format, Board, Proj);
@@ -2666,6 +3304,7 @@ Begin
     If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
         Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('generated', True)
             + ',' + JsonStr('output_path', OutputPath)
+            + ',' + JsonStr('options_not_taken', NotTaken)
             + ',' + JsonStr('board', Board.FileName)
             + ',' + JsonBool('in_project', Proj <> Nil)))
     Else
@@ -3018,6 +3657,53 @@ Begin
 End;
 
 {..............................................................................}
+{ CloseRunOutJobs - close the OutJobs an earlier proj_run_outjob opened,      }
+{ except the one about to run. A run with a second OutJob still open (the     }
+{ previous board's) stopped the script inside GenerateReport, after its files }
+{ were out; the same container had run cleanly with one OutJob open.          }
+{ An OutJob that reads modified, or that a tool recorded as edited, is left   }
+{ open. Returns how many were closed.                                         }
+{..............................................................................}
+Function CloseRunOutJobs(Keep : String) : Integer;
+Var
+    Rest, Path, Kept : String;
+    P : Integer;
+    Doc : IServerDocument;
+    Dirty : Boolean;
+Begin
+    Result := 0;
+    Kept := '';
+    Rest := RunOutJobsOpened;
+    While Length(Rest) > 1 Do
+    Begin
+        Rest := Copy(Rest, 2, Length(Rest));
+        P := Pos('|', Rest);
+        If P = 0 Then Break;
+        Path := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P, Length(Rest));
+        If Path = '' Then Continue;
+        If UpperCase(Path) = UpperCase(Keep) Then
+        Begin
+            Kept := Kept + '|' + Path + '|';
+            Continue;
+        End;
+        Doc := Nil;
+        Try Doc := Client.GetDocumentByPath(Path); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Dirty := False;
+        Try Dirty := Doc.Modified; Except Dirty := True; End;
+        If DocWasEdited(Path) Then Dirty := True;
+        If Dirty Then Continue;
+        Try
+            Client.CloseDocument(Doc);
+            Inc(Result);
+        Except
+        End;
+    End;
+    RunOutJobsOpened := Kept;
+End;
+
+{..............................................................................}
 { Execute a specific OutJob container by name                                  }
 { Params: outjob_path (optional), container_name                              }
 {..............................................................................}
@@ -3028,7 +3714,8 @@ Var
     IniFile : TIniFile;
     FoundContainerName, ContainerType, RelativePath, OutputDir : String;
     G, J : Integer;
-    Found, OutJobOpened, OutJobActive : Boolean;
+    Found, OutJobOpened, OutJobActive, RunRaised : Boolean;
+    ClosedOthers : Integer;
     OutJobDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
@@ -3073,26 +3760,32 @@ Begin
         Exit;
     End;
 
-    { Open and ACTIVATE the OutJob document. Focus alone leaves it open }
-    { without making it the active document; measured on AD25: the      }
-    { container then runs cleanly and writes 0 files. ShowDocument is   }
-    { what app_set_active_document does, and what the output batch      }
-    { follows.                                                          }
+    { The container writes nothing unless the OutJob is the ACTIVE document: }
+    { focused but not shown, it ran cleanly and wrote 0 files (AD25, AD26).  }
+    { Open it the way the Projects panel does, then show it, then focus it.  }
+    ClosedOthers := CloseRunOutJobs(OutJobPath);
+    OutJobOpened := False;
     OutJobDoc := Nil;
-    Try
-        If Not Client.IsDocumentOpen(OutJobPath) Then
-            OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath)
-        Else
-            OutJobDoc := Client.GetDocumentByPath(OutJobPath);
-        If OutJobDoc <> Nil Then
+    Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
+    If OutJobDoc = Nil Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', OutJobPath);
+        RunProcess('WorkspaceManager:OpenObject');
+        Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
+        If OutJobDoc = Nil Then
         Begin
-            Try Client.ShowDocument(OutJobDoc); Except End;
-            Try OutJobDoc.Focus; Except End;
+            Try OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath); Except OutJobDoc := Nil; End;
         End;
         OutJobOpened := OutJobDoc <> Nil;
-    Except
-        OutJobDoc := Nil;
-        OutJobOpened := False;
+        If OutJobOpened Then
+            RunOutJobsOpened := RunOutJobsOpened + '|' + OutJobPath + '|';
+    End;
+    If OutJobDoc <> Nil Then
+    Begin
+        Try Client.ShowDocument(OutJobDoc); Except End;
+        Try OutJobDoc.Focus; Except End;
     End;
     OutJobActive := False;
     Try
@@ -3165,26 +3858,33 @@ Begin
         Exit;
     End;
 
-    { Execute based on container type }
-    If ContainerType = 'Publish' Then
-    Begin
-        ResetParameters;
-        AddStringParameter('Action', 'PublishToPDF');
-        AddStringParameter('OutputMedium', ContainerName);
-        AddStringParameter('ObjectKind', 'OutputBatch');
-        If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
-        AddStringParameter('DisableDialog', 'True');
-        RunProcess('WorkspaceManager:Print');
-    End
-    Else
-    Begin
-        { Default: GeneratedFiles and others use GenerateReport }
-        ResetParameters;
-        AddStringParameter('Action', 'Run');
-        AddStringParameter('OutputMedium', ContainerName);
-        AddStringParameter('ObjectKind', 'OutputBatch');
-        If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
-        RunProcess('WorkspaceManager:GenerateReport');
+    { Execute based on container type. An exception from the run itself came }
+    { after the files were out (NC Drill, its report section unwritten) and  }
+    { stopped the script; it is caught and reported, and the folder decides. }
+    RunRaised := False;
+    Try
+        If ContainerType = 'Publish' Then
+        Begin
+            ResetParameters;
+            AddStringParameter('Action', 'PublishToPDF');
+            AddStringParameter('OutputMedium', ContainerName);
+            AddStringParameter('ObjectKind', 'OutputBatch');
+            If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
+            AddStringParameter('DisableDialog', 'True');
+            RunProcess('WorkspaceManager:Print');
+        End
+        Else
+        Begin
+            { Default: GeneratedFiles and others use GenerateReport }
+            ResetParameters;
+            AddStringParameter('Action', 'Run');
+            AddStringParameter('OutputMedium', ContainerName);
+            AddStringParameter('ObjectKind', 'OutputBatch');
+            If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
+            RunProcess('WorkspaceManager:GenerateReport');
+        End;
+    Except
+        RunRaised := True;
     End;
 
     { Resolve the OutJob's configured output directory so callers can pick }
@@ -3216,7 +3916,9 @@ Begin
         ',"output_dir":"' + EscapeJsonString(OutputDir) + '"' +
         ',"outjob_path":"' + EscapeJsonString(OutJobPath) + '"' +
         ',"outjob_opened":' + BoolToJsonStr(OutJobOpened) +
-        ',"outjob_active":' + BoolToJsonStr(OutJobActive) + '}');
+        ',"outjob_active":' + BoolToJsonStr(OutJobActive) +
+        ',"run_raised":' + BoolToJsonStr(RunRaised) +
+        ',"other_outjobs_closed":' + IntToStr(ClosedOthers) + '}');
 End;
 
 {..............................................................................}
@@ -4862,7 +5564,85 @@ End;
 
 { What names one compiled net, and where: its labels, power ports, ports,  }
 { sheet entries and off-sheet connectors, with the net's own flags.        }
-Function NetContentsJson(Net : INet; WithPins : Boolean) : String;
+{ How one compiled net is built, as a JSON member: its wires and lines,    }
+{ items the compiler removed, scope and signal type, the name the compiler }
+{ worked out, bus width, and how many pins of each driving kind it joins   }
+{ (two outputs on one net is a fight).                                     }
+Function NetStructureJson(Net : INet) : String;
+Var
+    SubWires, Lines, AllItems, Removed, Scope, BusWidth, Outputs, BiDirs, Powers, OpenColl, Misses : Integer;
+    SignalType, Calculated, Hidden : String;
+    BusElement, BusSection, ByValue : Boolean;
+    BusKind, RangeValue1, RangeValue2, NonPin : Integer;
+    Range1, Range2, NetNumber, Harness, Parent : String;
+    ParentNet : INet;
+Begin
+    SubWires := -1; Lines := -1; AllItems := -1; Removed := -1; Scope := -1; BusWidth := 0;
+    BusElement := False; BusSection := False; ByValue := False;
+    BusKind := -1; RangeValue1 := 0; RangeValue2 := 0; NonPin := -1;
+    Range1 := ''; Range2 := ''; NetNumber := ''; Harness := ''; Parent := '';
+    Outputs := 0; BiDirs := 0; Powers := 0; OpenColl := 0; Misses := 0;
+    SignalType := ''; Calculated := ''; Hidden := '';
+    Try SubWires := Net.DM_SubWireCount; Except Inc(Misses); End;
+    Try Lines := Net.DM_LineCount; Except Inc(Misses); End;
+    Try AllItems := Net.DM_AllNetItemCount; Except Inc(Misses); End;
+    Try Removed := Net.DM_RemovedNetItemCount; Except Inc(Misses); End;
+    Try Scope := Net.DM_Scope; Except Inc(Misses); End;
+    Try SignalType := Net.DM_SignalType; Except Inc(Misses); End;
+    Try Calculated := Net.DM_CalculatedNetName; Except Inc(Misses); End;
+    Try Hidden := Net.DM_HiddenNetName; Except Inc(Misses); End;
+    Try BusWidth := Net.DM_BusWidth; Except Inc(Misses); End;
+    Try Outputs := Net.DM_CountOfElectricalType(eElectricOutput); Except Inc(Misses); End;
+    Try BiDirs := Net.DM_CountOfElectricalType(eElectricIO); Except Inc(Misses); End;
+    Try Powers := Net.DM_CountOfElectricalType(eElectricPower); Except Inc(Misses); End;
+    Try OpenColl := Net.DM_CountOfElectricalType(eElectricOpenCollector); Except Inc(Misses); End;
+    Try BusElement := Net.DM_IsBusElement; Except Inc(Misses); End;
+    Try BusSection := Net.DM_IsBusSection; Except Inc(Misses); End;
+    Try BusKind := Net.DM_BusKind; Except Inc(Misses); End;
+    Try Range1 := Net.DM_BusRange1; Except Inc(Misses); End;
+    Try Range2 := Net.DM_BusRange2; Except Inc(Misses); End;
+    Try RangeValue1 := Net.DM_BusRangeValue1; Except Inc(Misses); End;
+    Try RangeValue2 := Net.DM_BusRangeValue2; Except Inc(Misses); End;
+    Try ByValue := Net.DM_RangeDefinedByValue; Except Inc(Misses); End;
+    Try NonPin := Net.DM_CountOfNonPinItems; Except Inc(Misses); End;
+    Try NetNumber := Net.DM_NetNumber; Except Inc(Misses); End;
+    Try Harness := Net.DM_HarnessType; Except Inc(Misses); End;
+    ParentNet := Nil;
+    Try ParentNet := Net.DM_BusSectionParent; Except ParentNet := Nil; End;
+    If ParentNet <> Nil Then
+    Begin
+        Try Parent := ParentNet.DM_NetName; Except End;
+    End;
+    Result := JsonRaw('structure', JsonObj(
+        JsonInt('sub_wires', SubWires) + ','
+        + JsonInt('lines', Lines) + ','
+        + JsonInt('all_items', AllItems) + ','
+        + JsonInt('removed_items', Removed) + ','
+        + JsonInt('scope', Scope) + ','
+        + JsonStr('signal_type', SignalType) + ','
+        + JsonStr('calculated_name', Calculated) + ','
+        + JsonStr('hidden_name', Hidden) + ','
+        + JsonInt('bus_width', BusWidth) + ','
+        + JsonInt('output_pins', Outputs) + ','
+        + JsonInt('io_pins', BiDirs) + ','
+        + JsonInt('power_pins', Powers) + ','
+        + JsonInt('open_collector_pins', OpenColl) + ','
+        + JsonInt('non_pin_items', NonPin) + ','
+        + JsonStr('net_number', NetNumber) + ','
+        + JsonBool('bus_element', BusElement) + ','
+        + JsonBool('bus_section', BusSection) + ','
+        + JsonInt('bus_kind', BusKind) + ','
+        + JsonStr('bus_range_from', Range1) + ','
+        + JsonStr('bus_range_to', Range2) + ','
+        + JsonInt('bus_range_value_from', RangeValue1) + ','
+        + JsonInt('bus_range_value_to', RangeValue2) + ','
+        + JsonBool('bus_range_by_value', ByValue) + ','
+        + JsonStr('bus_section_parent', Parent) + ','
+        + JsonStr('harness_type', Harness) + ','
+        + JsonInt('read_errors', Misses)));
+End;
+
+Function NetContentsJson(Net : INet; WithPins : Boolean; WithStructure : Boolean) : String;
 Var
     Item : INetItem;
     Labels, Powers, Ports, Entries, Cross, Directives, Pins, Text : String;
@@ -4957,6 +5737,8 @@ Begin
         + JsonRaw('directives', '[' + Directives + ']'));
     If WithPins Then
         Result := Copy(Result, 1, Length(Result) - 1) + ',' + JsonRaw('pins', '[' + Pins + ']') + '}';
+    If WithStructure Then
+        Result := Copy(Result, 1, Length(Result) - 1) + ',' + NetStructureJson(Net) + '}';
 End;
 
 {..............................................................................}
@@ -4974,11 +5756,12 @@ Var
     FlatDoc : IDocument;
     Net : INet;
     I, Limit, Listed, Examined, Naming : Integer;
-    NamedOnly, Truncated : Boolean;
+    NamedOnly, Truncated, Structure : Boolean;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     NetName := ExtractJsonValue(Params, 'net');
     NamedOnly := LowerCase(ExtractJsonValue(Params, 'named_only')) = 'true';
+    Structure := LowerCase(ExtractJsonValue(Params, 'structure')) = 'true';
     Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 500);
     If Limit < 1 Then Limit := 500;
     Workspace := GetWorkspace;
@@ -5023,7 +5806,7 @@ Begin
             Break;
         End;
         If Items <> '' Then Items := Items + ',';
-        Items := Items + NetContentsJson(Net, NetName <> '');
+        Items := Items + NetContentsJson(Net, NetName <> '', Structure);
         Inc(Listed);
     End;
     If (NetName <> '') And (Listed = 0) Then
@@ -5057,6 +5840,7 @@ Var
     I, Idx, Total, Mode : Integer;
     Order : TStringList;
     OutPath : String;
+    PcbType, ConfigName : String;
     Sub, AllowPort, AllowEntry, AppendSheet, SwapLabel, SwapPin : Boolean;
 Begin
     Order := TStringList.Create;
@@ -5124,6 +5908,13 @@ Begin
     Try AppendSheet := Project.DM_GetAppendSheetNumberToLocalNets; Except End;
     Try SwapLabel := Project.DM_GetPinSwapBy_Netlabel; Except End;
     Try SwapPin := Project.DM_GetPinSwapBy_Pin; Except End;
+    { The defaults a new document in this project inherits. Reported and    }
+    { written here rather than in a tool of their own: they are Project     }
+    { Options like the rest, and a second writer over the same state would  }
+    { be one more place for the two to disagree.                            }
+    PcbType := ''; ConfigName := '';
+    Try PcbType := Project.DM_GetDefaultPcbType; Except End;
+    Try ConfigName := Project.DM_GetDefaultConfigurationName; Except End;
     Result := JsonRaw('documents', '[' + Docs + ']') + ','
         + JsonRaw('search_paths', '[' + Paths + ']') + ','
         + JsonRaw('generated_documents', '[' + Gens + ']') + ','
@@ -5133,7 +5924,9 @@ Begin
         + JsonStr('output_path', OutPath) + ','
         + JsonBool('append_sheet_number_to_local_nets', AppendSheet) + ','
         + JsonBool('pin_swap_by_net_label', SwapLabel) + ','
-        + JsonBool('pin_swap_by_pin', SwapPin);
+        + JsonBool('pin_swap_by_pin', SwapPin) + ','
+        + JsonStr('default_pcb_type', PcbType) + ','
+        + JsonStr('default_configuration_name', ConfigName);
 End;
 
 {..............................................................................}
@@ -5151,6 +5944,8 @@ Function Proj_ProjectSetup(Params : String; RequestId : String) : String;
 Var
     ProjectPath, MoveDoc, MoveTo, AddPath, SubStr, PortStr, EntryStr, NotApplied : String;
     ModeStr, OutStr, AppendStr, SwapLabelStr, SwapPinStr : String;
+    PcbTypeStr, ConfigStr, WasType, WasConfig : String;
+    GotOut, WantOut : String;
     Workspace : IWorkspace;
     Project : IProject;
     SP : ISearchPath;
@@ -5169,6 +5964,9 @@ Begin
     AppendStr := LowerCase(ExtractJsonValue(Params, 'append_sheet_number_to_local_nets'));
     SwapLabelStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_net_label'));
     SwapPinStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_pin'));
+    { Not lower-cased: these two are names, not flags. }
+    PcbTypeStr := ExtractJsonValue(Params, 'default_pcb_type');
+    ConfigStr := ExtractJsonValue(Params, 'default_configuration_name');
     If (ModeStr <> '') And (Not IsIntStr(ModeStr)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'hierarchy_mode must be a number');
@@ -5244,8 +6042,17 @@ Begin
     Begin
         Project.DM_SetOutputPath(OutStr);
         Changed := True;
-        If UpperCase(NoTrailingSlash(Project.DM_GetOutputPath))
-           <> UpperCase(NoTrailingSlash(OutStr)) Then
+        { A RELATIVE output path is resolved against the project folder, so  }
+        { the read-back is the absolute one and an exact compare called a    }
+        { write that worked not_applied. MEASURED: 'Outputs Test' read back  }
+        { as <project folder>\Outputs Test, and the tool reported it as not  }
+        { applied while the reader showed the new value. Matched by tail for }
+        { exactly that case; an absolute path still has to match in full.    }
+        GotOut := UpperCase(NoTrailingSlash(Project.DM_GetOutputPath));
+        WantOut := UpperCase(NoTrailingSlash(OutStr));
+        If (GotOut <> WantOut)
+           And (Copy(GotOut, Length(GotOut) - Length(WantOut), Length(WantOut) + 1)
+                <> '\' + WantOut) Then
             NotApplied := NotApplied + '"output_path",';
     End;
     If AppendStr <> '' Then
@@ -5268,6 +6075,35 @@ Begin
         Changed := True;
         If Project.DM_GetPinSwapBy_Pin <> (SwapPinStr = 'true') Then
             NotApplied := NotApplied + '"pin_swap_by_pin",';
+    End;
+    { These two are not free-text. MEASURED: setting the configuration   }
+    { name to one the project does not have did not take AND cleared the  }
+    { name it already had, from 'Sources' to empty, so a write that failed }
+    { left the project worse off than not calling at all. The previous     }
+    { value is put back when the read-back disagrees.                      }
+    If PcbTypeStr <> '' Then
+    Begin
+        WasType := '';
+        Try WasType := Project.DM_GetDefaultPcbType; Except End;
+        Try Project.DM_SetDefaultPcbType(PcbTypeStr); Except End;
+        Changed := True;
+        If Project.DM_GetDefaultPcbType <> PcbTypeStr Then
+        Begin
+            Try Project.DM_SetDefaultPcbType(WasType); Except End;
+            NotApplied := NotApplied + '"default_pcb_type",';
+        End;
+    End;
+    If ConfigStr <> '' Then
+    Begin
+        WasConfig := '';
+        Try WasConfig := Project.DM_GetDefaultConfigurationName; Except End;
+        Try Project.DM_SetDefaultConfigurationName(ConfigStr); Except End;
+        Changed := True;
+        If Project.DM_GetDefaultConfigurationName <> ConfigStr Then
+        Begin
+            Try Project.DM_SetDefaultConfigurationName(WasConfig); Except End;
+            NotApplied := NotApplied + '"default_configuration_name",';
+        End;
     End;
     If NotApplied <> '' Then NotApplied := Copy(NotApplied, 1, Length(NotApplied) - 1);
     Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -5941,7 +6777,7 @@ Begin
       SCHM_EndModify / SCHM_PrimitiveRegistration broadcasts bracket
       the actual property write and registration. }
     Found := False;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
     Try
         Iterator := SchDoc.SchIterator_Create;
         Iterator.SetState_IterationDepth(eIterateFirstLevel);
@@ -5978,7 +6814,7 @@ Begin
             SchRegisterObject(SchDoc, Parameter);
         End;
     Finally
-        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+        SchEndEdit(SchDoc, 'Edit');
     End;
 
     { Persist directly to disk via the IServerDocument API. MarkDocDirtyByPath
@@ -6504,7 +7340,7 @@ Begin
     End;
 
     Count := 0;
-    SchServer.ProcessControl.PreProcess(SchDoc, '');
+    SchBeginEdit(SchDoc, '');
 
     Iterator := SchDoc.SchIterator_Create;
     Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
@@ -6520,12 +7356,13 @@ Begin
                 Inc(Count);
             End;
         Except
+            NoteWriteFailed('DesignatorLocked');
         End;
         Obj := Iterator.NextSchObject;
     End;
     SchDoc.SchIterator_Destroy(Iterator);
 
-    SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+    SchEndEdit(SchDoc, 'Edit');
     SchDoc.GraphicallyInvalidate;
 
     Result := BuildSuccessResponse(RequestId,
@@ -6612,6 +7449,29 @@ Begin
     End;
     Try
         Data := Data + ',"append_sheet_number_to_local_nets":' + BoolToJsonStr(Project.DM_GetAppendSheetNumberToLocalNets);
+    Except
+    End;
+
+    { Pin swapping, and the defaults a new document inherits. Reported so   }
+    { every option Proj_ProjectSetup can WRITE can also be read back here,  }
+    { which is what lets a caller diff a project against a stored policy    }
+    { without the writer's other machinery. The two channel settings above  }
+    { are the exception: readable, and the engine registers no setter for   }
+    { either under any spelling.                                            }
+    Try
+        Data := Data + ',"pin_swap_by_pin":' + BoolToJsonStr(Project.DM_GetPinSwapBy_Pin);
+    Except
+    End;
+    Try
+        Data := Data + ',"pin_swap_by_netlabel":' + BoolToJsonStr(Project.DM_GetPinSwapBy_Netlabel);
+    Except
+    End;
+    Try
+        Data := Data + ',"default_pcb_type":"' + EscapeJsonString(Project.DM_GetDefaultPcbType) + '"';
+    Except
+    End;
+    Try
+        Data := Data + ',"default_configuration_name":"' + EscapeJsonString(Project.DM_GetDefaultConfigurationName) + '"';
     Except
     End;
 
@@ -6771,20 +7631,56 @@ Begin
     End;
 End;
 
-{ The violation type with this exact description (case ignored), or a      }
-{ number given as text. -1 when neither.                                    }
-Function ErcKindFromText(Workspace : IWorkspace; Text : String) : Integer;
+{ How many violation types Altium actually has.                             }
+{                                                                           }
+{ DM_ViolationTypeDescription answers by index and has no end marker, and   }
+{ past the end of the enum it hands back whatever adjacent memory reads as  }
+{ a string. MEASURED on AD 26.11: indices 0..166 are the real table, 167 to }
+{ 169 answer empty, and from 170 on it returns truncated fragments of other }
+{ string tables ('Out o', 'Unconnec', 'Gray') plus, at 350, a block of raw  }
+{ UTF-16 carrying NULs. Scanning a fixed 0..400 and keeping anything        }
+{ non-empty therefore reported 295 types where there are 167, and           }
+{ DM_SetErrorLevels would have been called on the 128 indices past the end  }
+{ of the array it indexes. The exact count moves between reads, because     }
+{ what is past the end is whatever that memory holds at the time.           }
+{                                                                           }
+{ The ids are a contiguous enum from 0, so the first empty description is   }
+{ the end of it. Nothing in the SDK gives a count: IWorkspace declares only }
+{ DM_ViolationTypeDescription and DM_ViolationTypeGroup, and IProject's     }
+{ DM_ViolationCount counts violations, not types.                           }
+Function ErcTypeCount(Workspace : IWorkspace) : Integer;
 Var
     I : Integer;
     Desc : String;
 Begin
+    Result := 0;
+    For I := 0 To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If Desc = '' Then Exit;
+        Result := I + 1;
+    End;
+End;
+
+{ The violation type with this exact description (case ignored), or a      }
+{ number given as text. -1 when neither.                                    }
+Function ErcKindFromText(Workspace : IWorkspace; Text : String) : Integer;
+Var
+    I, Stop : Integer;
+    Desc : String;
+Begin
     Result := -1;
+    Stop := ErcTypeCount(Workspace);
     If (Trim(Text) <> '') And (StrToIntDef(Trim(Text), -1) >= 0) Then
     Begin
         Result := StrToIntDef(Trim(Text), -1);
+        { A number past the end of the table names nothing, and writing to }
+        { it would reach past the array DM_SetErrorLevels indexes.          }
+        If Result >= Stop Then Result := -1;
         Exit;
     End;
-    For I := 0 To 400 Do
+    For I := 0 To Stop - 1 Do
     Begin
         Desc := '';
         Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
@@ -6799,12 +7695,16 @@ End;
 { Proj_GetErcLevels - every violation type with its current report level. }
 { Params: project_path (default the focused project), match (substring of  }
 { the description, optional).                                              }
+{ Reports type_count (how many types Altium has) and beyond_table (how     }
+{ many look-alike strings the reader found past the end and ignored: 127   }
+{ and 128 on two reads of the same AD 26.11, since it is uninitialised     }
+{ memory; see ErcTypeCount).                                               }
 Function Proj_GetErcLevels(Params : String; RequestId : String) : String;
 Var
     Project : IProject;
     Workspace : IWorkspace;
     Problem, Match, Desc, Items : String;
-    I, Level, Count : Integer;
+    I, Level, Count, Stop, Group, Beyond : Integer;
 Begin
     Project := ErcProject(Params, Problem);
     If Project = Nil Then
@@ -6816,7 +7716,8 @@ Begin
     Match := LowerCase(ExtractJsonValue(Params, 'match'));
     Items := '';
     Count := 0;
-    For I := 0 To 400 Do
+    Stop := ErcTypeCount(Workspace);
+    For I := 0 To Stop - 1 Do
     Begin
         Desc := '';
         Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
@@ -6824,16 +7725,32 @@ Begin
         Begin
             Level := -1;
             Try Level := Project.DM_ErrorLevels(I); Except Level := -1; End;
+            { The section the Error Reporting dialog files this type under. }
+            Group := -1;
+            Try Group := Workspace.DM_ViolationTypeGroup(I); Except Group := -1; End;
             If Items <> '' Then Items := Items + ',';
             Items := Items + '{"kind":' + IntToStr(I)
                 + ',"description":"' + EscapeJsonString(Desc) + '"'
+                + ',"group":' + IntToStr(Group)
                 + ',"level":"' + ErcLevelName(Level) + '"}';
             Inc(Count);
         End;
     End;
+    { Counted, not reported: it is the measurement that says the table ends }
+    { where it does, and a build where it reads 0 has either a different    }
+    { Altium or a reader that stopped too early.                            }
+    Beyond := 0;
+    For I := Stop To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If Desc <> '' Then Inc(Beyond);
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
         + ',"count":' + IntToStr(Count)
+        + ',"type_count":' + IntToStr(Stop)
+        + ',"beyond_table":' + IntToStr(Beyond)
         + ',"levels":[' + Items + ']}');
 End;
 
@@ -7135,7 +8052,7 @@ Begin
                     Inc(SheetsSkipped)
                 Else
                 Begin
-                    SchServer.ProcessControl.PreProcess(SchDoc, '');
+                    SchBeginEdit(SchDoc, '');
                     Try
                         For P := 0 To PCount - 1 Do
                         Begin
@@ -7180,7 +8097,7 @@ Begin
                             End;
                         End;
                     Finally
-                        SchServer.ProcessControl.PostProcess(SchDoc, 'Edit');
+                        SchEndEdit(SchDoc, 'Edit');
                     End;
                     Try MarkDocDirtyByPath(FullPath); Except End;
                     Try SchDoc.GraphicallyInvalidate; Except End;
@@ -7204,6 +8121,7 @@ End;
 Function HandleProjectCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
+        'get_hierarchy':     Result := Proj_GetHierarchy(Params, RequestId);
         'create':            Result := Proj_Create(Params, RequestId);
         'open':              Result := Proj_Open(Params, RequestId);
         'save':              Result := Proj_Save(Params, RequestId);
@@ -7240,6 +8158,12 @@ Begin
         'set_component_variation': Result := Proj_SetComponentVariation(Params, RequestId);
         'net_color':         Result := Proj_NetColor(Params, RequestId);
         'get_net_items':     Result := Proj_GetNetItems(Params, RequestId);
+        'step_options':      Result := Proj_StepOptions(Params, RequestId);
+        'get_channels':      Result := Proj_GetChannels(Params, RequestId);
+        'component_models':  Result := Proj_ComponentModels(Params, RequestId);
+        'library_lookup':    Result := Proj_LibraryLookup(Params, RequestId);
+        'output_panel':      Result := Proj_OutputPanel(Params, RequestId);
+        'add_generated_document': Result := Proj_AddGeneratedDocument(Params, RequestId);
         'project_setup':     Result := Proj_ProjectSetup(Params, RequestId);
         'make_schematic_library': Result := Proj_MakeSchematicLibrary(Params, RequestId);
         'make_integrated_library': Result := Proj_MakeIntegratedLibrary(Params, RequestId);

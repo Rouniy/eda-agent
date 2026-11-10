@@ -257,7 +257,10 @@ def register_design_tools(mcp) -> None:
         return store.active()
 
     @mcp.tool()
-    async def design_session_start(requirement: str, session_id: str = "") -> dict[str, Any]:
+    async def design_session_start(requirement: str, session_id: str = "",
+                                   mode: str = "",
+                                   inputs: Optional[Union[dict, str]] = None,
+                                   ) -> dict[str, Any]:
         """Open a durable design-session journal for an autonomous run.
 
         The journal is append-only state that survives context compaction,
@@ -269,13 +272,75 @@ def register_design_tools(mcp) -> None:
         Args:
             requirement: the design requirement text this run implements.
             session_id: optional explicit id; defaults to a timestamp.
+            mode: the design mode (see design_list_modes), e.g.
+                "reference_redraw" to redraw a vendor dev kit's schematic,
+                "layout_only" for a finished schematic. Blank uses the
+                selected mode (EDA_AGENT_MODE, then `eda-agent mode-use`),
+                else "full_design", the whole 13-stage pipeline.
+            inputs: the mode's inputs as an object (or JSON text), e.g.
+                {"vendor": "NXP", "board": "MIMXRT1170-EVKB",
+                 "source": "<URL of the schematic PDF>"}. A required input
+                left out is refused with the list of what is missing.
 
         Returns:
-            ``{"session_id": ..., "state": {...}}``.
+            ``{"session_id": ..., "mode": {...}, "state": {...}}``.
         """
+        from ..design.modes import get_mode, session_payload
+        if isinstance(inputs, str):
+            try:
+                inputs = json.loads(inputs) if inputs.strip() else None
+            except json.JSONDecodeError as exc:
+                return {"error": f"inputs is not valid JSON: {exc}"}
+        if inputs is not None and not isinstance(inputs, dict):
+            return {"error": "inputs must be a JSON object"}
+        try:
+            chosen = get_mode(mode)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        missing = chosen.missing_inputs(inputs or {})
+        if missing:
+            return {"error": f"the {chosen.name!r} mode needs {missing}; pass "
+                             f"them in inputs",
+                    "mode": chosen.as_dict()}
         store = _session_store()
-        journal = store.start(requirement, session_id=session_id or None)
-        return {"session_id": journal.session_id, "state": asdict(journal.state())}
+        journal = store.start(requirement, session_id=session_id or None,
+                              mode=session_payload(chosen, chosen.resolve_inputs(inputs or {})))
+        return {"session_id": journal.session_id, "mode": chosen.as_dict(),
+                "state": asdict(journal.state())}
+
+    @mcp.tool()
+    async def design_list_modes() -> dict[str, Any]:
+        """The design modes a run can be started in, and which one is selected.
+
+        A mode is a preset for a kind of job: which pipeline stages it walks,
+        the rules it adds, what each stage does differently and the inputs
+        it needs. Built in: full_design (the whole pipeline), schematic_only,
+        layout_only, reference_redraw (redraw a vendor dev kit or reference
+        design's schematic) and devkit_derivative (a new board from a dev
+        kit). The active profile's modes/ folder adds its own or changes
+        these. Start a run in one with design_session_start(mode=...).
+        """
+        from ..design.modes import load_modes, selected_mode_name
+        modes, problems = load_modes()
+        name, source = selected_mode_name()
+        return {"ok": True, "selected": name, "selected_by": source,
+                "modes": [{"name": m.name, "title": m.title,
+                           "description": m.description,
+                           "stages": len(m.stages),
+                           "inputs": [i.name for i in m.inputs],
+                           "source": m.source} for m in modes.values()],
+                "problems": problems}
+
+    @mcp.tool()
+    async def design_get_mode(name: str = "") -> dict[str, Any]:
+        """One design mode in full: stages, skipped stages, inputs, rules,
+        per-stage notes and the profile pieces it points at. Blank name
+        gives the selected mode."""
+        from ..design.modes import get_mode
+        try:
+            return {"ok": True, **get_mode(name).as_dict()}
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
 
     @mcp.tool()
     async def design_session_log(
@@ -378,7 +443,9 @@ def register_design_tools(mcp) -> None:
         if state.open_question:
             guidance = f"BLOCKED: ask the user: {state.open_question}"
         elif state.complete:
-            guidance = "All 13 pipeline stages complete."
+            guidance = (f"All {len(state.stages)} stages of the '{state.mode}' "
+                        f"mode complete." if state.mode
+                        else "All 13 pipeline stages complete.")
         else:
             guidance = f"Next stage: {state.next_stage}"
             sent_back = gates.get(state.next_stage)
@@ -1917,6 +1984,8 @@ def register_design_tools(mcp) -> None:
                     board = await asyncio.to_thread(read_live_board, expect_file)
                 except WrongBoard as exc:
                     return {"ok": False, "error": str(exc)}
+                except Exception as exc:  # noqa: BLE001 - reported to the caller
+                    return {"ok": False, "error": f"board read failed: {exc}"}
                 source = "live"
             loops = await asyncio.to_thread(analyze_loops, board, pin_names,
                                             kinds)
@@ -2243,6 +2312,8 @@ def register_design_tools(mcp) -> None:
                 board = await asyncio.to_thread(read_live_board, expect_file)
             except WrongBoard as exc:
                 return {"ok": False, "error": str(exc)}
+            except Exception as exc:  # noqa: BLE001 - reported to the caller
+                return {"ok": False, "error": f"board read failed: {exc}"}
             source = "live"
         result = await asyncio.to_thread(
             smart_drc, board, spacing_mils=spacing_mils, probe_mils=probe_mils,
@@ -2962,38 +3033,7 @@ def register_design_tools(mcp) -> None:
         Resolve those first by either picking an existing-lib equivalent
         or branching into a library-authoring sub-task.
 
-        Args:
-            plan_json: Either a DesignPlan JSON string, or the DesignPlan
-                as a JSON object/dict. The MCP framework auto-deserializes
-                JSON-object literals to dicts before the tool sees them,
-                so both shapes are accepted.
-            project_path: Absolute path to the target .PrjPcb. Created
-                if it does not exist.
-            use_canvas: Pick the execution path. Default ``True`` runs
-                the new canvas pipeline; pass ``False`` to fall back to
-                the legacy executor.
-            placement_hints: Optional ``{refdes: {"x": int, "y": int,
-                "rotation": int}}`` partial anchors. Hinted refdes pin
-                to the supplied position; others run through the
-                algorithmic placement (Sugiyama + multi-try scoring).
-                Used by the agent-in-loop refinement workflow:
-                  1. Run ``design_preview_plan`` -> see SVG + score.
-                  2. If layout is bad, identify specific refdes that
-                     should sit elsewhere; build hints dict.
-                  3. Call ``design_preview_plan`` again with hints ->
-                     iterate until score is acceptable.
-                  4. Call ``design_execute_plan`` with the same hints
-                     to emit the refined layout.
-            mode: How to reach the sheet. ``"auto"`` (default) EDITS a
-                sheet this tool has drawn before, moving only the parts
-                whose position changed, placing the new ones, deleting
-                the ones the plan dropped, and leaving every other
-                component exactly as it is. It draws from scratch when
-                there is no prior sheet. This is what makes re-running a
-                changed plan safe on a schematic somebody has worked on.
-                ``"full"`` re-places every component, discarding any
-                hand edit; use it when you want the sheet redrawn.
-                ``"delta"`` refuses rather than redraw.
+Args: plan_json is a DesignPlan JSON string or file path. project_path identifies the target project. dry_run previews the plan; use_canvas selects the canvas executor. Resolve needs_create parts before applying. Review the returned project path, placement results and errors.
 
                 The edit path only knows what is in the plan. To keep a
                 part where a person dragged it, read the sheet back with
@@ -3148,6 +3188,28 @@ def register_design_tools(mcp) -> None:
         return result
 
     # --- stages to production: feasibility, prototype, EVT, DVT, PVT -------
+    #
+    # OFF unless a profile, EDA_AGENT_PHASES or --phases names the stages
+    # to run (docs/NPI_PHASE_GATES.md). Off means not advertised, rather
+    # than advertised and refusing: a tool that exists only to say it is
+    # switched off costs a call and a round trip to teach what its absence
+    # teaches for free.
+    #
+    # Read once, here, because registration is what it decides. Changing
+    # the setting takes a restart, the same as --backend and --toolset,
+    # and for the same reason: the surface is chosen before any call.
+    from ..profile import get_phase_stages
+    phase_stages = get_phase_stages()
+
+    def phase_tool(fn):
+        """Advertise fn only where the phase gate is switched on."""
+        return mcp.tool()(fn) if phase_stages else fn
+
+    def _stage_is_on(name: str) -> bool:
+        return name in phase_stages
+
+    def _stages_note() -> str:
+        return ", ".join(phase_stages) or "none"
 
     def _ledger(product: str):
         from ..config import get_config
@@ -3161,7 +3223,8 @@ def register_design_tools(mcp) -> None:
                                "done_when": check.done_when,
                                "answered_by": "tools" if check.tools else "people"}
         if check.tools:
-            out["tools"] = list(check.tools)
+            from .folds import call_form
+            out["tools"] = list(dict.fromkeys(call_form(n) for n in check.tools))
         if with_reason:
             out["why_now"] = check.reason
         if line.answer is not None:
@@ -3173,7 +3236,7 @@ def register_design_tools(mcp) -> None:
             out["ignored_because"] = line.ignored_because
         return out
 
-    @mcp.tool()
+    @phase_tool
     async def design_phase_gate(stage: str, revision: str = "", product: str = "default",
                                 with_reasons: bool = True) -> dict[str, Any]:
         """The checks that close one stage on the way to production, and how
@@ -3203,6 +3266,14 @@ def register_design_tools(mcp) -> None:
             name = stage_from(stage)
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
+        if not _stage_is_on(name):
+            # Answering it anyway would let a programme build up evidence
+            # for a stage its own profile says it does not run, which
+            # design_phase_standing would then ignore without saying so.
+            return {"ok": False, "reason": (
+                f"{name} is not one of the stages this profile runs "
+                f"({_stages_note()}). Add it with `eda-agent phases-enable "
+                f"{name}` if it belongs here.")}
         result = review(name, _ledger(product).answers(), revision)
         return {"stage": name, "title": TITLES[name], "product": product,
                 "revision": revision, "cleared": result.cleared, "tally": result.tally(),
@@ -3211,7 +3282,7 @@ def register_design_tools(mcp) -> None:
                 "tools_to_run": result.tools_to_run(),
                 "for_people": result.for_people()}
 
-    @mcp.tool()
+    @phase_tool
     async def design_phase_answer(key: str, outcome: str, detail: str = "",
                                   source: str = "", revision: str = "",
                                   product: str = "default") -> dict[str, Any]:
@@ -3234,6 +3305,12 @@ def register_design_tools(mcp) -> None:
             and ``holding``.
         """
         from ..design.phase_gates import CHECKS, review
+        wanted = CHECKS.get(key)
+        if wanted is not None and not _stage_is_on(wanted.stage):
+            return {"ok": False, "reason": (
+                f"{key} belongs to {wanted.stage}, which is not one of the "
+                f"stages this profile runs ({_stages_note()}). Recording it "
+                f"would leave evidence nothing reviews.")}
         ledger = _ledger(product)
         try:
             ledger.add(key, outcome, source=source, detail=detail, revision=revision)
@@ -3245,7 +3322,7 @@ def register_design_tools(mcp) -> None:
                 "stage_cleared": result.cleared, "tally": result.tally(),
                 "holding": [line.check.key for line in result.holding()]}
 
-    @mcp.tool()
+    @phase_tool
     async def design_phase_standing(revision: str = "",
                                     product: str = "default") -> dict[str, Any]:
         """Which stage the product is in, and what that stage still needs.
@@ -3254,16 +3331,23 @@ def register_design_tools(mcp) -> None:
         work exists beyond it: a board whose feasibility checks never closed
         is in feasibility.
 
+        Only the stages this profile runs are reviewed, and ``stages_run``
+        names them. ``in_production`` means every one of THOSE cleared, so
+        read it against ``stages_run`` rather than against all five.
+
         Returns:
-            ``stage``, ``title``, ``in_production`` (every stage cleared),
-            that stage's ``holding`` and ``tools_to_run``, and ``stages``
-            (each one's ``cleared``, ``tally`` and ``holding``).
+            ``stage``, ``title``, ``in_production`` (every stage run
+            cleared), ``stages_run``, that stage's ``holding`` and
+            ``tools_to_run``, and ``stages`` (each one's ``cleared``,
+            ``tally`` and ``holding``).
         """
         from ..design.phase_gates import DONE, TITLES, standing
-        stage, reviews = standing(_ledger(product).answers(), revision)
+        stage, reviews = standing(_ledger(product).answers(), revision,
+                                  stages=phase_stages)
         current = next((r for r in reviews if r.stage == stage), None)
         return {"product": product, "revision": revision, "stage": stage,
                 "title": TITLES[stage], "in_production": stage == DONE,
+                "stages_run": list(phase_stages),
                 "holding": [line.check.key for line in current.holding()] if current else [],
                 "tools_to_run": current.tools_to_run() if current else [],
                 "stages": [{"stage": r.stage, "cleared": r.cleared, "tally": r.tally(),

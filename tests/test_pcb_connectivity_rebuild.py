@@ -120,9 +120,11 @@ def test_place_tracks_joins_the_net_primitive_list():
 
 def test_place_tracks_rebuilds_after_postprocess_not_inside_it():
     # A rebuild issued while PCBServer is still mid-transaction cannot see
-    # the finished state.
+    # the finished state. The edit now closes through PcbEndEdit, which
+    # reaches PostProcess only at the outermost level, so the handler must
+    # hold exactly one pair and rebuild after it.
     src = _handler(PCB_PAS, "PCB_PlaceTracks")
-    assert src.index("PCBServer.PostProcess") < src.index(
+    assert src.index("PcbEndEdit(0)") < src.index(
         "RebuildPCBConnectivity(Board)")
 
 

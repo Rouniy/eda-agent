@@ -27,6 +27,13 @@ profile/
   footprint_defaults.json    # {"pad_corner_radius_pct": 1}
   footprint_policy.json      # design.footprint_policy's explicit policy dict
   document_settings.json     # schematic units/grid (see below)
+  design_rules.json          # targets the board's DRC rules are built from
+  erc_levels.json            # the project's ERC matrix (the default set)
+  erc_levels/                 # named ERC sets, each able to extend another
+    strict.json                #   (one policy per file)
+  phase_gates.json           # enabled stages for the optional design_phase_* tools
+  modes/                      # design modes (see DESIGN_MODES.md)
+    nxp_redraw.json            #   (one mode per file)
   templates/                  # plain files, copied as-is
     default/                   #   a whole project (profile-new-project)
       ...
@@ -39,7 +46,9 @@ reuse formats that already existed before profiles did -- see
 [ENGINEERING_TOOLS.md](ENGINEERING_TOOLS.md) for `naming.json` and
 `company_goals.json`, and `engineering/rules.py` / `design/fab_profile.py` for
 the other two. `footprint_defaults.json`, `footprint_policy.json`,
-`document_settings.json` and `templates/` are new, documented below.
+`document_settings.json`, `design_rules.json`, `erc_levels.json`,
+`erc_levels/`, `phase_gates.json` and `templates/` are new, documented
+below.
 
 ## How a profile is found
 
@@ -146,6 +155,41 @@ being picked up at all. Keys starting with `_` are left alone, so
   board from one of the profile's `templates/documents/` files and open it
   (Altium backend only).
 
+## Dashboard
+
+The dashboard (`eda-agent dashboard`, or the button on the Altium status
+form) has a **Workspace** mode (key `8`), and the top bar carries a chip
+naming the profile in effect. The chip's dot says where it came from:
+green for the central choice, amber for a project profile, blue for
+`EDA_AGENT_PROFILE_DIR`, grey for none. A red border means the profile has
+problems `profile-validate` would report.
+
+The mode shows:
+
+- **Where it comes from.** The three steps of the resolution order above,
+  each with what it holds, and which one decided. This is read inside the
+  server process, so it is the answer the AI's tools get, which is not
+  always the answer a shell in another folder gets.
+- **Switch the central profile.** One button per profile under
+  `~/.eda-agent/profiles/`. It writes the same pointer `profile-use` does.
+  If a project profile or `EDA_AGENT_PROFILE_DIR` decides here, the
+  switch is recorded and the page says it does not apply yet. The
+  naming/IPC pointer `apply_env` set at startup follows the switch; one you
+  set yourself is never touched. Which phase tools are advertised is fixed
+  when the server starts, so a switch between profiles with different
+  `phase_gates.json` says a restart is needed.
+- **What it declares.** Design-rule targets, with a button that shows the
+  rules `pcb_rules_plan` would put on a board (pure Python, Altium is not
+  asked); rulesets with their rule counts by severity; every ERC set,
+  resolved through `extends`; fab profiles' limits; project and document
+  templates; naming, document settings, footprint defaults and policy, and
+  phase gates. Any file name opens the file read-only. Nothing in a profile
+  is edited from the page.
+- **Hold the open design to it.** Compare (`profile_diff_all`), preview
+  (`profile_apply_all`, dry run) and apply (`profile_apply_all`,
+  `dry_run=False`). Apply asks for a second click, since it writes to
+  Altium. It only adds and updates, never deletes.
+
 ## `footprint_defaults.json`
 
 ```json
@@ -217,6 +261,174 @@ auto-applied to a live PCB document. A project template (below) sidesteps
 this for brand-new projects, since a template's own documents already carry
 whatever unit/grid state was saved into them.
 
+## `design_rules.json`
+
+```json
+{
+  "fab_profile": "jlcpcb_4layer",
+  "net_classes": {"VBUS": "power", "GND": "power"},
+  "options": {"class_current_a": {"power": 2.0}, "diff_pair_target_ohms": 90}
+}
+```
+
+The board's Altium design rules, managed from the profile by three tools:
+
+| | |
+|---|---|
+| `pcb_rules_plan` | what the profile asks for. Pure Python, no Altium. |
+| `pcb_rules_diff` | how the open board differs from it. |
+| `pcb_rules_apply` | closes the gap. `dry_run=True` by default. |
+
+**This file holds the TARGETS, not the rules.** `fab_profile` names a file
+in the profile's `fab_profiles/` (or carries the profile inline);
+`net_classes` and `options` feed the same synthesis `design_synthesize_rules`
+uses. The rules themselves are derived on every call, because
+`design/rule_synthesis.py` asserts that each number it emits traces to a
+fab-profile field or a verified calculator (IPC-2221 width, IPC-2141
+impedance). A rule stored here could only drift away from the calculator
+that justified it.
+
+**Apply is idempotent, and never deletes.** A rule already on the board is
+updated in place. Altium's own `PCB_CreateDesignRule` sets the name and adds
+with no check for one already there, so applying a set twice without this
+leaves two rules sharing a name and Altium's priority order picks the
+winner. Three things are reported rather than written:
+
+- `extra` -- on the board, not in the profile. Altium ships default rules on
+  every board, and a rule somebody added for this board deliberately is not
+  drift. Seeing them is the point; removing them is the owner's call.
+- `skipped` -- owned by the schematic (`from_schematic`). The next update
+  from the schematic rewrites it, so writing it here is undone silently.
+- `unwritable` -- a rule kind with no in-place writer. Deleting and
+  recreating would lose the rule's priority and any scope edited by hand.
+
+**Reading values back goes through Altium's prose.** Only a
+clearance-family rule reports a number of its own; every other kind is
+readable solely as `Rule.Descriptor`, the text Altium writes for the rules
+dialog, so the comparison parses it. `tolerance_mils` (default 0.02) absorbs
+the round trip through the millimetre descriptor: a rule written as 6 mil
+reads back as `0.152mm`, which is 5.984 mil.
+
+**`enabled` is not the flag that matters.** A rule has both `Enabled` and
+`DRCEnabled`, and only the second decides whether DRC checks it.
+Measured on a real six-layer board: 37 of its 159 rules read `enabled: true`
+while DRC ignored them, and the only sign was the word `(Disabled)` inside
+the descriptor. `pcb_get_design_rules` and `pcb_get_rule_properties` now
+report `drc_enabled` directly.
+
+## `erc_levels.json` and `erc_levels/`
+
+```json
+{
+  "extends": "company",
+  "levels": {
+    "Nets with multiple names": "no_report",
+    "Nets with no driving source": "error",
+    "Floating power object": "fatal"
+  },
+  "unlisted": "leave"
+}
+```
+
+Project Options > Error Reporting: the level every ERC violation type is
+reported at, one of `no_report`, `warning`, `error` or `fatal`. The matrix
+lives in the `.PrjPcb`, so every new project starts from Altium's defaults
+and a house policy survives only as long as somebody remembers to re-enter
+it. Three tools manage it from the profile:
+
+| | |
+|---|---|
+| `proj_erc_plan` | what the profile asks for. Pure Python, no Altium. |
+| `proj_erc_diff` | how the open project differs from it. |
+| `proj_erc_apply` | closes the gap. `dry_run=True` by default. |
+
+**Sets.** `erc_levels.json` at the profile root is the default set, reached
+by naming no set at all. Any number of named ones live in
+`erc_levels/<name>.json` and are chosen with `set_name`. A set may
+`extends` another, which is resolved before anything is compared, with the
+nearer file winning; `chain` in the reply names the files that were merged,
+base first, so a level nobody expected can be traced to the set that asked
+for it. That is what keeps a company base policy and a per-workspace
+narrowing of it two files rather than two copies.
+
+A level of `null` **drops** an entry an extended set made. "This workspace
+does not manage that type" is a different statement from "set it to
+no_report", and without it a company set could be overridden but never
+narrowed.
+
+**A type is named by Altium's own prose.** `DM_ViolationTypeDescription` is
+the only name there is, so a type is written exactly as
+`proj_get_erc_levels` lists it, matched ignoring case and surrounding
+space. Its kind number works too. A name this Altium does not have is
+reported under `unknown` rather than skipped: a policy quietly missing half
+its entries, because it was written against a version that spelled
+something differently, is worse than one that says so.
+
+**Unlisted types are left alone.** A set naming 12 types is a policy about
+those 12, not an assertion that the other 140 belong at Altium's defaults,
+so the rest come back under `unmanaged` untouched. `"unlisted": "<level>"`
+opts into pinning the whole matrix for an owner who wants exactly that, and
+`unlisted=` on any of the three tools overrides the file for one call.
+
+"The whole matrix" is the types Altium actually has, which is a narrower
+claim than it used to be. `DM_ViolationTypeDescription` answers by index
+with no end marker and, past the end of the enum, returns adjacent memory
+read as a string; the reader used to scan a fixed range and keep anything
+non-empty, which on AD 26.11 reported 295 types for a project that has 167.
+It now stops at the first empty description and reports `type_count` and
+`beyond_table` so the bound is visible. Without that, pinning the matrix
+would have written levels into the 128 indices past the end of the array
+`DM_SetErrorLevels` writes to.
+
+**Apply writes only what differs**, so a second apply writes nothing.
+Altium reads every write back, and a level that did not take arrives with a
+`problem` rather than being counted as set. The project is saved afterwards
+unless `save=False`, because an unsaved matrix is lost when the project
+closes.
+
+`eda-agent profile-validate` resolves every set in the profile, including
+the ones only reached through `extends`, so a set naming a base that is not
+there is a problem reported there rather than a policy that silently sets
+nothing.
+
+## Applying the whole profile at once
+
+```
+profile_diff_all    # how what is open differs from everything the profile declares
+profile_apply_all   # closes the gap. dry_run=True by default.
+```
+
+Each section runs its own manager: `pcb_rules_diff` over the board's design
+rules, `proj_erc_diff` over the project's ERC matrix. Two rules keep the
+combined answer honest.
+
+**A section the profile does not define is skipped, not failed.** A profile
+declaring only an ERC policy is a complete profile, and saying
+"design_rules.json is not a file" about it would be noise dressed as a
+problem.
+
+**One failing section does not hide the others.** The design rules need a
+board open and the ERC matrix needs a project, so a caller with only one of
+them still gets the other's answer. `applied` and `failed` name the
+sections either way, because a partial apply is a real outcome rather than
+an error.
+
+`in_step` reports only the sections that actually compared something.
+`document_settings` is reported as apply-only: nothing reads a schematic's
+units and grid back, so there is no comparison to make, and leaving it out
+entirely would make a profile that sets it look ignored. It is also the one
+section that reads the **active** profile rather than `profile_dir`, so
+pointing `profile_dir` elsewhere refuses it by name instead of writing
+another profile's units.
+
+## `phase_gates.json`
+
+List the NPI stages for the optional `design_phase_*` tools, for example
+`{"stages": ["evt", "dvt", "pvt"]}`. An empty list leaves those tools
+unadvertised. Use `eda-agent phases-show`, `phases-enable` and
+`phases-disable` to inspect or change this setting. `EDA_AGENT_PHASES`
+or `--phases` overrides it for one run. See [NPI phase gates](NPI_PHASE_GATES.md).
+
 ## `templates/<name>/` and `templates/documents/`
 
 Two kinds, kept apart because they are used differently.
@@ -254,7 +466,7 @@ existing destination is refused unless `overwrite=True`, and if the copy
 succeeds but Altium will not open it, the result still reports the file
 that was written rather than losing it.
 
-### Not covered: preferences and Draftsman
+### Not covered: Altium preferences and Draftsman
 
 **Altium preferences** cannot be templated from here. There is no scripting
 API for the Preferences dialog: `app_get_preferences` reads the active

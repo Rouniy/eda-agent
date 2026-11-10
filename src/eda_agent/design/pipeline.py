@@ -1816,7 +1816,7 @@ def _neat_engine_overrides(plan):  # type: ignore[no-untyped-def]
                           x_mils=s.x_mils, y_mils=s.y_mils, rotation=s.rotation)
             for r, s in layout.placed.items()
         }
-    except Exception:
+    except Exception:  # layout inference is optional; no placement result is available
         return None
 
 
@@ -3891,7 +3891,7 @@ def _ic_pin_offsets(
         return {}
     try:
         symbols = extractor.extract_many(refs)
-    except Exception:
+    except Exception:  # symbol extraction is optional for this estimate
         return {}
     out: dict[str, dict[str, tuple[int, int]]] = {}
     for part in plan.parts:

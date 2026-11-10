@@ -146,7 +146,109 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "or instrumentation amplifier as a triangle automatically: "
             "inputs left with + and -, output at the apex, supplies top and "
             "bottom, one triangle per part for a dual or quad. A rectangle "
-            "is right only for an IC with no conventional symbol."),
+            "is right only for an IC with no conventional symbol: yellow "
+            "body, pins left and right only, grouped by function with empty "
+            "rows between groups, every pin drawn (never stacked), and many "
+            "power pins on a power-only part (lib_create_symbol_in_parts)."),
+    },
+    {
+        "task": "Build a library part from its datasheet: symbol, footprint and 3D model",
+        "keywords": ("datasheet", "footprint", "3d", "freecad", "land",
+                     "pattern", "ipc", "package"),
+        "when": (("land", "pattern"), ("footprint", "datasheet"),
+                 ("symbol", "footprint", "model"), ("freecad",), ("ipc", "7351"),
+                 ("datasheet", "3d")),
+        "document_kind": "library",
+        "backends": ("altium",),
+        "use": ["lib_create_footprint_from_package", "footprint_check_package",
+                "lib_create_ic_symbol", "lib_create_symbol_in_parts",
+                "lib_create_passive_symbol", "lib_create_3d_model",
+                "obj_switch_view", "lib_link_footprint", "lib_check_pcblib",
+                "lib_get_pad_geometry", "datasheet_find_pages",
+                "datasheet_view_page", "footprint_compare_drawing", "app_save_all"],
+        "avoid": [
+            ("lib_add_footprint_pads", "pads one by one skip the readback "
+                                       "and the drawing check; give the "
+                                       "package to lib_create_footprint_from_package"),
+            ("lib_add_footprint_bodies", "an extruded box is not a model of "
+                                         "the part; build the STEP with "
+                                         "lib_create_3d_model"),
+        ],
+        "note": (
+            "One part at a time: read its pin table and package drawing, then "
+            "symbol, footprint, model, link, before the next datasheet. The "
+            "symbol and footprint tools bring their library forward and show "
+            "the new part themselves; do not focus a library by hand "
+            "(app_set_active_document) between parts: it shows the last part "
+            "until the next one is drawn. Read "
+            "a PDF one page or one range per call (a list of pages is refused). "
+            "LAND PATTERN: the manufacturer's recommended land pattern when the "
+            "datasheet gives one (a separate drawing from the package's own "
+            "pads in its bottom view, and the two differ); it is often far from the outline, so "
+            "datasheet_find_pages lists where before deciding it gives none; "
+            "give the PDF as source.path and the footprint tool refuses a "
+            "source page that is not one of them "
+            "(family custom with custom_pads, each pad's "
+            "number, x, y, width, height in mm); where it gives none, the IPC-7351 "
+            "calculation from the package drawing (the package family with "
+            "min/nom/max dimensions), never a terminal plus a guessed extension. "
+            "A BGA land size from the datasheet goes in vendor land_diameter; "
+            "ball lands are round (custom pads shape circle). Measure every gap "
+            "on the drawing: rows or columns can step by more than the pitch; "
+            "custom pads go with drawing_numbers, every number printed on the "
+            "land drawing as read, and drawing_dims placing each one (copied, "
+            "never worked out): pitches, gaps, spans, a land's length and width, "
+            "an edge to a centre line; pads that disagree are refused. Work out "
+            "what each number spans from its extension lines: a drawing can "
+            "print a different land length per side. A pin "
+            "with several lands (a FET's drain bars, a microphone's ring) "
+            "repeats its number in custom_pads, so the silkscreen and "
+            "courtyard clear every land; lands added afterwards do not; in "
+            "drawing_dims D#1, D#2 name the first and second land numbered D. "
+            "A land that is not a rectangle (a stepped corner land, a cut "
+            "corner) keeps its real shape: overlapping rectangles of one "
+            "number, or the pad plus outline [[x, y], ...]. READ DRAWINGS "
+            "ZOOMED: datasheet_view_page renders a region of a page at 400 "
+            "dpi; a whole page is too small for a 0.75 among 0.5s or a step "
+            "in a land. Before drawing custom pads, footprint_compare_drawing "
+            "sets the figure (source.page, region) beside the lands built, "
+            "mirrored for a bottom view: compare every land, gap, size and "
+            "shape, correct the package, and pass the compared id it returns; "
+            "the footprint tool refuses custom pads without it. Every "
+            "footprint is built by lib_create_footprint_from_package: pads "
+            "placed one by one into a new footprint are refused without that "
+            "id too, and when the comparison cannot run, stop and report it "
+            "rather than build the lands another way. Lands named like balls "
+            "(A1, H8) also need names_page and names_region, the ball map, "
+            "when the land figure prints no names. "
+            "PACKAGE AXES: two-row parts have their rows LEFT and RIGHT, so "
+            "lead_span_x is the tip-to-tip span across them (JEDEC E) and "
+            "body_y the body along them (D); lead_length is the terminal along "
+            "the span (L), lead_width across it (b); exposed pad ep_x/ep_y. "
+            "Check it with footprint_check_package, then compare the pads read "
+            "back (lib_get_pad_geometry) with the drawing and the top-view pin "
+            "figure, pad by pad. A bottom-view pinout is "
+            "mirrored for the top-view footprint; a BGA's letters and A1 corner "
+            "follow the ball map (options letters and a1); empty ball "
+            "positions go in depopulated. "
+            "SYMBOL: an IC or module is a rectangle in Altium's standard yellow "
+            "with pins on the LEFT and RIGHT only, grouped by function with an "
+            "empty row (null) between groups, not in pin-number order; every pin "
+            "drawn, never stacked; many power and ground pins (more than 8, or "
+            "over a quarter of the pins) go on a power-only "
+            "part (lib_create_symbol_in_parts). A discrete part (MOSFET, diode, "
+            "passive) gets its standard symbol from lib_create_passive_symbol, "
+            "drain and source up and down. "
+            "3D MODEL: the vendor's STEP when it can be downloaded, else "
+            "lib_create_3d_model from the drawing: body, leads, pin-1 mark, "
+            "any lens, window or shield, each solid with its role (the role "
+            "sets the colour), and terminals to put a pad or ball on every "
+            "land of the footprint. EDA_AGENT_STEP_WRITER=freecad builds "
+            "it with FreeCAD (CadQuery is the default); either writes the "
+            "colours. Then show it: obj_switch_view mode 2d with footprint_name "
+            "and fit true (the pads), then mode 3d with footprint_name, fit true "
+            "and views \"iso,bottom,front\" to turn it, ending on camera iso. "
+            "Finish with lib_check_pcblib across the library."),
     },
     {
         "task": "Read or change one part of a multi-part symbol",
@@ -876,6 +978,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  ("ready", "production")),
         "document_kind": "any",
         "backends": ("altium", "easyeda"),
+        "needs": "phase_gates",
         "use": ["design_phase_standing", "design_phase_gate", "design_phase_answer"],
         "avoid": [],
         "note": ("A product is in the first stage that does not clear. Each "
@@ -967,6 +1070,18 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "not the copper it poured."),
     },
     {
+        "task": "Read the copper one pour poured, holes included",
+        "keywords": ("poured", "holes", "pieces"),
+        "when": (("poured", "copper"), ("pour", "holes"), ("pour", "pieces"),
+                 ("poured", "pieces")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_get_pour_copper", "pcb_get_polygons"],
+        "avoid": [],
+        "note": ("Index and name from pcb_get_polygons; each poured piece with its "
+                 "outline and holes. A hatched pour's tracks are read by pcb_get_copper."),
+    },
+    {
         "task": "Rename or swap designators across a whole project",
         "keywords": ("swap", "designator", "designators"),
         "when": (("swap", "designator"), ("rename", "designator"),
@@ -974,7 +1089,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "schematic",
         "backends": ("altium",),
         "use": ["sch_rename_designators"],
-        "avoid": ["obj_batch_modify"],
+        "avoid": [("obj_modify", "Renaming parts one by one cannot swap names safely")],
         "note": ("Collisions are refused before any write; parts go through "
                  "temporary names, so a swap works. proj_annotate renumbers a "
                  "whole design."),
@@ -1000,7 +1115,9 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "library",
         "backends": ("altium",),
         "use": ["lib_set_3d_body"],
-        "avoid": ["obj_modify"],
+        "avoid": [("obj_modify",
+                   "does not place the body by its box centre or read the "
+                   "position back")],
         "note": ("center_x / center_y with body_index put the body's box centre "
                  "there, relative to the footprint origin, and read it back."),
     },
@@ -1308,6 +1425,18 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "dielectric or mask layer; pcb_add_layer takes above / below."),
     },
     {
+        "task": "The Layer Stack Manager shows old values after a scripted stack change",
+        "keywords": ("manager", "stale", "old", "values", "sync", "resync"),
+        "when": (("stack", "manager", "old"), ("stack", "manager", "stale"),
+                 ("stack", "manager", "sync"), ("layer", "stack", "manager")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_layer_stack_manager", "pcb_sync_stack_manager"],
+        "avoid": [("pcb_move_layer", "applies the manager's copy, old values included")],
+        "note": ("pcb_layer_stack_manager reports out_of_step; pcb_sync_stack_manager "
+                 "writes the board's values into the manager's copy through Altium."),
+    },
+    {
         "task": "Highlight nets in a colour on the board",
         "keywords": ("net", "color", "colour", "highlight", "override",
                      "schematic", "board"),
@@ -1390,6 +1519,20 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "A setting of Altium itself, for every document; minutes.",
     },
     {
+        "task": "Clean up or read a component value such as 4.7k, 2.2uF or 3.3V",
+        "keywords": ("value", "rkm", "resistance", "capacitance", "inductance",
+                     "voltage", "current", "cleanup", "format", "normalize"),
+        "when": (("value", "cleanup"), ("value", "format"), ("rkm",),
+                 ("normalize", "value")),
+        "document_kind": "any",
+        "backends": ("altium",),
+        "use": ["app_format_value"],
+        "avoid": [],
+        "note": ("Exact; touches no document. The written form is the user's "
+                 "choice on the Config tab of the bridge panel (None, RKM, SI, "
+                 "SI with unit), never the agent's."),
+    },
+    {
         "task": "Lock a schematic parameter or keep it from library updates",
         "keywords": ("parameter", "lock", "read", "only", "synchronize",
                      "update", "library", "database"),
@@ -1404,6 +1547,54 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "AllowDatabaseSynchronize. Ports (ePort): AutoSize, "
                  "OverrideDisplayString, HarnessColor; the last two read "
                  "back but are lost on save and reopen (AD 26.11)."),
+    },
+    {
+        "task": "Style a schematic note, text frame or drawn shape",
+        "keywords": ("border", "fill", "transparent", "color", "font",
+                     "wrap", "margin", "style", "dashed"),
+        "when": (("note", "color"), ("note", "border"), ("frame", "border"),
+                 ("frame", "color"), ("frame", "fill"), ("word", "wrap"),
+                 ("transparent",), ("line", "style"), ("label", "font"),
+                 ("sheet", "symbol", "font")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify", "obj_get_font_id"],
+        "avoid": [],
+        "note": ("obj_modify, each written, saved and reopened on AD 25.8.1. "
+                 "eNote and eTextFrame: FontId, Color (border), AreaColor "
+                 "(fill), TextColor, WordWrap, ClipToRect, TextMargin (mils), "
+                 "Alignment; eTextFrame also ShowBorder, LineWidth, IsSolid "
+                 "(fill on / off); eNote Author and Collapsed (a note always "
+                 "draws its border and drops LineWidth / IsSolid on save). "
+                 "Shapes: Color, AreaColor, LineWidth, IsSolid; Transparent "
+                 "on eRectangle and eEllipse only, LineStyle on eLine and "
+                 "eRectangle only (elsewhere Altium drops them on save, so "
+                 "they are refused). Label fonts: SheetName.FontId, "
+                 "SheetFileName.FontId on a sheet symbol, Designator.FontId, "
+                 "Comment.FontId on a part. FontId is an id from "
+                 "obj_get_font_id; 0 or text is refused."),
+    },
+    {
+        "task": "Show or hide a power port's or port's net name, set an off-sheet connector's side or a port's height",
+        "keywords": ("power", "port", "off-sheet", "offsheet", "cross-sheet",
+                     "connector", "net", "name", "show", "hide", "height",
+                     "side"),
+        "when": (("net", "name", "power"), ("show", "net", "name"),
+                 ("off-sheet", "side"), ("cross-sheet", "side"),
+                 ("port", "height")),
+        "document_kind": "schematic",
+        "backends": ("altium",),
+        "use": ["obj_query", "obj_modify"],
+        "avoid": [],
+        "note": ("obj_modify, each written, saved and reopened on AD 25.8.1. "
+                 "ShowNetName on ePowerObject, eCrossSheetConnector and "
+                 "ePort; CrossSheetStyle on eCrossSheetConnector (0 left, "
+                 "1 right; sch_place_cross_sheet_connector side sets it); "
+                 "Height on ePort (mils). Also Text, FontId, Color, "
+                 "Orientation on net labels, power ports and connectors; "
+                 "Style on power ports; Name, AreaColor, TextColor, IOType, "
+                 "Alignment, Width on ports. A port's Style reads back but "
+                 "Altium resets it on reopen."),
     },
     {
         "task": "Show a pour's removed copper or let Altium name pours",
@@ -1816,6 +2007,34 @@ def derived_recipes(task: str, docs: dict[str, str],
     return [r for _s, _n, r in out[:limit]]
 
 
+#: Recipes whose tools are only advertised when a setting switches them
+#: on, keyed by the ``needs`` they declare. The guide exists because
+#: capabilities were reported absent when they were present; sending a
+#: caller to a tool this server is not advertising is the same failure
+#: with more confidence behind it, so an off feature's recipe is withheld
+#: rather than offered with a caveat.
+def _phase_gates_on() -> bool:
+    from ..profile import get_phase_stages
+    return bool(get_phase_stages())
+
+
+_FEATURE_IS_ON = {"phase_gates": _phase_gates_on}
+
+
+def switched_on(entry) -> bool:
+    """Whether a recipe's feature is enabled, for one that declares a ``needs``.
+
+    An unrecognised ``needs`` counts as on: a recipe that named a feature
+    nobody wired up would otherwise vanish silently, which is the harder
+    failure to notice of the two.
+    """
+    needs = entry.get("needs")
+    if not needs:
+        return True
+    predicate = _FEATURE_IS_ON.get(needs)
+    return True if predicate is None else bool(predicate())
+
+
 def guidance_for(task: str = "", document_kind: str = "",
                  backend: str = "",
                  docs: Optional[dict[str, str]] = None) -> dict[str, Any]:
@@ -1833,7 +2052,7 @@ def guidance_for(task: str = "", document_kind: str = "",
 
     ranked = sorted(
         ((_score(r, task, document_kind), i, r)
-         for i, r in enumerate(_RECIPES) if on_backend(r)),
+         for i, r in enumerate(_RECIPES) if on_backend(r) and switched_on(r)),
         key=lambda t: (-t[0], t[1]))
     recipes = []
     for score, _i, r in ranked:
@@ -1865,6 +2084,12 @@ def guidance_for(task: str = "", document_kind: str = "",
     # just no longer hide everything else. Tools already named by a
     # curated recipe are not repeated.
     derived: list[dict[str, Any]] = []
+    if task and docs and backend:
+        # Another backend's own tools answer nothing here: with every
+        # backend registered, kicad_lib_copy outranked lib_copy_component
+        # for an Altium caller.
+        others = tuple(f"{b}_" for b in ("kicad", "easyeda") if b != backend)
+        docs = {n: d for n, d in docs.items() if not n.startswith(others)}
     if task and docs:
         named = {t for r in recipes for t in r.get("use", [])}
         derived = [d for d in derived_recipes(task, docs)
@@ -1887,6 +2112,27 @@ def guidance_for(task: str = "", document_kind: str = "",
                   "tool_catalog before concluding a tool does not exist."
                   if not recipes and not dead_ends else "")),
     }
+
+
+def with_reach(result: dict[str, Any], reach_of) -> dict[str, Any]:
+    """Add ``reach``: how to call each named tool that is a member of a
+    family tool or a single-item tool, neither of which is advertised."""
+    if not result.get("ok"):
+        return result
+    named: set[str] = set()
+    for group in ("recipes", "derived"):
+        for entry in result.get(group) or []:
+            for key in ("use", "avoid"):
+                for item in entry.get(key) or []:
+                    named.add(item.get("tool", "") if isinstance(item, dict)
+                              else str(item))
+    for dead in result.get("not_possible") or []:
+        for item in dead.get("do_instead") or []:
+            named.add(str(item))
+    reach = {n: reach_of(n) for n in sorted(named) if n and reach_of(n)}
+    if reach:
+        result = dict(result, reach=reach)
+    return result
 
 
 def register_guidance_tools(mcp):
@@ -1928,10 +2174,15 @@ def register_guidance_tools(mcp):
         # The docstrings are read from the live registry rather than a
         # copy, so a tool renamed or re-described is reflected the moment
         # it is, with nothing to update here.
+        from .folds import reach_of
+
         docs: dict[str, str] = {}
         try:
-            for spec in await mcp.list_tools():
+            specs = list(await mcp.list_tools())
+            specs += list((getattr(mcp, "hidden", {}) or {}).values())
+            for spec in specs:
                 docs[spec.name] = getattr(spec, "description", "") or ""
         except Exception:            # noqa: BLE001
             docs = {}
-        return guidance_for(task, document_kind, backend, docs)
+        result = guidance_for(task, document_kind, backend, docs)
+        return with_reach(result, reach_of)

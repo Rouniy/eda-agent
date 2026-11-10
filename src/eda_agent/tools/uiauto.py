@@ -198,9 +198,10 @@ def register_uiauto_tools(mcp):
         menu_may_steal_focus: bool = False,
         first_step_timeout: float = 30.0,
     ) -> dict[str, Any]:
-        """Drive Tools > Update From Libraries, ECO included.
+        """Drive Tools > Update From Libraries, ECO included, from the GUI.
 
-        THIS PRESSES BUTTONS IN THE GUI: the wizard has no API. Each
+        proj_update_from_libraries does the same through the bridge, with
+        no menu or focus taken; use this for a wizard already open. Each
         dialog is read and answered by the role of its buttons; it STOPS
         on an error, an unexpected question or unknown buttons. The end
         presses EXECUTE CHANGES on the ECO, which is not undoable here:
@@ -235,13 +236,11 @@ def register_uiauto_tools(mcp):
                 f"launch must be already_open or menu, not {launch!r}")}
         if launch == "menu" and not menu_may_steal_focus:
             return {"ok": False, "reason": (
-                "launch='menu' has to drive Altium's menu bar with real "
-                "keyboard and mouse input, because nothing scriptable "
-                "opens this wizard: the bridge's menu call reports "
-                "success and invokes nothing, and Altium's menus expose "
-                "no working accessible action. That means bringing "
-                "Altium to the front and briefly moving the pointer, so "
-                "it is not done unless asked. Pass "
+                "launch='menu' drives Altium's menu bar with real "
+                "keyboard and mouse input, which brings Altium to the "
+                "front and briefly moves the pointer, so it is not done "
+                "unless asked. proj_update_from_libraries runs the same "
+                "update through the bridge without either. Pass "
                 "menu_may_steal_focus=True, or open Tools > "
                 + _MENUS[target].split("|", 1)[1] +
                 " yourself and use launch='already_open'.")}
@@ -1303,6 +1302,57 @@ def register_uiauto_tools(mcp):
         return {"ok": True, "path": path, "hwnd": target, **pixels,
                 "created_folder": created_folder,
                 "note": "read the file to look at it"}
+
+    @mcp.tool()
+    async def app_recover_script(force: bool = False) -> dict[str, Any]:
+        """Clear a crashed bridge script and restart the loop.
+
+        A call that crashes the script does this by itself. This is for a
+        script found halted later: the Script IDE holding a line, or
+        "Another script executing now". It screenshots and answers OK on a
+        script error box, screenshots the halted line, stops the script
+        (Run > Stop, Ctrl+F3) and restarts the loop, with other sessions'
+        calls waiting through it. Screenshots and a record go to
+        logs/crashes in the workspace.
+
+        Args:
+            force: restart even when Altium's title does not name the
+                script project, the usual sign of a halt.
+
+        Returns:
+            ``halted`` (whether a restart ran), ``screenshots``,
+            ``dialog``, ``title``, ``restart`` {restarted, output} and
+            ``record``.
+        """
+        from ..bridge import get_bridge, script_crash
+
+        pid, problem = _altium_pid()
+        if problem:
+            return problem
+
+        bridge = get_bridge()
+        workspace = bridge.config.workspace_dir
+        dead = False
+        if not force:
+            dead = (await asyncio.to_thread(bridge.ping_with_version) is None
+                    and not script_crash.another_call_running(workspace))
+
+        def recover():
+            report = dialog_report.report(pid)
+            box = script_crash.script_error_dialog(report)
+            return script_crash.recover(
+                workspace, pid, "app_recover_script",
+                "manual00", box, lambda seconds: False, force=force or dead)
+
+        outcome = await asyncio.to_thread(recover)
+        if dead:
+            outcome["no_ping"] = True
+        if not outcome.get("halted"):
+            outcome["reason"] = (
+                "no halt was seen: Altium's title does not name the script "
+                "project and the loop answers a ping, or another session's "
+                "call is running. Pass force=True to restart anyway.")
+        return outcome
 
     @mcp.tool()
     async def app_canvas(x: int, y: int, to_x: int = 0, to_y: int = 0,

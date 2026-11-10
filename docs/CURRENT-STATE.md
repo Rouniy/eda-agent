@@ -1,5 +1,136 @@
 # Current integration state / agent handoff
 
+## Complete MOREmbedded source backport candidate, 2026-11-10
+
+Branch `backport-morembedded-final-eval` merges `MOREmbedded/main` at
+`3af39ffd` into Rouniy's integration line based on `origin/main`
+`b218e101`. It includes the previously staged foundation, PCB, profile,
+design-mode, NPI-phase and Workspace work. Conflicting native handlers,
+tool interfaces, translations and release claims were reconciled in the
+merge worktree. The primary `D:/ai/eda-agent` worktree and its local edits
+were not changed.
+
+The complete local Python suite finished with 11,660 passed, 253 skipped,
+one expected failure and zero failures (2026-11-10). Pascal lint/build
+scanned 12 files with zero errors or warnings and produced script
+`2026.11.10.204`. Python compilation, source integrity, EasyEDA extension
+build, wheel and sdist build, and verification of an installed wheel in a
+clean environment passed. The 253 skips include checks requiring external
+tools or environments absent here. GitHub CI and native acceptance are
+separate gates; do not infer their results from the local suite.
+
+The shared operating runbook named in `AGENTS.md` is absent from the
+sibling checkout and its linked location is unavailable. No Altium runtime
+was replaced or exercised. Native write, save/reopen, export comparison,
+queue and lifecycle acceptance for this candidate remain outstanding.
+
+## Session queue prerequisite, 2026-11-10 (offline checks complete)
+
+The `backport-morembedded-workspace` branch adds the donor per-tool-call
+session queue needed by the dashboard workbench. Rouniy's bridge timeout
+extension and restricted source flags were preserved. 86 related Python tests
+pass, the `.198` Pascal bundle builds with zero lint errors/warnings, and six
+version checks pass. Native queue/lifecycle acceptance is outstanding; the
+loaded runtime was not changed.
+
+## Optional NPI stages, 2026-11-10 (offline checks complete)
+
+The separate `backport-morembedded-phases` branch extends design modes with
+profile- and CLI-controlled `design_phase_*` tools, hidden by default. Rouniy's
+existing `design_npi_*` programme journal remains separate. 744 related tests
+pass; direct `phases-show`, `--phases evt phases-show` and `mode-list` commands
+also run from this worktree. The Pascal runtime remains `.197`; no runtime was
+deployed. Full-suite and native acceptance remain pending.
+
+## Design-mode worktree, 2026-11-10 (offline checks complete)
+
+The separate `backport-morembedded-modes` branch extends profile safety with
+design-mode presets, profile-defined modes, CLI `mode-*` commands and design
+session integration. The donor commit was reconciled with Rouniy's CLI without
+importing its unrelated phase commands. 138 focused compatibility tests pass;
+`eda-agent mode-list` and CLI help also run from this worktree. The Pascal
+runtime remains `.197`; no runtime was deployed. A full suite and native
+acceptance remain pending.
+
+## Profile safety follow-up, 2026-11-09 (offline checks in progress)
+
+The separate `backport-morembedded-profilefix` branch adds the donor guard
+that refuses a profile-wide ERC write without an explicit `.PrjPcb` path,
+distinguishes dry-run `would_apply` from completed writes, and reports
+`modified:false` when `obj_modify` made no change. The `.197` Pascal bundle
+builds with zero lint errors/warnings; 108 impacted tests pass after the
+full-suite follow-up fixes. The donor dashboard
+assertion was deferred because Rouniy does not yet carry that workspace view.
+Standalone `proj_erc_apply` now also requires an absolute `.PrjPcb` path
+matching the project returned by the diff read. The remaining selected-project
+capability and approval gate must be reviewed before native acceptance or
+deployment. No runtime was deployed.
+
+## Profile rules/ERC worktree, 2026-11-09 (offline checks complete)
+
+The separate `backport-morembedded-integration` branch extends the PCB stage
+with profile-driven board rule planning/application, project ERC matrix sets,
+and whole-profile application. Nine impacted/version test modules pass (196
+tests). A full Python run found 10,480 passes, 205 skips, one expected
+failure, and three failures: a malformed `LmCopperSection` block from conflict
+resolution plus two stale rounded tool-count claims. All three were corrected;
+the 41 implicated structure/count tests pass. The `.196` Pascal bundle is
+the candidate for this stage.
+The donor NPI stage-enablement logic is deferred for a separate reconciliation
+with Rouniy's existing phase gates. Native acceptance and selected-project
+write-gate review remain outstanding; no runtime was deployed.
+
+## PCB text and pour worktree, 2026-11-09 (offline checks complete)
+
+The separate `backport-morembedded-pcb` branch extends the bulk/board-read
+stage with board-text font, style, kind and justification handling, improved
+text-frame sizing, and readback of a polygon's poured copper including holes.
+Five impacted/version test modules pass (193 tests), and the `.194` Pascal
+bundle builds with zero lint errors or warnings. Native acceptance on
+disposable Altium documents remains outstanding. No runtime was deployed.
+
+## Bulk and board-read worktree, 2026-11-09 (offline checks complete)
+
+The separate `backport-morembedded-bulk` branch extends the foundation with
+typed `tool_invoke` arguments and `items` forwarding, narrowed layout-model
+copper reads, Mechanical17+ layer filtering, and a combined board-view read/write
+tool. The five focused/version test modules pass (52 tests), and the `.193`
+Pascal bundle builds with zero lint errors and warnings. The larger donor
+rule-limit/save-report commit has substantial conflicts with Rouniy handlers
+and remains pending; its trial cherry-pick was aborted. Native acceptance on
+disposable Altium documents remains outstanding. No runtime was deployed.
+
+## Foundation worktree, 2026-11-09 (offline checks complete; native acceptance pending)
+
+The separate `backport-morembedded-foundation` branch contains donor SDK
+reach, folded tool families, script-crash recovery, and the first bulk-tool
+framework through `c33bb096`. Legacy handlers now use the shared edit helpers
+for bulk transaction boundaries, and named SchLib component walks are scoped to
+the requested symbol and part. Synchronous offline tools are excluded from the
+Altium IPC bulk claim. The `.192` Pascal bundle builds with zero lint errors or
+warnings. The full Python suite had 10,264 passes, 205 skips, one expected
+failure, and one package-version mismatch; after aligning `__version__` with
+`pyproject.toml` at 0.7.1, all six version tests passed. Native acceptance on
+disposable documents remains outstanding; no runtime was deployed.
+
+
+On 2026-11-09, the `MOREmbedded/main` tip was fetched at `3af39ffd`. It has
+251 commits beyond the current Rouniy `main` and about 496 changed files.
+The isolated `backport-morembedded-20261109` worktree carries the first
+independent backport batch, through `60004e1b`. Its focused checks passed
+123 tests, skipped 3, and the 12-unit Pascal bundle lint/build reported zero
+errors and warnings. The full Python suite reported 10,175 passed, 174
+skipped, one expected failure, and one stale release-document version check;
+after the document was corrected, all six version-consistency tests passed.
+A trial whole-tree
+merge was aborted after 102 Pascal lint errors; its result was not kept.
+Two sampled commits depend on donor-only tools (`fd72413c`, `4248ce89`), and
+the design-mode commit `3fc626e7` depends on donor profile, phase-gate and
+CLI foundations. They remain in the queue. The linked shared-project runbook
+is absent from the sibling checkouts and its GitHub URL returned 404; no
+Altium runtime or installed script was changed for this backport.
+
+
 The main Altium script is now `.189`, loaded from the one source project
 `D:\AI\eda-agent\scripts\altium\Altium_API.PrjScr`. A direct HTTP MCP
 `app_ping` on AD26.11.1.5 returned `version_match=true`,

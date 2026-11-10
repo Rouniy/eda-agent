@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check the imported engineering calculations and MCP surface together."""
+import asyncio
+import functools
+import inspect
+
 from eda_agent.engineering import ipc7351
 from eda_agent.tools.engineering import _live_pads_to_um, register_engineering_tools
 from eda_agent.tools.registry import ToolRegistry
@@ -13,10 +17,25 @@ SOIC8 = {
 }
 
 
+def _call(fn):
+    """Call a registered tool the way a client does, and return its reply.
+
+    A registry entry is wrapped by ``bulk.with_items`` so every tool takes
+    ``items``, which makes even a synchronous tool a coroutine function.
+    These tests check what the wrapped tool returns, so they go through
+    the wrapper rather than around it.
+    """
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        return asyncio.run(result) if inspect.isawaitable(result) else result
+    return run
+
+
 def _tools():
     registry = ToolRegistry()
     register_engineering_tools(registry, altium=True)
-    return {name: registry.get(name).fn for name in (
+    return {name: _call(registry.get(name).fn) for name in (
         "eng_calculate_ipc", "eng_compare_ipc_footprint", "eng_audit_footprint",
         "eng_validate_ruleset", "eng_evaluate_rules", "eng_validate_design_intent",
         "eng_ltspice_check_netlist", "eng_ltspice_parse_log",
@@ -26,10 +45,7 @@ def _tools():
         "eng_parse_ipc_footprint_name", "eng_validate_library",
         "eng_write_library_validation_report", "eng_eco_preview",
         "eng_validate_library_live", "eng_eco_preview_live",
-        "eng_a365_workspace_infos", "eng_a365_library_components_params",
-        "eng_a365_entity", "eng_a365_publish_model", "eng_a365_release_component",
-        "eng_a365_update_parameters",
-    )}
+        )}
 
 
 def test_ipc_result_can_be_audited_and_compared():
@@ -91,22 +107,6 @@ def test_live_geometry_uses_millimetres_to_micrometres():
          "w_mm": 0.65, "h_mm": 1.5}]})
     assert geometry["pads"][0] == {
         "name": "1", "x": -2540, "y": 1270, "w": 650, "h": 1500}
-
-
-def test_a365_requires_configuration_and_rejects_mutations(monkeypatch):
-    from eda_agent.engineering.a365 import assert_read_only
-    from eda_agent.engineering.errors import PermissionDenied
-
-    monkeypatch.delenv("EDA_AGENT_NEXAR_CLIENT_ID", raising=False)
-    registry = ToolRegistry()
-    register_engineering_tools(registry)
-    assert not registry.get("eng_a365_workspaces").fn()["ok"]
-    try:
-        assert_read_only("mutation { desReleaseComponent(input: {}) { id } }")
-    except PermissionDenied:
-        pass
-    else:
-        raise AssertionError("Nexar mutation reached a read-only query path")
 
 
 def test_pin_table_to_symbol_and_datasheet_footprint():

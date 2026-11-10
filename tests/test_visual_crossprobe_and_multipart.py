@@ -70,45 +70,43 @@ async def test_visual_cross_probe_captures_result_without_live_altium(monkeypatc
 
 @pytest.mark.asyncio
 async def test_multipart_symbol_assigns_parts_and_shared_pins(monkeypatch):
+    """Shared pins sit on owner part 0, so Altium shows them on every part.
+
+    The shape is upstream's: an object of ``left_pins``/``right_pins``
+    placed under each part's own pins, rather than this fork's earlier
+    flat list of pins carrying their own x and y.
+    """
     from eda_agent.tools import library
 
     bridge = _Bridge()
-    monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    monkeypatch.setattr(library, 'get_bridge', lambda: bridge)
     mcp = _Mcp()
     library.register_library_tools(mcp)
 
-    result = await mcp.tools["lib_create_multipart_symbol"](
-        "DUAL_AMP",
+    result = await mcp.tools['lib_create_symbol_in_parts'](
+        'DUAL_AMP',
         parts=[
-            {
-                "name": "A",
-                "left_pins": [{"designator": "2", "name": "INA"}],
-                "right_pins": [{"designator": "1", "name": "OUTA"}],
-            },
-            {
-                "name": "B",
-                "left_pins": [{"designator": "6", "name": "INB"}],
-                "right_pins": [{"designator": "7", "name": "OUTB"}],
-            },
+            {'left_pins': [{'designator': '2', 'name': 'INA'}],
+             'right_pins': [{'designator': '1', 'name': 'OUTA'}]},
+            {'left_pins': [{'designator': '6', 'name': 'INB'}],
+             'right_pins': [{'designator': '7', 'name': 'OUTB'}]},
         ],
-        shared_pins=[
-            {"designator": "8", "name": "V+", "x": 0, "y": 400}
-        ],
+        shared_pins={'left_pins': [{'designator': '8', 'name': 'V+',
+                                    'electrical_type': 'power'}]},
     )
 
     assert result["part_count"] == 2
     assert result["ok"] is True
-    assert bridge.calls[0][1]["part_count"] == "2"
+    created = next(params for command, params in bridge.calls
+                   if command == "library.create_symbol")
+    assert created["part_count"] == "2"
     pins = next(params["pins"] for command, params in bridge.calls
                 if command == "library.add_pins")
     assert "owner_part_id=1" in pins
     assert "owner_part_id=2" in pins
     assert "owner_part_id=0" in pins
-    assert [c for c in bridge.calls if c[0] == "library.set_active_part"] == [
-        ("library.set_active_part", {"part_id": 1}),
-        ("library.set_active_part", {"part_id": 2}),
-        ("library.set_active_part", {"part_id": 1}),
-    ]
+    assert result["shown_part"] == 2
+    assert ("generic.run_process", {"process": "SCH:NextComponentPart", "params": ""}) in bridge.calls
     assert max(i for i, (command, _) in enumerate(bridge.calls)
                if command == "library.add_symbol_rectangle") < next(
                    i for i, (command, _) in enumerate(bridge.calls)
@@ -156,12 +154,27 @@ async def test_multipart_validates_before_mutating(monkeypatch):
     from eda_agent.tools import library
 
     bridge = _Bridge()
-    monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    monkeypatch.setattr(library, 'get_bridge', lambda: bridge)
     mcp = _Mcp()
     library.register_library_tools(mcp)
+    make = mcp.tools['lib_create_symbol_in_parts']
+    two = [{'left_pins': [{'designator': '1', 'name': 'A'}]},
+           {'left_pins': [{'designator': '2', 'name': 'B'}]}]
 
-    result = await mcp.tools["lib_create_multipart_symbol"]("BAD", parts=[{}])
-    assert result == {"ok": False, "reason": "part 1 has no pins"}
+    # The flat list this fork once took is refused by shape, so a caller
+    # written against it is told what to send rather than half-served.
+    old = await make('BAD', parts=two, shared_pins=[{'designator': '8', 'name': 'V+'}])
+    assert old == {'ok': False,
+                   'reason': 'shared_pins is an object with left_pins and right_pins'}
+    clash = await make('BAD', parts=two,
+                       shared_pins={'left_pins': [{'designator': '2', 'name': 'V+'}]})
+    assert clash == {'ok': False, 'reason': 'part 2: pin 2 is also shared'}
+    blank = await make('BAD', parts=two, shared_pins={'left_pins': [{'name': 'GND'}]})
+    assert not blank['ok'] and 'non-empty' in blank['reason']
+    twice = await make('BAD', parts=two, shared_pins={
+        'left_pins': [{'designator': '8', 'name': 'V+'}],
+        'right_pins': [{'designator': '8', 'name': 'V-'}]})
+    assert twice == {'ok': False, 'reason': 'shared pin given twice: 8'}
     assert bridge.calls == []
 
 

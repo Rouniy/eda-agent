@@ -113,6 +113,16 @@ def install_bridge_fake(monkeypatch, tmp_path, fake):
     import eda_agent.bridge as bridge_pkg
     monkeypatch.setattr(bridge_pkg, "get_bridge", lambda: fake)
 
+    # A running KiCad is as live as Altium: a no-argument sweep would
+    # save, revert or renumber whatever project is open in it. Every
+    # KiCad request goes through KiCadIpc.call, so the wall is there.
+    from eda_agent.bridge import kicad_ipc
+
+    def kicad_wall(*_args, **_kwargs):
+        raise kicad_ipc.KiCadNotReachableError("KiCad is walled off in this test")
+
+    monkeypatch.setattr(kicad_ipc.KiCadIpc, "call", kicad_wall)
+
     import eda_agent.tools as tools_pkg
     for mod_info in pkgutil.iter_modules(tools_pkg.__path__):
         mod = importlib.import_module(f"eda_agent.tools.{mod_info.name}")
@@ -214,6 +224,20 @@ def pytest_collection_modifyitems(config, items):
             needs = True
         if needs:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_bulk_hint_counts():
+    """Start each test with no calls counted toward the repeat nudge.
+
+    Every tool that takes ``items`` counts its single calls process-wide
+    and adds ``_hint_bulk`` to a reply once one repeats; a test calling a
+    tool the test before it called would otherwise see a reply it did not
+    cause.
+    """
+    from eda_agent.tools.bulk_hints import BulkHintTracker
+    BulkHintTracker.reset()
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -441,6 +465,23 @@ def _no_bridge_left_pinging():
         f"fake instead of letting it resolve the global bridge")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_profile_preferences(request, monkeypatch):
+    """Hide the profile layer of the preferences from every test that does
+    not ask for it with ``@pytest.mark.profile_preferences``.
+
+    A profile's preferences.json can switch edits to read-only, change the
+    value format and pick the default design mode. A developer's machine
+    usually has a central profile in effect, and an unmarked test (a safety
+    refusal, a value-format reply, a design run that names no mode) would
+    then see that profile's choices instead of the panel file it set up.
+    """
+    if request.node.get_closest_marker("profile_preferences"):
+        return
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, "_profile_layer", lambda: {})
+
+
 def pytest_configure(config):
     # FAIL FAST when pytest-asyncio is absent.
     #
@@ -472,6 +513,12 @@ def pytest_configure(config):
         "network: test genuinely needs the internet; exempt from the "
         "session-wide block. Use sparingly, it makes CI depend on a "
         "third party being reachable.")
+    config.addinivalue_line(
+        "markers",
+        "profile_preferences: test reads the active profile's "
+        "preferences.json (value format, safety switches, default_mode). "
+        "Every other test has that layer hidden, so a profile on the "
+        "developer's machine cannot change what it sees.")
     config.addinivalue_line(
         "markers",
         "kicad_libs: test reads the KiCad symbol/footprint libraries "

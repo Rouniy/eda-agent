@@ -1,5 +1,119 @@
 # Fork integration TODO
 
+## Complete source backport candidate, 2026-11-10
+
+- [x] Merge the full `MOREmbedded/main` line at `3af39ffd` into the
+  Rouniy integration branch, preserving the existing restricted runtime
+  and reconciling conflicting handlers and interfaces.
+- [x] Run the complete local Python suite: 11,660 passed, 253 skipped,
+  one expected failure, zero failures. Build Pascal `2026.11.10.204`
+  with zero lint errors/warnings, the EasyEDA extension, wheel and sdist;
+  verify the installed wheel in a clean environment.
+- [ ] Confirm the backport branch in GitHub CI, including Python 3.11/3.12
+  and Free Pascal checks unavailable on this machine.
+- [ ] Recover the shared operating runbook required by `AGENTS.md`, then
+  execute the native acceptance matrix on disposable Altium documents
+  before any runtime deployment. Compare exports from the same snapshot
+  and record exact runtime/source hashes and target identity.
+
+## Workspace prerequisites, 2026-11-10
+
+- [x] Port the per-tool-call Altium session queue, preserving the existing
+  bridge timeout extension and source access flags. Related tests: 86 passed;
+  `.198` Pascal build: zero lint errors/warnings.
+- [ ] Qualify queued calls, dashboard interactions and stop/restart natively
+  on disposable documents before deployment.
+- [ ] Port group arc/pad placement and OCR row reads before enabling the
+  donor workbench and Workspace view.
+
+## Optional NPI stages, 2026-11-10
+
+- [x] Port explicit phase selection from the donor while retaining Rouniy's
+  existing NPI journal. Related tests: 744 passed; direct read-only CLI
+  commands checked.
+- [ ] Run the full suite after the next dependent block and review native
+  behaviour on disposable documents before deployment.
+
+## Design modes, 2026-11-10
+
+- [x] Port design-mode presets and profile modes, preserve the Rouniy CLI,
+  and verify 138 related tests plus direct `mode-list`/help execution.
+- [ ] Reconcile the donor's separate NPI stage settings and phase commands
+  with Rouniy's existing phase-gate implementation.
+- [ ] Run a full Python suite after the next dependency block; native
+  acceptance remains required before deployment.
+
+## Profile safety follow-up, 2026-11-09
+
+- [x] Require an explicit `.PrjPcb` for profile-wide ERC writes and separate
+  `would_apply` from actual writes in dry-run results.
+- [x] Require standalone `proj_erc_apply` to name the absolute `.PrjPcb`
+  returned by the diff read before any write.
+- [ ] Reconcile profile writes with the selected-project capability and
+  approval gate before native acceptance or deployment.
+- [ ] Add the dashboard assertion when the donor Workspace view is ported.
+
+## Profile rules/ERC follow-up, 2026-11-09
+
+- [x] Port profile-driven board rules, ERC sets, and whole-profile apply.
+  Impacted/version tests: 196 passed; `.195` Pascal build: zero errors/warnings.
+- [ ] Reconcile donor NPI stage settings with Rouniy's existing phase gates.
+- [ ] Review selected-project write gates and run native acceptance on
+  disposable documents before deployment of profile writes.
+
+## PCB text and pour follow-up, 2026-11-09
+
+- [x] Port board-text properties and frame sizing, plus poured-copper readback.
+  Impacted/version tests: 193 passed; `.194` Pascal build: zero errors/warnings.
+- [ ] Qualify the board-text writes and polygon readback natively on disposable
+  documents before deploying the new script bundle.
+
+## Bulk and board-read follow-up, 2026-11-09
+
+- [x] Port typed `tool_invoke` arguments, `items` forwarding, narrow copper
+  reads, Mechanical17+ filtering, and combined board-view handling. Focused
+  tests: 52 passed; `.193` Pascal build: zero errors/warnings.
+- [ ] Reconcile donor rule-limit, paged-via and save-report changes with
+  Rouniy handlers (`99b79120`); the direct cherry-pick conflicts in nine files.
+- [ ] Run native acceptance on disposable documents before deploying the
+  new script bundle, especially bulk undo and board-view writes.
+
+## Foundation worktree follow-up, 2026-11-09
+
+- [x] Reconcile bulk transaction boundaries in existing Rouniy Pascal
+  handlers before advertising one-undo-step `items` calls for them.
+- [x] Scope the named SchLib component walk to the selected symbol,
+  including hidden pins and the requested part.
+- [x] Keep synchronous offline engineering/profile tools outside Altium IPC
+  bulk claims and update the surface assertion accordingly.
+- [x] Rebuild `.192` script bundle and run impacted and full Python tests
+  after these changes. The full suite had 10,264 passes, 205 skips, one
+  expected failure, and one version mismatch; all six version checks passed
+  after the fix. Native acceptance remains separate.
+
+
+## MOREmbedded backport, 2026-11-09
+
+- [x] Fetch `MOREmbedded/main` at `3af39ffd` and isolate integration in
+  `backport-morembedded-20261109`; keep the dirty `main` checkout untouched.
+- [x] Port the first independent fixes: multi-monitor pointer gestures,
+  foreground activation, comtypes warning, polygon naming, mechanical-layer
+  hints, SDK generator exclusions, shared Part Zero pins, netlist export,
+  board-read error reporting, and hole-to-hole DRC. Pascal bundle lint passes.
+- [x] Review the full Python run: 10,175 passed, 174 skipped, one expected
+  failure, and one stale release-document version assertion. The document
+  now names `.191`; all six version-consistency tests pass. No second full
+  run was needed for this documentation-only repair.
+- [ ] Reconcile the remaining donor changes by dependency: bridge and tool
+  foundations; profile/rules/ERC; design modes; dashboard/workspace;
+  optional Rust compute; latest native-verification fixes. A donor commit
+  is only done when its behavior and tests are present, not merely ancestral.
+- [ ] Preserve the selected-project access gates, Rouniy update and security
+  links, and the existing locally edited source files when preparing final
+  integration into `main`.
+- [ ] Run native acceptance on disposable Altium documents before deployment.
+
+
 ## Latest integration and verification, 2026-10-29
 
 - [x] Merge upstream `e5fb6b2` and MOREmbedded `dbaef87` as real second

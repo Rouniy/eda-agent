@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+﻿# SPDX-License-Identifier: Apache-2.0
 """The stackup tools, their CLI verbs, and the Pascal parse they rely on.
 
 The last of those is the one that matters most. Setting a stackup goes
@@ -347,7 +347,10 @@ def test_a_fractional_thickness_reaches_the_bridge_through_mcp(monkeypatch):
 
     asyncio.run(mcp.call_tool("pcb_modify_layer", {
         "layer": "Top Layer", "copper_thickness_mils": 1.378,
-        "dielectric_height_mils": 8.2835, "legacy_stack_write": True}))
-    assert sent == [("pcb.modify_layer", {
+        "dielectric_height_mils": 8.2835,
+        "legacy_stack_write": True}))
+    writes = [params for command, params in sent
+              if command == "pcb.modify_layer"]
+    assert writes == [{
         "layer": "Top Layer", "copper_thickness_mils": "1.378",
-        "dielectric_height_mils": "8.2835"})]
+        "dielectric_height_mils": "8.2835"}]

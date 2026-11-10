@@ -398,7 +398,8 @@ Begin
     End;
     If Discard Then
     Begin
-        Try ServerDoc.SetModified(False); Except End;
+        { Still marked, the close can raise Altium's save prompt. }
+        Try ServerDoc.SetModified(False); Except NoteWriteFailed('clear the modified flag before close'); End;
     End;
     Client.CloseDocument(ServerDoc);
     Again := Nil;
@@ -423,14 +424,34 @@ Begin
         + ',"file_path":"' + EscapeJsonString(FilePath) + '"}');
 End;
 
+{ A harness wiring diagram (.WirDoc) opens only through the workspace      }
+{ manager. Client.OpenDocument returned Nil for 'HarnessWiringDiagram', the  }
+{ kind the document is CREATED under, and 'HARNESS' returned a document the  }
+{ schematic server could not see, while reporting success (AD 26.11.1.5,     }
+{ 2026-11-08). WorkspaceManager:OpenObject is what sch_place_harness_wires   }
+{ and app_set_active_document already used, and both left a diagram that     }
+{ sch_get_harness reads.                                                     }
+Function OpenThroughWorkspace(FilePath : String) : IServerDocument;
+Begin
+    Result := Nil;
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', FilePath);
+    Try RunProcess('WorkspaceManager:OpenObject'); Except End;
+    Try Application.ProcessMessages; Except End;
+    Try Result := Client.GetDocumentByPath(FilePath); Except Result := Nil; End;
+End;
+
 Function App_OpenDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath, DocKind, Ext : String;
+    FilePath, DocKind, Ext, AskedKind, ActualKind, Route : String;
     ServerDoc : IServerDocument;
-    AlreadyLoaded : Boolean;
+    AlreadyLoaded, ViaWorkspace : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocKind := UpperCase(ExtractJsonValue(Params, 'kind'));
+    AskedKind := DocKind;
+    ViaWorkspace := LowerCase(ExtractFileExt(FilePath)) = '.wirdoc';
 
     If FilePath = '' Then
     Begin
@@ -454,6 +475,7 @@ Begin
         Else If Ext = '.pcblib' Then DocKind := 'PCBLIB'
         Else If Ext = '.outjob' Then DocKind := 'OUTPUTJOB'
         Else If Ext = '.bomdoc' Then DocKind := 'BOM'
+        Else If Ext = '.wirdoc' Then DocKind := 'HARNESSWIRINGDIAGRAM'
         Else
         Begin
             Result := BuildErrorResponse(RequestId, 'KIND_REQUIRED',
@@ -466,24 +488,39 @@ Begin
     AlreadyLoaded := False;
     Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
     If ServerDoc <> Nil Then AlreadyLoaded := True;
-    If ServerDoc = Nil Then
+    If (ServerDoc = Nil) And ViaWorkspace Then
+        ServerDoc := OpenThroughWorkspace(FilePath)
+    Else If ServerDoc = Nil Then
     Begin
         Try ServerDoc := Client.OpenDocument(DocKind, FilePath); Except End;
     End;
     If ServerDoc = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
-            'Client.OpenDocument returned Nil for kind=' + DocKind +
-            ', path=' + FilePath);
+        If ViaWorkspace Then
+            Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+                'The workspace manager did not open the wiring diagram ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+                'Client.OpenDocument returned Nil for kind=' + DocKind +
+                ', path=' + FilePath);
         Exit;
     End;
 
     Try Client.ShowDocument(ServerDoc); Except End;
     Try Application.ProcessMessages; Except End;
+    { The kind Altium gave the document, not the one asked for: a kind that }
+    { opens the file as something else must not read back as success.      }
+    ActualKind := '';
+    Try ActualKind := ServerDoc.Kind; Except ActualKind := ''; End;
+    If ActualKind = '' Then ActualKind := DocKind;
+    Route := 'client';
+    If ViaWorkspace Then Route := 'workspace';
     Result := BuildSuccessResponse(RequestId,
         '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
-        '","kind":"' + EscapeJsonString(DocKind) +
-        '","already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
+        '","kind":"' + EscapeJsonString(ActualKind) +
+        '","opened_through":"' + Route +
+        '","kind_ignored":' + BoolToJsonStr(ViaWorkspace And (AskedKind <> '')) +
+        ',"already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
 End;
 
 Function App_ReloadDocument(Params : String; RequestId : String) : String;
@@ -1028,7 +1065,7 @@ Begin
     If FileExists(FilePath) Then
         Try AgeBefore := FileAge(FilePath); Except AgeBefore := -1; End;
     Saved := False;
-    Try ServerDoc.SetFileName(FilePath); Except End;
+    Try ServerDoc.SetFileName(FilePath); Except { the file check below decides } End;
     Try
         ServerDoc.SetModified(True);
         ServerDoc.DoFileSave('');
@@ -1331,6 +1368,10 @@ Begin
             PCBServer.PostProcess;
             PcbOk := True;
         Except End;
+    { Raw calls on purpose, past the PcbEndEdit count, which now matches. }
+    PcbEditDepth := 0;
+    SchEditOpen := '|';
+    SchHeld := False;
 
     { The schematic server keeps its own transaction, and a SchLib handler    }
     { can die the same way, so close that too. Its PostProcess takes the      }
@@ -1403,10 +1444,153 @@ Begin
         + JsonInt('interval_minutes', Workspace.DM_GetRecoveryInterval Div 60000)));
 End;
 
+{ App_FormatValue - a component value in the RKM code of IEC 60062 (4K7,  }
+{ 2u2, 10uF, 3V3; the Vf functions in Utils.pas). Pure string work: no     }
+{ document is read or touched. action tostring: kind + value (a plain     }
+{ decimal) -> text. fromstring: text (+ kind, decimal) -> value, kind,     }
+{ rest, notes. cleanup: both, the text made proper. decimal is the SOURCE }
+{ text's decimal separator, '.' or ','; empty = this machine's.          }
+Function App_FormatValue(Params : String; RequestId : String) : String;
+Var
+    Action, Text, Value, Kind, Sep, Rec, Msg, Notes, Line, Arr, Body : String;
+    P : Integer;
+Begin
+    Action := LowerCase(Trim(ExtractJsonValue(Params, 'action')));
+    Text := ExtractJsonValue(Params, 'text');
+    Value := ExtractJsonValue(Params, 'value');
+    Kind := ExtractJsonValue(Params, 'kind');
+    Sep := Trim(ExtractJsonValue(Params, 'decimal'));
+    If (Sep <> '') And (Sep <> '.') And (Sep <> ',') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'decimal is ''.'' or '','': ' + Sep);
+        Exit;
+    End;
+    If Action = 'tostring' Then
+        Rec := VfToString(Kind, Value)
+    Else If Action = 'fromstring' Then
+        Rec := VfParse(Text, Kind, Sep)
+    Else If Action = 'cleanup' Then
+        Rec := VfCleanup(Text, Kind, Sep)
+    Else
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+            'action is tostring, fromstring or cleanup: ' + Action);
+        Exit;
+    End;
+    If VfField(Rec, 0) <> 'OK' Then
+    Begin
+        Msg := VfField(Rec, 1);
+        If Copy(Msg, 1, 12) = 'unknown kind' Then
+            Result := BuildErrorResponse(RequestId, 'UNKNOWN_KIND', Msg)
+        Else
+            Result := BuildErrorResponse(RequestId, 'BAD_VALUE', Msg);
+        Exit;
+    End;
+    If Action = 'tostring' Then
+    Begin
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonStr('text', VfField(Rec, 1))));
+        Exit;
+    End;
+    { fromstring: kind value rest notes; cleanup: text kind value rest notes }
+    P := 1;
+    Body := '';
+    If Action = 'cleanup' Then
+    Begin
+        Body := JsonStr('text', VfField(Rec, 1)) + ',';
+        P := 2;
+    End;
+    If VfField(Rec, P) = '' Then Body := Body + JsonNull('kind') + ','
+    Else Body := Body + JsonStr('kind', VfField(Rec, P)) + ',';
+    Body := Body + JsonStr('value', VfField(Rec, P + 1)) + ',' + JsonStr('rest', VfField(Rec, P + 2));
+    Notes := VfField(Rec, P + 3);
+    Arr := '';
+    While Notes <> '' Do
+    Begin
+        P := Pos(Chr(10), Notes);
+        If P > 0 Then
+        Begin
+            Line := Copy(Notes, 1, P - 1);
+            Notes := Copy(Notes, P + 1, Length(Notes));
+        End
+        Else
+        Begin
+            Line := Notes;
+            Notes := '';
+        End;
+        If Arr <> '' Then Arr := Arr + ',';
+        Arr := Arr + '"' + EscapeJsonString(Line) + '"';
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(Body + ',"notes":' + JsonArr(Arr)));
+End;
+
+{ Which session is editing which document (DocOwners in Main.pas), with how }
+{ long ago it last wrote and whether that owner still holds it.             }
+Function App_DocumentOwners(RequestId : String) : String;
+Var
+    Rest, Rec, Path, Items, Response : String;
+    P, Q, Age : Integer;
+Begin
+    Items := '';
+    Rest := DocOwners;
+    P := Pos(Chr(1), Rest);
+    While P > 0 Do
+    Begin
+        Rest := Copy(Rest, P + 1, Length(Rest));
+        Q := Pos(Chr(2), Rest);
+        If Q = 0 Then Break;
+        Path := Copy(Rest, 1, Q - 1);
+        Rec := OwnerRecord(Path);
+        If Rec <> '' Then
+        Begin
+            Age := OwnerAgeMs(Rec);
+            If Items <> '' Then Items := Items + ',';
+            Items := Items + JsonObj(JsonStr('document', Path) + ','
+                + JsonStr('session', OwnerField(Rec, 0)) + ','
+                + JsonStr('last_command', OwnerField(Rec, 2)) + ','
+                + JsonInt('seconds_since_write', Age Div 1000) + ','
+                + JsonBool('held', Age < OWNER_IDLE_MS) + ','
+                + JsonBool('yours', OwnerField(Rec, 0) = RequestTag(RequestId)));
+        End;
+        P := Pos(Chr(1), Rest);
+    End;
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonRaw('documents', '[' + Items + ']') + ','
+        + JsonStr('session', RequestTag(RequestId)) + ','
+        + JsonInt('idle_release_seconds', OWNER_IDLE_MS Div 1000)));
+    Result := Response;
+End;
+
+{ Hand a document to the calling session, whoever held it. }
+Function App_ClaimDocument(Params, RequestId : String) : String;
+Var
+    Path, Key, Rec, Before, Response : String;
+Begin
+    Path := ExtractJsonValue(Params, 'file_path');
+    If Path = '' Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Result := Response;
+        Exit;
+    End;
+    Key := OwnerKey(Path);
+    Rec := OwnerRecord(Key);
+    Before := '';
+    If Rec <> '' Then Before := OwnerField(Rec, 0);
+    OwnerSet(Key, RequestTag(RequestId), 'claimed');
+    Response := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('document', Path) + ','
+        + JsonStr('session', RequestTag(RequestId)) + ','
+        + JsonStr('previous_owner', Before)));
+    Result := Response;
+End;
+
 Function HandleApplicationCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
         'ping':                Result := App_Ping(RequestId);
+        'format_value':        Result := App_FormatValue(Params, RequestId);
+        'document_owners':     Result := App_DocumentOwners(RequestId);
+        'claim_document':      Result := App_ClaimDocument(Params, RequestId);
         'exit_active_command': Result := App_ExitActiveCommand(RequestId);
         'get_version':         Result := App_GetVersion(RequestId);
         'get_open_documents':  Result := App_GetOpenDocuments(RequestId);

@@ -164,7 +164,8 @@ def test_set_3d_body_touches_only_proven_body_members():
     assert body.count("Model.SetState(") == 1
     assert body.index("Model.SetState(") < body.index("Body.Model := Model;")
     assert "Model.Rotation" not in body and "RotationX" not in body
-    # A STEP body is matched to its saved record before it is written.
+    # A STEP body is matched to its saved record before it is written, by
+    # file name: a body linked this session holds the full path.
     assert "If SavedCount <> Total Then SavedStr := '';" in body
     assert body.count("UpperCase(ExtractFileName(ModelFile))") == 2
     # A skipped body is not counted as changed (read changed 1 live before).

@@ -24,6 +24,9 @@ from typing import Optional
 # Package-resource helpers
 # --------------------------------------------------------------------------
 
+
+_GLOBAL_PROJECTS = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+
 def get_package_root() -> Path:
     """Return the filesystem path to the installed `eda_agent` package."""
     import eda_agent
@@ -244,17 +247,28 @@ def relaunch_command(exe: str, prjscr: str) -> list[str]:
 #: nothing is (a loop that is not running never takes the stop file).
 RESTART_STOP_WAIT_S = 300.0
 RESTART_IDLE_STOP_WAIT_S = 15.0
+#: The same wait when nothing answered a ping and the halted script was
+#: stopped: no loop is left to take the stop file.
+RESTART_DEAD_STOP_WAIT_S = 2.0
 #: How long --restart waits for the new loop to answer.
 RESTART_PING_WAIT_S = 90.0
+#: How long a dialog that is not a script error box may block the new loop
+#: before --restart stops waiting and says which dialog it is.
+RESTART_DIALOG_GIVE_UP_S = 10.0
 
 
-def _wait_for_loop_to_stop(workspace: Path) -> str:
+def _wait_for_loop_to_stop(workspace: Path, trust_progress: bool = True,
+                           idle_wait: Optional[float] = None) -> str:
     """Drop the stop file and wait for the loop to take it.
 
     The loop deletes it between commands, so a command in flight always
     finishes first. Returns "stopped", or "not running" when nothing took
     it and no handler was running (the file is then removed, so a later
     start does not stop at once).
+
+    ``trust_progress`` False ignores progress files: a handler that halted
+    in the debugger leaves its progress file behind, and read as a command
+    still running it held the restart for the whole long wait.
     """
     import time
 
@@ -263,9 +277,10 @@ def _wait_for_loop_to_stop(workspace: Path) -> str:
     start = time.monotonic()
     while stop.exists():
         waited = time.monotonic() - start
-        busy = any(workspace.glob("progress_*.json"))
+        busy = trust_progress and any(workspace.glob("progress_*.json"))
         if waited > RESTART_STOP_WAIT_S or (
-                not busy and waited > RESTART_IDLE_STOP_WAIT_S):
+                not busy and waited > (RESTART_IDLE_STOP_WAIT_S
+                                       if idle_wait is None else idle_wait)):
             try:
                 stop.unlink()
             except OSError:
@@ -335,6 +350,37 @@ def _restart(command: list, frames_pid: int) -> int:
     from .diag.doctor import _ping_altium
     from .ui import windows
 
+    from .bridge.script_crash import clear_error_boxes
+
+    def clear(stage: str) -> str:
+        """Clear script error boxes; what still blocks, "" for nothing.
+
+        A modal holds the stop, the start and the ping alike, and waiting
+        one out took 80 s behind a box nobody was pressing (2026-10-30).
+        """
+        found = clear_error_boxes(frames_pid)
+        for box in found["cleared"]:
+            said = "; ".join(box["said"][:2]) if box["said"] else "no readable text"
+            print(f"{stage}: Altium showed {box['title']!r} ({said}); "
+                  f"OK {box['pressed']}.")
+        return found["blocking"]
+
+    from .bridge.altium_bridge import _trace_log
+
+    began = time.monotonic()
+
+    def phase(name: str) -> None:
+        """Say how far the restart is, with the time, on the output and in
+        the bridge trace: a recovery took 145 s (2026-10-30) and nothing
+        said where."""
+        line = f"[{time.monotonic() - began:5.1f}s] {name}"
+        print(line)
+        try:
+            _trace_log(Path(get_config().workspace_dir), f"RESTART {line}")
+        except Exception:                        # noqa: BLE001
+            pass
+
+    clear("Before the restart")
     if _blocked_by_dialog(frames_pid, "the loop cannot take the stop file"):
         return 1
 
@@ -363,11 +409,21 @@ def _restart(command: list, frames_pid: int) -> int:
                                   "started": time.time(), "pid": os.getpid()}),
                       encoding="utf-8")
     try:
-        state = _wait_for_loop_to_stop(workspace)
+        # Nothing answers: the script may be parked at a breakpoint after a
+        # handler crashed. Run > Stop it first, so the stop file waits only
+        # the short idle limit, not out a progress file the crash left behind.
+        phase("pinged: " + ("the loop answers" if ping else "nothing answers"))
+        if ping is None:
+            _stop_halted_script(command)
+            phase("Run > Stop sent to a halted script")
+            clear("After stopping the halted script")
+        state = _wait_for_loop_to_stop(workspace, trust_progress=ping is not None,
+                                       idle_wait=(RESTART_DEAD_STOP_WAIT_S
+                                                  if ping is None else None))
+        phase(f"stop file: {state}")
         print(f"The loop {'stopped' if state == 'stopped' else 'was not running'}; "
               f"other sessions' calls are waiting for the new one.")
         if state != "stopped" and ping is None:
-            _stop_halted_script(command)
             print(f"Nothing answered a ping through {workspace}, so any script "
                   f"left halted in Altium was stopped first. If Altium still "
                   f"says \"Another script executing now\", a loop is serving "
@@ -375,11 +431,30 @@ def _restart(command: list, frames_pid: int) -> int:
                   f"workspace and run this again.")
         frames = windows.visible_main_frames(frames_pid)
         launcher = subprocess.Popen(command, close_fds=True)
+        phase("StartMCPServer handed to Altium")
         _reshow_hidden_frames(launcher, frames)
+        phase("hand-off done")
         deadline = time.monotonic() + RESTART_PING_WAIT_S
+        blocked_since: Optional[float] = None
         while time.monotonic() < deadline:
             ping = _ping_altium()
+            if ping is None:
+                # The new loop cannot start behind a modal: clear an error
+                # box at once, and give up on any other within seconds
+                # rather than waiting out the whole timeout.
+                blocking = clear("Starting the loop")
+                if not blocking:
+                    blocked_since = None
+                elif blocked_since is None:
+                    blocked_since = time.monotonic()
+                elif time.monotonic() - blocked_since > RESTART_DIALOG_GIVE_UP_S:
+                    print(f"ERROR: Altium has a dialog open, so the new loop "
+                          f"cannot start: {blocking}. Answer it, then run "
+                          f"`eda-agent relaunch --restart` again.",
+                          file=sys.stderr)
+                    return 1
             if ping is not None:
+                phase("the new loop answers")
                 waiting = len(list(workspace.glob("request_*.json")))
                 print(f"The bridge answers again (version "
                       f"{ping.get('script_version', '?')}); {waiting} waiting "
@@ -927,6 +1002,12 @@ _PROFILE_EXAMPLE_DOCUMENT_SETTINGS = """{
 }
 """
 
+_PROFILE_EXAMPLE_PHASE_GATES = """{
+  "_comment": "Which NPI stages this owner runs, in docs/NPI_PHASE_GATES.md. An empty list is the default and leaves the three design_phase_* tools unadvertised. Scaffolded empty on purpose: turning a gate on is a decision, not a default.",
+  "stages": []
+}
+"""
+
 _PROFILE_EXAMPLE_FOOTPRINT_POLICY = """{
   "_comment": "Matches design.footprint_policy.py's explicit-policy keys. Omit a key to infer it from the library's own majority convention instead.",
   "courtyard": true,
@@ -946,8 +1027,14 @@ def _profile_scaffold(directory, name: str) -> None:
     (directory / "footprint_defaults.json").write_text(_PROFILE_EXAMPLE_FOOTPRINT_DEFAULTS, encoding="utf-8")
     (directory / "footprint_policy.json").write_text(_PROFILE_EXAMPLE_FOOTPRINT_POLICY, encoding="utf-8")
     (directory / "document_settings.json").write_text(_PROFILE_EXAMPLE_DOCUMENT_SETTINGS, encoding="utf-8")
+    (directory / "phase_gates.json").write_text(_PROFILE_EXAMPLE_PHASE_GATES, encoding="utf-8")
     (directory / "rules").mkdir(exist_ok=True)
     (directory / "fab_profiles").mkdir(exist_ok=True)
+    # The directory but not a file: an ERC set is a policy about which
+    # violations this owner cares about, and a scaffolded example would
+    # name types a given Altium version may not have, so a brand-new
+    # profile would start out reporting half its policy as unknown.
+    (directory / "erc_levels").mkdir(exist_ok=True)
     (directory / "templates").mkdir(exist_ok=True)
     # Project templates are a directory each, under templates/; single
     # documents live in templates/documents/ so neither listing has to
@@ -980,14 +1067,11 @@ def cmd_profile_use(name: str) -> int:
     """Set the centrally active profile (~/.eda-agent/active_profile)."""
     from . import profile as profile_mod
 
-    target = profile_mod.central_profiles_root() / name
-    if not target.is_dir():
-        print(f"ERROR: no profile named {name!r} at {target}. "
-              f"Run `eda-agent profile-init {name}` first.", file=sys.stderr)
+    try:
+        target = profile_mod.use_central_profile(name)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    pointer = profile_mod.active_profile_pointer()
-    pointer.parent.mkdir(parents=True, exist_ok=True)
-    pointer.write_text(name, encoding="utf-8")
     print(f"Active profile: {name} ({target})")
     return 0
 
@@ -997,9 +1081,8 @@ def cmd_profile_list() -> int:
     from . import profile as profile_mod
 
     root = profile_mod.central_profiles_root()
-    names = sorted(d.name for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
-    pointer = profile_mod.active_profile_pointer()
-    active = pointer.read_text(encoding="utf-8").strip() if pointer.exists() else ""
+    names = profile_mod.central_profile_names()
+    active = profile_mod.central_active_name()
     if not names:
         print(f"No central profiles under {root}.")
     for n in names:
@@ -1039,6 +1122,16 @@ def cmd_profile_show(*, as_json: bool) -> int:
     print(f"  footprint_defaults: {p.footprint_defaults or '(none)'}")
     print(f"  footprint_policy:   {p.footprint_policy or '(none)'}")
     print(f"  document_settings:  {p.document_settings or '(none)'}")
+    print(f"  design_rules:       {p.design_rules or '(none)'}")
+    # The default ERC set and the named ones are two lines because they
+    # are reached differently: the first by naming no set at all, the
+    # second by name, and one line would read as a list the default is
+    # missing from.
+    managed = len(p.erc_levels.get("levels") or {}) if p.erc_levels else 0
+    print(f"  erc_levels:         "
+          f"{str(managed) + ' type(s)' if p.erc_levels else '(none)'}")
+    print(f"  erc sets:           {p.erc_sets() or '(none)'}")
+    print(f"  phase_gates:        {p.phase_gates or '(none)'}")
     print(f"  rulesets:           {p.rulesets() or '(none)'}")
     print(f"  fab_profiles:       {p.fab_profile_names() or '(none)'}")
     print(f"  templates:          {p.template_names() or '(none)'}")
@@ -1059,9 +1152,6 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
     relying on it (same discipline engineering/rules.py documents for
     rulesets)."""
     from . import profile as profile_mod
-    from .engineering.naming import NamingPolicy
-    from .engineering.rules import validate_ruleset
-    from .design.fab_profile import load_fab_profile
 
     if here:
         directory = Path.cwd() / profile_mod.PROJECT_PROFILE_DIRNAME / profile_mod.PROJECT_PROFILE_SUBDIR
@@ -1077,35 +1167,7 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
         print(f"ERROR: {directory} does not exist.", file=sys.stderr)
         return 1
 
-    p = profile_mod.load_profile(directory)
-    # Loading degrades rather than raising (so a typo cannot break startup or
-    # pad authoring), which makes this command the place those problems have
-    # to surface.
-    errors: list[str] = list(p.errors)
-    # The same checks the consumers apply, so "valid" here means the tools
-    # will accept it rather than refuse at the point of use.
-    errors += profile_mod.check_footprint_defaults(p.footprint_defaults)
-    errors += profile_mod.check_document_settings(p.document_settings)
-
-    if p.naming_path:
-        try:
-            NamingPolicy(path=p.naming_path)
-        except Exception as exc:  # noqa: BLE001 -- report, don't crash the CLI
-            errors.append(f"naming.json: {exc}")
-
-    if p.rules_dir:
-        import json as _json
-        for rs_path in sorted(p.rules_dir.glob("*.json")):
-            try:
-                validate_ruleset(_json.loads(rs_path.read_text(encoding="utf-8")))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"rules/{rs_path.name}: {exc}")
-
-    if p.fab_profiles_dir:
-        for fp_path in sorted(p.fab_profiles_dir.glob("*.json")):
-            result = load_fab_profile(str(fp_path))
-            if not result.get("ok"):
-                errors.append(f"fab_profiles/{fp_path.name}: {result.get('reason')}")
+    errors = profile_mod.validate_profile(directory)
 
     if errors:
         print(f"{len(errors)} problem(s) in {directory}:", file=sys.stderr)
@@ -1113,6 +1175,133 @@ def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
             print(f"  - {e}", file=sys.stderr)
         return 1
     print(f"Profile at {directory} is valid.")
+    return 0
+
+
+def cmd_mode_list() -> int:
+    """List the design modes and which one is selected."""
+    from .design.modes import load_modes, selected_mode_name
+
+    modes, problems = load_modes()
+    selected, source = selected_mode_name()
+    print(f"Selected: {selected} (from {source})")
+    for m in modes.values():
+        marker = " (selected)" if m.name == selected else ""
+        where = "" if m.source == "built-in" else f"  [{m.source}]"
+        print(f"{m.name}{marker} -- {m.title}: {len(m.stages)} stage(s){where}")
+    if selected not in modes:
+        print(f"\nERROR: the selected mode {selected!r} ({source}) does not "
+              f"exist; runs that name no mode will be refused.", file=sys.stderr)
+    for problem in problems:
+        print(f"  problem: {problem}", file=sys.stderr)
+    return 1 if problems or selected not in modes else 0
+
+
+def cmd_mode_show(name: Optional[str], *, as_json: bool) -> int:
+    """Print one mode in full: the selected one when no name is given."""
+    import json as _json
+    from .design.modes import get_mode
+
+    try:
+        mode = get_mode(name or "")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    d = mode.as_dict()
+    if as_json:
+        print(_json.dumps(d, indent=2))
+        return 0
+    print(f"Mode: {d['name']} -- {d['title']}  ({d['source']})")
+    print(f"  {d['description']}")
+    print(f"  stages:  {', '.join(d['stages'])}")
+    if d["skipped_stages"]:
+        print(f"  skipped: {', '.join(d['skipped_stages'])}")
+    for i in d["inputs"]:
+        need = "required" if i["required"] else "optional"
+        default = f", default {i['default']!r}" if i["default"] else ""
+        print(f"  input {i['name']} ({need}{default}): {i['description']}")
+    for r in d["rules"]:
+        print(f"  rule: {r}")
+    for stage, note in d["stage_notes"].items():
+        print(f"  {stage}: {note}")
+    if d["profile_hints"]:
+        print(f"  profile hints: {d['profile_hints']}")
+    return 0
+
+
+def cmd_mode_use(name: Optional[str], *, clear: bool) -> int:
+    """Select the mode runs use when they name none (~/.eda-agent/active_mode)."""
+    from .design.modes import MODE_ENV, active_mode_pointer, load_modes
+
+    pointer = active_mode_pointer()
+    if clear:
+        if pointer.exists():
+            pointer.unlink()
+        print("Mode selection cleared: runs that name no mode use full_design.")
+        return 0
+    if not name:
+        print("ERROR: name a mode, or pass --clear.", file=sys.stderr)
+        return 2
+    modes, _problems = load_modes()
+    if name not in modes:
+        print(f"ERROR: no mode named {name!r}. The modes are {sorted(modes)}.",
+              file=sys.stderr)
+        return 1
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(name, encoding="utf-8")
+    print(f"Selected mode: {name}")
+    from .design.modes import profile_default_mode
+    from_profile = profile_default_mode()
+    if from_profile and from_profile != name:
+        print(f"  (the active profile's preferences.json sets default_mode "
+              f"{from_profile!r}, which overrules this while that profile is "
+              f"in effect.)")
+    if os.environ.get(MODE_ENV):
+        print(f"  ({MODE_ENV} is set to {os.environ[MODE_ENV]!r} in this "
+              f"shell and overrules this.)")
+    return 0
+
+
+def cmd_mode_init(name: str, *, extends: Optional[str], force: bool) -> int:
+    """Scaffold modes/<name>.json in the profile in effect here."""
+    import json as _json
+    from . import profile as profile_mod
+    from .design.modes import MODES_SUBDIR, _NAME, load_modes
+
+    if not _NAME.match(name):
+        print("ERROR: a mode name is lowercase letters, digits and "
+              "underscores, starting with a letter.", file=sys.stderr)
+        return 2
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("ERROR: no profile is active here; modes live in a profile's "
+              "modes/ folder. Run `eda-agent profile-init` first.", file=sys.stderr)
+        return 1
+    modes, _problems = load_modes(directory)
+    if extends and extends not in modes:
+        print(f"ERROR: cannot extend {extends!r}; the modes are {sorted(modes)}.",
+              file=sys.stderr)
+        return 1
+    target = directory / MODES_SUBDIR / f"{name}.json"
+    if target.exists() and not force:
+        print(f"ERROR: {target} exists; pass --force to replace it.", file=sys.stderr)
+        return 1
+    body: dict = {"_comment": "A design mode; see docs/DESIGN_MODES.md. Every "
+                              "key is optional. With extends, rules are added "
+                              "to the base's and stage_notes merged."}
+    if extends:
+        body["extends"] = extends
+    body.update({"title": name.replace("_", " ").capitalize(),
+                 "description": "",
+                 "rules": [],
+                 "stage_notes": {}})
+    if not extends:
+        from .design.session import STAGES
+        body["stages"] = list(STAGES)
+        body["inputs"] = []
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_json.dumps(body, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {target}")
     return 0
 
 
@@ -1141,6 +1330,137 @@ def cmd_profile_new_project(template: str, dest: str, *, force: bool) -> int:
     print(f"Created project from template {template!r} at: {dst}")
     return 0
 
+
+# --------------------------------------------------------------------------
+# phases -- which NPI stages this owner runs. Off by default; the setting
+# lives in the profile because which gates a programme runs is a house
+# rule, not a property of the board in front of you.
+# --------------------------------------------------------------------------
+
+def _phases_profile_dir() -> "Optional[Path]":
+    """The profile these commands write to, or None with the reason printed.
+
+    There is deliberately no "create one for you": a profile is a whole
+    directory with its own resolution order, and scaffolding one silently
+    from a settings command would leave an owner with two.
+    """
+    from . import profile as profile_mod
+
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("No profile active here, so there is nowhere to record this.",
+              file=sys.stderr)
+        print("  Make one:  eda-agent profile-init <name>        (central)",
+              file=sys.stderr)
+        print("             eda-agent profile-init <name> --here (this project)",
+              file=sys.stderr)
+        print("  Or for one run, no profile needed:", file=sys.stderr)
+        print("             eda-agent --phases evt,dvt,pvt ...", file=sys.stderr)
+        print("             (or the EDA_AGENT_PHASES environment variable)",
+              file=sys.stderr)
+        return None
+    return directory
+
+
+def _write_phase_stages(stages: tuple) -> int:
+    """Record ``stages`` in the active profile's phase_gates.json.
+
+    Other keys in the file are preserved: the scaffold writes a
+    ``_comment`` into it, and a settings command that silently dropped an
+    owner's note would be the kind of small betrayal nobody reports.
+    """
+    import json as _json
+
+    from . import profile as profile_mod
+
+    directory = _phases_profile_dir()
+    if directory is None:
+        return 1
+    path = directory / "phase_gates.json"
+    data, error = profile_mod._read_json_lenient(path)
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        print("  Fix or delete that file first; overwriting it would throw "
+              "away whatever else is in it.", file=sys.stderr)
+        return 1
+    data["stages"] = list(stages)
+    path.write_text(_json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    print(f"Stages recorded in {path}")
+    _print_phase_stages(label="Now running")
+    return 0
+
+
+def _print_phase_stages(*, label: str = "Stages") -> None:
+    from . import profile as profile_mod
+    from .design.phase_gates import TITLES
+
+    found = profile_mod.describe_phase_stages()
+    stages = found["stages"]
+    where = {"environment": f"the {profile_mod.PHASE_STAGES_ENV} environment "
+                            f"variable",
+             "profile": found["path"] or "the active profile",
+             "default": "the default (no profile or variable sets them)"}
+    print(f"{label}: {', '.join(stages) if stages else 'none'}  "
+          f"[from {where[found['source']]}]")
+    for stage in stages:
+        print(f"  {stage:<12} {TITLES[stage]}")
+    if not stages:
+        print("  The three design_phase_* tools are not advertised.")
+    if found["problem"]:
+        print(f"  IGNORED: {found['raw']!r} -- {found['problem']}",
+              file=sys.stderr)
+
+
+def cmd_phases_show(*, as_json: bool = False) -> int:
+    """Which NPI stages are in force, and which setting decided it."""
+    from . import profile as profile_mod
+
+    if as_json:
+        import json as _json
+        print(_json.dumps(profile_mod.describe_phase_stages(), indent=2))
+        return 0
+    _print_phase_stages()
+    found = profile_mod.describe_phase_stages()
+    if found["source"] == "environment" and found["stages"]:
+        print(f"  ({profile_mod.PHASE_STAGES_ENV} overrules the profile. "
+              f"Unset it to go back to what the profile says.)")
+    return 1 if found["problem"] else 0
+
+
+def cmd_phases_enable(stages: "list[str]") -> int:
+    """Turn on the named stages, or all five when none are named."""
+    from .design.phase_gates import STAGES, parse_stages
+
+    try:
+        wanted = parse_stages(stages) if stages else STAGES
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if not wanted:
+        print("ERROR: that names no stage. Use phases-disable to turn the "
+              "gate off.", file=sys.stderr)
+        return 2
+    code = _write_phase_stages(wanted)
+    if code == 0:
+        print("  Restart the server for it to advertise them: the tool "
+              "surface is chosen at startup.")
+    return code
+
+
+def cmd_phases_disable() -> int:
+    """Turn the gate off, keeping every answer already recorded."""
+    code = _write_phase_stages(())
+    if code == 0:
+        print("  Answers already recorded are untouched, and come back "
+              "with the stages.")
+        print("  Restart the server to drop the tools.")
+    return code
+
+
+# --------------------------------------------------------------------------
+# perf -- where the time went, from the logs already being written
+# --------------------------------------------------------------------------
 
 def cmd_sdk_coverage(*, as_json: bool = False, detail: int = 0,
                      sdk_json: str | None = None) -> int:
@@ -1263,7 +1583,7 @@ def cmd_sdk_generate(*, object_type: str = "component", kind: str = "read",
 def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
                   pin: str = "", properties: str = "",
                   doc_path: str = "", as_json: bool = False,
-                  sdk_json: str | None = None) -> int:
+                  sdk_json: str | None = None, index: int = 0) -> int:
     """Ask the running Altium which DECLARED properties it actually exposes.
 
     `sdk-coverage` counts what the chains reach. This measures something
@@ -1287,6 +1607,17 @@ def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
     from .sdk.reflect import SdkUnavailable, load_sdk
     from .sdk.symbols import SymbolsUnavailable, load_symbols
 
+    from .sdk.coverage import supported_sch_types
+
+    # Checked before anything is loaded: the kinds come from the deployed
+    # Pascal, so a typo is refused by name even where the reflected SDK
+    # (local only, never committed) is absent.
+    types = supported_sch_types()
+    if object_type.lower() not in types:
+        print(f"unknown schematic object type {object_type!r}; "
+              f"known: {', '.join(sorted(types))}", file=sys.stderr)
+        return 1
+
     names = [n.strip() for n in properties.split(",") if n.strip()]
     if not names:
         try:
@@ -1302,6 +1633,11 @@ def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
             table = None
         _, take, _ = candidates_for(model, object_type, "read", table)
         names = [name for name, _prop in take]
+    if not names:
+        print(f"nothing left to probe on {object_type}: every property the "
+              f"SDK declares for it is already read by the deployed block.",
+              file=sys.stderr)
+        return 0
 
     # A probe list built from today's table against yesterday's script
     # is how the debugger gets halted: the running block may still read
@@ -1323,6 +1659,7 @@ def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
         return 1
 
     params = {"properties": ",".join(names), "object_type": object_type}
+    params["index"] = str(index)
     if designator:
         params["designator"] = designator
     if pin:
@@ -1351,6 +1688,7 @@ def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
 
     rows = reply["results"]
     exposed = [r for r in rows if r.get("exposed")]
+    target = reply.get("designator") or f"#{index}"
     print(f"Probed {len(rows)} declared properties on "
           f"{reply.get('interface', '?')} "
           f"(component {reply.get('designator') or '?'}, "
@@ -1579,6 +1917,93 @@ def cmd_calc(verb: str, values: dict, *, as_json: bool = False) -> int:
     return 0
 
 
+def calc_aliases() -> dict:
+    """Every spelling of a calculator name that resolves to its verb.
+
+    The verb (`calc-fusing`), the verb without the prefix (`fusing`),
+    and the function it calls in either separator (`fusing_current`,
+    `fusing-current`). `eda-agent calc` advertised the last of those in
+    its own help text and did not accept it, so this accepts all four
+    rather than picking one and leaving the help wrong again.
+    """
+    out = {}
+    for verb, (fn_name, _help, _params) in CALC_COMMANDS.items():
+        for spelling in (verb, verb[len("calc-"):], fn_name,
+                         fn_name.replace("_", "-")):
+            out.setdefault(spelling, verb)
+    return out
+
+
+def list_calculators() -> int:
+    """Print the calculators and what each one needs. Always exit 0."""
+    print("Calculators (run one as `eda-agent calc NAME KEY=VALUE ...`):")
+    print()
+    for verb, (_fn, help_text, params) in CALC_COMMANDS.items():
+        print(f"  {verb[len('calc-'):]:<12} {help_text}")
+        required = [name for name, _t, default, _h in params
+                    if default is None]
+        optional = [f"{name}={default}" for name, _t, default, _h in params
+                    if default is not None]
+        if required:
+            print(f"               needs: {' '.join(required)}")
+        if optional:
+            print(f"               optional: {' '.join(optional)}")
+    print()
+    print("Each one is also a verb of its own: `eda-agent calc-fusing "
+          "--width-mils 10`.")
+    return 0
+
+
+def cmd_calc_by_name(name: str, inputs: list, *,
+                     as_json: bool = False) -> int:
+    """`eda-agent calc NAME KEY=VALUE ...`, the flagless form.
+
+    The generated `calc-*` verbs get their values from argparse, which
+    has already applied the types and the defaults. This form has a bare
+    list of KEY=VALUE strings instead, so it has to do both itself --
+    and until now it did neither: it handed the list straight to
+    cmd_calc, which expects a dict, and every invocation of the
+    documented example ended in an AttributeError.
+    """
+    if not name:
+        return list_calculators()
+
+    verb = calc_aliases().get(name)
+    if verb is None:
+        print(f"unknown calculator {name!r}", file=sys.stderr)
+        print("Run `eda-agent calc` for the list.", file=sys.stderr)
+        return 2
+
+    _fn, _help, params = CALC_COMMANDS[verb]
+    types = {pname: ptype for pname, ptype, _d, _h in params}
+    values = {pname: default for pname, _t, default, _h in params}
+
+    for item in inputs or []:
+        if "=" not in item:
+            print(f"expected KEY=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        key, _, raw = item.partition("=")
+        key = key.strip().replace("-", "_")
+        if key not in types:
+            print(f"{verb} has no input {key!r}. It takes: "
+                  f"{', '.join(types)}", file=sys.stderr)
+            return 2
+        try:
+            values[key] = types[key](raw.strip())
+        except (TypeError, ValueError):
+            print(f"{key}={raw!r} is not a "
+                  f"{types[key].__name__}", file=sys.stderr)
+            return 2
+
+    missing = [pname for pname, _t, default, _h in params
+               if default is None and values.get(pname) is None]
+    if missing:
+        print(f"{verb} needs {', '.join(missing)}", file=sys.stderr)
+        return 2
+
+    return cmd_calc(verb, values, as_json=as_json)
+
+
 # --------------------------------------------------------------------------
 # Fab capabilities, stackups and laminates
 # --------------------------------------------------------------------------
@@ -1715,21 +2140,33 @@ def cmd_laminates(*, as_json: bool = False) -> int:
     if not data.get("ok"):
         print(data["reason"], file=sys.stderr)
         return 1
-    print(f"{'laminate':24} {'er(proc)':>9} {'er(design)':>11} "
-          f"{'tan d':>8} {'Tg':>6}")
+    # Every column may be absent: a maker that tabulates typical values by
+    # frequency publishes no process and no design value, and only Rogers
+    # of the four publishes a Tg here.
+    def cell(value) -> str:
+        return "-" if value is None else str(value)
+
+    print(f"{'laminate':30} {'er(proc)':>9} {'er(design)':>11} "
+          f"{'er(use)':>8} {'tan d':>8} {'Tg':>6}")
     for lam in data["laminates"]:
-        design = "-" if lam["er_design"] is None else lam["er_design"]
-        loss = "-" if lam["loss_tangent"] is None else lam["loss_tangent"]
-        tg = "-" if lam["tg_c"] is None else lam["tg_c"]
-        print(f"{lam['name']:24} {lam['er_process']:>9} {design:>11} "
-              f"{loss:>8} {tg:>6}")
+        print(f"{lam['name'][:30]:30} {cell(lam.get('er_process')):>9} "
+              f"{cell(lam.get('er_design')):>11} "
+              f"{cell(lam.get('er_for_design')):>8} "
+              f"{cell(lam.get('loss_tangent')):>8} "
+              f"{cell(lam.get('tg_c')):>6}")
     for conv in data["conventions"]:
-        print(f"{conv['name']:24} {conv['er_low']:>9} to {conv['er_high']}")
+        print(f"{conv['name'][:30]:30} {conv['er_low']:>9} to {conv['er_high']}")
+    for fig in data.get("fab_figures") or []:
+        print(f"{fig['name'][:30]:30} {cell(fig.get('er_process')):>9} "
+              f"{'(fab figure, no conditions published)'}")
     sys.stdout.flush()
     print("\nTwo dielectric constants per laminate on purpose: the PROCESS "
           "value is\nmeasured one way and the DESIGN value another, they "
           "differ by about 5%,\nand the design value is the one to size an "
-          "impedance with.", file=sys.stderr)
+          "impedance with. er(use) is that\nchoice made for you: the design "
+          "value where there is one, else the typical\nvalue at the highest "
+          "frequency listed, never the process value.",
+          file=sys.stderr)
     print(data["note"], file=sys.stderr)
     return 0
 

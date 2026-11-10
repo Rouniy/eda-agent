@@ -110,10 +110,14 @@ _SIMULATOR_TOOLS = frozenset({
     "audit_find_missing_decoupling",
     "audit_find_pin_net_name_mismatches",
     "audit_find_unconnected_ic_pins", "design_lint_report",
-    "eng_eco_preview_live", "lib_add_footprint_arc",
+    "eng_compare_live_ipc_footprint", "eng_eco_preview_live",
+    "lib_add_footprint_arc",
     "lib_add_footprint_pad", "lib_add_footprint_pads",
     "lib_add_footprint_track", "lib_add_footprint_tracks",
     "lib_add_pins", "lib_add_symbol_polygon",
+    "lib_audit_footprint_vs_datasheet", "lib_get_pad_geometry",
+    "lib_set_current_component", "proj_update_from_libraries",
+    "sch_place_comment",
     "lib_add_symbol_rectangle", "lib_add_symbol_text",
     "lib_batch_rename", "lib_batch_set_params",
     "lib_create_3d_model", "lib_create_footprint",
@@ -124,8 +128,8 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_link_3d_model", "lib_link_footprint", "obj_batch_delete",
     "obj_batch_modify", "obj_create", "obj_delete",
     "obj_deselect_all", "obj_get_font_id", "obj_get_font_spec",
-    "obj_modify", "obj_query", "obj_run_process", "obj_select",
-    "obj_zoom", "obj_zoom_to_xy", "pcb_bind_pad_nets",
+    "obj_modify", "obj_query", "obj_run_process", "obj_select", "obj_zoom",
+    "obj_zoom_to_xy", "pcb_bind_pad_nets",
     "pcb_build_from_project", "pcb_create_nets_from_list",
     "pcb_get_board_outline", "pcb_get_board_statistics",
     "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
@@ -160,6 +164,10 @@ _OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts", "engineering"})
 _OFFLINE_TOOLS = frozenset({
     # Read a profile directory off local disk; Altium is not involved.
     "profile_show", "profile_list",
+    # The plan half of the two profile managers: both read the profile and
+    # run the synthesis with nothing open. Their diff and apply halves do
+    # reach the bridge and keep the live_only their prefix gives them.
+    "pcb_rules_plan", "proj_erc_plan",
     # Read or write library FILES directly (OLE streams, LibPkg text,
     # byte copies); the bridge is never called.
     "lib_read_pcblib_headers", "lib_write_libpkg",
@@ -238,6 +246,13 @@ INTERACTION_OVERRIDES = {
     "lib_restore_library_backup": SILENT,
     # Two library reads and a file in the workspace; the library is untouched.
     "lib_render_footprint": READONLY,
+    # Who edits which document: reading it, or handing one over, writes
+    # nothing to a design.
+    "app_document_owners": READONLY,
+    "app_claim_document": READONLY,
+    # Reads the rules, or keeps an approved copy beside the board: nothing
+    # in the design changes.
+    "pcb_drc_rules": READONLY,
     # Non-suppressible modal dialogs that block the single-threaded loop.
     "proj_sync_pcb": MODAL,          # ECO / Update-PCB dialog
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog
@@ -249,6 +264,9 @@ INTERACTION_OVERRIDES = {
     # answer, and anyone filtering for operations that keep the session
     # responsive must not be handed this one.
     "app_update_from_libraries": MODAL,
+    # Altium's Confirm box for the netlist update blocks the loop until it
+    # is answered; the tool presses Yes itself, as above.
+    "pcb_update_free_primitive_nets": MODAL,
     # Pulls new code into the installation and can restart the Altium
     # loop. It is filed under meta, which counts as offline, and offline
     # would otherwise read as readonly.
@@ -302,6 +320,13 @@ INTERACTION_OVERRIDES = {
     # written. The pcb_ prefix defaults to silent, which would tell anyone
     # filtering for safe operations that an audit edits the board.
     "pcb_layout_audit": READONLY,
+    # Measures two objects and asks the clearance rule on the pair; writes
+    # nothing. The pcb_ prefix alone would call it mutating.
+    "pcb_measure_clearance": READONLY,
+    # Reads the Layer Stack Manager's own data for the board (layers with
+    # their properties, drill pairs, spans, profiles, optionally its model)
+    # and writes nothing; the pcb_ prefix alone would call it silent.
+    "pcb_layer_stack_manager": READONLY,
     # Reads a database library's declared tables and fields. The lib_ prefix
     # does not make that clear to the classifier; it writes nothing.
     "lib_dblib_info": READONLY,
@@ -337,6 +362,14 @@ INTERACTION_OVERRIDES = {
     "lib_read_pin_table": READONLY, "design_check_company_rules": READONLY,
     "design_read_rules_export": READONLY, "design_phase_gate": READONLY,
     "design_phase_standing": READONLY,
+    # The plan and diff halves of the two profile managers. Plan reads a
+    # profile off local disk and diff reads the board or the project; only
+    # apply writes. The pcb_ and proj_ prefixes both default to silent,
+    # which would advertise "show me what would change" as a tool that
+    # changes something, and the "_diff" marker is only recognised with a
+    # trailing underscore so neither diff matched it either.
+    "pcb_rules_plan": READONLY, "pcb_rules_diff": READONLY,
+    "proj_erc_plan": READONLY, "proj_erc_diff": READONLY,
     # Appends to the product's ledger of stage answers in the workspace.
     "design_phase_answer": SILENT,
     # Writes the deck and its results into a run folder in the workspace.
@@ -372,6 +405,8 @@ _READONLY_SUBSTRINGS = (
 # entry points invisible to a client discovering by category, which bites
 # hardest under the minimal toolset where the catalog IS the interface.
 _CATEGORY_BY_NAME = {
+    "datasheet_find_pages": "parts",
+    "datasheet_view_page": "parts",
     "datasheet_fetch": "parts",
     "footprint_check_package": "design",
     "footprint_render_package": "design",
@@ -384,6 +419,8 @@ _CATEGORY_BY_NAME = {
     # Updates eda-agent itself, on every backend: about the tool surface,
     # like tool_catalog, rather than about any one EDA tool.
     "server_update": "meta",
+    # The family tool for the audits; its members keep the audit_ prefix.
+    "audit": "audit",
 }
 
 
@@ -609,8 +646,33 @@ def interaction_of(name: str, category: str | None = None) -> str:
     return SILENT
 
 
+def _fold_metadata(name: str) -> "dict[str, str] | None":
+    """A family tool takes its members' category and their most demanding
+    maturity and interaction, since any kind may be the one called."""
+    from .folds import FOLDS, built_members
+
+    if name not in FOLDS:
+        return None
+    members = list(built_members(name).values()) or list(FOLDS[name].members.values())
+    if not members:
+        return None
+    records = [tool_metadata(m) for m in members]
+    maturity_rank = {OFFLINE: 0, SIMULATOR: 1, LIVE_ONLY: 2}
+    interaction_rank = {READONLY: 0, SILENT: 1, PARTIAL: 2, MODAL: 3}
+    return {
+        "name": name,
+        "category": records[0]["category"],
+        "maturity": max((r["maturity"] for r in records), key=maturity_rank.get),
+        "interaction": max((r["interaction"] for r in records),
+                           key=interaction_rank.get),
+    }
+
+
 def tool_metadata(name: str) -> dict[str, str]:
     """Full metadata record for one tool name."""
+    folded = _fold_metadata(name)
+    if folded:
+        return folded
     category = category_of(name)
     return {
         "name": name,

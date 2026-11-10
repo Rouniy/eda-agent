@@ -60,7 +60,8 @@ def test_a_board_found_by_walking_is_named_on_the_reply():
     body = _fn("Main.pas", "GetPCBBoardAnywhere")
     walk = body.index("Client.OpenDocument('PCB', Path)")
     assert "BoardFallbackPath := Path;" in body[walk:]
-    process = _fn("StatusForm.pas", "ProcessCommand")
+    # ProcessOne: each item of a bulk call is a request of its own.
+    process = _fn("StatusForm.pas", "ProcessOne")
     assert "BoardFallbackPath := '';" in process
     assert process.index("BoardFallbackPath := '';") < process.index("Case Category Of")
     assert "Result := BoardFallbackNote(Result);" in process
@@ -81,7 +82,8 @@ def test_every_pad_shape_reader_knows_a_custom_pad():
         text = _decommented(_src(unit))
         for m in re.finditer(r"= eRoundedRectangular Then (?:ShapeStr|Result|Str|Name) :=", text):
             window = text[m.start():m.start() + 260]
-            assert "eCustomShape" in window, f"{unit}: a shape mapper falls through for a custom pad"
+            # ShapeIsCustom asks eCustomShape only where it exists (22.8 on).
+            assert "ShapeIsCustom(" in window, f"{unit}: a shape mapper falls through for a custom pad"
             readers += 1
     assert readers >= 8
 
@@ -110,7 +112,7 @@ def test_every_footprint_delete_walk_is_filtered():
 
 def test_the_delete_counts_again_and_says_when_something_stayed():
     body = _fn("Library.pas", "Lib_DeleteFootprintPrimitives")
-    assert body.index("Leftover := CountFootprintMatches(") > body.index("PCBServer.PostProcess;")
+    assert body.index("Leftover := CountFootprintMatches(") > body.index("PcbEndEdit(0);")
     assert '"leftover":' in body and '"hint":"' in body and '"matched":' in body
     count = _fn("Library.pas", "CountFootprintMatches")
     assert "FilterFootprintWalk(GrpIter, ObjFilter);" in count
@@ -127,7 +129,7 @@ def test_a_schlib_query_walks_the_symbol_on_screen_first():
     body = _fn("Generic.pas", "ProcessSchDocObjects")
     pick = body.index("If Mode = 'query' Then")
     current = body.index("LibComp := SchLib.CurrentSchComponent", pick)
-    fallback = body.index("LibComp := LastCreatedLibComponent", pick)
+    fallback = body.index("LibComp := RememberedLibComponent(SchDoc)", pick)
     assert current < fallback
     assert "LibComp := GetTargetLibComponent(SchLib)" in body
     assert "(ObjTypeInt = eParameter) Or (ObjTypeInt = eDesignator)" in body
@@ -137,8 +139,8 @@ def test_a_schlib_query_walks_the_symbol_on_screen_first():
 def test_a_schlib_parameter_delete_prefers_the_symbol_on_screen():
     body = _decommented(_src("Generic.pas"))
     start = body.index("Procedure DeleteParametersAnyOwner(")
-    part = body[start:body.index("RemoveMatchingParamsFromComponent(Comp, ReducedFilter", start)]
-    assert part.index("SchDoc.CurrentSchComponent") < part.index("LastCreatedLibComponent")
+    part = body[start:body.index("RemoveMatchingParamsFromComponent(SchDoc, Comp, ReducedFilter", start)]
+    assert part.index("SchDoc.CurrentSchComponent") < part.index("RememberedLibComponent(SchDoc)")
 
 
 # -- #108: vias in one call -----------------------------------------------------
@@ -174,6 +176,25 @@ def test_the_footprint_read_reports_via_mask_tenting_testpoints_and_stack():
     assert "LibViaDetailJson(Via)" in body
     assert body.count('"selected":') >= 5
     assert '"editor_origin_x_mm":' in body
+
+
+def test_the_editor_origin_is_reported_only_for_the_current_footprint():
+    # Board.XOrigin is the current footprint's marker; another footprint
+    # reads X = 0, so the difference would be the marker's absolute place.
+    body = _fn("Library.pas", "Lib_GetFootprintPrimitives")
+    assert "Try IsCurrent := PcbLib.CurrentComponent = Target; Except End;" in body
+    current = body.index("If IsCurrent Then")
+    other = body.index("Else", current)
+    assert "FloatToJsonStr(OriginX)" in body[current:other]
+    assert (
+        "OriginJson := ',\"editor_origin_x_mm\":null,\"editor_origin_y_mm\":null';"
+        in body[other:other + 120]
+    )
+    reply = body[body.index("RespJson :="):]
+    assert "OriginJson +" in reply
+    assert "',\"current\":' + BoolToJsonStr(IsCurrent)" in reply
+    # A read never makes the footprint current.
+    assert "CurrentComponent :=" not in body
 
 
 def test_each_kind_of_the_footprint_read_can_be_left_out():

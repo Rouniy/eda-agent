@@ -117,8 +117,30 @@ def _stage_names() -> set[str]:
 
 
 def _registered() -> set[str]:
+    """Every tool any backend can register, optional features included.
+
+    The question here is whether a reader following a name in the prose
+    finds a tool at the end of it. A tool behind a setting the reader has
+    not switched on is still that tool, and the prose that names it says
+    which setting, so enumerating with the optional features off would
+    report the documentation as wrong for documenting them.
+    """
+    import os
+
     from eda_agent.tools import register_backend
 
+    before = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        return _enumerate_backends(register_backend)
+    finally:
+        if before is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = before
+
+
+def _enumerate_backends(register_backend) -> set[str]:
     names: set[str] = set()
     for backend in ("altium", "kicad", "easyeda"):
         captured: dict = {}
@@ -130,8 +152,12 @@ def _registered() -> set[str]:
                     return fn
                 return deco
 
-        register_backend(_Mcp(), backend)
+        server = _Mcp()
+        register_backend(server, backend)
         names |= set(captured)
+        # Reached through a family tool or a bulk tool; the reference
+        # lists each with the tool that runs it.
+        names |= set(getattr(server, "hidden", {}) or {})
     return names
 
 
