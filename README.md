@@ -45,6 +45,7 @@ dashboard descriptions below are not the exposed shared-mode feature set.
 - [Requirements](#requirements)
 - [Installation](#installation) - including [Altium-side scripts](#altium-side-scripts) and [Check that it worked](#check-that-it-worked)
 - [Workspace and profiles](#workspace-and-profiles) - what lives where, and how to set your house style
+- [Design modes](#design-modes) - choose the scope of a design run
 - [Fab capabilities, stackups and laminates](#fab-capabilities-stackups-and-laminates) - JLCPCB and PCBWay, dated and sourced
 - [Calculators](#calculators) - spacing, fusing, vias, impedance and the rest, on the CLI too
 - [EDA backends](#eda-backends)
@@ -369,6 +370,13 @@ feasibility, prototype, EVT, DVT, and PVT evidence by programme and
 design revision. The gate lists checks to run and records the results;
 it does not run Altium tools automatically. See
 [NPI phase gates](docs/NPI_PHASE_GATES.md).
+
+## Design modes
+
+Use `eda-agent mode-list` to see the built-in scopes, such as schematic-only,
+layout-only and reference-design redraw. `mode-show`, `mode-use` and `mode-init`
+inspect, select and create modes. See [design modes](docs/DESIGN_MODES.md) for
+the stage definitions and profile format.
 
 ## EDA backends
 

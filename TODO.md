@@ -1,5 +1,14 @@
 # Fork integration TODO
 
+## Design modes, 2026-11-10
+
+- [x] Port design-mode presets and profile modes, preserve the Rouniy CLI,
+  and verify 138 related tests plus direct `mode-list`/help execution.
+- [ ] Reconcile the donor's separate NPI stage settings and phase commands
+  with Rouniy's existing phase-gate implementation.
+- [ ] Run a full Python suite after the next dependency block; native
+  acceptance remains required before deployment.
+
 ## Profile safety follow-up, 2026-11-09
 
 - [x] Require an explicit `.PrjPcb` for profile-wide ERC writes and separate

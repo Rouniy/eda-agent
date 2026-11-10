@@ -1,5 +1,15 @@
 # Current integration state / agent handoff
 
+## Design-mode worktree, 2026-11-10 (offline checks complete)
+
+The separate `backport-morembedded-modes` branch extends profile safety with
+design-mode presets, profile-defined modes, CLI `mode-*` commands and design
+session integration. The donor commit was reconciled with Rouniy's CLI without
+importing its unrelated phase commands. 138 focused compatibility tests pass;
+`eda-agent mode-list` and CLI help also run from this worktree. The Pascal
+runtime remains `.197`; no runtime was deployed. A full suite and native
+acceptance remain pending.
+
 ## Profile safety follow-up, 2026-11-09 (offline checks in progress)
 
 The separate `backport-morembedded-profilefix` branch adds the donor guard
