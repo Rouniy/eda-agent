@@ -26521,9 +26521,12 @@ Begin
             Obj := Iter.FirstPCBObject;
             While Obj <> Nil Do
             Begin
-                Wanted := False;
-                Try Wanted := Obj.Selected; Except Wanted := False; End;
-            End;
+                Wanted := True;
+                If SelectedOnly Then
+                Begin
+                    Wanted := False;
+                    Try Wanted := Obj.Selected; Except Wanted := False; End;
+                End;
             If Wanted And Wide Then
             Begin
                 Try Wanted := LayerDisplayName(Obj.Layer) = LayerDisplayName(OnLayer);

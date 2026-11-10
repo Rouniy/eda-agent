@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.09.196';
+    SCRIPT_VERSION = '2026.11.09.197';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -66192,9 +66192,12 @@ Begin
             Obj := Iter.FirstPCBObject;
             While Obj <> Nil Do
             Begin
-                Wanted := False;
-                Try Wanted := Obj.Selected; Except Wanted := False; End;
-            End;
+                Wanted := True;
+                If SelectedOnly Then
+                Begin
+                    Wanted := False;
+                    Try Wanted := Obj.Selected; Except Wanted := False; End;
+                End;
             If Wanted And Wide Then
             Begin
                 Try Wanted := LayerDisplayName(Obj.Layer) = LayerDisplayName(OnLayer);
