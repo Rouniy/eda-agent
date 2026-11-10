@@ -187,7 +187,12 @@ Begin
     ServerDoc := Nil;
     Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
     If ServerDoc = Nil Then Exit;
-    Try ServerDoc.SetModified(False); Except End;
+    Try
+        ServerDoc.SetModified(False);
+    Except
+        NoteWriteFailed('clear the modified flag');
+        Exit;
+    End;
     Result := True;
 End;
 
@@ -1766,6 +1771,7 @@ Var
     PcbComp : IPCB_Component;
     I, J, DocCount : Integer;
     UsePhysical, Found : Boolean;
+    FilterWas : Boolean;
 Begin
     Designator := ExtractJsonValue(Params, 'designator');
     Target := ExtractJsonValue(Params, 'target');
@@ -1835,10 +1841,13 @@ Begin
             AddStringParameter('Scope', 'All');
             RunProcess('PCB:DeSelect');
         Except End;
+        { Components switched off in the Selection Filter would otherwise }
+        { not be selected, and PCB:Jump would have nothing to go to.      }
+        FilterWas := PcbSelectFilterOff(Board);
         BoardIter := Board.BoardIterator_Create;
         Try
             BoardIter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            BoardIter.AddFilter_LayerSet(AllLayers);
+            BoardIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             BoardIter.AddFilter_Method(eProcessAll);
             PcbComp := BoardIter.FirstPCBObject;
             While (PcbComp <> Nil) And (Not Found) Do
@@ -1846,14 +1855,15 @@ Begin
                 Try
                     If PcbComp.Name.Text = Designator Then
                     Begin
-                        Try PcbComp.Selected := True; Except End;
+                        Try PcbComp.Selected := True; Except NoteWriteFailed('select the part on the board'); End;
                         Found := True;
                     End;
-                Except End;
+                Except { a part whose designator cannot be read is skipped } End;
                 PcbComp := BoardIter.NextPCBObject;
             End;
         Finally
             Board.BoardIterator_Destroy(BoardIter);
+            PcbSelectFilterRestore(Board, FilterWas);
         End;
         Try Board.GraphicallyInvalidate; Except End;
         { Pan/zoom the view to the now-selected component. PCB:Jump with     }
@@ -1941,10 +1951,10 @@ Begin
                             SchComp := SchObj;
                             If SchComp.Designator.Text = Designator Then
                             Begin
-                                Try SchComp.Selection := True; Except End;
+                                Try SchComp.Selection := True; Except NoteWriteFailed('select the part on the sheet'); End;
                                 Break;
                             End;
-                        Except End;
+                        Except { not a component: skipped } End;
                         SchObj := SchIter.NextSchObject;
                     End;
                 Finally
@@ -2315,6 +2325,7 @@ Begin
                             Else
                                 Inc(SkipCount);
                         Except
+                            NoteWriteFailed('annotate: reset a designator');
                         End;
                         Obj := Iterator.NextSchObject;
                     End;
@@ -2446,6 +2457,7 @@ Begin
                     Inc(RenameCount);
                 End;
             Except
+                NoteWriteFailed('annotate: write a designator');
             End;
         End;
 
@@ -2813,6 +2825,142 @@ End;
 { Altium finds for it (empty when it finds none), integrated or not.        }
 { Params: project_path, designator (optional), limit (default 300).          }
 {..............................................................................}
+Function HierItemJson(Item : INetItem; Var Misses : Integer) : String;
+Var
+    Name, NetName, Electric : String;
+Begin
+    Name := ''; NetName := ''; Electric := '';
+    Try Name := Item.DM_PortName; Except Inc(Misses); End;
+    Try NetName := Item.DM_NetName; Except Inc(Misses); End;
+    Try Electric := Item.DM_ElectricalString; Except Inc(Misses); End;
+    If Name = '' Then Name := NetName;
+    Result := JsonObj(JsonStr('name', Name) + ','
+        + JsonStr('net', NetName) + ','
+        + JsonStr('io', Electric));
+End;
+
+{..............................................................................}
+{ Proj_GetHierarchy - the compiled sheet hierarchy: every schematic with    }
+{ its parents, the ports it offers up, and the sheet symbols on it with     }
+{ their file, sheet name, entries and how many child sheets the compiler   }
+{ found for them (0: the file is not in the project).                       }
+{..............................................................................}
+
+Function Proj_GetHierarchy(Params : String; RequestId : String) : String;
+Var
+    Workspace : IWorkspace;
+    Project : IProject;
+    Doc, TopDoc, ParentDoc : IDocument;
+    Sym : ISheetSymbol;
+    Item : INetItem;
+    ProjectPath, Items, TopName, FileName, Kind, Parents, Ports, Syms, Entries : String;
+    SymFile, SymName, PName : String;
+    I, J, K, Misses, Children, Sheets : Integer;
+Begin
+    ProjectPath := ExtractJsonValue(Params, 'project_path');
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace'); Exit; End;
+    If ProjectPath <> '' Then Project := FindProjectByPath(Workspace, ProjectPath)
+    Else Project := Workspace.DM_FocusedProject;
+    If Project = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PROJECT', 'No project found'); Exit; End;
+    SmartCompile(Project);
+    Misses := 0;
+    TopName := '';
+    TopDoc := Nil;
+    Try TopDoc := Project.DM_TopLevelLogicalDocument; Except Inc(Misses); End;
+    If TopDoc <> Nil Then
+    Begin
+        Try TopName := TopDoc.DM_FileName; Except Inc(Misses); End;
+    End;
+    Items := '';
+    Sheets := 0;
+    For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(I); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Kind := '';
+        Try Kind := UpperCase(Doc.DM_DocumentKind); Except End;
+        If Kind <> 'SCH' Then Continue;
+        Inc(Sheets);
+        FileName := '';
+        Try FileName := Doc.DM_FileName; Except Inc(Misses); End;
+
+        Parents := '';
+        Try
+            For J := 0 To Doc.DM_ParentDocumentCount - 1 Do
+            Begin
+                ParentDoc := Nil; PName := '';
+                Try ParentDoc := Doc.DM_ParentDocuments(J); Except ParentDoc := Nil; End;
+                If ParentDoc = Nil Then Continue;
+                Try PName := ParentDoc.DM_FileName; Except End;
+                If Parents <> '' Then Parents := Parents + ',';
+                Parents := Parents + '"' + EscapeJsonString(PName) + '"';
+            End;
+        Except Inc(Misses); End;
+
+        Ports := '';
+        Try
+            For J := 0 To Doc.DM_PortCount - 1 Do
+            Begin
+                Item := Nil;
+                Try Item := Doc.DM_Ports(J); Except Item := Nil; End;
+                If Item = Nil Then Continue;
+                If Ports <> '' Then Ports := Ports + ',';
+                Ports := Ports + HierItemJson(Item, Misses);
+            End;
+        Except Inc(Misses); End;
+
+        Syms := '';
+        Try
+            For J := 0 To Doc.DM_SheetSymbolCount - 1 Do
+            Begin
+                Sym := Nil;
+                Try Sym := Doc.DM_SheetSymbols(J); Except Sym := Nil; End;
+                If Sym = Nil Then Continue;
+                SymFile := ''; SymName := ''; Children := -1;
+                Try SymFile := Sym.DM_SheetSymbolFileName; Except Inc(Misses); End;
+                Try SymName := Sym.DM_LogicalDesignator; Except Inc(Misses); End;
+                Try Children := Sym.DM_ChildSheetCount; Except Inc(Misses); End;
+                Entries := '';
+                Try
+                    For K := 0 To Sym.DM_SheetEntryCount - 1 Do
+                    Begin
+                        Item := Nil;
+                        Try Item := Sym.DM_SheetEntries(K); Except Item := Nil; End;
+                        If Item = Nil Then Continue;
+                        If Entries <> '' Then Entries := Entries + ',';
+                        Entries := Entries + HierItemJson(Item, Misses);
+                    End;
+                Except Inc(Misses); End;
+                If Syms <> '' Then Syms := Syms + ',';
+                Syms := Syms + JsonObj(JsonStr('sheet_name', SymName) + ','
+                    + JsonStr('file', SymFile) + ','
+                    + JsonInt('child_sheets', Children) + ','
+                    + JsonRaw('entries', '[' + Entries + ']'));
+            End;
+        Except Inc(Misses); End;
+
+        If Items <> '' Then Items := Items + ',';
+        Items := Items + JsonObj(JsonStr('file', FileName) + ','
+            + JsonRaw('parents', '[' + Parents + ']') + ','
+            + JsonRaw('ports', '[' + Ports + ']') + ','
+            + JsonRaw('sheet_symbols', '[' + Syms + ']'));
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('top', TopName) + ','
+        + JsonInt('sheet_count', Sheets) + ','
+        + JsonInt('read_errors', Misses) + ','
+        + JsonRaw('sheets', '[' + Items + ']')));
+End;
+
+{..............................................................................}
+{ Proj_ComponentModels - where each compiled part's models resolve: model    }
+{ name and type, each datafile's library, entity and kind, the full path     }
+{ Altium finds for it (empty when it finds none), integrated or not.        }
+{ Params: project_path, designator (optional), limit (default 300).          }
+{..............................................................................}
+
 Function Proj_ComponentModels(Params : String; RequestId : String) : String;
 Var
     Workspace : IWorkspace;
@@ -3509,6 +3657,53 @@ Begin
 End;
 
 {..............................................................................}
+{ CloseRunOutJobs - close the OutJobs an earlier proj_run_outjob opened,      }
+{ except the one about to run. A run with a second OutJob still open (the     }
+{ previous board's) stopped the script inside GenerateReport, after its files }
+{ were out; the same container had run cleanly with one OutJob open.          }
+{ An OutJob that reads modified, or that a tool recorded as edited, is left   }
+{ open. Returns how many were closed.                                         }
+{..............................................................................}
+Function CloseRunOutJobs(Keep : String) : Integer;
+Var
+    Rest, Path, Kept : String;
+    P : Integer;
+    Doc : IServerDocument;
+    Dirty : Boolean;
+Begin
+    Result := 0;
+    Kept := '';
+    Rest := RunOutJobsOpened;
+    While Length(Rest) > 1 Do
+    Begin
+        Rest := Copy(Rest, 2, Length(Rest));
+        P := Pos('|', Rest);
+        If P = 0 Then Break;
+        Path := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P, Length(Rest));
+        If Path = '' Then Continue;
+        If UpperCase(Path) = UpperCase(Keep) Then
+        Begin
+            Kept := Kept + '|' + Path + '|';
+            Continue;
+        End;
+        Doc := Nil;
+        Try Doc := Client.GetDocumentByPath(Path); Except Doc := Nil; End;
+        If Doc = Nil Then Continue;
+        Dirty := False;
+        Try Dirty := Doc.Modified; Except Dirty := True; End;
+        If DocWasEdited(Path) Then Dirty := True;
+        If Dirty Then Continue;
+        Try
+            Client.CloseDocument(Doc);
+            Inc(Result);
+        Except
+        End;
+    End;
+    RunOutJobsOpened := Kept;
+End;
+
+{..............................................................................}
 { Execute a specific OutJob container by name                                  }
 { Params: outjob_path (optional), container_name                              }
 {..............................................................................}
@@ -3519,7 +3714,8 @@ Var
     IniFile : TIniFile;
     FoundContainerName, ContainerType, RelativePath, OutputDir : String;
     G, J : Integer;
-    Found, OutJobOpened, OutJobActive : Boolean;
+    Found, OutJobOpened, OutJobActive, RunRaised : Boolean;
+    ClosedOthers : Integer;
     OutJobDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
@@ -3564,26 +3760,32 @@ Begin
         Exit;
     End;
 
-    { Open and ACTIVATE the OutJob document. Focus alone leaves it open }
-    { without making it the active document; measured on AD25: the      }
-    { container then runs cleanly and writes 0 files. ShowDocument is   }
-    { what app_set_active_document does, and what the output batch      }
-    { follows.                                                          }
+    { The container writes nothing unless the OutJob is the ACTIVE document: }
+    { focused but not shown, it ran cleanly and wrote 0 files (AD25, AD26).  }
+    { Open it the way the Projects panel does, then show it, then focus it.  }
+    ClosedOthers := CloseRunOutJobs(OutJobPath);
+    OutJobOpened := False;
     OutJobDoc := Nil;
-    Try
-        If Not Client.IsDocumentOpen(OutJobPath) Then
-            OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath)
-        Else
-            OutJobDoc := Client.GetDocumentByPath(OutJobPath);
-        If OutJobDoc <> Nil Then
+    Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
+    If OutJobDoc = Nil Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', OutJobPath);
+        RunProcess('WorkspaceManager:OpenObject');
+        Try OutJobDoc := Client.GetDocumentByPath(OutJobPath); Except OutJobDoc := Nil; End;
+        If OutJobDoc = Nil Then
         Begin
-            Try Client.ShowDocument(OutJobDoc); Except End;
-            Try OutJobDoc.Focus; Except End;
+            Try OutJobDoc := Client.OpenDocument('OUTPUTJOB', OutJobPath); Except OutJobDoc := Nil; End;
         End;
         OutJobOpened := OutJobDoc <> Nil;
-    Except
-        OutJobDoc := Nil;
-        OutJobOpened := False;
+        If OutJobOpened Then
+            RunOutJobsOpened := RunOutJobsOpened + '|' + OutJobPath + '|';
+    End;
+    If OutJobDoc <> Nil Then
+    Begin
+        Try Client.ShowDocument(OutJobDoc); Except End;
+        Try OutJobDoc.Focus; Except End;
     End;
     OutJobActive := False;
     Try
@@ -3656,26 +3858,33 @@ Begin
         Exit;
     End;
 
-    { Execute based on container type }
-    If ContainerType = 'Publish' Then
-    Begin
-        ResetParameters;
-        AddStringParameter('Action', 'PublishToPDF');
-        AddStringParameter('OutputMedium', ContainerName);
-        AddStringParameter('ObjectKind', 'OutputBatch');
-        If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
-        AddStringParameter('DisableDialog', 'True');
-        RunProcess('WorkspaceManager:Print');
-    End
-    Else
-    Begin
-        { Default: GeneratedFiles and others use GenerateReport }
-        ResetParameters;
-        AddStringParameter('Action', 'Run');
-        AddStringParameter('OutputMedium', ContainerName);
-        AddStringParameter('ObjectKind', 'OutputBatch');
-        If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
-        RunProcess('WorkspaceManager:GenerateReport');
+    { Execute based on container type. An exception from the run itself came }
+    { after the files were out (NC Drill, its report section unwritten) and  }
+    { stopped the script; it is caught and reported, and the folder decides. }
+    RunRaised := False;
+    Try
+        If ContainerType = 'Publish' Then
+        Begin
+            ResetParameters;
+            AddStringParameter('Action', 'PublishToPDF');
+            AddStringParameter('OutputMedium', ContainerName);
+            AddStringParameter('ObjectKind', 'OutputBatch');
+            If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
+            AddStringParameter('DisableDialog', 'True');
+            RunProcess('WorkspaceManager:Print');
+        End
+        Else
+        Begin
+            { Default: GeneratedFiles and others use GenerateReport }
+            ResetParameters;
+            AddStringParameter('Action', 'Run');
+            AddStringParameter('OutputMedium', ContainerName);
+            AddStringParameter('ObjectKind', 'OutputBatch');
+            If RelativePath <> '' Then AddStringParameter('OutputBasePath', RelativePath);
+            RunProcess('WorkspaceManager:GenerateReport');
+        End;
+    Except
+        RunRaised := True;
     End;
 
     { Resolve the OutJob's configured output directory so callers can pick }
@@ -3707,7 +3916,9 @@ Begin
         ',"output_dir":"' + EscapeJsonString(OutputDir) + '"' +
         ',"outjob_path":"' + EscapeJsonString(OutJobPath) + '"' +
         ',"outjob_opened":' + BoolToJsonStr(OutJobOpened) +
-        ',"outjob_active":' + BoolToJsonStr(OutJobActive) + '}');
+        ',"outjob_active":' + BoolToJsonStr(OutJobActive) +
+        ',"run_raised":' + BoolToJsonStr(RunRaised) +
+        ',"other_outjobs_closed":' + IntToStr(ClosedOthers) + '}');
 End;
 
 {..............................................................................}
@@ -5361,8 +5572,15 @@ Function NetStructureJson(Net : INet) : String;
 Var
     SubWires, Lines, AllItems, Removed, Scope, BusWidth, Outputs, BiDirs, Powers, OpenColl, Misses : Integer;
     SignalType, Calculated, Hidden : String;
+    BusElement, BusSection, ByValue : Boolean;
+    BusKind, RangeValue1, RangeValue2, NonPin : Integer;
+    Range1, Range2, NetNumber, Harness, Parent : String;
+    ParentNet : INet;
 Begin
     SubWires := -1; Lines := -1; AllItems := -1; Removed := -1; Scope := -1; BusWidth := 0;
+    BusElement := False; BusSection := False; ByValue := False;
+    BusKind := -1; RangeValue1 := 0; RangeValue2 := 0; NonPin := -1;
+    Range1 := ''; Range2 := ''; NetNumber := ''; Harness := ''; Parent := '';
     Outputs := 0; BiDirs := 0; Powers := 0; OpenColl := 0; Misses := 0;
     SignalType := ''; Calculated := ''; Hidden := '';
     Try SubWires := Net.DM_SubWireCount; Except Inc(Misses); End;
@@ -5378,6 +5596,23 @@ Begin
     Try BiDirs := Net.DM_CountOfElectricalType(eElectricIO); Except Inc(Misses); End;
     Try Powers := Net.DM_CountOfElectricalType(eElectricPower); Except Inc(Misses); End;
     Try OpenColl := Net.DM_CountOfElectricalType(eElectricOpenCollector); Except Inc(Misses); End;
+    Try BusElement := Net.DM_IsBusElement; Except Inc(Misses); End;
+    Try BusSection := Net.DM_IsBusSection; Except Inc(Misses); End;
+    Try BusKind := Net.DM_BusKind; Except Inc(Misses); End;
+    Try Range1 := Net.DM_BusRange1; Except Inc(Misses); End;
+    Try Range2 := Net.DM_BusRange2; Except Inc(Misses); End;
+    Try RangeValue1 := Net.DM_BusRangeValue1; Except Inc(Misses); End;
+    Try RangeValue2 := Net.DM_BusRangeValue2; Except Inc(Misses); End;
+    Try ByValue := Net.DM_RangeDefinedByValue; Except Inc(Misses); End;
+    Try NonPin := Net.DM_CountOfNonPinItems; Except Inc(Misses); End;
+    Try NetNumber := Net.DM_NetNumber; Except Inc(Misses); End;
+    Try Harness := Net.DM_HarnessType; Except Inc(Misses); End;
+    ParentNet := Nil;
+    Try ParentNet := Net.DM_BusSectionParent; Except ParentNet := Nil; End;
+    If ParentNet <> Nil Then
+    Begin
+        Try Parent := ParentNet.DM_NetName; Except End;
+    End;
     Result := JsonRaw('structure', JsonObj(
         JsonInt('sub_wires', SubWires) + ','
         + JsonInt('lines', Lines) + ','
@@ -5392,6 +5627,18 @@ Begin
         + JsonInt('io_pins', BiDirs) + ','
         + JsonInt('power_pins', Powers) + ','
         + JsonInt('open_collector_pins', OpenColl) + ','
+        + JsonInt('non_pin_items', NonPin) + ','
+        + JsonStr('net_number', NetNumber) + ','
+        + JsonBool('bus_element', BusElement) + ','
+        + JsonBool('bus_section', BusSection) + ','
+        + JsonInt('bus_kind', BusKind) + ','
+        + JsonStr('bus_range_from', Range1) + ','
+        + JsonStr('bus_range_to', Range2) + ','
+        + JsonInt('bus_range_value_from', RangeValue1) + ','
+        + JsonInt('bus_range_value_to', RangeValue2) + ','
+        + JsonBool('bus_range_by_value', ByValue) + ','
+        + JsonStr('bus_section_parent', Parent) + ','
+        + JsonStr('harness_type', Harness) + ','
         + JsonInt('read_errors', Misses)));
 End;
 
@@ -7109,6 +7356,7 @@ Begin
                 Inc(Count);
             End;
         Except
+            NoteWriteFailed('DesignatorLocked');
         End;
         Obj := Iterator.NextSchObject;
     End;
@@ -7873,6 +8121,7 @@ End;
 Function HandleProjectCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
+        'get_hierarchy':     Result := Proj_GetHierarchy(Params, RequestId);
         'create':            Result := Proj_Create(Params, RequestId);
         'open':              Result := Proj_Open(Params, RequestId);
         'save':              Result := Proj_Save(Params, RequestId);

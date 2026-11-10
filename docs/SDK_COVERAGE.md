@@ -121,15 +121,23 @@ Per object type, the widest gaps:
 
 1. Each of the four chains is parsed for every `PropName = '...'` it
    tests.
-2. Each supported object type is mapped to the interface the SDK
+2. Every routine a chain calls with `PropName` is parsed the same way,
+   because most of what a pin, a port, a parameter or a dimension
+   answers lives one level down. Those names are credited only to the
+   types the Pascal guards them on: the `Obj.ObjectId` test the branch
+   makes, or the owner table (`SchExtraFits`, `ExtraPCBPropertyFits`)
+   for the extra-property families. A routine called to decide whether
+   a branch is taken, or called with a literal name, is not counted
+   again: the branch that reaches it already carries the name.
+3. Each supported object type is mapped to the interface the SDK
    declares for it. Most are mechanical (`eRectangle` to
    `ISch_Rectangle`); the rest are in two small override tables in
    `src/eda_agent/sdk/coverage.py`, because Altium's own naming is not
    uniform.
-3. The SDK's inheritance is resolved transitively, so a component is
+4. The SDK's inheritance is resolved transitively, so a component is
    measured against everything `ISch_GraphicalObject` and
    `ISch_BasicContainer` give it too, not only its own 46 properties.
-4. The sets are compared per interface.
+5. The sets are compared per interface.
 
 ### Two things the number does not claim
 

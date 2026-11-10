@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import psutil
 from pathlib import Path
 from typing import Any, Optional
@@ -135,6 +136,23 @@ def _reports_update(fn):
     return wrapper
 
 
+def _screen_capture_warning() -> Optional[str]:
+    """Say which Python lacks the screen capture packages, when one does:
+    a server started from another Python than the one updated reads the
+    screen through nothing, and app_screenshot is the first to find out."""
+    if os.name != "nt":
+        return None
+    try:
+        from ..ui import ocr
+        if ocr.available():
+            return None
+    except Exception:  # noqa: BLE001  a warning never breaks a ping
+        pass
+    return (f"screen capture is off: pywin32 or Pillow is missing from the "
+            f"Python that runs this server ({sys.executable}). Install them "
+            f"with: \"{sys.executable}\" -m pip install pywin32 Pillow")
+
+
 def _bundled_script_version() -> Optional[str]:
     """Read SCRIPT_VERSION from the bundled Main.pas.
 
@@ -150,7 +168,7 @@ def _bundled_script_version() -> Optional[str]:
     try:
         main_pas = get_bundled_scripts_path() / "Main.pas"
         text = main_pas.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+    except OSError:  # no bundle to compare against; see the docstring
         return None
     m = _VERSION_RE.search(text)
     return m.group(1) if m else None
@@ -158,10 +176,7 @@ def _bundled_script_version() -> Optional[str]:
 
 def _bundled_script_path() -> Optional[str]:
     """The Main.pas that _bundled_script_version reads, as a string."""
-    try:
-        return str(get_bundled_scripts_path() / "Main.pas")
-    except Exception:
-        return None
+    return str(get_bundled_scripts_path() / "Main.pas")
 
 
 def _folder_of(file_path: str) -> str:
@@ -449,6 +464,8 @@ def register_meta_tools(mcp):
         # Prevent self-recursion; tool_catalog is fine to invoke.
         if name == "tool_invoke":
             return {"error": "tool_invoke cannot invoke itself"}
+        from ..bridge.altium_bridge import name_tool_call
+        name_tool_call(name)
         try:
             result = await mcp.call_tool(name, arguments or {})
         except Exception as e:  # noqa: BLE001 - surface as data, not a crash
@@ -517,6 +534,73 @@ async def _run_declared_menu(bridge, menu_path: str) -> dict:
     if isinstance(result, dict):
         out["bridge"] = result
     return out
+
+
+# The bridge request reaches the scripts as 8-bit text: a character above
+# U+00FF (the ohm sign, the Greek mu, the Unicode minus) arrives as "?".
+# The value engine reads these as R, u and -, so they are folded here.
+_VALUE_GROUPING = "    "
+_VALUE_FOLD = {"Ω": "R", "Ω": "R", "μ": "u", "µ": "u",
+               "−": "-", chr(0x2013): "-", "°": "", "º": ""}
+
+
+def fold_value_text(text: str) -> str:
+    """A value string folded to what the scripts can receive (ASCII for the
+    symbols the value engine knows). Grouping spaces go BEFORE NFKC, which
+    would turn them into plain spaces, and a plain space ends a value."""
+    t = text or ""
+    for ch in _VALUE_GROUPING:
+        t = t.replace(ch, "")
+    t = unicodedata.normalize("NFKC", t)
+    return "".join(_VALUE_FOLD.get(ch, ch) for ch in t)
+
+
+# SI form of a value, per kind: the prefixes the value engine allows for
+# it (largest first), and whether the unit is always written. Resistors take
+# no milli or micro (the engine writes 0R005), capacitors no milli, volts and
+# amperes no kilo, so the SI form keeps to the same letters.
+_SI_PREFIXES = {
+    "ohm": (("G", 9), ("M", 6), ("k", 3), ("", 0)),
+    "farad": (("", 0), ("u", -6), ("n", -9), ("p", -12)),
+    "henry": (("", 0), ("m", -3), ("u", -6), ("n", -9)),
+    "volt": (("", 0), ("m", -3), ("u", -6), ("n", -9)),
+    "ampere": (("", 0), ("m", -3), ("u", -6), ("n", -9)),
+    "percent": (("", 0),),
+    "ppm": (("", 0),),
+    "celsius": (("", 0),),
+}
+_SI_UNIT = {"ohm": "", "farad": "F", "henry": "H", "volt": "V", "ampere": "A",
+            "percent": "%", "ppm": "ppm", "celsius": "C"}
+_SI_UNIT_ALWAYS = ("volt", "ampere", "percent", "ppm", "celsius")
+_KIND_ALIASES = {"r": "ohm", "c": "farad", "l": "henry", "v": "volt",
+                 "a": "ampere", "%": "percent"}
+
+
+def si_value_text(value: str, kind: str, with_unit: bool) -> Optional[str]:
+    """``value`` (an exact decimal in the base unit) written with a decimal
+    point and an SI prefix, or None for a kind it does not know. Exact: the
+    digits are moved, never rounded. Resistors never carry a unit; volts,
+    amperes, %, ppm and degrees C always do, farads and henries only
+    ``with_unit``."""
+    from decimal import Decimal, InvalidOperation, localcontext
+    k = _KIND_ALIASES.get((kind or "").strip().lower(), (kind or "").strip().lower())
+    if k not in _SI_PREFIXES:
+        return None
+    try:
+        d = Decimal(str(value).strip())
+    except InvalidOperation:
+        return None
+    letter, power = _SI_PREFIXES[k][-1]
+    for cand, p in _SI_PREFIXES[k]:
+        if d == 0 or abs(d) >= Decimal(1).scaleb(p):
+            letter, power = cand, p
+            break
+    # Enough digits for any value: the default 28 would round a long one.
+    with localcontext() as ctx:
+        ctx.prec = len(d.as_tuple().digits) + 30
+        mantissa = format(d.scaleb(-power).normalize(), "f")
+    unit = _SI_UNIT[k] if (k in _SI_UNIT_ALWAYS or with_unit) else ""
+    return f"{mantissa}{letter}{unit}"
 
 
 def register_application_tools(mcp):
@@ -1175,6 +1259,9 @@ def register_application_tools(mcp):
         script_path = _bundled_script_path()
         servers, duplicate = _other_servers()
         warnings: list[str] = [duplicate] if duplicate else []
+        capture = _screen_capture_warning()
+        if capture:
+            warnings.append(capture)
         if not bridge.is_altium_running():
             return {
                 "success": False,
@@ -1366,7 +1453,8 @@ def register_application_tools(mcp):
 
         Args:
             kind: Document kind, 'PCB', 'SCH', 'PCBLIB', 'SCHLIB',
-                'OUTPUTJOB', or any other kind Altium's server module
+                'OUTPUTJOB', 'HarnessWiringDiagram' (a .WirDoc in a
+                .PrjHar), or any other kind Altium's server module
                 registers under.
             file_path: Absolute path where the new document should live.
                 Use Windows backslashes.
@@ -1425,7 +1513,11 @@ def register_application_tools(mcp):
         Project members keep their project association because the live
         script uses ``Client.OpenDocument`` rather than the UI open process.
         The document kind is inferred from common Altium extensions, so
-        callers normally only need to provide the absolute path.
+        callers normally only need to provide the absolute path. A .WirDoc
+        always opens through the workspace manager, the one route that
+        leaves a wiring diagram sch_get_harness can read; ``kind`` is
+        ignored for it (``kind_ignored``). ``kind`` in the reply is what
+        Altium gave the document.
 
         Args:
             file_path: Absolute path to an existing document.
@@ -1558,6 +1650,39 @@ def register_application_tools(mcp):
         }
 
     @mcp.tool()
+    async def app_document_owners() -> dict[str, Any]:
+        """Which Claude session is editing which open document.
+
+        Sessions share one Altium. A tool that writes claims the document
+        it acts on; another session's write to it is refused
+        (DOCUMENT_IN_USE) while the owner has written within the last
+        ``idle_release_seconds``. Reads are never refused, and neither is
+        the person at the dashboard.
+
+        Returns:
+            ``documents`` (each ``document``, ``session``, ``last_command``,
+            ``seconds_since_write``, ``held``, ``yours``) and ``session``,
+            this session's tag.
+        """
+        return await get_bridge().send_command_async("application.document_owners", {})
+
+    @mcp.tool()
+    async def app_claim_document(file_path: str) -> dict[str, Any]:
+        """Take a document over from the session editing it.
+
+        Only when the user says so: the other session's next write to it
+        is then refused instead of this one's.
+
+        Args:
+            file_path: The document's full path.
+
+        Returns:
+            ``document``, ``session`` (this one) and ``previous_owner``.
+        """
+        return await get_bridge().send_command_async(
+            "application.claim_document", {"file_path": file_path})
+
+    @mcp.tool()
     async def app_list_documents() -> list[dict[str, Any]]:
         """List all documents known to the current Altium workspace.
 
@@ -1658,9 +1783,12 @@ def register_application_tools(mcp):
             # bring the board forward because no editor had loaded it.
             if "not loaded" not in str(exc).lower() or not os.path.isfile(file_path):
                 raise
+            # file_path names the document the open acts on, so ownership
+            # judges that one and not whichever document is in front.
             await bridge.send_command_async("application.run_process", {
                 "process_name": "WorkspaceManager:OpenObject",
-                "parameters": f"ObjectKind=Document|FileName={file_path}"})
+                "parameters": f"ObjectKind=Document|FileName={file_path}",
+                "file_path": file_path})
             opened = True
             result = await bridge.send_command_async(
                 "application.set_active_document", {"file_path": file_path}
@@ -1736,6 +1864,110 @@ def register_application_tools(mcp):
                 return {"ok": False, "reason": "interval_minutes is 1 or more"}
             params["interval"] = str(interval_minutes)
         return await get_bridge().send_command_async("application.autosave", params)
+
+    @mcp.tool()
+    async def app_format_value(
+        action: str,
+        text: Optional[str] = None,
+        value: Optional[Any] = None,
+        kind: Optional[str] = None,
+        decimal: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Read, write or clean up a component value. HOW IT IS WRITTEN IS
+        THE USER'S CHOICE on the Config tab of the bridge panel in Altium,
+        or in the active profile's preferences.json, which wins, read on
+        every call: RKM (IEC 60062, a letter where the decimal
+        point would be: 4K7, 0R005, 2u2, 10uF, 3V3), SI (4.7k, 0.005, 2.2u,
+        3.3V), SI with the unit (2.2uF, 100nF, 10uH; never on resistors), or
+        None, which leaves values as written: cleanup returns the text
+        unchanged and tostring is refused. The reply's ``value_format``
+        says which applied. Do not pick a form for the user.
+
+        Done by the bridge's own value engine (no document is read or
+        touched), so a script can use the same rules. NO ROUNDING: a value
+        is digits and a power of ten, exact to the last digit.
+
+        Reading is tolerant: 4.7k, 4,7 kOhm, 10 000uF, 2.2uF, 0.1 uF,
+        3,3 V, 125 degC. The unit letter decides the kind; without one,
+        p / n / u is a capacitor and G / M / m / K a resistor. Letters
+        that could read two ways are blocked: on a resistor m is MEGA
+        (milli and micro are written 0R005, 0R0005); on volts and amperes
+        M is milli; femto is never read (100 fF is 0p1). The value ends at
+        the first space or character that is not part of it ("10uF 50V"
+        and "10uF/50V" read 10uF, the rest comes back in ``rest``); a value
+        that runs on into digits or letters it cannot use ("10.1.1k") is
+        refused.
+
+        Args:
+            action: ``cleanup`` (text -> the proper text), ``fromstring``
+                (text -> value and kind) or ``tostring`` (kind + value ->
+                text).
+            text: The value as written, for cleanup / fromstring.
+            value: The value in the base unit (ohm, farad, henry, volt,
+                ampere, %, ppm, degree C) for tostring: a string such as
+                "0.0000022" or "1e3", or a number.
+            kind: ohm, farad, henry, volt, ampere, percent, ppm or
+                celsius (also R, C, L, V, A). Takes precedence over the
+                text; a unit in the text that disagrees is a note.
+            decimal: The decimal separator of the SOURCE text, "." or
+                ",", for "1,000" / "1.000"; default this machine's.
+
+        Returns:
+            ``text`` (cleanup, tostring), ``value`` as an exact decimal
+            string and ``kind`` (cleanup, fromstring), ``rest`` (what
+            followed the value), ``notes`` (every guess made) and
+            ``value_format`` (cleanup, tostring).
+        """
+        act = (action or "").strip().lower()
+        if act not in ("cleanup", "fromstring", "tostring"):
+            return {"ok": False,
+                    "reason": "action is cleanup, fromstring or tostring"}
+        if decimal not in (None, "", ".", ","):
+            return {"ok": False, "reason": "decimal is '.' or ','"}
+        params: dict[str, Any] = {"action": act}
+        if act == "tostring":
+            if value is None or not kind:
+                return {"ok": False, "reason": "tostring needs kind and value"}
+            if isinstance(value, bool):
+                return {"ok": False, "reason": "value is a number"}
+            params["value"] = repr(value) if isinstance(value, float) else str(value)
+        else:
+            if text is None or not str(text).strip():
+                return {"ok": False, "reason": f"{act} needs text"}
+            params["text"] = fold_value_text(str(text))
+        if kind:
+            params["kind"] = kind
+        if decimal:
+            params["decimal"] = decimal
+        if act == "fromstring":
+            return await get_bridge().send_command_async("application.format_value", params)
+
+        from ..preferences import value_format, value_unit, where_set
+        style, unit = value_format(), value_unit()
+        if style == "none" and act == "tostring":
+            where, undo = where_set("value_format")
+            return {"ok": False, "value_format": "none",
+                    "reason": f"No value format is chosen: it is None {where}, "
+                              f"so values are left as written. {undo}"}
+        reply = await get_bridge().send_command_async("application.format_value", params)
+        if not isinstance(reply, dict) or reply.get("success") is False or "text" not in reply:
+            return reply
+        reply = dict(reply)
+        if style == "none":
+            reply["text"] = str(text)
+            reply["note"] = (f"Left as written: the value format is None "
+                             f"{where_set('value_format')[0]}.")
+        elif style == "si":
+            exact = params.get("value") if act == "tostring" else reply.get("value")
+            kind_of = kind if act == "tostring" else reply.get("kind")
+            si = si_value_text(exact, kind_of or "", unit == "with")
+            if si is None:
+                return {"ok": False, "value_format": "si",
+                        "reason": f"No SI form for kind {kind_of!r}; the value read "
+                                  f"{exact!r}."}
+            reply["text"] = si
+        reply["value_format"] = style + ("_unit" if style == "si" and unit == "with" else "")
+        return reply
 
     @mcp.tool()
     async def app_run_menu(menu_path: str) -> dict[str, Any]:

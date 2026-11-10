@@ -24,6 +24,9 @@ from typing import Optional
 # Package-resource helpers
 # --------------------------------------------------------------------------
 
+
+_GLOBAL_PROJECTS = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+
 def get_package_root() -> Path:
     """Return the filesystem path to the installed `eda_agent` package."""
     import eda_agent
@@ -1181,6 +1184,7 @@ def cmd_mode_list() -> int:
 
     modes, problems = load_modes()
     selected, source = selected_mode_name()
+    print(f"Selected: {selected} (from {source})")
     for m in modes.values():
         marker = " (selected)" if m.name == selected else ""
         where = "" if m.source == "built-in" else f"  [{m.source}]"
@@ -1246,6 +1250,12 @@ def cmd_mode_use(name: Optional[str], *, clear: bool) -> int:
     pointer.parent.mkdir(parents=True, exist_ok=True)
     pointer.write_text(name, encoding="utf-8")
     print(f"Selected mode: {name}")
+    from .design.modes import profile_default_mode
+    from_profile = profile_default_mode()
+    if from_profile and from_profile != name:
+        print(f"  (the active profile's preferences.json sets default_mode "
+              f"{from_profile!r}, which overrules this while that profile is "
+              f"in effect.)")
     if os.environ.get(MODE_ENV):
         print(f"  ({MODE_ENV} is set to {os.environ[MODE_ENV]!r} in this "
               f"shell and overrules this.)")
@@ -1573,7 +1583,7 @@ def cmd_sdk_generate(*, object_type: str = "component", kind: str = "read",
 def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
                   pin: str = "", properties: str = "",
                   doc_path: str = "", as_json: bool = False,
-                  sdk_json: str | None = None) -> int:
+                  sdk_json: str | None = None, index: int = 0) -> int:
     """Ask the running Altium which DECLARED properties it actually exposes.
 
     `sdk-coverage` counts what the chains reach. This measures something
@@ -1597,6 +1607,17 @@ def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
     from .sdk.reflect import SdkUnavailable, load_sdk
     from .sdk.symbols import SymbolsUnavailable, load_symbols
 
+    from .sdk.coverage import supported_sch_types
+
+    # Checked before anything is loaded: the kinds come from the deployed
+    # Pascal, so a typo is refused by name even where the reflected SDK
+    # (local only, never committed) is absent.
+    types = supported_sch_types()
+    if object_type.lower() not in types:
+        print(f"unknown schematic object type {object_type!r}; "
+              f"known: {', '.join(sorted(types))}", file=sys.stderr)
+        return 1
+
     names = [n.strip() for n in properties.split(",") if n.strip()]
     if not names:
         try:
@@ -1612,6 +1633,11 @@ def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
             table = None
         _, take, _ = candidates_for(model, object_type, "read", table)
         names = [name for name, _prop in take]
+    if not names:
+        print(f"nothing left to probe on {object_type}: every property the "
+              f"SDK declares for it is already read by the deployed block.",
+              file=sys.stderr)
+        return 0
 
     # A probe list built from today's table against yesterday's script
     # is how the debugger gets halted: the running block may still read
@@ -1633,6 +1659,7 @@ def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
         return 1
 
     params = {"properties": ",".join(names), "object_type": object_type}
+    params["index"] = str(index)
     if designator:
         params["designator"] = designator
     if pin:
@@ -1661,6 +1688,7 @@ def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
 
     rows = reply["results"]
     exposed = [r for r in rows if r.get("exposed")]
+    target = reply.get("designator") or f"#{index}"
     print(f"Probed {len(rows)} declared properties on "
           f"{reply.get('interface', '?')} "
           f"(component {reply.get('designator') or '?'}, "
@@ -1889,6 +1917,93 @@ def cmd_calc(verb: str, values: dict, *, as_json: bool = False) -> int:
     return 0
 
 
+def calc_aliases() -> dict:
+    """Every spelling of a calculator name that resolves to its verb.
+
+    The verb (`calc-fusing`), the verb without the prefix (`fusing`),
+    and the function it calls in either separator (`fusing_current`,
+    `fusing-current`). `eda-agent calc` advertised the last of those in
+    its own help text and did not accept it, so this accepts all four
+    rather than picking one and leaving the help wrong again.
+    """
+    out = {}
+    for verb, (fn_name, _help, _params) in CALC_COMMANDS.items():
+        for spelling in (verb, verb[len("calc-"):], fn_name,
+                         fn_name.replace("_", "-")):
+            out.setdefault(spelling, verb)
+    return out
+
+
+def list_calculators() -> int:
+    """Print the calculators and what each one needs. Always exit 0."""
+    print("Calculators (run one as `eda-agent calc NAME KEY=VALUE ...`):")
+    print()
+    for verb, (_fn, help_text, params) in CALC_COMMANDS.items():
+        print(f"  {verb[len('calc-'):]:<12} {help_text}")
+        required = [name for name, _t, default, _h in params
+                    if default is None]
+        optional = [f"{name}={default}" for name, _t, default, _h in params
+                    if default is not None]
+        if required:
+            print(f"               needs: {' '.join(required)}")
+        if optional:
+            print(f"               optional: {' '.join(optional)}")
+    print()
+    print("Each one is also a verb of its own: `eda-agent calc-fusing "
+          "--width-mils 10`.")
+    return 0
+
+
+def cmd_calc_by_name(name: str, inputs: list, *,
+                     as_json: bool = False) -> int:
+    """`eda-agent calc NAME KEY=VALUE ...`, the flagless form.
+
+    The generated `calc-*` verbs get their values from argparse, which
+    has already applied the types and the defaults. This form has a bare
+    list of KEY=VALUE strings instead, so it has to do both itself --
+    and until now it did neither: it handed the list straight to
+    cmd_calc, which expects a dict, and every invocation of the
+    documented example ended in an AttributeError.
+    """
+    if not name:
+        return list_calculators()
+
+    verb = calc_aliases().get(name)
+    if verb is None:
+        print(f"unknown calculator {name!r}", file=sys.stderr)
+        print("Run `eda-agent calc` for the list.", file=sys.stderr)
+        return 2
+
+    _fn, _help, params = CALC_COMMANDS[verb]
+    types = {pname: ptype for pname, ptype, _d, _h in params}
+    values = {pname: default for pname, _t, default, _h in params}
+
+    for item in inputs or []:
+        if "=" not in item:
+            print(f"expected KEY=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        key, _, raw = item.partition("=")
+        key = key.strip().replace("-", "_")
+        if key not in types:
+            print(f"{verb} has no input {key!r}. It takes: "
+                  f"{', '.join(types)}", file=sys.stderr)
+            return 2
+        try:
+            values[key] = types[key](raw.strip())
+        except (TypeError, ValueError):
+            print(f"{key}={raw!r} is not a "
+                  f"{types[key].__name__}", file=sys.stderr)
+            return 2
+
+    missing = [pname for pname, _t, default, _h in params
+               if default is None and values.get(pname) is None]
+    if missing:
+        print(f"{verb} needs {', '.join(missing)}", file=sys.stderr)
+        return 2
+
+    return cmd_calc(verb, values, as_json=as_json)
+
+
 # --------------------------------------------------------------------------
 # Fab capabilities, stackups and laminates
 # --------------------------------------------------------------------------
@@ -2025,21 +2140,33 @@ def cmd_laminates(*, as_json: bool = False) -> int:
     if not data.get("ok"):
         print(data["reason"], file=sys.stderr)
         return 1
-    print(f"{'laminate':24} {'er(proc)':>9} {'er(design)':>11} "
-          f"{'tan d':>8} {'Tg':>6}")
+    # Every column may be absent: a maker that tabulates typical values by
+    # frequency publishes no process and no design value, and only Rogers
+    # of the four publishes a Tg here.
+    def cell(value) -> str:
+        return "-" if value is None else str(value)
+
+    print(f"{'laminate':30} {'er(proc)':>9} {'er(design)':>11} "
+          f"{'er(use)':>8} {'tan d':>8} {'Tg':>6}")
     for lam in data["laminates"]:
-        design = "-" if lam["er_design"] is None else lam["er_design"]
-        loss = "-" if lam["loss_tangent"] is None else lam["loss_tangent"]
-        tg = "-" if lam["tg_c"] is None else lam["tg_c"]
-        print(f"{lam['name']:24} {lam['er_process']:>9} {design:>11} "
-              f"{loss:>8} {tg:>6}")
+        print(f"{lam['name'][:30]:30} {cell(lam.get('er_process')):>9} "
+              f"{cell(lam.get('er_design')):>11} "
+              f"{cell(lam.get('er_for_design')):>8} "
+              f"{cell(lam.get('loss_tangent')):>8} "
+              f"{cell(lam.get('tg_c')):>6}")
     for conv in data["conventions"]:
-        print(f"{conv['name']:24} {conv['er_low']:>9} to {conv['er_high']}")
+        print(f"{conv['name'][:30]:30} {conv['er_low']:>9} to {conv['er_high']}")
+    for fig in data.get("fab_figures") or []:
+        print(f"{fig['name'][:30]:30} {cell(fig.get('er_process')):>9} "
+              f"{'(fab figure, no conditions published)'}")
     sys.stdout.flush()
     print("\nTwo dielectric constants per laminate on purpose: the PROCESS "
           "value is\nmeasured one way and the DESIGN value another, they "
           "differ by about 5%,\nand the design value is the one to size an "
-          "impedance with.", file=sys.stderr)
+          "impedance with. er(use) is that\nchoice made for you: the design "
+          "value where there is one, else the typical\nvalue at the highest "
+          "frequency listed, never the process value.",
+          file=sys.stderr)
     print(data["note"], file=sys.stderr)
     return 0
 

@@ -37,7 +37,7 @@ def test_each_scope_clears_the_symbol_the_last_one_named():
 
 def test_the_walk_is_the_named_symbol_fetched_through_the_library():
     body = _generic("ProcessSchDocObjects")
-    assert "If LibScopeName <> '' Then\n            LibComp := LastCreatedLibComponent" in body
+    assert "If LibScopeName <> '' Then\n            LibComp := RememberedLibComponent(SchDoc)" in body
     assert "If (LibScopeName <> '') And (SymbolRef <> LibScopeName) Then Exit;" in body
     # MEASURED 2026.10.30.6: with LookupLibComponent called from Generic the
     # whole unit read as undeclared in Altium (HandleGenericCommand), every

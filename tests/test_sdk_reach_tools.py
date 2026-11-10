@@ -131,9 +131,11 @@ def test_part_parameters_refuse_before_altium(monkeypatch, kwargs):
 
 def test_part_parameters_use_the_factory_call_scripts_are_given():
     body = _body("PCB.pas", "PCB_ComponentParameters")
-    assert "CreatePrimitiveParametersWithoutVariant(Comp)" in body
+    factory = _body("PCB.pas", "PcbPartParameters")
+    assert "Prims := PcbPartParameters(Comp)" in body
+    assert "CreatePrimitiveParametersWithoutVariant(Comp)" in factory
     assert "Internal_CreatePrimitiveParameters" not in body
-    assert "GetParameterByIndex" in body
+    assert "GetParameterByIndex" in _body("PCB.pas", "PcbPartParameterItems")
     # The getter by name halts the loop; the read-back comes from the walk.
     assert "GetValueByNameDef" not in body
     assert "Problem := 'the value does not read back'" in body

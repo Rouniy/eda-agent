@@ -40,22 +40,25 @@ dashboard descriptions below are not the exposed shared-mode feature set.
 
 - [Demo](#demo)
 - [Dashboard](#dashboard)
+- [Layout voting](#layout-voting)
 - [How it works](#how-it-works)
 - [Features](#features)
 - [Requirements](#requirements)
-- [Installation](#installation) - including [Altium-side scripts](#altium-side-scripts) and [Check that it worked](#check-that-it-worked)
-- [Workspace and profiles](#workspace-and-profiles) - what lives where, and how to set your house style
-- [Design modes](#design-modes) - choose the scope of a design run
-- [Fab capabilities, stackups and laminates](#fab-capabilities-stackups-and-laminates) - JLCPCB and PCBWay, dated and sourced
-- [Calculators](#calculators) - spacing, fusing, vias, impedance and the rest, on the CLI too
+- [Installation](#installation)
+- [Workspace and profiles](#workspace-and-profiles)
+- [PCBA phase gates](#pcba-phase-gates)
+- [Design modes](#design-modes)
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
 - [Tool count (clients that cap it)](#tool-count-clients-that-cap-it)
+- [Fab capabilities, stackups and laminates](#fab-capabilities-stackups-and-laminates)
+- [Calculators](#calculators)
 - [Part sourcing](#part-sourcing)
+- [Altium 365, company policies, simulators](#altium-365-company-policies-simulators)
 - [Example use cases](#example-use-cases)
-- [Known limitations](#known-limitations) - read this before trusting it with a real design
+- [Known limitations](#known-limitations)
 - [Timeout and server lifecycle](#timeout-and-server-lifecycle)
-- [Tool reference](#tool-reference) - and the other documents
+- [Tool reference](#tool-reference)
 - [Architecture](#architecture)
 - [CLI](#cli)
 - [Configuration](#configuration)
@@ -64,6 +67,7 @@ dashboard descriptions below are not the exposed shared-mode feature set.
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 - [Disclaimer](#disclaimer)
+- [About](#about)
 
 </details>
 
@@ -79,7 +83,7 @@ Claude Code with eda-agent draws a 12 V to 3.3 V, 2 A step-down supply around th
 
 ## Dashboard
 
-<img src="assets/dashboard.png" alt="eda-agent dashboard inside Altium Designer" width="320">
+<img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer, command log" width="320"> <img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="320">
 
 Two dashboards ship with eda-agent:
 
@@ -138,6 +142,7 @@ template.
 - **Logo / artwork on the board**: `pcb_place_image` turns a PNG or BMP into PCB region primitives (silkscreen logo, QR code, artwork). The image is decomposed into non-overlapping rectangles rather than traced outlines, so nothing is approximated away from the source art and holes need no special handling. Plans by default (`dry_run=True`) and reports the primitive count first, because anti-aliased artwork can decompose into thousands of pieces, with a `max_regions` cap that a photograph will hit immediately. Verified on a live board: an asymmetric test glyph was placed and read back to confirm scale, origin corner and layer, and that the art is neither mirrored nor flipped
 - **Headless library reads**: `lib_read_pcblib_headers` parses a `.PcbLib`'s footprint names, pad counts, heights and descriptions straight out of the OLE container with Altium closed (the `.SchLib` side already backs the `altium_local` provider and the offline review). Pad geometry stays a live read: it lives in Altium's binary primitive region, which this project does not reverse-engineer without ground truth
 - **Owner profiles**: per-workspace house style (footprint-authoring defaults like pad corner rounding, design rules, fab/stackup profiles, naming conventions, schematic units/grid, project templates), auto-discovered from a project-local `.eda-agent/profile/` or a centrally-switched `eda-agent profile-use <name>`. See [docs/PROFILES.md](docs/PROFILES.md)
+- **Optional Rust compute**: `eda-agent --compute rust` (or `EDA_AGENT_COMPUTE=rust`) runs the routing planner's grid search in a compiled wheel built from `rust/eda_agent_compute`, which is about 16x faster on a 1090-pad board at a 10 mil grid, with byte-identical results. Python stays the default and the wheel is optional. See [docs/RUST_COMPUTE.md](docs/RUST_COMPUTE.md)
 - **Bulk-tool nudge**: when a singular tool is hit 2 to 3 times in 10 s, the response carries a `_hint_bulk` field pointing at the batch variant. Clients that missed the bulk tool in the docstring learn about it at runtime
 - **Design agent surface**: MCP tools (`design_get_discipline`, `design_snapshot_inventory`, `design_validate_plan`, `design_audit_schematic`, `design_validate`) that let an MCP-client LLM produce a structured `DesignPlan` JSON, audit the drawn sheet for layout problems, and validate ERC + connectivity. Datasheet-first, NDA-isolated by construction
 - **Schematics drawn from a hand template**: the LLM plans the sheet the way an engineer draws it, every coordinate on the grid (rails as straight wires, capacitors hanging to ground, a divider whose midpoint runs straight to its pin), writing wires through pin anchors such as `U1.EN`. `sch_preview_template` checks the template and draws it to a PNG without touching the sheet; `sch_draw_template` places the parts, reads their pins back, checks the wiring against those pins and the plan's nets, refuses a short or a misplaced part before the first wire, then draws the wires, power ports and labels and stamps the part data. On EasyEDA, `easyeda_emit_template` and `easyeda_emit_template_connections` do the same in two passes
@@ -151,8 +156,8 @@ template.
 - Python 3.11+
 - An EDA tool, one of:
   - **Altium Designer** (recent versions, AD20+ preferred) - Windows only
-  - **KiCad 9+** with the IPC API server enabled (Preferences → Plugins → KiCad API server), plus `pip install -e .[kicad]`
-  - **EasyEDA Pro**, through a browser extension you build and import into the editor. Note the connection runs the other way round: the editor dials out to this server, so nothing here can start it
+  - **KiCad 10** with its API enabled (Preferences → Plugins → Enable KiCad API) and the board open in the PCB editor; nothing extra to install
+  - **EasyEDA Pro**, through a browser extension you build and import into the editor. Note the connection runs the other way round: the editor dials out to this server, so nothing here can start it (see [`extensions/easyeda/README.md`](extensions/easyeda/README.md))
 
 The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), so one install drives any of them. See [EDA backends](#eda-backends).
 
@@ -221,7 +226,7 @@ Default destination: wherever Altium already loads the script project from (its 
 
 Register the script as a Global Project in Altium (once):
 
-1. **DXP → Preferences → Scripting System → Global Projects** → **Install from file**
+1. **Preferences** (the gear icon at the top right; **DXP → Preferences** before AD18) **→ Scripting System → Global Projects** → **Install from file**
 2. Select the `Altium_API.PrjScr` you just installed
 
 From then on, every Altium startup compiles the script project and the polling loop is one click away:
@@ -402,7 +407,8 @@ cannot do, is in [`docs/BACKENDS.md`](docs/BACKENDS.md).
 
 Tools are grouped by the **document** they act on, and mixing them up is the
 most common mistake: `lib_` acts on a `.PcbLib` or `.SchLib`, `pcb_` on an open
-`.PcbDoc`, `sch_` and `obj_` on an open `.SchDoc`. A board tool aimed at a
+`.PcbDoc`, `sch_` on an open `.SchDoc`, and `obj_` on either, by the object
+type it is given (`eTrackObject` acts on the active board). A board tool aimed at a
 library does not reliably fail. With no board focused it can resolve some other
 open board and report success for work you never asked for.
 
@@ -512,11 +518,22 @@ and the design value is the one to size an impedance with. A table
 carrying a single `er` silently picks one, so both are carried and
 `er_design` is null where none is published.
 
+Not every maker publishes both. Isola and Panasonic tabulate **typical**
+values by frequency instead, and for those both columns stay empty
+rather than borrowing a typical figure and calling it a process or
+design one. Every laminate also carries `er_for_design`: the one number
+to size an impedance with, which is the design value where there is one
+and the nearest typical value otherwise, never the process value, and it
+says which kind it chose.
+
 The laminate list is deliberately short: only entries read off a
 datasheet are in it. pcb-toolkit carries 45 presets extracted from the
 Saturn PCB Toolkit binary, which its own README calls compatibility
 data rather than manufacturer data; copying them here would turn an
 acknowledged approximation into what looks like a reference table.
+A fab's own figure for its own stack, like JLCPCB's 4.6, is reported
+separately under `fab_figures` for the same reason: it has no
+measurement conditions and does not carry to another fab's FR-4.
 
 ### Applying one to a board
 
@@ -664,7 +681,7 @@ managed library, and can publish, release and change parameters (only with
 `confirm=True`). Two routes: the workspace's own API, with
 `EDA_AGENT_ALTIUM365_DOMAIN` and a token made under Admin > Developer in
 `EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
-`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once.
+`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
 lists. Nothing Altium 365 returns is written to disk.
 `altium365_check_setup` says which route is set up.
@@ -701,7 +718,7 @@ The AI reads your schematic live. Ask it anything a reviewer would:
 >
 > *"Compare the focused schematic to the version from 3 weeks ago. What parameter values changed?"*
 
-Behind that, the AI calls tools like `query_objects(object_type="eSchComponent", scope="project")`, `get_connectivity_many(designators=[...])`, `get_nets(...)`, `modify_objects(...)`, and so on. You watch Altium repaint as it works.
+Behind that, the AI calls tools like `obj_query(object_type="eSchComponent", scope="project")`, `proj_get_connectivity_many(designators=[...])`, `proj_get_nets(...)`, `obj_modify(...)`, and so on. You watch Altium repaint as it works.
 
 ### Sch ↔ PCB drift detection
 
@@ -834,7 +851,7 @@ That clicks the menu and answers the dialogs in one call, which matters because 
 
 ### Tools vary in maturity
 
-Not every one of these tools has been exercised on every Altium version or design size. The generic primitives (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `run_process`) and the core `application` / `project` tools are the best-tested. Some PCB modify operations (polygon repour, room creation, align-components) are less battle-tested. Queries are generally safer than mutations.
+Not every one of these tools has been exercised on every Altium version or design size. The generic primitives (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `obj_run_process`) and the core `application` / `project` tools are the best-tested. Some PCB modify operations (polygon repour, room creation, align-components) are less battle-tested. Queries are generally safer than mutations.
 
 ## Timeout and server lifecycle
 
@@ -842,13 +859,13 @@ The server has **three independent timeout mechanisms**:
 
 ### 1. Per-command timeout (Python side)
 
-When the MCP client calls a tool, the Python bridge writes a request file and waits up to **10 seconds by default** for a response. Fast queries typically complete in under 100 ms, so a 10 s ceiling surfaces stalls quickly while leaving plenty of margin for real work. Long-running tools that are expected to take longer (`app_save_all`, `stop_server`, `pcb_get_unrouted_nets`) set their own larger timeouts internally.
+When the MCP client calls a tool, the Python bridge writes a request file and waits up to **10 seconds by default** for a response. Fast queries typically complete in under 100 ms, so a 10 s ceiling surfaces stalls quickly while leaving plenty of margin for real work. Long-running tools that are expected to take longer (`app_save_all`, `pcb_get_unrouted_nets`) set their own larger timeouts internally.
 
 Each request is published to its own `request_<id>.json` file; Altium replies in `response_<id>.json` with the matching ID. The bridge's keep-alive thread and MCP-client calls each use their own request IDs, so responses never race. The older single-`response.json` channel was retired in IPC v2.
 
 ### 2. Server auto-shutdown (Altium side)
 
-The DelphiScript polling loop auto-stops after **10 minutes of inactivity** (`AUTO_SHUTDOWN_MS = 600000`). If the MCP client disconnects and the keep-alive pings stop arriving, the server releases Altium's scripting engine after ten minutes and `StartMCPServer` returns. To resume, re-launch via **File → Run Script... → StartMCPServer → Run**.
+The DelphiScript polling loop auto-stops after **10 minutes of inactivity** (`AutoShutdownMs = 600000`). If the MCP client disconnects and the keep-alive pings stop arriving, the server releases Altium's scripting engine after ten minutes and `StartMCPServer` returns. To resume, re-launch via **File → Run Script... → StartMCPServer → Run**.
 
 ### 3. Python keep-alive pings
 
@@ -862,7 +879,7 @@ The server normally remains alive while a client sends keep-alives. After discon
 
 ### Why this matters for Altium UI responsiveness
 
-The polling loop goes into idle mode after ~1 second of no MCP commands. In idle mode it polls every 100 ms with a `ProcessMessages` yield in between, so Altium's UI stays responsive continuously. In active mode the loop polls every 10 ms (`ProcessMessages` every 5th tick), giving sub-50 ms round-trip latency for back-to-back commands. For a full release, call `app_detach` or click **Detach** on the dashboard.
+The polling loop goes into idle mode after a second or two of no MCP commands (150 empty polls). In idle mode it polls every 30 ms with a `ProcessMessages` yield in between, so Altium's UI stays responsive continuously. In active mode the loop polls every 10 ms (`ProcessMessages` every 5th tick), giving sub-50 ms round-trip latency for back-to-back commands. For a full release, call `app_detach` or click **Detach** on the dashboard.
 
 ## Tool reference
 
@@ -877,14 +894,46 @@ maps official Altium scripting examples and interfaces to those tools, records
 live AD-version verification and known gaps, and gives future agents the
 required extension trail.
 
+[`docs/SDK_COVERAGE.md`](docs/SDK_COVERAGE.md) is the other half of that
+question: how much of Altium's declared object model the generic property
+layer reaches, how the figure is arrived at, and why a property Altium
+declares is not necessarily one a script can touch.
+
 [`CHANGELOG.md`](CHANGELOG.md) records what each change added or fixed,
 and marks anything not yet watched working against a live Altium session
-or a real Nexar account. The deeper references are
-[`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) for the `eng_*`
-family, [`docs/PROFILES.md`](docs/PROFILES.md) for per-workspace house
-style, [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md) for part
-providers, and [`docs/BACKENDS.md`](docs/BACKENDS.md) for the EDA
-backends.
+or a real Nexar account.
+[`docs/RELEASE_VERIFICATION.md`](docs/RELEASE_VERIFICATION.md) is where a
+release's Pascal is either recorded as read live or declared unverified,
+with the exact call that would settle it.
+
+The deeper references:
+
+| Document | What it covers |
+| --- | --- |
+| [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) | the `eng_*` family, and which parts are unverified against live Altium or Nexar |
+| [`docs/PROFILES.md`](docs/PROFILES.md) | per-workspace house style: naming, rules, fab profiles, templates |
+| [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md) | the part providers, what each one answers, and what none of them do |
+| [`docs/BACKENDS.md`](docs/BACKENDS.md) | the Altium, KiCad and EasyEDA Pro backends |
+| [`docs/AUTONOMOUS_DESIGN.md`](docs/AUTONOMOUS_DESIGN.md) | driving a full spec-to-board run from any MCP client |
+| [`docs/DESIGN_MODES.md`](docs/DESIGN_MODES.md) | presets for the kind of run: reference-design redraw, dev-kit derivative, schematic only, layout only |
+| [`docs/AI_ALTIUM_FIELD_NOTES.md`](docs/AI_ALTIUM_FIELD_NOTES.md) | Altium behaviours measured while driving it, written as operating constraints |
+| [`docs/ALTIUM_AUTONOMY_RUNBOOK.md`](docs/ALTIUM_AUTONOMY_RUNBOOK.md) | the by-hand runbook, deliberately outside the unit suite because it drives a real Altium |
+| [`docs/HARDWARE_CI.md`](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
+| [`docs/TOOL_NAMING.md`](docs/TOOL_NAMING.md) | the `ns_verb_object` convention every tool name follows |
+| [`docs/ui-automation.md`](docs/ui-automation.md) | what the synthesised input can reach, and what contains it |
+
+| [`docs/ALTIUM_MCP_RU.md`](docs/ALTIUM_MCP_RU.md) | Additional project reference |
+| [`docs/DESIGN-event-driven-dispatch.md`](docs/DESIGN-event-driven-dispatch.md) | Additional project reference |
+| [`docs/FORK-ARGUMENT-AUDIT-2026-10-28.md`](docs/FORK-ARGUMENT-AUDIT-2026-10-28.md) | Additional project reference |
+| [`docs/FORK-BEHAVIOR-CHECK-2026-10-28.md`](docs/FORK-BEHAVIOR-CHECK-2026-10-28.md) | Additional project reference |
+| [`docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`](docs/FORK-INTEGRATION-AUDIT-2026-10-26.md) | Additional project reference |
+| [`docs/LIBRARY-READS-DESIGN.md`](docs/LIBRARY-READS-DESIGN.md) | Additional project reference |
+| [`docs/PARITY-ROADMAP.md`](docs/PARITY-ROADMAP.md) | Additional project reference |
+| [`docs/PROPOSAL-2026-09-28-metadata-write-increment.md`](docs/PROPOSAL-2026-09-28-metadata-write-increment.md) | Additional project reference |
+| [`docs/PROPOSAL-2026-10-07-placement-write-increment.md`](docs/PROPOSAL-2026-10-07-placement-write-increment.md) | Additional project reference |
+| [`docs/PROPOSAL-2026-10-09-copper-write-increment.md`](docs/PROPOSAL-2026-10-09-copper-write-increment.md) | Additional project reference |
+| [`docs/PROPOSAL-2026-10-09-setup-write-increment.md`](docs/PROPOSAL-2026-10-09-setup-write-increment.md) | Additional project reference |
+| [`docs/UPSTREAM-SYNC-2026-10-27.md`](docs/UPSTREAM-SYNC-2026-10-27.md) | Additional project reference |
 
 At runtime `tool_catalog` serves the same data, filtered by category,
 maturity, interaction or substring, and `tool_invoke` calls anything it
@@ -926,6 +975,11 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 
 ## CLI
 
+Grouped the same way `eda-agent --help` groups them, so the two
+listings can be read against each other.
+
+### Server and setup
+
 | Command | Purpose |
 |---|---|
 | `eda-agent` | Start the MCP server on stdio (what the MCP client calls) |
@@ -949,10 +1003,68 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent sdk-coverage [--json] [--detail N] [--sdk-json PATH]` | How much of Altium's own SDK the generic property layer reaches. Reflects `Altium.SDK.Interfaces.dll` from the local install into `reference/altium_sdk.json` (via `scripts/altium_sdk_reflect.ps1`), then measures the four Pascal property chains against it and names every property that is declared but unreachable. See [SDK coverage](docs/SDK_COVERAGE.md) |
 | `eda-agent profile-init <name> [--here]` | Scaffold a new owner profile (naming/rules/fab/footprint conventions). `--here` makes it project-local (`.eda-agent/profile/`, meant to be committed); without it, a centrally-switchable `~/.eda-agent/profiles/<name>/`. See [docs/PROFILES.md](docs/PROFILES.md) |
 | `eda-agent profile-list` | List central profiles and which one is active |
-| `eda-agent profile-use <name>` | Set the centrally active profile |
 | `eda-agent profile-show [--json]` | Show the profile actually in effect for the current directory |
+| `eda-agent profile-use <name>` | Set the centrally active profile |
 | `eda-agent profile-validate [name] [--here]` | Load every file in a profile and report errors |
 | `eda-agent profile-new-project <template> <dest> [--force]` | Copy a profile's `templates/<name>/` tree to a new project directory |
+| `eda-agent phases-show [--json]` | Which [NPI stages](#pcba-phase-gates) are in force, and which setting decided it |
+| `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all five when none are named. Off by default |
+| `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
+
+### Diagnostics
+
+| Command | Purpose |
+|---|---|
+| `eda-agent fork-status` | Compare configured fork tips and merge bases |
+| `eda-agent perf` | Show bridge command timing |
+| `eda-agent compute-status` | Show which optional compute implementation is active |
+| `eda-agent relaunch` | Restart the Altium polling script after an explicit operator decision |
+
+### Browser UIs
+
+| Command | Purpose |
+|---|---|
+| `eda-agent dashboard` | Start the local dashboard |
+| `eda-agent stop-dashboard` | Stop the local dashboard |
+| `eda-agent vote` | Open the feedback page |
+
+### Altium SDK reach
+
+| Command | Purpose |
+|---|---|
+| `eda-agent sdk-generate` | Generate a reviewed candidate property reader or writer |
+| `eda-agent sdk-probe` | Probe declared properties on the running Altium instance |
+| `eda-agent sdk-symbols` | Inspect indexed SDK symbols |
+
+### Owner profiles
+
+Use `profile-init`, `profile-list`, `profile-show`, `profile-use`,
+`profile-validate`, `profile-new-project`, and the `phases-*` commands
+listed above to select and check project conventions.
+
+### Design modes
+
+| Command | Purpose |
+|---|---|
+| `eda-agent mode-list` | List the [design modes](docs/DESIGN_MODES.md) and which one is selected |
+| `eda-agent mode-show [name] [--json]` | One mode in full: stages, inputs, rules, stage notes |
+| `eda-agent mode-use <name>` / `--clear` | Select the mode a run uses when it names none |
+| `eda-agent mode-init <name> [--extends MODE]` | Scaffold `modes/<name>.json` in the active profile |
+| `eda-agent --mode <name> <command>` | Use a mode for one command (same as `EDA_AGENT_MODE`) |
+
+### Offline analysis (no running Altium)
+
+| Command | Purpose |
+|---|---|
+| `eda-agent review --offline <file> [--json/--sarif] [--fail-on ...]` | **Offline** component-level design review of a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in (`--offline` or `EDA_AGENT_HEADLESS_REVIEW=1`); exit 1 on findings at/above `--fail-on` - a hardware-CI gate |
+| `eda-agent bom --offline <file> [--csv/--json]` | **Offline** consolidated BOM from a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in |
+| `eda-agent netlist --offline <file> [--json] [--fail-on ...]` | **Offline** geometric netlist reconstruction + connectivity ERC (`single_pin_net`, `net_short`) from a `.SchDoc` (no Altium). Opt-in; exit 1 on findings at/above `--fail-on` |
+
+### Engineering calculators
+
+| Command | Purpose |
+|---|---|
+| `eda-agent calc [NAME] [KEY=VALUE ...] [--json]` | The flagless form of the verbs below: `eda-agent calc fusing-current width_mils=10`. Takes the verb (`calc-fusing`), the verb without its prefix (`fusing`) or the underlying function (`fusing-current`). Bare `eda-agent calc` lists them with the inputs each takes |
 | `eda-agent calc-spacing --voltage V [--environment B2]` | Minimum conductor spacing for a voltage (IPC-2221) |
 | `eda-agent calc-fusing --width-mils W [--copper-oz 1] [--time-s 1]` | Current that melts a track in a given time (Onderdonk) |
 | `eda-agent calc-via --drill-mils D --length-mils L` | Via inductance, capacitance and barrel resistance |
@@ -964,10 +1076,31 @@ All intelligence lives in Python. The DelphiScript side is a pass-through layer 
 | `eda-agent calc-padstack --drill-mils D --annular-ring-mils R [--pitch-mils P]` | Pad and antipad sizes, gap to neighbours |
 | `eda-agent calc-wire --awg N [--length-m 1] [--temperature-c 20]` | AWG diameter, area and resistance |
 | `eda-agent calc-cross-check <calculator> [--arg NAME=VALUE]` | Compare a calculator against a locally built pcb-toolkit |
+
+### Fab capabilities and materials
+
+| Command | Purpose |
+|---|---|
 | `eda-agent stackup-vendors [--json]` | Bundled fab vendors, with source and age |
 | `eda-agent stackup-show <vendor> [--json]` | One vendor's minimums and stackup templates |
 | `eda-agent stackup-profile <vendor> [--fill NAME=MILS]` | Emit a fab profile JSON, or say what the vendor does not publish |
 | `eda-agent laminates [--json]` | Laminate properties, with both dielectric constants |
+| `eda-agent fab-inspect` | Inspect exported fabrication files offline |
+
+### Altium 365
+
+| Command | Purpose |
+|---|---|
+| `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
+| `eda-agent altium365-logout` | Forget the saved Nexar login |
+| `eda-agent a365-login` | Authenticate the direct Altium 365 workspace API |
+| `eda-agent a365-logout` | Remove the direct workspace credential |
+
+### Experimental
+
+| Command | Purpose |
+|---|---|
+| `eda-agent eco-execute --confirm [--validate-only] [--allow-confirm-dialogs] [--wait-first N] [--budget N]` | **Experimental, unverified.** Watches for and auto-presses Altium's Engineering Change Order dialog (Validate Changes / Execute Changes / Close), via the existing `app_drive_dialogs` reactive driver. Off unless `--confirm`; does not trigger an ECO itself (trigger separately with `proj_sync_pcb` or Design > Update PCB Document while this runs). See [ECO update](docs/ENGINEERING_TOOLS.md#eco-update-experimental) |
 
 Every `calc-*` verb takes `--json` for the full reply and exits non-zero
 on a refusal, so a script can tell "this geometry is impossible" from
@@ -1032,16 +1165,26 @@ python build.py
 ```
 eda-agent/
 ├── src/eda_agent/          Python package
-│   ├── bridge/             Altium communication layer
+│   ├── bridge/             Communication with each editor (Altium IPC, EasyEDA WebSocket)
 │   ├── schemas/            Pydantic IPC envelope + per-command schemas
-│   ├── tools/              MCP tool implementations (incl. design.py)
+│   ├── tools/              MCP tool implementations
+│   ├── core/               EDA-agnostic design snapshot and review
 │   ├── design/             Design agent: plan / inventory / discipline / executor / validator
+│   ├── layout/, placement/, route/   Board geometry, rules, placement and routing engines
+│   ├── libimport/          Part providers and vendor library import
+│   ├── render/, export/    Drawing designs to SVG/PNG; file-format exporters
+│   ├── fileio/, sim/       Offline readers (opt-in fallback); simulation results and settings
+│   ├── ui/                 Windows UI automation for dialogs and menus
+│   ├── web/                Local web dashboard
 │   ├── diag/               Health and doctor checks
 │   ├── cli.py              CLI subcommands
 │   └── server.py           MCP server entry point
 ├── scripts/altium/         DelphiScript sources (dev source of truth)
 │   ├── Main.pas, Utils.pas, Dispatcher.pas, …
 │   └── Altium_API.PrjScr   Altium script project
+├── extensions/easyeda/     The EasyEDA Pro extension (the editor half of that backend)
+├── skills/                 Client skill files (autodesign)
+├── docs/                   Backends, tool reference, release verification and other guides
 └── tests/                  Python + Free Pascal test suite
 ```
 
@@ -1055,11 +1198,11 @@ At wheel build time `scripts/altium/` is copied into `src/eda_agent/scripts/` in
 
 **Altium error dialog "Undeclared identifier: ..." or "Could not convert variant..."**: a DelphiScript crash in one of the bridge handlers. In Altium's Script IDE toolbar, press the red **Stop** button (or **Run > Stop** / **Ctrl+F3**; use **Ctrl+Pause/Break** if the script is stuck in an infinite loop) to halt the debugger. Then re-launch the polling loop via **File > Run Script... > StartMCPServer > Run**. If the identifier is one the scripts themselves define, Altium is running an older compile of a unit: run `app_ping`, which names it in `stale_units`, then close the script project in the Projects panel (right-click `Altium_API.PrjScr`, **Close Project**), reopen it and run StartMCPServer. Otherwise report the identifier or error text as an issue.
 
-**Some Altium buttons don't respond while the server is running**: expected while the AI is actively issuing commands. Built-in Altium functions that depend on DelphiScript wait for the polling loop to yield. The loop enters an idle/yield mode within ~1 s of the last AI command; if a button is still unresponsive after that, call `app_detach` from the MCP client to fully release the scripting engine.
+**Some Altium buttons don't respond while the server is running**: expected while the AI is actively issuing commands. Built-in Altium functions that depend on DelphiScript wait for the polling loop to yield. The loop enters an idle/yield mode a second or two after the last AI command; if a button is still unresponsive after that, call `app_detach` from the MCP client to fully release the scripting engine.
 
 **Altium's main window disappears while the status window stays up**: the main window has been found hidden, not minimized, with no taskbar button. The bridge checks after every reply, keep-alive pings included, and shows it again without taking the focus, so it comes back within about 30 s. Each time, `bridge_trace.log` gets a `FRAME_SHOWN` line naming the last command, and UI tools log `UI tool=<name>` lines so they can be named too. If it keeps happening, report that line as an issue.
 
-**Command timeouts on very large boards**: default is 10 s so stalls surface fast. Tools known to take longer (`app_save_all`, `pcb_get_unrouted_nets`, `stop_server`) set their own internal timeouts up to 60 s. If you hit a timeout on a custom long-running operation, embed the bridge directly and pass a higher `timeout=` to `send_command_async`. The polling loop itself adapts (10 ms active, 100 ms idle) so it doesn't add latency.
+**Command timeouts on very large boards**: default is 10 s so stalls surface fast. Tools known to take longer (`app_save_all`, `pcb_get_unrouted_nets`) set their own, longer timeouts. If you hit a timeout on a custom long-running operation, embed the bridge directly and pass a higher `timeout=` to `send_command_async`. The polling loop itself adapts (10 ms active, 30 ms idle) so it doesn't add latency.
 
 ## License
 
@@ -1079,6 +1222,4 @@ This project is not affiliated with, endorsed by, or sponsored by Altium Limited
 
 ## About
 
-eda-agent was created and is maintained by [George Saliba](https://salitronic.com), an independent electronics design engineer. Thanks to everyone who has contributed, see the [contributors](https://github.com/salitronic/eda-agent/graphs/contributors).
-
-If you need hardware designed, I take on design work, see [salitronic.com](https://salitronic.com).
+eda-agent is maintained in this fork by [MOREmbedded](https://github.com/MOREmbedded). It builds on, and tracks, the upstream [salitronic/eda-agent](https://github.com/salitronic/eda-agent) project. Thanks to everyone who has contributed to either, see the [contributors](https://github.com/MOREmbedded/eda-agent/graphs/contributors).

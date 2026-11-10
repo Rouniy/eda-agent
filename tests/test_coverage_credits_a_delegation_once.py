@@ -10,6 +10,13 @@ DescriptionString, which a pin cannot answer.
 
 The report is the number this project steers by, so an overstatement in
 it is worse than no report.
+
+The chains delegate in three shapes, and all three are measured here: a
+branch guarded on the object type, a family of extra properties whose
+owner table names the type each one belongs to, and a call no branch
+guards at all. Reading only the chain's own body missed 116 reachable
+properties; reading them all into one flat set, which is what upstream's
+sdk-reach did, is the overstatement these tests exist to prevent.
 """
 
 from __future__ import annotations

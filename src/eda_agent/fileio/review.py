@@ -383,7 +383,7 @@ def to_sarif(report: dict[str, Any], *, tool_version: str = "") -> dict[str, Any
     rules = [
         {"id": rid,
          "shortDescription": {"text": _RULE_HELP.get(rid, rid)},
-         "helpUri": "https://github.com/salitronic/eda-agent"}
+         "helpUri": "https://github.com/Rouniy/eda-agent"}
         for rid in rule_ids
     ]
     default_uri = str(report.get("file", "")).replace("\\", "/")
@@ -402,7 +402,7 @@ def to_sarif(report: dict[str, Any], *, tool_version: str = "") -> dict[str, Any
             }],
         })
     driver = {"name": "eda-agent", "informationUri":
-              "https://github.com/salitronic/eda-agent", "rules": rules}
+              "https://github.com/Rouniy/eda-agent", "rules": rules}
     if tool_version:
         driver["version"] = tool_version
     return {

@@ -1,5 +1,21 @@
 # Fork integration TODO
 
+## Complete source backport candidate, 2026-11-10
+
+- [x] Merge the full `MOREmbedded/main` line at `3af39ffd` into the
+  Rouniy integration branch, preserving the existing restricted runtime
+  and reconciling conflicting handlers and interfaces.
+- [x] Run the complete local Python suite: 11,660 passed, 253 skipped,
+  one expected failure, zero failures. Build Pascal `2026.11.10.204`
+  with zero lint errors/warnings, the EasyEDA extension, wheel and sdist;
+  verify the installed wheel in a clean environment.
+- [ ] Confirm the backport branch in GitHub CI, including Python 3.11/3.12
+  and Free Pascal checks unavailable on this machine.
+- [ ] Recover the shared operating runbook required by `AGENTS.md`, then
+  execute the native acceptance matrix on disposable Altium documents
+  before any runtime deployment. Compare exports from the same snapshot
+  and record exact runtime/source hashes and target identity.
+
 ## Workspace prerequisites, 2026-11-10
 
 - [x] Port the per-tool-call Altium session queue, preserving the existing

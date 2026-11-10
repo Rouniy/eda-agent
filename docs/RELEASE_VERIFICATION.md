@@ -1,7 +1,7 @@
 
-# Release verification: 2026.11.10.200 candidate
+# Release verification: 2026.11.10.204 candidate
 
-The backport branch builds script `2026.11.10.200`. Native Altium acceptance
+The backport branch builds script `2026.11.10.204` with package `0.8.1`. Native Altium acceptance
 and deployment for this candidate remain pending. The notes below retain the
 last completed live verification and must not be read as acceptance of this
 candidate.
@@ -229,7 +229,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.11.10.200` from `app_ping` after an
+Expect `altium_script_version` = `2026.11.10.204` from `app_ping` after an
 operator installs and starts this candidate. This native check is pending.
 
 ## 2026.10.28.156 - Previous native checkpoint
@@ -587,6 +587,17 @@ works elsewhere cannot be an undeclared identifier:
 
 | Step | Property | Written elsewhere? | Risk |
 |---|---|---|---|
+| 60, local grids | `SetProperty_AngularStep` | yes, `PCB_LocalGrid` | medium, grid settings require native readback |
+| 62, sheet symbol labels | `SheetName.Location`, `SheetFileName.Location`, `FontId` | yes, `Generic.pas` | medium, positions and fonts require native readback |
+| 63, rule limits | `MinLimit`, `MaxLimit`, `Minimum`, `Maximum`, `MaximumFlightTime` | yes, `RuleLimitsReport` in `PCB.pas` | high, require native rule readback |
+| 64, board intake and stack manager | `Selected`, `CopperThickness` | yes, `PCB.pas` | high, board edits need save and reopen checks |
+| 65, blanket edits | `Location` | yes, `Generic.pas` | medium, verify blanket geometry and net coverage |
+| 68, footprint repoint | `Name` | yes, `Library.pas` | high, verify model identity after save |
+| 69, directives and compile masks | `Orientation` | yes, `Generic.pas` | medium, verify repeated channels and ERC output |
+| 70, pad relief and IPC batch | `SolderMaskExpansion` | yes, `PCB.pas` | high, verify copper and mask output |
+| 72, board rule policy | `Name` | yes, `PCB.pas` | high, verify rule values and scopes |
+| 75, board placement | `XLocation` | yes, `PCB.pas` | high, verify the exact board target |
+| 76, custom pad shapes | `TopShape` | yes, `PCB.pas` | high, verify custom geometry in the target Altium version |
 | 5, 3D placement | `StandoffHeight` | only by step 15, itself unverified | highest |
 | 5, 3D placement | `Rotation` on a body | other object types only | high |
 | 2, pin edges | `Symbol_OuterEdge`, `Symbol_InnerEdge` | only by `Library.pas` and, since step 44, `Generic.pas` | high, and can stop the loop; the inner edge has since run live through obj_modify |
@@ -687,8 +698,8 @@ works elsewhere cannot be an undeclared identifier:
 | 39, pin map | `MapAsString` on a footprint model | no, nowhere | low, written, read back and restored live |
 | 39, footprint choice | `IsCurrent` on a placed part's footprint model | yes, `Library.pas` | medium, not yet run on a part with several models |
 | 38, stack-up apply | `CopperThickness`, `DielectricHeight`, `DielectricConstant`, `DielectricType` on a board layer | yes, `PCB_ModifyLayer` | low, the same writes pcb_modify_layer makes, each read back |
-| 40, body standoff | `StandoffHeight` written on a library 3D body already in place, not a STEP one | yes, `Lib_Link3DModel` and `AddExtrudedBody`, on a body just created | low, run live on an extruded body |
-| 40, model Z offset | `SetState` (RotX, RotY, RotZ, Dz) on a STEP body's model | no, nowhere | low, signature measured live from the saved record; the rotations passed are the saved file's |
+| 40, body standoff | `StandoffHeight` written on a library 3D body already in place, not a STEP one | yes, `AddExtrudedBody`, on a body just created | low, run live on an extruded body |
+| 40, model Z offset | `SetState` (RotX, RotY, RotZ, Dz) on a STEP body's model | yes, `Lib_Link3DModel`, on a model before it is bound; its Dz is new | low, signature measured live from the saved record; the rotations passed are the saved file's |
 | 40, model reassigned | `Model` assigned back to a STEP body after SetState | yes, `Lib_Link3DModel`, on a body just created | low, it is what makes the Z offset save, measured live |
 | 40, body height | `OverallHeight` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
 | 40, body opacity | `BodyOpacity3D` written on a library 3D body | yes, `SetPCBProperty`, on a board body | low |
@@ -715,7 +726,7 @@ works elsewhere cannot be an undeclared identifier:
 | 43, xSignals | `CreateFromPins`, `AssignPinPairClass` on the board's pin pair manager | no, nowhere | medium, ran live; the new xSignal is read back by name |
 | 43, text anchors | `ChangeNameAutoposition`, `ChangeCommentAutoposition` on a placed part | yes, `PCB_AutoplaceSilkscreen` | low, ran live; hidden text keeps its place |
 | 43, auto position | `AutoPosition_NameComment` on a placed part | no, nowhere | low, ran live |
-| 43, part text properties | `LockStrings`, `FootprintDescription`, `DefaultPCB3DModel` on a placed part | only by `PCBGeneric.pas`, itself new | low, the first two written and read back live |
+| 43, part text properties | `LockStrings`, `PrimitiveLock`, `FootprintDescription`, `DefaultPCB3DModel` on a placed part | only by `PCBGeneric.pas`, itself new | low, `LockStrings`, `PrimitiveLock` and `FootprintDescription` written and read back live |
 | 43, project setup | `DM_MoveSourceDocument`, `DM_AddSearchPath`, `DM_SetAllowPortNetNames`, `DM_SetAllowSheetEntryNetNames` on a project | no, nowhere | medium, ran live, read back, saved and reopened |
 | 43, library check | `Sch_LibraryRuleChecker_Create`, `ShowReport`, `Duplicate_Pins`, `Missing_Footprint` on a library's rule checker | no, nowhere | low, writes a report file only; ran live |
 | 44, drill pair | `AddLayerPair` on the board | no, nowhere | medium, ran live; a copy and a non-copper layer are refused first |
@@ -3905,7 +3916,9 @@ No Pascal changed.
 `design_phase_gate`, `design_phase_answer` and `design_phase_standing`
 hold a product to feasibility, prototype, EVT, DVT and PVT;
 `eda-agent sdk-reach` counts the properties Altium's SDK declares that
-the generic tools reach; `design_simulate_deck` runs a deck in ngspice or
+the generic tools reach (that command has since been merged into
+`eda-agent sdk-coverage`, which reads a reflected SDK rather than the
+index this run used); `design_simulate_deck` runs a deck in ngspice or
 LTspice; `footprint_read_ipc_name`, `lib_verify_ipc_names`,
 `lib_check_naming`, `lib_make_name`, `lib_read_pin_table`,
 `design_check_company_rules`, `design_read_rules_export` and
@@ -3917,7 +3930,9 @@ read and write Altium 365.
    prototype, and back in feasibility when asked about revision B.
 2. **SDK reach.** 802 of 2,221 declared properties reached (36.1 %)
    across 46 object types: 464 of 1,040 on the schematic, 338 of 1,181 on
-   the board.
+   the board. Measured with `sdk-reach` against its own SDK index; the
+   figure `sdk-coverage` reports is not comparable, because the two read
+   different dumps of the SDK.
 3. **Simulators.** One RC deck in ngspice-47 and LTspice 24.0.12:
    both 4.96629 V at 5 ms and a 2.1972 ms rise (RC ln 9). A deck calling
    an unknown subcircuit fails in both with the engine's error. A deck
@@ -3964,6 +3979,489 @@ Live1023 project: the button wrote `{"saving":"off"}` and turned amber;
 `Live1023.PrjPcb` as not saved; a detach after a net label wrote nothing;
 no file in the folder changed. After a bridge restart the button still
 read off. Switched back on, `app_save_document` wrote the scratch sheet.
+
+## 60. Further SDK reach: board pictures, net figures, grids, part parameters, library manager
+
+New board tools: `pcb_render_png`, `pcb_save_board_text`,
+`pcb_net_figures`, `pcb_clear_guides`, `pcb_local_grid`,
+`pcb_plane_state`, `pcb_hole_symbols`, `pcb_component_parameters`,
+`pcb_place_simple_body`, `pcb_place_baseline_dimension`,
+`pcb_file_info`. New project tools: `proj_step_export_options` (and an
+`options` argument on `proj_export_step`), `proj_get_channels`,
+`proj_component_models`, `lib_library_manager`, `proj_output_panel`,
+`proj_add_generated_document`, and a `structure` argument on
+`proj_get_net_items`. The lint now refuses a routine defined twice in the
+script, since the later one silently takes every call.
+
+Run live on AD 26.11.1.5 with the 29 October script on a scratch copy of
+RoundLED: the PNG matched the board; the JSON (9.8 MB) and ASCII dumps
+were written beside it; net figures gave routed and signal lengths and
+delays for VBUS and USB_DP; polar and cartesian grids were added, found at
+a point and deleted; drill symbols shown and hidden; a cylinder and a
+sphere body placed; a baseline dimension read back four text locations;
+the file version read 5.01; both plane layers read unpoured. On C1 a
+parameter was set (read back 43), removed (gone from the list), and a
+second remove answered "no parameter of that name". STEP settings read
+and wrote back unchanged. Channels, part models, net structure, the
+Output panel and adding a generated document answered. The library
+manager located a part, extracted an IntLib, listed 218 parts of an
+installed library, and said `known_to_manager: false` with a reason for a
+library it does not hold. `proj_run_output` still answers through its own
+handler.
+
+Not reachable from scripts, so not offered: adding guides or snap points
+(only deletion is given), net resistance and current, the DRC checker's
+options, variant groups, the file feature list, and running one output
+generator without an OutJob (`DM_Generate_OutputFilesTo` wrote nothing for
+Gerber or NC Drill, with or without the OutJob's own settings string; use
+`proj_run_outjob`).
+
+## 61. One call for many: `items` on every tool
+
+Nearly every tool takes `items`, a list of its own arguments. The items'
+requests are gathered into one bulk request per command, which the script
+runs item by item inside one edit: one board edit for the whole call, and
+on a schematic or SchLib one edit per document, joined as the items reach
+it. `obj_modify`, `obj_create`, `obj_delete` and `lib_rename_component`
+send their list to the batch handlers that `obj_batch_modify`,
+`obj_batch_create`, `obj_batch_delete` and `lib_batch_rename` used; those
+names are no longer advertised and still answer through `tool_invoke`,
+with a note naming the new form. The family tools (`pcb_calc`, `audit`,
+`pcb_dimension`, `pcb_body`) take a list of `{kind, args}`.
+
+On a scratch board and a scratch sheet:
+
+* `pcb_place_arc` with 20 items: one request, the reply lists 20 placed
+  arcs in order, and one Undo (Ctrl+Z) removes all 20. A single
+  `pcb_place_arc` call still takes one Undo.
+* Three items, the second on a layer that does not exist: the first is
+  placed, the second refused with the layer error, the third reported
+  skipped.
+* `sch_place_net_label` with 10 items on one sheet: one Undo removes all
+  10. Ten items spread over two sheets: one Undo on each sheet.
+* `proj_replace_component` with two items: each new part keeps its old
+  UniqueId (read it back with `obj_query`); the board still links both.
+* `obj_modify` with items of different filters on one symbol's pins: the
+  same reply shape as `obj_batch_modify` gave, and one Undo.
+* `tool_invoke('obj_batch_modify', ...)` still works and its reply notes
+  `obj_modify(items=[...])`.
+* Call one tool singly three times within ten seconds: the third reply
+  carries `_hint_bulk` naming `items`.
+
+## 62. Labels where Altium puts them, library scope, and a crash told at once
+
+Measured 2026-10-30 on AD 26.11.1.5 with the 30 October scripts, on scratch
+documents:
+
+* `sch_place_sheet_symbol` at (1000,1000)-(2200,1600): the name reads back
+  at (1000,1700) and the file name at (1000,1600), not at the sheet origin.
+  Before, six symbols on a real sheet had all twelve texts at (0,0)/(0,100).
+* `sch_autoposition_labels` on symbols already placed: 'rotate' (90 and
+  back) positioned the labels and left a 1600 x 400 symbol's size and its
+  right-side entry as they were; 'modify' and 'move' changed nothing.
+  `obj_query` / `obj_modify` read and write `SheetName.Location.X/Y`,
+  `SheetFileName.Location.X/Y`, `.Autoposition` and `SheetName.Text`.
+* `obj_modify eSheetSymbol set=SheetName.FontId=26|SheetFileName.FontId=27`
+  (issue #229), measured 2026-11-07 on AD 25.8.1 on a scratch copy: both
+  fonts read back, kept after a save and reopen; `Designator.FontId` and
+  `Comment.FontId` on a part the same. `FontId=0`, `abc` and `-3` are
+  refused (listed under `properties.failed`) and the font is unchanged.
+* Same day, notes, text frames and shapes, written one property at a time,
+  saved and reopened: a note's and a frame's `TextColor`, `WordWrap`,
+  `ClipToRect`, `TextMargin` and a note's `Author` kept; a frame's
+  `ShowBorder`, `LineWidth`, `IsSolid` kept; `Transparent` kept on a
+  rectangle and an ellipse, `LineStyle` on a line and a rectangle. Read back
+  and LOST on save, so refused: `Transparent` on a round rectangle, text
+  frame or note, `LineStyle` on a text frame or note; a note's `ShowBorder`
+  written false read back true. A note's `LineWidth` and `IsSolid` (already
+  writable) are lost on save too. `FontId=0` / `abc` on a free text are
+  refused; before, they were written as font 0 and font 1.
+* Same day, net labels, power ports, ports and off-sheet connectors placed
+  on a scratch copy, written, saved and reopened: `ShowNetName` (power
+  port, off-sheet connector, port), `CrossSheetStyle` (connector, also
+  from the placer's side), a port's `Height` (150.5 mils) and a text
+  frame's `TextMargin` (12.5 mils) kept. A port's `Style` read back and
+  came back 0 after reopen, AutoSize on or off; `IsCustomStyle`, listed
+  on ISch_Port, stopped the loop when written, so it is not offered. A net
+  label turned 90 degrees reads a different font id after reopen: the same
+  font with rotation 90. `Text` asked of a round rectangle answers
+  unreadable (it stopped the loop before).
+* A part placed by `sch_place_components` or `sch_draw_template`, rotated:
+  its designator and comment sit where Altium puts them for that rotation.
+  Not yet measured live.
+* `obj_modify eSheetSymbol set=Orientation=1`: refused as unknown, the
+  loop keeps running (it halted the script with "Undeclared identifier:
+  Orientation").
+* A scratch SchLib, two symbols, one with a hidden power pin 11:
+  `obj_query ePin scope=lib_component:HID_SYM` lists pin 11;
+  `obj_modify ... filter=Designator=11 set=HiddenNetName=GND` reads back
+  GND; `obj_modify eSchComponent scope=lib_component:HID_SYM
+  set=ShowHiddenPins=true` matched 1 and the other symbols stayed false
+  (it matched all 25 of a real library).
+* A handler that halts the script: the call reports the crash as soon as
+  the halt is confirmed, with the restart running behind it; other calls
+  wait for the new loop. `relaunch --restart` prints, and traces as
+  `RESTART`, how long each of its steps took. Not yet measured on a real
+  halt.
+
+Found while deploying: calling `LookupLibComponent` from Generic.pas left
+the whole unit undeclared in Altium ("Undeclared identifier:
+HandleGenericCommand" on every generic command) with no compile error
+shown. A test refuses that call.
+
+## 63. Rule limits, the copper read by kind and layer, pour names, the foreground guard
+
+Measured 2026-10-31 on AD 26.11.1.5 with the 31 October scripts, on the
+scratch board Tent.PcbDoc, closed without saving:
+
+* A pour with Auto Naming on, `obj_modify ePolyObject set=Name=SCRATCH_POUR_A`:
+  the pour reads the new name and `AutoGenerateName` false. Before, the
+  reply said matched 1 and the old name stayed (#150).
+* Mechanical17 enabled, `pcb_place_polygon_rect layer=Mechanical17`: the
+  reply names `Mechanical17` (it said `Unknown`). `pcb_get_copper
+  kinds=polygon layer=Mechanical17` finds that pour (#149);
+  `kinds=via,polygon` lists the 2 vias then both pours; with the
+  Mechanical17 pour selected, `selected=true` lists only it;
+  `kinds=pad` is refused (BAD_KINDS) and `layer=Nowhere` (UNKNOWN_LAYER).
+* `pcb_create_design_rule` made a Length rule (100 / 2500.5 mil), an
+  Impedance rule (45 to 55 ohm) and Flight Time rules (rising 1.5 ns,
+  falling 2 ns), each read back in `limits`. `pcb_set_rule_properties`
+  in one call set the length maximum to 3000 mil, the impedance to 90 to
+  110 ohm and the falling flight time to 0.75 ns; a flight time sent to
+  the impedance rule came back in `limits_note`, unwritten. Altium's own
+  descriptors read "Max=3000mil", "Maximum=750.0pS" and
+  "Minimum=90.00Ohms Maximum=110.0Ohms".
+* `app_click_menu` while Altium is busy with a bridge command waits for
+  the window activation instead of refusing ("belongs to process
+  None"); with the session locked or the remote desktop disconnected it
+  refuses at once. Covered by simulated tests; the two real-window tests
+  skip on this desktop, where the activation never stays pending.
+* `pcb_get_vias offset=1 limit=1` on the 2-via scratch board: the second
+  via, `count` 2, `returned` 1, `more` false; `net=GND` returns 0 of 0.
+  Not yet checked on a board whose vias carry nets.
+* A via placed with `pcb_place_vias`, then `app_save_document`:
+  `was_modified` true (it said false after an edit made through the API).
+  The via was deleted and the board saved again as it was.
+* `app_get_active_document` with nothing focused now names the document
+  in the editor's current view before the schematic server's last
+  sheet. Not provoked live: the state needs no focused document.
+
+## 64. Board tools from the November intake, and the Layer Stack Manager kept in step
+
+Measured 2026-11-03 on AD 26.11.1.5 with the 3 November scripts, on the
+scratch boards Tidy.PcbDoc and SymStack.PcbDoc:
+
+* `obj_count` without a filter answers from the primitive counter and
+  matches a board walk (3 tracks, 1 pad, 1 via; 0 on an empty board).
+* `pcb_connected_copper` from a free pad found the pad, its track, the via
+  and the bottom track, and left a separate track out; `select=true`
+  selected exactly those four. A track on Mechanical33 is refused as not
+  copper.
+* `pcb_measure_clearance` between a pad on NA and a track on NB 3 mil
+  away: the Clearance rule, 10 mil, `violation` true. With neither on a
+  net Altium applies no rule; the reply then names the rule whose scopes
+  take the pair, `net_scope_matches` false and `below_scoped_gap` true.
+* `pcb_embedded_data` wrote, rewrote, read and deleted a record, Latin-1
+  text exact; Undo brought a deleted record back. A JSON object given as
+  text is stored as its JSON text.
+* `pcb_view` set and restored the view; a view read after a zoom comes
+  back exactly, and `centre_error_mils` stays within half of the view's
+  8.9 mil step at a whole-board zoom.
+* `pcb_layer_stack_manager` reads a new board's FR-4 layer as `dielectric`.
+  `pcb_move_layer` moved Top Layer down and back up; the top edge is
+  refused, and tracks stay on their layers.
+* `pcb_get_board_statistics` counts a track on Mechanical33.
+* `pcb_update_free_primitive_nets` answered Altium's Confirm box itself
+  and the bridge stayed up; a board cutout no longer counts as free
+  copper.
+* `pcb_sync_stack_manager`, and the same sync run by `pcb_make_layer_stack`,
+  `pcb_set_dielectric` and `pcb_modify_layer`: after a 2 to 4 layer
+  rebuild the four kept copper layers were stale in the manager and came
+  back in step with the board unchanged, still in step after a save and
+  reopen. A symmetric stack edited in its centre stays symmetric; one
+  made lopsided loses the flag and keeps its values.
+* Adding and removing copper layers by script, on a symmetric and a
+  non-symmetric stack, saved and reopened: the manager always had the same
+  layers as the board.
+
+Not run live here: the replicate-layout net count, region holes in
+`pcb_apply_geometry_map` and the Online DRC switch, which their author
+ran on AD 25.8.1.
+
+## 65. Blankets, and vertex reads on objects without vertices
+
+Measured 2026-11-04 on AD 26.11.1.5 with the first 4 November blanket build, on a scratch
+project with two labelled wires, one inside the blanket and one outside:
+
+* `sch_place_blanket` with `{"NetClass": "TESTCLASS"}` placed the
+  blanket and its directive on the first vertex; after a compile
+  `sch_get_blankets` listed it with that directive and coverage
+  `["SIG_IN"]` only.
+* `obj_query eBlanket` read `Vertices`, `VerticesCount`, `LineStyle`,
+  `Collapsed`, `Transparent` and `Color`.
+* `obj_modify eBlanket` set `Vertices` to an outline over both wires and
+  `LineStyle=1`; after a recompile the coverage was
+  `["SIG_IN","SIG_OUT"]` and `line_style` 1.
+* `obj_delete eBlanket` removed it; the query then found none.
+* `obj_query` on a rectangle asking `VerticesCount,LineStyle` returned
+  both as unreadable and the bridge kept answering. The same request
+  halted the script before.
+
+Not run live here: a directive held inside a blanket drawn in Altium's
+editor, which `sch_get_directives` now reports with owner `blanket`.
+
+## 66. A write that raised is reported
+
+Every `Try` around a property write whose `Except` was empty now either
+calls `NoteWriteFailed`, which puts `writes_failed`, `writes_failed_at`
+and `writes_warning` on the reply, or carries a comment saying why
+nothing is lost (read back below, a flag in the reply, display only).
+`tests/test_write_failures_are_reported.py` refuses a new silent one.
+The coverage list of `sch_get_blankets` gives each blanket's `index`
+instead of a position, which the compiled blanket does not have.
+
+Live check after the deploy:
+
+1. Ping: `altium_script_version` as at the top of this page, no stale
+   units. Then one call per unit: `obj_count` (generic),
+   `lib_get_components` on an open library (library),
+   `pcb_get_board_statistics` (board), `proj_get_focused` (project).
+2. On a scratch sheet, place a note, a text frame and a blanket; read
+   them back and confirm no `writes_failed` on any of the replies.
+3. On a scratch board, set a track width and a rule's comment; confirm
+   no `writes_failed`.
+
+## 67. A large reply no longer freezes Altium after it is sent
+
+After writing each reply, the loop indexed the whole reply to read its
+`error` for the status window. On a reply of several hundred KB that
+held Altium's main thread for minutes (a 620 KB `obj_query` answered in
+29 s, then the loop was silent for 539 s), and every session's calls
+queued behind it. The loop now reads the error only when the envelope
+says `success:false` in its first fields, takes it from what the
+handler recorded when it built the error, and parses the reply only
+when it is 64 KB or less. `tests/test_large_reply_is_not_parsed.py`
+refuses a whole-reply parse there.
+
+Live check after the deploy: on a scratch board with about 4000
+tracks, `obj_query` every track with its geometry (over 500 KB), then
+`app_ping`. The ping answers in under a second, and the status window
+still shows an error row for a failed call such as `obj_query` with an
+unknown object type.
+
+## 68. Footprint copy, footprint repoint and sync report what happened
+
+Three calls answered success and changed nothing (measured on scratch
+copies, 2026-11-04):
+
+* `lib_copy_footprint` with `source_library` written with forward
+  slashes missed the open library, loaded a hidden second copy and copied
+  into that (`primitives_realigned` -1, the copy gone after a save).
+  Request keys ending in `library` or `_file`, and `destination`, now get
+  the same backslash spelling as `*path` keys; the footprint copy, move
+  and rotate open a closed library as a document instead of loading it
+  out of sight; the copy is read back before success.
+* `sch_set_components_parameters` with `Footprint` renamed the model and
+  read the name back while the compiled part kept the old footprint. The
+  renamed model is now taken off current and put back, each in its own
+  modify, as Altium's release manager script does; the compiled part
+  reads the new footprint. The sheet is marked through
+  `MarkDocDirtyByPath`, so the save reports `was_modified` true; five
+  more handlers had the same bare `SetModified`.
+* `proj_sync_pcb` gave no reason when a part kept its footprint. Before
+  closing the change order it ticks Only Show Errors and reads the rows
+  by OCR into `change_order.failed_lines`; a `footprint_mismatch` row that
+  one of them explains carries it as `eco_line`. "Comparator Results ...
+  Continue and create ECO?", which blocked the sync, is answered Yes and
+  listed in `change_order.passed`.
+
+Live check after the deploy, on scratch copies only:
+
+1. `lib_copy_footprint` within an open PcbLib, `source_library` written
+   with `/`: the copy is listed by `lib_get_footprints` and its pads
+   match the source. Into a PcbLib that is not open: it opens, and after
+   `app_save_document` and a close the copy is still listed.
+2. On a part with a footprint model, `sch_set_components_parameters`
+   `Footprint` = another library footprint, save (`was_modified` true),
+   `proj_get_component_info_many`: `footprint` is the new name.
+3. Point that part at a footprint no library has and run
+   `proj_sync_pcb`: `after_sync.footprint_mismatch` carries an `eco_line`
+   with "Footprint Not Found".
+
+## 69. Hierarchy read, repeated channels, compile masks, directive and No ERC options (live verified)
+
+Measured 2026-11-05 on AD 26.11.1.5 with the last 4 November build, on a scratch
+project of three sheets added by explicit `project_path`: Top with one
+sheet symbol for Chan.SchDoc, Chan with ports DIN (input), DOUT
+(output), PG (output) and FB (input), and Orphan linked from nowhere.
+
+* `sch_place_sheet_symbol` with `repeat_first` 1 and `repeat_last` 4
+  named it `Repeat(CH,1,4)`; `sch_place_sheet_entry` found it by `CH`,
+  and `repeat` named the entry `Repeat(DIN)`. `proj_get_channels`
+  listed CH1 to CH4 with `channel_index` 1 to 4.
+* `proj_get_hierarchy` read 3 sheets, no read errors, and reported
+  exactly the four planted breaks: SPARE entry without a port, FB port
+  without an entry, PG input entry on an output port, Orphan.SchDoc.
+  Altium gives compiled channels after the first only their Repeat()
+  entries; those copies are not checked, and each parent is listed once.
+* `sch_place_compile_mask` read back its box and `collapsed`.
+* `sch_add_directive` with two parameters, `style` 1, `orientation` 1
+  read back all four.
+* `sch_place_no_erc` with `symbol` 1, `orientation` 2,
+  `suppress_all` false, `active` true read back each.
+* `sch_get_blankets` coverage of a blanket over the repeated symbol
+  listed its nets and `sheet_symbols` CH1 to CH4.
+
+Not run live here: a compile mask's effect on the netlist, and what
+each `style` and `symbol` integer looks like.
+
+## 70. Pad relief, the library's own board, the current footprint, auto-off, IPC batch
+
+Pull requests #221, #222, #225, #227 (vincent-himpe), #223 (All4Motion)
+and #228 (StarX-ai). Measured 2026-11-05 on AD 26.11.1.5 with this
+build, on a scratch board and a scratch PcbLib:
+
+* `pcb_pad_relief` on a free SMD pad read the rule's relief (4 spokes,
+  10 / 10 mil), set 2 spokes, 8 mil width, 9 mil gap and read them back
+  as `defined` manual; `style` "rule" put it back.
+* `pcb_pad_relief_spokes` refused "E" on a round pad (its east end is an
+  arc) with the reason, then placed "N" and "0" degrees and read both
+  points back in `custom_spokes`.
+* With a PcbLib in front, `lib_get_footprints` named the `current`
+  footprint and `pcb_layer_view` read and wrote the library's own
+  board (Mechanical16 hidden, then shown, both read back).
+
+* `lib_ipc_batch_template` read the 38 templates Altium installs under
+  ProgramData (family code in A1, columns, legend); "QFP" is found in
+  the PQFP file, whose code differs from its name.
+* `lib_generate_ipc_batch` on tables filled from TI package drawings:
+  RGT0016C (VQFN-16, 4222419/E) gave 17 pads at 0.50 mm pitch, terminal
+  pads 0.25 mm wide and a 1.68 mm thermal pad, with one STEP body
+  extracted and checksummed; DBZ0003A (SOT-23, 4214838/F), a family the
+  old check refused, gave 3 pads at 0.95 / 1.9 mm. Altium's reports: no
+  errors, only its pad-trimming warnings. Afterwards the session's
+  document stayed the library, not the generator's HTML report.
+
+Not run live here: the status window's double-click (an interface
+action). The generator's designator removal is off unless asked for,
+and it writes nothing of its own into the output folder.
+
+## 71. A rule or room name already on the board is refused
+
+`pcb_create_design_rule` and `pcb_create_room` added a second rule of a
+name the board already had, and Altium's priority order then decided
+which applied. Both now refuse it (`RULE_EXISTS`), and
+`tests/test_rule_names_are_unique.py` refuses a rule factory call with
+no name check before it. Measured 2026-11-05 on a scratch board: a
+second `DupCheck` rule and a room of that name were both refused, and
+the first rule was unchanged.
+
+## 72. Board rules and ERC levels from the policy folder
+
+`pcb_apply_policy_rules`, `proj_apply_policy_erc` and
+`design_apply_policy` bring a board's rules and a project's ERC levels
+to `board_rules.json` and `erc_levels.json` / `erc_levels/<set>.json` in
+EDA_AGENT_POLICY_DIR. They write through `pcb.create_design_rule`,
+`pcb.set_rule_properties` and `project.set_erc_levels`; nothing is
+deleted. Measured 2026-11-05 on a scratch board and project:
+
+* Board: a dry run proposed two rules to create and one to rewrite
+  (comment and a 12 to 20 mil gap). Applying created both and rewrote
+  the third (`gap_written`); applying again created nothing, showed no
+  difference and left no duplicate.
+* ERC: a set extending another changed three levels and saved the
+  project; a second look found all three the same.
+
+## 73. The dashboard cockpit: the board in front, kept current, with its checks
+
+The Layout tab's "follow Altium" draws the board in front in Altium and
+lists the layout checks on it. `pcb.cockpit_state` (read only) gives the
+document in front, a stamp of the parts, one of the free copper (walked
+only when asked; otherwise the counter's count) and the selection. The
+dashboard polls it about every 1.5 s, stretched to keep near a tenth of
+Altium's script time; a change that holds still for one poll re-reads
+only its sections, then the checks run. Its calls follow the front
+(`following_front`): they neither put a document back nor adopt one.
+
+Measured 2026-11-05 on AD 26.11.1.5 with this build, on a scratch copy of
+a 146-part, 2,095-copper board:
+
+* First read 16 to 17 s, fast checks 2 s, slow ones 2 s; 153 located
+  findings. Counting poll about 0.2 s in Altium, walking poll about 0.9 s;
+  on an 11,084-copper board the walk took 5 s, so above 4,000 objects
+  the copper is counted, not walked.
+* A part moved 100 mil: parts and pads re-read (9 s), findings updated
+  14 s after the move, no copper re-read.
+* A part and a net selected in Altium appeared in the state; clicking a
+  part selected it and zoomed to it, a net was highlighted, a finding
+  zoomed Altium to it; the focus stayed on the board throughout.
+* Pinned to the scratch board while another session had its schematic
+  in front, nothing was read.
+
+## 74. Update From Libraries without the menu, every dialog answered
+
+`proj_update_from_libraries` runs Tools > Update From Libraries or Update
+From PCB Libraries as Altium's own process
+(`WorkspaceManager:DocumentOptions`, `ObjectKind=Project|Action=
+LibrarySynch` or `PCBLibrarySynch`), so no menu or pointer is used. With
+Dialogs Automatic the dialogs on the way are answered and the change
+order is executed, its failed lines read, and closed. A dialog passed on
+the way can require text: the "Confirm" counting footprints no library
+has is answered only when it says so, and its sentence is kept.
+
+Measured 2026-11-05 on AD 26.11.1.5, on the scratch RoundLED project:
+
+* Schematic: "Update From Library" Finish, then the change order
+  executed and closed; no failed lines.
+* Board: "Update From PCB Libraries - Options" Update All Footprints
+  (Create ECO); "Confirm" read as "9 of the 155 footprints were not found
+  in libraries. Continue?" and answered Yes; on Execute, "Component(s)
+  Update Options" OK; the change order closed; no failed lines.
+
+The tool focuses its document first (`document_path`). Another session
+placing tracks between its own focus and its placement put 17 tracks on
+this scratch board, which was discarded unsaved: placing tools should
+name their board and refuse another (open).
+
+## 75. Placement names its board
+
+`pcb_place_tracks`, `pcb_place_vias`, `pcb_place_arcs` and `pcb_place_pads`
+take `board_path`: the handler takes that board by its path at the moment
+it places (through `StackBoard`), and refuses when it is not open. Without
+it they act on the board in front as before. Another session focusing its
+own document between a focus and a placement put 17 tracks on the wrong
+board before this.
+
+The first build called `ResolvePCBBoard` (Main.pas) directly from the four
+handlers and the PCB unit then failed to load on every deploy ("Undeclared
+identifier: HandlePCBCommand"); the same call through `StackBoard`, a
+PCB.pas wrapper, loads.
+
+Measured 2026-11-05 on AD 26.11.1.5 with this build: with a scratch sheet in
+front, a track with `board_path` naming a scratch board went onto that
+board; a path naming no open board was refused and placed nothing.
+
+## 76. Altium 21: custom pad shapes and filtered label visibility
+
+On AD 21.4 `eCustomShape` is an undeclared identifier, and a pad read that
+reached it stopped the loop (issue #260). Custom pad shapes arrived in
+22.8 (release notes, August 2022), so every pad reader now asks
+`ShapeIsCustom` (Utils.pas), which reads the version first and answers
+false before 22.8. The separate top and bottom mask (AD 15) and the mask
+from the hole edge (AD 15.1) predate 21 and are not gated.
+
+`pcb_set_text_visibility` with designators skipped a component with
+`Continue` from inside a Try; on AD 21 a filtered call left Altium
+unresponsive (issue #262). It now advances once at the end of the loop.
+
+On AD 25 or 26, with a scratch board and library:
+
+1. `lib_get_pad_geometry` and `pcb_get_pad_properties` on a part with a
+   custom pad: the shape reads `custom`.
+2. `pcb_set_text_visibility` with two designators: only those two change.
+
+On AD 21, the same pad reads answer without stopping the loop, and the
+filtered visibility call returns.
 
 ## Still open, and not blocking
 

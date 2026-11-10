@@ -3033,38 +3033,7 @@ def register_design_tools(mcp) -> None:
         Resolve those first by either picking an existing-lib equivalent
         or branching into a library-authoring sub-task.
 
-        Args:
-            plan_json: Either a DesignPlan JSON string, or the DesignPlan
-                as a JSON object/dict. The MCP framework auto-deserializes
-                JSON-object literals to dicts before the tool sees them,
-                so both shapes are accepted.
-            project_path: Absolute path to the target .PrjPcb. Created
-                if it does not exist.
-            use_canvas: Pick the execution path. Default ``True`` runs
-                the new canvas pipeline; pass ``False`` to fall back to
-                the legacy executor.
-            placement_hints: Optional ``{refdes: {"x": int, "y": int,
-                "rotation": int}}`` partial anchors. Hinted refdes pin
-                to the supplied position; others run through the
-                algorithmic placement (Sugiyama + multi-try scoring).
-                Used by the agent-in-loop refinement workflow:
-                  1. Run ``design_preview_plan`` -> see SVG + score.
-                  2. If layout is bad, identify specific refdes that
-                     should sit elsewhere; build hints dict.
-                  3. Call ``design_preview_plan`` again with hints ->
-                     iterate until score is acceptable.
-                  4. Call ``design_execute_plan`` with the same hints
-                     to emit the refined layout.
-            mode: How to reach the sheet. ``"auto"`` (default) EDITS a
-                sheet this tool has drawn before, moving only the parts
-                whose position changed, placing the new ones, deleting
-                the ones the plan dropped, and leaving every other
-                component exactly as it is. It draws from scratch when
-                there is no prior sheet. This is what makes re-running a
-                changed plan safe on a schematic somebody has worked on.
-                ``"full"`` re-places every component, discarding any
-                hand edit; use it when you want the sheet redrawn.
-                ``"delta"`` refuses rather than redraw.
+Args: plan_json is a DesignPlan JSON string or file path. project_path identifies the target project. dry_run previews the plan; use_canvas selects the canvas executor. Resolve needs_create parts before applying. Review the returned project path, placement results and errors.
 
                 The edit path only knows what is in the plan. To keep a
                 part where a person dragged it, read the sheet back with

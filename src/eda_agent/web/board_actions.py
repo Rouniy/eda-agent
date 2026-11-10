@@ -18,6 +18,17 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger("eda_agent.web.board_actions")
 
+
+def _result_line(record: dict[str, Any]) -> dict[str, Any]:
+    """Summarize an action while retaining the DRC verdict and its context."""
+    reply = record.get("reply")
+    out = {"tool": record["tool"], "problem": _failed(reply)}
+    if isinstance(reply, dict) and reply.get("verdict"):
+        out["verdict"] = reply["verdict"]
+        out["verdict_reason"] = reply.get("verdict_reason", "")
+        out["violation_count"] = reply.get("violation_count")
+    return out
+
 #: Actions that change copper: the cockpit reads the whole board after them
 #: (its copper stamp is only counted on a large board).
 _COPPER = {"route", "unroute", "tidy", "teardrops", "repour"}

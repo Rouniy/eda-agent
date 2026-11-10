@@ -454,6 +454,25 @@ class ActivityTailer:
             self.entries.append(parsed)
         self._broadcast({"type": "entry", "entry": parsed.to_dict()})
 
+    def read_new(self, offset: int) -> int:
+        """Take in every complete line after ``offset`` and return the
+        offset after the last one; a partial line waits for its end.
+
+        Bytes, and readline rather than iteration: a text file refuses
+        tell() inside a for loop, and the error left the offset where it
+        was, so one line was read again and again, hundreds of times."""
+        if self.log_path.stat().st_size < offset:
+            offset = 0                    # truncated or rotated: replay
+        with open(self.log_path, "rb") as f:
+            f.seek(offset)
+            while True:
+                raw = f.readline()
+                if not raw.endswith(b"\n"):
+                    break
+                offset = f.tell()
+                self._ingest(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+        return offset
+
     def _run(self) -> None:
         offset = 0
         # Initial backfill: read everything that's there so the UI has
@@ -475,11 +494,7 @@ class ActivityTailer:
                 if not self.log_path.exists():
                     time.sleep(0.5)
                     continue
-                size = self.log_path.stat().st_size
-                if size < offset:
-                    # Truncated or rotated. Replay from scratch.
-                    offset = 0
-                if size == offset:
+                if self.log_path.stat().st_size == offset:
                     time.sleep(0.3)
                     continue
                 # Bytes, and readline rather than iteration: a text file
@@ -1087,7 +1102,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
                 LINT_SEVERITY as _LINT_SEVERITY,
                 LINT_AUDIT_LIST as _LINT_AUDIT_LIST,
             )
-        except Exception:
+        except ImportError:  # the review tools are optional to the dashboard
             _LINT_SEVERITY = {}
             _LINT_AUDIT_LIST = []
 
@@ -1323,7 +1338,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             try:
                 data = _bridge_call("project.dashboard_snapshot", {},
                                     timeout=45.0)
-            except Exception:
+            except Exception:  # None, not cached: the next caller retries
                 return None
             return {"ok": True, "data": data} if data is not None else None
         val = _cached("project.dashboard_snapshot", 15.0, call)
@@ -1879,7 +1894,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             try:
                 from eda_agent.bridge import get_bridge
                 alive = get_bridge().is_altium_running()
-            except Exception:
+            except Exception:  # only words the message; either way it says no board
                 alive = False
             msg = ("No PCB geometry yet -- open a PcbDoc and refresh"
                    if alive else "Altium is not running")
@@ -1914,7 +1929,7 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
             # carries the short summary.
             try:
                 app.logger.error("render_pcb_svg failed: %s\n%s", e, tb)
-            except Exception:
+            except Exception:  # the reply below still carries the error
                 pass
             return Response(
                 _empty_drawing_svg(f"PCB render failed: {e}"),
@@ -2289,8 +2304,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        try: srv.shutdown()
-        except Exception: pass
+        try:
+            srv.shutdown()
+        except Exception:  # shutting down anyway
+            pass
     return 0
 
 

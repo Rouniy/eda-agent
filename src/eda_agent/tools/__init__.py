@@ -16,6 +16,8 @@ New tools should match the family they belong to rather than invent a third
 shape.
 """
 
+from typing import Any
+
 from .application import (
     register_application_tools,
     register_meta_tools,
@@ -26,6 +28,7 @@ from .uiauto import register_uiauto_tools
 from .pcb3d import register_pcb3d_tools
 from .project import register_project_tools
 from .library import register_library_tools
+from .ipc_batch import register_ipc_batch_tools
 from .generic import register_generic_tools
 from .pcb import register_pcb_tools
 from .rules import register_rule_tools
@@ -40,11 +43,14 @@ from .route import register_route_tools
 from .sch_template import register_sch_template_tools
 from .easyeda import register_easyeda_tools
 from .kicad import register_kicad_tools
+from .kicad_board import register_kicad_board_tools
+from .kicad_sch import register_kicad_sch_tools
+from .kicad_lib import register_kicad_lib_tools
 from .eda import register_eda_tools
 from .calc import register_calc_tools, register_pcb_calc_tools, register_physics_calc_tools
 from .stackup import register_stackup_tools
-from .plan import register_plan_tools
 from .npi import register_npi_tools
+from .plan import register_plan_tools
 from .parts import register_parts_tools
 from .live import register_live_tools
 from .footprint import register_footprint_tools
@@ -229,6 +235,7 @@ def register_all_tools(mcp):
     register_application_tools(mcp)
     register_project_tools(mcp)
     register_library_tools(mcp)
+    register_ipc_batch_tools(mcp)
     register_generic_tools(mcp)
     register_pcb_tools(mcp)
     register_rule_tools(mcp)
@@ -266,12 +273,43 @@ def register_backend(
         name = _register_minimal(mcp, backend)
     else:
         name = _register_full(mcp, backend)
+    _drop_schema_titles(mcp)
     # The canned requests go on the real server under either toolset: a
     # minimal server hides tools, not the prompts a user picks from.
     register_request_prompts(mcp, name)
     # One prompt per design mode, to start a run in it (design/modes.py).
     register_mode_prompts(mcp)
     return name
+
+
+def _without_titles(schema: Any) -> Any:
+    """A JSON schema without the "title" keywords pydantic generates.
+
+    Each one repeats its property's name ("layer" -> "Layer") and is sent
+    with every tool listing. A property that is itself called "title" is
+    a name under "properties", not the keyword, and is kept.
+    """
+    if isinstance(schema, list):
+        return [_without_titles(s) for s in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {}
+    for key, value in schema.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        if key in ("properties", "$defs", "definitions") and isinstance(value, dict):
+            out[key] = {name: _without_titles(sub) for name, sub in value.items()}
+        else:
+            out[key] = _without_titles(value)
+    return out
+
+
+def _drop_schema_titles(mcp) -> None:
+    manager = getattr(mcp, "_tool_manager", None)
+    if manager is None:
+        return
+    for tool in manager.list_tools():
+        tool.parameters = _without_titles(tool.parameters)
 
 
 def _register_minimal(mcp, backend: str) -> str:
@@ -322,6 +360,9 @@ def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
         register_all_tools(mcp)
     if backend in ("kicad", "both"):
         register_kicad_tools(mcp)
+        register_kicad_board_tools(mcp)
+        register_kicad_sch_tools(mcp)
+        register_kicad_lib_tools(mcp)
     register_engineering_tools(mcp, altium=backend in ("altium", "both"))
     register_profile_tools(mcp, altium=backend in ("altium", "both"))
     # The engineering calculators (pcb_calc_*) are pure physics and
@@ -330,8 +371,9 @@ def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
     # double-registering under "both".
     if backend == "easyeda":
         register_easyeda_tools(mcp)
-        # The plan-building half of the design family; EasyEDA draws the
-        # plan with its own template tools.
+    if backend in ("easyeda", "kicad"):
+        # The plan-building half of the design family. EasyEDA draws the
+        # plan with its own template tools, KiCad with kicad_generate_*.
         register_offline_design_tools(mcp)
     # Conductor spacing, fusing current, via parasitics, spiral
     # inductance, reactance, resonance, wavelength, PDN target,
@@ -393,13 +435,16 @@ __all__ = [
     "register_backend",
     "register_easyeda_tools",
     "register_kicad_tools",
+    "register_kicad_board_tools",
+    "register_kicad_sch_tools",
+    "register_kicad_lib_tools",
     "register_eda_tools",
     "register_calc_tools",
     "register_pcb_calc_tools",
     "register_physics_calc_tools",
     "register_stackup_tools",
-    "register_plan_tools",
     "register_npi_tools",
+    "register_plan_tools",
     "register_offline_design_tools",
     "OFFLINE_DESIGN_TOOLS",
     "register_offline_review_tools",
@@ -424,6 +469,7 @@ __all__ = [
     "register_mode_prompts",
     "register_project_tools",
     "register_library_tools",
+    "register_ipc_batch_tools",
     "register_generic_tools",
     "register_pcb_tools",
     "register_rule_tools",

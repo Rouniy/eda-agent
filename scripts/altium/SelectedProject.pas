@@ -1058,7 +1058,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Prim := Iter.FirstPCBObject;
         While (Prim <> Nil) And (Not Result) Do
@@ -1067,7 +1067,7 @@ Begin
             Begin
                 Copper := (Prim.ObjectId = eViaObject);
                 If Not Copper Then
-                    Copper := PCB_IsCopperLayerName(GetLayerString(Prim.Layer));
+                    Copper := PCB_IsCopperLayerName(LayerDisplayName(Prim.Layer));
                 If Copper Then
                 Begin
                     PB := Prim.BoundingRectangle;
@@ -1245,7 +1245,7 @@ Begin
                 OpCX[J] := IntToStr(Comp.x);
                 OpCY[J] := IntToStr(Comp.y);
                 OpCR[J] := IntToStr(PlaceEditRotation(Comp));
-                Try LayerStr := GetLayerString(Comp.Layer); Except LayerStr := 'Unknown'; End;
+                Try LayerStr := LayerDisplayName(Comp.Layer); Except LayerStr := 'Unknown'; End;
                 OpCL[J] := LayerStr;
                 If Not Comp.Moveable Then Status := 'refused: the part is locked'
                 Else If LayerStr <> 'TopLayer' Then Status := 'refused: the part is not on the top layer (no side changes)'
@@ -1535,7 +1535,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Prim := Iter.FirstPCBObject;
         While Prim <> Nil Do
@@ -1543,7 +1543,7 @@ Begin
             If Not Prim.InComponent Then
             Begin
                 If Prim.ObjectId = eViaObject Then Inc(Vias)
-                Else If PCB_IsCopperLayerName(GetLayerString(Prim.Layer)) Then Inc(Tracks);
+                Else If PCB_IsCopperLayerName(LayerDisplayName(Prim.Layer)) Then Inc(Tracks);
             End;
             Prim := Iter.NextPCBObject;
         End;
@@ -1586,7 +1586,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePadObject, eViaObject, eTrackObject, eArcObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Prim := Iter.FirstPCBObject;
         While Prim <> Nil Do
@@ -1598,11 +1598,11 @@ Begin
                 If Prim.Layer = eMultiLayer Then Relevant := True
                 Else Relevant := (Layer = eNoLayer) Or (Prim.Layer = Layer);
                 If Relevant And (Layer <> eNoLayer) And (Prim.Layer <> eMultiLayer) Then
-                    Relevant := PCB_IsCopperLayerName(GetLayerString(Prim.Layer));
+                    Relevant := PCB_IsCopperLayerName(LayerDisplayName(Prim.Layer));
             End
             Else
             Begin
-                LayerStr := GetLayerString(Prim.Layer);
+                LayerStr := LayerDisplayName(Prim.Layer);
                 If PCB_IsCopperLayerName(LayerStr) Then
                     Relevant := (Layer = eNoLayer) Or (Prim.Layer = Layer);
             End;
@@ -1709,7 +1709,7 @@ Begin
                         Try
                             What := What + ' pad ' + Pad.Name + ' at ' + IntToStr(Pad.x) + ',' + IntToStr(Pad.y)
                                 + ' size ' + IntToStr(Pad.TopXSize) + 'x' + IntToStr(Pad.TopYSize)
-                                + ' shape ' + IntToStr(Pad.TopShape) + ' layer ' + GetLayerString(Pad.Layer);
+                                + ' shape ' + IntToStr(Pad.TopShape) + ' layer ' + LayerDisplayName(Pad.Layer);
                         Except
                         End;
                     End;
@@ -1733,7 +1733,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Via := Iter.FirstPCBObject;
         While (Via <> Nil) And (Not Result) Do
@@ -1764,7 +1764,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eTrackObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Track := Iter.FirstPCBObject;
         While (Track <> Nil) And (Not Result) Do
@@ -2037,7 +2037,7 @@ Begin
             Lyr := ResolveLayerId(Board, TLay[J]);
             If Lyr <> eNoLayer Then
             Begin
-                LayerStr := GetLayerString(Lyr);
+                LayerStr := LayerDisplayName(Lyr);
                 If Not PCB_IsCopperLayerName(LayerStr) Then Lyr := eNoLayer;
             End;
             Net := FindNetByName(Board, TNet[J]);
@@ -2325,7 +2325,7 @@ End;
 Function SetupIsCopperLayer(L : TLayer) : Boolean;
 Begin
     Result := False;
-    Try Result := PCB_IsCopperLayerName(GetLayerString(L)); Except Result := False; End;
+    Try Result := PCB_IsCopperLayerName(LayerDisplayName(L)); Except Result := False; End;
 End;
 
 Function SetupFindRule(Board : IPCB_Board; Name : String) : IPCB_Rule;
@@ -2390,7 +2390,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eDifferentialPairObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         P := Iter.FirstPCBObject;
         While (P <> Nil) And (Result = Nil) Do
@@ -2680,7 +2680,7 @@ Begin
         Begin
             If SetupIsCopperLayer(L) Then
             Begin
-                Lyr := GetLayerString(L);
+                Lyr := LayerDisplayName(L);
                 Try RL.SetState_RoutingLayers(L, (Pos(',' + Lyr + ',', Allowed) > 0)); Except Result := 'layers not accepted'; End;
             End;
         End;
@@ -3110,7 +3110,7 @@ Begin
                         End
                         Else If Kind = 'room' Then
                         Begin
-                            Rule := SetupFindRule(Board, Name);
+                            Rule := PCB_FindRuleByName(Board, Name);
                             Ok := True;
                             { A room's region is a polygon that only its creation builds from the   }
                             { bounding rectangle: on 2026-10-09 an updated rectangle read back      }
@@ -3153,7 +3153,7 @@ Begin
                         End
                         Else If Kind = 'rule' Then
                         Begin
-                            Rule := SetupFindRule(Board, Name);
+                            Rule := PCB_FindRuleByName(Board, Name);
                             KindId := SetupRuleKindId(SetupField(Fields, 'kind'));
                             Exists := (Rule <> Nil);
                             If Rule = Nil Then

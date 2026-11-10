@@ -207,39 +207,15 @@ together with their parameters in one call; `eng_a365_entity` reads any
 `des*ById` entity by introspecting the live schema for its scalar fields, for
 entity kinds with no dedicated reader.
 
-### Write tools
+Any reading GraphQL query may be run; one containing `mutation` or
+`subscription` is refused. Changes go only through the fixed write tools
+(`altium365_publish_library_file`, `altium365_release_component`,
+`altium365_set_component_parameters`), each of which needs `confirm=True`.
 
-Three write operations, each refusing unless `confirm=True` (eda-agent's
-existing style for an irreversible action, e.g. `easyeda_clear_routing`) -
-there is no separate owner-approval job queue here, since that whole
-governance layer was deliberately left out of this integration:
-
-- `eng_a365_publish_model(kind, workspace_url, folder_id, name, file_path, confirm=False)` -
-  upload a symbol or footprint file (via Nexar's File Service) and link it
-  into a library folder. `name` is checked against the owner naming policy
-  (`engineering/naming.py`) before publishing.
-- `eng_a365_release_component(input_obj, confirm=False)` - release a
-  component revision (`desReleaseComponent`). `input_obj` is passed through
-  as-is - the mutation's input is documented inline by Nexar rather than a
-  named type, so it is built the same way the client already builds it
-  (`a365.py`'s `release_mutation`/`gql_literal`), not guessed at here.
-- `eng_a365_update_parameters(component_id, parameters, release_note, replace_existing=False, confirm_replace="", confirm=False)` -
-  add or change a component's parameters (new revision). `replace_existing=True`
-  deletes ALL existing parameters first and additionally requires
-  `confirm_replace` set to the exact string `"REPLACE ALL PARAMETERS"` -
-  ported verbatim from Altium Booster 3.2's own guard for this operation
-  (`service.py`), not a new phrase invented for this port. Every call
-  verifies the write by reading the new component revision back and
-  confirming each requested parameter actually matches, rather than
-  trusting the mutation's own success response (the project's eco_verify
-  discipline: a write that reports success is not the same as a write that
-  happened).
-
-None of these three is wired into a doctor-style pre-flight beyond
-`eng_a365_doctor`'s existing schema check; verify the exact mutation shapes
-against a real Nexar account before relying on them (unverified against a
-live account while porting this - no Nexar credential was available to test
-against).
+Until 2026-11-01 this fork also had its own client and fifteen `eng_a365_*`
+tools. They covered the same ground under other names and gave way to
+upstream's, which is maintained; only the logout was carried across, because
+upstream had none. See CHANGELOG.
 
 The original DelphiScript bridge is not installed here. Its Altium operations
 are marked as requiring AD26 validation, while `eda-agent` already has a

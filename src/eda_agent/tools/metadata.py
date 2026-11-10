@@ -110,10 +110,14 @@ _SIMULATOR_TOOLS = frozenset({
     "audit_find_missing_decoupling",
     "audit_find_pin_net_name_mismatches",
     "audit_find_unconnected_ic_pins", "design_lint_report",
-    "eng_eco_preview_live", "lib_add_footprint_arc",
+    "eng_compare_live_ipc_footprint", "eng_eco_preview_live",
+    "lib_add_footprint_arc",
     "lib_add_footprint_pad", "lib_add_footprint_pads",
     "lib_add_footprint_track", "lib_add_footprint_tracks",
     "lib_add_pins", "lib_add_symbol_polygon",
+    "lib_audit_footprint_vs_datasheet", "lib_get_pad_geometry",
+    "lib_set_current_component", "proj_update_from_libraries",
+    "sch_place_comment",
     "lib_add_symbol_rectangle", "lib_add_symbol_text",
     "lib_batch_rename", "lib_batch_set_params",
     "lib_create_3d_model", "lib_create_footprint",
@@ -124,8 +128,8 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_link_3d_model", "lib_link_footprint", "obj_batch_delete",
     "obj_batch_modify", "obj_create", "obj_delete",
     "obj_deselect_all", "obj_get_font_id", "obj_get_font_spec",
-    "obj_modify", "obj_query", "obj_run_process", "obj_select",
-    "obj_zoom", "obj_zoom_to_xy", "pcb_bind_pad_nets",
+    "obj_modify", "obj_query", "obj_run_process", "obj_select", "obj_zoom",
+    "obj_zoom_to_xy", "pcb_bind_pad_nets",
     "pcb_build_from_project", "pcb_create_nets_from_list",
     "pcb_get_board_outline", "pcb_get_board_statistics",
     "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
@@ -242,6 +246,13 @@ INTERACTION_OVERRIDES = {
     "lib_restore_library_backup": SILENT,
     # Two library reads and a file in the workspace; the library is untouched.
     "lib_render_footprint": READONLY,
+    # Who edits which document: reading it, or handing one over, writes
+    # nothing to a design.
+    "app_document_owners": READONLY,
+    "app_claim_document": READONLY,
+    # Reads the rules, or keeps an approved copy beside the board: nothing
+    # in the design changes.
+    "pcb_drc_rules": READONLY,
     # Non-suppressible modal dialogs that block the single-threaded loop.
     "proj_sync_pcb": MODAL,          # ECO / Update-PCB dialog
     "proj_sync_schematic": MODAL,    # Update-Schematic dialog
@@ -253,6 +264,9 @@ INTERACTION_OVERRIDES = {
     # answer, and anyone filtering for operations that keep the session
     # responsive must not be handed this one.
     "app_update_from_libraries": MODAL,
+    # Altium's Confirm box for the netlist update blocks the loop until it
+    # is answered; the tool presses Yes itself, as above.
+    "pcb_update_free_primitive_nets": MODAL,
     # Pulls new code into the installation and can restart the Altium
     # loop. It is filed under meta, which counts as offline, and offline
     # would otherwise read as readonly.
@@ -306,6 +320,13 @@ INTERACTION_OVERRIDES = {
     # written. The pcb_ prefix defaults to silent, which would tell anyone
     # filtering for safe operations that an audit edits the board.
     "pcb_layout_audit": READONLY,
+    # Measures two objects and asks the clearance rule on the pair; writes
+    # nothing. The pcb_ prefix alone would call it mutating.
+    "pcb_measure_clearance": READONLY,
+    # Reads the Layer Stack Manager's own data for the board (layers with
+    # their properties, drill pairs, spans, profiles, optionally its model)
+    # and writes nothing; the pcb_ prefix alone would call it silent.
+    "pcb_layer_stack_manager": READONLY,
     # Reads a database library's declared tables and fields. The lib_ prefix
     # does not make that clear to the classifier; it writes nothing.
     "lib_dblib_info": READONLY,
@@ -384,6 +405,8 @@ _READONLY_SUBSTRINGS = (
 # entry points invisible to a client discovering by category, which bites
 # hardest under the minimal toolset where the catalog IS the interface.
 _CATEGORY_BY_NAME = {
+    "datasheet_find_pages": "parts",
+    "datasheet_view_page": "parts",
     "datasheet_fetch": "parts",
     "footprint_check_package": "design",
     "footprint_render_package": "design",

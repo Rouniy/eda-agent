@@ -18,6 +18,29 @@ from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, request
 
+
+def rules_report(board: str, got: Any) -> dict:
+    """Summarize board rules against the approved baseline for the dashboard."""
+    from ..export import drc_rules
+
+    rules = (got or {}).get("rules") if isinstance(got, dict) else None
+    if not isinstance(rules, list):
+        return {"ok": False, "reason": "the rules could not be read"}
+    baseline = drc_rules.read_baseline(board)
+    out = {"ok": True, "board": board, "count": len(rules),
+           "fingerprint": drc_rules.fingerprint(rules),
+           "sheet": drc_rules.sheet(rules),
+           "not_checked": drc_rules.not_checked(rules, None),
+           "approved": baseline is not None}
+    if baseline:
+        out.update(approved_at=baseline.get("approved_at"),
+                   approved_note=baseline.get("note", ""),
+                   changes=drc_rules.diff(baseline["rules"], rules),
+                   logged=drc_rules.read_log(board, since=str(baseline.get("approved_at") or "")))
+    else:
+        out.update(changes=[], logged=drc_rules.read_log(board))
+    return out
+
 # -- the model, from the cockpit's snapshot ---------------------------------
 
 

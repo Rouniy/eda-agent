@@ -306,15 +306,30 @@ def render_block(model: SdkModel,
                  allow_getter: bool = BLOCK_ALLOW_GETTER) -> str:
     """The whole generated region, markers included.
 
-    One probe per object type. Only ISch_Component today: the point of
-    probing is to learn the exposure rate on one type before committing
-    to generating the other thirty-one.
+    Two probes, because the 32 schematic types turned out not to need
+    32 of them. Of the 442 declared-but-unreached read slots across
+    those types, 310 were ten names, and all ten are declared on
+    ISch_GraphicalObject itself, the type GetSchProperty already takes.
+    One routine against the base answers them for every schematic
+    object, with no cast and no ObjectId guard, where a chain per type
+    would have written the same ten lines thirty-one times.
+
+    ISch_Component keeps its own, because the other 132 slots are
+    type-specific and the component chain is where that work started.
+    The two overlap by those ten names: a component is tried against
+    its own chain first, and the duplication is what lets either
+    routine be correct on its own.
 
     Pass ``table`` and the block carries only what the engine will
     resolve. Without it the block is a list of candidates, and running
     it is how you find out which ones halt the debugger.
     """
-    body = render_probe(
+    already = handled_heads("GetSchProperty")
+    shared = render_probe(
+        model, "ISch_GraphicalObject", "ISch_GraphicalObject",
+        function_name="GetSchGraphicalGenerated",
+        already=already, table=table, allow_getter=allow_getter).pascal
+    component = render_probe(
         model, "ISch_Component", "ISch_Component",
         function_name="GetSchComponentGenerated",
         already=handled_heads("GetSchProperty") - BLOCK_PROBE_OVERLAP,
@@ -353,3 +368,97 @@ def candidates_for(model: SdkModel, object_type: str, kind: str = "read",
                       already=reachable_heads(chain, constant), table=table,
                       allow_getter=allow_getter)
     return interface, take, skip
+
+
+def render_name_guard(names: Iterable[str], *, predicate_name: str,
+                      list_name: str) -> str:
+    """The two routines that let the board gate recognise a generated name.
+
+    GetPCBProperty is not reached directly: Gen_QueryObjects refuses a
+    property name IsKnownPCBProperty does not recognise, deliberately,
+    because returning '' for a misspelling reads as "the data is not
+    there" and had three times been reported as the bridge failing to
+    do something it could.
+
+    That guard is a hand-written Or-chain and KnownPCBPropertyList is a
+    hand-written string beside it, and the comment above the list warns
+    in as many words that a list lagging the reader tells a caller a
+    property does not exist when it does. Adding 37 reads without
+    adding 37 names did exactly that. Generating both from the same
+    list the reads come from is what stops it happening again.
+    """
+    names = list(names)
+    guard = [
+        f"Function {predicate_name}(PropName : String) : Boolean;",
+        "Begin",
+    ]
+    if names:
+        tests = [f"(PropName = '{n}')" for n in names]
+        guard.append("    Result :=")
+        for n, test in enumerate(tests):
+            tail = ";" if n == len(tests) - 1 else " Or"
+            guard.append(f"        {test}{tail}")
+    else:
+        guard.append("    Result := False;")
+    guard.append("End;")
+
+    listing = [
+        "{ The same names as text, for the refusal message. HIDDEN FROM THE",
+        "  RUN SCRIPT DIALOG BY ITS ARGUMENT, like its hand-written",
+        "  neighbour: Altium lists parameterless routines there and this",
+        "  is not one of the four a user wants. Dummy is never read. }",
+        f"Function {list_name}(Dummy : Integer) : String;",
+        "Begin",
+    ]
+    if names:
+        chunks, line = [], ""
+        for n in names:
+            piece = n if not line else f"{line}, {n}"
+            if len(piece) > 58:
+                chunks.append(line)
+                line = n
+            else:
+                line = piece
+        if line:
+            chunks.append(line)
+        for n, chunk in enumerate(chunks):
+            head = "    Result := " if n == 0 else "        + "
+            sep = "" if n == len(chunks) - 1 else ", "
+            listing.append(f"{head}'{chunk}{sep}'")
+        listing[-1] += ";"
+    else:
+        listing.append("    Result := '';")
+    listing.append("End;")
+
+    return "\n".join(guard) + "\n\n" + "\n".join(listing) + "\n"
+
+
+def render_pcb_block(model: SdkModel,
+                     table: SymbolTable | None = None,
+                     allow_getter: bool = BLOCK_ALLOW_GETTER) -> str:
+    """The board side of the same finding, in PCBGeneric.pas.
+
+    717 read slots across 14 board object types were unreachable, and 42
+    names were declared on all 14 of them. IPCB_Primitive is already the
+    type GetPCBProperty takes, so the same one-routine move applies: 37
+    of those names survive the type and symbol filters, reaching 518
+    slots that would otherwise need 14 chains.
+
+    A separate region because the concatenation puts PCBGeneric.pas
+    before Generic.pas, and DelphiScript has no forward declarations: a
+    routine GetPCBProperty calls has to be in its own file, above it.
+
+    Not read live yet. Unlike the schematic base, nothing has probed a
+    board property this way, so docs/RELEASE_VERIFICATION.md names the
+    read that settles it.
+    """
+    probe = render_probe(
+        model, "IPCB_Primitive", "IPCB_Primitive",
+        function_name="GetPCBPrimitiveGenerated",
+        already=handled_heads("GetPCBProperty"), table=table,
+        allow_getter=allow_getter)
+    guard = render_name_guard(
+        probe.included, predicate_name="IsGeneratedPCBProperty",
+        list_name="GeneratedPCBPropertyList")
+    return (f"{BEGIN_MARKER}\n{probe.pascal}\n{guard}"
+            f"{END_MARKER}\n")

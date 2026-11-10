@@ -14,7 +14,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.10.200';
+    SCRIPT_VERSION = '2026.11.10.204';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -45,6 +45,8 @@ Const
     { handlers back-to-back; each DM_Compile can be 5-10 s on a real design,   }
     { so bursts without this cache add up to 30-40 s of needless recompiles.   }
     COMPILE_CACHE_TTL_MS = 2000;
+    { A document stays its writer's while it wrote within this. }
+    OWNER_IDLE_MS = 600000;
 
     { PickSession's slot length. Sessions now take turns per tool call, so  }
     { the scan passes either 0 (the session is inside a tool call: keep    }
@@ -61,6 +63,7 @@ Const
 
     CONFIG_FILE = 'mcp_config.json';
     SAVING_FILE = 'saving.json';
+    PREFS_FILE = 'preferences.json';
 
     // ISch_RobotManager SendMessage IDs (from Altium Schematic API docs).
     SCHM_PrimitiveRegistration = 1;
@@ -91,6 +94,9 @@ Const
     LIB_IDENT_KIND_VAULT_NAME = 4;
 
 Var
+    LastCreatedLibDocAddr : Integer;
+    WritesFailed : Integer;
+    WritesFailedAt : String;
     WorkspaceDir : String;
     SelectedCompileReady : Boolean;
     SelectedCompileProject : IProject;
@@ -106,6 +112,10 @@ Var
     PollIntervalIdleMs   : Integer;
     IdleThreshold        : Integer;
     AutoShutdownMs       : Cardinal;
+    { The auto-off period a double-click on the status window's auto-off  }
+    { card returns to after "always on": the config file's value when it  }
+    { is above 0, else the 10-minute default.                              }
+    ConfiguredShutdownMs : Cardinal;
     YieldIterations      : Integer;
     YieldEveryNActive    : Integer;
 
@@ -113,6 +123,11 @@ Var
     { pointer it was run against, so we only skip when the SAME project was    }
     { compiled recently. Reset to 0 / Nil at startup.                          }
     LastCompileTick : Cardinal;
+    { Bumped by every write that goes through the edit helpers           }
+    { (SchBeginModify, PcbBeginEdit, NoteDocEdited); SmartCompile reuses }
+    { a compile only while it has not moved.                             }
+    WriteSerial : Integer;
+    CompiledAtSerial : Integer;
     { Documents the last save pass actually reached. See
       SaveOneDocByDocRef. Reset by App_SaveAll before each pass. }
     SaveAttempts, SaveWritten : Integer;
@@ -123,6 +138,13 @@ Var
     { File names, upper case, of every document a tool has flagged for
       saving this session, each wrapped in '|'. See NoteDocEdited. }
     EditedDocs : String;
+    { WHICH SESSION IS EDITING WHICH DOCUMENT. One record per document:   }
+    { Chr(1) PATH Chr(2) tag Chr(2) tick Chr(2) command Chr(3), the path  }
+    { upper case with back slashes. See OwnerRefusal.                     }
+    DocOwners : String;
+    { Full paths of the OutJobs proj_run_outjob opened, each
+      wrapped in '|'. The next run closes them. See CloseRunOutJobs. }
+    RunOutJobsOpened : String;
     { Documents the current save pass has already handled, wrapped in '|'.
       A free document is reached once per project walk, and the second
       visit would report a library it had just written as left alone. }
@@ -135,6 +157,27 @@ Var
     SavingOff : Boolean;
     SavesHeld : Integer;
     HeldFiles : String;
+    { The Config tab's choices, kept in PREFS_FILE. ValueFormat is how a  }
+    { component value is written back: 'none' (left as it is), 'rkm'    }
+    { (4K7, 2u2) or 'si' (4.7k, 2.2u). ValueUnit is 'with' to add the     }
+    { unit symbol under SI (100nF, 10uH, 3.3V; never on resistors).      }
+    ValueFormat : String;
+    ValueUnit : String;
+    { EditsMode 'readonly' refuses every command that is not a read;      }
+    { UiAutomationMode 'off' stops menus, dialogs and keystrokes (the     }
+    { Python side enforces it); KeepInViewMode 'on' fits the view after   }
+    { each edit (the Python side does it). Defaults: allowed, on, off.    }
+    EditsMode : String;
+    { DeletingMode / ClosingMode 'refused' turn away a command that deletes }
+    { or removes, or that closes a document or project. Default allowed.  }
+    DeletingMode : String;
+    ClosingMode : String;
+    UiAutomationMode : String;
+    KeepInViewMode : String;
+    { DialogMode 'auto' lets a tool answer the dialog it opens (the      }
+    { change order, the Teardrops options); 'manual' leaves it to the    }
+    { user. Default auto; the Python side does the answering.            }
+    DialogMode : String;
     LastCompiledProject : IProject;
     { How the last SmartCompile call for the current request was satisfied:
       'delegated' (shared dispatcher already compiled this selection),
@@ -181,6 +224,15 @@ Var
     { as cast_errors so a non-zero value at session end isn't invisible.     }
     CastErrorCount : Integer;
 
+    { The last four JSON documents read by key, each with its index of
+      top-level keys. See JsonIndexOf. }
+    JsonIdxDoc0, JsonIdxDoc1, JsonIdxDoc2, JsonIdxDoc3 : String;
+    JsonIdx0, JsonIdx1, JsonIdx2, JsonIdx3 : String;
+    JsonIdxNext : Integer;
+    { Keys asked for that were present only below the top level, each
+      wrapped in '|'. See ExtractJsonValue. }
+    JsonNestedSeen : String;
+
     { Tracks the most recently created/selected library component so the    }
     { Lib_Add* primitive helpers can target it directly. SchLib's           }
     { CurrentSchComponent setter is a no-op in DelphiScript, assigning to  }
@@ -218,8 +270,8 @@ Var
       resets these before routing every request. }
     SheetsSeen, SheetsSkipped : Integer;
     BoardFallbackPath, BoardFallbackFrom, BoardMissWhy : String;
-    SlotSession, SaveScope : String;
-    SlotStartTick, QueueNoteTick, CleanLeftAlone : Integer;
+    SaveScope : String;
+    CleanLeftAlone : Integer;
 
 {..............................................................................}
 { Initialise polling tunables to compile-time defaults. Called by the          }
@@ -233,6 +285,7 @@ Begin
     PollIntervalIdleMs   := 30;
     IdleThreshold        := 150;
     AutoShutdownMs       := 600000;  { 10 min }
+    ConfiguredShutdownMs := 600000;
     YieldIterations      := 5;
     YieldEveryNActive    := 5;
 End;
@@ -430,8 +483,13 @@ Begin
     // since the last compile. An external UI edit invalidates the cache
     // immediately, so the next MCP call after the user clicked "Add part"
     // sees the new state instead of a 2-second-stale snapshot.
+    // A write of our own does too, through WriteSerial: the Modified flag
+    // can read False while the editor holds an edit made through
+    // ProcessControl, so a net read right after a schematic write was
+    // answered from the netlist as it was before it.
     If (Project = LastCompiledProject) And (LastCompileTick > 0) And
        ((GetTickCount - LastCompileTick) < COMPILE_CACHE_TTL_MS) And
+       (WriteSerial = CompiledAtSerial) And
        (Not ProjectHasDirtyDocs(Project)) Then
     Begin
         LastCompileAction := 'cache';
@@ -442,6 +500,7 @@ Begin
     LastCompileAction := 'compiled';
     LastCompiledProject := Project;
     LastCompileTick := GetTickCount;
+    CompiledAtSerial := WriteSerial;
 End;
 
 { Resolve the post-compile document set. After Project.DM_Compile the          }
@@ -491,6 +550,7 @@ End;
 
 Procedure SchBeginModify(Obj : ISch_BasicContainer);
 Begin
+    WriteSerial := WriteSerial + 1;
     If (Obj <> Nil) And (SchServer <> Nil) Then
         SchServer.RobotManager.SendMessage(
             Obj.I_ObjectAddress, c_BroadCast, SCHM_BeginModify, c_NoEventData);
@@ -501,6 +561,42 @@ Begin
     If (Obj <> Nil) And (SchServer <> Nil) Then
         SchServer.RobotManager.SendMessage(
             Obj.I_ObjectAddress, c_BroadCast, SCHM_EndModify, c_NoEventData);
+End;
+
+{ REMEMBERED LIBRARY SYMBOL. LastCreatedLibComponent is held across commands }
+{ (it is how a symbol made this session is found again before the library    }
+{ can see it), but nothing cleared it when its library was closed outside   }
+{ RefreshSchLibFromDisk. MEASURED on AD 25.8.1: after lib_component scopes   }
+{ on a library that was then closed and reopened, add_symbol_rectangle      }
+{ answered shown=false and the rectangle landed in no part of the symbol on  }
+{ screen, in memory or after save + reopen: it went into a freed component.  }
+{ So the symbol is remembered with its document, and handed out only while  }
+{ that document is the current one.                                          }
+Function LibDocAddress(Doc : ISch_Document) : Integer;
+Begin
+    Result := 0;
+    If Doc = Nil Then Exit;
+    Try Result := Doc.I_ObjectAddress; Except Result := 0; End;
+End;
+
+Procedure RememberLibComponent(Doc : ISch_Document; Comp : ISch_Component; Name : String);
+Begin
+    LastCreatedLibComponent := Comp;
+    LastCreatedLibComponentName := Name;
+    LastCreatedLibDocAddr := LibDocAddress(Doc);
+End;
+
+{ The remembered symbol when Doc is the library it came from, else Nil. }
+Function RememberedLibComponent(Doc : ISch_Document) : ISch_Component;
+Var
+    Addr : Integer;
+Begin
+    Result := Nil;
+    If LastCreatedLibComponent = Nil Then Exit;
+    If LastCreatedLibDocAddr = 0 Then Exit;
+    Addr := LibDocAddress(Doc);
+    If (Addr = 0) Or (Addr <> LastCreatedLibDocAddr) Then Exit;
+    Result := LastCreatedLibComponent;
 End;
 
 Procedure SchRegisterObject(Container, Obj : ISch_BasicContainer);
@@ -540,10 +636,97 @@ Procedure NoteDocEdited(FilePath : String);
 Var
     Key : String;
 Begin
+    WriteSerial := WriteSerial + 1;
     If FilePath = '' Then Exit;
     Key := '|' + UpperCase(ExtractFileName(FilePath)) + '|';
     If Pos(Key, EditedDocs) = 0 Then EditedDocs := EditedDocs + Key;
 End;
+
+{ ONE SESSION AT A TIME ON A DOCUMENT. Sessions share one Altium, and a    }
+{ write landed on a board another session was working on with nothing to   }
+{ say so. Each write a session's tool call makes claims the document it    }
+{ acts on; another session's write to it is refused while the owner has   }
+{ written within OWNER_IDLE_MS. The person at the dashboard is never       }
+{ refused and claims nothing; application.claim_document hands a document  }
+{ over when the user says so.                                              }
+Function OwnerKey(Path : String) : String;
+Begin
+    Result := UpperCase(Trim(StringReplace(Path, '/', '\', -1)));
+End;
+
+{ The owner record of KEY without its delimiters, '' when none. }
+Function OwnerRecord(Key : String) : String;
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    Result := '';
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), DocOwners);
+    If P = 0 Then Exit;
+    Rest := Copy(DocOwners, P + Length(Key) + 2, Length(DocOwners));
+    E := Pos(Chr(3), Rest);
+    If E = 0 Then Exit;
+    Result := Copy(Rest, 1, E - 1);
+End;
+
+{ Field I (0 tag, 1 tick, 2 command) of an owner record. }
+Function OwnerField(Rec : String; I : Integer) : String;
+Var
+    N, P : Integer;
+Begin
+    Result := '';
+    For N := 0 To I - 1 Do
+    Begin
+        P := Pos(Chr(2), Rec);
+        If P = 0 Then Exit;
+        Rec := Copy(Rec, P + 1, Length(Rec));
+    End;
+    P := Pos(Chr(2), Rec);
+    If P = 0 Then Result := Rec
+    Else Result := Copy(Rec, 1, P - 1);
+End;
+
+Procedure OwnerSet(Key : String; Tag : String; Command : String);
+Var
+    P, E : Integer;
+    Rest : String;
+Begin
+    If Key = '' Then Exit;
+    P := Pos(Chr(1) + Key + Chr(2), DocOwners);
+    If P > 0 Then
+    Begin
+        Rest := Copy(DocOwners, P, Length(DocOwners));
+        E := Pos(Chr(3), Rest);
+        If E > 0 Then
+            DocOwners := Copy(DocOwners, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
+    End;
+    DocOwners := DocOwners + Chr(1) + Key + Chr(2) + Tag + Chr(2)
+        + IntToStr(GetTickCount) + Chr(2) + Command + Chr(3);
+End;
+
+{ The session tag a request id starts with. }
+Function RequestTag(RequestId : String) : String;
+Var
+    P : Integer;
+Begin
+    P := Pos('-', RequestId);
+    If P > 1 Then Result := LowerCase(Copy(RequestId, 1, P - 1))
+    Else Result := LowerCase(RequestId);
+End;
+
+{ Milliseconds since the owner of a record last wrote. }
+Function OwnerAgeMs(Rec : String) : Integer;
+Var
+    Tick : Integer;
+Begin
+    Tick := StrToIntDef(OwnerField(Rec, 1), 0);
+    If (Tick = 0) Or (GetTickCount < Tick) Then Result := 0
+    Else Result := GetTickCount - Tick;
+End;
+
+
+
 
 Function DocWasEdited(FilePath : String) : Boolean;
 Begin
@@ -586,6 +769,7 @@ Begin
     Begin
         PcbEditDepth := 0;
         PCBServer.PreProcess;
+        WriteSerial := WriteSerial + 1;
     End;
     PcbEditDepth := PcbEditDepth + 1;
 End;
@@ -726,6 +910,23 @@ Begin
     SchServer.ProcessControl.PostProcess(Doc, Name);
 End;
 
+Procedure NoteWriteFailed(Where : String);
+Begin
+    Inc(WritesFailed);
+    { The first eight places are enough to find the cause; the count says }
+    { how many more there were.                                           }
+    If WritesFailed <= 8 Then
+    Begin
+        If WritesFailedAt <> '' Then WritesFailedAt := WritesFailedAt + ',';
+        { Labels are code names; a quote is the one character that could  }
+        { break the JSON (EscapeJsonString is in a later unit).            }
+        WritesFailedAt := WritesFailedAt + '"'
+            + StringReplace(StringReplace(Where, '\', '/', MkSet(rfReplaceAll)),
+                            '"', '''', MkSet(rfReplaceAll)) + '"';
+    End;
+End;
+
+
 Procedure MarkDocDirtyByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
@@ -735,7 +936,7 @@ Begin
     InvalidateCompileCache(0);
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
-    Try ServerDoc.SetModified(True); Except End;
+    Try ServerDoc.SetModified(True); Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 End;
 
 {..............................................................................}
@@ -991,6 +1192,36 @@ End;
 { Why carries the reason when the Result is Nil.                               }
 {..............................................................................}
 
+Function FrontPCBBoardPath(Dummy : Integer) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Result := '';
+    Try Board := PCBServer.GetCurrentPCBBoard; Except Board := Nil; End;
+    If Board <> Nil Then
+        Try Result := Board.FileName; Except Result := ''; End;
+End;
+
+{..............................................................................}
+{ GetPCBBoardForMutation - the board an EDIT is allowed to touch.              }
+{                                                                              }
+{ GetPCBBoardAnywhere WANDERS, and that is correct for a read. When no PcbDoc  }
+{ is focused it walks every open project, opens the first board it finds,      }
+{ reads it, and restores the previous view so the focus change is invisible.   }
+{ For a query that is a convenience. For a DELETE it is a misfire: with a      }
+{ library focused and two boards open, obj_delete would remove primitives from }
+{ whichever board the walk reached first, and hide the fact that it had        }
+{ switched documents to do it.                                                 }
+{                                                                              }
+{ So an edit gets a board only when the target is UNAMBIGUOUS: a PcbDoc is     }
+{ focused, or exactly one is open anywhere. Two open and none focused is       }
+{ refused, and the refusal names them, because picking one is a guess the      }
+{ caller has to make rather than one this should make silently.                }
+{                                                                              }
+{ Why carries the reason when the Result is Nil.                               }
+{..............................................................................}
+
+
 Function GetPCBBoardForMutation(Var Why : String) : IPCB_Board;
 Var
     Workspace : IWorkspace;
@@ -1148,8 +1379,8 @@ Begin
         SaveAttempts := SaveAttempts + 1;
         AgeBefore := -1;
         Try AgeBefore := FileAge(Path); Except AgeBefore := -1; End;
-        Try ServerDoc.SetModified(True); Except End;
-        Try ServerDoc.DoFileSave(''); Except End;
+        Try ServerDoc.SetModified(True); Except NoteWriteFailed('.SetModified('); End;
+        Try ServerDoc.DoFileSave(''); Except NoteWriteFailed('.DoFileSave('); End;
         { A confirmed write clears the edit marker for every document kind. }
         { Otherwise a later detach can rewrite a now-clean schematic.       }
         AgeAfter := -1;
@@ -1181,7 +1412,7 @@ Begin
     If ProjDoc = Nil Then Exit;
     AgeBefore := -1;
     Try AgeBefore := FileAge(Path); Except End;
-    Try ProjDoc.SetModified(True); Except End;
+    Try ProjDoc.SetModified(True); Except NoteWriteFailed('.SetModified('); End;
     Try ProjDoc.DoFileSave(''); Except Exit; End;
     AgeAfter := -1;
     Try AgeAfter := FileAge(Path); Except End;
@@ -1203,9 +1434,9 @@ Begin
         If (ProjectServerDoc <> Nil) And ProjectServerDoc.Modified Then
             If Not SaveHeldBack(Project.DM_ProjectFullPath) Then
             Begin
-                Try ProjectServerDoc.DoFileSave(''); Except End;
+                Try ProjectServerDoc.DoFileSave(''); Except { CountDirtyInProject reports what stayed unsaved } End;
             End;
-    Except End;
+    Except { CountDirtyInProject reports what stayed unsaved } End;
 End;
 
 { Project-scoped save/close should leave clean open sheets untouched. The
@@ -1885,15 +2116,20 @@ End;
 { open or focus by the other spelling loaded a second copy from disk, the   }
 { tool then edited that copy, and an edit after it raised "Object accessed  }
 { after being destroyed" in ADVPCB (measured 2026-10-18). Only a value under }
-{ a key ending in "path" that is a drive or UNC path is rewritten, so a     }
-{ menu_path like "File|Open" passes untouched.                              }
+{ a key ending in "path", "library" or "_file", or named "destination",     }
+{ that is a drive or UNC path is rewritten, so a menu_path like "File|Open" }
+{ passes untouched. source_library once kept its forward slashes, missed    }
+{ the open library and copied a footprint into a hidden second copy.        }
 Function CanonicalPathValue(Key : String; Value : String) : String;
 Var
     K : String;
 Begin
     Result := Value;
     K := LowerCase(Key);
-    If (Length(K) < 4) Or (Copy(K, Length(K) - 3, 4) <> 'path') Then Exit;
+    If Not ((Copy(K, Length(K) - 3, 4) = 'path')
+        Or (Copy(K, Length(K) - 6, 7) = 'library')
+        Or (Copy(K, Length(K) - 4, 5) = '_file')
+        Or (K = 'destination')) Then Exit;
     If (Length(Value) >= 3) And (Copy(Value, 2, 1) = ':')
         And ((Copy(Value, 3, 1) = '/') Or (Copy(Value, 3, 1) = '\')) Then
         Result := StringReplace(Value, '/', '\', -1)
@@ -1901,7 +2137,10 @@ Begin
         Result := StringReplace(Value, '/', '\', -1);
 End;
 
-Function ExtractJsonValue(Json : String; Key : String) : String;
+{ The first value stored under Key at ANY depth. For a handler reading its   }
+{ own reply, where the field sits inside the data or error object. A        }
+{ request is read with ExtractJsonValue, which takes top-level keys only.   }
+Function JsonValueAnywhere(Json : String; Key : String) : String;
 Var
     StartPos, EndPos : Integer;
     SearchKey : String;
@@ -1999,6 +2238,173 @@ Begin
 End;
 
 {..............................................................................}
+{ Reading a JSON object by its top-level keys.                                 }
+{                                                                              }
+{ A document is parsed once into an index of its top-level keys and the span  }
+{ of each value, written as |key=start,end|key=start,end|, and keys are       }
+{ looked up there. A key of the same name inside a nested object or array is  }
+{ not a top-level key, so it is never read in its place: parameters holding   }
+{ an items array whose entries carry "layer" have no "layer" of their own.    }
+{ The first of two equal top-level keys wins. A key holding a bar or an equals }
+{ sign is not indexed, and no caller asks for one.                            }
+{..............................................................................}
+Function JsonBuildIndex(Json : String) : String;
+Var
+    I, N, Depth, StrStart, ValStart, LastNonWs : Integer;
+    Ch, Key, Keys : String;
+    InStr, ExpectKey, InValue : Boolean;
+Begin
+    Keys := '|';
+    N := Length(Json);
+    Depth := 0;
+    InStr := False;
+    ExpectKey := False;
+    InValue := False;
+    Key := '';
+    StrStart := 0;
+    ValStart := 0;
+    LastNonWs := 0;
+    I := 1;
+    While I <= N Do
+    Begin
+        Ch := Copy(Json, I, 1);
+        If InStr Then
+        Begin
+            If Ch = '\' Then
+                I := I + 1
+            Else If Ch = '"' Then
+            Begin
+                InStr := False;
+                LastNonWs := I;
+                If (Depth = 1) And ExpectKey Then
+                Begin
+                    Key := Copy(Json, StrStart + 1, I - StrStart - 1);
+                    ExpectKey := False;
+                End;
+            End;
+        End
+        Else If (Ch <> ' ') And (Ch <> #9) And (Ch <> #10) And (Ch <> #13) Then
+        Begin
+            If InValue And (ValStart = 0) Then ValStart := I;
+            If Ch = '"' Then
+            Begin
+                InStr := True;
+                StrStart := I;
+            End
+            Else If (Ch = '{') Or (Ch = '[') Then
+            Begin
+                Inc(Depth);
+                If (Depth = 1) And (Ch = '{') Then ExpectKey := True;
+                LastNonWs := I;
+            End
+            Else If (Depth = 1) And (Ch = ':') And (Key <> '') And (Not InValue) Then
+            Begin
+                InValue := True;
+                ValStart := 0;
+            End
+            Else If (Depth = 1) And ((Ch = ',') Or (Ch = '}')) Then
+            Begin
+                If InValue And (ValStart > 0) And (Pos('|', Key) = 0)
+                    And (Pos('=', Key) = 0)
+                    And (Pos('|' + Key + '=', Keys) = 0) Then
+                    Keys := Keys + Key + '=' + IntToStr(ValStart) + ','
+                        + IntToStr(LastNonWs) + '|';
+                InValue := False;
+                Key := '';
+                If Ch = ',' Then
+                    ExpectKey := True
+                Else
+                    Break;
+            End
+            Else If (Ch = '}') Or (Ch = ']') Then
+            Begin
+                Dec(Depth);
+                LastNonWs := I;
+            End
+            Else
+                LastNonWs := I;
+        End;
+        I := I + 1;
+    End;
+    Result := Keys;
+End;
+
+{ The index of a document, from the last four read or freshly built. A     }
+{ handler reads many keys from one set of parameters, often between reads  }
+{ of an item, so each document is parsed once.                             }
+Function JsonIndexOf(Json : String) : String;
+Var
+    Keys : String;
+Begin
+    If Json = JsonIdxDoc0 Then Keys := JsonIdx0
+    Else If Json = JsonIdxDoc1 Then Keys := JsonIdx1
+    Else If Json = JsonIdxDoc2 Then Keys := JsonIdx2
+    Else If Json = JsonIdxDoc3 Then Keys := JsonIdx3
+    Else
+    Begin
+        Keys := JsonBuildIndex(Json);
+        If JsonIdxNext = 1 Then
+        Begin
+            JsonIdxDoc1 := Json;
+            JsonIdx1 := Keys;
+        End
+        Else If JsonIdxNext = 2 Then
+        Begin
+            JsonIdxDoc2 := Json;
+            JsonIdx2 := Keys;
+        End
+        Else If JsonIdxNext = 3 Then
+        Begin
+            JsonIdxDoc3 := Json;
+            JsonIdx3 := Keys;
+        End
+        Else
+        Begin
+            JsonIdxDoc0 := Json;
+            JsonIdx0 := Keys;
+        End;
+        If JsonIdxNext >= 3 Then JsonIdxNext := 0 Else JsonIdxNext := JsonIdxNext + 1;
+    End;
+    Result := Keys;
+End;
+
+{ The value of a top-level key: a string unescaped, any other value (number, }
+{ true, false, null, object or array) as its JSON text, '' when the key is   }
+{ not a top-level key of the object.                                         }
+Function ExtractJsonValue(Json : String; Key : String) : String;
+Var
+    Keys, Span, Value : String;
+    P, S, E : Integer;
+Begin
+    Result := '';
+    If (Key = '') Or (Pos('"' + Key + '"', Json) = 0) Then Exit;
+    Keys := JsonIndexOf(Json);
+    P := Pos('|' + Key + '=', Keys);
+    If P = 0 Then
+    Begin
+        { The name is in the text but not as a top-level key: nested, or a
+          string value. Logged once per key, so a caller that meant a
+          nested value shows up in activity.log. }
+        If Pos('|' + Key + '|', JsonNestedSeen) = 0 Then
+        Begin
+            JsonNestedSeen := JsonNestedSeen + '|' + Key + '|';
+            AppendLog(FormatLogStamp(0) + ',0,_json_key_not_top_level,' + Key);
+        End;
+        Exit;
+    End;
+    Span := Copy(Keys, P + Length(Key) + 2, Length(Keys));
+    Span := Copy(Span, 1, Pos('|', Span) - 1);
+    S := StrToIntDef(Copy(Span, 1, Pos(',', Span) - 1), 0);
+    E := StrToIntDef(Copy(Span, Pos(',', Span) + 1, Length(Span)), 0);
+    If (S <= 0) Or (E < S) Then Exit;
+    If Copy(Json, S, 1) = '"' Then
+        Value := CanonicalPathValue(Key, UnescapeJsonString(Copy(Json, S + 1, E - S - 1)))
+    Else
+        Value := Copy(Json, S, E - S + 1);
+    Result := Value;
+End;
+
+{..............................................................................}
 { JSON envelope builders.                                                       }
 {                                                                               }
 { All responses include protocol_version so the Python side can detect a       }
@@ -2043,6 +2449,41 @@ Begin
     Result := Nil;
     If Path = '' Then Exit;
     Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
+End;
+
+{..............................................................................}
+{ A WRITE THAT RAISED IS NOT A WRITE THAT HAPPENED.                           }
+{                                                                              }
+{ Most property writes sit in a Try so one refused value does not abort the   }
+{ rest of an edit. With an empty handler the reply still said success, and   }
+{ the caller had no way to tell the value was never set. A handler with      }
+{ nothing else to do calls NoteWriteFailed; WriteFailures puts the count and  }
+{ the places on the reply at the one dispatch point, as SheetCoverage does.  }
+{..............................................................................}
+
+{ NoteWriteFailed itself is defined near the top of this unit, before the  }
+{ first helper that calls it.                                                }
+
+{ The reply with the failed writes added. Only a success whose data is an    }
+{ object is touched: an error already says it failed.                        }
+Function WriteFailures(Response : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If WritesFailed = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Added := '"writes_failed":' + IntToStr(WritesFailed)
+        + ',"writes_failed_at":[' + WritesFailedAt + ']'
+        + ',"writes_warning":"' + IntToStr(WritesFailed) + ' write(s) in this '
+        + 'call raised and did not take effect, although the call went on: '
+        + 'read the objects back before relying on them."';
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
 
 {..............................................................................}
@@ -2276,6 +2717,46 @@ Begin
         WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"off"}')
     Else
         WriteFileContent(WorkspaceDir + SAVING_FILE, '{"saving":"on"}');
+End;
+
+{ The Config tab's choices outlast a restart: read from PREFS_FILE when the }
+{ pump starts. No file, or a value this script does not know, means 'none' }
+{ and 'without': nothing is reformatted unless the user chose a format.    }
+Procedure LoadPreferences(Dummy : Integer);
+Var
+    Content : String;
+Begin
+    ValueFormat := 'none';
+    ValueUnit := 'without';
+    EditsMode := 'allowed';
+    DeletingMode := 'allowed';
+    ClosingMode := 'allowed';
+    UiAutomationMode := 'on';
+    KeepInViewMode := 'off';
+    DialogMode := 'auto';
+    If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
+    Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
+    ValueFormat := LowerCase(ExtractJsonValue(Content, 'value_format'));
+    If (ValueFormat <> 'rkm') And (ValueFormat <> 'si') Then ValueFormat := 'none';
+    ValueUnit := LowerCase(ExtractJsonValue(Content, 'value_unit'));
+    { Only SI takes a unit: the RKM code of IEC 60062 has none. }
+    If (ValueUnit <> 'with') Or (ValueFormat <> 'si') Then ValueUnit := 'without';
+    If LowerCase(ExtractJsonValue(Content, 'edits')) = 'readonly' Then EditsMode := 'readonly';
+    If LowerCase(ExtractJsonValue(Content, 'deleting')) = 'refused' Then DeletingMode := 'refused';
+    If LowerCase(ExtractJsonValue(Content, 'closing')) = 'refused' Then ClosingMode := 'refused';
+    If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
+    If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
+    If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
+End;
+
+Procedure StorePreferences(Dummy : Integer);
+Begin
+    WriteFileContent(WorkspaceDir + PREFS_FILE,
+        '{"value_format":"' + ValueFormat + '","value_unit":"' + ValueUnit
+        + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
+        + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
+        + '","keep_in_view":"' + KeepInViewMode
+        + '","dialogs":"' + DialogMode + '"}');
 End;
 
 {..............................................................................}
@@ -2862,6 +3343,7 @@ Begin
 
     V := ExtractJsonValue(Content, 'auto_shutdown_ms');
     If V <> '' Then Begin Try N := StrToInt(V); If N >= 0 Then AutoShutdownMs := N; Except End; End;
+    If AutoShutdownMs > 0 Then ConfiguredShutdownMs := AutoShutdownMs;
 
     { Operator idle-timeout pin. The wheel's Python client rewrites            }
     { mcp_config.json with its own defaults at connect time and repeatedly     }

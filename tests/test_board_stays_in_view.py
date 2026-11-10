@@ -69,6 +69,9 @@ def test_opted_in_edit_fits_after_the_reply(monkeypatch):
         return {"edit": "done"}
 
     monkeypatch.setattr(bridge, "_execute_command_async", dispatch)
+    monkeypatch.setattr(bridge, "_execute_command",
+                        lambda command, params, timeout, max_extensions=None:
+                        calls.append(command) or {"edit": "done"})
     result = asyncio.run(bridge.send_command_async("pcb.place_tracks", {}))
     assert result == {"edit": "done"}
     assert calls == ["pcb.place_tracks", "generic.zoom"]

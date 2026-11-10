@@ -11,6 +11,7 @@ user tool calls.
 
 import contextlib
 import contextvars
+import functools
 import itertools
 import json
 import locale
@@ -68,23 +69,6 @@ logger = logging.getLogger("eda_agent.bridge")
 PROTOCOL_VERSION = 2
 
 
-def _read_response_json(path: Path) -> dict[str, Any]:
-    """Read modern UTF-8 replies and older ANSI-codepage replies.
-
-    AD25 DelphiScript can write TStringList files in the Windows system
-    codepage. The request reader uses a UTF-8 BOM, but SaveToFile on that
-    runtime need not emit UTF-8. Keep UTF-8 first so modern replies retain
-    every Unicode character; fall back only when its bytes cannot decode.
-    """
-    raw = path.read_bytes()
-    try:
-        decoded = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        system_encoding = locale.getencoding()
-        if system_encoding.lower().replace("-", "") in {"utf8", "utf8sig"}:
-            raise
-        decoded = raw.decode(system_encoding)
-    return json.loads(decoded)
 
 # Heartbeat-aware deadline extension cap. The Pascal dispatcher writes a
 # progress_<id>.json marker while a handler runs; Python's poll loop extends
@@ -111,16 +95,36 @@ _QUEUE_FRESH_S = 5.0
 #: the failure this exists to remove. Checking on an interval catches it
 #: whenever it turns up.
 #:
-#: The first check is delayed so ordinary calls never pay for it. MEASURED
-#: on this workspace, the compile-bound reads are the slowest legitimate
-#: handlers and return in about a second, so a 3 second grace leaves
-#: headroom. After that the cost is one Win32 window enumeration per
-#: interval, against a call that is already stalled.
-_DIALOG_PROBE_AFTER = 3.0
-_DIALOG_PROBE_EVERY = 3.0
+#: One look costs about 60 ms (a Toolhelp scan for Altium's pid and a
+#: Win32 window enumeration), so it starts after a second and repeats
+#: every half second. A dialog counts as blocking the call only when the
+#: same one is seen on two looks in a row, so a progress window Altium
+#: opens and closes by itself never stops a call.
+_DIALOG_PROBE_AFTER = 1.0
+_DIALOG_PROBE_EVERY = 0.5
+
+
+def _blocking_signature(report: Optional[dict], expected: frozenset = frozenset()) -> str:
+    """The dialogs blocking Altium, as one comparable string; '' if none.
+
+    A dialog whose title contains one of ``expected`` is one the caller
+    is answering itself (proj_sync_pcb and its change order) and is not
+    counted.
+    """
+    if not report or not report.get("blocked"):
+        return ""
+    dialogs = [d for d in report.get("dialogs") or [] if isinstance(d, dict)]
+    if not dialogs:
+        return "blocked"
+    return "|".join(sorted(
+        f"{d.get('hwnd')}:{d.get('title')}" for d in dialogs
+        if not any(e.lower() in str(d.get("title") or "").lower() for e in expected)))
 
 #: Call diagnostics on the executing thread.
 _executor = ThreadPoolExecutor(max_workers=1)
+
+#: The command in flight on this thread and any error box answered for it,
+#: per thread because the keep-alive pings on its own.
 _CALL = threading.local()
 
 
@@ -142,11 +146,14 @@ _FOLLOW: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
 
 
 @contextlib.contextmanager
-def tool_call():
+def tool_call(name: str = ""):
     """One MCP tool call: its commands to Altium keep the turn between
     them while other sessions wait, and when it returns the turn passes
-    on at once (callend_<tag>-<call>.flag) instead of after a grace."""
-    call = {"id": uuid.uuid4().hex[:4], "sent": False}
+    on at once (callend_<tag>-<call>.flag) instead of after a grace.
+    ``name`` is the tool: a tool that writes marks its commands so, and
+    Altium keeps another session's writes off the document (OwnerRefusal
+    in StatusForm.pas)."""
+    call = {"id": uuid.uuid4().hex[:4], "sent": False, "tool": name}
     token = _TOOL_CALL.set(call)
     try:
         yield call
@@ -154,6 +161,14 @@ def tool_call():
         _TOOL_CALL.reset(token)
         if call["sent"]:
             _end_call(call["id"])
+
+
+def name_tool_call(name: str) -> None:
+    """The tool a proxy (tool_invoke, a family tool) is running inside the
+    current call, so its commands are marked by what it does."""
+    call = _TOOL_CALL.get()
+    if call is not None and name:
+        call["tool"] = name
 
 
 def _end_call(call_id: str) -> None:
@@ -229,7 +244,7 @@ def _trace_log(workspace_dir: Path, msg: str) -> None:
         path = workspace_dir / "bridge_trace.log"
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{time.time():.3f} {msg}\n")
-    except Exception:
+    except OSError:  # a trace line is not worth failing a call over
         pass
 
 
@@ -288,7 +303,7 @@ def _make_dir_watcher(directory: Path):
         if not handle or handle == _INVALID_HANDLE:
             return None
         return handle
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the caller falls back to sleeping
         return None
 
 
@@ -307,7 +322,7 @@ def _wait_dir_change(handle, timeout_ms: float) -> bool:
             _kernel32.FindNextChangeNotification(handle)
             return True
         return False
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the caller re-checks and waits again
         return False
 
 
@@ -316,16 +331,77 @@ def _close_dir_watcher(handle) -> None:
         return
     try:
         _kernel32.FindCloseChangeNotification(handle)
-    except Exception:
+    except (OSError, ctypes.ArgumentError):  # the handle is gone either way
         pass
 
 
-#: This server's session tag. One eda-agent server runs per Claude session,
-#: so the tag tells Altium which session a request came from: it serves one
-#: session at a time in slots when several are waiting, and never slots a
-#: session that is alone (ScanForRequestFile in Main.pas).
-_SESSION_TAG = uuid.uuid4().hex[:8]
+def _claude_session_tag() -> str:
+    """Eight hex digits naming the Claude session this server runs under.
+
+    A Claude session starts more than one eda-agent server (the full and
+    the two-tool surface), and the reload proxy restarts its child, so a
+    random tag per process gave one session several. Altium then refused
+    a session's own write as another session's (measured 2026-11-05: a
+    repour through one server, the DRC after it through the other). The
+    tag is made from the nearest Claude process above this one, its pid
+    and start time, so every server of a session shares it. Random when
+    no Claude process is found (a script, a test).
+    """
+    try:
+        import hashlib
+        import psutil
+        for parent in psutil.Process().parents():
+            name = parent.name().lower()
+            if name in ("claude.exe", "claude") or (
+                    name.startswith("node") and any(
+                        "claude" in part.lower() for part in parent.cmdline()[:3])):
+                return hashlib.sha1(
+                    f"{parent.pid}:{parent.create_time()}".encode()).hexdigest()[:8]
+    except Exception:  # noqa: BLE001 - any failure falls back to a random tag
+        pass
+    return uuid.uuid4().hex[:8]
+
+
+#: This server's session tag, shared by every eda-agent server of one Claude
+#: session. It tells Altium which session a request came from: it serves one
+#: session at a time in slots when several are waiting, never slots a session
+#: that is alone (ScanForRequestFile in Main.pas), and gives documents to the
+#: session that writes them.
+_SESSION_TAG = _claude_session_tag()
 _SEQUENCE = itertools.count(1)
+
+
+def dialog_owner(workspace_dir: Path) -> Optional[dict[str, Any]]:
+    """Whose call raised the dialog Altium is showing, from what is on disk.
+
+    The handler that raised a modal is still running, so its progress
+    marker is there, named by its request id, which starts with the
+    session's tag; the shared trace holds that session's last command.
+    None when no marker says.
+    """
+    try:
+        markers = sorted(Path(workspace_dir).glob("progress_*.json"),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    if not markers:
+        return None
+    request_id = markers[0].name[len("progress_"):-len(".json")]
+    tag = request_id.split("-", 1)[0].lower()
+    command = ""
+    try:
+        trace = Path(workspace_dir) / "bridge_trace.log"
+        with open(trace, "rb") as f:
+            f.seek(max(0, trace.stat().st_size - 400_000))
+            tail = f.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
+            m = re.search(r" SEND cmd=(\S+) id=" + re.escape(tag[:8]) + r"\b", line)
+            if m and not m.group(1).startswith("application.ping"):
+                command = m.group(1)
+                break
+    except OSError:
+        pass
+    return {"session": tag, "yours": tag == _SESSION_TAG.lower(), "command": command}
 
 
 def _queue_is_alive(workspace_dir: Path) -> bool:
@@ -432,12 +508,15 @@ _READ_VERBS = ("get_", "query", "count", "list", "find", "read", "export",
 def _wants_board_in_view(command: str, now: Optional[float] = None) -> bool:
     """True when the view should be fitted after ``command``.
 
-    Only with ``EDA_AGENT_KEEP_BOARD_IN_VIEW`` set, only after a board,
+    Only with ``EDA_AGENT_KEEP_BOARD_IN_VIEW`` set or Keep board in view on
+    the panel's Config tab, only after a board,
     schematic or object edit (``pcb.`` and ``generic.`` commands that are
     not reads), and at most once every two seconds.
     """
     if os.environ.get(KEEP_IN_VIEW_ENV, "").strip().lower() not in ("1", "true", "yes"):
-        return False
+        from ..preferences import keep_in_view
+        if not keep_in_view():
+            return False
     domain, _, verb = command.partition(".")
     if domain not in ("pcb", "generic") or not verb:
         return False
@@ -490,6 +569,11 @@ class CommandRequest:
     #: The document this session last had in front. Altium puts it back
     #: in front before running the command (SessionFocus in StatusForm.pas).
     session_doc: str = ""
+    #: Sent by a tool that writes: Altium refuses it on a document another
+    #: session is editing, and gives the document to this session after.
+    writes: bool = False
+    #: "user" for the person at the dashboard, never refused.
+    actor: str = ""
 
     def to_dict(self) -> dict:
         out: dict[str, Any] = {
@@ -501,6 +585,10 @@ class CommandRequest:
         # so the envelope key must come ahead of anything a caller passes.
         if self.session_doc:
             out["session_doc_path"] = self.session_doc
+        if self.actor:
+            out["actor"] = self.actor
+        if self.writes:
+            out["writes"] = "1"
         out["params"] = self.params
         return out
 
@@ -577,6 +665,28 @@ _UNPINNED = frozenset({
 })
 
 
+def _actor() -> str:
+    """'user' for the dashboard, which acts for the person at Altium."""
+    return "user" if (getattr(_CALL, "follow_front", False) or _FOLLOW.get()) else ""
+
+
+@functools.lru_cache(maxsize=None)
+def _tool_writes(name: str) -> bool:
+    if not name:
+        return False
+    try:
+        from ..tools.metadata import READONLY, interaction_of
+        return interaction_of(name) != READONLY
+    except Exception:  # noqa: BLE001  unknown: let it through unmarked
+        return False
+
+
+def _call_writes() -> bool:
+    """Whether the tool call these commands belong to can change a design."""
+    call = _TOOL_CALL.get()
+    return bool(call) and _tool_writes(str(call.get("tool") or ""))
+
+
 def _unpinned(command: str, params: Optional[dict]) -> bool:
     return (getattr(_CALL, "follow_front", False) or _FOLLOW.get()
             or command in _UNPINNED) or (
@@ -595,6 +705,11 @@ def next_session_doc(current: str, command: str, params: dict,
     """
     moved = response.active_document_changed or {}
     if isinstance(moved, dict) and moved.get("to"):
+        # A report opened in Altium's browser (file:///...html) is not a
+        # document; adopting it made every later call reopen the address
+        # with another file:/// in front.
+        if "://" in str(moved["to"]):
+            return current
         return str(moved["to"])
     if command == "application.set_active_document" and response.success:
         data = response.data if isinstance(response.data, dict) else {}
@@ -627,6 +742,9 @@ class AltiumBridge:
     def __init__(self):
         self.config = get_config()
         self.process_manager = AltiumProcessManager()
+        #: Titles of dialogs a caller is answering itself while its call
+        #: runs; the poll loop does not stop for them. See expecting().
+        self.expected_dialogs: frozenset = frozenset()
         self._attached = False
         self._keepalive_thread: Optional[threading.Thread] = None
         self._keepalive_stop = threading.Event()
@@ -842,8 +960,8 @@ class AltiumBridge:
         # cleaned without waiting for a full re-attach.
         try:
             self._sweep_orphan_responses()
-        except Exception:
-            pass
+        except OSError as e:  # leftover files cost nothing now; say so in the trace
+            _trace_log(self.config.workspace_dir, f"orphan sweep failed: {e}")
         self._keepalive_stop.clear()
         self._keepalive_thread = threading.Thread(
             target=self._keepalive_loop, daemon=True, name="altium-keepalive"
@@ -1054,6 +1172,8 @@ class AltiumBridge:
         first_appearance: Optional[float] = None
         parse_errors = 0
         next_dialog_probe = start + _DIALOG_PROBE_AFTER
+        #: The blocking dialogs the last look saw; see _DIALOG_PROBE_EVERY.
+        last_blocked = ""
 
         while True:
             poll_count += 1
@@ -1079,6 +1199,11 @@ class AltiumBridge:
             if first_appearance is None and now >= next_dialog_probe:
                 next_dialog_probe = now + _DIALOG_PROBE_EVERY
                 early = self._dialog_probe()
+                signature = _blocking_signature(early)
+                if signature and signature != last_blocked:
+                    last_blocked = signature
+                    continue
+                last_blocked = signature
                 if early and early.get("blocked") and self._recover_script_crash(
                         request_id, response_path, early) == "continue":
                     continue
@@ -1096,12 +1221,13 @@ class AltiumBridge:
                         f"after={waited:.1f}s "
                         f"summary={early.get('summary', '')[:120]}",
                     )
+                    owner = dialog_owner(workspace_dir)
                     raise AltiumTimeoutError(
                         f"Altium is showing a modal dialog {waited:.0f}s into "
                         f"this call, so the handler cannot run and waiting for "
                         f"the timeout would tell you nothing more."
-                        + self._dialog_suffix(early),
-                        details={"dialogs": early,
+                        + self._dialog_suffix(early, owner),
+                        details={"dialogs": early, "raised_by": owner,
                                  "blocked_after_seconds": round(waited, 1)},
                     )
             # DO NOT OPEN AN EMPTY RESPONSE. SaveToFile creates the file
@@ -1291,7 +1417,7 @@ class AltiumBridge:
                     "have died. Confirm with app_ping before recovery. "
                 )
             raise AltiumTimeoutError(
-                detail + recovery_message(fault) + self._dialog_suffix(probe),
+                detail + recovery_message(fault) + self._dialog_suffix(probe, dialog_owner(workspace_dir) if probe else None),
                 details={
                     "recovery": recovery_guidance(fault),
                     "fault": fault,
@@ -1310,7 +1436,7 @@ class AltiumBridge:
                "The Altium polling loop is probably not running. "
                if not probe else "")
             + recovery_message(DEAD_LOOP)
-            + self._dialog_suffix(probe),
+            + self._dialog_suffix(probe, dialog_owner(workspace_dir) if probe else None),
             details={"recovery": recovery_guidance(DEAD_LOOP),
                      "dialogs": probe},
         )
@@ -1448,16 +1574,28 @@ class AltiumBridge:
                                      details=outcome)
 
     @staticmethod
-    def _dialog_suffix(probe: Optional[dict]) -> str:
+    def _dialog_suffix(probe: Optional[dict], owner: Optional[dict] = None) -> str:
         """One sentence naming what is blocking, for the timeout text."""
         if not probe:
             return ""
-        return (
+        text = (
             f" A DIALOG IS ON SCREEN, so the loop is blocked rather than "
-            f"absent: {probe.get('summary', 'a modal is open')}. Answer it, "
-            f"or read it with app_list_open_dialogs and press a button with "
-            f"app_press_dialog_button; both work while the bridge does not."
-        )
+            f"absent: {probe.get('summary', 'a modal is open')}.")
+        if owner and not owner.get("yours"):
+            return text + (
+                f" ANOTHER CLAUDE SESSION'S CALL raised it (session "
+                f"{owner['session']}"
+                + (f", {owner['command']}" if owner.get("command") else "")
+                + "): leave it to that session, which is waiting on it too, "
+                  "and try again later; answer it only if the user says so.")
+        if owner and owner.get("yours"):
+            text += (" This session's own call raised it"
+                     + (f" ({owner['command']})" if owner.get("command") else "")
+                     + ".")
+        return text + (
+            " Answer it, or read it with app_list_open_dialogs and press a "
+            "button with app_press_dialog_button; both work while the bridge "
+            "does not.")
 
     def _reshow_hidden_frame(self, command: str, request_id: str) -> list:
         """Show Altium's main window again if it is hidden. Never raises.
@@ -1539,7 +1677,8 @@ class AltiumBridge:
         """Execute a command synchronously (blocking)."""
         request = CommandRequest(
             command=command, params=params,
-            session_doc="" if _unpinned(command, params) else self._session_doc)
+            session_doc="" if _unpinned(command, params) else self._session_doc,
+            writes=_call_writes(), actor=_actor())
         workspace_dir = self.config.workspace_dir
 
         _CALL.command = command
@@ -1641,6 +1780,7 @@ class AltiumBridge:
         first_appearance: Optional[float] = None
         parse_errors = 0
         next_dialog_probe = start + _DIALOG_PROBE_AFTER
+        last_blocked = ""
 
         _trace_log(
             workspace_dir,
@@ -1653,6 +1793,11 @@ class AltiumBridge:
             if first_appearance is None and now >= next_dialog_probe:
                 next_dialog_probe = now + _DIALOG_PROBE_EVERY
                 early = self._dialog_probe()
+                signature = _blocking_signature(early)
+                if signature and signature != last_blocked:
+                    last_blocked = signature
+                    continue
+                last_blocked = signature
                 if early and early.get("blocked"):
                     waited = now - start
                     _trace_log(
@@ -1661,12 +1806,13 @@ class AltiumBridge:
                         f"after={waited:.1f}s "
                         f"summary={early.get('summary', '')[:120]}",
                     )
+                    owner = dialog_owner(workspace_dir)
                     raise AltiumTimeoutError(
                         f"Altium is showing a modal dialog {waited:.0f}s into "
                         "this call, so the handler cannot run and waiting for "
                         "the timeout would tell you nothing more."
-                        + self._dialog_suffix(early),
-                        details={"dialogs": early,
+                        + self._dialog_suffix(early, owner),
+                        details={"dialogs": early, "raised_by": owner,
                                  "blocked_after_seconds": round(waited, 1)},
                     )
             if response_path.exists():
@@ -1793,7 +1939,7 @@ class AltiumBridge:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Any:
-        refusal = refuse_command(command)
+        refusal = refuse_command(command, params)
         if refusal is not None:
             return {"success": False, "error": {
                 "code": "REFUSED_BY_POLICY", "message": refusal}}
@@ -1803,6 +1949,17 @@ class AltiumBridge:
             timeout = self.config.poll_timeout
         self._ensure_keepalive()
         return self._execute_command(command, one_spelling(params or {}), timeout)
+
+    @contextlib.contextmanager
+    def expecting(self, title: str):
+        """While inside, a dialog whose title contains ``title`` does not
+        stop a call: the caller is answering it itself."""
+        before = self.expected_dialogs
+        self.expected_dialogs = before | {title}
+        try:
+            yield
+        finally:
+            self.expected_dialogs = before
 
     async def send_command_async(
         self,
@@ -1815,12 +1972,34 @@ class AltiumBridge:
         # goes to Altium in one bulk request. See bridge/bulk.py.
         from . import bulk
         collector = bulk.current()
-        if collector is not None and refuse_command(command) is None:
+        if collector is not None and refuse_command(command, params) is None:
             return await collector.submit(command, params or {}, timeout)
-        if max_extensions is None:
-            return await self.send_command_direct(command, params, timeout)
-        return await self.send_command_direct(
-            command, params, timeout, max_extensions=max_extensions)
+        extra = {} if max_extensions is None else {"max_extensions": max_extensions}
+        try:
+            return await self.send_command_direct(command, params, timeout, **extra)
+        except AltiumError as exc:
+            path = await self._library_to_focus(command, exc)
+            if not path:
+                raise
+        await self.send_command_direct(
+            "application.set_active_document", {"file_path": path})
+        return await self.send_command_direct(command, params, timeout, **extra)
+
+    async def _library_to_focus(self, command: str, exc: Exception) -> str:
+        """Find a single open library when a library command lacks focus."""
+        ext = {"NO_PCBLIB": ".pcblib", "NO_SCHLIB": ".schlib"}.get(
+            str(getattr(exc, "code", "") or ""))
+        if not ext or not command.startswith("library."):
+            return ""
+        try:
+            docs = await self.send_command_direct("application.get_open_documents", {})
+        except AltiumError:
+            return ""
+        docs = docs if isinstance(docs, list) else (docs or {}).get("documents") or []
+        paths = sorted({str(d.get("file_path") or "") for d in docs
+                        if isinstance(d, dict)
+                        and str(d.get("file_path") or "").lower().endswith(ext)})
+        return paths[0] if len(paths) == 1 else ""
 
     async def send_bulk_async(
         self,
@@ -1885,7 +2064,7 @@ class AltiumBridge:
         max_extensions: Optional[int] = None,
     ) -> Any:
         """Send one request now, collector or not."""
-        refusal = refuse_command(command)
+        refusal = refuse_command(command, params)
         if refusal is not None:
             return {"success": False, "error": {
                 "code": "REFUSED_BY_POLICY", "message": refusal}}
@@ -1916,7 +2095,7 @@ class AltiumBridge:
         try:
             self.send_command("application.ping", timeout=3.0)
             return True
-        except (AltiumTimeoutError, AltiumCommandError, Exception):
+        except Exception:  # any failure is the answer: Altium did not reply
             return False
 
     def ping_with_version(
@@ -1930,7 +2109,7 @@ class AltiumBridge:
                 # The diagnostic still uses the ordinary request/response
                 # protocol, but a hidden process must not prevent its ping.
                 result = self._execute_command("application.ping", {}, 3.0)
-        except (AltiumTimeoutError, AltiumCommandError, Exception):
+        except Exception:  # any failure is the answer: Altium did not reply
             return None
         if isinstance(result, dict):
             return result

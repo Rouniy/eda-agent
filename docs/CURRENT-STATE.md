@@ -1,5 +1,29 @@
 # Current integration state / agent handoff
 
+## Complete MOREmbedded source backport candidate, 2026-11-10
+
+Branch `backport-morembedded-final-eval` merges `MOREmbedded/main` at
+`3af39ffd` into Rouniy's integration line based on `origin/main`
+`b218e101`. It includes the previously staged foundation, PCB, profile,
+design-mode, NPI-phase and Workspace work. Conflicting native handlers,
+tool interfaces, translations and release claims were reconciled in the
+merge worktree. The primary `D:/ai/eda-agent` worktree and its local edits
+were not changed.
+
+The complete local Python suite finished with 11,660 passed, 253 skipped,
+one expected failure and zero failures (2026-11-10). Pascal lint/build
+scanned 12 files with zero errors or warnings and produced script
+`2026.11.10.204`. Python compilation, source integrity, EasyEDA extension
+build, wheel and sdist build, and verification of an installed wheel in a
+clean environment passed. The 253 skips include checks requiring external
+tools or environments absent here. GitHub CI and native acceptance are
+separate gates; do not infer their results from the local suite.
+
+The shared operating runbook named in `AGENTS.md` is absent from the
+sibling checkout and its linked location is unavailable. No Altium runtime
+was replaced or exercised. Native write, save/reopen, export comparison,
+queue and lifecycle acceptance for this candidate remain outstanding.
+
 ## Session queue prerequisite, 2026-11-10 (offline checks complete)
 
 The `backport-morembedded-workspace` branch adds the donor per-tool-call

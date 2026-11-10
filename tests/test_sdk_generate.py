@@ -20,8 +20,9 @@ import pytest
 
 from eda_agent.sdk.generate import (BEGIN_MARKER, END_MARKER, Skipped,
                                     _reject, member_spelling, plan,
-                                    render_block, render_probe,
-                                    render_write, replace_block)
+                                    render_block, render_pcb_block,
+                                    render_probe, render_write,
+                                    replace_block)
 from eda_agent.sdk.reflect import Property, SdkModel, SdkUnavailable, load_sdk
 from eda_agent.sdk.symbols import SymbolsUnavailable, SymbolTable, load_symbols
 

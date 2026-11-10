@@ -483,7 +483,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -793,7 +793,7 @@ Begin
                 NetName := '';
                 Try NetName := Prim1.Net.Name; Except End;
                 LayerStr := '';
-                Try LayerStr := GetLayerString(Prim1.Layer); Except End;
+                Try LayerStr := LayerDisplayName(Prim1.Layer); Except End;
 
                 { Check both endpoints, EndIdx 1..2.                         }
                 For EndIdx := 1 To 2 Do
@@ -977,7 +977,7 @@ Begin
     BIter := Board.BoardIterator_Create;
     Try
         BIter.AddFilter_ObjectSet(MkSet(eViaObject));
-        BIter.AddFilter_LayerSet(AllLayers);
+        BIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         BIter.AddFilter_Method(eProcessAll);
         Obj1 := BIter.FirstPCBObject;
         While Obj1 <> Nil Do
@@ -995,7 +995,7 @@ Begin
                         SpatIter := Board.SpatialIterator_Create;
                         Try
                             SpatIter.AddFilter_ObjectSet(MkSet(eViaObject));
-                            SpatIter.AddFilter_LayerSet(AllLayers);
+                            SpatIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
                             SpatIter.AddFilter_Area(Via1.x - Radius, Via1.y - Radius,
                                                      Via1.x + Radius, Via1.y + Radius);
                             Obj2 := SpatIter.FirstPCBObject;
@@ -1128,7 +1128,7 @@ Begin
                     Begin
                         Inc(Violations);
                         LayerStr := '';
-                        Try LayerStr := GetLayerString(Obj.Layer); Except End;
+                        Try LayerStr := LayerDisplayName(Obj.Layer); Except End;
                         BBox.X1 := 0; BBox.Y1 := 0;
                         Try BBox := Obj.BoundingRectangle; Except End;
                         If Not First Then ItemsJson := ItemsJson + ',';
@@ -1140,7 +1140,7 @@ Begin
                         ItemsJson := ItemsJson + JsonObj(EntryJson);
                     End;
                 End;
-            Except End;
+            Except { a region that cannot be read is skipped; this only reads } End;
             Obj := Iter.NextPCBObject;
         End;
     Finally
@@ -1468,7 +1468,7 @@ Begin
     BIter := Board.BoardIterator_Create;
     Try
         BIter.AddFilter_ObjectSet(MkSet(eViaObject));
-        BIter.AddFilter_LayerSet(AllLayers);
+        BIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         BIter.AddFilter_Method(eProcessAll);
         Obj := BIter.FirstPCBObject;
         While Obj <> Nil Do
@@ -1790,7 +1790,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePadObject, eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -1833,7 +1833,7 @@ Begin
                         Begin
                             Inc(Violations);
                             LayerStr := '';
-                            Try LayerStr := GetLayerString(LayerId); Except End;
+                            Try LayerStr := LayerDisplayName(LayerId); Except End;
                             If Not First Then ItemsJson := ItemsJson + ',';
                             First := False;
                             EntryJson :=
@@ -2037,7 +2037,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -2053,7 +2053,7 @@ Begin
                     Designator := '';
                     Try Designator := Comp.Name.Text; Except End;
                     LayerStr := '';
-                    Try LayerStr := GetLayerString(Comp.Layer); Except End;
+                    Try LayerStr := LayerDisplayName(Comp.Layer); Except End;
                     If Not First Then ItemsJson := ItemsJson + ',';
                     First := False;
                     EntryJson :=
@@ -2255,7 +2255,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(ePadObject, eViaObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -2822,7 +2822,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
 
         Comp := Iter.FirstPCBObject;
@@ -2834,7 +2834,7 @@ Begin
                 If DesigText <> Nil Then
                 Begin
                     Inc(Checked);
-                    DesigLayer := GetLayerString(DesigText.Layer);
+                    DesigLayer := LayerDisplayName(DesigText.Layer);
                     Rot := DesigText.Rotation;
                     OnTop := DesigLayer = 'TopOverlay';
                     { Treat the rotation as discrete 0/90/180/270 even if  }
@@ -2882,7 +2882,7 @@ Begin
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
             Iter.AddFilter_Method(eProcessAll);
             Comp := Iter.FirstPCBObject;
             While Comp <> Nil Do
@@ -2892,7 +2892,7 @@ Begin
                     Try DesigText := Comp.Name; Except End;
                     If DesigText <> Nil Then
                     Begin
-                        DesigLayer := GetLayerString(DesigText.Layer);
+                        DesigLayer := LayerDisplayName(DesigText.Layer);
                         Rot := DesigText.Rotation;
                         OnTop := DesigLayer = 'TopOverlay';
                         CompName := '';
@@ -3104,7 +3104,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Comp := Iter.FirstPCBObject;
         While Comp <> Nil Do
@@ -3167,7 +3167,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eTextObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
@@ -3187,7 +3187,7 @@ Begin
                     Inc(Violations);
                     TextStr := '';
                     Try TextStr := Obj.Text; Except End;
-                    LayerName := GetLayerString(LayerVal);
+                    LayerName := LayerDisplayName(LayerVal);
                     If Not First Then ItemsJson := ItemsJson + ',';
                     First := False;
                     EntryJson :=
@@ -3868,7 +3868,7 @@ Begin
                                         Inc(Bad);
                                         NetName := '';
                                         Try If Track.Net <> Nil Then NetName := Track.Net.Name; Except End;
-                                        LayerName := GetLayerString(Track.Layer);
+                                        LayerName := LayerDisplayName(Track.Layer);
                                         If Not First Then ItemsJson := ItemsJson + ',';
                                         First := False;
                                         EntryJson :=
@@ -4001,7 +4001,7 @@ Begin
     Iter := Board.BoardIterator_Create;
     Try
         Iter.AddFilter_ObjectSet(MkSet(eNetObject));
-        Iter.AddFilter_LayerSet(AllLayers);
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         Iter.AddFilter_Method(eProcessAll);
         Net := Iter.FirstPCBObject;
         While Net <> Nil Do
@@ -4116,7 +4116,7 @@ Begin
     BIter := Board.BoardIterator_Create;
     Try
         BIter.AddFilter_ObjectSet(MkSet(ePadObject));
-        BIter.AddFilter_LayerSet(AllLayers);
+        BIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
         BIter.AddFilter_Method(eProcessAll);
         Obj := BIter.FirstPCBObject;
         While Obj <> Nil Do
@@ -4203,7 +4203,7 @@ Begin
                                 Begin
                                     Inc(Violations);
                                     LayerStr := '';
-                                    Try LayerStr := GetLayerString(LayerId); Except End;
+                                    Try LayerStr := LayerDisplayName(LayerId); Except End;
                                     If Not First Then ItemsJson := ItemsJson + ',';
                                     First := False;
                                     EntryJson :=
@@ -4216,7 +4216,7 @@ Begin
                                     ItemsJson := ItemsJson + JsonObj(EntryJson);
                                 End;
                             End;
-                        Except End;
+                        Except { a layer that cannot be read is skipped; this only reads } End;
                         Layer := Stack.NextLayer(Layer);
                     End;
                 End
@@ -4265,7 +4265,7 @@ Begin
                     Begin
                         Inc(Violations);
                         LayerStr := '';
-                        Try LayerStr := GetLayerString(PadLayer); Except End;
+                        Try LayerStr := LayerDisplayName(PadLayer); Except End;
                         If Not First Then ItemsJson := ItemsJson + ',';
                         First := False;
                         EntryJson :=
@@ -4545,6 +4545,219 @@ Begin
 End;
 
 
+{ Audit_FindStaleReadPaths                                                    }
+{                                                                              }
+{ A write that reports success can leave a read path behind: the getters show }
+{ the new state while another way of finding the object still answers from   }
+{ the old one (#208: a via's mask moved its box, its spatial index entry     }
+{ stayed, and a search by the new box found nothing). This walks the board  }
+{ and asks each read path for every object:                                   }
+{   index   the spatial index hands the object out where it is, at the      }
+{           centre of its bounding box (searches by area, the online DRC,    }
+{           pours and picking go through it). An object it holds there but  }
+{           not at the corners of the box the getters report is counted as  }
+{           index_box, not as stale: Altium indexes a via whose mask comes  }
+{           from the rules by a narrower box (BoardIndexState);              }
+{   net     an object that reports a net is in that net's own list           }
+{           (connectivity, the ratsnest and pours walk the list; poured      }
+{           copper is not in it and is not asked);                           }
+{   counts  per primitive type (the spatial iterator never hands out group }
+{           objects: components and polygons), the index over the board     }
+{           holds as many objects as the board walk: more means an entry    }
+{           left for a deleted object, fewer an object never indexed.       }
+
+Function StaleTypeId(T : Integer) : Integer;
+Begin
+    Case T Of
+        0 : Result := eTrackObject;
+        1 : Result := eArcObject;
+        2 : Result := eViaObject;
+        3 : Result := ePadObject;
+        4 : Result := eFillObject;
+        5 : Result := eRegionObject;
+        6 : Result := eTextObject;
+    Else
+        Result := eComponentBodyObject;
+    End;
+End;
+
+Function StaleTypeWanted(Types : String; Name : String) : Boolean;
+Begin
+    Result := (Types = '') Or (Pos(',' + Name + ',', ',' + Types + ',') > 0);
+End;
+
+Function Audit_FindStaleReadPaths(Params, RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Spatial : IPCB_SpatialIterator;
+    NetIter : IPCB_BoardIterator;
+    Group : IPCB_GroupIterator;
+    Obj, Member : IPCB_Primitive;
+    Net : IPCB_Net;
+    Members : TStringList;
+    BR : TCoordRect;
+    T, TypeId, State, Narrow, Limit, Checked, StaleIdx, StaleNet, Mismatch, Walked, Indexed, Shown : Integer;
+    Types, Name, ItemsJson, CountsJson, Response, NetName, Owner : String;
+    Lo, Hi : TCoord;
+Begin
+    Board := ResolvePCBBoard(ExtractJsonValue(Params, 'board_path'));
+    If Board = Nil Then
+    Begin
+        Response := BuildErrorResponse(RequestId, 'NO_BOARD',
+            'No board open at that path, and none focused');
+        Result := Response;
+        Exit;
+    End;
+    Types := LowerCase(ExtractJsonValue(Params, 'types'));
+    Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 100);
+
+    { Every primitive any net lists. }
+    Members := TStringList.Create;
+    Members.Sorted := True;
+    NetIter := Board.BoardIterator_Create;
+    Try
+        NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
+        NetIter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        NetIter.AddFilter_Method(eProcessAll);
+        Net := NetIter.FirstPCBObject;
+        While Net <> Nil Do
+        Begin
+            Group := Net.GroupIterator_Create;
+            Try
+                Group.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject,
+                    ePadObject, eFillObject, eRegionObject, eTextObject,
+                    eComponentBodyObject));
+                Member := Group.FirstPCBObject;
+                While Member <> Nil Do
+                Begin
+                    Members.Add(IntToStr(Member.I_ObjectAddress));
+                    Member := Group.NextPCBObject;
+                End;
+            Finally
+                Net.GroupIterator_Destroy(Group);
+            End;
+            Net := NetIter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(NetIter);
+    End;
+
+    Checked := 0; Narrow := 0; StaleIdx := 0; StaleNet := 0; Mismatch := 0; Shown := 0;
+    ItemsJson := ''; CountsJson := '';
+    Lo := MilsToCoordF(-200000);
+    Hi := MilsToCoordF(200000);
+    Try
+        For T := 0 To 7 Do
+        Begin
+            TypeId := StaleTypeId(T);
+            Name := ObjectIDToObjectName(TypeId);
+            If Not StaleTypeWanted(Types, Name) Then Continue;
+            Walked := 0;
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(TypeId));
+                Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Iter.AddFilter_Method(eProcessAll);
+                Obj := Iter.FirstPCBObject;
+                While Obj <> Nil Do
+                Begin
+                    Inc(Walked);
+                    Inc(Checked);
+                    State := BoardIndexState(Board, Obj);
+                    If State = 1 Then Inc(Narrow);
+                    If (State And 1) = 0 Then
+                    Begin
+                        Inc(StaleIdx);
+                        If Shown < Limit Then
+                        Begin
+                            BR := Obj.BoundingRectangle;
+                            Owner := '';
+                            If Obj.InComponent Then Owner := 'component'
+                            Else If Obj.InPolygon Then Owner := 'polygon'
+                            Else If Obj.InDimension Then Owner := 'dimension';
+                            If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+                            ItemsJson := ItemsJson + JsonObj(
+                                JsonStr('read_path', 'index') + ','
+                                + JsonStr('type', Name) + ','
+                                + JsonStr('layer', LayerDisplayName(Obj.Layer)) + ','
+                                + JsonStr('owner', Owner) + ','
+                                + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
+                                + JsonFloat('bottom', CoordToMilsF(BR.Bottom)) + ','
+                                + JsonFloat('right', CoordToMilsF(BR.Right)) + ','
+                                + JsonFloat('top', CoordToMilsF(BR.Top)));
+                            Inc(Shown);
+                        End;
+                    End;
+                    Net := Nil;
+                    If Not Obj.InPolygon Then Net := Obj.Net;
+                    If Net <> Nil Then
+                    Begin
+                        If Members.IndexOf(IntToStr(Obj.I_ObjectAddress)) < 0 Then
+                        Begin
+                            Inc(StaleNet);
+                            If Shown < Limit Then
+                            Begin
+                                BR := Obj.BoundingRectangle;
+                                NetName := '';
+                                Try NetName := Net.Name; Except End;
+                                If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+                                ItemsJson := ItemsJson + JsonObj(
+                                    JsonStr('read_path', 'net') + ','
+                                    + JsonStr('type', Name) + ','
+                                    + JsonStr('net', NetName) + ','
+                                    + JsonStr('layer', LayerDisplayName(Obj.Layer)) + ','
+                                    + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
+                                    + JsonFloat('bottom', CoordToMilsF(BR.Bottom)));
+                                Inc(Shown);
+                            End;
+                        End;
+                    End;
+                    Obj := Iter.NextPCBObject;
+                End;
+            Finally
+                Board.BoardIterator_Destroy(Iter);
+            End;
+
+            Indexed := 0;
+            Spatial := Board.SpatialIterator_Create;
+            Try
+                Spatial.AddFilter_ObjectSet(MkSet(TypeId));
+                Spatial.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+                Spatial.AddFilter_Area(Lo, Lo, Hi, Hi);
+                Obj := Spatial.FirstPCBObject;
+                While Obj <> Nil Do
+                Begin
+                    Inc(Indexed);
+                    Obj := Spatial.NextPCBObject;
+                End;
+            Finally
+                Board.SpatialIterator_Destroy(Spatial);
+            End;
+            If Indexed <> Walked Then Inc(Mismatch);
+            If CountsJson <> '' Then CountsJson := CountsJson + ',';
+            CountsJson := CountsJson + JsonObj(JsonStr('type', Name) + ','
+                + JsonInt('board', Walked) + ',' + JsonInt('index', Indexed));
+        End;
+    Finally
+        Members.Free;
+    End;
+
+    Response := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonInt('checked', Checked) + ',' +
+            JsonInt('violations', StaleIdx + StaleNet + Mismatch) + ',' +
+            JsonInt('stale_index', StaleIdx) + ',' +
+            JsonInt('count_mismatches', Mismatch) + ',' +
+            JsonInt('index_box', Narrow) + ',' +
+            JsonInt('stale_net', StaleNet) + ',' +
+            JsonRaw('counts', '[' + CountsJson + ']') + ',' +
+            JsonRaw('items', '[' + ItemsJson + ']')
+        ));
+    Result := Response;
+End;
+
+
 Function HandleAuditCommand(Action : String; Params : String;
                              RequestId : String) : String;
 Begin
@@ -4608,6 +4821,8 @@ Begin
         Result := Audit_FindInconsistentTrackWidths(Params, RequestId)
     Else If Action = 'find_pads_center_not_connected' Then
         Result := Audit_FindPadsCenterNotConnected(Params, RequestId)
+    Else If Action = 'find_stale_read_paths' Then
+        Result := Audit_FindStaleReadPaths(Params, RequestId)
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
             'Unknown audit action: ' + Action);

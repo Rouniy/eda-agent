@@ -213,7 +213,7 @@ def _signature_line(kind: str, fn: Callable) -> str:
 def _first_line(fn: Callable) -> str:
     doc = (inspect.getdoc(fn) or "").strip()
     line = doc.split("\n\n", 1)[0].replace("\n", " ")
-    return line if len(line) <= 140 else line[:137].rstrip() + "..."
+    return line if len(line) <= 70 else line[:67].rstrip() + "..."
 
 
 def _describe(fold_name: str, fold: Fold, members: dict[str, ToolSpec]) -> str:

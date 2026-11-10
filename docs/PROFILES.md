@@ -466,7 +466,7 @@ existing destination is refused unless `overwrite=True`, and if the copy
 succeeds but Altium will not open it, the result still reports the file
 that was written rather than losing it.
 
-### Not covered: preferences and Draftsman
+### Not covered: Altium preferences and Draftsman
 
 **Altium preferences** cannot be templated from here. There is no scripting
 API for the Preferences dialog: `app_get_preferences` reads the active

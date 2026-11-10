@@ -3,6 +3,7 @@
 """Project management tools for Altium Designer MCP Server."""
 
 import asyncio
+import re
 from typing import Any, Optional
 from ..bridge import get_bridge
 from ..units import MM_PER_MIL
@@ -32,7 +33,7 @@ def _list_open_dialogs() -> list[dict[str, Any]]:
     try:
         from .application import _get_ui_inspector
         return list(_get_ui_inspector().list_dialogs())
-    except Exception:
+    except Exception:  # a failed inventory must not mask the real error
         return []
 
 
@@ -161,7 +162,88 @@ async def _pair_names(bridge) -> set:
             if isinstance(p, dict) and p.get("name")}
 
 
-async def _after_sync(bridge, pairs_before: set) -> dict:
+
+
+async def _footprint_source(bridge, designator: str) -> dict:
+    """Where Altium looks for a part's current footprint: the library each
+    of its datafiles names and the path it resolves to ('' when none)."""
+    try:
+        reply = await bridge.send_command_async(
+            "project.component_models",
+            {"designator": designator, "limit": "1"}, timeout=180.0)
+    except Exception as exc:                    # noqa: BLE001 - reported, not raised
+        return {"footprint_source_error": str(exc)}
+    for part in _rows(reply, "parts"):
+        models = part.get("models") if isinstance(part, dict) else None
+        for model in models or []:
+            if (isinstance(model, dict) and model.get("current")
+                    and str(model.get("type", "")).upper() == "PCBLIB"):
+                if model.get("integrated"):
+                    return {"footprint_source": [{"integrated": True}]}
+                return {"footprint_source": [
+                    {"library": f.get("library", ""), "found_at": f.get("found_at", "")}
+                    for f in model.get("datafiles") or [] if isinstance(f, dict)]}
+    return {}
+
+
+def _signal(name: str) -> str:
+    """An entry or port name as it connects: Repeat(X) is X, case aside."""
+    m = re.fullmatch(r"\s*repeat\s*\(\s*([^,()]+?)\s*\)\s*", name or "", re.I)
+    return (m.group(1) if m else (name or "")).strip().upper()
+
+
+def _direction(io: str) -> str:
+    """input, output or '' for anything that does not conflict."""
+    io = (io or "").strip().lower()
+    return io if io in ("input", "output") else ""
+
+
+def _channel_copy(sym: dict, siblings: list) -> bool:
+    """A compiled channel of a Repeat() symbol after the first: Altium
+    gives it only the Repeat() entries, the first channel carries all."""
+    names = {str(e.get("name", "")) for e in sym.get("entries") or []}
+    if not names or any(_signal(n) == n.strip().upper() for n in names):
+        return False
+    return any(s is not sym and str(s.get("file", "")).lower() == str(sym.get("file", "")).lower()
+               and names < {str(e.get("name", "")) for e in s.get("entries") or []}
+               for s in siblings)
+
+
+def hierarchy_problems(sheets: list, top: str = "") -> list[dict]:
+    """What does not join up in a compiled hierarchy: dangling symbols,
+    entries and ports without a partner, opposite directions, orphans."""
+    by_file = {str(s.get("file", "")).lower(): s for s in sheets if isinstance(s, dict)}
+    problems: list[dict] = []
+    for sheet in by_file.values():
+        name = sheet.get("file", "")
+        if not sheet.get("parents") and name.lower() != top.lower():
+            problems.append({"kind": "orphan_sheet", "sheet": name})
+        symbols = sheet.get("sheet_symbols") or []
+        for sym in symbols:
+            if _channel_copy(sym, symbols):
+                continue
+            where = {"sheet": name, "sheet_symbol": sym.get("sheet_name", ""),
+                     "file": sym.get("file", "")}
+            child = by_file.get(str(sym.get("file", "")).lower())
+            if child is None or sym.get("child_sheets") == 0:
+                problems.append({"kind": "missing_child", **where})
+                continue
+            ports = {_signal(p.get("name", "")): p for p in child.get("ports") or []}
+            entries = {_signal(e.get("name", "")): e for e in sym.get("entries") or []}
+            for sig in sorted(set(entries) - set(ports)):
+                problems.append({"kind": "entry_without_port", "name": sig, **where})
+            for sig in sorted(set(ports) - set(entries)):
+                problems.append({"kind": "port_without_entry", "name": sig, **where})
+            for sig in sorted(set(entries) & set(ports)):
+                a = _direction(entries[sig].get("io", ""))
+                b = _direction(ports[sig].get("io", ""))
+                if a and b and a != b:
+                    problems.append({"kind": "direction_conflict", "name": sig,
+                                     "entry_io": a, "port_io": b, **where})
+    return problems
+
+
+async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict:
     """What a schematic-to-board sync left undone, read from both sides."""
     bom = await bridge.send_command_async("project.get_bom", {"limit": "100000"})
     board = await bridge.send_command_async("pcb.get_components", {})
@@ -172,15 +254,61 @@ async def _after_sync(bridge, pairs_before: set) -> dict:
     mismatch = [{"designator": d, "schematic": fp, "board": pcb[d]}
                 for d, fp in sorted(sch.items())
                 if d in pcb and fp and pcb[d] and fp.lower() != pcb[d].lower()]
+    for row in mismatch:
+        line = change_order.failure_for(row["schematic"], list(failed), row["designator"])
+        if line:
+            row["eco_line"] = line
+            if change_order.says_not_found(line):
+                row.update(await _footprint_source(bridge, row["designator"]))
     missing = sorted(d for d in sch if d not in pcb)
     removed = sorted(pairs_before - await _pair_names(bridge))
     out: dict[str, Any] = {"footprint_mismatch": mismatch,
                            "missing_on_board": missing,
                            "diff_pairs_removed": removed}
-    problems = []
+    problems: list[str] = []
+    on_both = sorted(d for d in sch if d in pcb)
+    if on_both:
+        from ..core.eco_verify import verify_eco
+        pins = await bridge.send_command_async(
+            "project.get_connectivity_batch", {"designators": "~~".join(on_both)})
+        # Paged, NOT one call: pcb.get_pad_properties windows at 500 pads
+        # by default and says so in `truncated`. Reading page one and
+        # reporting the unbound list as the board's is the original bug in
+        # a new place, and every real board is past that window.
+        try:
+            pads, complete = await _fetch_all_pads(bridge)
+        except Exception as exc:
+            out["error"] = f"could not verify board pad nets: {exc}"
+            return out
+        nets = verify_eco(_rows(pins, "components"), pads)
+        # Distinct names on purpose: verify_eco's own `complete` means
+        # "nothing was wrong" and its `pads_checked` counts pads it could
+        # pair with a pin. These two are about the SWEEP that fed it.
+        nets["pads_swept"] = len(pads)
+        nets["sweep_complete"] = complete
+        out["pad_nets"] = nets
+        if not complete:
+            problems.append(
+                "the pad sweep hit its guard rail, so pad_nets describes "
+                "part of the board only")
+        if nets["pads_unbound_count"] or nets["pads_mismatched_count"]:
+            problems.append(
+                f"{nets['pads_unbound_count']} pad(s) have no net and "
+                f"{nets['pads_mismatched_count']} carry another net than their pin "
+                f"(pad_nets lists them; pcb_bind_pad_nets repairs unbound ones)")
     if mismatch:
-        problems.append(f"{len(mismatch)} part(s) kept a footprint the "
-                        f"schematic no longer uses")
+        explained = sum(1 for row in mismatch if row.get("eco_line"))
+        unresolved = sorted({f["library"] for row in mismatch
+                             for f in row.get("footprint_source") or []
+                             if f.get("library") and not f.get("found_at")})
+        problems.append(
+            f"{len(mismatch)} part(s) kept a footprint the schematic no longer "
+            f"uses" + (f"; for {explained} the change order says why "
+                       f"(eco_line), typically a footprint it found in no "
+                       f"library it searches" if explained else "")
+            + (f"; Altium finds no library named {', '.join(unresolved)} "
+               f"(footprint_source): install it (lib_install_library) or "
+               f"relink the part" if unresolved else ""))
     if missing:
         problems.append(f"{len(missing)} schematic part(s) are not on the board")
     if removed:
@@ -308,11 +436,10 @@ def register_project_tools(mcp):
         failed with "No project found". Check proj_list_open first.
 
         Args:
-            project_path: Full path for the new project file (.PrjPcb, .PrjLib, etc.)
-            project_type: Type of project to create:
-                - "PCB": PCB project (.PrjPcb)
-                - "IntegratedLibrary": Integrated library project
-                - "ScriptProject": Script project
+            project_path: Full path for the new project file (.PrjPcb
+                or .PrjHar)
+            project_type: "PCB" writes a PCB project's default settings;
+                any other value writes a bare project file.
 
         Returns:
             Dictionary with created project information
@@ -405,13 +532,37 @@ def register_project_tools(mcp):
         if project_path:
             params["project_path"] = project_path
         members = None
-        if not save and project_path:
+        if project_path:
             members = await _close_members(bridge, project_path)
         try:
             result = await bridge.send_command_async("project.close", params)
         except Exception as exc:                    # noqa: BLE001
             prompt = _close_prompt_in(exc)
-            if prompt is None or save:
+            if prompt is None:
+                raise
+            # MEASURED 2026-11-05: closing a library package raised "Confirm
+            # Save Locally" listing only OTHER projects' documents. Saving
+            # or discarding there acts on work nobody named, so it is
+            # cancelled and the close reported as not done.
+            loop = _asyncio.get_running_loop()
+            foreign = await loop.run_in_executor(
+                None, _cancel_foreign_prompt, bridge, members, prompt)
+            if foreign is not None:
+                return {"success": False, "closed": False,
+                        "project_path": project_path,
+                        "prompt": prompt["title"],
+                        "cancelled": foreign["cancelled"],
+                        "foreign_documents": foreign["paths"],
+                        "reason": (
+                            "Altium's save prompt for this close listed "
+                            "documents of other projects, so nothing in it "
+                            "was saved or discarded. "
+                            + ("It was cancelled and the project left open."
+                               if foreign["cancelled"] else
+                               "Cancel could not be pressed and the prompt is "
+                               "still open, blocking the bridge: answer it "
+                               "with app_press_dialog_button(\"Cancel\")."))}
+            if save:
                 raise
             left = {"success": False, "closed": False,
                     "project_path": project_path, "prompt": prompt["title"],
@@ -425,7 +576,6 @@ def register_project_tools(mcp):
                     "and the bridge is blocked until the prompt is answered")
                 return left
 
-            loop = _asyncio.get_running_loop()
             answered, discarded, refusal = await loop.run_in_executor(
                 None, _answer_close_prompts, bridge, members, prompt)
 
@@ -521,6 +671,38 @@ def register_project_tools(mcp):
             if title.startswith(_CLOSE_PROMPT_TITLES):
                 return {"title": title, "hwnd": dialog.get("hwnd")}
         return None
+
+    def _prompt_paths(hwnd):
+        """Absolute paths a save prompt lists, or None when it cannot be read."""
+        from ..ui import uia, windows
+        if not (windows.available() and uia.available()
+                and windows.automation_enabled()):
+            return None
+        read = uia.describe_window(hwnd, depth=6, limit=400)
+        return sorted({e.get("name", "") for e in read.get("elements", [])
+                       if _is_absolute(e.get("name", ""))})
+
+    def _cancel_foreign_prompt(bridge, members, prompt):
+        """Cancel a close prompt that lists another project's documents.
+
+        Returns {paths, cancelled} when it lists foreign paths, else None (the
+        prompt lists only members, or membership or the prompt cannot be
+        read, and the caller goes on as before).
+        """
+        from ..ui import uia, windows
+        hwnd = prompt.get("hwnd")
+        if members is None or not hwnd:
+            return None
+        listed = _prompt_paths(hwnd)
+        if not listed:
+            return None
+        foreign = [p for p in listed if p.upper() not in members]
+        if not foreign:
+            return None
+        cancelled = bool(uia.invoke(hwnd, "Cancel").get("ok"))
+        if cancelled:
+            cancelled = windows.wait_for_close(hwnd, timeout=10.0)
+        return {"paths": foreign, "cancelled": cancelled}
 
     def _answer_close_prompts(bridge, members, prompt, budget=30.0):
         """Answer the save prompt: Save None, then OK. Runs in a thread.
@@ -1329,7 +1511,7 @@ def register_project_tools(mcp):
         original_active = None
         try:
             original_active = await bridge.send_command_async("application.get_active_document")
-        except Exception:
+        except Exception:  # no prior focus to restore if the read failed
             pass
         opened = False
         outcome: dict[str, Any] = {"success": False}
@@ -1420,7 +1602,7 @@ def register_project_tools(mcp):
                 await bridge.send_command_async(
                     "application.set_active_document",
                     {"file_path": original_active["file_path"]})
-            except Exception:
+            except Exception:  # report restoration failure in the returned outcome
                 outcome["focus_restored"] = False
             else:
                 outcome["focus_restored"] = True
@@ -2129,7 +2311,9 @@ def register_project_tools(mcp):
         not active. A dialog Altium raises during the run (an error
         after the files are out, say) comes back as ``dialog`` with the
         files found so far, not as a bare failure; close it before the
-        next call.
+        next call. An error Altium raises without a dialog comes back as
+        ``run_raised`` with the files found. OutJobs an earlier run
+        opened are closed first, unless they have unsaved changes.
 
         Args:
             container_name: Name of the output container to execute
@@ -2148,6 +2332,7 @@ def register_project_tools(mcp):
             count), ``written`` (up to 50 paths), and ``reason`` when
             nothing was written.
         """
+        import os as _os
         import time as _time
         from pathlib import Path
 
@@ -2172,6 +2357,16 @@ def register_project_tools(mcp):
             board_hash, outjob_hash = sha256_file(board_file), sha256_file(outjob_file)
         params: dict[str, Any] = {"container_name": container_name}
         if outjob_path:
+            # MEASURED: Altium opens a path that is not there as a NEW,
+            # empty OutJob and focuses it, so the run failed and left a
+            # phantom document active that every later tool then refused
+            # to work on. Checked here, where the path is still a string.
+            if not _os.path.isfile(outjob_path):
+                return {"success": False, "container_name": container_name,
+                        "outjob_path": outjob_path, "reason": (
+                            f"{outjob_path} is not a file; Altium would open "
+                            "a new empty OutJob at that path and focus it. "
+                            "Nothing was run.")}
             params["outjob_path"] = outjob_path
             busy = _locked_outputs(_outjob_output_dir(outjob_path, container_name))
             if busy:
@@ -2317,6 +2512,31 @@ def register_project_tools(mcp):
                           "newly_produced": st.st_mtime >= cutoff})
         return True, files
 
+    def _drill_report_duplicates(paths):
+        """Each fresh NC drill report that lists holes at the same point.
+
+        MEASURED 2026-10-30: after 279 via holes were resized, the drill
+        file held 5 holes while every other output looked right, and the
+        report said "Two holes at same point : 279". The report is the
+        only place that says so, so it is read after every run.
+        """
+        import re
+        from pathlib import Path
+
+        found = []
+        for p in paths:
+            if not str(p).lower().endswith(".drr"):
+                continue
+            try:
+                text = Path(p).read_text(encoding="latin-1", errors="replace")
+            except OSError:
+                continue
+            counts = [int(m.group(1)) for m in re.finditer(
+                r"(?i)holes at same point\s*:\s*(\d+)", text)]
+            if counts or re.search(r"(?i)holes at same point", text):
+                found.append({"report": str(p), "count": sum(counts) or 1})
+        return found
+
     def _judge_outjob_run(run, started_at, fresh_window_seconds):
         """A run reply with ``success`` decided by what was written.
 
@@ -2334,6 +2554,16 @@ def register_project_tools(mcp):
         out["files_written"] = len(fresh)
         out["written"] = fresh[:50]
         out["success"] = bool(fresh)
+        duplicates = _drill_report_duplicates(fresh)
+        if duplicates:
+            out["success"] = False
+            out["drill_duplicates"] = duplicates
+            out["reason"] = (
+                "the drill report says holes share a point, and the NC "
+                "drill file leaves such holes out: "
+                + "; ".join(f"{d['report']}: {d['count']}" for d in duplicates)
+                + ". Close and reopen the board, then run the output again")
+            return out
         if run.get("dialog"):
             out["reason"] = (
                 f"Altium raised a dialog during the run and the bridge "
@@ -2345,6 +2575,13 @@ def register_project_tools(mcp):
                    "Pass outjob_path so the output folder can be checked. ")
                 + "Close the dialog (app_list_open_dialogs) before the "
                   "next call")
+            return out
+        if run.get("run_raised"):
+            out["reason"] = (
+                "Altium raised an error during the run. "
+                + (f"{len(fresh)} file(s) were written under {out_dir}; "
+                   f"check that the set is complete" if fresh else
+                   "Nothing new was found in the output folder"))
             return out
         if not fresh:
             inactive = run.get("outjob_active") is False
@@ -2453,7 +2690,8 @@ def register_project_tools(mcp):
                 "files_written": judged.get("files_written", 0),
                 "files": files if include_files else [],
             }
-            if not entry["ok"] or judged.get("dialog"):
+            if (not entry["ok"] or judged.get("dialog")
+                    or judged.get("run_raised")):
                 entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
             # A dialog blocks every later run; stop and say so.
@@ -2561,7 +2799,8 @@ def register_project_tools(mcp):
                 "files_written": judged.get("files_written", 0),
                 "files": files,
             }
-            if not entry["ok"] or judged.get("dialog"):
+            if (not entry["ok"] or judged.get("dialog")
+                    or judged.get("run_raised")):
                 entry["reason"] = judged.get("reason", "")
             per_container.append(entry)
             # A dialog blocks every later run, and the extras too.
@@ -3160,10 +3399,13 @@ def register_project_tools(mcp):
             structure: Add how each net is built, from the compiled
                 model: ``sub_wires``, ``lines``, ``all_items``,
                 ``removed_items``, ``scope``, ``signal_type``,
-                ``calculated_name``, ``hidden_name``, ``bus_width`` and
+                ``calculated_name``, ``hidden_name``, ``bus_width``,
+                ``net_number``, ``non_pin_items``, ``harness_type`` and
                 the count of ``output_pins``, ``io_pins``, ``power_pins``
-                and ``open_collector_pins`` it joins (two outputs on one
-                net drive against each other).
+                and ``open_collector_pins``. Bus details include
+                ``bus_element``, ``bus_section``, ``bus_kind``,
+                ``bus_range_from``, ``bus_range_to`` and
+                ``bus_section_parent``.
 
         Returns:
             ``nets_examined``, ``nets_listed``, ``truncated`` and
@@ -4021,15 +4263,15 @@ def register_project_tools(mcp):
 
     @mcp.tool()
     async def proj_sync_pcb(
-        wait_seconds: float = 60.0,
-        verify_pad_nets: bool = True,
+        wait_seconds: float = 360.0,
+        verify_pad_nets: bool = False,
     ) -> dict[str, Any]:
         """Push schematic changes to PCB (ECO): Design > Update PCB Document.
 
-        IMPORTANT: this is NOT silent. Altium's ECO (change-review) dialog
-        is non-suppressible by design, so this **fires the real ECO and then
-        BLOCKS on a modal dialog until a human clicks "Execute Changes"**.
-        Do not call it in an unattended/headless run.
+        With Dialogs Automatic (Config tab) the tool executes and closes
+        the change order (``change_order``); otherwise it waits for the
+        user and blocks the bridge (``app_list_open_dialogs`` reads it).
+        Focuses the PCB first (WRONG_FOCUS if it cannot).
 
         The wait is BOUNDED (``wait_seconds``). It used to inherit the
         bridge's full 300 s heartbeat budget and then report the handler as
@@ -4039,23 +4281,6 @@ def register_project_tools(mcp):
         naming the open dialogs. Giving up does NOT cancel the ECO: Altium
         is still sitting on that dialog, and the changes are neither
         applied nor discarded until someone answers it.
-
-        The server:
-          1. Checks for an already-open modal dialog and refuses up front
-             rather than queueing behind it.
-          2. Compiles the project and records before-state mappings
-             (matched, extra-in-schematic, extra-in-pcb).
-          2. Focuses the project's PCB and invokes
-             ``WorkspaceManager:Compare`` (ObjectKind=Project,
-             Action=UpdateMe): import the schematic's changes into that
-             PCB. The modal ECO dialog opens here.
-          3. After the user accepts, recompiles and reports the after-state
-             delta (how many components were added/removed).
-          5. Returns ``dialog_outcome_verified:false`` rather than guessing
-             whether the ECO was accepted or dismissed.
-          6. With ``verify_pad_nets``, compares the compiled netlist's
-             (designator, pin, net) triples against the board's pad nets
-             and reports every pad the ECO left unbound.
 
         Why step 6 exists: an ECO has been observed to return success having
         silently skipped a component: one part's pads were left with no
@@ -4072,31 +4297,16 @@ def register_project_tools(mcp):
         Before executing, check that the ECO's affected documents are the
         PcbDoc.
 
-        What the result does NOT tell you: whether the dialog was accepted.
-        ``dialog_outcome_verified`` is always false, because the handler
-        returns as soon as the modal closes and cannot see which button was
-        pressed. ``components_added_to_pcb`` and its siblings are recounts,
-        so they catch a change in component PRESENCE and miss everything
-        else an ECO carries: footprint swaps, designator and parameter
-        edits, net changes. ``after_sync`` separately compares schematic
-        footprints with the board, lists schematic parts missing on the
-        board, and identifies board-only differential pairs the ECO removed.
-        Unchanged counts therefore mean "nothing was added or removed",
-        not "nothing happened". To learn what the dialog
-        actually says, call ``app_list_open_dialogs``, which reads Altium
-        over Win32 and so answers while the modal is blocking the bridge.
+The ECO reply does not prove which button was pressed. after_sync compares footprints, missing parts, removed differential pairs and pad nets; review the change order before trusting a clean count.
 
         For unattended board population without a schematic, use
         ``pcb_place_components`` instead (places geometry only: see its note
         about leaving the project unsynced).
 
         Args:
-            wait_seconds: Bound on how long to wait for the ECO to return
-                before reporting the dialog as blocking. The ECO itself is
+            wait_seconds: How long to wait for the ECO to return before
+                reporting the dialog as blocking. The ECO itself is
                 unaffected by this.
-            verify_pad_nets: Run the post-ECO completeness check. Costs a
-                compiled-netlist read plus a paged pad sweep; turn it off
-                only if you will verify by other means.
 
         Returns:
             success, pcb_path, before/after mapping counts,
@@ -4140,11 +4350,11 @@ def register_project_tools(mcp):
             poll_window = min(5.0, max(1.0, float(wait_seconds)))
         extensions = max(1, int(round(float(wait_seconds) / poll_window)))
         try:
-            result = await bridge.send_command_async(
-                "project.update_pcb", {},
-                timeout=poll_window,
+            result, driven = await send_answering(
+                bridge, "project.update_pcb", {}, change_order.TITLE,
+                change_order.STEPS, timeout=poll_window,
                 max_extensions=extensions,
-            )
+                on_the_way=change_order.ON_THE_WAY)
         except AltiumTimeoutError as exc:
             return _modal_blocked_response(
                 "ECO_DIALOG_BLOCKING",
@@ -4160,8 +4370,9 @@ def register_project_tools(mcp):
 
         if not isinstance(result, dict):
             return result
+        failed = _record_change_order(result, driven)
         if result.get("success") is True:
-            result["after_sync"] = await _after_sync(bridge, pairs_before)
+            result["after_sync"] = await _after_sync(bridge, pairs_before, failed)
         if verify_pad_nets:
             result["pad_net_verification"] = await _verify_pad_nets(bridge)
         return result
@@ -4220,23 +4431,23 @@ def register_project_tools(mcp):
                 out["note"] = "no change order appeared: nothing to update"
         return out
 
+
     @mcp.tool()
     async def proj_sync_schematic() -> dict[str, Any]:
-        """Push PCB changes back to schematic (back-annotate ECO). Attempts silent execution.
+        """Push PCB changes back to schematic (back-annotate ECO).
 
-        Design > Update Schematic, compiled before and after with the
-        change reported. Older Altium versions may still show a dialog
-        (``dialog_may_have_opened``).
+        Design > Update Schematic, compiled before and after. A change
+        order it opens is answered as in proj_sync_pcb.
 
         Returns:
-            Dictionary with success, pcb_path, before/after mapping counts,
-            components_added_to_schematic, components_removed_from_schematic,
-            in_sync, and dialog_may_have_opened flag.
+            success, pcb_path, mapping counts, components added and
+            removed, in_sync, ``change_order``.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "project.update_schematic", {}
-        )
+        result, driven = await send_answering(
+            bridge, "project.update_schematic", {},
+            change_order.TITLE, change_order.STEPS, on_the_way=change_order.ON_THE_WAY)
+        _record_change_order(result, driven)
         return result
 
     @mcp.tool()
@@ -4326,3 +4537,26 @@ def register_project_tools(mcp):
             "project.get_project_options", params
         )
         return result
+
+
+    @mcp.tool()
+    async def proj_get_hierarchy(project_path: str = "") -> dict[str, Any]:
+        """The compiled sheet hierarchy: each sheet's ``parents``,
+        ``ports`` and ``sheet_symbols`` with their ``entries``, and the
+        ``problems``: a missing child, an entry without a port or a port
+        without an entry, opposite directions, an orphan sheet.
+
+        Args:
+            project_path: The .PrjPcb. Default: the focused project.
+        """
+        params = {"project_path": project_path} if project_path else {}
+        out = await get_bridge().send_command_async(
+            "project.get_hierarchy", params, timeout=180.0)
+        sheets = _rows(out, "sheets")
+        if sheets:
+            for s in sheets:
+                if isinstance(s, dict) and isinstance(s.get("parents"), list):
+                    s["parents"] = list(dict.fromkeys(s["parents"]))
+            body = out.get("result", out) if isinstance(out.get("result"), dict) else out
+            out["problems"] = hierarchy_problems(sheets, str(body.get("top") or ""))
+        return out
