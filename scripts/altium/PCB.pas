@@ -6230,7 +6230,7 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
             'Not a PCB property: ' + BadProps + '. Available: '
-            + KnownPCBPropertyList + '.');
+            + KnownPCBPropertyList(0) + '.');
         Exit;
     End;
 

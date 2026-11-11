@@ -1,5 +1,11 @@
 # Fork integration TODO
 
+## Live script error repair, 2026-10-29
+
+- [x] Fix `pcb.query_region` unknown-property handling: call
+  `KnownPCBPropertyList(0)`, rebuild script `.190`, and verify the native
+  error and valid-region paths through MCP on AD26.11.1.5.
+
 ## Latest integration and verification, 2026-10-29
 
 - [x] Merge upstream `e5fb6b2` and MOREmbedded `dbaef87` as real second

@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.10.29.189';
+    SCRIPT_VERSION = '2026.10.29.190';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -44943,7 +44943,7 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_PROPERTY',
             'Not a PCB property: ' + BadProps + '. Available: '
-            + KnownPCBPropertyList + '.');
+            + KnownPCBPropertyList(0) + '.');
         Exit;
     End;
 
