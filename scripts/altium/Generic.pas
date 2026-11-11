@@ -4529,7 +4529,7 @@ Begin
     LibComp := Nil;
     If (ObjTypeInt = eParameter) Or (ObjTypeInt = eDesignator) Then
     Begin
-        ParamsOfSymbol := IsLibDoc;
+        ParamsOfSymbol := SchDoc.ObjectId = eSchLib;
         If ParamsOfSymbol Then
         Begin
             Try LibComp := SchDoc.CurrentSchComponent; Except LibComp := Nil; End;
@@ -4548,7 +4548,7 @@ Begin
     If (ObjTypeInt = ePin) And (Mode = 'query') And (SchDoc.ObjectId <> eSchLib) Then
         If Pos('OwnerPart', FilterStr) = 0 Then OnlyShown := True;
     UnshownPins := TStringList.Create;
-    If OnlyShown Then DeadPinKeys(SchDoc, UnshownPins);
+    If OnlyShown Then CollectHiddenPinKeys(SchDoc, UnshownPins);
 
     Obj := Iterator.FirstSchObject;
     While Obj <> Nil Do
@@ -4598,7 +4598,7 @@ Begin
         Obj := Iterator.NextSchObject;
     End;
 
-    If ParamsOfSymbol Or OwnWalk Then
+    If ParamsOfSymbol Then
         LibComp.SchIterator_Destroy(Iterator)
     Else
         SchDoc.SchIterator_Destroy(Iterator);
@@ -7092,6 +7092,7 @@ Begin
         If Not First Then JsonItems := JsonItems + ',';
         First := False;
         JsonItems := JsonItems + '{"index":' + IntToStr(I) +
+            ',"error_level":' + IntToStr(Level) +
             ',"description":"' + EscapeJsonString(Desc) +
             '","detail":"' + EscapeJsonString(Detail) +
             '","level":"' + ErcLevelName(Level) +

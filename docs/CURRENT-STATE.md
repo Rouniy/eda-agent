@@ -1,5 +1,26 @@
 # Current integration state / agent handoff
 
+## MOREmbedded backport candidate, 2026-11-11
+
+This source branch merges MOREmbedded/main `b1eacd57` into Rouniy/main
+`0a366f4b`. It adds the fork's Altium 365 library scan, project stages,
+design modes, token usage reporting, dashboard theme and related fixes.
+Conflicts were reconciled with the existing Rouniy project selection,
+Altium 365 engineering tools and script version. The existing live runtime
+has not been replaced. New native Pascal behavior and live Altium 365 calls
+remain unverified; offline test results belong to this source branch only.
+
+Offline verification on this branch: `python scripts/altium/build.py` scanned
+12 units with zero errors or warnings and rebuilt the monolithic script.
+`python -m pytest tests -q -n 4` finished with 11,786 passed, 256 skipped,
+one expected failure and zero failures. Source SHA-256:
+`Main.pas` `A15DBCCC4DE17AB8B15E7C192C3C3D360F4334CDA8C81ADB311E6ABFE6E3FFD0`;
+generated `Altium_MCP.pas`
+`1D3714122312010807EFBA6214A0EA78540288586CE74CA14197E61783CAC45B`.
+Loaded runtime SHA-256 and Altium version were not measured; the running
+installation was not touched.
+
+
 ## Complete MOREmbedded source backport candidate, 2026-11-10
 
 Branch `backport-morembedded-final-eval` merges `MOREmbedded/main` at

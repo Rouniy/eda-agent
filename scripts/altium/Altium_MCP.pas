@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.10.204';
+    SCRIPT_VERSION = '2026.11.11.1';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -187,6 +187,9 @@ Var
     { change order, the Teardrops options); 'manual' leaves it to the    }
     { user. Default auto; the Python side does the answering.            }
     DialogMode : String;
+    { UsageStatsMode 'on' lets the server count the tokens each tool     }
+    { call costs (Stats tab); 'off' stops the counting. Default on.      }
+    UsageStatsMode : String;
     LastCompiledProject : IProject;
     { How the last SmartCompile call for the current request was satisfied:
       'delegated' (shared dispatcher already compiled this selection),
@@ -2743,6 +2746,7 @@ Begin
     UiAutomationMode := 'on';
     KeepInViewMode := 'off';
     DialogMode := 'auto';
+    UsageStatsMode := 'on';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
     ValueFormat := LowerCase(ExtractJsonValue(Content, 'value_format'));
@@ -2756,6 +2760,7 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
+    If LowerCase(ExtractJsonValue(Content, 'usage_stats')) = 'off' Then UsageStatsMode := 'off';
 End;
 
 Procedure StorePreferences(Dummy : Integer);
@@ -2765,7 +2770,8 @@ Begin
         + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
         + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
         + '","keep_in_view":"' + KeepInViewMode
-        + '","dialogs":"' + DialogMode + '"}');
+        + '","dialogs":"' + DialogMode
+        + '","usage_stats":"' + UsageStatsMode + '"}');
 End;
 
 {..............................................................................}
@@ -18316,11 +18322,11 @@ Begin
     Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
     If Track = Nil Then Exit;
     Track.Layer := Layer;
-    Track.X1 := MMsToCoord(OrgX + X1);
-    Track.Y1 := MMsToCoord(OrgY + Y1);
-    Track.X2 := MMsToCoord(OrgX + X2);
-    Track.Y2 := MMsToCoord(OrgY + Y2);
-    Track.Width := MMsToCoord(0.1);
+    Track.X1 := MMToCoord(OrgX + X1);
+    Track.Y1 := MMToCoord(OrgY + Y1);
+    Track.X2 := MMToCoord(OrgX + X2);
+    Track.Y2 := MMToCoord(OrgY + Y2);
+    Track.Width := MMToCoord(0.1);
     Footprint.AddPCBObject(Track);
     PCBServer.SendMessageToRobots(Track.I_ObjectAddress, c_Broadcast,
         PCBM_BoardRegisteration, c_NoEventData);
@@ -18540,11 +18546,11 @@ Begin
                 Pad.Name := Fields[0];
                 Pad.Mode := ePadMode_Simple;
                 Pad.HoleSize := 0;
-                Pad.X := MMsToCoord(OrgX + StrToFloatDef(Fields[1], 0));
-                Pad.Y := MMsToCoord(OrgY + StrToFloatDef(Fields[2], 0));
+                Pad.X := MMToCoord(OrgX + StrToFloatDef(Fields[1], 0));
+                Pad.Y := MMToCoord(OrgY + StrToFloatDef(Fields[2], 0));
                 Pad.Layer := eTopLayer;
-                Pad.TopXSize := MMsToCoord(StrToFloatDef(Fields[3], 0));
-                Pad.TopYSize := MMsToCoord(StrToFloatDef(Fields[4], 0));
+                Pad.TopXSize := MMToCoord(StrToFloatDef(Fields[3], 0));
+                Pad.TopYSize := MMToCoord(StrToFloatDef(Fields[4], 0));
                 ShapeText := Fields[5];
                 If ShapeText = 'Round' Then Pad.TopShape := eRounded
                 Else If ShapeText = 'Oval' Then Pad.TopShape := eRounded
@@ -18576,10 +18582,10 @@ Begin
                 Else
                 Begin
                     Pin1Arc.Layer := eTopOverlay;
-                    Pin1Arc.XCenter := MMsToCoord(OrgX + BX1 - 0.3);
-                    Pin1Arc.YCenter := MMsToCoord(OrgY + BY2 + 0.3);
-                    Pin1Arc.Radius := MMsToCoord(0.15);
-                    Pin1Arc.LineWidth := MMsToCoord(0.30);
+                    Pin1Arc.XCenter := MMToCoord(OrgX + BX1 - 0.3);
+                    Pin1Arc.YCenter := MMToCoord(OrgY + BY2 + 0.3);
+                    Pin1Arc.Radius := MMToCoord(0.15);
+                    Pin1Arc.LineWidth := MMToCoord(0.30);
                     Pin1Arc.StartAngle := 0;
                     Pin1Arc.EndAngle := 360;
                     Footprint.AddPCBObject(Pin1Arc);
@@ -18595,10 +18601,10 @@ Begin
                 Begin
                     DesigText.Text := '.Designator';
                     DesigText.Layer := ILayer.MechanicalLayer(13);
-                    DesigText.XLocation := MMsToCoord(OrgX + BX1);
-                    DesigText.YLocation := MMsToCoord(OrgY);
-                    DesigText.Size := MMsToCoord(1.0);
-                    DesigText.Width := MMsToCoord(0.15);
+                    DesigText.XLocation := MMToCoord(OrgX + BX1);
+                    DesigText.YLocation := MMToCoord(OrgY);
+                    DesigText.Size := MMToCoord(1.0);
+                    DesigText.Width := MMToCoord(0.15);
                     Footprint.AddPCBObject(DesigText);
                     PCBServer.SendMessageToRobots(DesigText.I_ObjectAddress,
                         c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
@@ -43156,6 +43162,40 @@ Begin
         Net := Iterator.NextPCBObject;
     End;
     Board.BoardIterator_Destroy(Iterator);
+End;
+
+{ The net a pad on this board carries under this name, or Nil. Preferred over }
+{ FindNetByName when binding new copper, so the copper joins the net object   }
+{ the pads already belong to. pcb.place_via and pcb.rebind_copper_to_pad_nets }
+{ call it. A merge on 2026-10-10 dropped this definition and kept the calls, }
+{ so each of those lines stopped the script with an undeclared identifier.   }
+Function FindPadNetByName(Board : IPCB_Board; NetName : String) : IPCB_Net;
+Var
+    Iterator : IPCB_BoardIterator;
+    Pad : IPCB_Pad;
+Begin
+    Result := Nil;
+    If (Board = Nil) Or (NetName = '') Then Exit;
+    Iterator := Board.BoardIterator_Create;
+    Try
+        Iterator.AddFilter_ObjectSet(MkSet(ePadObject));
+        Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+        Pad := Iterator.FirstPCBObject;
+        While Pad <> Nil Do
+        Begin
+            Try
+                If (Pad.Net <> Nil) And (Pad.Net.Name = NetName) Then
+                Begin
+                    Result := Pad.Net;
+                    Exit;
+                End;
+            Except End;
+            Pad := Iterator.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iterator);
+    End;
 End;
 
 { The refusal for copper asked onto a net the board does not have: placed  }
@@ -84864,7 +84904,7 @@ Begin
     LibComp := Nil;
     If (ObjTypeInt = eParameter) Or (ObjTypeInt = eDesignator) Then
     Begin
-        ParamsOfSymbol := IsLibDoc;
+        ParamsOfSymbol := SchDoc.ObjectId = eSchLib;
         If ParamsOfSymbol Then
         Begin
             Try LibComp := SchDoc.CurrentSchComponent; Except LibComp := Nil; End;
@@ -84883,7 +84923,7 @@ Begin
     If (ObjTypeInt = ePin) And (Mode = 'query') And (SchDoc.ObjectId <> eSchLib) Then
         If Pos('OwnerPart', FilterStr) = 0 Then OnlyShown := True;
     UnshownPins := TStringList.Create;
-    If OnlyShown Then DeadPinKeys(SchDoc, UnshownPins);
+    If OnlyShown Then CollectHiddenPinKeys(SchDoc, UnshownPins);
 
     Obj := Iterator.FirstSchObject;
     While Obj <> Nil Do
@@ -84933,7 +84973,7 @@ Begin
         Obj := Iterator.NextSchObject;
     End;
 
-    If ParamsOfSymbol Or OwnWalk Then
+    If ParamsOfSymbol Then
         LibComp.SchIterator_Destroy(Iterator)
     Else
         SchDoc.SchIterator_Destroy(Iterator);
@@ -87427,6 +87467,7 @@ Begin
         If Not First Then JsonItems := JsonItems + ',';
         First := False;
         JsonItems := JsonItems + '{"index":' + IntToStr(I) +
+            ',"error_level":' + IntToStr(Level) +
             ',"description":"' + EscapeJsonString(Desc) +
             '","detail":"' + EscapeJsonString(Detail) +
             '","level":"' + ErcLevelName(Level) +
@@ -108923,6 +108964,8 @@ Var
     { Open Dashboard button only enables when this is within the last 60s. }
     LastPingMs       : Cardinal;
     OpenWebEnabled   : Boolean;
+    { FileAge of the Stats tab's file when it was last read; -1 none. }
+    StatsFileStamp   : Integer;
 
     { P2 prerequisite probe (see eda-agent docs/DESIGN-event-driven-dispatch.md }
     { section 2). Counts tmr_Probe firings so the operator can read the rate    }
@@ -108952,6 +108995,8 @@ Const
     COLOR_TEXT_MUTED    = $00A0A0A0;
     COLOR_TEXT_FAINT    = $00808080;
     UPDATE_FLAG_FILE     = 'update_available.flag';
+    { Written by the MCP server after each tool call (diag/usage.py). }
+    USAGE_STATUS_FILE    = 'tool_usage.txt';
 
     MAX_LOG_LINES       = 2000;
     SPINNER_FRAMES      = 4;
@@ -109481,6 +109526,8 @@ Begin
         + 'it ran, and its average and longest time in ms.');
     SetTip(tab_Config, 'Your choices for how the bridge works. Kept across '
         + 'restarts.');
+    SetTip(tab_Stats, 'Tokens the AI spent on the EDA tools, estimated: this '
+        + 'session by tool, today and the whole workspace.');
     Tip := 'How a component value is written when it is cleaned up. '
         + 'Kept across restarts.';
     SetTip(lbl_CfgValue, Tip);
@@ -109517,10 +109564,38 @@ Begin
         + 'it as the tool was asked, then reads the result back. Manual: the '
         + 'dialog waits for you.';
     SetTip(lbl_CfgEco, Tip);  SetTip(opt_EcoAuto, Tip);  SetTip(opt_EcoManual, Tip);
+    Tip := 'Count the tokens each tool call costs the AI: the arguments it '
+        + 'writes and the result it reads, estimated from their size. Shown '
+        + 'on the Stats tab and in the dashboard''s Usage view, and kept in '
+        + 'the workspace''s .eda-agent\usage folder. Off: nothing is counted.';
+    SetTip(lbl_CfgStats, Tip);  SetTip(opt_StatsOn, Tip);  SetTip(opt_StatsOff, Tip);
     SetTip(btn_Update, 'A newer eda-agent is out. Ask your AI assistant to '
         + 'update it; it tells you what is new first.');
 End;
 
+
+{ The Stats tab shows the table the MCP server writes after each tool call }
+{ (eda_agent.diag.usage), as it is. Read only when the file changed:      }
+{ FileAge looks at the directory entry, so the tick never opens a file     }
+{ the server is replacing.                                                 }
+Procedure RefreshStatsPanel(Force : Boolean);
+Var
+    Path : String;
+    Stamp : Integer;
+Begin
+    Try
+        Path := WorkspaceDir + USAGE_STATUS_FILE;
+        Stamp := FileAge(Path);
+        If (Not Force) And (Stamp = StatsFileStamp) Then Exit;
+        StatsFileStamp := Stamp;
+        If Stamp < 0 Then
+            mmo_Stats.Lines.Text := 'No token statistics yet.' + #13#10 + #13#10
+                + 'They appear after the AI''s first tool call, when Token '
+                + 'stats is On (Config tab). Kept per workspace.'
+        Else
+            mmo_Stats.Lines.Text := ReadFileContent(Path);
+    Except End;
+End;
 
 { Open-Dashboard button reflects actual dashboard availability via a         }
 { heartbeat file the Python dashboard process writes every ~3s: a Unix      }
@@ -109672,7 +109747,7 @@ Begin
         ParamGrantShown := Granted;
         If Granted Then
         Begin
-            chk_AllowParams.Caption := '  ' + FilledDot(0)
+            chk_AllowParams.Caption := '  *'
                 + '  Parameter edits GRANTED for ONE batch - click to revoke';
             chk_AllowParams.Color := $00303848;
             If SelectedPath <> '' Then
@@ -109685,7 +109760,7 @@ Begin
         End
         Else
         Begin
-            chk_AllowParams.Caption := '  ' + HollowDot(0)
+            chk_AllowParams.Caption := '  o'
                 + '  Allow parameter edits (existing parameters)';
             chk_AllowParams.Color := $00202126;
         End;
@@ -109710,7 +109785,7 @@ Begin
         PlaceGrantShown := Granted;
         If Granted Then
         Begin
-            chk_AllowPlace.Caption := '  ' + FilledDot(0)
+            chk_AllowPlace.Caption := '  *'
                 + '  Placement edits GRANTED for ONE batch - click to revoke';
             chk_AllowPlace.Color := $00303848;
             If SelectedPath <> '' Then
@@ -109723,7 +109798,7 @@ Begin
         End
         Else
         Begin
-            chk_AllowPlace.Caption := '  ' + HollowDot(0)
+            chk_AllowPlace.Caption := '  o'
                 + '  Allow board edits (move parts; plan copper; stackup, classes, rooms, rules)';
             chk_AllowPlace.Color := $00202126;
         End;
@@ -109771,6 +109846,9 @@ Begin
     ColorCountdown(IdleSecToShutdown);
     UpdateOpenWebState(0);
     UpdateUpdateBadge(0);
+    Try
+        If mmo_Stats.Visible Then RefreshStatsPanel(False);
+    Except End;
 End;
 
 
@@ -109906,6 +109984,8 @@ Begin
     OwnPanelColours(sep_Cfg4);      OwnPanelColours(sep_Cfg5);
     OwnPanelColours(sep_Cfg6);
     OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
+    OwnPanelColours(sep_Cfg7);      OwnPanelColours(tab_Stats);
+    OwnPanelColours(opt_StatsOn);   OwnPanelColours(opt_StatsOff);
 End;
 
 
@@ -110044,6 +110124,14 @@ Begin
         Else
             lbl_CfgEcoHint.Caption := 'The AI answers the dialogs its tools '
                 + 'open: change orders, teardrops.';
+        PaintOption(opt_StatsOn, UsageStatsMode <> 'off');
+        PaintOption(opt_StatsOff, UsageStatsMode = 'off');
+        If UsageStatsMode = 'off' Then
+            lbl_CfgStatsHint.Caption := 'Off: tool calls are not counted and '
+                + 'nothing is written.'
+        Else
+            lbl_CfgStatsHint.Caption := 'Each tool call''s token cost is '
+                + 'estimated and kept per workspace. See the Stats tab.';
     Except End;
 End;
 
@@ -110070,6 +110158,7 @@ Begin
         FilterText      := '';
         LastPingMs      := 0;
         OpenWebEnabled  := False;
+        StatsFileStamp  := -2;
 
         OwnAllPanelColours(0);
         Try
@@ -110368,6 +110457,8 @@ Begin
     Try
         If mmo_Perf.Visible Then
             Clipboard.AsText := mmo_Perf.Lines.Text
+        Else If mmo_Stats.Visible Then
+            Clipboard.AsText := mmo_Stats.Lines.Text
         Else
             Clipboard.AsText := mmo_Log.Lines.Text;
         btn_CopyLog.Caption := #59643;
@@ -110531,7 +110622,22 @@ Begin
 End;
 
 
-{ Show one of the three tabs: 0 Log, 1 Perf, 2 Config. }
+Procedure tab_StatsEnter(Sender : TObject);
+Begin
+    Try
+        If Not mmo_Stats.Visible Then tab_Stats.Color := $004A4A4A;
+    Except End;
+End;
+Procedure tab_StatsLeave(Sender : TObject);
+Begin
+    Try
+        If mmo_Stats.Visible Then tab_Stats.Color := COLOR_BG_LOG
+        Else tab_Stats.Color := COLOR_BG_CARD;
+    Except End;
+End;
+
+
+{ Show one of the four tabs: 0 Log, 1 Perf, 2 Config, 3 Stats. }
 Procedure PaintTab(Pnl : TPanel; Open : Boolean);
 Begin
     Try
@@ -110552,14 +110658,17 @@ Procedure ShowTab(Which : Integer);
 Begin
     Try
         If Which = 1 Then RefreshPerfPanel(0);
+        If Which = 3 Then RefreshStatsPanel(True);
         mmo_Log.Visible := Which = 0;
         mmo_Perf.Visible := Which = 1;
         pnl_Config.Visible := Which = 2;
-        lbl_LogHint.Visible := Which <> 2;
+        mmo_Stats.Visible := Which = 3;
+        lbl_LogHint.Visible := Which < 2;
         btn_CopyLog.Visible := Which <> 2;
         PaintTab(tab_Log, Which = 0);
         PaintTab(tab_Perf, Which = 1);
         PaintTab(tab_Config, Which = 2);
+        PaintTab(tab_Stats, Which = 3);
     Except End;
 End;
 
@@ -110571,6 +110680,9 @@ Begin ShowTab(1); End;
 
 Procedure tab_ConfigClick(Sender : TObject);
 Begin ShowTab(2); End;
+
+Procedure tab_StatsClick(Sender : TObject);
+Begin ShowTab(3); End;
 
 Procedure tab_ConfigEnter(Sender : TObject);
 Begin
@@ -110622,7 +110734,8 @@ Begin
         Else If Setting = 'closing' Then ClosingMode := Choice
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
         Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
-        Else If Setting = 'dialogs' Then DialogMode := Choice;
+        Else If Setting = 'dialogs' Then DialogMode := Choice
+        Else If Setting = 'usage_stats' Then UsageStatsMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -110664,6 +110777,12 @@ Begin ChooseAgentSetting('keep_in_view', 'off'); End;
 
 Procedure opt_ViewOnClick(Sender : TObject);
 Begin ChooseAgentSetting('keep_in_view', 'on'); End;
+
+Procedure opt_StatsOnClick(Sender : TObject);
+Begin ChooseAgentSetting('usage_stats', 'on'); End;
+
+Procedure opt_StatsOffClick(Sender : TObject);
+Begin ChooseAgentSetting('usage_stats', 'off'); End;
 
 
 { ============================================================================ }

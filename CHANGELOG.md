@@ -16,6 +16,76 @@ maturity classification for every tool.
 
 ### Added
 
+- **Token usage of the EDA tools, counted.** Every MCP tool call is
+  measured as the server sends it: the arguments the AI wrote and the
+  result it reads back, turned into an estimated token count (about 4
+  characters a token, images by their size as the model shrinks them),
+  with the time taken. Kept per workspace in `.eda-agent/usage/` (which
+  ignores itself for git), summed per tool, day, session and profile.
+  Shown on a new **Stats** tab in the status window in Altium and a new
+  **Usage** view in the dashboard (key 9). A setting, `usage_stats`
+  (default on): **Token stats** on the Config tab, or per profile in the
+  dashboard's Workspace view; `EDA_AGENT_USAGE_OFF=1` also turns it off.
+  See [`docs/TOKEN_USAGE.md`](docs/TOKEN_USAGE.md).
+
+- **`eda-agent start` brings one design workspace up in one command.**
+  Each workspace keeps its own settings in `.eda-agent/workspace.json`
+  (profile, dashboard port, the Altium 365 workspaces the tools may use)
+  and its dashboard log in `.eda-agent/logs/`, so two workspaces share
+  nothing and no client detail lands in this repository. Secrets stay in
+  the user environment; the file refuses keys that look like one. Only an
+  eda-agent process is stopped to free the dashboard port.
+
+- **An offline copy of an Altium 365 managed library, kept in the profile.**
+  `altium365_scan_library` reads every component, symbol, footprint and
+  folder into `<profile>/library/<workspace host>/` as JSON and CSV, past
+  the 10,000-row `totalCount` cap, with several readers on row ranges and
+  pages halved when they time out; an interrupted scan continues.
+  `altium365_update_library` rereads all but the bulk block at the end of
+  the list and probes the row past it. `altium365_search_library` searches
+  it offline and `lib_search` folds it in as `source: "altium365"`.
+  `altium365_library_report` lists gaps and, given design folders, joins
+  placements from `.SchDoc` files on the item id and flags older
+  revisions. CLI: `altium365-scan-library`, `altium365-update-library`.
+  Live-checked on 2026-11-10 against a 22,561-component workspace: the
+  scan and the counts matched an independent scan, the refresh took
+  1m49s. `profile.json` names the workspace in `altium365_workspaces`.
+- **`altium365_scan_3d_models`** reads the library's 3D model items from
+  Altium's Explorer panel, which the GraphQL API cannot list. UNVERIFIED:
+  the live run was stopped before it finished.
+
+- **Project stages in the dashboard.** The Workspace view's Settings card
+  has a switch for the NPI gates (off by default; it writes the profile's
+  `phase_gates.json`, as `phases-enable` does). With it on, a *Project
+  stages* card shows each tracked `.PrjPcb` as a stepper from Feasibility
+  to Production, passed, current, ahead or not run, and each stage opens
+  its gate's checklist to mark Met, Unmet, Waived or Open with the
+  evidence. Projects are tracked by path, or picked from those open in
+  Altium; each has a revision, and changing it reopens the gates. The list
+  and the answers live in `<workspace>/phase_gates/`, never in a
+  repository, and the ledger is the one the `design_phase_*` tools write
+  (`product` = the project's file name). See docs/NPI_PHASE_GATES.md.
+- **A Research stage** between Feasibility and Prototype, with five
+  checks: the architecture chosen, risks ranked and owned, the top risks
+  retired on an eval kit or in simulation, reference designs read, and
+  every requirement mapped to a block. 47 checks across six stages.
+- **Per-profile settings.** A profile may carry `preferences.json` with the
+  Altium panel's Config-tab keys (component value format, keep in view,
+  dialogs, and the edits/deleting/closing/UI-automation safety switches)
+  and `default_mode`, the design mode a run starts in. The profile wins
+  over the panel's one-per-machine file for the value format and workflow
+  settings; for the safety switches the stricter of the two wins, so a
+  profile can add a restriction but never lift one. `default_mode` sits
+  between `EDA_AGENT_MODE` and `eda-agent mode-use`. Refusals and the
+  value-format tool name the profile file when it decided.
+  `profile-validate` checks the file. See docs/PROFILES.md.
+- **Settings card in the dashboard's Workspace mode (key 8).** Shows each
+  of those settings, the value in effect and where it comes from (this
+  profile, the Altium panel, the environment, `mode-use` or the default),
+  and sets or clears it in the profile's `preferences.json`. The panel's
+  own file is read, never written. The Altium panel itself still shows
+  only its own choice; UNVERIFIED on a live Altium.
+
 - **Dashboard Workspace mode.** A top-bar chip names the profile in
   effect and where it comes from; mode 8 shows the resolution order, a
   button per central profile to switch to it, the design-rule targets and
@@ -49,6 +119,70 @@ maturity classification for every tool.
     thing.
 
 ### Fixed
+
+- **`proj_run_erc` and `proj_get_erc_violations` stopped the bridge**
+  (`SCRIPT_VERSION` `2026.11.10.1`). `Gen_GetErcViolations` built each
+  violation with `IntToStr(ErrorLevel)` and `SuppressedText`, neither
+  declared anywhere, so Altium 26.11.1.5 halted with "Undeclared
+  identifier" on the first violation. `error_level` now carries the
+  numeric level and the duplicate `suppressed` key is gone. The same scan
+  found `FindPadNetByName`, whose definition a merge on 2026-10-10
+  dropped while the `pcb.place_via` and `pcb.place_track` commands (given
+  a net) and `pcb_rebind_copper_to_pad_nets` kept calling it; it is
+  restored. A new
+  lint rule, `undeclared-read`, fails the build on any bare identifier no
+  unit declares and `scripts/altium/lint_external_names.txt` does not
+  list. UNVERIFIED live: checked by the linter and tests, not yet run in
+  Altium.
+
+- **app_list_panels, app_open_panel and app_read_panel on AD 26.11.** They
+  ran on the event loop thread without COM, and 26.11 has no
+  TPopupPanelButton for a docked panel, so they saw 0 panels. They now run
+  on a thread of their own and also find a panel by its caption; live on
+  26.11 they list Projects, Properties and a floating Explorer, and read
+  the Projects grid.
+- **Altium 365 settings set with `setx` work without a restart**: the
+  user's saved environment fills in what the process lacks.
+  `EDA_AGENT_ALTIUM365_TIMEOUT_S` sets the request timeout.
+
+- **Nexar sign-in works with a portal app.** `eda-agent altium365-login`
+  sent the client id and PKCE verifier but no client secret, so an app made
+  in the Nexar portal (a confidential client) was turned down with HTTP 400.
+  `EDA_AGENT_NEXAR_CLIENT_SECRET`, when set, now goes with the code exchange
+  and with each refresh. It is kept out of the config's printed form and
+  masked if a reply echoes it. A refused token request now says what Nexar
+  said (`invalid_client`, `invalid_grant`, ...) with a likely fix, instead
+  of only the status. Checked live on 2026-11-09: the login succeeded with
+  a portal app and its secret, and listed the account's workspaces.
+
+- **The login says which workspaces it reaches.** After signing in,
+  `eda-agent altium365-login` lists every Altium 365 workspace the account
+  can reach, marks any that `EDA_AGENT_ALTIUM365_WORKSPACES` leaves out, and
+  says how to keep the tools to some of them. The docs no longer send
+  readers to an Admin > Developer token page that many plans lack; there,
+  Nexar is the way in.
+
+- **What the 2026-11-08 live verification found** (`SCRIPT_VERSION`
+  `2026.11.08.5`). Each was seen on a live Altium 26.11.1.5 against
+  scratch files:
+  - `app_open_document` and `app_reload_document` could not open a
+    harness wiring diagram: `.wirdoc` had no kind, so a reload closed the
+    diagram and failed to reopen it, and `kind=HARNESS` reported success
+    for a document `sch_get_harness` could not see. A .WirDoc now opens
+    through the workspace manager, and the reply's `kind` is what Altium
+    gave the document.
+  - A harness wire, splice or cable answered `Name` with nothing, so
+    `obj_delete filter="Name=W2"` matched nothing. It now answers the
+    name its description carries, the same one `sch_get_harness` shows.
+  - `profile_apply_all` wrote the ERC matrix of whichever project had
+    focus, which with a free board in front was Altium's "Free
+    Documents". Writing it now needs `project_path`, "Free Documents" is
+    refused by the diff, preview and apply and by `proj_erc_apply`, and
+    the dashboard's Workspace view passes the project its Compare read.
+  - A dry run listed its sections under `applied`; they are under
+    `would_apply` now. `design_list_modes` flags a selected mode that
+    does not exist. `obj_modify` answers `modified:false` when every
+    property it asked for was refused.
 
 - **The merged pad-net check read only the first 500 pads.**
   `pcb.get_pad_properties` windows at 500 and reports `truncated`;

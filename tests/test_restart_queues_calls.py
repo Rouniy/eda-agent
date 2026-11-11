@@ -37,10 +37,11 @@ def test_a_fresh_marker_is_a_restart_and_an_old_one_is_not(tmp_path):
 
 
 @pytest.fixture
-def bridge(tmp_path):
+def bridge(tmp_path, monkeypatch):
     from eda_agent.config import configure
     configure(workspace_dir=tmp_path)
     b = ab.AltiumBridge()
+    monkeypatch.setattr(b, "_dialog_probe", lambda: None)
     yield b
     b.detach()
 

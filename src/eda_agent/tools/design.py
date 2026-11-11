@@ -316,8 +316,9 @@ def register_design_tools(mcp) -> None:
         the rules it adds, what each stage does differently and the inputs
         it needs. Built in: full_design (the whole pipeline), schematic_only,
         layout_only, reference_redraw (redraw a vendor dev kit or reference
-        design's schematic) and devkit_derivative (a new board from a dev
-        kit). The active profile's modes/ folder adds its own or changes
+        design's schematic), devkit_derivative (a new board from a dev
+        kit) and reusable_block (one self-contained block with a defined
+        interface and layout fragment, to publish as an Altium reuse block). The active profile's modes/ folder adds its own or changes
         these. Start a run in one with design_session_start(mode=...).
         """
         from ..design.modes import load_modes, selected_mode_name
@@ -3187,7 +3188,7 @@ Args: plan_json is a DesignPlan JSON string or file path. project_path identifie
             pass
         return result
 
-    # --- stages to production: feasibility, prototype, EVT, DVT, PVT -------
+    # --- stages to production: feasibility, research, prototype, EVT, DVT, PVT -------
     #
     # OFF unless a profile, EDA_AGENT_PHASES or --phases names the stages
     # to run (docs/NPI_PHASE_GATES.md). Off means not advertised, rather
@@ -3242,7 +3243,8 @@ Args: plan_json is a DesignPlan JSON string or file path. project_path identifie
         """The checks that close one stage on the way to production, and how
         the product stands against them.
 
-        The stages in order: feasibility, prototype, evt, dvt, pvt. Each check
+        The stages in order: feasibility, research, prototype, evt, dvt, pvt.
+        Each check
         says what it asks, why at this stage, what counts as done, which tools
         here answer it, and its outcome from the answers recorded so far. It
         runs nothing: call ``tools_to_run``, then record each result with
@@ -3250,7 +3252,7 @@ Args: plan_json is a DesignPlan JSON string or file path. project_path identifie
         can answer.
 
         Args:
-            stage: feasibility, prototype, evt, dvt or pvt (also "design
+            stage: feasibility, research, prototype, evt, dvt or pvt (also "design
                 validation" and similar).
             revision: The board revision in question; answers given for
                 another revision stop counting, and the check says so.
@@ -3333,7 +3335,7 @@ Args: plan_json is a DesignPlan JSON string or file path. project_path identifie
 
         Only the stages this profile runs are reviewed, and ``stages_run``
         names them. ``in_production`` means every one of THOSE cleared, so
-        read it against ``stages_run`` rather than against all five.
+        read it against ``stages_run`` rather than against all six.
 
         Returns:
             ``stage``, ``title``, ``in_production`` (every stage run

@@ -227,6 +227,104 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _no_saved_user_environment(monkeypatch, tmp_path_factory):
+    """Keep this machine's saved Altium 365 settings out of every test.
+
+    ``altium365.read_environment`` fills in what the process lacks from
+    the user's saved environment (HKCU, Environment), so a developer
+    who ran ``setx EDA_AGENT_NEXAR_APP_ID ...`` would otherwise see the
+    tests reach for Nexar. A test that wants it patches it back.
+    """
+    import eda_agent.altium365 as a365
+    monkeypatch.setattr(a365, "saved_user_environment", lambda names=None: {})
+    # A shell that already has them is the same case: take them out of
+    # the process environment too. A test that wants one sets it again.
+    for name in a365.SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+    # And a real login from altium365-login stays where it is: a test that
+    # sets an app id must not find it and reach Nexar with it.
+    monkeypatch.setattr(a365, "default_login_path",
+                        lambda: tmp_path_factory.getbasetemp() / "no-nexar-login.bin")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_altium_global_projects(monkeypatch):
+    """Keep this machine's Altium registry out of every test.
+
+    ``get_default_scripts_dest`` follows the folder Altium's Global
+    Projects list names, so on a developer's machine an unpatched test
+    would read, and an install-scripts without ``dest`` would WRITE, the
+    script folder a live Altium compiles from.
+
+    Done by closing one key rather than by stubbing
+    ``registered_script_projects`` or the platform. Stubbing the function
+    leaves unread the fake registry that some tests install; stubbing
+    ``cli.sys.platform`` reaches the real ``sys`` module and turns off
+    every other Windows branch in the run, which took eight unrelated
+    tests with it. Replacing the whole ``winreg`` module broke four more,
+    because other libraries read the registry too (dateutil wants
+    ``ConnectRegistry`` for time zones). So the real module is kept and
+    only ``HKCU\\Software\\Altium`` is refused. A test that wants entries
+    installs its own fake over this one.
+    """
+    import sys as _sys
+    import types
+
+    try:
+        import winreg as real
+    except ImportError:                      # not Windows: nothing to hide
+        return
+
+    proxy = types.ModuleType("winreg")
+    proxy.__dict__.update(real.__dict__)
+    _real_open = real.OpenKey
+
+    def _open(key, sub_key, *args, **kwargs):
+        if isinstance(sub_key, str) and sub_key.lower().startswith("software\\altium"):
+            raise OSError("this machine's Altium registry is hidden from tests")
+        return _real_open(key, sub_key, *args, **kwargs)
+
+    proxy.OpenKey = _open
+    monkeypatch.setitem(_sys.modules, "winreg", proxy)
+
+
+@pytest.fixture(autouse=True)
+def _restore_global_config():
+    """Put the global config back after a test calls ``configure()``.
+
+    ``configure`` replaces a module-level singleton and nothing undid it,
+    so a test that pointed the workspace at its own tmp_path left every
+    later test pointed there too. It surfaced as
+    test_install_scripts_points_altium_at_the_servers_workspace writing
+    another test's directory into the pointer file, and only when the two
+    ran in the same process.
+
+    Compared by VALUE, not identity: a test that sets a field on the
+    existing object instead of calling ``configure`` leaks just the same,
+    and that version of this fixture missed it.
+    """
+    from eda_agent import config as config_module
+
+    before = config_module.config
+    try:
+        snapshot = before.model_dump()
+    except Exception:                                    # noqa: BLE001
+        snapshot = None
+    yield
+    now = config_module.config
+    changed = now is not before
+    if not changed and snapshot is not None:
+        try:
+            changed = now.model_dump() != snapshot
+        except Exception:                                # noqa: BLE001
+            changed = False
+    if changed:
+        config_module.config = (before if snapshot is None
+                                else type(before)(**snapshot))
+        from eda_agent.bridge.altium_bridge import reset_bridge
+        reset_bridge()
+
+@pytest.fixture(autouse=True)
 def _fresh_bulk_hint_counts():
     """Start each test with no calls counted toward the repeat nudge.
 

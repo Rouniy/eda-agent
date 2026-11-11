@@ -14,7 +14,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.10.204';
+    SCRIPT_VERSION = '2026.11.11.1';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -178,6 +178,9 @@ Var
     { change order, the Teardrops options); 'manual' leaves it to the    }
     { user. Default auto; the Python side does the answering.            }
     DialogMode : String;
+    { UsageStatsMode 'on' lets the server count the tokens each tool     }
+    { call costs (Stats tab); 'off' stops the counting. Default on.      }
+    UsageStatsMode : String;
     LastCompiledProject : IProject;
     { How the last SmartCompile call for the current request was satisfied:
       'delegated' (shared dispatcher already compiled this selection),
@@ -2734,6 +2737,7 @@ Begin
     UiAutomationMode := 'on';
     KeepInViewMode := 'off';
     DialogMode := 'auto';
+    UsageStatsMode := 'on';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
     ValueFormat := LowerCase(ExtractJsonValue(Content, 'value_format'));
@@ -2747,6 +2751,7 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'ui_automation')) = 'off' Then UiAutomationMode := 'off';
     If LowerCase(ExtractJsonValue(Content, 'keep_in_view')) = 'on' Then KeepInViewMode := 'on';
     If LowerCase(ExtractJsonValue(Content, 'dialogs')) = 'manual' Then DialogMode := 'manual';
+    If LowerCase(ExtractJsonValue(Content, 'usage_stats')) = 'off' Then UsageStatsMode := 'off';
 End;
 
 Procedure StorePreferences(Dummy : Integer);
@@ -2756,7 +2761,8 @@ Begin
         + '","edits":"' + EditsMode + '","deleting":"' + DeletingMode
         + '","closing":"' + ClosingMode + '","ui_automation":"' + UiAutomationMode
         + '","keep_in_view":"' + KeepInViewMode
-        + '","dialogs":"' + DialogMode + '"}');
+        + '","dialogs":"' + DialogMode
+        + '","usage_stats":"' + UsageStatsMode + '"}');
 End;
 
 {..............................................................................}

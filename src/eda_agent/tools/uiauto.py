@@ -837,7 +837,8 @@ def register_uiauto_tools(mcp):
         if not panels.available():
             return {"ok": False, "reason": "UI automation is unavailable here"}
 
-        open_now = panels.list_open(pid)
+        open_now = await asyncio.to_thread(
+            panels.on_com_thread, lambda: panels.list_open(pid))
         out: dict[str, Any] = {
             "ok": True,
             "count": len(open_now),
@@ -848,7 +849,8 @@ def register_uiauto_tools(mcp):
         if not open_now:
             out["note"] = panels.EMPTY_SCAN_NOTE
         if offered_too:
-            out["offered"] = panels.offered(pid)
+            out["offered"] = await asyncio.to_thread(
+                panels.on_com_thread, lambda: panels.offered(pid))
         return out
 
     @mcp.tool()
@@ -882,7 +884,8 @@ def register_uiauto_tools(mcp):
         pid, problem = _altium_pid()
         if problem is not None:
             return problem
-        return panels.open_panel(pid, name, settle=settle)
+        return await asyncio.to_thread(
+            panels.on_com_thread, lambda: panels.open_panel(pid, name, settle=settle))
 
     @mcp.tool()
     async def app_read_panel(name: str) -> dict[str, Any]:
@@ -908,7 +911,8 @@ def register_uiauto_tools(mcp):
         pid, problem = _altium_pid(reads_only=True)
         if problem is not None:
             return problem
-        return panels.read_panel(pid, name)
+        return await asyncio.to_thread(
+            panels.on_com_thread, lambda: panels.read_panel(pid, name))
 
     @mcp.tool()
     async def app_set_dropdown(
@@ -1442,7 +1446,8 @@ def register_uiauto_tools(mcp):
         out["dialog_count"] = len(open_dialogs)
 
         try:
-            out["panels"] = [p["name"] for p in panels.list_open(pid)]
+            out["panels"] = [p["name"] for p in panels.on_com_thread(
+                lambda: panels.list_open(pid))]
         except Exception as exc:                 # noqa: BLE001
             out["panels"] = []
             out["panel_error"] = str(exc)

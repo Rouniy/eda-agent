@@ -1576,11 +1576,11 @@ Begin
     Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
     If Track = Nil Then Exit;
     Track.Layer := Layer;
-    Track.X1 := MMsToCoord(OrgX + X1);
-    Track.Y1 := MMsToCoord(OrgY + Y1);
-    Track.X2 := MMsToCoord(OrgX + X2);
-    Track.Y2 := MMsToCoord(OrgY + Y2);
-    Track.Width := MMsToCoord(0.1);
+    Track.X1 := MMToCoord(OrgX + X1);
+    Track.Y1 := MMToCoord(OrgY + Y1);
+    Track.X2 := MMToCoord(OrgX + X2);
+    Track.Y2 := MMToCoord(OrgY + Y2);
+    Track.Width := MMToCoord(0.1);
     Footprint.AddPCBObject(Track);
     PCBServer.SendMessageToRobots(Track.I_ObjectAddress, c_Broadcast,
         PCBM_BoardRegisteration, c_NoEventData);
@@ -1800,11 +1800,11 @@ Begin
                 Pad.Name := Fields[0];
                 Pad.Mode := ePadMode_Simple;
                 Pad.HoleSize := 0;
-                Pad.X := MMsToCoord(OrgX + StrToFloatDef(Fields[1], 0));
-                Pad.Y := MMsToCoord(OrgY + StrToFloatDef(Fields[2], 0));
+                Pad.X := MMToCoord(OrgX + StrToFloatDef(Fields[1], 0));
+                Pad.Y := MMToCoord(OrgY + StrToFloatDef(Fields[2], 0));
                 Pad.Layer := eTopLayer;
-                Pad.TopXSize := MMsToCoord(StrToFloatDef(Fields[3], 0));
-                Pad.TopYSize := MMsToCoord(StrToFloatDef(Fields[4], 0));
+                Pad.TopXSize := MMToCoord(StrToFloatDef(Fields[3], 0));
+                Pad.TopYSize := MMToCoord(StrToFloatDef(Fields[4], 0));
                 ShapeText := Fields[5];
                 If ShapeText = 'Round' Then Pad.TopShape := eRounded
                 Else If ShapeText = 'Oval' Then Pad.TopShape := eRounded
@@ -1836,10 +1836,10 @@ Begin
                 Else
                 Begin
                     Pin1Arc.Layer := eTopOverlay;
-                    Pin1Arc.XCenter := MMsToCoord(OrgX + BX1 - 0.3);
-                    Pin1Arc.YCenter := MMsToCoord(OrgY + BY2 + 0.3);
-                    Pin1Arc.Radius := MMsToCoord(0.15);
-                    Pin1Arc.LineWidth := MMsToCoord(0.30);
+                    Pin1Arc.XCenter := MMToCoord(OrgX + BX1 - 0.3);
+                    Pin1Arc.YCenter := MMToCoord(OrgY + BY2 + 0.3);
+                    Pin1Arc.Radius := MMToCoord(0.15);
+                    Pin1Arc.LineWidth := MMToCoord(0.30);
                     Pin1Arc.StartAngle := 0;
                     Pin1Arc.EndAngle := 360;
                     Footprint.AddPCBObject(Pin1Arc);
@@ -1855,10 +1855,10 @@ Begin
                 Begin
                     DesigText.Text := '.Designator';
                     DesigText.Layer := ILayer.MechanicalLayer(13);
-                    DesigText.XLocation := MMsToCoord(OrgX + BX1);
-                    DesigText.YLocation := MMsToCoord(OrgY);
-                    DesigText.Size := MMsToCoord(1.0);
-                    DesigText.Width := MMsToCoord(0.15);
+                    DesigText.XLocation := MMToCoord(OrgX + BX1);
+                    DesigText.YLocation := MMToCoord(OrgY);
+                    DesigText.Size := MMToCoord(1.0);
+                    DesigText.Width := MMToCoord(0.15);
                     Footprint.AddPCBObject(DesigText);
                     PCBServer.SendMessageToRobots(DesigText.I_ObjectAddress,
                         c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);

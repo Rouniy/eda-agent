@@ -1,5 +1,13 @@
 # Fork integration TODO
 
+## MOREmbedded backport, 2026-11-11
+
+- [ ] Qualify the merged Pascal changes on a disposable Altium project after
+  the operator has stopped the existing bridge and chosen a deployment window.
+- [ ] Check Altium 365 library scanning against an authorized test workspace;
+  local request and parsing tests do not establish live API compatibility.
+
+
 ## Complete source backport candidate, 2026-11-10
 
 - [x] Merge the full `MOREmbedded/main` line at `3af39ffd` into the

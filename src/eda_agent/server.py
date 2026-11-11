@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
@@ -393,17 +394,47 @@ class _CompactFastMCP(FastMCP):
 
     async def call_tool(self, name, arguments):
         from .bridge.altium_bridge import tool_call
-        from .updates import notice_once
-        with tool_call():
-            result = await super().call_tool(name, arguments)
-        news = notice_once()
+        from .diag import usage
+        started = time.monotonic()
+        call: dict = {"tool": name}
+        try:
+            with tool_call(name) as call:
+                result = await super().call_tool(name, arguments)
+        except BaseException as exc:
+            usage.get_recorder().record(
+                _usage_name(name, arguments, call), arguments,
+                ms=int((time.monotonic() - started) * 1000), error=exc)
+            raise
+        try:
+            from . import updates
+            news = updates.notice_once()
+        except Exception:  # noqa: BLE001  news never breaks a tool
+            news = None
         if news:
             result = add_update_notice(result, news)
         if isinstance(result, tuple):
-            return (compact_text_blocks(result[0]), result[1])
-        if isinstance(result, list):
-            return compact_text_blocks(result)
+            result = (compact_text_blocks(result[0]), result[1])
+        elif isinstance(result, list):
+            result = compact_text_blocks(result)
+        # Counted as sent, after compaction: what the model reads.
+        usage.get_recorder().record(
+            _usage_name(name, arguments, call), arguments, result,
+            ms=int((time.monotonic() - started) * 1000))
         return result
+
+
+def _usage_name(name: str, arguments, call) -> str:
+    """The operation a call ran: the tool, or for a family tool or
+    tool_invoke the member it reached (name_tool_call), as
+    ``family/member``. A call over a list of items keeps the tool's
+    own name."""
+    inner = str((call or {}).get("tool") or "") if isinstance(call, dict) else ""
+    if inner and inner != name:
+        # pcb_calc reaching pcb_calc_impedance reads pcb_calc/impedance.
+        if inner.startswith(name + "_"):
+            inner = inner[len(name) + 1:]
+        return f"{name}/{inner}"
+    return name
 
 
 # Create global FastMCP instance, named for the backend so a client that
@@ -835,7 +866,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
 
     return [
         ("Server and setup", (
-            "serve", "install-scripts", "scripts-path", "relaunch",
+            "serve", "start", "install-scripts", "scripts-path", "relaunch",
             "update", "easyeda-extension",
         )),
         ("Diagnostics", (
@@ -867,6 +898,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
         )),
         ("Altium 365", (
             "altium365-login", "altium365-logout", "a365-login", "a365-logout",
+            "altium365-scan-library", "altium365-update-library",
         )),
         ("Experimental", (
             "eco-execute",
@@ -999,12 +1031,27 @@ def build_parser() -> argparse.ArgumentParser:
               "Equivalent to setting EDA_AGENT_TOOLSET."),
     )
     parser.add_argument(
-        "--mode", default=None, metavar="MODE",
-        help="Design mode for runs that do not name one; see mode-list.",
+        # For one run, without touching the profile. The profile is where
+        # this belongs when it is the owner's standing answer; this is for
+        # trying a gate on, and for a client that has an env block and no
+        # profile directory of its own.
+        "--phases", default=None, metavar="STAGES",
+        help=("Which NPI stages to run, comma-separated: feasibility, "
+              "research, prototype, evt, dvt, pvt, or 'all'. Default: none, which "
+              "leaves the three design_phase_* tools unadvertised. 'none' "
+              "turns the gate off over a profile that turned it on. "
+              "Equivalent to setting EDA_AGENT_PHASES."),
     )
     parser.add_argument(
-        "--phases", default=None, metavar="STAGES",
-        help="NPI stages to enable for this run, comma-separated or 'none'.",
+        # For one run. Unlike --phases this needs no reload: a mode does
+        # not change which tools exist, only what design_session_start
+        # picks when a run names no mode.
+        "--mode", default=None, metavar="MODE",
+        help=("The design mode a run uses when it names none: full_design, "
+              "schematic_only, layout_only, reference_redraw, "
+              "devkit_derivative, reusable_block, or one from the "
+              "profile's modes/. "
+              "Equivalent to setting EDA_AGENT_MODE; see mode-list."),
     )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
@@ -1438,17 +1485,61 @@ def build_parser() -> argparse.ArgumentParser:
     dash_p.add_argument("--port", type=int, default=8766)
     dash_p.add_argument("--debug", action="store_true")
 
+    # start -- bring one design workspace up from its .eda-agent/workspace.json
+    start_p = subparsers.add_parser(
+        "start",
+        help=("Bring a design workspace up: its profile, dashboard, doctor and "
+              "Altium 365 login, from <workspace>/.eda-agent/workspace.json."),
+        epilog=("Make the file once with --init, run from the workspace folder: "
+                "eda-agent start --init --profile NAME --port 8777 "
+                "--altium365-workspace https://<name>.365.altium.com/. "
+                "Secrets stay in your user environment, never in the file."),
+    )
+    start_p.add_argument("--workspace", default="",
+                         help="Workspace folder (default: found from the current one).")
+    start_p.add_argument("--init", action="store_true",
+                         help="Write or update the workspace's settings file and stop.")
+    start_p.add_argument("--profile", default="", help="Central profile to activate.")
+    start_p.add_argument("--port", type=int, default=0, help="Dashboard port.")
+    start_p.add_argument("--altium365-workspace", action="append", default=[],
+                         dest="altium365_workspace", metavar="URL",
+                         help="Altium 365 workspace the tools may use. Repeatable.")
+    start_p.add_argument("--no-dashboard", action="store_true")
+    start_p.add_argument("--no-doctor", action="store_true")
+    start_p.add_argument("--no-login", action="store_true")
+    start_p.add_argument("--relogin", action="store_true",
+                         help="Sign in to Nexar again even if the saved login is valid.")
+    start_p.add_argument("--shortcut", action="store_true",
+                         help="Make a desktop shortcut that runs start for this workspace.")
+
     # altium365-login -- sign in to Nexar once for the Altium 365 tools
     subparsers.add_parser(
         "altium365-login",
         help=("Sign in to Nexar in the browser for the altium365_ tools "
-              "(needs EDA_AGENT_NEXAR_APP_ID). The workspace route needs no "
+              "(needs EDA_AGENT_NEXAR_APP_ID, plus EDA_AGENT_NEXAR_CLIENT_SECRET for a "
+              "Nexar portal app). The workspace route needs no "
               "sign-in: set EDA_AGENT_ALTIUM365_DOMAIN and EDA_AGENT_ALTIUM365_TOKEN."),
     )
     subparsers.add_parser(
         "altium365-logout",
         help="Forget the saved Nexar login of altium365-login.",
     )
+    for verb, what in (("altium365-scan-library",
+                        "Read a workspace's whole managed library into the active "
+                        "profile (library/<host>/), continuing an unfinished scan."),
+                       ("altium365-update-library",
+                        "Refresh a scanned library: reread all but its bulk block, and "
+                        "say whether a full scan is needed.")):
+        lib_p = subparsers.add_parser(verb, help=what)
+        lib_p.add_argument("--workspace", default="",
+                           help="Workspace URL (default: the profile's one).")
+        lib_p.add_argument("--database-dir", default="",
+                           help="Keep the database here instead of in the profile.")
+        if verb == "altium365-scan-library":
+            lib_p.add_argument("--workers", type=int, default=4,
+                               help="Readers on different row ranges at once (1-16).")
+            lib_p.add_argument("--restart", action="store_true",
+                               help="Drop an unfinished scan and start over.")
 
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
@@ -1712,6 +1803,9 @@ def main() -> int:
             "--port", str(args.port),
             *(["--debug"] if args.debug else []),
         ])
+    if args.command == "start":
+        from .workspace_start import cmd_start
+        return cmd_start(args)
     if args.command == "stop-dashboard":
         # Read the PID written by the dashboard process and SIGTERM it.
         # No PID file = no dashboard running -> success (idempotent stop).
@@ -1745,9 +1839,13 @@ def main() -> int:
             return 1
     if args.command == "altium365-login":
         import webbrowser
-        from .altium365 import Altium365Error, browser_login, read_environment
+        from .altium365 import (Altium365Error, Altium365Session, browser_login,
+                                login_workspaces, read_environment)
         try:
-            print(browser_login(read_environment(), webbrowser.open))
+            config = read_environment()
+            print(browser_login(config, webbrowser.open))
+            for line in login_workspaces(Altium365Session(config)):
+                print(line)
             return 0
         except Altium365Error as exc:
             print(f"Not signed in: {exc}")
@@ -1761,6 +1859,24 @@ def main() -> int:
             print(f"Could not remove {path}: {exc}")
             return 1
         print(f"Signed out: removed {path}." if gone else "No saved Nexar login.")
+        return 0
+    if args.command in ("altium365-scan-library", "altium365-update-library"):
+        from .altium365 import Altium365Error, Altium365Session
+        from .altium365_library import resolve_target, scan_library, update_library
+        try:
+            url, db = resolve_target(args.workspace, args.database_dir)
+            print(f"{url} -> {db}", flush=True)
+            say = lambda m: print(m, flush=True)  # noqa: E731
+            if args.command == "altium365-scan-library":
+                done = scan_library(Altium365Session(), url, db, workers=args.workers,
+                                    restart=args.restart, progress=say)
+            else:
+                done = update_library(Altium365Session(), url, db, progress=say)
+        except Altium365Error as exc:
+            print(f"Stopped: {exc}")
+            return 1
+        import json as _json
+        print(_json.dumps(done, indent=1, ensure_ascii=False))
         return 0
     if args.command == "review":
         return _run_review(args)

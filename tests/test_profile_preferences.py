@@ -307,7 +307,10 @@ def test_the_workspace_view_shows_each_setting_and_where_it_comes_from(tmp_path,
     assert st["items"]["deleting"]["value"] == "refused"
     assert st["items"]["deleting"]["source"] == "panel"
     assert st["mode"]["selected"] == "reference_redraw" and st["mode"]["source"] == "profile"
-    assert {"reference_redraw", "devkit_derivative"} <= {m["name"] for m in st["mode"]["modes"]}
+    listed = {m["name"]: m["title"] for m in st["mode"]["modes"]}
+    assert {"reference_redraw", "devkit_derivative"} <= set(listed)
+    # The dashboard's "Design mode a run starts in" list offers it.
+    assert listed["reusable_block"] == "Design a reusable block"
     assert st["problems"] == []
 
 
@@ -362,7 +365,7 @@ def test_the_page_has_the_settings_card_wired():
             / "workbench.html").read_text(encoding="utf-8")
     assert "function wsSettingsCard(" in page and "${wsSettingsCard(w)}" in page
     assert '"/api/wb/workspace/settings"' in page and "data-wsset" in page
-    assert 'addEventListener("change", e => { if (S.mode === "workspace"' in page
+    assert "if (e.target.dataset.wsset != null) wsSetChange(e.target);" in page
 
 
 def test_save_works_beside_a_key_this_version_does_not_know(tmp_path):

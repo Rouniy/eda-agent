@@ -46,7 +46,9 @@ dashboard descriptions below are not the exposed shared-mode feature set.
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Workspace and profiles](#workspace-and-profiles)
-- [PCBA phase gates](#pcba-phase-gates)
+- [PCBA programme journal](#pcba-programme-journal)
+- [Fabrication output check](#fabrication-output-check)
+- [NPI phase gates](#npi-phase-gates)
 - [Design modes](#design-modes)
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
@@ -368,7 +370,7 @@ each other and you mostly set it once and forget it; a **profile** is
 what you want the output to look like, and is worth revisiting whenever
 you change who you are working for.
 
-## PCBA phase gates
+## PCBA programme journal
 
 `design_npi_gate`, `design_npi_record`, and `design_npi_status` track
 feasibility, prototype, EVT, DVT, and PVT evidence by programme and
@@ -380,12 +382,108 @@ The optional `design_phase_*` tools use the stages selected with
 `eda-agent phases-enable`; they are hidden by default. The existing
 `design_npi_*` programme journal remains available separately.
 
+## Fabrication output check
+
+`pcb_check_fab_output` reads an exported folder and compares it against
+the live board:
+
+| Check | Against |
+|---|---|
+| copper layer count | the board stackup |
+| outline width and height | `pcb_get_board_outline` |
+| drill hit count | pads with holes, plus vias |
+| smallest drill | a fab minimum you supply |
+| smallest copper feature | a fab minimum you supply (warning only) |
+
+`checks_run` in the response names what was actually compared, so a
+check that could not run is never mistaken for one that passed. If a
+board read fails, that check is skipped and said so; the rest still run.
+
+Two details worth knowing. A Gerber bounding box spans the drawn ink,
+and a board outline is a stroked path whose centreline is the real
+edge, so a 20 mm board drawn with a 0.2 mm pen measures 20.2 mm. The
+stroke is subtracted and reported as `stroke_mm`, with the raw figure
+kept alongside. And the smallest-feature check is a **warning**, never
+an error, because apertures cover pads and text as well as tracks.
+
+Needs the optional extra, which brings in
+[gerbonara](https://pypi.org/project/gerbonara/) (Apache-2.0, Gerber and
+Excellon in one library):
+
+```bash
+pip install -e .[gerber]
+```
+
+It requires Python 3.12+, while eda-agent itself supports 3.11, which is
+why it is an extra rather than a core dependency. Without it the tool
+says so plainly instead of failing obscurely.
+
+## NPI phase gates
+
+Feasibility, research, prototype, EVT, DVT and PVT as gates the server holds you
+to, rather than a slide nobody opens after kickoff.
+
+**Off until you ask for them.** Most boards are not run under a formal
+NPI process, and one that is not should not be carrying three tools and
+a stage vocabulary through every prompt to be told so. Turn on the
+stages you actually run:
+
+```bash
+eda-agent phases-enable evt dvt pvt
+```
+
+```
+design_phase_gate      what one stage asks, and where each check stands
+design_phase_answer    record the outcome of one check, with its source
+design_phase_standing  which stage the product is actually in
+```
+
+`phases-show` says which stages are in force and which setting decided
+it; `phases-disable` turns them off again and keeps every answer already
+recorded. The setting lives in the [owner profile](docs/PROFILES.md),
+because which gates a programme runs is a house rule rather than a
+property of the board in front of you, and `EDA_AGENT_PHASES` or
+`--phases` overrules it for one run.
+
+47 checks across the six stages, 32 of them answered by tools this
+server already has: ERC and DRC results, footprint audits against the
+datasheet, impedance profiles, diff-pair matching, fab-profile DFM,
+part lifecycle, fiducials. The rest need a person, and say so
+(`answered_by: people`): pilot yield, EMC pre-scan and enclosure sign-off
+are not things a server can know. Each check records what counts as done
+and **why it belongs to that stage rather than a later one**.
+
+The gate reports; it does not run the checks. Each check names the tools
+that answer it, the client runs them and writes the outcome back, so the
+loop stays the client's and nothing happens that you did not ask for.
+
+**In the dashboard**, the Workspace view's Settings card switches the
+gates on, and a *Project stages* card draws every tracked `.PrjPcb` as
+a stepper from Feasibility to Production, with each gate's checklist a
+click away. See [docs/NPI_PHASE_GATES.md](docs/NPI_PHASE_GATES.md).
+
+Three rules make it hard to pass by accident: an answer expires, an
+answer belongs to a board revision and stops counting against another
+one, and a waiver without a reason is refused. The current stage is the
+first one that does not pass: a board whose feasibility never closed is
+at feasibility however much layout has been done.
+
+See [docs/NPI_PHASE_GATES.md](docs/NPI_PHASE_GATES.md).
+
 ## Design modes
 
-Use `eda-agent mode-list` to see the built-in scopes, such as schematic-only,
-layout-only and reference-design redraw. `mode-show`, `mode-use` and `mode-init`
-inspect, select and create modes. See [design modes](docs/DESIGN_MODES.md) for
-the stage definitions and profile format.
+A design run does not have to be the whole spec-to-board pipeline. A
+mode picks the stages, adds the rules for that kind of job and names the
+inputs it needs: `reference_redraw` redraws a vendor dev kit's schematic
+faithfully in your own libraries, `devkit_derivative` builds a new board
+around a dev kit's proven core, `reusable_block` designs one
+self-contained block with a defined interface and a layout fragment to
+publish as an Altium reuse block, `schematic_only` and `layout_only` do
+half the pipeline each, `full_design` all of it. Start a run with
+`design_session_start(requirement, mode="reference_redraw",
+inputs={...})`, pick one from the client's prompt list (`mode_<name>`),
+or select a default with `eda-agent mode-use`. Your own modes go in the
+owner profile's `modes/`. See [docs/DESIGN_MODES.md](docs/DESIGN_MODES.md).
 
 ## EDA backends
 
@@ -678,13 +776,30 @@ The providers, their credentials and their access policies are in
 
 **Altium 365.** The `altium365_` tools read workspaces, projects and the
 managed library, and can publish, release and change parameters (only with
-`confirm=True`). Two routes: the workspace's own API, with
-`EDA_AGENT_ALTIUM365_DOMAIN` and a token made under Admin > Developer in
-`EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
-`EDA_AGENT_NEXAR_APP_ID` and `eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
+`confirm=True`). Two routes. Nexar works on every plan: put your Nexar
+app's client id in `EDA_AGENT_NEXAR_APP_ID` (and, for an app made in the
+Nexar portal, its secret in `EDA_AGENT_NEXAR_CLIENT_SECRET`), then run
+`eda-agent altium365-login` once (`eda-agent altium365-logout` forgets it).
+The login lists every workspace the account can reach; each tool takes the
+workspace URL it acts on. The workspace's own API, with
+`EDA_AGENT_ALTIUM365_DOMAIN` and a workspace token in
+`EDA_AGENT_ALTIUM365_TOKEN`, needs a plan whose admin pages offer API
+tokens; many plans do not (Admin > Apps lists only third-party
+integrations), and then Nexar is the way in.
 `EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
-lists. Nothing Altium 365 returns is written to disk.
-`altium365_check_setup` says which route is set up.
+lists. Set these with `setx` in your own terminal (never paste a secret
+into a chat); the tools also read your saved user environment, so no
+restart is needed after `setx`. `altium365_check_setup` says which route
+is set up.
+
+`altium365_scan_library` copies a workspace's managed library into the
+active profile (`<profile>/library/<workspace host>/`, JSON and CSV),
+reading past the 10,000-row `totalCount` cap with several readers, and
+continues an interrupted scan. `altium365_update_library` refreshes it in
+a minute or two, `altium365_search_library` and `lib_search` search it
+offline, and `altium365_library_report` reports gaps and, given your
+design folders, placements of an older revision. Apart from this copy,
+which you ask for, nothing Altium 365 returns is written to disk.
 
 **Company policies** are your files in `EDA_AGENT_POLICY_DIR`: a
 `naming.json` (a `template` and `pattern` per footprint, symbol and
@@ -912,6 +1027,7 @@ The deeper references:
 | --- | --- |
 | [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) | the `eng_*` family, and which parts are unverified against live Altium or Nexar |
 | [`docs/PROFILES.md`](docs/PROFILES.md) | per-workspace house style: naming, rules, fab profiles, templates |
+| [`docs/TOKEN_USAGE.md`](docs/TOKEN_USAGE.md) | tokens the AI spends on each EDA tool: what is counted, where it is shown and kept, how to switch it off |
 | [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md) | the part providers, what each one answers, and what none of them do |
 | [`docs/BACKENDS.md`](docs/BACKENDS.md) | the Altium, KiCad and EasyEDA Pro backends |
 | [`docs/AUTONOMOUS_DESIGN.md`](docs/AUTONOMOUS_DESIGN.md) | driving a full spec-to-board run from any MCP client |
@@ -984,6 +1100,7 @@ listings can be read against each other.
 |---|---|
 | `eda-agent` | Start the MCP server on stdio (what the MCP client calls) |
 | `eda-agent serve` | Explicit form of the above |
+| `eda-agent start [--workspace DIR] [--init] [--profile NAME] [--port N] [--altium365-workspace URL] [--no-dashboard] [--no-doctor] [--no-login] [--relogin] [--shortcut]` | Bring a design workspace up from `<workspace>/.eda-agent/workspace.json`: activate its profile, fill the Altium 365 settings in from your user environment, restart its dashboard on its own port (log in `.eda-agent/logs/`), run doctor, check the Nexar login (the browser opens only when it is not valid), and say whether the Altium bridge is up. `--init` writes the file; `--shortcut` makes a desktop shortcut. The file holds no secrets and refuses keys that look like one |
 | `eda-agent --no-dashboard` / `eda-agent --headless` | MCP server only, no web dashboard. Required by strict-stdio MCP clients (Codex, etc) that can't tolerate the dashboard thread. Also via env var: `EDA_AGENT_DISABLE_DASHBOARD=1` or `EDA_AGENT_HEADLESS=1`. |
 | `eda-agent scripts-path` | Print path to bundled DelphiScript sources |
 | `eda-agent easyeda-extension path` / `eda-agent easyeda-extension build [--out DIR] [--force]` | Find or build the EasyEDA Pro extension. An explicit nonempty build directory requires `--force`; a successful build must produce a nonempty `.eext`. |
@@ -1007,8 +1124,8 @@ listings can be read against each other.
 | `eda-agent profile-use <name>` | Set the centrally active profile |
 | `eda-agent profile-validate [name] [--here]` | Load every file in a profile and report errors |
 | `eda-agent profile-new-project <template> <dest> [--force]` | Copy a profile's `templates/<name>/` tree to a new project directory |
-| `eda-agent phases-show [--json]` | Which [NPI stages](#pcba-phase-gates) are in force, and which setting decided it |
-| `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all five when none are named. Off by default |
+| `eda-agent phases-show [--json]` | Which [NPI stages](#npi-phase-gates) are in force, and which setting decided it |
+| `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all six when none are named. Off by default |
 | `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
 
 ### Diagnostics
@@ -1095,6 +1212,8 @@ listed above to select and check project conventions.
 | `eda-agent altium365-logout` | Forget the saved Nexar login |
 | `eda-agent a365-login` | Authenticate the direct Altium 365 workspace API |
 | `eda-agent a365-logout` | Remove the direct workspace credential |
+| `eda-agent altium365-scan-library` | Copy a workspace's managed library into the active profile, continuing an unfinished scan |
+| `eda-agent altium365-update-library` | Refresh that copy without reading the whole library again |
 
 ### Experimental
 
@@ -1135,11 +1254,22 @@ server's existing stderr logging):
 - Bearer tokens, OAuth tokens and distributor/Nexar API keys are redacted
   before a line is written, regardless of which code logged it
 
-Part sourcing, Nexar/Altium 365, and the rest of the `eng_*` engineering
-tools have their own environment variables (`EDA_AGENT_NEXAR_CLIENT_ID`,
-`EDA_AGENT_A365_DOMAIN`, `EDA_AGENT_A365_TOKEN`, `EDA_AGENT_A365_WORKSPACES`,
-`EDA_AGENT_LTSPICE_EXE`, `EDA_AGENT_IPC_DIR`,
-and more) - see [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) and
+The `altium365_` tools take one of two routes, and set no default between them:
+
+| Route | Set | Token from |
+|---|---|---|
+| Workspace, direct | `EDA_AGENT_ALTIUM365_DOMAIN`, `EDA_AGENT_ALTIUM365_TOKEN` | the workspace's admin pages, only on plans that offer API tokens (lasts up to a year) |
+| Nexar | `EDA_AGENT_NEXAR_APP_ID`, and `EDA_AGENT_NEXAR_CLIENT_SECRET` for a portal app | `eda-agent altium365-login` once; `altium365-logout` forgets it |
+
+Setting the domain wins. A workspace token has no refresh grant, so an
+expired one is reported and has to be replaced by hand rather than
+renewed against an identity server that never issued it.
+
+Part sourcing and the rest of the `eng_*` engineering tools have their
+own environment variables (`EDA_AGENT_NEXAR_CLIENT_ID`, `EDA_AGENT_A365_DOMAIN`,
+`EDA_AGENT_A365_TOKEN`, `EDA_AGENT_A365_WORKSPACES`,
+`EDA_AGENT_ALTIUM365_WORKSPACES`,
+`EDA_AGENT_LTSPICE_EXE`, `EDA_AGENT_IPC_DIR`, and more) - see [`docs/ENGINEERING_TOOLS.md`](docs/ENGINEERING_TOOLS.md) and
 [`docs/PART_SOURCING.md`](docs/PART_SOURCING.md).
 
 Coordinates throughout the API are in **mils** (1 mil = 0.0254 mm).

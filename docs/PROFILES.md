@@ -17,7 +17,8 @@ as it always has -- this is purely additive.
 
 ```
 profile/
-  profile.json              # {"name": "...", "description": "..."}
+  profile.json              # {"name": "...", "description": "...",
+                            #  "altium365_workspaces": ["https://..."]}
   naming.json                # engineering.naming.NamingPolicy's own format
   company_goals.json         # engineering.ipc7351.load_goals's own format
   rules/                     # engineering.rules.RuleStore's own format
@@ -39,7 +40,18 @@ profile/
       ...
     documents/                 #   single sheets/boards (profile_new_document)
       A4_Titleblock.SchDoc
+  library/                    # written by the altium365_ library tools
+    example.365.altium.com/    #   one Altium 365 workspace's library copy
 ```
+
+`library/` is data, not settings: `altium365_scan_library` writes it and
+the search, update and report tools read it. It belongs to the profile
+because a library belongs to the company or client the profile is for.
+`altium365_workspaces` in `profile.json` names the workspace(s) those
+tools use when none is given; see
+[ENGINEERING_TOOLS.md](ENGINEERING_TOOLS.md#the-library-database). If the
+profile lives in a shared repository, decide whether `library/` should
+be committed there or ignored.
 
 `naming.json`, `company_goals.json`, `rules/*.json` and `fab_profiles/*.json`
 reuse formats that already existed before profiles did -- see
@@ -423,11 +435,88 @@ another profile's units.
 
 ## `phase_gates.json`
 
-List the NPI stages for the optional `design_phase_*` tools, for example
-`{"stages": ["evt", "dvt", "pvt"]}`. An empty list leaves those tools
-unadvertised. Use `eda-agent phases-show`, `phases-enable` and
-`phases-disable` to inspect or change this setting. `EDA_AGENT_PHASES`
-or `--phases` overrides it for one run. See [NPI phase gates](NPI_PHASE_GATES.md).
+```json
+{
+  "stages": ["evt", "dvt", "pvt"]
+}
+```
+
+Which [NPI stages](NPI_PHASE_GATES.md) this owner runs. An empty list is
+the default, and it leaves the three `design_phase_*` tools unadvertised
+rather than advertised and refusing.
+
+It is a profile setting because which gates a programme runs follows the
+company rather than the board in front of you, and a project-local
+profile commits it with the project, so a team shares one answer. Set it
+with `eda-agent phases-enable evt dvt pvt`, which preserves anything else
+in the file; `eda-agent phases-show` says which setting is deciding.
+
+`EDA_AGENT_PHASES` and `--phases` overrule it for one run, which is how
+an MCP client with an `env` block and no profile directory reaches it.
+The stages take the same spellings everywhere, plus `all` and `none`;
+`none` exists because an empty variable means "the profile decides", so
+without the word a shell could enable stages over a profile but never
+disable them.
+
+The tool surface is chosen at startup, so a change takes a restart.
+
+## `preferences.json`
+
+```json
+{
+  "_comment": "Acme: SI values with units, never delete from the AI",
+  "value_format": "si",
+  "value_unit": "with",
+  "deleting": "refused",
+  "default_mode": "reference_redraw"
+}
+```
+
+The same keys as the Config tab on the Altium panel, which keeps its own
+`preferences.json` in the bridge folder (one per machine), plus
+`default_mode`. Every key is optional. Set it from the dashboard's Settings
+card or by hand.
+
+| Key | Values | When both say something |
+|---|---|---|
+| `value_format` | `none`, `rkm` (4K7, 2u2), `si` (4.7k, 2.2u) | the profile wins |
+| `value_unit` | `without`, `with` (only with `si`) | travels with `value_format` |
+| `keep_in_view` | `off`, `on` | the profile wins |
+| `dialogs` | `auto`, `manual` | the profile wins |
+| `edits` | `allowed`, `readonly` | the stricter wins |
+| `deleting` | `allowed`, `refused` | the stricter wins |
+| `closing` | `allowed`, `refused` | the stricter wins |
+| `ui_automation` | `on`, `off` | the stricter wins |
+| `usage_stats` | `on`, `off` | the profile wins |
+| `theme` | `system` (follow the OS light or dark mode), `light`, `dark` | profile only: the panel has no theme switch |
+| `default_mode` | any mode's name | see [DESIGN_MODES.md](DESIGN_MODES.md) |
+
+`value_format` and `value_unit` are one choice: a profile that sets the
+format also decides the unit (`without` unless it says `with`), so a format
+from the profile is never combined with a unit from the panel, and a
+`value_unit` alone does nothing.
+
+The four safety switches can only be made stricter by a profile. A profile
+can switch edits to read-only for a client whose designs the AI must not
+change; it cannot switch back on what you turned off on the panel. A
+refusal names the file that switched it off.
+
+The Altium panel shows only its own file, so with a profile in effect its
+Config tab can differ from what the tools do; the Settings card shows both
+and which one decides. The Pascal side also enforces the panel's own
+safety switches by itself, which is why a profile can add to them but never
+remove them.
+
+`theme` is how the web dashboard looks. Choose it from the dashboard's
+Settings menu (top right) or the Settings card in the Workspace view; with a
+profile in effect the choice is saved in that profile, so each company's
+workspace can keep its own. `system` follows the operating system and
+switches with it while the page is open. With no profile in effect the
+choice is kept by the browser only.
+
+`profile-validate` names an unknown key, a value a key cannot take, a
+`value_unit` without `value_format`, and a `default_mode` that is not a
+mode. A broken file is skipped: the panel's choices apply.
 
 ## `templates/<name>/` and `templates/documents/`
 

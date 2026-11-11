@@ -1,5 +1,10 @@
 
-# Release verification: 2026.11.10.204 candidate
+# Release verification: 2026.11.11.1 candidate
+
+This candidate merges MOREmbedded/main at b1eacd57 into Rouniy/main at
+0a366f4b. Pascal lint/build and Python tests are offline checks; the new
+Altium 365 and dashboard paths have not been checked against a live account
+or native DelphiScript session.
 
 The backport branch builds script `2026.11.10.204` with package `0.8.1`. Native Altium acceptance
 and deployment for this candidate remain pending. The notes below retain the
@@ -229,7 +234,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.11.10.204` from `app_ping` after an
+Expect `altium_script_version` = `2026.11.11.1` from `app_ping` after an
 operator installs and starts this candidate. This native check is pending.
 
 ## 2026.10.28.156 - Previous native checkpoint
