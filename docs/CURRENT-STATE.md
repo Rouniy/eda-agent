@@ -3,7 +3,8 @@
 ## MOREmbedded backport candidate, 2026-11-11
 
 This source branch merges MOREmbedded/main `b1eacd57` into Rouniy/main
-`0a366f4b`. It adds the fork's Altium 365 library scan, project stages,
+`0a366f4b` and records the native PCB repair commit `f91ff25d` as a second
+parent of merge `704ef648`. It adds the fork's Altium 365 library scan, project stages,
 design modes, token usage reporting, dashboard theme and related fixes.
 Conflicts were reconciled with the existing Rouniy project selection,
 Altium 365 engineering tools and script version. The existing live runtime
@@ -19,6 +20,14 @@ generated `Altium_MCP.pas`
 `1D3714122312010807EFBA6214A0EA78540288586CE74CA14197E61783CAC45B`.
 Loaded runtime SHA-256 and Altium version were not measured; the running
 installation was not touched.
+
+The final merge tree passed the same full suite (11,786 passed, 256 skipped,
+one expected failure) and 12-unit Pascal lint/build with zero findings.
+The regenerated `Altium_MCP.pas` matched the committed content. Isolated
+build produced `eda_agent-0.8.1` wheel and sdist; distribution verification
+checked payloads and metadata, installed the wheel into a clean environment,
+ran its version and path commands, built the EasyEDA extension, and wrote
+artifact checksums under `D:\ai\qa\dist-704ef648`.
 
 
 ## Complete MOREmbedded source backport candidate, 2026-11-10

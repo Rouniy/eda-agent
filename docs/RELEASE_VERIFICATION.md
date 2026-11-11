@@ -6,7 +6,7 @@ This candidate merges MOREmbedded/main at b1eacd57 into Rouniy/main at
 Altium 365 and dashboard paths have not been checked against a live account
 or native DelphiScript session.
 
-The backport branch builds script `2026.11.10.204` with package `0.8.1`. Native Altium acceptance
+The backport branch builds script `2026.11.11.1` with package `0.8.1`. Native Altium acceptance
 and deployment for this candidate remain pending. The notes below retain the
 last completed live verification and must not be read as acceptance of this
 candidate.
