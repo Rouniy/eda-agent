@@ -43,7 +43,8 @@ Its launch target is now read from
 the deployed `.PrjScr`; recovery refuses a missing target or a source
 `Main.pas` without `SELECTED_PROJECT_READ_ONLY=True`. It also recognizes the
 selected-project status form as an active bridge. The marker currently names
-the `.4-shared` runtime above.
+the `.4-shared` runtime above. An established X2 process launched with a URI
+is no longer mistaken for a pending second launcher during recovery.
 
 ## MOREmbedded backport candidate, 2026-11-11
 

@@ -88,6 +88,29 @@ def test_read_only_status_form_counts_as_running(monkeypatch):
     assert monitor.script_ui_state(42) == (True, True, True)
 
 
+def test_ready_uri_host_is_not_a_pending_launcher(monkeypatch):
+    monitor = _load_monitor()
+
+    class Process:
+        pid = 42
+        info = {"name": "X2.EXE", "cmdline": [
+            "X2.EXE", "dxpprocess://ScriptingSystem:RunScript/?ProjectName=test"]}
+
+    class Inspector:
+        def __init__(self, pid):
+            assert pid == 42
+
+        def list_windows(self):
+            return self.windows
+
+    monkeypatch.setattr(monitor.psutil, "process_iter", lambda attrs: [Process()])
+    monkeypatch.setattr(monitor, "WindowsUiInspector", Inspector)
+    Inspector.windows = [{"class_name": "TDocumentForm"}]
+    assert not monitor.pending_script_launcher()
+    Inspector.windows = []
+    assert monitor.pending_script_launcher()
+
+
 def test_recovery_requires_configured_read_only_script_project(tmp_path):
     monitor = _load_monitor()
     project = tmp_path / "Altium_API.PrjScr"

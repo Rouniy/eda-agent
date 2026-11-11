@@ -141,11 +141,19 @@ def pending_script_launcher() -> bool:
         try:
             if (proc.info["name"] or "").lower() != "x2.exe":
                 continue
-            if any("dxpprocess://ScriptingSystem:RunScript" in arg
-                   for arg in (proc.info["cmdline"] or [])):
+            if not any("dxpprocess://ScriptingSystem:RunScript" in arg
+                       for arg in (proc.info["cmdline"] or [])):
+                continue
+            # X2 keeps the launch URI in its command line for the entire
+            # session. A ready editor is the established host, not a pending
+            # second launcher waiting for Windows URI handoff.
+            windows = WindowsUiInspector(proc.pid).list_windows()
+            if not any(window["class_name"] == "TDocumentForm" for window in windows):
                 return True
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+        except Exception:
+            return True
     return False
 
 
