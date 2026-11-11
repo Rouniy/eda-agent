@@ -179,6 +179,23 @@ def _bundled_script_path() -> Optional[str]:
     return str(get_bundled_scripts_path() / "Main.pas")
 
 
+def _configured_readonly_runtime(workspace: Path) -> tuple[str, str] | None:
+    """Identify the read-only script explicitly paired with this MCP server."""
+    try:
+        marker = workspace / "altium-script-project.txt"
+        project = Path(marker.read_text(encoding="utf-8-sig").strip()).resolve(strict=True)
+        main = project.parent / "Main.pas"
+        source = main.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    if (not project.is_file() or project.name != "Altium_API.PrjScr"
+            or not re.search(r"^\s*SELECTED_PROJECT_READ_ONLY\s*=\s*True\s*;",
+                             source, re.MULTILINE)):
+        return None
+    version = _VERSION_RE.search(source)
+    return (str(main), version.group(1)) if version else None
+
+
 def _folder_of(file_path: str) -> str:
     """A file's folder, comparable across slash style, case and WSL mounts."""
     text = str(file_path).replace("\\", "/")
@@ -1291,6 +1308,11 @@ def register_application_tools(mcp):
                 "warnings": warnings,
                 "message": "Altium script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
             }
+
+        if result.get("plt_profile") == "eda-selected-readonly-v1":
+            runtime = _configured_readonly_runtime(get_config().workspace_dir)
+            if runtime is not None:
+                script_path, bundled = runtime
 
         altium_ver = result.get("script_version") or ""
         if bundled is None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 
 from eda_agent import cli
 from eda_agent.tools import application as app_mod
@@ -55,6 +56,27 @@ def _reply(projects):
 def test_the_compared_file_is_named(monkeypatch):
     out = _ping(monkeypatch, _reply([]))
     assert out["bundled_script_path"] == str(BUNDLED / "Main.pas")
+
+
+def test_readonly_ping_compares_with_configured_runtime(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "Altium_API.PrjScr").write_text("[Design]\n")
+    main = runtime / "Main.pas"
+    main.write_text("SCRIPT_VERSION = '2026.11.11.4-shared';\n"
+                    "SELECTED_PROJECT_READ_ONLY = True;\n")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "altium-script-project.txt").write_text(
+        str(runtime / "Altium_API.PrjScr"), encoding="utf-8-sig")
+    monkeypatch.setattr(app_mod, "get_config",
+                        lambda: SimpleNamespace(workspace_dir=workspace))
+    reply = {"pong": True, "script_version": "2026.11.11.4-shared",
+             "plt_profile": "eda-selected-readonly-v1"}
+    out = _ping(monkeypatch, reply)
+    assert out["bundled_script_path"] == str(main)
+    assert out["bundled_script_version"] == reply["script_version"]
+    assert out["version_match"] is True
 
 
 def test_a_project_loaded_from_elsewhere_is_warned_about(monkeypatch):
