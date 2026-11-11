@@ -1,5 +1,11 @@
 # Fork integration TODO
 
+## Native unknown-property repair, 2026-10-29
+
+- [x] Fix `pcb.query_region` unknown-property handling with
+  `KnownPCBPropertyList(0)`. Script `.190` passed the 12-unit lint/build,
+  four focused Python tests, and native readback on AD26.11.1.5.
+
 ## MOREmbedded backport, 2026-11-11
 
 - [ ] Qualify the merged Pascal changes on a disposable Altium project after

@@ -152,7 +152,20 @@ is absent from the sibling checkouts and its GitHub URL returned 404; no
 Altium runtime or installed script was changed for this backport.
 
 
-The main Altium script is now `.189`, loaded from the one source project
+## Native unknown-property repair, 2026-10-29
+
+A live `pcb.query_region` call with an unknown property raised Altium's
+`Wrong number of params` dialog. The error branch called
+`KnownPCBPropertyList` without its required dummy argument. `PCB.pas` was
+changed to call `KnownPCBPropertyList(0)` and the script was bumped to `.190`.
+The 12-unit Pascal lint/build and four focused Python tests passed. After an
+operator restart, AD26.11.1.5 reported `.190` with a version match. Native
+MCP calls returned the expected unknown-property error without a dialog and
+a valid empty-region result on an open PCB. MCP 14701 and its supervisor were
+restarted; TCP 14700 remained active. The fix is present in the current
+source branch, whose script version is newer.
+
+Before this repair, the main Altium script was `.189`, loaded from the one source project
 `D:\AI\eda-agent\scripts\altium\Altium_API.PrjScr`. A direct HTTP MCP
 `app_ping` on AD26.11.1.5 returned `version_match=true`,
 `script_location_match=true`, and no warnings. The supervised Python MCP
