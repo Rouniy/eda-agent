@@ -794,21 +794,6 @@ object StatusForm: TStatusForm
       OnMouseEnter = tab_PerfEnter
       OnMouseLeave = tab_PerfLeave
     end
-    object lbl_LogHint: TLabel
-      Left = 194
-      Top = 6
-      Width = 142
-      Height = 14
-      Alignment = taRightJustify
-      AutoSize = False
-      Caption = 'newest at top'
-      Font.Charset = DEFAULT_CHARSET
-      Font.Color = $00808080
-      Font.Height = -10
-      Font.Name = 'Segoe UI'
-      Font.Style = []
-      ParentFont = False
-    end
     object tab_Config: TPanel
       Left = 128
       Top = 2

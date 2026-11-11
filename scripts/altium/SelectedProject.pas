@@ -3280,6 +3280,13 @@ Begin
                 + ',"selection_api":1,"selection":' + SelectionJSON(0) + '}');
         Exit;
     End;
+    If Command = 'application.stop_server' Then
+    Begin
+        { Detach must remain available without a selected CAD project. }
+        Running := False;
+        Result := BuildSuccessResponse(RequestId, '{"stopped":true}');
+        Exit;
+    End;
     If Command = 'selection.get_projects' Then
     Begin
         Result := BuildSuccessResponse(RequestId, SelectedProjectsJSON(0));

@@ -29,6 +29,7 @@ These tests are cheap, sync-checking only -- no Altium round-trip.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 from tests.pascal_source import strip_comments
@@ -268,6 +269,16 @@ def _declared_controls() -> set[str]:
     dfm = (SCRIPTS_DIR / "StatusForm.dfm").read_text(encoding="utf-8",
                                                      errors="replace")
     return set(re.findall(r"^\s*object\s+(\w+)\s*:", dfm, flags=re.MULTILINE))
+
+
+def test_statusform_control_names_are_unique():
+    """The form loader rejects a duplicate component name at runtime."""
+    dfm = (SCRIPTS_DIR / "StatusForm.dfm").read_text(encoding="utf-8",
+                                                     errors="replace")
+    names = re.findall(r"^\s*object\s+(\w+)\s*:", dfm, flags=re.MULTILINE)
+    assert len(names) > 30
+    duplicates = [name for name, count in Counter(names).items() if count > 1]
+    assert not duplicates, f"duplicate StatusForm.dfm components: {duplicates}"
 
 
 def test_statusform_only_touches_controls_the_dfm_declares():

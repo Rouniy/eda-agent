@@ -139,7 +139,10 @@ def dump_menu_tree(editor: str, include_context_menus: bool,
                    include_shortcuts: bool) -> dict[str, Any]:
     if editor not in (*_FILES, "all"):
         return {"ok": False, "error": "editor must be pcb, sch, pcblib, schlib, project or all"}
-    system = _system_dir()
+    try:
+        system = _system_dir()
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)}
     launchers, trees = _resources(system)
     editors = list(_FILES) if editor == "all" else [editor]
     menus: list[dict[str, Any]] = []
@@ -175,7 +178,10 @@ def dump_menu_tree(editor: str, include_context_menus: bool,
 
 
 def list_panel_catalog() -> dict[str, Any]:
-    system = _system_dir()
+    try:
+        system = _system_dir()
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)}
     launchers, _ = _resources(system)
     panels: dict[str, dict[str, Any]] = {}
     for attrs in launchers.values():
@@ -194,9 +200,12 @@ def list_panel_catalog() -> dict[str, Any]:
 
 
 def read_resource_file(name: str) -> dict[str, Any]:
-    system = _system_dir()
     if not name or Path(name).name != name or not name.lower().endswith(".rcs"):
         return {"ok": False, "error": "name must be a bare .rcs filename"}
+    try:
+        system = _system_dir()
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)}
     matches = [p for p in system.glob("*.rcs") if p.name.casefold() == name.casefold()]
     if len(matches) != 1:
         return {"ok": False, "error": "RCS resource not found"}

@@ -25,6 +25,13 @@ class NativeSelectionTests(unittest.TestCase):
         for unsafe in ("SaveAllDirty(", "DM_SetAsCurrentProject", "DM_OpenProject", "ProcessMessages;"):
             self.assertNotIn(unsafe, self.source)
 
+    def test_detach_is_available_without_a_selected_project(self):
+        start = self.source.index("If Command = 'application.stop_server' Then")
+        guard = self.source.index("P := CurrentSelectedProject(0);", start)
+        self.assertLess(start, guard)
+        self.assertIn("Running := False;", self.source[start:guard])
+        self.assertIn("'{\"stopped\":true}'", self.source[start:guard])
+
     def test_tokens_checked_before_native_reads(self):
         guard = self.source.index("ExpectedGeneration <> IntToStr(SelectedGeneration)")
         self.assertLess(guard, self.source.index("P.DM_Compile;"))

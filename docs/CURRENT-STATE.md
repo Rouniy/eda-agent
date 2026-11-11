@@ -1,5 +1,42 @@
 # Current integration state / agent handoff
 
+## Native smoke after MOREmbedded merge, 2026-11-11
+
+AD 26.11.1 exposed three integration defects that offline Pascal lint did not
+detect: an invalid `Else If` in `Generic.pas`, a duplicate `lbl_LogHint` in
+`StatusForm.dfm`, and rejection of `application.stop_server` in selected-project
+read-only mode. All three are fixed in source script `2026.11.11.4`; the last
+also has a native detach response. Python resource catalog calls now return
+an error object when no single Altium installation is running.
+
+With Altium closed, the separate runtime at
+`D:\ai\eda-agent-shared-20261111-2\Altium_API.PrjScr` was rebuilt from this
+source with `SELECTED_PROJECT_READ_ONLY=True` and version
+`2026.11.11.4-shared`. AD loaded it without a compile or form error.
+`application.ping` returned that version, `eda-selected-readonly-v1`, and no
+selected project. `selection.get_projects` returned an empty list.
+`application.stop_server` returned `stopped:true`, the status window disappeared,
+and a fresh start answered ping again. No CAD project was opened for this
+smoke test. Native design reads/writes, Altium 365 calls, export comparisons,
+and acceptance on disposable documents remain outstanding. The linked shared
+operating runbook is still unavailable.
+
+SHA-256: source `Main.pas`
+`B247A63C38DEBDC6ED8787D390FB49A2E4F0DDD18AA4C3D7F87B0BDC8172B3E4`,
+source `Altium_MCP.pas`
+`1B80BEC0220FA2959532C2F82F5DBBC88144E65F6D0981E140528E91DC601B06`,
+runtime `Main.pas`
+`08BF6C6C66CF86F3FFF34DDD9EF1D964AD8EFD6D56BC0D9EDAF020BE8DC06D2C`,
+runtime `Altium_MCP.pas`
+`F2DF0F4B303BF6CEE1CA2C9C4826D33AFEBC5932630FC46BC86B2F8D78D0D886`.
+
+Final offline checks: 12-unit Pascal lint/build reported zero errors and
+warnings. The complete Python suite passed 11,792 tests, skipped 256, and
+reported one expected failure with no ordinary failures. Wheel and sdist
+builds passed; distribution verification installed the wheel in a clean
+environment, checked package metadata and payload, and built the EasyEDA
+extension. Artifacts and checksums are in `D:\ai\qa\dist-fix-20261111`.
+
 ## MOREmbedded backport candidate, 2026-11-11
 
 This source branch merges MOREmbedded/main `b1eacd57` into Rouniy/main

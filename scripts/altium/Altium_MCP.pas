@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.11.1';
+    SCRIPT_VERSION = '2026.11.11.4';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -83338,15 +83338,14 @@ Begin
             Begin
                 Comp := Obj;
                 Result := GetSchComponentGenerated(Comp, PropName, Have);
+            End
+            Else If Obj.ObjectId = ePin Then
+            Begin
+                PinGenerated := Obj;
+                Result := GetSchPinGenerated(PinGenerated, PropName, Have);
             End;
-            If Not Have Then
+            If (Not Have) And (Obj.ObjectId <> ePin) Then
                 Result := GetSchGraphicalGenerated(Obj, PropName, Have);
-            If Not Have Then Result := '';
-        End
-        Else If Obj.ObjectId = ePin Then
-        Begin
-            PinGenerated := Obj;
-            Result := GetSchPinGenerated(PinGenerated, PropName, Have);
             If Not Have Then Result := '';
         End;
     Except
@@ -108635,6 +108634,13 @@ Begin
             Result := BuildSuccessResponse(RequestId, '{"pong":true,"script_version":"'
                 + SCRIPT_VERSION + '","plt_profile":"eda-selected-readonly-v1"'
                 + ',"selection_api":1,"selection":' + SelectionJSON(0) + '}');
+        Exit;
+    End;
+    If Command = 'application.stop_server' Then
+    Begin
+        { Detach must remain available without a selected CAD project. }
+        Running := False;
+        Result := BuildSuccessResponse(RequestId, '{"stopped":true}');
         Exit;
     End;
     If Command = 'selection.get_projects' Then

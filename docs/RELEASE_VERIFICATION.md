@@ -1,15 +1,21 @@
 
-# Release verification: 2026.11.11.1 candidate
+# Release verification: 2026.11.11.4 candidate
 
 This candidate merges MOREmbedded/main at b1eacd57 into Rouniy/main at
 0a366f4b. Pascal lint/build and Python tests are offline checks; the new
 Altium 365 and dashboard paths have not been checked against a live account
 or native DelphiScript session.
 
-The backport branch builds script `2026.11.11.1` with package `0.8.1`. Native Altium acceptance
-and deployment for this candidate remain pending. The notes below retain the
+The backport branch builds script `2026.11.11.4` with package `0.8.1`. AD
+26.11.1 loaded a separate `2026.11.11.4-shared` read-only runtime, returned
+that version from ping, listed zero projects, and confirmed stop/restart.
+Native acceptance on disposable CAD documents remains pending. The notes below retain the
 last completed live verification and must not be read as acceptance of this
 candidate.
+
+Final offline gate: 12 Pascal units linted and built with zero findings;
+11,792 Python tests passed, 256 skipped, one expected failure, zero ordinary
+failures. Wheel, sdist and clean-environment distribution verification passed.
 
 Script `.186` merges `MOREmbedded/main` `5933c00` (including upstream
 `75df990`) into the Rouniy main line. The 12-file Pascal build has zero
@@ -234,8 +240,10 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.11.11.1` from `app_ping` after an
-operator installs and starts this candidate. This native check is pending.
+Expect `altium_script_version` = `2026.11.11.4` if the raw source project is
+installed and started. The raw source project was not deployed. Direct native
+`application.ping` instead returned `2026.11.11.4-shared` from the separate
+read-only runtime; full `app_ping` version and unit-stamp checks remain open.
 
 ## 2026.10.28.156 - Previous native checkpoint
 

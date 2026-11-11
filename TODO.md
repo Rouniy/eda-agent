@@ -8,6 +8,8 @@
 
 ## MOREmbedded backport, 2026-11-11
 
+- [x] Repair native script load and read-only detach defects found on AD
+  26.11.1; verify `2026.11.11.4-shared` ping, project listing and stop/restart.
 - [ ] Qualify the merged Pascal changes on a disposable Altium project after
   the operator has stopped the existing bridge and chosen a deployment window.
 - [ ] Check Altium 365 library scanning against an authorized test workspace;

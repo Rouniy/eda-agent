@@ -47,3 +47,12 @@ def test_the_sheet_reads_come_off_the_base_object():
     assert "Obj.GetState_DescriptionString" in reader
     assert "Obj.GetState_IdentifierString" in reader
     assert "Result := Obj.ErrorString" in reader
+
+
+def test_generated_pin_read_stays_inside_the_final_fallback():
+    reader = _routine("Generic.pas", "GetSchProperty")
+    pin = reader.index("Else If Obj.ObjectId = ePin Then")
+    base = reader.index("If (Not Have) And (Obj.ObjectId <> ePin) Then")
+    final = reader.index("If Not Have Then Result := '';", base)
+    close = reader.index("End;\n    Except", final)
+    assert pin < base < final < close

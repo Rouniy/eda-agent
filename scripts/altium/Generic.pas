@@ -2963,15 +2963,14 @@ Begin
             Begin
                 Comp := Obj;
                 Result := GetSchComponentGenerated(Comp, PropName, Have);
+            End
+            Else If Obj.ObjectId = ePin Then
+            Begin
+                PinGenerated := Obj;
+                Result := GetSchPinGenerated(PinGenerated, PropName, Have);
             End;
-            If Not Have Then
+            If (Not Have) And (Obj.ObjectId <> ePin) Then
                 Result := GetSchGraphicalGenerated(Obj, PropName, Have);
-            If Not Have Then Result := '';
-        End
-        Else If Obj.ObjectId = ePin Then
-        Begin
-            PinGenerated := Obj;
-            Result := GetSchPinGenerated(PinGenerated, PropName, Have);
             If Not Have Then Result := '';
         End;
     Except
