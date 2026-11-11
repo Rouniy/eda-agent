@@ -243,7 +243,11 @@ CLI tests pass.
 Expect `altium_script_version` = `2026.11.11.4` if the raw source project is
 installed and started. The raw source project was not deployed. Direct native
 `application.ping` instead returned `2026.11.11.4-shared` from the separate
-read-only runtime; full `app_ping` version and unit-stamp checks remain open.
+read-only runtime. Network `app_ping` from client `0.8.1` compared against
+that configured runtime and reported `version_match:true` with no warnings.
+The supervisor restarted the restricted script after `app_detach`, and the
+scheduled health check reported healthy. This profile does not supply unit
+stamps; checks on disposable CAD documents remain open.
 
 ## 2026.10.28.156 - Previous native checkpoint
 

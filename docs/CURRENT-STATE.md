@@ -45,6 +45,14 @@ the deployed `.PrjScr`; recovery refuses a missing target or a source
 selected-project status form as an active bridge. The marker currently names
 the `.4-shared` runtime above. An established X2 process launched with a URI
 is no longer mistaken for a pending second launcher during recovery.
+The live recovery check called `app_detach` with no selected CAD project,
+confirmed the status window disappeared, then observed the supervisor's
+first script restart request. The status window returned, network `app_ping`
+reported client `0.8.1`, script and configured runtime both
+`2026.11.11.4-shared`, `version_match:true` and no warnings. The scheduled
+health check reported `healthy:true` and 796 MCP tools. Unit stamps are not
+provided by this restricted ping profile; native CAD acceptance is still open.
+The targeted supervisor, ping and health tests passed after these changes.
 
 ## MOREmbedded backport candidate, 2026-11-11
 
