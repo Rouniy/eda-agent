@@ -8,6 +8,7 @@ import msvcrt
 import os
 import asyncio
 import json
+import re
 import socket
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,7 +74,10 @@ def script_ui_state(altium_pid: int | None) -> tuple[bool | None, bool | None, b
         windows = WindowsUiInspector(altium_pid).list_windows()
     except Exception:
         return None, None, None
-    forms = [window for window in windows if window["title"] == "EDA Agent MCP"]
+    forms = [window for window in windows
+             if window["class_name"] == "TScriptForm"
+             and (window["title"] == "EDA Agent MCP"
+                  or " - EDA (" in window["title"])]
     return (
         bool(forms),
         forms[0]["enabled"] if len(forms) == 1 else None,
@@ -86,6 +90,21 @@ def safe_script_launch_target(candidate_count: int, form_present: bool | None,
                               editor_ready: bool | None) -> bool:
     """The URI handler cannot target a particular X2 among several."""
     return candidate_count == 1 and form_present is False and editor_ready is True
+
+
+def configured_script_project(workspace: Path) -> Path | None:
+    """Return the explicitly provisioned read-only runtime for recovery."""
+    marker = workspace / "altium-script-project.txt"
+    try:
+        path = Path(marker.read_text(encoding="utf-8-sig").strip()).resolve(strict=True)
+        main = (path.parent / "Main.pas").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    if (not path.is_file() or path.name != "Altium_API.PrjScr"
+            or not re.search(r"^\s*SELECTED_PROJECT_READ_ONLY\s*=\s*True\s*;",
+                             main, re.MULTILINE)):
+        return None
+    return path
 
 
 def safe_stall_stop_target(candidate_count: int, form_present: bool | None,
@@ -327,9 +346,11 @@ def main() -> None:
                             status["script_form_enabled"] = form_enabled
                             logging.warning("stopped unresponsive disabled script form in pid=%s: %s",
                                             altium_pid, stop_result)
+                        script_project = configured_script_project(workspace)
                         if (failed_pings >= 2
                                 and time.monotonic() - last_script_launch > 120
                                 and script_launch_budget.allow_launch()
+                                and script_project is not None
                                 and safe_script_launch_target(
                                     status["altium_candidate_count"],
                                     form_present, editor_ready)
@@ -339,6 +360,7 @@ def main() -> None:
                                 [
                                     "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                                     "-File", str(SCRIPTS / "start-altium-bridge.ps1"),
+                                    "-ScriptProject", str(script_project),
                                 ],
                                 cwd=ROOT,
                                 stdin=subprocess.DEVNULL,
