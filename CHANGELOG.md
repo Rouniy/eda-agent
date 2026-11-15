@@ -14,6 +14,27 @@ maturity classification for every tool.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`eda-agent update` no longer leaves eda-agent uninstalled when
+  eda-agent.exe is in use.** Python runs pip's launcher as a zip on
+  `sys.path`, and its first metadata lookup kept that zip open for the
+  life of the process, so Windows would not let the update rename the
+  launcher out of pip's way (WinError 32). pip then uninstalled eda-agent,
+  stopped on the launcher and left nothing installed. eda-agent now takes
+  the launcher off `sys.path` as it is imported, so a process started from
+  it no longer holds it. A launcher still held (a server started before
+  this fix) means only the dependencies are installed and eda-agent is
+  left as it was, with the command that finishes the job. A pip run that
+  fails is now followed by the same install check as one that succeeds, a
+  missing install is installed once more, and one still missing is
+  reported with the repair command.
+- **The status window's taskbar icon.** Altium's script form loader drops
+  `Icon.Data` from a .dfm, so the icon added in 2026.11.14.1 never reached
+  the window and its taskbar button kept Windows' blank picture. The form
+  now loads `eda-agent.ico` itself (ApplyAppIcon), from the copy the MCP
+  server and `install-scripts` put in the IPC workspace. Scripts 2026.11.15.2.
+
 ### Added
 
 - **An app icon.** The Altium status window, the web dashboard's browser tab
@@ -21,8 +42,8 @@ maturity classification for every tool.
   blank default: a gold "A" drawn as two PCB traces ending in via pads,
   with a blue spark, on the dashboard's dark tile. The 16 to 32 px sizes are
   drawn on their own pixel grid so the taskbar button stays sharp. Sources
-  are in `assets/icon`; `python scripts/build_icons.py` rebuilds the favicon,
-  the `.ico` and the status window's `Icon.Data`. Scripts 2026.11.14.1.
+  are in `assets/icon`; `python scripts/build_icons.py` rebuilds the favicon
+  and the `.ico`. Scripts 2026.11.14.1.
 - **Signal integrity: the whole board.** New job kind `board-si` and tool
   `si_board_check`: every high-speed net and pair, chosen by name or Altium
   net class, checked against its own limits (impedance, loss, return loss,

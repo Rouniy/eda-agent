@@ -4,7 +4,7 @@
 
 - [x] Reconcile the complete donor source through `a2a0fac4` with Rouniy's
   selected-project runtime and existing extensions; package `0.8.2`, script
-  `2026.11.15.1`.
+  `2026.11.15.4`.
 - [x] Build/lint all 12 Pascal units with zero findings; build wheel/sdist
   and verify clean installation plus the installed EasyEDA extension build.
 - [x] Finish the full Python suite after repairs: 13,829 passed, 272 skipped, 1 expected failure, zero failures.

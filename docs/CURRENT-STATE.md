@@ -1,5 +1,43 @@
 # Current integration state / agent handoff
 
+## MOREmbedded follow-up synchronization, 2026-11-16
+
+Branch `sync-morembedded-20261115-2` merges MOREmbedded/main
+`9c6d5c69` (pull requests 96 to 99: status window icon loaded at run
+time, rich-text log colours, README and website pictures, the update
+launcher fix) into Rouniy/main `dfb2366a`. The fork had no open pull
+requests on 2026-11-15. Package `0.8.2`, source script `2026.11.15.4`.
+
+Reconciliation: the selected-project flags and package description are
+retained; eight operator-grant and probe log calls now go through
+`LogLine`, because the fork replaced the list box with a rich-text box;
+the README keeps its 250-line budget and states around 800 tools.
+
+Two defects that predate this merge are fixed here. `render_block` in
+`src/eda_agent/sdk/generate.py` returned an undefined name, and the
+generated SDK probe region of `Generic.pas` carried a duplicated header
+with two hand-written functions inside it. The guard test for that region
+is skipped without the local `reference/` SDK files, which is why earlier
+runs did not report it; on main `dfb2366a` with those files present it
+failed.
+
+Pascal lint/build: 12 units, zero errors and warnings. Full Python 3.12
+suite on the merged tree, with the SDK reference files supplied through
+`EDA_AGENT_SDK_JSON` and `EDA_AGENT_SDK_SYMBOLS`:
+**13,841 passed, 268 skipped, 1 expected failure, zero failures**.
+Log: `D:/ai/qa/pytest-sync2-merge-20261115.log`. The same suite on main
+`dfb2366a` gave 13,832 passed and the one failure described above
+(`D:/ai/qa/pytest-main-dfb2366a-20261115.log`).
+
+Raw source SHA-256 (as built on this Windows host):
+
+- `Main.pas`: `f7bc5abc0994ec933623f171363016289b62f471e81375189eaf9b511c916a8c`.
+- `Altium_MCP.pas`: `28e5ee2d48736939d8aa2dc70a47583be7819f1ca3302670d8f75a837c039d82`.
+
+Upstream salitronic/main is 67 commits ahead of Rouniy/main and is not part
+of this synchronization. Runtime deployment and native checks of this
+source are recorded separately below once performed.
+
 ## MOREmbedded source synchronization, 2026-11-15
 
 Worktree `D:/ai/eda-agent-sync-20261115`, branch

@@ -701,6 +701,8 @@ def cmd_update(check_only: bool = False, assume_yes: bool = False,
         print(f"  {step['step']}: {'ok' if step['ok'] else 'FAILED'}")
         if not step["ok"] and step.get("output"):
             print("    " + step["output"].replace("\n", "\n    "))
+        if step.get("note"):
+            print("    " + step["note"])
     print(out["next_step"])
     return 1 if out.get("failed_steps") else 0
 
@@ -1092,6 +1094,8 @@ def _install_scripts_into(dst: Path, force: bool,
     workspace_dir = _default_workspace_dir()
     workspace_dir.mkdir(parents=True, exist_ok=True)
     write_workspace_pointer(workspace_dir)
+    from .app_icon import publish_icon
+    publish_icon(workspace_dir)
 
     prjscr = dst / "Altium_API.PrjScr"
     print(f"Copied {copied} files to: {dst}")

@@ -1,16 +1,16 @@
 
-# Release verification: 2026.11.15.1 candidate
+# Release verification: 2026.11.15.4 candidate
 
 The current source candidate merges MOREmbedded/main `a2a0fac4` into the
 Rouniy integration line at `5183f80a`. Its package version is `0.8.2` and
-its script version is `2026.11.15.1`. Final Python source verification: 13,829 passed, 272 skipped, 1 expected failure, zero failures.
+its script version is `2026.11.15.4`. Final Python source verification: 13,829 passed, 272 skipped, 1 expected failure, zero failures.
 All 12 Pascal units lint/build clean; wheel/sdist and clean-install
 verification plus the installed EasyEDA build passed. Strict MkDocs
 build passed. See CURRENT-STATE.md for source/artifact provenance.
 The historical results below describe previous revisions. The installed
 shared runtime has not been replaced or qualified for these new changes.
 
-Expect `altium_script_version` = `2026.11.15.1` only after deploying this
+Expect `altium_script_version` = `2026.11.15.4` only after deploying this
 candidate's raw source runtime. A generated restricted runtime adds its
 own suffix; compare it with that configured runtime instead.
 

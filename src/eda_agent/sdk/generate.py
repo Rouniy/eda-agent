@@ -335,7 +335,7 @@ def render_block(model: SdkModel,
         already=handled_heads("GetSchProperty") - BLOCK_PROBE_OVERLAP,
         table=table,
         allow_getter=allow_getter).pascal
-    return f"{BEGIN_MARKER}\n{body}{END_MARKER}\n"
+    return f"{BEGIN_MARKER}\n{shared}\n{component}{END_MARKER}\n"
 
 
 def replace_block(source: str, block: str) -> str:

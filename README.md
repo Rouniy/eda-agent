@@ -5,7 +5,7 @@
 **Let an AI work inside your live Altium Designer session.**
 
 An MCP server that gives Claude, or any MCP client, around 800 tools on the design you have open:
-schematic, PCB, library, project and review. You watch every change happen in Altium.
+schematic, PCB, library, project, review, signal and power integrity, and thermal analysis. You watch every change happen in Altium.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](pyproject.toml)
@@ -30,7 +30,7 @@ schematic, PCB, library, project and review. You watch every change happen in Al
 
 ### Rouniy integration
 
-Source candidate: package `0.8.2`, script `2026.11.15.1`. Read
+Source candidate: package `0.8.2`, script `2026.11.15.4`. Read
 [AGENTS.md](AGENTS.md), [current deployment and qualification](docs/CURRENT-STATE.md)
 and [the integration TODO](TODO.md) before connecting to Altium.
 Shared use requires the generated selected-project read-only runtime and its
@@ -48,7 +48,9 @@ The optional [battery research lab](research/battery-ai-comsol-lab/README.md) ru
 - **Datasheet first.** The tools tell the AI to fetch the vendor datasheet, and never to make values up.
 - **Fast.** Nearly every tool takes a list, so 20 edits are one call and one undo step. The auto-placer scores only what each move changed (6 to 13 times faster), and an optional Rust core speeds up routing.
 - **Your house style.** Profiles hold pad rounding, design rules, ERC levels, fab stackups and templates, one per company or project.
-- **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface. 773+ with both backends registered.
+- **Analysis on the real copper.** Signal integrity from line models to eyes and a whole-board check, PDN IR drop and impedance, and 3D thermal analysis, all read from the board you have open.
+- **You stay in control.** A status window inside Altium shows every command as it runs and holds the switches for what the AI may change; a local web dashboard covers review, calculators, simulation and the optional features.
+- **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface: 920+ with both backends (Altium and KiCad) registered.
 
 ## Quick start
 
@@ -130,10 +132,7 @@ The full guide, with updates, workspaces and profiles, is in [Getting started](d
 | 🚦 **NPI phase gates** | EVT, DVT and PVT checklists, answered by tools where possible. See [NPI phase gates](docs/NPI_PHASE_GATES.md) |
 | ☁️ **Altium 365** | Workspaces, the managed library and releases, through Nexar or directly, plus an offline copy of the managed library. See [Engineering tools](docs/ENGINEERING_TOOLS.md) |
 
-<p align="center">
-<img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer" width="300">
-<img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with AI permission switches" width="300">
-</p>
+<p align="center"><img src="assets/dashboard.png" alt="eda-agent status window in Altium, Log tab with the commands of a board review" width="260"> <img src="assets/status_perf.png" alt="eda-agent status window, Perf tab with totals per command" width="260"> <img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="260"></p>
 
 ## Documentation
 
