@@ -3321,7 +3321,6 @@ Var
       property whose write did not stick as an unknown name, which points
       a reader at a spelling mistake that is not there. }
     WroteOK : Boolean;
-    SwapPin : ISch_Pin;
     FootprintBefore, FootprintAfter : String;
     FootprintChoice : Integer;
 Begin
