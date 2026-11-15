@@ -44,7 +44,9 @@ CHECKPOINT_MAX_AGE_DAYS = 30
 #: app_screenshot's default files in the workspace root. Screenshots
 #: saved to a path the caller chose are never touched.
 SCREENSHOT_GLOB = "altium_*.png"
-SCREENSHOT_MAX_AGE_DAYS = 30
+#: A week: they are working views (a session looks, then acts), and at
+#: about 3 MB each a month of them reached 200 MB (measured 2026-11-15).
+SCREENSHOT_MAX_AGE_DAYS = 7
 
 
 def rotate_log(path: Path, max_bytes: int = LOG_MAX_BYTES,

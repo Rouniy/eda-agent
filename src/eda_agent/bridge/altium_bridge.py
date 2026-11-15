@@ -628,6 +628,9 @@ class CommandResponse:
     #: ``restored`` (put back in front), ``missing`` (closed) or
     #: ``not_restored``. Absent when it was already in front.
     session_document: Optional[dict] = None
+    #: Documents the command named that were not loaded before it ran and
+    #: are now: what this session opened, and so may close again.
+    opened_documents: list = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "CommandResponse":
@@ -640,6 +643,7 @@ class CommandResponse:
             next_step=data.get("next_step") or "",
             active_document_changed=data.get("active_document_changed"),
             session_document=data.get("session_document"),
+            opened_documents=list(data.get("opened_documents") or []),
         )
 
 
@@ -759,6 +763,51 @@ def read_session_doc(workspace_dir) -> tuple[str, float]:
         return "", 0.0
     doc = data.get("document") if isinstance(data, dict) else None
     return (doc if isinstance(doc, str) else ""), at
+
+
+def _opened_docs_path(workspace_dir) -> Path:
+    return Path(workspace_dir) / SESSION_DOCS_DIR / f"{_SESSION_TAG}.opened.json"
+
+
+def read_opened_docs(workspace_dir) -> list[dict]:
+    """The documents this session opened, oldest first: each ``path``,
+    ``command`` and ``at`` (epoch seconds). Empty when none are noted."""
+    try:
+        data = json.loads(_opened_docs_path(workspace_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = data.get("opened") if isinstance(data, dict) else None
+    return [r for r in rows or [] if isinstance(r, dict) and r.get("path")]
+
+
+def write_opened_docs(workspace_dir, rows: list[dict]) -> None:
+    """Replace the session's opened list ([] forgets it). Never raises."""
+    path = _opened_docs_path(workspace_dir)
+    try:
+        if not rows:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"opened": rows}), encoding="utf-8")
+        replace_with_retry(tmp, path)
+    except OSError:
+        pass
+
+
+def note_opened_docs(workspace_dir, paths: list, command: str) -> None:
+    """Add ``paths`` (as a reply's opened_documents gave them) to the
+    session's opened list, once each by normalised path."""
+    if not paths:
+        return
+    rows = read_opened_docs(workspace_dir)
+    known = {os.path.normcase(str(r["path"])) for r in rows}
+    now = time.time()
+    for path in paths:
+        if isinstance(path, str) and path and os.path.normcase(path) not in known:
+            rows.append({"path": path, "command": command, "at": round(now)})
+            known.add(os.path.normcase(path))
+    write_opened_docs(workspace_dir, rows)
 
 
 def keep_session_doc(workspace_dir, doc: str) -> float:
@@ -1088,6 +1137,8 @@ class AltiumBridge:
                 else ticks_per_ping
             if tick >= due:
                 tick = 0
+                if consecutive_failures == 0 and self._keepalive_not_needed():
+                    continue
                 try:
                     self.send_command("application.ping", timeout=5.0)
                     if consecutive_failures >= slow_after:
@@ -1104,6 +1155,40 @@ class AltiumBridge:
                     else:
                         logger.debug("Keep-alive ping failed (%d)",
                                      consecutive_failures)
+
+    #: Shared by every server on the machine: touched after a ping or a
+    #: command Altium answered. A keep-alive is only needed when nothing has
+    #: reached the loop for a whole interval, so one ping per interval keeps
+    #: it up, not one per attached server (measured: 101 servers sent 51,000
+    #: pings in three weeks against 5,700 real commands).
+    KEEPALIVE_STAMP = "keepalive.stamp"
+
+    def _keepalive_not_needed(self) -> bool:
+        """True when a real command of this server, or anything another
+        server sent, reached Altium within the last keep-alive interval, so
+        this ping can be skipped. This server's own pings never count: they
+        are the interval."""
+        recent = getattr(self, "_last_answered", 0.0)
+        if recent and time.monotonic() - recent < self.KEEPALIVE_INTERVAL:
+            return True
+        try:
+            stamp = self.config.workspace_dir / self.KEEPALIVE_STAMP
+            if time.time() - stamp.stat().st_mtime >= self.KEEPALIVE_INTERVAL:
+                return False
+            return stamp.read_text(encoding="ascii").strip() != str(os.getpid())
+        except (OSError, ValueError):
+            return False
+
+    def _note_keepalive(self, command: str = "") -> None:
+        """Record that Altium answered ``command`` just now: in the shared
+        stamp (with this process's id) and, for a real command, here."""
+        if command != "application.ping":
+            self._last_answered = time.monotonic()
+        try:
+            (self.config.workspace_dir / self.KEEPALIVE_STAMP).write_text(
+                str(os.getpid()), encoding="ascii")
+        except OSError:
+            pass
 
     def _maybe_open_dashboard_sentinel(self) -> None:
         """If the Altium status form dropped open_dashboard.url, open it.
@@ -1969,6 +2054,9 @@ class AltiumBridge:
                 server_version=response.protocol_version,
             )
 
+        if response.opened_documents:
+            note_opened_docs(self.config.workspace_dir, response.opened_documents, command)
+
         if not _unpinned(command, params):
             after = next_session_doc(self._session_doc, command, params, response)
             if after != self._session_doc:
@@ -1980,6 +2068,7 @@ class AltiumBridge:
 
         if response.success:
             note("Command %s succeeded", command)
+            self._note_keepalive(command)
             self._clear_fault_if_any(workspace_dir)
             data = _with_envelope_notes(response.data, response)
             if command == "application.ping" and isinstance(data, dict):

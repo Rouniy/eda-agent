@@ -5932,6 +5932,11 @@ Begin
     Remaining := MovesStr;
     MovedNets := TStringList.Create;
 
+    { One edit round the whole batch: the per-part edit below nests inside   }
+    { it, so PreProcess/PostProcess run once and the batch is one undo step. }
+    { Measured 2026-11-15: about 190 ms a part when each part was its own.   }
+    PcbBeginEdit(0);
+    Try
     While Length(Remaining) > 0 Do
     Begin
         PipePos := Pos('|', Remaining);
@@ -5996,46 +6001,41 @@ Begin
         If HasY Then NewY := StrToFloatDef(YStr, 0);
         If HasRot Then NewRot := StrToFloatDef(RotStr, 0);
 
-        { Per-component PreProcess+PostProcess (same as singular). Each move   }
-        { is structurally a singular move, just inside one IPC turn.           }
-        PcbBeginEdit(0);
-        Try
-            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
-                PCBM_BeginModify, c_NoEventData);
+        { Each part gets its own BeginModify/EndModify; the edit round the    }
+        { whole batch (above) holds PreProcess/PostProcess for all of them.   }
+        PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+            PCBM_BeginModify, c_NoEventData);
 
-            { MOVED, NOT ASSIGNED, and the pour is how you find out.
-              A component owns its pads. Writing Comp.x moves the
-              component record and leaves every child pad at its old
-              coordinate in the board's own structures, so the polygon
-              engine keeps clearing the hole where the part used to be.
-              Reported from a live board: a part was moved through here,
-              repoured, and the copper still avoided the old pad while
-              shorting the new one; repouring from the menu did not help,
-              because the board still believed the pad had not moved.
+        { MOVED, NOT ASSIGNED, and the pour is how you find out.
+          A component owns its pads. Writing Comp.x moves the
+          component record and leaves every child pad at its old
+          coordinate in the board's own structures, so the polygon
+          engine keeps clearing the hole where the part used to be.
+          Reported from a live board: a part was moved through here,
+          repoured, and the copper still avoided the old pad while
+          shorting the new one; repouring from the menu did not help,
+          because the board still believed the pad had not moved.
 
-              MoveByXY is inherited from IPCB_Primitive, PCB_Place3DBody
-              and PCB_ReplicateLayout already call it, and four published
-              scripts move a component with it, so it is not an undeclared
-              identifier. The delta is taken from where the component
-              actually is, and rotation is applied first so the move lands
-              the origin exactly where the caller asked whatever the
-              rotation did to it. }
-            If HasRot Then Comp.Rotation := NewRot;
-            If HasX Or HasY Then
-            Begin
-                CurX := Comp.x;
-                CurY := Comp.y;
-                If HasX Then DeltaX := MilsToCoordF(NewX) - CurX Else DeltaX := 0;
-                If HasY Then DeltaY := MilsToCoordF(NewY) - CurY Else DeltaY := 0;
-                If (DeltaX <> 0) Or (DeltaY <> 0) Then
-                    Comp.MoveByXY(DeltaX, DeltaY);
-            End;
-
-            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
-                PCBM_EndModify, c_NoEventData);
-        Finally
-            PcbEndEdit(0);
+          MoveByXY is inherited from IPCB_Primitive, PCB_Place3DBody
+          and PCB_ReplicateLayout already call it, and four published
+          scripts move a component with it, so it is not an undeclared
+          identifier. The delta is taken from where the component
+          actually is, and rotation is applied first so the move lands
+          the origin exactly where the caller asked whatever the
+          rotation did to it. }
+        If HasRot Then Comp.Rotation := NewRot;
+        If HasX Or HasY Then
+        Begin
+            CurX := Comp.x;
+            CurY := Comp.y;
+            If HasX Then DeltaX := MilsToCoordF(NewX) - CurX Else DeltaX := 0;
+            If HasY Then DeltaY := MilsToCoordF(NewY) - CurY Else DeltaY := 0;
+            If (DeltaX <> 0) Or (DeltaY <> 0) Then
+                Comp.MoveByXY(DeltaX, DeltaY);
         End;
+
+        PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast,
+            PCBM_EndModify, c_NoEventData);
 
         { The nets of its pads, for the ratsnest below. }
         PadIter := Comp.GroupIterator_Create;
@@ -6056,6 +6056,9 @@ Begin
         End;
 
         Applied := Applied + 1;
+    End;
+    Finally
+        PcbEndEdit(0);
     End;
 
     { Measured: after a scripted move the connection lines still ran to
