@@ -24,9 +24,14 @@ _UI = "drives Altium's own dialogs, panels or menus"
 _ALT_DOC = "Altium document or project bookkeeping with no KiCad counterpart"
 _VARIANT = "assembly variants: KiCad 10.0's API and files have no variant model to drive"
 _SIM = "Altium's mixed-mode simulator; KiCad simulates with kicad_run_spice"
+_SIM_MODELS = ("links vendor SPICE models to Altium parts; KiCad assigns models in "
+               "its own Simulation Model dialog")
 _NO_API = "KiCad 10.0's API has no call for it"
 _STACKUP_RO = "stackup is read-only in KiCad 10.0's API; edit it in Board Setup"
 _MECH = "Altium mechanical layer pairs and kinds; KiCad has fixed User layers"
+_PROFILE = "Altium project profile settings; KiCad uses its own project and board settings"
+_SILK = "Altium silkscreen object addresses; KiCad edits board graphics through its own API"
+_BRIDGE = "Altium DelphiScript bridge lifecycle; KiCad uses its own IPC connection"
 
 COVERED: dict[str, str] = {
     # application and documents
@@ -167,6 +172,7 @@ COVERED: dict[str, str] = {
     "pcb_special_strings": "kicad_get_text_variables",
     "pcb_render_svg": "kicad_export_pcb",
     "pcb_render_png": "kicad_render_3d",
+    "pcb_render_3d": "kicad_render_3d",
     "pcb_export_coordinates": "kicad_export_pos",
     "pcb_export_component_3d": "kicad_export_step",
     "pcb_gerber_options": "kicad_export_gerbers",
@@ -224,6 +230,7 @@ COVERED: dict[str, str] = {
     "sch_increment_designators": "kicad_sch_annotate",
     "sch_set_sheet_size": "kicad_sch_set_page",
     "sch_set_sheet_options": "kicad_sch_set_page",
+    "sch_sheet_template": "kicad_sch_set_page",
     "sch_get_sheet_parameters": "kicad_sch_get_items",
     "sch_render_svg": "kicad_export_schematic_svg",
     # libraries
@@ -278,6 +285,7 @@ COVERED: dict[str, str] = {
     "lib_create_footprint_from_package": "kicad_create_footprint_from_package",
     "lib_create_standard_footprint": "kicad_create_footprint_from_package",
     "lib_render_footprint": "kicad_export_footprint_svg",
+    "lib_preview_part": "kicad_export_symbol_svg",
     # design family members registered on the Altium backend only
     "design_validate": "design_validate_plan",
     "design_lint_report": "kicad_full_review",
@@ -291,6 +299,58 @@ COVERED: dict[str, str] = {
 }
 
 NOT_APPLICABLE: dict[str, str] = {
+
+    # -- this fork's own tools -------------------------------------------
+    # The profile managers read a profile (EDA-agnostic, and registered on
+    # every backend) but write through Altium-only handlers.
+    **{name: _PROFILE for name in (
+        "pcb_rules_plan", "pcb_rules_diff", "pcb_rules_apply", "pcb_rules_fab_floors",
+        "proj_erc_plan", "proj_erc_diff", "proj_erc_apply",
+        "profile_apply_all", "profile_diff_all",
+        "profile_apply_document_settings", "profile_new_document")},
+    # Silkscreen addressed by Altium's object address.
+    **{name: _SILK for name in (
+        "pcb_get_overlay_tracks", "pcb_clone_silk_track_fragment",
+        "pcb_apply_silk_clip_plan")},
+    # Altium's own windows, dialogs and views.
+    **{name: _UI for name in (
+        "app_capture_dialogs", "app_capture_window", "app_click_dialog_button",
+        "app_interact_dialog_control", "app_list_dialogs", "app_list_windows",
+        "app_visual_context", "obj_zoom_to_xy", "proj_visual_cross_probe",
+        "design_capture_snapshot", "design_compare_svg",
+        "pcb_render_route_plan_svg")},
+    # The bridge itself.
+    **{name: _BRIDGE for name in (
+        "app_change_transaction", "app_get_restart_status",
+        "app_get_script_errors", "app_restart_altium_bridge",
+        "app_restart_mcp_server")},
+    # Altium document and library bookkeeping.
+    **{name: _ALT_DOC for name in (
+        "app_open_document", "app_reload_document", "lib_set_active_part",
+        "sch_get_component_models")},
+    **{name: _DBLIB for name in (
+        "lib_backup_library", "lib_extract_step_models",
+        "lib_list_library_backups", "lib_read_pcblib_headers",
+        "lib_restore_library_backup", "lib_write_libpkg")},
+    # Reads and writes KiCad's API does not expose.
+    **{name: _NO_API for name in (
+        "pcb_get_connections_detail", "pcb_get_net_object_ids",
+        "pcb_get_net_routing", "pcb_get_special_strings",
+        "pcb_get_used_layers", "pcb_rebind_vias",
+        "pcb_rebind_copper_to_pad_nets", "pcb_rebuild_connectivity",
+        "pcb_delete_connections_for_net", "pcb_set_component_side",
+        "pcb_place_image", "pcb_place_region_poly", "pcb_query_region",
+        "sch_query_region", "sch_place_compile_mask",
+        "obj_measure_distance")},
+    **{name: _MECH for name in (
+        "pcb_get_drill_layer_pairs", "pcb_get_internal_planes")},
+    **{name: _STACKUP_RO for name in (
+        "pcb_configure_multilayer_stackup",)},
+    # Live-Altium comparisons: they read a running editor, not a file.
+    **{name: "reads a running Altium editor, not a file" for name in (
+        "eng_compare_live_ipc_footprint", "eng_eco_preview_live",
+        "eng_ltspice_deck_from_schematic", "eng_validate_library_live",
+        "eng_ltspice_compare_schematic")},
     # Altium 365
     **{name: _A365 for name in (
         "altium365_check_setup", "altium365_describe_type", "altium365_get_component",
@@ -342,6 +402,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "proj_net_color": "per-net colours have no call in KiCad 10.0's API",
     "lib_export_kicad_footprint": "converts Altium footprints to KiCad files",
     "lib_export_kicad_symbol": "converts Altium symbols to KiCad files",
+    "proj_convert_to_kicad": "converts an Altium project to a KiCad project",
     "lib_save_footprint_library": "library tools here write the file on each call",
     "obj_get_font_id": "Altium's font table",
     "obj_get_font_spec": "Altium's font table",
@@ -352,7 +413,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "sch_set_units": "Altium document units; KiCad files are mm",
     # project bookkeeping
     **{name: _ALT_DOC for name in (
-        "proj_add_document", "proj_remove_document", "proj_import_document",
+        "proj_add_document", "proj_remove_document", "proj_rename_document", "proj_import_document",
         "proj_load_sheets", "proj_close", "proj_open", "proj_save",
         "proj_get_compile_freshness", "proj_get_declared_design_objects",
         "proj_get_channels", "proj_get_hierarchy", "proj_push_parameters",
@@ -376,6 +437,10 @@ NOT_APPLICABLE: dict[str, str] = {
     **{name: _SIM for name in (
         "sim_attach_model", "sim_attach_primitives", "sim_get_probes", "sim_get_readiness",
         "sim_get_results", "sim_get_setup", "sim_setup_analysis", "sch_place_probe")},
+    # SPICE model library: links vendor models to Altium parts.
+    **{name: _SIM_MODELS for name in (
+        "sim_scan_models", "sim_find_models", "sim_set_pin_map",
+        "sim_find_schematic_models", "sim_get_pin_map", "sim_attach_library_model")},
     # Altium-only board objects and features
     "pcb_add_bend_line": "rigid-flex bend lines are Altium's",
     "pcb_delete_bend_line": "rigid-flex bend lines are Altium's",
@@ -450,6 +515,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_make_paste_grid": "free pads: KiCad 10.0's API creates pads only inside footprints",
     # Altium-only schematic objects
     "sch_place_harness_connector": "Altium signal harnesses",
+    "sch_place_signal_harness": "Altium signal harnesses",
     "sch_get_constraint_groups": "Altium constraint groups",
     "sch_add_directive": "Altium schematic directives; KiCad uses net classes and rules",
     "sch_get_directives": "Altium schematic directives",
@@ -497,6 +563,40 @@ NOT_APPLICABLE: dict[str, str] = {
 }
 
 GAPS: dict[str, str] = {
+    "sim_emc_prescan": "reads the board through Altium's layout model; a KiCad board reader for it is not written",
+    "sim_em_build_model": "as sim_emc_prescan",
+    "sim_em_run": "runs models from sim_em_build_model, which has no KiCad reader yet",
+    "sim_em_results": "as sim_em_run",
+    "sim_thermal_analysis": "as sim_emc_prescan",
+    "sim_pdn_ir_drop": "as sim_emc_prescan",
+    "sim_pdn_impedance": "as sim_emc_prescan",
+    "sim_read_touchstone": "reads a file only; registered with the Altium suite, not yet on the KiCad surface",
+    "app_features": "reports this installation; registered with the Altium suite, not yet on the KiCad surface",
+    "app_install_features": "as app_features",
+    "sim_engines": "simulation engines work on files; registered with the Altium suite, not yet on the KiCad surface",
+    "sim_job_run": "as sim_engines",
+    "sim_job_status": "as sim_engines",
+    "sim_job_compare": "as sim_engines",
+    "sim_jobs": "as sim_engines",
+    "si_line_model": "reads the stackup through the Altium bridge; not yet on the KiCad surface",
+    "si_stackup_plan": "as si_line_model",
+    "si_board_snapshot": "reads the board through the Altium bridge; not yet on the KiCad surface",
+    "si_net_channel": "as si_board_snapshot",
+    "si_channel_eye": "works on Touchstone files; registered with the Altium suite, not yet on the KiCad surface",
+    "si_spice_model": "as si_channel_eye",
+    "si_ibis_models": "as si_channel_eye",
+    "si_board_check": "as si_board_snapshot",
+    "pcb_apply_impedance_rules": "rule writing not ported to the KiCad board",
+    "pcb_audit_diff_pair": "not ported",
+    "pcb_audit_placement_plan": "not ported",
+    "pcb_check_fab_output": "reads an exported package; not wired to KiCad's exporter",
+    "pcb_place_diff_pair_vias": "not written",
+    "pcb_plan_bga_fanout": "not written",
+    "pcb_plan_return_vias": "not written",
+    "pcb_route_diff_pair": "not written",
+    "route_audit_plan": "not ported",
+    "route_build_offline_package": "not ported",
+    "pcb_drc_rules": "no tool keeps an approved copy of a KiCad board's rules or compares a DRC against it",
     "pcb_pad_relief": "a KiCad pad carries its own zone connection, spoke width, gap and spoke angle; no tool sets them yet",
     "app_screenshot": "no view capture in the API; would need OS window capture",
     "pcb_autoplace": "Autoplacer action needs a footprint selection and no dialog check yet",
@@ -688,4 +788,4 @@ GAPS.update({name: "Rouniy Altium extension; KiCad parity is not yet assessed"
                  "sch_place_harness_wires",
                  "sch_place_workspace_components",
                  "sch_query_region",
-             )})
+             ) if name not in COVERED and name not in NOT_APPLICABLE})

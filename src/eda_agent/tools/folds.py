@@ -50,7 +50,8 @@ FOLDS: dict[str, Fold] = {
                  "impedance, terminations, length matching, thermal vias, "
                  "reactance, resonance, wavelength, PDN target, wire gauge, "
                  "fusing current, via and spiral inductance, padstacks. "
-                 "Offline, except polygon_area, which reads the open board."),
+                 "Offline, except polygon_area and toolkit_board, which "
+                 "read the open board."),
         prefixes=("pcb_calc_",),
     ),
     "audit": Fold(
@@ -142,6 +143,7 @@ FOLDED_BATCH: dict[str, str] = {
     "obj_batch_create": "obj_create",
     "obj_batch_delete": "obj_delete",
     "lib_batch_rename": "lib_rename_component",
+    "lib_set_pad_geometry": "lib_set_pad_properties",
 }
 
 #: Members of every family tool built so far, fold name -> {kind: tool}.

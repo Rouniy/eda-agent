@@ -152,6 +152,10 @@ window on screen.
 
 ### Simulating the schematic you have open
 
+Vendor model linking, pin maps, export to the LTspice GUI and comparing an
+LTspice circuit with the schematic are described in
+[SPICE models and LTspice](SPICE_MODELS.md).
+
 `eng_ltspice_deck_from_schematic` builds the deck for you, which is the
 step that connects LTspice to the design rather than leaving it a
 calculator on the side. It reads the live sheet twice - the same SPICE
@@ -164,8 +168,8 @@ Read two parts of the response before running anything:
 - **`pin_order_assumptions`** lists every diode, transistor and FET whose
   node order came from pin NUMBER order. SPICE reads terminals
   positionally (`D1 anode cathode`, `Q1 collector base emitter`), so a
-  wrong order produces a deck that simulates cleanly and answers wrongly
-  - the worst failure available. R, L and C are never listed, because
+  wrong order produces a deck that simulates cleanly and answers wrongly,
+  which is the worst failure available. R, L and C are never listed, because
   their order cannot be wrong.
 - **`skipped`** gives a reason per omitted part, and **`net_renames`**
   lists nets whose names SPICE could not accept (a `/` in a bus name,

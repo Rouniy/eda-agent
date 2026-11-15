@@ -53,6 +53,7 @@ _FAMILIES = ("easyeda_", "lib_", "pcb_", "sch_", "proj_", "obj_", "app_",
 #: mistake.
 NOT_TOOLS: dict[str, str] = {
     "kicad_local": "a part provider id, listed in the provider table",
+    "lib_ref": "a parameter of sim_set_pin_map and sim_get_pin_map",
     "part_count": "a parameter of lib_create_symbol",
     "design_roots": "a parameter of altium365_library_report",
     "part_id": "a parameter of sch_place_dblib_component",
@@ -60,6 +61,7 @@ NOT_TOOLS: dict[str, str] = {
     "lib_reference": "a schematic library component field and placement parameter",
     "part_issues": "a reply field of sch_place_components_from_list",
     "pcb_only": "a reply field of the schematic/PCB comparison",
+    "pcb_units": "a key of a profile's document_settings.json (docs/OPTIONS.md)",
     "sch_only": "a reply field of the schematic/PCB comparison",
     # Names from the PLT companion runtime (PLT-hw tools/eda-agent/shared_server.py),
     # which registers its own restricted tool set rather than this package's.

@@ -194,6 +194,137 @@ def get_default_scripts_dest() -> Path:
 # scripts-path
 # --------------------------------------------------------------------------
 
+def _feature_mark(state: str) -> str:
+    return {"ready": "[x]", "partial": "[~]", "missing": "[ ]", "off": "[-]",
+            "unavailable": "[/]"}.get(state, "[?]")
+
+
+def cmd_features(deep: bool = False, as_json: bool = False,
+                 on: str = "", off: str = "", set_path: str = "",
+                 clear_path: str = "") -> int:
+    """What eda-agent can do here: every feature, its state, and every
+    dependency with its version. --on/--off switch an engine;
+    --set-path/--clear-path save or forget where a program is."""
+    import json
+    from .features import report, state
+    if set_path or clear_path:
+        name, _, value = (set_path or clear_path).partition("=")
+        if set_path and not value.strip():
+            print("error: --set-path takes VARIABLE=PATH", file=sys.stderr)
+            return 2
+        try:
+            saved = state.set_path(name, value if set_path else "")
+        except (KeyError, ValueError) as exc:
+            print(f"error: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+            return 2
+        print(f"{name.strip()} " + (f"saved: {saved[name.strip()]}" if set_path else "forgotten")
+              + f" ({state.state_file()})")
+        return 0
+    if on or off:
+        try:
+            now_off = state.set_switch(on or off, bool(on))
+        except (KeyError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"{on or off} is now {'on' if on else 'off'}"
+              f" (off: {', '.join(sorted(now_off)) or 'none'})")
+        return 0
+    rep = report(deep=deep)
+    if as_json:
+        print(json.dumps(rep, indent=1, default=str))
+        return 0
+    deps = {d["id"]: d for d in rep["dependencies"]}
+    for group in rep["groups"]:
+        print(f"\n{group}")
+        for f in (x for x in rep["features"] if x["group"] == group):
+            print(f"  {_feature_mark(f['state'])} {f['id']:<17} {f['title']}"
+                  + ("  (built in)" if f["core"] and f["state"] == "ready" else "")
+                  + (f"  (missing: {', '.join(f['missing'])})" if f["missing"]
+                     and f["state"] != "ready" else ""))
+            if f.get("note"):
+                print(f"        {f['note']}")
+            if f["core"] and f["state"] == "ready":
+                continue    # built-in packages: `--json` lists them
+            for d_id in f["needs"] + [x for g in f["any_of"] for x in g] + f["adds"]:
+                d = deps[d_id]
+                if d.get("applies") is False:
+                    continue
+                ver = d.get("version") or ""
+                where = d.get("state")
+                print(f"        {d['title']:<26} {where:<11} {ver:<10} {d['license']}")
+                if d.get("detail") and d.get("state") != "present":
+                    print(f"          {d['detail']}")
+    print("\n[x] ready  [~] partly  [ ] missing  [-] switched off  [/] not on this machine")
+    missing = [f["id"] for f in rep["features"] if f["state"] == "missing" and not f["dev"]]
+    if missing:
+        print(f"Install them all: eda-agent install-deps --all   "
+              f"(or name some: eda-agent install-deps {missing[0]})")
+    for e in rep["plugin_errors"]:
+        print(f"plugin {e['plugin']}: {e['error']}", file=sys.stderr)
+    return 0
+
+
+def cmd_install_deps(names: list, everything: bool = False, dev: bool = False,
+                     dry_run: bool = False, assume_yes: bool = False,
+                     as_json: bool = False) -> int:
+    """Install what the named features (or all of them) need."""
+    import json
+    from .features import install
+    if not names and not everything:
+        print("name features to install, or --all (see `eda-agent features`)",
+              file=sys.stderr)
+        return 2
+    try:
+        chosen = install.select(names, everything=everything, include_dev=dev)
+    except KeyError as exc:
+        print(f"error: {exc.args[0]}", file=sys.stderr)
+        return 2
+    plan = install.plan(chosen)
+    data = plan.to_dict()
+    if as_json and (dry_run or not plan.automatic):
+        print(json.dumps(data, indent=1))
+        return 0
+    if not as_json:
+        if data["already_present"]:
+            core = {d for f in chosen if f.core for d in f.needs}
+            extra = [d for d in data["already_present"] if d not in core]
+            n_core = len(data["already_present"]) - len(extra)
+            print("Already installed: " + ", ".join(
+                extra + ([f"the {n_core} core packages"] if n_core else [])))
+        for st in plan.steps:
+            tag = {"pip": "install", "local": "build", "venv": "install apart",
+                   "cargo": "build", "manual": "by hand", "skip": "skipped"}[st.kind]
+            print(f"- [{tag}] {st.title}")
+            for cmd in st.to_dict().get("commands", []):
+                print(f"      {cmd}")
+            if st.text:
+                print(f"      {st.text}")
+        if not plan.steps:
+            print("Nothing to install.")
+    if dry_run or not plan.automatic:
+        return 0
+    if not assume_yes:
+        size = data["download_mb"]
+        try:
+            answer = input(f"Run {data['automatic_steps']} install step(s)"
+                           + (f", about {size} MB" if size else "") + "? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing installed.")
+            return 1
+    result = install.execute(plan, on_line=None if as_json else print)
+    if as_json:
+        print(json.dumps(result, indent=1))
+    else:
+        for r in result["steps"]:
+            print(f"{'ok ' if r['ok'] else 'FAILED'} {r['title']} ({r['seconds']} s)")
+        print(f"Log: {result['log']}")
+        if result["manual"]:
+            print("Still to do by hand: " + ", ".join(m["title"] for m in result["manual"]))
+    return 0 if result["ok"] else 1
+
+
 def cmd_scripts_path() -> int:
     """Print the path to the bundled DelphiScript sources."""
     path = get_bundled_scripts_path()
@@ -1450,6 +1581,58 @@ def cmd_phases_disable() -> int:
     return code
 
 
+def cmd_router_show(*, as_json: bool = False) -> int:
+    """Which autorouter engine routing runs use, and what decided it."""
+    from .layout.route import engine
+
+    found = engine.describe()
+    if as_json:
+        import json as _json
+        print(_json.dumps(found, indent=2))
+        return 1 if found["problem"] else 0
+    where = {"environment": f"the {engine.ENV} environment variable",
+             "profile": found["path"] or "the active profile",
+             "default": "the default (no profile or variable sets it)",
+             "fallback": "the default, because the setting in force cannot be used"}
+    print(f"Router engine: {found['engine']}  (from {where[found['source']]})")
+    print(f"  Engines: {', '.join(engine.ENGINES)}. 'euan' is the alternative "
+          "router from Euan's fork; off by default.")
+    if found["problem"]:
+        print(f"  IGNORED: {found['problem']}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_router_use(name: str) -> int:
+    """Record the autorouter engine in the active profile's router.json."""
+    from . import profile as profile_mod
+    from .layout.route import engine
+
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("No profile active here, so there is nowhere to record this.",
+              file=sys.stderr)
+        print(f"  For one run, no profile needed: set {engine.ENV}="
+              f"{name} in the environment.", file=sys.stderr)
+        return 1
+    result = engine.write(directory, name)
+    if not result["ok"]:
+        print(f"ERROR: {result['reason']}", file=sys.stderr)
+        return 2
+    print(f"Router engine '{result['engine']}' recorded in {result['path']}")
+    found = engine.describe(directory)
+    if found["source"] == "environment":
+        print(f"  Note: {engine.ENV}={os.environ.get(engine.ENV, '').strip()} is set here and "
+              "decides for runs started with it; the others take this profile's choice.")
+    elif found["source"] == "fallback":
+        print(f"  Note: {found['problem']}, so runs started with it use the default "
+              f"engine until {engine.ENV} is fixed or unset.")
+    print("  Routing runs that use this profile take it on their next run; no restart "
+          "needed. 'eda-agent router-show' in the design workspace says what is in force "
+          "there.")
+    return 0
+
+
 # --------------------------------------------------------------------------
 # perf -- where the time went, from the logs already being written
 # --------------------------------------------------------------------------
@@ -2161,6 +2344,227 @@ def cmd_laminates(*, as_json: bool = False) -> int:
           file=sys.stderr)
     print(data["note"], file=sys.stderr)
     return 0
+
+
+# --------------------------------------------------------------------------
+# Fab design-rule database and connectors
+# --------------------------------------------------------------------------
+
+def cmd_fab_list(*, as_json: bool = False) -> int:
+    """Every fab connector: status, tiers and how old its reading is."""
+    import json as _json
+
+    from .design.fab_connectors import list_connectors
+
+    rows = list_connectors()
+    if as_json:
+        print(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    for r in rows:
+        age = (f"read {r['retrieved']}" + ("  STALE" if r.get("stale") else "")
+               if "retrieved" in r else "no data yet")
+        print(f"{r['key']:18} {r['vendor']:22} {r['country']:6} "
+              f"{r['status']:8} {age}")
+        if r.get("tiers"):
+            print(f"{'':18} tiers: {', '.join(r['tiers'])}")
+        if r.get("note"):
+            print(f"{'':18} {r['note']}")
+    return 0
+
+
+def _fmt_rule(rule: dict) -> str:
+    from .units import MM_PER_MIL
+
+    if "mils" in rule:
+        return f"{rule['mils']:g} mil ({rule['mils'] * MM_PER_MIL:.3f} mm)"
+    if "counts" in rule:
+        return ", ".join(str(c) for c in rule["counts"])
+    return str(rule.get("value", ""))
+
+
+def cmd_fab_rules(vendor: str, *, layers: int, oz: float = 1.0,
+                  tier: str = "standard", ipc_class: Optional[int] = None,
+                  as_json: bool = False) -> int:
+    """All published design rules of one fab build, each with its quote."""
+    import json as _json
+
+    from .design.fab_rules import fab_rules
+
+    got = fab_rules(vendor, copper_layers=layers, outer_oz=oz, tier=tier,
+                    ipc_class=ipc_class)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False, default=str))
+        return 0 if got["ok"] else 1
+    if not got["ok"]:
+        print(got["reason"], file=sys.stderr)
+        for k in ("tiers", "vendors", "copper_layer_counts"):
+            if k in got:
+                print(f"  {k}: {got[k]}", file=sys.stderr)
+        return 1
+    print(f"{got['vendor']} {got['tier']}, {layers} layers, {oz:g} oz outer "
+          f"(read {got['source']['retrieved']}, {got['source']['url']})")
+    for key, rule in got["rules"].items():
+        print(f"  {rule['label'][:38]:38} {_fmt_rule(rule)}")
+        print(f"  {'':38} \"{rule['quote'][:100]}\"")
+    if got["missing"]:
+        print("\nNot published (refused, not guessed):")
+        for m in got["missing"]:
+            print(f"  {m['key']:22} {m['reason']}")
+    if got["age"].get("stale"):
+        print(f"\n{got['age']['stale_note']}", file=sys.stderr)
+    return 0
+
+
+def _std_profile_values():
+    from .design.standards import load_values
+    from .profile import resolve_profile_dir
+
+    prof = resolve_profile_dir()
+    return prof, load_values(prof)
+
+
+def cmd_std_list(*, domain: Optional[str] = None, priority: Optional[int] = None,
+                 as_json: bool = False) -> int:
+    """The IPC standards catalogue: number, current revision, scope."""
+    import json as _json
+
+    from .design.standards import load_catalogue
+
+    cat = load_catalogue()
+    rows = [s for s in cat.standards
+            if (domain is None or s.domain == domain)
+            and (priority is None or s.priority == priority)]
+    if as_json:
+        print(_json.dumps({"checked_on": cat.checked_on,
+                           "standards": [s.model_dump() for s in rows]},
+                          indent=2, ensure_ascii=False))
+        return 0
+    for s in rows:
+        mark = "" if s.revision_confirmed else " (revision unconfirmed)"
+        print(f"P{s.priority} {s.domain:12} {s.label:22} {s.title[:60]}{mark}")
+    print(f"\n{len(rows)} standard(s); revisions checked {cat.checked_on}.",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_std_rules(*, category: Optional[str] = None, as_json: bool = False) -> int:
+    """IPC rule definitions, with how many values the active profile holds."""
+    import json as _json
+
+    from .design.standards import coverage
+
+    prof, loaded = _std_profile_values()
+    if not loaded["ok"]:
+        print(loaded["reason"], file=sys.stderr)
+        for e in loaded.get("errors", []):
+            print(f"  {e}", file=sys.stderr)
+        return 1
+    rows = [r for r in coverage(loaded["values"])
+            if category is None or r["category"] == category]
+    if as_json:
+        print(_json.dumps({"profile": str(prof) if prof else None,
+                           "values_file": loaded["path"],
+                           "warnings": loaded["warnings"], "rules": rows},
+                          indent=2, ensure_ascii=False))
+        return 0
+    for r in rows:
+        state = f"{r['values']} value(s)" if r["values"] else "not configured"
+        print(f"{r['rule_id']:42} {state:16} {', '.join(r['standards'])}")
+    where = loaded["path"] or (f"{prof}/standards/values.json (absent)" if prof
+                               else "no active profile")
+    print(f"\nValues: {where}", file=sys.stderr)
+    for w in loaded["warnings"]:
+        print(f"warning: {w}", file=sys.stderr)
+    return 0
+
+
+def cmd_std_floors(*, as_json: bool = False) -> int:
+    """Write the fab rules' IPC class floor file from the profile's values."""
+    import json as _json
+
+    from .design.standards import write_class_floors
+
+    prof, _ = _std_profile_values()
+    if prof is None:
+        got = {"ok": False, "reason": "no active profile; class floors live in "
+               "<profile dir>/standards/ (see docs/PROFILES.md)"}
+    else:
+        got = write_class_floors(prof)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+    elif got["ok"]:
+        print(f"wrote {got['path']} (classes {', '.join(got['classes'])})")
+    else:
+        print(got["reason"], file=sys.stderr)
+        for e in got.get("errors", []):
+            print(f"  {e}", file=sys.stderr)
+    return 0 if got["ok"] else 1
+
+
+def cmd_fab_compare(*, layers: int, oz: float = 1.0,
+                    keys: Optional[list] = None, as_json: bool = False) -> int:
+    """Every fab and tier side by side for one build."""
+    import json as _json
+
+    from .design.fab_rules import compare
+
+    got = compare(keys or None, copper_layers=layers, outer_oz=oz)
+    if as_json or not got["ok"]:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+        return 0 if got["ok"] else 1
+    short = [k.replace("min_", "")[:10] for k in got["keys"]]
+    print(f"{'fab / tier':34}" + "".join(f"{s:>11}" for s in short) + "   (mil)")
+    for row in got["rows"]:
+        cells = "".join(f"{row['cells'][k].get('mils', '-'):>11}"
+                        if not isinstance(row['cells'][k].get('mils'), float)
+                        else f"{row['cells'][k]['mils']:>11.2f}"
+                        for k in got["keys"])
+        print(f"{(row['vendor'] + ' / ' + row['tier'])[:34]:34}{cells}")
+    print("\n'-' = the fab does not publish it for this build (or it was not "
+          "readable);\nrun fab-rules <fab> for the reason and the quote.",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_fab_refresh(vendor: str, *, files: Optional[list] = None,
+                    write: bool = False, as_json: bool = False) -> int:
+    """Re-read a fab's pages and check every stored quote is still there."""
+    import json as _json
+
+    from .design.fab_connectors import refresh, write_retrieved
+
+    got = refresh(vendor, files=files)
+    if write and got.get("check"):
+        got["write"] = write_retrieved(vendor, got)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+        return 0 if got["ok"] else 1
+    if "reason" in got and not got.get("read"):
+        print(got["reason"], file=sys.stderr)
+    for r in got.get("read", []):
+        print(f"read     {r}")
+    for f in got.get("failed", []):
+        print(f"FAILED   {f['url']}: {f['reason']}")
+        if f.get("hint"):
+            print(f"         {f['hint']}")
+    if got.get("snapshot"):
+        print(f"snapshot {got['snapshot']}")
+    if got.get("note"):
+        print(got["note"])
+    chk = got.get("check")
+    if chk:
+        print(f"\n{chk['confirmed']} quote(s) still on the pages, "
+              f"{len(chk['not_found'])} not found.")
+        for row in chk["not_found"]:
+            print(f"  {row['tier']}/{row['key']}: \"{row['quote'][:90]}\"")
+        if chk["not_found"]:
+            print("\nA quote that is gone means the fab changed or moved it: "
+                  "read the page and update the data by hand.", file=sys.stderr)
+    if got.get("write"):
+        w = got["write"]
+        print("reading date moved " + (f"{w['from']} -> {w['to']}" if w["ok"]
+                                       else f"refused: {w['reason']}"))
+    return 0 if got["ok"] else 1
 
 
 def cmd_calc_cross_check(calculator: str, values: list,

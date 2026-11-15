@@ -74,6 +74,7 @@ _CATEGORY_BY_PREFIX = (
     ("audit_", "audit"),
     ("design_", "design"),
     ("sim_", "simulation"),
+    ("si_", "simulation"),
     ("route_", "routing"),
     ("tool_", "meta"),
     ("part_", "parts"),
@@ -130,6 +131,19 @@ _SIMULATOR_TOOLS = frozenset({
     "obj_deselect_all", "obj_get_font_id", "obj_get_font_spec",
     "obj_modify", "obj_query", "obj_run_process", "obj_select", "obj_zoom",
     "obj_zoom_to_xy", "pcb_bind_pad_nets",
+    "lib_add_footprint_arc", "lib_add_footprint_pad",
+    "lib_add_footprint_pads", "lib_add_footprint_track",
+    "lib_add_footprint_tracks", "lib_add_pins", "lib_add_symbol_polygon",
+    "lib_audit_footprint_vs_datasheet", "lib_batch_rename",
+    "lib_batch_set_params", "lib_create_3d_model", "lib_create_footprint",
+    "lib_create_ic_symbol",
+    "lib_export_kicad_symbol",
+    "lib_get_pad_geometry", "lib_get_pin_list", "lib_link_3d_model",
+    "lib_link_footprint", "lib_set_current_component", "obj_batch_delete",
+    "obj_batch_modify", "obj_create", "obj_delete", "obj_deselect_all",
+    "obj_get_font_id", "obj_get_font_spec", "obj_modify", "obj_query",
+    "obj_run_process", "obj_select", "obj_zoom", "obj_zoom_to_xy",
+    "pcb_bind_pad_nets",
     "pcb_build_from_project", "pcb_create_nets_from_list",
     "pcb_get_board_outline", "pcb_get_board_statistics",
     "pcb_get_components", "pcb_get_nets", "pcb_get_pad_properties",
@@ -173,6 +187,9 @@ _OFFLINE_TOOLS = frozenset({
     "lib_read_pcblib_headers", "lib_write_libpkg",
     "lib_backup_library", "lib_list_library_backups",
     "lib_restore_library_backup",
+    # The SPICE model library: index files on disk, search the index,
+    # save a pin map. None of them reaches Altium.
+    "sim_scan_models", "sim_find_models", "sim_set_pin_map",
 })
 
 _ENGINEERING_EXTERNAL = frozenset({
@@ -185,6 +202,8 @@ _ENGINEERING_EXTERNAL = frozenset({
     # emit anything, unlike the rest of the eng_ltspice_* family, which
     # parses text it was handed.
     "eng_ltspice_deck_from_schematic",
+    # Reads the live schematic to compare it with an LTspice circuit.
+    "eng_ltspice_compare_schematic",
 })
 # pcb / audit / simulation -> live_only; design is mixed (mostly offline,
 # handled by the offline classifier below).
@@ -204,7 +223,7 @@ _OFFLINE_BY_NAME = frozenset({"footprint_check_package",
 # substring rule above assumes a calc tool is pure maths; these query
 # Altium first, so reporting them as offline sends anyone filtering for
 # "works without Altium" straight into a bridge error.
-_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area", "lib_extract_step_models"})
+_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area", "lib_extract_step_models", "pcb_calc_toolkit_board"})
 
 # design_* tools that are pure Python (per the design-agent surface: plan
 # authoring, analysis, and derivation all run offline). The bridge-backed
@@ -246,6 +265,7 @@ INTERACTION_OVERRIDES = {
     "lib_restore_library_backup": SILENT,
     # Two library reads and a file in the workspace; the library is untouched.
     "lib_render_footprint": READONLY,
+    "lib_preview_part": READONLY,
     # Who edits which document: reading it, or handing one over, writes
     # nothing to a design.
     "app_document_owners": READONLY,
@@ -419,6 +439,9 @@ _CATEGORY_BY_NAME = {
     # Updates eda-agent itself, on every backend: about the tool surface,
     # like tool_catalog, rather than about any one EDA tool.
     "server_update": "meta",
+    # The session's length unit: how every tool reads and writes, not
+    # any one EDA tool's work.
+    "length_units": "meta",
     # The family tool for the audits; its members keep the audit_ prefix.
     "audit": "audit",
 }

@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <title>eda-agent workbench</title>
+<link rel="icon" href="/eda-agent.svg" type="image/svg+xml">
+<link rel="icon" href="/eda-agent.ico" sizes="16x16 20x20 24x24 32x32 40x40 48x48 64x64 256x256">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>
 /* Theme before the first paint, so a dark page never flashes light. The
@@ -212,6 +214,25 @@ table.grid td.m { color:var(--ink2); max-width:210px; overflow:hidden; text-over
 table.grid .sub { color:var(--ink3); }
 table.grid a { color:var(--blue); }
 .issue { white-space:nowrap; }
+.libtabs { margin-bottom:var(--s4); }
+.pfgrid { display:grid; grid-template-columns:minmax(320px, 1fr) minmax(360px, 1.2fr); gap:var(--s5); align-items:start; }
+@media (max-width: 900px) { .pfgrid { grid-template-columns:1fr; } }
+.pfgrid > div { min-width:0; }
+.pflist { overflow-x:auto; }
+.pflist table.grid { table-layout:fixed; }
+.pflist table.grid td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pflist th:nth-child(2) { width:80px; } .pflist th:nth-child(3) { width:96px; } .pflist th:nth-child(4) { width:72px; }
+.pfgrid table.grid td.m { max-width:180px; }
+.pffile { margin-top:var(--s4); }
+.pffile input { display:block; width:100%; margin:6px 0; }
+.pvpane { position:sticky; top:0; }
+.pvhead { margin:0 0 4px; }
+.pvhead small { color:var(--ink2); font-weight:400; margin-left:6px; }
+.pvgrid { display:grid; grid-template-columns:1fr 1fr; gap:var(--s3); margin:var(--s3) 0; }
+.pvfig { margin:0; border:1px solid var(--rule); background:var(--paper); display:flex; flex-direction:column; }
+.pvfig figcaption { font-size:12px; color:var(--ink2); padding:4px 8px; border-bottom:1px solid var(--rule2); }
+.pvsvg { padding:6px; flex:1; display:flex; align-items:center; }
+.pvsvg svg { display:block; width:100%; height:auto; max-height:420px; }
 .tools { display:grid; grid-template-columns:300px 1fr; gap:var(--s4); height:100%; }
 .tools .list { overflow:auto; background:var(--paper); border:1px solid var(--rule); }
 .tools .list .row { padding:4px var(--s3); }
@@ -292,6 +313,71 @@ table.grid.usage .m { position:relative; font:12px var(--mono); overflow-wrap:an
 table.grid.usage td:first-child { min-width:180px; }
 @container (max-width: 760px) { table.grid.usage .opt { display:none; } }
 table.grid.usage td:not(:first-child), table.grid.usage th:not(:first-child) { text-align:right; white-space:nowrap; }
+/* Calculators: the list, the inputs, the result. */
+.tk { display:grid; grid-template-columns:230px minmax(300px, 400px) minmax(0, 1fr); gap:var(--s4); align-items:start; container-type:inline-size; }
+.tk > * { min-width:0; }
+.tklist { background:var(--paper); border:1px solid var(--rule); max-height:calc(100vh - 120px); overflow:auto; position:sticky; top:0; }
+.tklist input { width:calc(100% - 12px); margin:6px; }
+.tklist h3 { margin:0; padding:8px 10px 3px; font-size:11px; font-weight:600; color:var(--ink3); text-transform:uppercase; letter-spacing:.04em; }
+.tklist button { display:block; width:100%; text-align:left; border:none; border-radius:0; background:none; padding:4px 10px; }
+.tklist button:hover { background:var(--paper2); }
+.tklist button[aria-current="true"] { background:var(--sel); font-weight:600; }
+.tkform, .tkout { background:var(--paper); border:1px solid var(--rule); padding:var(--s3) var(--s4); }
+.tkform h3, .tkout h3 { margin:0 0 2px; font-size:16px; font-weight:600; display:flex; gap:var(--s2); align-items:baseline; }
+.tkform h3 .sp { flex:1; } .tkform h3 button { font-size:12px; font-weight:400; }
+.tkrow { display:grid; grid-template-columns:minmax(0, 1fr) 96px 70px; gap:4px 6px; align-items:center; padding:3px 0; border-bottom:1px solid var(--rule2); }
+.tkrow label { color:var(--ink2); overflow-wrap:anywhere; }
+.tkrow input[type=text] { width:100%; text-align:right; font-family:var(--mono); font-size:12px; }
+.tkrow select { width:100%; padding:4px 2px; }
+.tkrow .wide { grid-column:2 / span 2; } .tkrow .wide input, .tkrow .wide select { text-align:left; }
+.tkrow .u { color:var(--ink3); font-size:12px; }
+.tkrow.filled input[type=text] { border-color:var(--green); box-shadow:inset 3px 0 0 var(--green); }
+.tkboard { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:var(--s2) 0; }
+.tkfig { display:flex; flex-wrap:wrap; gap:var(--s3) var(--s5); margin:var(--s2) 0 var(--s3); }
+.tkfig div { display:flex; flex-direction:column; }
+.tkfig span { color:var(--ink3); font-size:12px; }
+.tkfig b { font-size:26px; font-weight:600; line-height:1.15; }
+.tkout table.grid td { cursor:default; } .tkout table.grid td.v { text-align:right; font-family:var(--mono); white-space:nowrap; }
+.tkout table.grid td small { color:var(--ink3); }
+.tkbadge { font-size:11px; font-weight:600; padding:1px 7px; border-radius:9px; border:1px solid var(--rule); color:var(--ink2); white-space:nowrap; }
+.tkbadge.solver, .tkbadge.exact { border-color:var(--green); color:var(--green); } .tkbadge.estimate { border-color:var(--amber); color:var(--amber); }
+.tkout dl { display:grid; grid-template-columns:max-content 1fr; gap:3px var(--s3); margin:var(--s3) 0 0; font-size:12px; }
+.tkout dt { color:var(--ink3); } .tkout dd { margin:0; color:var(--ink2); }
+.tkout svg { display:block; width:100%; height:auto; margin:var(--s2) 0; background:var(--field); border:1px solid var(--rule2); }
+.tkout svg text { font:10px var(--mono); fill:var(--ink3); }
+.tkout.busy .tkfig b { color:var(--ink3); }
+@media (min-width: 821px) { #app[data-mode="calc"] { grid-template-columns:268px 1fr 0; } #app[data-mode="calc"] #side { display:none; } }
+/* Features and Simulation: wide panes of cards. */
+@media (min-width: 821px) { #app[data-mode="features"], #app[data-mode="sim"] { grid-template-columns:0 1fr 300px; } #app[data-mode="features"] #nav, #app[data-mode="sim"] #nav { display:none; } }
+.ftgrid { grid-template-columns:repeat(auto-fill, minmax(400px, 1fr)); margin-bottom:var(--s4); }
+.ftcard.ready { box-shadow:inset 3px 0 0 var(--green); } .ftcard.missing { box-shadow:inset 3px 0 0 var(--red); }
+.ftcard.partial { box-shadow:inset 3px 0 0 var(--amber); } .ftcard.off, .ftcard.unavailable { background:var(--paper2); }
+.ftcard h3 .pill { font-weight:400; } .ftsw { margin:0; font-size:12px; }
+.ftcard table.ftdeps { margin-top:8px; table-layout:fixed; } .ftdeps th:nth-child(2) { width:104px; } .ftdeps th:nth-child(3) { width:78px; } .ftdeps th:nth-child(4) { width:28%; }
+.ftdeps td { overflow-wrap:anywhere; } .ftdeps details { margin-top:3px; font-size:12px; }
+.ftplan { margin-top:8px; padding:8px 10px; border:1px dashed var(--blue); border-radius:4px; background:var(--paper2); }
+.ftplan pre.small { margin:4px 0; } .ftlog { margin-bottom:var(--s3); border-color:var(--blue); }
+h2.ftgroup { margin-top:var(--s3); }
+.ftcard.core { box-shadow:inset 3px 0 0 var(--blue); } .ftcard.flash { outline:2px solid var(--blue); outline-offset:2px; }
+.ftpick { margin:0 6px 0 0; } .ftpick input { margin:0; }
+.ftnote { color:var(--ink2); font-style:italic; } .ftcore { margin-top:6px; font-size:12px; }
+.ftrel { margin:6px 0 2px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+.ftchip { font-size:11px; padding:1px 8px; border-radius:9px; } .ftchip .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:5px; background:var(--rule); vertical-align:1px; }
+.ftchip.ready .dot { background:var(--green); } .ftchip.partial .dot { background:var(--amber); } .ftchip.missing .dot { background:var(--red); }
+.ftlocs { margin-top:6px; } .ftloc { margin-top:4px; } .ftloc .row { display:flex; gap:4px; } .ftloc input { flex:1; min-width:0; font-size:12px; }
+.ftall { margin-top:var(--s3); } .ftall summary { cursor:pointer; } .ftall table.ftdeps { table-layout:auto; } .ftall td:last-child { line-height:1.9; }
+.simgrid { display:grid; grid-template-columns:minmax(300px, 0.9fr) minmax(360px, 1.1fr); gap:var(--s4); align-items:start; }
+@media (max-width: 1100px) { .simgrid { grid-template-columns:1fr; } }
+.simwrap > .wsgrid { margin-bottom:var(--s4); } .simnew { margin-bottom:var(--s4); } .simrow { display:flex; gap:6px; } .simrow input { flex:1; min-width:0; font:12px var(--mono); }
+.simline { display:grid; grid-template-columns:repeat(auto-fill, minmax(185px, 1fr)); gap:8px 12px; margin:8px 0; } .simline label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--ink2); } .simline input, .simline select { font:12px var(--mono); min-width:0; }
+.simgraph { margin:6px 0 10px; display:grid; gap:4px; } .simgraph .m { margin-right:6px; }
+.simlink { background:none; border:0; padding:0; color:var(--blue); cursor:pointer; text-decoration:underline; font:inherit; }
+.simfiles { margin:8px 0; } .simplot { max-width:100%; border-radius:6px; display:block; margin-bottom:6px; } .simfiles a { margin-right:10px; }
+.simpicks { display:flex; gap:var(--s4); flex-wrap:wrap; }
+.simjob h3 small { color:var(--ink3); } table.simcmp td { cursor:default; } table.simcmp td.v { text-align:right; font-family:var(--mono); white-space:nowrap; }
+.simrun { border-top:1px solid var(--rule2); margin-top:8px; padding-top:4px; } .simrun h4 { display:flex; gap:6px; align-items:baseline; }
+@container (max-width: 980px) { .tk { grid-template-columns:200px minmax(0, 1fr); } .tkout { grid-column:2; } }
+@container (max-width: 640px) { .tk { grid-template-columns:minmax(0, 1fr); } .tkout { grid-column:1; } .tklist { position:static; max-height:240px; } }
 .uchart { display:flex; align-items:flex-end; gap:3px; height:90px; margin:var(--s2) 0 var(--s3); }
 .uchart div { flex:0 1 36px; display:flex; flex-direction:column; justify-content:flex-end; height:100%; min-width:0; }
 .uchart i { display:block; background:var(--ink3); border-radius:2px 2px 0 0; }
@@ -425,6 +511,9 @@ ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; 
       <button data-mode="tools" title="Run any tool (7)">Tools</button>
       <button data-mode="workspace" title="The profile in effect: its design rules, ERC sets and templates (8)">Workspace</button>
       <button data-mode="usage" title="Tokens the AI spent on the EDA tools, estimated (9)">Usage</button>
+      <button data-mode="calc" title="PCB calculators: impedance, trace current, vias, planes and more (0)">Calculators</button>
+      <button data-mode="sim" title="Simulation engines and jobs, with each engine's answer side by side">Simulation</button>
+      <button data-mode="features" title="Features and dependencies: what is installed, what each part offers, install and switch">Features</button>
     </nav>
     <div class="end">
       <button id="wsbtn" data-src="none" title="Which profile the tools work under"><span class="dot" aria-hidden="true"></span><span id="wsname">Profile</span></button>
@@ -485,6 +574,7 @@ ol.pipe li.picked .name { text-decoration:underline; text-underline-offset:3px; 
   <h2>Keyboard</h2>
   <dl>
     <dt><kbd>1</kbd> to <kbd>9</kbd></dt><dd>Change mode</dd>
+    <dt><kbd>0</kbd></dt><dd>Open the calculators</dd>
     <dt><kbd>Ctrl K</kbd></dt><dd>Find a part, net, problem or command</dd>
     <dt><kbd>/</kbd></dt><dd>Filter the list</dd>
     <dt><kbd>N</kbd> <kbd>Shift N</kbd></dt><dd>Next and previous problem</dd>
@@ -588,8 +678,10 @@ const num = (v, d) => v == null || v === "" ? "-" : Number(v).toLocaleString(LAN
 const store = {get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
                set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
 const baseName = p => String(p || "").split(/[\\/]/).pop();
-const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools", "workspace", "usage"];
-const PANE_MODES = ["library", "tools", "workspace", "usage"];
+const MODES = ["place", "route", "review", "library", "assemble", "engines", "tools", "workspace", "usage", "calc", "sim", "features"];
+const PANE_MODES = ["library", "tools", "workspace", "usage", "calc", "sim", "features"];
+/* Modes that change the page's grid: a change into or out of one re-measures the sheet. */
+const WIDE_MODES = ["calc", "sim", "features"];
 
 const S = {
   mode: store.get("wb.mode", "place"), list: store.get("wb.list", "parts"),
@@ -599,6 +691,7 @@ const S = {
   sel: null, multi: new Set(), view: null, hover: null, mouse: null,
   preview: null, previewKind: null, previewFor: null, lastResult: null,
   lib: null, libPick: new Set(), libFilter: "", libOnly: "", libShown: [],
+  libView: store.get("wb.libView", "design"), pf: {q: "", rows: null, note: "", vault: store.get("wb.vault", "")}, pv: null, pvTimer: 0,
   policy: null, live: null, decisions: [], decSeq: 0, asmAt: 0,
   tools: null, tool: null, toolFilter: "", toolResult: null,
   stg: null, stgOpen: "", stgChecks: null, stgDraft: {}, stgOpenList: null,
@@ -925,6 +1018,9 @@ function paintTools() {
   else if (S.mode === "tools") html = toolsSideBlock();
   else if (S.mode === "workspace") html = workspaceSideBlock();
   else if (S.mode === "usage") html = usageSideBlock();
+  else if (S.mode === "calc") html = calcSideBlock();
+  else if (S.mode === "features") html = featuresSideBlock();
+  else if (S.mode === "sim") html = simSideBlock();
   const el = $("#tools");
   if (el.dataset.html === html) return;
   const keep = {};
@@ -1188,14 +1284,18 @@ function paintPane() {
   if (S.mode === "tools") return paintToolsPane();
   if (S.mode === "workspace") return paintWorkspacePane();
   if (S.mode === "usage") return paintUsagePane();
+  if (S.mode === "calc") return paintCalcPane();
+  if (S.mode === "features") return paintFeaturesPane();
+  if (S.mode === "sim") return paintSimPane();
   if (pane.hidden) return;
+  if (S.libView === "find") return paintFindPane();
   const L = S.lib || {};
-  if (!L.state || L.state === "reading" || L.state === "empty") { pane.innerHTML = `<p class="hint" style="font-size:15px;padding:30px"><span class="spin"></span> ${esc(T("Reading the project in Altium: {0}", libStep(L.step)))}</p>`; return; }
-  if (L.state === "failed") { pane.innerHTML = `<div style="padding:30px"><p class="bad">${esc(L.error)}</p><button data-lib="read">${esc(T("Try again"))}</button></div>`; return; }
+  if (!L.state || L.state === "reading" || L.state === "empty") { pane.innerHTML = libTabs() + `<p class="hint" style="font-size:15px;padding:30px"><span class="spin"></span> ${esc(T("Reading the project in Altium: {0}", libStep(L.step)))}</p>`; return; }
+  if (L.state === "failed") { pane.innerHTML = libTabs() + `<div style="padding:30px"><p class="bad">${esc(L.error)}</p><button data-lib="read">${esc(T("Try again"))}</button></div>`; return; }
   const rows = libRows(), pct = (a, b) => b ? Math.round(100 * a / b) + "%" : "-";
   const focus = document.activeElement && document.activeElement.id === "libq";
   const allOn = rows.length && rows.every(r => r.designators.every(d => S.libPick.has(d)));
-  pane.innerHTML = `<div class="panehead"><div class="figures">
+  pane.innerHTML = libTabs() + `<div class="panehead"><div class="figures">
       <div><span>${esc(T("Parts"))}</span><b>${num(L.parts)}</b></div><div><span>${esc(T("Different parts"))}</span><b>${num(L.kinds)}</b></div>
       <div><span>${esc(T("With an MPN"))}</span><b class="${L.with_mpn === L.parts ? "good" : ""}">${pct(L.with_mpn, L.parts)}</b></div>
       <div><span>${esc(T("With a datasheet"))}</span><b class="${L.with_datasheet === L.parts ? "good" : ""}">${pct(L.with_datasheet, L.parts)}</b></div>
@@ -1221,6 +1321,88 @@ function paintPane() {
     <p class="hint">${esc(T("Read at {0}, in {1} s. Pick lines to light their parts on the board and to update them from their library.", L.read_at ? new Date(L.read_at * 1000).toLocaleTimeString(LANG) : "", num(L.seconds, 1)))}</p>`;
   S.libShown = rows;
   if (focus) { const q = $("#libq"); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+}
+/* ---------------------------------------------------- part lookup and preview */
+function libTabs() {
+  return `<div class="chipset libtabs"><button data-libview="design" aria-pressed="${S.libView !== "find"}">${esc(T("Parts in the design"))}</button><button data-libview="find" aria-pressed="${S.libView === "find"}">${esc(T("Look up a part"))}</button></div>`;
+}
+let pfTimer = 0;
+function pfSearch(q) {
+  S.pf.q = q; clearTimeout(pfTimer);
+  pfTimer = setTimeout(async () => {
+    const r = await get("/api/wb/parts/find?q=" + encodeURIComponent(q));
+    if (!r || S.pf.q !== q) return;
+    S.pf.rows = r.results || []; S.pf.note = r.ok === false ? r.reason : (r.note || ""); S.pf.databases = r.databases; S.pf.matches = r.matches;
+    paintPane();
+  }, 250);
+}
+async function pvAsk(spec) {
+  if (S.pf.vault && spec.design_item_id) spec.vault = S.pf.vault;
+  const r = await post("/api/wb/parts/preview", spec);
+  if (!r || !r.ok) { S.pv = {state: "failed", reason: (r && r.reason) || T("No answer from the dashboard")}; return paintPane(); }
+  S.pv = {state: "reading", spec}; paintPane(); pvPoll();
+}
+async function pvPoll() {
+  clearTimeout(S.pvTimer);
+  const r = await get("/api/wb/parts/preview"); if (!r) return;
+  S.pv = r; paintPane();
+  if (r.state === "reading") S.pvTimer = setTimeout(pvPoll, 700);
+}
+function pvPicture(title, body) { return `<figure class="pvfig"><figcaption>${esc(title)}</figcaption>${body}</figure>`; }
+function previewBlock() {
+  const v = S.pv;
+  if (!v) return `<p class="hint">${esc(T("Pick a part to see its symbol and footprint as they are in the library, before you place it."))}</p>`;
+  if (v.state === "reading") return `<div class="result run"><span class="spin"></span> ${esc(T("Reading the part in Altium"))}</div>`;
+  if (v.state === "failed" || v.ok === false) {
+    const ws = /Workspace name/.test(v.reason || "");
+    return `<div class="result fail">${esc(v.reason || T("The part did not read"))}</div>${ws ? `<p class="hint">${esc(T("Type the Workspace name as Altium shows it, then pick the part again."))}</p><input id="pfvault" value="${esc(S.pf.vault)}" placeholder="${esc(T("Workspace name"))}" aria-label="${esc(T("Workspace name"))}">` : ""}`;
+  }
+  if (v.state !== "ready") return "";
+  const s = v.symbol || {}, f = v.footprint || {};
+  const fpBody = f.ok ? `<div class="pvsvg">${f.svg}</div>` : `<p class="hint">${esc(f.reason || T("No footprint"))}</p>`;
+  const parts = v.part_count > 1 ? `<div class="chipset">${Array.from({length: Math.min(v.part_count, 26)}, (_, i) => `<button data-pvpart="${i + 1}" aria-pressed="${v.part === i + 1}">${esc(T("Part {0}", i + 1))}</button>`).join("")}</div>` : "";
+  return `<h2 class="pvhead">${esc(v.lib_ref || v.design_item_id)} <small>${esc(v.comment || "")}</small></h2>
+    <p class="hint">${esc(v.description || "")}</p>${parts}
+    <div class="pvgrid">${pvPicture(T("Symbol"), `<div class="pvsvg">${s.svg || ""}</div>`)}${pvPicture(f.name ? T("Footprint {0}", f.name) : T("Footprint"), fpBody)}</div>
+    <dl class="kv"><dt>${esc(T("Pins"))}</dt><dd>${num(s.pins)}${s.hidden_pins ? " " + esc(T("({0} hidden)", s.hidden_pins)) : ""}</dd>
+      ${f.ok ? `<dt>${esc(T("Pads"))}</dt><dd>${num(f.pads)}</dd>` : ""}
+      <dt>${esc(T("From"))}</dt><dd class="m">${esc(v.source || "")}</dd>${f.library ? `<dt>${esc(T("Footprint library"))}</dt><dd class="m">${esc(f.library)}</dd>` : ""}</dl>
+    ${(v.notes || []).concat(f.notes || []).map(n => `<p class="hint">${esc(n)}</p>`).join("")}
+    <p class="hint">${esc(T("Read at {0}, in {1} s.", v.read_at ? new Date(v.read_at * 1000).toLocaleTimeString(LANG) : "", num(v.seconds, 1)))} <button class="quiet" data-pvagain="1">${esc(T("Read it again"))}</button></p>`;
+}
+function paintFindPane() {
+  const pane = $("#pane"), P = S.pf, active = document.activeElement && document.activeElement.id;
+  const rows = P.rows || [];
+  const list = P.rows == null ? `<p class="hint">${esc(T("Search your scanned Altium 365 library by name, value, description or MPN."))}</p>`
+    : !rows.length ? `<p class="hint">${esc(P.note || (P.q.trim().length < 2 ? T("Type two letters or more.") : T("No part matches.")))}</p>`
+    : `<div class="pflist"><table class="grid"><thead><tr><th>${esc(T("Part"))}</th><th>${esc(T("Comment"))}</th><th>${esc(T("Footprint"))}</th><th>${esc(T("State"))}</th></tr></thead><tbody>
+      ${rows.map((r, i) => `<tr data-pfrow="${i}" aria-selected="${!!(S.pv && S.pv.spec && S.pv.spec.design_item_id === r.name)}"><td class="n" title="${esc(r.description)}">${esc(r.name)}<div class="sub">${esc(r.description)}</div></td><td>${esc(r.comment)}</td>
+        <td class="m">${esc((r.footprints || []).join(", "))}</td><td>${esc(r.lifecycle)}</td></tr>`).join("")}</tbody></table></div>
+      ${P.matches > rows.length ? `<p class="hint">${esc(T("{0} of {1} matches shown. Narrow the search.", rows.length, P.matches))}</p>` : ""}`;
+  pane.innerHTML = libTabs() + `<div class="pfgrid"><div>
+      <div class="panehead"><input id="pfq" placeholder="${esc(T("Search parts: name, value, MPN"))}" value="${esc(P.q)}" aria-label="${esc(T("Search parts"))}" style="margin-left:0;width:100%"></div>
+      ${list}
+      <details class="pffile"><summary>${esc(T("From a library file"))}</summary>
+        <input id="pflib" placeholder="${esc(T("Path of the .SchLib or .IntLib"))}" aria-label="${esc(T("Library file"))}" value="${esc(P.lib || "")}">
+        <input id="pfname" placeholder="${esc(T("Symbol name"))}" aria-label="${esc(T("Symbol name"))}" value="${esc(P.name || "")}">
+        <button data-pvfile="1">${esc(T("Preview"))}</button></details>
+    </div><div class="pvpane">${previewBlock()}</div></div>`;
+  if (active && ["pfq", "pfvault", "pflib", "pfname"].includes(active)) { const q = $("#" + active); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+}
+function pfClick(e) {
+  const tab = e.target.closest("[data-libview]");
+  if (tab) { S.libView = tab.dataset.libview; store.set("wb.libView", S.libView); if (S.libView === "design" && !S.lib) pollLibrary(true); paintPane(); return true; }
+  if (S.libView !== "find") return false;
+  const row = e.target.closest("[data-pfrow]");
+  if (row) { const r = S.pf.rows[+row.dataset.pfrow]; pvAsk({design_item_id: r.name}); return true; }
+  const part = e.target.closest("[data-pvpart]");
+  if (part && S.pv && S.pv.spec) { pvAsk(Object.assign({}, S.pv.spec, {part: +part.dataset.pvpart})); return true; }
+  if (e.target.closest("[data-pvagain]") && S.pv && S.pv.spec) { pvAsk(Object.assign({}, S.pv.spec, {again: true})); return true; }
+  if (e.target.closest("[data-pvfile]")) {
+    if (!S.pf.lib || !S.pf.name) { say(T("Give the library file and the symbol name."), true); return true; }
+    pvAsk({library_path: S.pf.lib, component_name: S.pf.name}); return true;
+  }
+  return true;
 }
 function libraryBlock() {
   const n = S.libPick.size, pol = S.policy, running = S.state.action && S.state.action.state === "running";
@@ -2119,6 +2301,183 @@ async function openBoard(file) {
   S.version = -1; S.checksVersion = -1; S.sel = null; S.multi = new Set(); S.view = null;
   say(T("Loading {0}", baseName(file)));
 }
+/* ================================================================ calculators */
+// The PCB toolkit (eda_agent.engineering.toolkit): the server declares each
+// calculator's inputs, so the forms here are built from that and a new
+// calculator needs nothing on this page. A result is asked for as you type.
+const TK = {cat: null, name: store.get("wb.tk.name", "microstrip"), vals: store.get("wb.tk.vals", {}),
+            res: null, busy: false, seq: 0, timer: 0, filter: "", board: null, layer: 0, filled: {}};
+function tkAll() { return TK.cat ? TK.cat.groups.flatMap(g => g.calculators) : []; }
+function tkCalc() { return tkAll().find(c => c.name === TK.name) || tkAll()[0] || null; }
+function tkVal(c, i) {
+  const v = (TK.vals[c.name] || {})[i.key];
+  if (v) return v;
+  return {v: i.default == null ? "" : i.default, u: i.unit || ""};
+}
+function tkShown(c, i) {
+  if (!i.show_if) return true;
+  return Object.entries(i.show_if).every(([k, allowed]) => { const o = c.inputs.find(x => x.key === k); return !o || allowed.includes(String(tkVal(c, o).v)); });
+}
+async function loadCalc() {
+  if (!TK.cat) {
+    TK.cat = await get("/api/wb/toolkit/catalog");
+    if (S.mode === "calc") paintPane();
+  }
+  if (TK.cat && TK.cat.ok && !TK.res) calcRun(0);
+}
+function calcRun(delay) {
+  clearTimeout(TK.timer);
+  TK.timer = setTimeout(async () => {
+    const c = tkCalc(); if (!c) return;
+    const inputs = {};
+    for (const i of c.inputs) {
+      if (!tkShown(c, i)) continue;
+      const v = tkVal(c, i);
+      if (i.kind === "bool" || i.kind === "choice" || i.kind === "choice_text") inputs[i.key] = v.v;
+      else if (v.v === "" || v.v == null) { if (i.optional) inputs[i.key] = null; }
+      else inputs[i.key] = {value: String(v.v).trim().replace(",", "."), unit: v.u || i.unit || ""};
+    }
+    const seq = ++TK.seq; TK.busy = true; paintCalcOut();
+    const r = await post("/api/wb/toolkit/run", {name: c.name, inputs});
+    if (seq !== TK.seq) return;
+    TK.busy = false; TK.res = r; paintCalcOut();
+  }, delay);
+}
+function tkField(c, i) {
+  const v = tkVal(c, i), id = "tk_" + i.key, tip = i.help ? ` title="${esc(i.help)}"` : "";
+  const cls = "tkrow" + (TK.filled[c.name + "." + i.key] ? " filled" : "");
+  let body;
+  if (i.kind === "choice") body = `<span class="wide"><select id="${id}" data-tk="${esc(i.key)}">${i.choices.map(o => `<option value="${esc(o.value)}"${String(v.v) === o.value ? " selected" : ""}>${esc(o.label)}</option>`).join("")}</select></span>`;
+  else if (i.kind === "bool") body = `<span class="wide"><input type="checkbox" id="${id}" data-tk="${esc(i.key)}"${v.v === true || v.v === "true" ? " checked" : ""}></span>`;
+  else if (i.kind === "choice_text") body = `<span class="wide"><input type="text" id="${id}" data-tk="${esc(i.key)}" value="${esc(v.v)}" autocomplete="off"></span>`;
+  else {
+    const units = i.units || [], un = units.length > 1
+      ? `<select data-tku="${esc(i.key)}" aria-label="${esc(i.label)}">${units.map(u => `<option${u === String(v.u) ? " selected" : ""}>${esc(u)}</option>`).join("")}</select>`
+      : `<span class="u">${esc(v.u || "")}</span>`;
+    body = `<input type="text" inputmode="decimal" id="${id}" data-tk="${esc(i.key)}" value="${esc(v.v)}" autocomplete="off">${un}`;
+  }
+  return `<div class="${cls}"${tip}><label for="${id}">${esc(i.label)}</label>${body}</div>`;
+}
+function tkForm() {
+  const c = tkCalc(); if (!c) return "";
+  const usesBoard = c.inputs.some(i => i.prefill && /^(stackup|board)\./.test(i.prefill));
+  const B = TK.board;
+  const boardRow = !usesBoard ? "" : `<div class="tkboard"><button type="button" data-tkboard="read">${esc(T("Fill from the board"))}</button>${
+    B && B.ok ? `<select data-tklayer aria-label="${esc(T("Layer"))}">${B.layers.map((l, n) => `<option value="${n}"${n === TK.layer ? " selected" : ""}>${esc(l.name)}</option>`).join("")}</select>`
+    : B && B.reading ? `<span class="hint"><span class="spin"></span> ${esc(T("Reading the board's layer stack"))}</span>`
+    : B ? `<span class="bad">${esc(B.reason || "")}</span>` : ""}</div>`;
+  return `<form class="tkform" autocomplete="off"><h3>${esc(c.title)}<span class="sp"></span><button type="button" class="quiet" data-tkreset="1">${esc(T("Reset"))}</button></h3>
+    <p class="hint">${esc(c.summary)}</p>${boardRow}${c.inputs.filter(i => tkShown(c, i)).map(i => tkField(c, i)).join("")}</form>`;
+}
+function tkSection(sec) {
+  // The solved cross-section, to scale across and exaggerated in height
+  // where the copper would otherwise be a hairline.
+  const sig = sec.metals.filter(m => m.net >= 0); if (!sig.length) return "";
+  const ys = sec.dielectrics.flatMap(d => [d.y0, d.y1]).concat(sec.metals.flatMap(m => [m.y0, m.y1]));
+  const y0 = sec.ground_bottom != null ? sec.ground_bottom : Math.min(...ys), y1 = sec.ground_top != null ? sec.ground_top : Math.max(...ys);
+  const H = (y1 - y0) || 1, cx0 = Math.min(...sig.map(m => m.x0)), cx1 = Math.max(...sig.map(m => m.x1));
+  const span = Math.max((cx1 - cx0) * 1.5 + 3 * H, 5 * H), mid = (cx0 + cx1) / 2, xa = mid - span / 2;
+  const W = 520, pad = 14, k = (W - 2 * pad) / span, plane = 5, air = sec.ground_top == null ? 22 : 0;
+  const hh = Math.max(H * k, 70), ky = hh / H, top = pad + air + (sec.ground_top != null ? plane : 0);
+  const X = x => pad + (x - xa) * k, Y = y => top + (y1 - y) * ky;
+  const clip = (a, b) => [Math.max(a, xa), Math.min(b, xa + span)];
+  let g = "";
+  for (const d of sec.dielectrics) g += `<rect x="${pad}" y="${Y(d.y1)}" width="${W - 2 * pad}" height="${(d.y1 - d.y0) * ky}" fill="var(--mask)" opacity="${d.er > 1 ? .22 : 0}"/><text x="${W - pad - 4}" y="${Y(d.y1) + 11}" text-anchor="end">Er ${d.er.toFixed(2)}</text>`;
+  if (sec.ground_bottom != null) g += `<rect x="${pad}" y="${Y(y0)}" width="${W - 2 * pad}" height="${plane}" fill="var(--amber)"/>`;
+  if (sec.ground_top != null) g += `<rect x="${pad}" y="${Y(y1) - plane}" width="${W - 2 * pad}" height="${plane}" fill="var(--amber)"/>`;
+  for (const m of sec.metals) {
+    const [a, b] = clip(m.x0, m.x1), [ta, tb] = clip(m.xt0, m.xt1); if (b <= a) continue;
+    const yb = Y(m.y0), yt = Math.min(Y(m.y1), yb - 2);
+    g += `<polygon points="${X(a)},${yb} ${X(b)},${yb} ${X(tb)},${yt} ${X(ta)},${yt}" fill="${m.net >= 0 ? "var(--red)" : "var(--amber)"}"/>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${top + hh + plane + pad}" role="img" aria-label="${esc(T("Cross-section"))}">${g}</svg>`;
+}
+function tkCurve(cv) {
+  const W = 520, Hh = 190, l = 46, b = 22, lx = v => cv.log_x ? Math.log10(v) : v, ly = v => cv.log_y ? Math.log10(Math.max(v, 1e-12)) : v;
+  const xs = cv.x.map(lx), ys = cv.y.map(ly), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.floor(Math.min(...ys)), y1 = Math.ceil(Math.max(...ys));
+  const X = v => l + (v - x0) / ((x1 - x0) || 1) * (W - l - 8), Y = v => 8 + (y1 - v) / ((y1 - y0) || 1) * (Hh - b - 8);
+  let g = "";
+  for (let d = y0; d <= y1; d++) g += `<line x1="${l}" x2="${W - 8}" y1="${Y(d)}" y2="${Y(d)}" stroke="var(--rule2)"/><text x="${l - 4}" y="${Y(d) + 3}" text-anchor="end">${esc(tkEng(cv.log_y ? 10 ** d : d))}Ω</text>`;
+  for (let d = Math.ceil(x0); d <= Math.floor(x1); d++) g += `<line y1="8" y2="${Hh - b}" x1="${X(d)}" x2="${X(d)}" stroke="var(--rule2)"/><text x="${X(d)}" y="${Hh - 8}" text-anchor="middle">${esc(tkEng(10 ** d))}Hz</text>`;
+  return `<svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="${esc(cv.label || "")}">${g}<polyline fill="none" stroke="var(--blue)" stroke-width="1.5" points="${xs.map((x, n) => X(x).toFixed(1) + "," + Y(ys[n]).toFixed(1)).join(" ")}"/></svg>`;
+}
+function tkEng(v) { const p = [[1e9, "G"], [1e6, "M"], [1e3, "k"], [1, ""], [1e-3, "m"], [1e-6, "µ"]]; for (const [f, s] of p) if (v >= f * .999) return +(v / f).toPrecision(3) + " " + s; return v.toExponential(0) + " "; }
+function tkOut() {
+  const r = TK.res, c = tkCalc();
+  if (!r) return `<div class="tkout"><p class="hint"><span class="spin"></span> ${esc(T("Calculating"))}</p></div>`;
+  if (!r.ok) return `<div class="tkout"><h3>${esc(c ? c.title : "")}</h3><div class="result fail">${esc(r.reason || "")}</div></div>`;
+  const prim = r.outputs.filter(o => o.primary), rest = r.outputs.filter(o => !o.primary);
+  const status = T({exact: "Exact", solver: "Field solver", published: "Published formula", estimate: "Estimate"}[r.status] || "Published formula");
+  return `<div class="tkout${TK.busy ? " busy" : ""}"><h3>${esc(r.title || "")}<span class="tkbadge ${esc(r.status)}">${esc(status)}</span>${TK.busy ? '<span class="spin"></span>' : ""}</h3>
+    <div class="tkfig">${prim.map(o => `<div><span>${esc(o.label)}</span><b>${esc(o.display)}</b></div>`).join("")}</div>
+    ${(r.warnings || []).map(w => `<div class="result fail">${esc(w)}</div>`).join("")}
+    ${r.section ? tkSection(r.section) : ""}${r.curve ? tkCurve(r.curve) : ""}
+    ${rest.length ? `<table class="grid"><tbody>${rest.map(o => `<tr><td>${esc(o.label)}${o.note ? ` <small>${esc(o.note)}</small>` : ""}</td><td class="v">${esc(o.display)}</td></tr>`).join("")}</tbody></table>` : ""}
+    <dl><dt>${esc(T("Model"))}</dt><dd>${esc(r.model || "")}</dd>
+    ${r.accuracy ? `<dt>${esc(T("Accuracy"))}</dt><dd>${esc(r.accuracy)}</dd>` : ""}
+    ${(r.cross_checks || []).map(k => `<dt>${esc(T("Checked against"))}</dt><dd>${esc(k.model)}: ${esc(k.label)} ${esc(k.display)}, ${esc(T("difference {0} %", (k.difference_percent > 0 ? "+" : "") + k.difference_percent.toFixed(2)))}${k.note ? " (" + esc(k.note) + ")" : ""}</dd>`).join("")}
+    ${(r.references || []).length ? `<dt>${esc(T("Sources"))}</dt><dd>${r.references.map(esc).join("<br>")}</dd>` : ""}</dl></div>`;
+}
+function paintCalcOut() { const el = document.querySelector("#pane .tkout"); if (el) el.outerHTML = tkOut(); }
+function tkListHtml() {
+  const f = TK.filter.trim().toLowerCase();
+  return TK.cat.groups.map(g => {
+    const rows = g.calculators.filter(c => !f || (c.title + " " + c.summary + " " + g.title).toLowerCase().includes(f));
+    return rows.length ? `<h3>${esc(g.title)}</h3>${rows.map(c => `<button type="button" data-tkname="${esc(c.name)}"${c.name === TK.name ? ' aria-current="true"' : ""} title="${esc(c.summary)}">${esc(c.title)}</button>`).join("")}` : "";
+  }).join("");
+}
+function paintCalcPane() {
+  const pane = $("#pane"); pane.hidden = false;
+  if (!TK.cat) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; return; }
+  if (!TK.cat.ok) { pane.innerHTML = `<div class="result fail">${esc(T("The dashboard did not answer."))}</div>`; return; }
+  if (!tkAll().some(c => c.name === TK.name)) TK.name = tkAll()[0].name;
+  pane.innerHTML = `<div class="tk"><div class="tklist"><input id="tkq" placeholder="${esc(T("Filter calculators"))}" value="${esc(TK.filter)}" autocomplete="off" aria-label="${esc(T("Filter calculators"))}"><div id="tkitems">${tkListHtml()}</div></div>${tkForm()}${tkOut()}</div>`;
+}
+function tkSet(key, patch) {
+  const c = tkCalc(), i = c.inputs.find(x => x.key === key); if (!i) return;
+  const all = TK.vals[c.name] || (TK.vals[c.name] = {});
+  all[key] = Object.assign({}, tkVal(c, i), patch); delete TK.filled[c.name + "." + key];
+  store.set("wb.tk.vals", TK.vals);
+}
+function tkRepaintForm() { const el = document.querySelector("#pane .tkform"); if (el) el.outerHTML = tkForm(); }
+function calcInput(e) {
+  const t = e.target;
+  if (t.id === "tkq") { TK.filter = t.value; $("#tkitems").innerHTML = tkListHtml(); return; }
+  if (t.dataset.tk && t.type === "text") { tkSet(t.dataset.tk, {v: t.value}); t.closest(".tkrow").classList.remove("filled"); calcRun(350); }
+}
+function calcChange(e) {
+  const t = e.target;
+  if (t.dataset.tklayer != null) { TK.layer = +t.value; return tkFill(); }
+  if (t.dataset.tku) { tkSet(t.dataset.tku, {u: t.value}); return calcRun(0); }
+  if (t.dataset.tk && t.type !== "text") { tkSet(t.dataset.tk, {v: t.type === "checkbox" ? t.checked : t.value}); tkRepaintForm(); calcRun(0); }
+}
+function tkFill() {
+  const c = tkCalc(), B = TK.board; if (!c || !B || !B.ok) return;
+  const L = B.layers[TK.layer] || B.layers[0]; let n = 0;
+  const all = TK.vals[c.name] || (TK.vals[c.name] = {});
+  for (const i of c.inputs) {
+    const got = i.prefill && L.values[i.prefill]; if (!got) continue;
+    all[i.key] = {v: got.value, u: got.unit || i.unit || ""}; TK.filled[c.name + "." + i.key] = true; n++;
+  }
+  store.set("wb.tk.vals", TK.vals); tkRepaintForm(); calcRun(0);
+  const note = (B.notes || []).join(" ");
+  say((n ? T("Filled {0} values from {1}.", n, L.name) : T("Nothing on this calculator comes from the layer stack.")) + (note ? " " + note : ""), !n || !!note);
+}
+async function calcClick(e) {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.tkname) { TK.name = t.dataset.tkname; store.set("wb.tk.name", TK.name); TK.res = null; paintPane(); return calcRun(0); }
+  if (t.dataset.tkreset) { const c = tkCalc(); delete TK.vals[c.name]; for (const k of Object.keys(TK.filled)) if (k.startsWith(c.name + ".")) delete TK.filled[k]; store.set("wb.tk.vals", TK.vals); tkRepaintForm(); return calcRun(0); }
+  if (t.dataset.tkboard) {
+    TK.board = {reading: true}; tkRepaintForm();
+    TK.board = await get("/api/wb/toolkit/board") || {ok: false, reason: T("The dashboard did not answer.")};
+    if (TK.board.ok) { const c = tkCalc(), want = /stripline/.test(c.name) ? "inner" : "outer"; TK.layer = Math.max(0, TK.board.layers.findIndex(l => l.kind === want)); tkFill(); }
+    else tkRepaintForm();
+  }
+}
+function calcSideBlock() {
+  return `<section class="block"><h2>${esc(T("Calculators"))}</h2><p class="hint">${esc(T("Impedance and crosstalk come from a 2D field solver, trace and via current from a thermal model of the board. Each result names its model, its accuracy and what it was checked against."))}</p><p class="hint">${esc(T("The AI runs the same calculators with the pcb_calc_toolkit tool."))}</p></section>`;
+}
+
 $("#boardbtn").addEventListener("click", e => { e.stopPropagation(); $("#boardmenu").hidden ? openPicker() : closePicker(); });
 $("#boardmenu").addEventListener("click", e => { const r = e.target.closest("[data-file]"); if (r) openBoard(r.dataset.file); });
 document.addEventListener("click", e => { if (!e.target.closest("#picker")) closePicker(); });
@@ -2129,10 +2488,425 @@ $("#follow").addEventListener("change", async e => {
   say(e.target.checked ? T("Following the board in front.") : T("Staying on this board."));
 });
 
+/* ================================================================ features and dependencies */
+// What this installation can do (eda_agent.features): every feature with its
+// state, every dependency with its version and license, the installer that
+// `eda-agent install-deps` runs, and the on/off switch of the engines.
+const FT = {rep: null, busy: false, timer: 0, plan: null, planFor: "", deep: false, pick: new Set(), filter: "all", allOpen: false};
+try { const f = localStorage.getItem("wb.ftfilter"); if (f) FT.filter = f; } catch (x) {}
+const ftState = s => T({ready: "Ready", partial: "Partly ready", missing: "Not installed", off: "Switched off", unavailable: "Not for this machine"}[s] || "Unknown");
+const ftDepState = s => T({present: "Installed", missing: "Missing", outdated: "Wrong version", unsupported: "Not for this machine"}[s] || "Unknown");
+const ftKind = k => T({python: "Python package", local: "Built from this repository", venv: "Own environment", program: "Program"}[k] || "Unknown");
+const ftPill = s => ({ready: "ok", present: "ok", partial: "warn", outdated: "warn", missing: "bad", off: "", unavailable: "", unsupported: ""}[s] || "");
+async function loadFeatures(deep) {
+  FT.busy = true; if (S.mode === "features") paintPane();
+  const r = await get("/api/wb/features" + (deep ? "?deep=1" : ""));
+  FT.rep = r || {ok: false}; FT.busy = false; if (r) FT.deep = !!deep;
+  if (S.mode === "features") paintPane();
+  if (S.mode === "sim" && SIM.eng) loadSim();
+  if (FT.rep.install && FT.rep.install.running) ftPoll();
+}
+function ftPoll() {
+  clearTimeout(FT.timer);
+  FT.timer = setTimeout(async () => {
+    const st = await get("/api/wb/features/install");
+    if (!st || !FT.rep) return ftPoll();
+    FT.rep.install = st;
+    if (st.running) { paintFtLog(); return ftPoll(); }
+    const ok = st.result && st.result.ok;
+    say(ok ? T("Installed. The features below are checked again.") : T("The install did not finish: see its log."), !ok);
+    loadFeatures(false);
+  }, 900);
+}
+function ftLogHtml() {
+  const st = FT.rep && FT.rep.install;
+  if (!st || (!st.running && !st.result)) return "";
+  const res = st.result, steps = (res && res.steps) || [];
+  const head = st.running ? `<span class="spin"></span> ${esc(T("Installing: {0}", (st.features || []).join(", ")))}`
+    : res.ok ? `<span class="good">${esc(T("Last install finished"))}</span>` : `<span class="bad">${esc(T("Last install failed"))}</span>`;
+  const rows = steps.map(s => `<li><span class="pill ${s.ok ? "ok" : "bad"}">${esc(s.ok ? T("Done") : T("Failed"))}</span> ${esc(s.title)} <small class="sub">${esc(T("{0} s", s.seconds))}</small></li>`).join("");
+  return `<div class="card ftlog"><h3>${head}<span class="sp"></span>${res && res.log ? `<small class="m">${esc(res.log)}</small>` : ""}</h3>
+    ${rows ? `<ul class="notes">${rows}</ul>` : ""}<pre class="small">${esc((st.lines || []).slice(-60).join("\n"))}</pre></div>`;
+}
+function paintFtLog() { const el = document.querySelector("#pane .ftlog"); if (el) el.outerHTML = ftLogHtml(); else if (S.mode === "features") paintPane(); }
+function ftPlanHtml(fid) {
+  if (FT.planFor !== fid || !FT.plan) return "";
+  const p = FT.plan;
+  const steps = (p.steps || []).map(s => `<li><b>${esc(T({pip: "Install", local: "Build", venv: "Install apart", manual: "By hand", skip: "Skipped"}[s.kind] || "Install"))}</b> ${esc(s.title)}${(s.commands || []).map(c => `<pre class="small">${esc(c)}</pre>`).join("")}${s.text ? `<div class="hint">${ftMd(s.text)}</div>` : ""}</li>`).join("");
+  const auto = p.automatic_steps || 0;
+  return `<div class="ftplan">${steps ? `<ul class="notes">${steps}</ul>` : `<p class="hint">${esc(T("Nothing to install."))}</p>`}
+    <div class="actions">${auto ? `<button class="go" data-ftgo="${esc(fid)}">${esc(p.download_mb ? T("Install now (about {0} MB)", p.download_mb) : T("Install now"))}</button>` : ""}<button data-ftcancel="1">${esc(T("Close"))}</button></div></div>`;
+}
+// Catalogue text marks commands and names with backticks: shown as code.
+const ftMd = t => esc(t).replace(/`([^`]+)`/g, '<span class="m">$1</span>');
+function ftLoc(d) {
+  // Where eda-agent looks for a program: saved here, or set in the environment.
+  const locs = d.locations || [];
+  if (!locs.length) return "";
+  const rows = locs.map(l => {
+    const src = l.source === "environment" ? T("set in the environment") : l.source === "saved" ? T("saved here") : "";
+    return `<div class="ftloc"><label class="m" for="ftloc-${esc(l.name)}">${esc(l.name)}</label>
+      <div class="row"><input id="ftloc-${esc(l.name)}" data-ftloc="${esc(l.name)}" value="${esc(l.value || l.saved || "")}" placeholder="${esc(T("Full path"))}"${l.source === "environment" ? " disabled" : ""}>
+      ${l.source === "environment" ? "" : `<button data-ftlocsave="${esc(l.name)}">${esc(T("Save"))}</button>${l.saved ? `<button data-ftlocclear="${esc(l.name)}">${esc(T("Forget"))}</button>` : ""}`}</div>
+      ${src ? `<small class="sub">${esc(src)}</small>` : ""}</div>`;
+  }).join("");
+  return `<div class="ftlocs"><small class="sub">${esc(T("Installed somewhere eda-agent does not look? Point it there; every later session uses it."))}</small>${rows}</div>`;
+}
+function ftDepRow(d, role) {
+  const open = d.state !== "present";
+  const how = (open && d.manual) || (d.locations || []).length
+    ? `<details${open && (d.locations || []).some(l => l.saved) ? " open" : ""}><summary>${esc(open ? T("How to install") : T("Location"))}</summary>${open && d.manual ? `<p class="hint">${ftMd(d.manual)}</p>` : ""}${open && d.url ? `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}</a>` : ""}${ftLoc(d)}</details>` : "";
+  return `<tr><td><b>${esc(d.title)}</b>${role ? ` <small class="sub">${esc(role)}</small>` : ""}<div class="sub">${esc(ftKind(d.kind))}${d.runs_apart ? " · " + esc(T("runs apart from eda-agent")) : ""}${d.note ? " · " + esc(d.note) : ""}</div>${how}</td>
+    <td><span class="pill ${ftPill(d.state)}" title="${esc(d.detail || d.where || "")}">${esc(ftDepState(d.state))}</span></td>
+    <td class="n">${esc(d.version || "")}</td><td class="m" title="${esc(d.license)}">${esc(d.license)}</td></tr>`;
+}
+function ftDeps(f, deps) {
+  const ids = [...f.needs, ...f.any_of.flat(), ...f.adds].filter(id => deps[id] && deps[id].applies !== false);
+  if (!ids.length) return "";
+  const alt = new Set(f.any_of.flat()), add = new Set(f.adds);
+  const rows = ids.map(id => ftDepRow(deps[id], alt.has(id) ? T("one of") : add.has(id) ? T("adds to it") : "")).join("");
+  const table = `<table class="grid ftdeps"><thead><tr><th>${esc(T("Needs"))}</th><th>${esc(T("Status"))}</th><th>${esc(T("Version"))}</th><th>${esc(T("License"))}</th></tr></thead><tbody>${rows}</tbody></table>`;
+  // Built-in packages are there on every installation: folded away unless one is missing.
+  if (f.core && f.state === "ready") return `<details class="ftcore"><summary>${esc(T("Packages ({0})", ids.length))}</summary>${table}</details>`;
+  return table;
+}
+function ftInstallable(f) { return !f.core && (f.state === "missing" || f.state === "partial" || (f.state === "off" && f.missing.length)); }
+function ftRelated(f, byId) {
+  const rel = (f.related || []).map(id => byId[id]).filter(Boolean);
+  if (!rel.length) return "";
+  return `<div class="ftrel"><small class="sub">${esc(T("Extended by"))}</small> ${rel.map(r => `<button class="ftchip ${esc(r.state)}" data-ftgoto="${esc(r.id)}" title="${esc(ftState(r.state))}"><span class="dot"></span>${esc(r.title)}</button>`).join(" ")}</div>`;
+}
+function ftCard(f, deps, running, byId) {
+  const canInstall = ftInstallable(f);
+  const sw = f.switchable ? `<label class="check ftsw" title="${esc(f.default_on ? T("An engine that is off is not offered for simulation jobs") : T("Off by default; on, eda-agent uses it for every run"))}"><input type="checkbox" data-ftswitch="${esc(f.id)}"${f.state !== "off" && !(f.state === "missing" && !f.default_on) ? " checked" : ""}${f.state === "missing" && !f.default_on ? " disabled" : ""}> ${esc(T("On"))}</label>` : "";
+  const pick = canInstall ? `<label class="check ftpick" title="${esc(T("Add to the selection to install"))}"><input type="checkbox" data-ftpick="${esc(f.id)}"${FT.pick.has(f.id) ? " checked" : ""}${running ? " disabled" : ""}></label>` : "";
+  const pill = f.core && f.state === "ready" ? `<span class="pill ok">${esc(T("Built in"))}</span>` : `<span class="pill ${ftPill(f.state)}">${esc(ftState(f.state))}</span>`;
+  const tools = (f.tools || []).length ? `<div class="sub2 hint">${esc(T("Tools"))}: ${f.tools.map(t => `<span class="m">${esc(t)}</span>`).join(", ")}</div>` : "";
+  return `<div class="card ftcard ${esc(f.state)}${f.core ? " core" : ""}" id="ft-${esc(f.id)}"><h3>${pick}${esc(f.title)} ${pill}<span class="sp"></span>${sw}
+      ${canInstall ? `<button data-ftplan="${esc(f.id)}"${running ? " disabled" : ""}>${esc(T("Install"))}</button>` : ""}</h3>
+    <p class="hint">${ftMd(f.summary)}</p>
+    ${f.note ? `<p class="hint ftnote">${ftMd(f.note)}</p>` : ""}
+    ${f.detail ? `<p class="hint bad">${esc(f.detail)}</p>` : ""}
+    ${f.offers.length ? `<h4>${esc(T("Offers"))}</h4><ul class="notes">${f.offers.map(o => `<li>${ftMd(o)}</li>`).join("")}</ul>` : ""}
+    ${ftRelated(f, byId)}
+    ${ftDeps(f, deps)}
+    ${ftPlanHtml(f.id)}
+    ${tools}
+    ${f.core ? (f.docs ? `<div class="sub2 hint"><span class="m">${esc(f.docs)}</span></div>` : "") : `<div class="sub2 hint">${f.extra ? `<span class="m">pip install eda-agent[${esc(f.extra)}]</span> · ` : ""}<span class="m">eda-agent install-deps ${esc(f.id)}</span>${f.docs ? ` · <span class="m">${esc(f.docs)}</span>` : ""}</div>`}</div>`;
+}
+const FT_FILTERS = [["all", "All"], ["builtin", "Built in"], ["ready", "Installed"], ["todo", "To install"], ["off", "Switched off"]];
+function ftShown(f) {
+  const k = FT.filter;
+  if (k === "builtin") return f.core;
+  if (k === "ready") return !f.core && (f.state === "ready" || f.state === "partial");
+  if (k === "todo") return ftInstallable(f) || f.state === "unavailable";
+  if (k === "off") return f.state === "off";
+  return true;
+}
+function ftAllDeps(R, byId) {
+  const deps = (R.dependencies || []).filter(d => d.applies !== false);
+  const order = {python: 0, local: 1, venv: 2, program: 3};
+  deps.sort((a, b) => (order[a.kind] - order[b.kind]) || a.title.localeCompare(b.title));
+  const rows = deps.map(d => `<tr><td><b>${esc(d.title)}</b><div class="sub">${esc(ftKind(d.kind))}${d.runs_apart ? " · " + esc(T("runs apart from eda-agent")) : ""}</div></td>
+    <td><span class="pill ${ftPill(d.state)}" title="${esc(d.detail || d.where || "")}">${esc(ftDepState(d.state))}</span></td>
+    <td class="n">${esc(d.version || "")}</td><td class="m">${esc(d.license)}</td>
+    <td>${(d.used_by || []).map(id => byId[id] ? `<button class="ftchip ${esc(byId[id].state)}" data-ftgoto="${esc(id)}"><span class="dot"></span>${esc(byId[id].title)}</button>` : "").join(" ")}</td></tr>`).join("");
+  const n = deps.length, have = deps.filter(d => d.state === "present").length;
+  return `<details class="card ftall"${FT.allOpen ? " open" : ""}><summary><b>${esc(T("All dependencies"))}</b> <small class="sub">${esc(T("{0} of {1} installed", have, n))}</small></summary>
+    <table class="grid ftdeps"><thead><tr><th>${esc(T("Dependency"))}</th><th>${esc(T("Status"))}</th><th>${esc(T("Version"))}</th><th>${esc(T("License"))}</th><th>${esc(T("Used by"))}</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+}
+function paintFeaturesPane() {
+  const pane = $("#pane"); pane.hidden = false;
+  const R = FT.rep;
+  if (!R) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; return; }
+  if (!R.ok) { pane.innerHTML = `<div class="result fail">${esc(T("The dashboard did not answer."))}</div>`; return; }
+  const deps = Object.fromEntries((R.dependencies || []).map(d => [d.id, d]));
+  const byId = Object.fromEntries((R.features || []).map(f => [f.id, f]));
+  const c = R.counts || {}, running = !!(R.install && R.install.running);
+  // A pick that is no longer installable (installed meanwhile) drops out.
+  for (const id of [...FT.pick]) if (!byId[id] || !ftInstallable(byId[id])) FT.pick.delete(id);
+  const fig = (label, v, cls) => `<div><span>${esc(label)}</span><b class="${cls || ""}">${num(v || 0)}</b></div>`;
+  const missingAny = (R.features || []).some(f => !f.dev && ftInstallable(f));
+  const groups = (R.groups || []).map(g => {
+    const cards = R.features.filter(f => f.group === g && ftShown(f)).map(f => ftCard(f, deps, running, byId)).join("");
+    return cards ? `<h2 class="wsh ftgroup">${esc(g)}</h2><div class="wsgrid ftgrid">${cards}</div>` : "";
+  }).join("") || `<p class="hint">${esc(T("Nothing matches this filter."))}</p>`;
+  const errs = (R.plugin_errors || []).map(e => `<li>${esc(e.plugin)}: ${esc(e.error)}</li>`).join("");
+  const chips = FT_FILTERS.map(([k, label]) => `<button data-ftfilter="${k}" aria-pressed="${FT.filter === k}">${esc(T(label))}</button>`).join("");
+  const nPick = FT.pick.size;
+  pane.innerHTML = `<div class="ftwrap"><div class="panehead"><div class="figures">
+      ${fig(T("Built in"), R.built_in, "good")}${fig(T("Installed"), (c.ready || 0) + (c.partial || 0) - (R.built_in || 0), "good")}${fig(T("Not installed"), c.missing, c.missing ? "bad" : "")}${fig(T("Switched off"), c.off)}${fig(T("Not for this machine"), c.unavailable)}
+    </div><span class="sp"></span>
+    <button data-ftdeep="1"${FT.busy ? " disabled" : ""} title="${esc(T("Also ask openEMS and the programs for their versions; takes a few seconds"))}">${FT.busy ? `<span class="spin"></span> ` : ""}${esc(T("Check thoroughly"))}</button>
+    ${nPick ? `<button class="go" data-ftplan="sel"${running ? " disabled" : ""}>${esc(T("Install selected ({0})", nPick))}</button>` : ""}
+    ${missingAny ? `<button${nPick ? "" : ' class="go"'} data-ftplan="all"${running ? " disabled" : ""}>${esc(T("Install everything missing"))}</button>` : ""}</div>
+    <div class="chipset ftfilters">${chips}</div>
+    <p class="hint">${esc(T("The same list and installer from a terminal: {0}. Python packages go into the Python eda-agent runs in; GPL programs run apart from it.", "eda-agent features, eda-agent install-deps --all"))}</p>
+    ${FT.planFor === "all" || FT.planFor === "sel" ? `<div class="card">${ftPlanHtml(FT.planFor)}</div>` : ""}
+    ${ftLogHtml()}
+    ${errs ? `<div class="result fail">${esc(T("Some plugins could not be loaded:"))}<ul>${errs}</ul></div>` : ""}
+    ${groups}
+    ${ftAllDeps(R, byId)}
+    <p class="hint">${esc(T("Engines are installed under {0}; switches are kept in {1}.", R.engines_dir, R.state_file))}</p></div>`;
+}
+function ftChosen(fid) { return fid === "all" ? {all: true} : fid === "sel" ? {features: [...FT.pick]} : {features: [fid]}; }
+async function featuresClick(e) {
+  const sum = e.target.closest(".ftall > summary");
+  if (sum) { FT.allOpen = !sum.parentElement.open; return; }
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.ftdeep) return loadFeatures(true);
+  if (b.dataset.ftfilter) { FT.filter = b.dataset.ftfilter; try { localStorage.setItem("wb.ftfilter", FT.filter); } catch (x) {} return paintPane(); }
+  if (b.dataset.ftgoto) {
+    const id = b.dataset.ftgoto;
+    if (!document.getElementById("ft-" + id)) { FT.filter = "all"; paintPane(); }
+    const c = document.getElementById("ft-" + id);
+    if (c) { c.scrollIntoView({block: "center", behavior: "smooth"}); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 1200); }
+    return;
+  }
+  if (b.dataset.ftlocsave || b.dataset.ftlocclear) {
+    const name = b.dataset.ftlocsave || b.dataset.ftlocclear;
+    const inp = document.querySelector(`[data-ftloc="${CSS.escape(name)}"]`);
+    const value = b.dataset.ftlocsave ? ((inp && inp.value) || "").trim() : "";
+    if (b.dataset.ftlocsave && !value) return say(T("Type the full path first."), true);
+    b.disabled = true;
+    const r = await post("/api/wb/features/path", {name, value});
+    b.disabled = false;
+    if (!r || !r.ok) return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true);
+    say(value ? T("{0} saved. Checking again.", name) : T("{0} forgotten.", name));
+    return loadFeatures(false);
+  }
+  if (b.dataset.ftcancel) { FT.plan = null; FT.planFor = ""; return paintPane(); }
+  if (b.dataset.ftplan) {
+    const fid = b.dataset.ftplan; b.disabled = true;
+    const r = await post("/api/wb/features/plan", ftChosen(fid));
+    if (!r || !r.ok) { b.disabled = false; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
+    FT.plan = r.plan; FT.planFor = fid; return paintPane();
+  }
+  if (b.dataset.ftgo) {
+    const fid = b.dataset.ftgo; b.disabled = true;
+    const r = await post("/api/wb/features/install", ftChosen(fid));
+    if (!r || !r.ok) { b.disabled = false; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
+    FT.plan = null; FT.planFor = "";
+    if (r.started) { if (fid === "sel") FT.pick.clear(); say(T("Installing: {0}", (r.plan.features || []).join(", "))); FT.rep.install = {running: true, features: r.plan.features, lines: []}; paintPane(); ftPoll(); }
+    else say(T("Nothing here can be installed automatically: follow the steps shown."));
+  }
+}
+async function featuresChange(e) {
+  const t = e.target; if (!t.dataset) return;
+  if (t.dataset.ftpick != null) {
+    (t.checked ? FT.pick.add : FT.pick.delete).call(FT.pick, t.dataset.ftpick);
+    if (FT.planFor === "sel") { FT.plan = null; FT.planFor = ""; }
+    return paintPane();
+  }
+  if (t.dataset.ftswitch == null) return;
+  const r = await post("/api/wb/features/switch", {id: t.dataset.ftswitch, on: t.checked});
+  if (!r || !r.ok) { t.checked = !t.checked; return say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); }
+  const f = FT.rep && (FT.rep.features || []).find(x => x.id === t.dataset.ftswitch);
+  say(t.checked ? T("{0} is on.", t.dataset.ftswitch)
+      : f && !f.default_on ? T("{0} is off.", t.dataset.ftswitch)
+      : T("{0} is off: simulation jobs will not use it.", t.dataset.ftswitch));
+  loadFeatures(false);
+}
+function featuresSideBlock() {
+  return `<section class="block"><h2>${esc(T("Features"))}</h2><p class="hint">${esc(T("What this installation can do, what each part needs, and what is missing. Installing changes the Python environment eda-agent runs in; a package that was already loaded needs eda-agent restarted."))}</p>
+    <p class="hint">${esc(T("Tick the cards you want and install them together, or install everything missing at once."))}</p>
+    <p class="hint">${esc(T("The AI reads the same list with the app_features tool."))}</p></section>`;
+}
+
+/* ================================================================ simulation */
+// Simulation engines and jobs (eda_agent.simulation): one folder per problem,
+// one run per engine, the answers side by side.
+const SIM = {eng: null, jobs: null, job: null, jobId: store.get("wb.sim.job", ""), timer: 0,
+             path: store.get("wb.sim.path", ""), pick: store.get("wb.sim.pick", {"eda-agent": true, "scikit-rf": true}),
+             line: Object.assign({structure: "microstrip", traces: "1", width_mils: "6", gap_mils: "6", copper_mils: "1.4", h_mils: "4",
+                                  h_below_mils: "5", h_above_mils: "5", er: "4.2", tand: "0.02", mask_mils: "0", foil: "smooth",
+                                  length_mm: "100", f_max_ghz: "20"}, store.get("wb.sim.line", {}))};
+// The line form: [spec key, label, choices]; a field shows only for the
+// structure it belongs to.
+const SIM_LINE = [
+  ["structure", "Structure", [["microstrip", "Microstrip (outer layer)"], ["stripline", "Stripline (inner layer)"]]],
+  ["traces", "Traces", [["1", "Single"], ["2", "Pair"]]],
+  ["width_mils", "Width (mil)"], ["gap_mils", "Gap (mil)", null, "pair"], ["copper_mils", "Copper (mil)"],
+  ["h_mils", "Height to plane (mil)", null, "microstrip"], ["h_below_mils", "Height below (mil)", null, "stripline"],
+  ["h_above_mils", "Height above (mil)", null, "stripline"], ["er", "Er"], ["tand", "Loss tangent"],
+  ["mask_mils", "Solder mask (mil)", null, "microstrip"],
+  ["foil", "Copper roughness", [["smooth", "Smooth"], ["std", "STD"], ["rtf", "RTF"], ["vlp", "VLP"], ["hvlp", "HVLP"]]],
+  ["length_mm", "Length (mm)"], ["f_max_ghz", "Up to (GHz)"]];
+const simState = s => T({queued: "Queued", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled"}[s] || "Unknown");
+const simPill = s => ({done: "ok", failed: "bad", running: "warn", queued: "warn"}[s] || "");
+function simFmt(v, unit) {
+  if (typeof v !== "number") return esc(String(v));
+  if (unit === "Hz") { const a = Math.abs(v); return a >= 1e9 ? num(v / 1e9, 4) + " GHz" : a >= 1e6 ? num(v / 1e6, 4) + " MHz" : a >= 1e3 ? num(v / 1e3, 4) + " kHz" : num(v, 3) + " Hz"; }
+  const a = Math.abs(v), s = a !== 0 && (a < 1e-3 || a >= 1e6) ? v.toExponential(4) : num(v, a < 1 ? 6 : 4);
+  return esc(s + (unit ? " " + unit : ""));
+}
+async function loadSim() {
+  const [e, j] = await Promise.all([get("/api/wb/sim/engines"), get("/api/wb/sim/jobs")]);
+  SIM.eng = e || {ok: false}; SIM.jobs = j || {ok: false};
+  if (SIM.jobId && !(SIM.jobs.jobs || []).some(x => x.id === SIM.jobId)) SIM.jobId = "";
+  if (!SIM.jobId && SIM.jobs.jobs && SIM.jobs.jobs.length) SIM.jobId = SIM.jobs.jobs[0].id;
+  if (SIM.jobId) await loadSimJob(); else if (S.mode === "sim") paintPane();
+}
+async function loadSimJob() {
+  const r = await get("/api/wb/sim/job/" + encodeURIComponent(SIM.jobId));
+  SIM.job = r && r.ok ? r : null;
+  if (S.mode === "sim") paintPane();
+  clearTimeout(SIM.timer);
+  const busy = SIM.job && Object.values(SIM.job.runs || {}).some(r => r.state === "running" || r.state === "queued");
+  if (busy && S.mode === "sim") SIM.timer = setTimeout(async () => { await loadSimJob(); if (!Object.values((SIM.job || {}).runs || {}).some(r => r.state === "running")) loadSim(); }, 2000);
+}
+function simEngineCard(e) {
+  const ok = e.available;
+  return `<div class="card simeng"><h3>${esc(e.title)} <span class="pill ${ftPill(e.state)}">${esc(ftState(e.state))}</span><span class="sp"></span><small>${esc(e.process === "external" ? T("Own program") : T("In this process"))}</small></h3>
+    <p class="hint">${esc(e.summary)}</p>
+    <dl class="kv"><dt>${esc(T("License"))}</dt><dd>${esc(e.license)}</dd><dt>${esc(T("Jobs"))}</dt><dd>${e.kinds.map(k => `<span class="pill">${esc(k)}</span>`).join(" ")}</dd>
+    ${Object.keys(e.versions || {}).length ? `<dt>${esc(T("Version"))}</dt><dd>${Object.entries(e.versions).map(([k, v]) => esc(k + " " + v)).join(", ")}</dd>` : ""}</dl>
+    ${ok ? "" : `<div class="actions"><button data-simfeature="${esc(e.feature)}">${esc(T("Set it up on the Features page"))}</button></div>`}</div>`;
+}
+function simJobsTable() {
+  const rows = (SIM.jobs.jobs || []).map(j => `<tr data-simjob="${esc(j.id)}"${j.id === SIM.jobId ? ' aria-selected="true"' : ""}><td><b>${esc(j.title)}</b><div class="sub m">${esc(j.id)}</div></td>
+    <td>${Object.entries(j.runs || {}).map(([n, r]) => `<span class="pill ${simPill(r.state)}" title="${esc(simState(r.state))}">${esc(n)}</span>`).join(" ")}</td>
+    <td class="n">${esc(new Date(j.created * 1000).toLocaleString(LANG))}</td></tr>`).join("");
+  return rows ? `<table class="grid"><thead><tr><th>${esc(T("Job"))}</th><th>${esc(T("Engines"))}</th><th>${esc(T("Created"))}</th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<p class="hint">${esc(T("No jobs yet. Check a Touchstone file below, or ask the AI to run one with sim_job_run."))}</p>`;
+}
+function simJobCard() {
+  const J = SIM.job; if (!J) return "";
+  const runs = J.runs || {}, names = Object.keys(runs);
+  const cmp = J.compare || {}, rows = cmp.metrics || [];
+  const kindEngines = ((SIM.eng.kinds || []).find(k => k.id === J.kind) || {}).engines || [];
+  const avail = Object.fromEntries((SIM.eng.engines || []).map(e => [e.id, e.available]));
+  const more = kindEngines.filter(n => !runs[n] && avail[n] && (!J.runnable || J.runnable.includes(n)));
+  const status = names.map(n => {
+    const r = runs[n], res = r.results || {};
+    const ver = (res.verdicts || []).map(v => `<li><span class="pill ${v.pass ? "ok" : "bad"}">${esc(v.pass ? T("Pass") : T("Fail"))}</span> ${esc(v.check)}: ${esc(v.detail || "")}</li>`).join("");
+    const notes = (res.notes || []).filter(Boolean).map(x => `<li>${esc(x)}</li>`).join("");
+    return `<div class="simrun"><h4>${esc(n)} <span class="pill ${simPill(r.state)}">${esc(simState(r.state))}</span>${r.seconds != null ? ` <small class="sub">${esc(T("{0} s", r.seconds))}</small>` : ""}
+      ${r.state === "running" ? ` <span class="spin"></span> <small class="sub">${esc(r.message || "")}</small>` : ""}</h4>
+      ${r.error ? `<p class="bad">${esc(r.error)}</p>` : ""}${ver ? `<ul class="notes">${ver}</ul>` : ""}${notes ? `<ul class="notes">${notes}</ul>` : ""}</div>`;
+  }).join("");
+  const r0 = names.length === 1 ? runs[names[0]].results : null;
+  const single = r0 ? (r0.metric_order || Object.keys(r0.metrics || {})).filter(k => (r0.metrics || {})[k]).map(k => [k, r0.metrics[k]]) : [];
+  const table = rows.length ? `<table class="grid simcmp"><thead><tr><th>${esc(T("Result"))}</th>${cmp.engines.map(n => `<th>${esc(n)}</th>`).join("")}<th>${esc(T("Spread"))}</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td>${esc(r.label || r.metric)}</td>${cmp.engines.map(n => `<td class="v">${n in r.values ? simFmt(r.values[n], r.unit) : "-"}</td>`).join("")}<td><span class="pill ${r.agree ? "ok" : "bad"}">${esc((100 * r.spread).toFixed(r.spread < 0.001 ? 3 : 1) + " %")}</span></td></tr>`).join("")}</tbody></table>`
+    : single.length ? `<table class="grid simcmp"><thead><tr><th>${esc(T("Result"))}</th><th>${esc(names[0])}</th></tr></thead><tbody>${single.map(([k, m]) => `<tr><td>${esc(m.label || k)}</td><td class="v">${m.display ? esc(m.display) : simFmt(m.value, m.unit)}</td></tr>`).join("")}</tbody></table>` : "";
+  const verdict = rows.length ? (cmp.agree ? `<div class="result ok">${esc(T("The engines agree within {0} %.", num(100 * cmp.rel_tol, 1)))}</div>`
+    : `<div class="result fail">${esc(T("The engines disagree: see the rows marked in red."))}</div>`) : "";
+  const files = names.map(n => {
+    const fl = ((runs[n].results || {}).files) || {}, url = f => "/api/wb/sim/file/" + encodeURIComponent(J.id) + "/" + encodeURIComponent(n) + "/" + encodeURIComponent(f);
+    const img = fl.plot ? `<img class="simplot" src="${esc(url(fl.plot))}" alt="${esc(T("S-parameters"))}">` : "";
+    const links = Object.entries(fl).filter(([k]) => k !== "plot").map(([k, f]) => /\.html$/i.test(f)
+      ? `<a href="${esc(url(f))}" target="_blank" rel="noopener">${esc(f)}</a>` : `<a href="${esc(url(f))}" download>${esc(f)}</a>`).join(" ");
+    return img || links ? `<div class="simfiles">${img}${links ? `<p class="m">${esc(T("Files"))}: ${links}</p>` : ""}</div>` : "";
+  }).join("");
+  return `<div class="card simjob"><h3>${esc(J.title)} <small>${esc(J.kind)}</small><span class="sp"></span>${more.map(n => `<button data-simrun="${esc(n)}">${esc(T("Run on {0}", n))}</button>`).join(" ")}</h3>
+    <p class="m">${esc(J.folder)}</p>${simLineage(J.lineage)}${verdict}${table}${files}${status}</div>`;
+}
+function simLineage(L) {
+  if (!L) return "";
+  const job = x => `<button class="link simlink" data-simjob="${esc(x.job)}" title="${esc(x.job)}">${esc(x.title)}</button> <small class="sub">${esc(x.kind)}</small>`;
+  const snap = s => `<span class="pill ${s.stale ? "bad" : s.stale === false ? "ok" : ""}" title="${esc(s.why || s.source || "")}">${esc(T("board snapshot {0}", s.snapshot.slice(0, 10)))}${s.stale ? " · " + esc(T("stale")) : ""}</span>`;
+  const from = [...(L.snapshots || []).map(snap), ...(L.parents || []).map(job)];
+  const used = (L.children || []).map(job);
+  if (!from.length && !used.length) return "";
+  return `<div class="simgraph">${from.length ? `<div><span class="m">${esc(T("Made from"))}</span> ${from.join(" ")}</div>` : ""}
+    ${used.length ? `<div><span class="m">${esc(T("Used by"))}</span> ${used.join(" ")}</div>` : ""}
+    ${L.stale ? `<div class="result fail">${esc(T("The board changed since this job's snapshot: take a new snapshot and run it again."))}</div>` : ""}</div>`;
+}
+function paintSimPane() {
+  const pane = $("#pane"); pane.hidden = false;
+  if (!SIM.eng || !SIM.jobs) { pane.innerHTML = `<p class="hint" style="padding:30px"><span class="spin"></span></p>`; return; }
+  if (!SIM.eng.ok) { pane.innerHTML = `<div class="result fail">${esc(T("The dashboard did not answer."))}</div>`; return; }
+  const ts = (SIM.eng.engines || []).filter(e => e.kinds.includes("touchstone-check"));
+  const picks = ts.map(e => `<label class="check"><input type="checkbox" data-simpick="${esc(e.id)}"${SIM.pick[e.id] ? " checked" : ""}${e.available ? "" : " disabled"}> ${esc(e.title)}</label>`).join("");
+  const errs = (SIM.eng.errors || []).map(e => `<li>${esc(e.plugin)}: ${esc(e.error)}</li>`).join("");
+  pane.innerHTML = `<div class="simwrap">
+    <h2 class="wsh">${esc(T("Engines"))}</h2><div class="wsgrid">${(SIM.eng.engines || []).map(simEngineCard).join("")}</div>
+    ${errs ? `<div class="result fail">${esc(T("Some plugins could not be loaded:"))}<ul>${errs}</ul></div>` : ""}
+    <h2 class="wsh">${esc(T("Check a Touchstone file"))}</h2>
+    <form class="card simnew" data-simform="1"><p class="hint">${esc(T("Passivity, reciprocity and the main figures of an .sNp file, from each engine you tick: two engines that agree are a second opinion."))}</p>
+      <div class="simrow"><input id="simpath" placeholder="${esc(T("Full path of the .sNp file"))}" value="${esc(SIM.path)}" autocomplete="off" aria-label="${esc(T("Full path of the .sNp file"))}"><button class="go" type="submit">${esc(T("Check"))}</button></div>
+      <div class="simpicks">${picks}</div></form>
+    <h2 class="wsh">${esc(T("Transmission line"))}</h2>
+    <form class="card simnew" data-simform="line"><p class="hint">${esc(T("Impedance, delay, loss and crosstalk of a trace or a pair, and the S-parameters of a length of it: R and L from an eddy-current solve with the planes, C and G with causal dielectrics. A single microstrip without mask is also checked against scikit-rf's closed form."))}</p>
+      <div class="simline">${simLineFields()}</div><div class="actions"><button class="go" type="submit">${esc(T("Model"))}</button></div></form>
+    <div class="simgrid"><div><h2 class="wsh">${esc(T("Jobs"))} <small class="sub m">${esc(SIM.jobs.folder || "")}</small></h2>${simJobsTable()}</div><div>${simJobCard()}</div></div></div>`;
+}
+async function simRun(kind, engines, spec, inputs, title) {
+  let job = "", failed = false;
+  for (const engine of engines) {
+    const r = await post("/api/wb/sim/run", {kind, engine, spec, inputs, title});
+    if (!r || !r.ok) { failed = true; say((r && (r.error || r.reason)) || T("The dashboard did not answer."), true); if (!r || !r.job) continue; }
+    job = r.job || job;
+  }
+  if (job) { SIM.jobId = job; store.set("wb.sim.job", job); }
+  await loadSim();
+  if (!failed) say("");  // the "Modelling ..." line ends with the run
+}
+async function simClick(e) {
+  const tr = e.target.closest("[data-simjob]");
+  if (tr) { SIM.jobId = tr.dataset.simjob; store.set("wb.sim.job", SIM.jobId); return loadSimJob(); }
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.simfeature) { setMode("features"); setTimeout(() => { const c = document.getElementById("ft-" + b.dataset.simfeature); if (c) c.scrollIntoView({block: "center"}); }, 400); return; }
+  if (b.dataset.simrun && SIM.job) {
+    b.disabled = true;
+    const ins = Object.fromEntries(Object.entries(SIM.job.inputs || {}).map(([k, v]) => [k, SIM.job.folder + "/inputs/" + v.file]));
+    return simRun(SIM.job.kind, [b.dataset.simrun], SIM.job.spec || {}, ins, SIM.job.title);
+  }
+}
+function simLineFields() {
+  const L = SIM.line;
+  return SIM_LINE.filter(([k, , , only]) => !only || (only === "pair" ? L.traces === "2" : L.structure === only)).map(([k, label, choices]) => {
+    const input = choices ? `<select data-simline="${k}">${choices.map(([v, l]) => `<option value="${esc(v)}"${L[k] === v ? " selected" : ""}>${esc(T(l))}</option>`).join("")}</select>`
+      : `<input data-simline="${k}" value="${esc(L[k] || "")}" inputmode="decimal" autocomplete="off">`;
+    return `<label>${esc(T(label))}${input}</label>`;
+  }).join("");
+}
+function simLineSubmit() {
+  const L = SIM.line, spec = {structure: L.structure, traces: Number(L.traces), foil: L.foil};
+  for (const [k, , choices, only] of SIM_LINE) {
+    if (choices || ["structure", "traces", "foil"].includes(k)) continue;
+    if (only && (only === "pair" ? L.traces !== "2" : L.structure !== only)) continue;
+    const v = parseFloat(String(L[k] || "").replace(",", "."));
+    if (!isFinite(v)) return say(T("Fill in every number."), true);
+    spec[k] = v;
+  }
+  const engines = ["eda-agent"];
+  if (spec.structure === "microstrip" && spec.traces === 1 && !spec.mask_mils && SIM.pick["scikit-rf"]
+      && (SIM.eng.engines || []).some(e => e.id === "scikit-rf" && e.available)) engines.push("scikit-rf");
+  const title = `${spec.structure} ${spec.traces === 2 ? T("Pair") : T("Single")} ${spec.width_mils} mil`;
+  say(T("Modelling {0}", title));
+  simRun("line-model", engines, spec, {}, title);
+}
+function simSubmit(form) {
+  if (form && form.dataset && form.dataset.simform === "line") return simLineSubmit();
+  const path = SIM.path.trim();
+  if (!path) return say(T("Give the full path of an .sNp file."), true);
+  const engines = Object.keys(SIM.pick).filter(k => SIM.pick[k]);
+  if (!engines.length) return say(T("Tick at least one engine."), true);
+  say(T("Checking {0}", baseName(path)));
+  simRun("touchstone-check", engines, {}, {touchstone: path}, baseName(path));
+}
+function simInput(e) {
+  if (e.target.id === "simpath") { SIM.path = e.target.value; store.set("wb.sim.path", SIM.path); }
+  if (e.target.dataset && e.target.dataset.simline && e.target.tagName === "INPUT") { SIM.line[e.target.dataset.simline] = e.target.value; store.set("wb.sim.line", SIM.line); }
+}
+function simChange(e) {
+  const t = e.target;
+  if (t.dataset && t.dataset.simpick != null) { SIM.pick[t.dataset.simpick] = t.checked; store.set("wb.sim.pick", SIM.pick); }
+  if (t.dataset && t.dataset.simline && t.tagName === "SELECT") {
+    SIM.line[t.dataset.simline] = t.value; store.set("wb.sim.line", SIM.line);
+    const box = $(".simline"); if (box) box.innerHTML = simLineFields();
+  }
+}
+function simSideBlock() {
+  return `<section class="block"><h2>${esc(T("Simulation"))}</h2><p class="hint">${esc(T("Every simulator is an engine: this project's own solvers, scikit-rf, openEMS and any plugin. A job is one problem; each engine's answer is kept beside the others, so they can be compared."))}</p><p class="hint">${esc(T("The AI runs the same jobs with sim_job_run and compares them with sim_job_compare."))}</p></section>`;
+}
+
 /* ================================================================ wiring */
 function setMode(m) {
   if (!MODES.includes(m)) m = "place";
-  const from = S.mode; S.mode = m; store.set("wb.mode", m);
+  const from = S.mode; S.mode = m; store.set("wb.mode", m); $("#app").dataset.mode = m;
   document.querySelectorAll("#modes button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
   if (m === "route" && S.list === "parts") setList("nets");
   if ((m === "place" || m === "assemble") && S.list === "nets") setList("parts");
@@ -2140,8 +2914,12 @@ function setMode(m) {
   if (m === "engines") pollLive(true); else if (from === "engines" || S.drawnBoard !== S.board) useDrawn(false);
   if (m === "assemble") { if (!S.lib || S.lib.state === "empty") pollLibrary(true); asmLight(); }
   else if (from === "assemble") S.multi = new Set();
-  if (m === "library" && !S.lib) pollLibrary(true);
+  if (m === "library" && !S.lib && S.libView !== "find") pollLibrary(true);
   if (m === "usage") loadUsage();
+  if (m === "calc") loadCalc();
+  if (m === "features") loadFeatures(false);
+  if (m === "sim") loadSim();
+  if (WIDE_MODES.includes(m) !== WIDE_MODES.includes(from)) resize();
   S.lastResult = null; paintPane(); clearTools(); paintTools(); paintTitle(); paintEmpty(); draw();
 }
 function repaintAll() { legend(); paintNav(); paintInspector(); clearTools(); paintTools(); paintTitle(); paintEmpty(); paintPane(); lastCall(); if (ACT.open) paintActivity(); draw(); }
@@ -2195,11 +2973,15 @@ function sideClick(e) {
 }
 $("#side").addEventListener("click", sideClick);
 $("#pane").addEventListener("click", e => {
+  if (S.mode === "calc") return calcClick(e);
+  if (S.mode === "features") return featuresClick(e);
+  if (S.mode === "sim") return simClick(e);
   if (S.mode === "workspace") return wsPaneClick(e);
   if (S.mode === "tools") {
     const r = e.target.closest("[data-tool]"); if (r) { S.tool = r.dataset.tool; S.toolResult = null; paintPane(); }
     return;
   }
+  if (pfClick(e)) return;
   if (e.target.closest("[data-lib]")) return libDo(e.target.closest("[data-lib]").dataset.lib);
   const only = e.target.closest("[data-libonly]"); if (only) { S.libOnly = only.dataset.libonly; return paintPane(); }
   if (e.target.closest("a") || e.target.id === "libq") return;
@@ -2214,13 +2996,22 @@ $("#pane").addEventListener("click", e => {
   S.multi = new Set(S.libPick); paintPane(); clearTools(); paintTools();
 });
 $("#pane").addEventListener("input", e => {
+  if (S.mode === "calc") return calcInput(e);
+  if (S.mode === "sim") return simInput(e);
   if (e.target.id === "libq") { S.libFilter = e.target.value; paintPane(); }
+  if (e.target.id === "pfq") pfSearch(e.target.value);
+  if (e.target.id === "pflib") S.pf.lib = e.target.value;
+  if (e.target.id === "pfname") S.pf.name = e.target.value;
+  if (e.target.id === "pfvault") { S.pf.vault = e.target.value.trim(); store.set("wb.vault", S.pf.vault); }
   if (e.target.id === "toolq") { S.toolFilter = e.target.value; paintPane(); }
   if (e.target.id === "stgpath") S.stgDraft.path = e.target.value;
   if (e.target.dataset && e.target.dataset.stgdetail != null && S.stgChecks) S.stgDraft[S.stgChecks.product + "|" + e.target.dataset.stgdetail] = e.target.value;
 });
-$("#pane").addEventListener("submit", e => { e.preventDefault(); runTool(e.target); });
+$("#pane").addEventListener("submit", e => { e.preventDefault(); if (S.mode === "calc") return calcRun(0); if (S.mode === "sim") return simSubmit(e.target); runTool(e.target); });
 $("#pane").addEventListener("change", e => {
+  if (S.mode === "calc") return calcChange(e);
+  if (S.mode === "features") return featuresChange(e);
+  if (S.mode === "sim") return simChange(e);
   if (S.mode === "usage" && e.target.dataset) {
     if (e.target.dataset.usagews != null) { S.usageWs = e.target.value; loadUsage(); }
     else if (e.target.dataset.usagedays != null) { S.usageDays = +e.target.value; loadUsage(); }
@@ -2260,6 +3051,7 @@ window.addEventListener("keydown", e => {
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key;
   if (/^[1-9]$/.test(k)) setMode(MODES[+k - 1]);
+  else if (k === "0") setMode("calc");
   else if (k === "/") { e.preventDefault(); $("#q").focus(); }
   else if (k === "f" || k === "F") fit();
   else if (k === "n") nextProblem(1); else if (k === "N") nextProblem(-1);

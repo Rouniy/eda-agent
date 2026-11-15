@@ -10,6 +10,11 @@ from eda_agent.layout.model import BOTTOM, Component, LayoutBoard, Pad
 from eda_agent.layout.rotation_audit import mst_length, suggest_rotations
 
 
+def _rect(cx, cy, w, h):
+    return [(cx - w / 2, cy - h / 2), (cx + w / 2, cy - h / 2),
+            (cx + w / 2, cy + h / 2), (cx - w / 2, cy + h / 2)]
+
+
 def _board(rotation: float = 0.0, side: str = "top", gnd_fanout: int = 0) -> LayoutBoard:
     """R1 sits between U1.1 (A, left) and U2.1 (B, right).
 
@@ -97,6 +102,40 @@ def test_a_plane_net_scores_the_nearest_return_pad():
     assert s["suggested_rotation"] == 270
     assert s["improvement_mils"] == pytest.approx(30.0)
     assert [set(t) for t in s["suggested_pads"]] == [{"pad", "net", "nearest_return_mils"}]
+def _blocked_board(r1_side, c9_side):
+    """R1's courtyard is off its origin, so every turn swings it into C9."""
+    board = _board(180, side=r1_side)
+    board.components[2].courtyard = _rect(0, 40, 160, 60)
+    board.components[2].courtyard_source = "courtyard"
+    board.components.append(Component(ref="C9", x=0, y=-60, side=c9_side,
+                                      courtyard=_rect(0, -60, 40, 40),
+                                      courtyard_source="courtyard"))
+    return board
+
+
+def test_a_neighbour_on_the_same_side_blocks_every_turn():
+    for side in ("top", BOTTOM):
+        out = suggest_rotations(_blocked_board(side, side))
+        assert not [s for s in out["suggestions"] if s["designator"] == "R1"], side
+        hits = [b for b in out["blocked"] if b["designator"] == "R1"]
+        assert {b["suggested_rotation"] for b in hits} == {0, 90, 270}
+        assert {b["collides_with"] for b in hits} == {"C9"}
+
+
+def test_a_part_on_the_other_side_does_not_block_a_turn():
+    """Courtyards on opposite sides never meet, as in placement_audit."""
+    for r1_side, c9_side in (("top", BOTTOM), (BOTTOM, "top")):
+        out = suggest_rotations(_blocked_board(r1_side, c9_side))
+        r1 = next(s for s in out["suggestions"] if s["designator"] == "R1")
+        assert r1["suggested_rotation"] == 0
+        assert not [b for b in out["blocked"] if b["designator"] == "R1"]
+
+
+def test_a_locked_part_is_not_touched():
+    board = _board(180)
+    board.components[2].locked = True
+    out = suggest_rotations(board)
+    assert not [s for s in out["suggestions"] if s["designator"] == "R1"]
 
 
 def test_rotation_audit_is_a_registered_advisory_check():

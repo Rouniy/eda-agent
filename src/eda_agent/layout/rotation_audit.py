@@ -16,6 +16,13 @@ Each connected net scores one term, moving all of the part's pads together:
 * a plane net (more pads than that, a ground or a supply): the distance to
   the nearest pad on another part in that net, because a decoupling cap's return is
   local and closeness to the IC's ground or thermal pad is what matters.
+A TURN THAT COLLIDES IS NOT SUGGESTED: the part's courtyard is turned with
+it and checked against every other part's ON THE SAME SIDE, so a
+suggestion can be applied as it is; a bottom-side part's turn is not ruled
+out by a top-side part above it, nor the other way round, the same rule
+``placement_audit`` uses for overlaps. Bottom-side parts are scored too: their pads are turned where
+they are on the board, which needs no assumption about how a mirrored
+part's rotation angle is counted.
 
 Geometry only. It knows nothing of which nets are critical, so a pull-up or
 a strap resistor can be told to turn for no electrical gain, and a

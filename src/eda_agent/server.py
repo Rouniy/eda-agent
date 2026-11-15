@@ -234,16 +234,18 @@ _UI_AUTOMATION_PARAGRAPHS = {
 }
 
 
-#: The units sentence. KiCad's tools take millimetres, as its files and API
-#: do, and every distance argument names its unit.
-_UNITS = {
-    "altium": "Coordinates are in mils throughout.\n",
-    "easyeda": "Coordinates are in mils throughout.\n",
-    "kicad": ("Coordinates are in millimetres on KiCad, as in its files: every\n"
-              "distance argument says so (x_mm, width_mm).\n"),
-    "both": ("Coordinates are in mils, except on the kicad_ tools, which take\n"
-             "millimetres and say so in each argument (x_mm, width_mm).\n"),
-}
+#: The length rule, the same on every backend (lengths.py).
+_UNITS = (
+    "LENGTHS IN MILS OR MM. Each session works in one unit, mil or mm:\n"
+    "length_units reads or sets it; a new session starts in the unit\n"
+    "chosen on the Config tab (mil unless changed). A length whose name\n"
+    "has no unit (x, width, hole_size) is in the session's unit, in\n"
+    "arguments and in replies, whatever its description says. A name with\n"
+    "a unit always means it: thickness_mils is mils, and thickness_mm may\n"
+    "be given in its place. Replies rename such keys to the session's\n"
+    "unit and say length_units. One call can use the other unit by giving\n"
+    "length_units beside its arguments.\n"
+)
 
 
 def build_server_instructions(
@@ -302,9 +304,9 @@ def build_server_instructions(
         "category.\n"
         "\n"
         + ui
-        + engine + items +
-        "Coordinates are in mils throughout, on every backend.\n"
-        "\n"
+        + engine + items
+        + _UNITS
+        + "\n"
         "A reply carrying \"update\" means a newer eda-agent is out. Tell\n"
         "the user what is new and ask; call server_update(apply=True) only\n"
         "after they agree.\n"
@@ -368,6 +370,120 @@ def add_update_notice(result, news):
     return (out, structured) if isinstance(result, tuple) else out
 
 
+def _tool_params(server, name: str) -> Optional[set]:
+    """The argument names ``name`` takes, or None for an unknown tool."""
+    import inspect
+    fn = None
+    try:
+        tool = server._tool_manager.get_tool(name)
+        fn = tool.fn if tool is not None else None
+    except Exception:  # noqa: BLE001
+        fn = None
+    if fn is None:
+        spec = (getattr(server, "hidden", {}) or {}).get(name)
+        fn = getattr(spec, "fn", None)
+    if fn is None:
+        return None
+    try:
+        return set(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lengths_in(server, name: str, arguments: dict):
+    """The call's arguments as the tool takes them, and how to read its
+    reply: ``(arguments, plan)``. A tool run through another (tool_invoke,
+    a family tool, a list of items) is converted as itself."""
+    from . import lengths
+    from .tools.folds import FOLDS, _BUILT
+    arguments, unit = lengths.call_unit(arguments)
+
+    def one(tool: str, args: dict) -> dict:
+        params = _tool_params(server, tool)
+        if params is None or not isinstance(args, dict):
+            return args
+        bad = lengths.unknown_unit_names(args, params)
+        if bad:
+            raise ValueError(f"{tool} takes no {', '.join(bad)}")
+        return lengths.args_in(tool, args, unit, params)
+
+    if name == "tool_invoke" and isinstance(arguments.get("arguments"), dict):
+        inner = str(arguments.get("name") or "")
+        if inner in _BUILT:
+            converted, plan = _lengths_in(server, inner, arguments["arguments"])
+            return {**arguments, "arguments": converted}, ("invoke", unit, inner, plan)
+        args = one(inner, arguments["arguments"])
+        return {**arguments, "arguments": args}, ("invoke", unit, inner, ("tool", unit, inner, args))
+    if name in _BUILT:
+        key = FOLDS[name].key
+
+        def member(call: dict):
+            tool = _BUILT[name].get(str(call.get(key) or "").strip())
+            if tool is None or not isinstance(call.get("args"), dict):
+                return call, ("tool", unit, "", {})
+            args = one(tool, call["args"])
+            return {**call, "args": args}, ("tool", unit, tool, args)
+
+        if isinstance(arguments.get("items"), list):
+            done = [member(c) if isinstance(c, dict) else (c, ("tool", unit, "", {}))
+                    for c in arguments["items"]]
+            return ({**arguments, "items": [c for c, _ in done]},
+                    ("items", unit, [p for _, p in done]))
+        call, plan = member(arguments)
+        return call, plan
+    args = one(name, arguments)
+    return args, ("tool", unit, name, args)
+
+
+def _reply_lengths(body, plan):
+    from . import lengths
+    kind, unit = plan[0], plan[1]
+    if kind == "tool":
+        tool, args = plan[2], plan[3]
+        if not tool:
+            return {**body, lengths.OVERRIDE: unit} if isinstance(body, dict) else body
+        return lengths.reply_in(tool, body, unit, args)
+    if kind == "invoke":
+        if isinstance(body, dict) and "result" in body:
+            return {**body, "result": _reply_lengths(body["result"], plan[3]),
+                    lengths.OVERRIDE: unit}
+        return body
+    if kind == "items":
+        if isinstance(body, dict) and isinstance(body.get("items"), list):
+            items = [_reply_lengths(r, p) if i < len(plan[2]) else r
+                     for i, (r, p) in enumerate(zip(body["items"], plan[2]))]
+            return {**body, "items": items, lengths.OVERRIDE: unit}
+        return body
+    return body
+
+
+def _lengths_out(result, plan):
+    """The tool's result with its lengths in the call's unit: the
+    structured copy and the JSON text copy alike."""
+    import json
+    blocks, structured = (result if isinstance(result, tuple) else (result, None))
+    if isinstance(structured, dict):
+        if set(structured) == {"result"}:
+            structured = {"result": _reply_lengths(structured["result"], plan)}
+        else:
+            structured = _reply_lengths(structured, plan)
+    if isinstance(blocks, list):
+        out = []
+        for block in blocks:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text[:1] in ("{", "["):
+                try:
+                    body = json.loads(text)
+                except ValueError:
+                    body = None
+                if body is not None:
+                    block = block.model_copy(update={
+                        "text": json.dumps(_reply_lengths(body, plan), ensure_ascii=False)})
+            out.append(block)
+        blocks = out
+    return (blocks, structured) if isinstance(result, tuple) else blocks
+
+
 class _CompactFastMCP(FastMCP):
     """FastMCP whose tool results carry compact JSON text, and the news of
     a newer eda-agent on the first reply after it is found; requests are
@@ -393,10 +509,22 @@ class _CompactFastMCP(FastMCP):
                                        self._mcp_server.create_initialization_options())
 
     async def call_tool(self, name, arguments):
+        logger.info("Tool call: %s", name)
+        # Lengths are given and returned in the session's unit; the tools
+        # work in their own (lengths.py). Only the outermost call converts:
+        # tool_invoke and the family tools call others through here.
+        from . import lengths
+        if lengths.inside():
+            plan = None
+        else:
+            arguments, plan = _lengths_in(self, name, arguments or {})
+        # Its commands to Altium take one turn together (Main.pas
+        # ScanForRequestFile), and the turn passes on when it returns.
         from .bridge.altium_bridge import tool_call
         from .diag import usage
         started = time.monotonic()
         call: dict = {"tool": name}
+        token = lengths.enter()
         try:
             with tool_call(name) as call:
                 result = await super().call_tool(name, arguments)
@@ -405,6 +533,10 @@ class _CompactFastMCP(FastMCP):
                 _usage_name(name, arguments, call), arguments,
                 ms=int((time.monotonic() - started) * 1000), error=exc)
             raise
+        finally:
+            lengths.leave(token)
+        if plan is not None:
+            result = _lengths_out(result, plan)
         try:
             from . import updates
             news = updates.notice_once()
@@ -869,6 +1001,9 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "serve", "start", "install-scripts", "scripts-path", "relaunch",
             "update", "easyeda-extension",
         )),
+        ("Features and dependencies", (
+            "features", "install-deps",
+        )),
         ("Diagnostics", (
             "doctor", "health", "perf", "compute-status", "fork-status",
         )),
@@ -882,6 +1017,7 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "profile-init", "profile-list", "profile-show", "profile-use",
             "profile-validate", "profile-new-project",
             "phases-show", "phases-enable", "phases-disable",
+            "router-show", "router-use",
         )),
         ("Design modes", (
             "mode-list", "mode-show", "mode-use", "mode-init",
@@ -894,7 +1030,10 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
         )),
         ("Fab capabilities and materials", (
             "stackup-vendors", "stackup-show", "stackup-profile",
-            "laminates", "fab-inspect",
+            "laminates", "fab-inspect", "fab-list", "fab-rules", "fab-compare", "fab-refresh",
+        )),
+        ("IPC standards", (
+            "std-list", "std-rules", "std-floors",
         )),
         ("Altium 365", (
             "altium365-login", "altium365-logout", "a365-login", "a365-logout",
@@ -1207,6 +1346,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON instead of the text report.",
     )
 
+    # features -- what is installed, what each feature offers and needs
+    feat_p = subparsers.add_parser(
+        "features",
+        help="List features and dependencies: installed, missing, versions",
+    )
+    feat_p.add_argument("--deep", action="store_true",
+                        help="Also run the slow checks (openEMS import, versions of programs).")
+    feat_p.add_argument("--json", action="store_true", help="Machine-readable output.")
+    feat_p.add_argument("--on", metavar="FEATURE", default="",
+                        help="Switch a switchable feature (an engine) on.")
+    feat_p.add_argument("--off", metavar="FEATURE", default="",
+                        help="Switch a switchable feature (an engine) off.")
+    feat_p.add_argument("--set-path", metavar="VARIABLE=PATH", default="",
+                        help="Save where a program is, e.g. "
+                             "EDA_AGENT_OPENEMS_DIR=F:\\openEMS; used by every later "
+                             "session unless the environment sets it.")
+    feat_p.add_argument("--clear-path", metavar="VARIABLE", default="",
+                        help="Forget a saved program location.")
+
+    # install-deps -- one command that installs what features need
+    inst_p = subparsers.add_parser(
+        "install-deps",
+        help="Install what features need (all of them with --all)",
+        epilog=("Python packages go into this Python with pip, one call per "
+                "feature; the Rust wheels are built from this checkout when "
+                "cargo is present; GPL engines get their own environment. "
+                "Programs such as openEMS and LTspice cannot be installed "
+                "this way: their steps are printed. `eda-agent features` "
+                "lists the feature names."),
+    )
+    inst_p.add_argument("names", nargs="*", metavar="FEATURE",
+                        help="Features to install (see `eda-agent features`).")
+    inst_p.add_argument("--all", action="store_true", dest="everything",
+                        help="Every feature except the development ones.")
+    inst_p.add_argument("--dev", action="store_true",
+                        help="With --all, include the test suite and website tools.")
+    inst_p.add_argument("--dry-run", action="store_true",
+                        help="Show the plan and change nothing.")
+    inst_p.add_argument("--yes", "-y", action="store_true",
+                        help="Do not ask before installing.")
+    inst_p.add_argument("--json", action="store_true", help="Machine-readable output.")
+
     # compute-status -- which A* implementation would run, and why
     subparsers.add_parser(
         "compute-status",
@@ -1370,6 +1551,23 @@ def build_parser() -> argparse.ArgumentParser:
              "has are overwritten; anything else already there is left "
              "alone (this merges, it does not replace the directory).")
 
+    # router-* -- which autorouter engine routing runs use (route/engine.py)
+    router_show_p = subparsers.add_parser(
+        "router-show",
+        help="Which autorouter engine routing runs use (default or euan), "
+             "and which setting decided it.",
+    )
+    router_show_p.add_argument("--json", action="store_true", dest="json_out",
+                               help="Emit machine-readable JSON.")
+    router_use_p = subparsers.add_parser(
+        "router-use",
+        help="Choose the autorouter engine: 'default', or 'euan' for the "
+             "alternative router from Euan's fork (off by default). Writes "
+             "the active profile's router.json.",
+    )
+    router_use_p.add_argument("engine", choices=("default", "euan"),  # = engine.ENGINES
+                              help="default (the usual router) or euan.")
+
     # mode-* -- design modes: presets for the kind of run (design/modes.py)
     subparsers.add_parser("mode-list", help="List the design modes and which is selected.")
     mode_show_p = subparsers.add_parser(
@@ -1471,6 +1669,87 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bundled laminate properties, with BOTH dielectric constants",
     ).add_argument("--json", dest="json_out", action="store_true",
                    help="Print as JSON.")
+
+    std_list_p = subparsers.add_parser(
+        "std-list",
+        help="The IPC standards catalogue: current revisions and scope",
+    )
+    std_list_p.add_argument("--domain", choices=("design", "fabrication",
+                            "materials", "assembly", "data"),
+                            help="Only standards of this domain.")
+    std_list_p.add_argument("--priority", type=int, choices=(1, 2, 3),
+                            help="Only this priority (1 drives rules now).")
+    std_list_p.add_argument("--json", dest="json_out", action="store_true",
+                            help="Print as JSON.")
+    std_rules_p = subparsers.add_parser(
+        "std-rules",
+        help="IPC rule definitions and which have values in the profile",
+        epilog=("Values come from your licensed copy, in the active "
+                "profile's standards/values.json; the repository ships none. "
+                "See docs/IPC_STANDARDS.md."),
+    )
+    std_rules_p.add_argument("--category",
+                             help="Only rules of this category, e.g. annular_ring.")
+    std_rules_p.add_argument("--json", dest="json_out", action="store_true",
+                             help="Print as JSON.")
+    subparsers.add_parser(
+        "std-floors",
+        help="Write the IPC class floors the fab rules read, from profile values",
+    ).add_argument("--json", dest="json_out", action="store_true",
+                   help="Print as JSON.")
+
+    subparsers.add_parser(
+        "fab-list",
+        help="Fab connectors: which fabs have design-rule data, and its age",
+    ).add_argument("--json", dest="json_out", action="store_true",
+                   help="Print as JSON.")
+    fab_rules_p = subparsers.add_parser(
+        "fab-rules",
+        help="Every published design rule of one fab build, with quotes",
+        epilog=("A rule the fab does not publish is listed as missing with "
+                "the reason; nothing is guessed. --ipc-class reads the "
+                "class floors from the active profile's "
+                "standards/ipc_class_floors.json and is refused without it."),
+    )
+    fab_rules_p.add_argument("vendor", help="e.g. jlcpcb, technoservice")
+    fab_rules_p.add_argument("--layers", type=int, required=True,
+                             help="Copper layer count.")
+    fab_rules_p.add_argument("--oz", type=float, default=1.0,
+                             help="Outer copper weight in oz (default 1).")
+    fab_rules_p.add_argument("--tier", default="standard",
+                             help="The fab's tier or process (fab-list shows them).")
+    fab_rules_p.add_argument("--ipc-class", type=int, choices=(1, 2, 3),
+                             help="Also apply IPC class floors.")
+    fab_rules_p.add_argument("--json", dest="json_out", action="store_true",
+                             help="Print as JSON.")
+    fab_cmp_p = subparsers.add_parser(
+        "fab-compare",
+        help="All fabs and tiers side by side for one build",
+    )
+    fab_cmp_p.add_argument("--layers", type=int, required=True,
+                           help="Copper layer count.")
+    fab_cmp_p.add_argument("--oz", type=float, default=1.0,
+                           help="Outer copper weight in oz (default 1).")
+    fab_cmp_p.add_argument("--key", action="append", dest="keys",
+                           help="Rule key to show, e.g. min_track. Repeatable.")
+    fab_cmp_p.add_argument("--json", dest="json_out", action="store_true",
+                           help="Print as JSON.")
+    fab_ref_p = subparsers.add_parser(
+        "fab-refresh",
+        help="Re-read a fab's pages and check every stored quote",
+        epilog=("Obeys robots.txt. For a site that refuses, save the page "
+                "from a browser and pass it with --file. Snapshots go to "
+                "%%USERPROFILE%%/.eda-agent/fab_snapshots/. Never rewrites "
+                "a figure; --write only moves the reading date, and only "
+                "when every quote was found again."),
+    )
+    fab_ref_p.add_argument("vendor", help="Connector key (fab-list).")
+    fab_ref_p.add_argument("--file", action="append", dest="files",
+                           help="A saved copy of a page. Repeatable.")
+    fab_ref_p.add_argument("--write", action="store_true",
+                           help="Move the reading date when all quotes match.")
+    fab_ref_p.add_argument("--json", dest="json_out", action="store_true",
+                           help="Print as JSON.")
 
     dash_p = subparsers.add_parser(
         "dashboard",
@@ -1680,6 +1959,38 @@ def main() -> int:
     # is chosen at import, so changing it after parsing is too late.
     if getattr(args, "mode", None):
         os.environ["EDA_AGENT_MODE"] = args.mode.strip()
+    # --compute before anything can run a search, and checked here: a
+    # server asked for Rust that cannot load it should say so at start,
+    # not on the first routing call an hour later.
+    requested_compute = getattr(args, "compute", None)
+    if requested_compute:
+        os.environ["EDA_AGENT_COMPUTE"] = requested_compute
+    # Program locations saved on the Features page and the switches that
+    # set a variable (the Rust kernels): defaults under whatever the
+    # environment says, so every command and the server see them.
+    from .features import state as _feature_state
+    _feature_state.apply()
+    if args.command == "features":
+        return cli.cmd_features(deep=args.deep, as_json=args.json,
+                                on=args.on, off=args.off,
+                                set_path=args.set_path, clear_path=args.clear_path)
+    if args.command == "install-deps":
+        return cli.cmd_install_deps(args.names, everything=args.everything,
+                                    dev=args.dev, dry_run=args.dry_run,
+                                    assume_yes=args.yes, as_json=args.json)
+    if args.command == "compute-status":
+        from . import compute as _compute
+        st = _compute.status()
+        for k, v in st.items():
+            print(f"{k}: {v}")
+        return 1 if "error" in st else 0
+    if args.command in (None, "serve"):
+        from . import compute as _compute
+        st = _compute.status()
+        if "error" in st:
+            print(f"compute: {st['error']}", file=sys.stderr)
+            return 2
+
     requested = getattr(args, "backend", None)
     requested_toolset = getattr(args, "toolset", None)
     requested_phases = getattr(args, "phases", None)
@@ -2013,6 +2324,10 @@ def main() -> int:
         return cli.cmd_phases_enable(args.stages)
     if args.command == "phases-disable":
         return cli.cmd_phases_disable()
+    if args.command == "router-show":
+        return cli.cmd_router_show(as_json=args.json_out)
+    if args.command == "router-use":
+        return cli.cmd_router_use(args.engine)
 
     if args.command == "calc-cross-check":
         return cli.cmd_calc_cross_check(args.calculator, args.arg,
@@ -2025,6 +2340,25 @@ def main() -> int:
         return cli.cmd_stackup_profile(args.vendor, fill=args.fill)
     if args.command == "laminates":
         return cli.cmd_laminates(as_json=args.json_out)
+    if args.command == "std-list":
+        return cli.cmd_std_list(domain=args.domain, priority=args.priority,
+                                as_json=args.json_out)
+    if args.command == "std-rules":
+        return cli.cmd_std_rules(category=args.category, as_json=args.json_out)
+    if args.command == "std-floors":
+        return cli.cmd_std_floors(as_json=args.json_out)
+    if args.command == "fab-list":
+        return cli.cmd_fab_list(as_json=args.json_out)
+    if args.command == "fab-rules":
+        return cli.cmd_fab_rules(args.vendor, layers=args.layers, oz=args.oz,
+                                 tier=args.tier, ipc_class=args.ipc_class,
+                                 as_json=args.json_out)
+    if args.command == "fab-compare":
+        return cli.cmd_fab_compare(layers=args.layers, oz=args.oz,
+                                   keys=args.keys, as_json=args.json_out)
+    if args.command == "fab-refresh":
+        return cli.cmd_fab_refresh(args.vendor, files=args.files,
+                                   write=args.write, as_json=args.json_out)
 
     if args.command in cli.CALC_COMMANDS:
         _, _, params = cli.CALC_COMMANDS[args.command]

@@ -1,5 +1,39 @@
 # Current integration state / agent handoff
 
+## MOREmbedded source synchronization, 2026-11-15
+
+Worktree `D:/ai/eda-agent-sync-20261115`, branch
+`sync-morembedded-20261115`, continues from `5183f80a` (three separately
+ported Python fixes above Rouniy/main `424027d3`) and merges the complete
+MOREmbedded/main line at `a2a0fac49cff53b7f357b2436feb99dab38b803b`.
+The donor and origin heads were checked against GitHub on 2026-11-15.
+Package `0.8.2`, source script `2026.11.15.1`.
+
+Conflict reconciliation retains the selected-project dispatcher and operator
+grants, scoped board readers, extraction diagnostics, Rouniy update URLs and
+existing rotation-audit API. Follow-up fixes adapt the new form's log control,
+declare the retained tools' session-unit conversions, reconcile KiCad parity
+entries, document Rouniy environment settings and regenerate tool/option
+references. Source tests use scratch IPC workspaces; native integration is
+not enabled by the test run.
+
+Pascal lint/build: 12 units, zero errors and warnings. Wheel and sdist built;
+distribution verification installed the wheel into a clean environment,
+checked metadata/resources and CLI paths, and built the installed EasyEDA
+extension. Artifacts/logs are under `D:/ai/qa/dist-sync-20261115` and
+`D:/ai/qa/*resume*`. Full-suite results are pending completion.
+
+Early runs hit Windows commit-limit exhaustion (including exit 0xC000012D);
+these are unsuccessful test launches, not passes. A subsequent two-worker
+run proceeds with `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1`.
+`threadpoolctl`, newly required by the donor, was installed for source tests.
+
+No Altium runtime was replaced or restarted for this candidate. The shared
+operating runbook required by AGENTS.md is absent locally and its linked
+GitHub URL still returned 404 on 2026-11-15. Native acceptance of the new
+Pascal behavior, same-snapshot export comparison, optional Rust builds and
+hosted Python-version/Free Pascal CI remain separate qualification work.
+
 ## Native smoke after MOREmbedded merge, 2026-11-11
 
 AD 26.11.1 exposed three integration defects that offline Pascal lint did not

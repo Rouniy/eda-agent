@@ -52,13 +52,13 @@ Var
     InFlightStartMs  : Cardinal;
     InFlightActive   : Boolean;
 
-    { Free-text filter applied at WRITE time to mmo_Log.Lines. Empty = no   }
+    { Free-text filter applied at WRITE time to lst_Log.Items. Empty = no   }
     { text filter. Changing the filter only affects new entries; old ones   }
     { stay until you click Clear log. (We used to keep a TStringList buffer }
     { and re-render on filter change, but DelphiScript's TStringList API is }
     { broken in too many spots, .Insert and .Clear undeclared, typed-param   }
     { dispatch loses methods, empty-literal arguments trip the parser; the  }
-    { committed pattern wrote straight to mmo_Log.Lines and we're back to    }
+    { committed pattern wrote straight to lst_Log.Items and we're back to    }
     { that.)                                                                 }
     FilterText       : String;
 
@@ -87,24 +87,32 @@ Var
     ProbeStartMs     : Cardinal;
 
 
-{ Static UI constants: Altium's dark theme, read off AD 26.11's own      }
-{ panels, status bar and buttons, so the form looks like one of them.    }
+{ Static UI constants: the web dashboard's dark theme (workbench.html,   }
+{ :root[data-theme="dark"]), so the window and the dashboard read as one  }
+{ product. A dark band at top and bottom, a body, raised cards, one inset }
+{ well for the log; blue marks what is chosen, amber what is held back.   }
 { DelphiScript color literals are BGR-ordered Cardinals (8 hex digits      }
 { after the $); a malformed 7-digit literal bombs the parser without an   }
 { obvious error location, so always double-count.                          }
 Const
-    COLOR_BG_BASE       = $00353535;   { panel body }
-    COLOR_BG_CARD       = $00404040;   { title strip, tab strip, status bar }
-    COLOR_BG_ELEVATED   = $00545454;   { button }
-    COLOR_BG_HOVER      = $00646464;   { button under the mouse }
-    COLOR_BG_LOG        = $002B2B2B;   { log and input fields }
-    COLOR_ACCENT_BLUE   = $00FFB363;   { #63B3FF in BGR }
-    COLOR_ACCENT_AMBER  = $00589EE0;   { #E09E58 in BGR }
-    COLOR_ACCENT_RED    = $005C5CFF;   { #FF5C5C in BGR }
-    COLOR_ACCENT_GREEN  = $006BC464;   { #64C46B in BGR }
-    COLOR_TEXT_BODY     = $00E5E5E5;
-    COLOR_TEXT_MUTED    = $00A0A0A0;
-    COLOR_TEXT_FAINT    = $00808080;
+    COLOR_BG_RAIL       = $00130F0B;   { #0B0F13 header and footer band }
+    COLOR_BG_BASE       = $0027201A;   { #1A2027 panel body }
+    COLOR_BG_CARD       = $00332A22;   { #222A33 figure cards, idle Dashboard }
+    COLOR_BG_ELEVATED   = $003D332A;   { #2A333D button }
+    COLOR_BG_HOVER      = $004D4236;   { #36424D button under the mouse }
+    COLOR_BG_LOG        = $001C1712;   { #12171C log well and input field }
+    COLOR_BG_SELECTED   = $004F3624;   { #24364F a toggle that is on }
+    COLOR_ACCENT_BLUE   = $00FFA67E;   { #7EA6FF }
+    COLOR_HOVER_BLUE    = $00FFBB9D;   { #9DBBFF }
+    COLOR_ACCENT_AMBER  = $0045A8EB;   { #EBA845 }
+    COLOR_HOVER_AMBER   = $006ABCF2;   { #F2BC6A }
+    COLOR_DIM_AMBER     = $00305A7A;   { #7A5A30 the busy dot's low beat }
+    COLOR_ACCENT_RED    = $00637AFF;   { #FF7A63 }
+    COLOR_ACCENT_GREEN  = $008AC062;   { #62C08A }
+    COLOR_TEXT_ON_ACCENT = $001C1712;  { dark text on a blue or amber fill }
+    COLOR_TEXT_BODY     = $00EAE6E1;   { #E1E6EA }
+    COLOR_TEXT_MUTED    = $00C0B8AE;   { #AEB8C0 }
+    COLOR_TEXT_FAINT    = $009E958A;   { #8A959E }
     UPDATE_FLAG_FILE     = 'update_available.flag';
     { Written by the MCP server after each tool call (diag/usage.py). }
     USAGE_STATUS_FILE    = 'tool_usage.txt';
@@ -206,7 +214,7 @@ Begin
     Try lbl_LastErr.Caption := Text; Except NoteWriteFailed('lbl_LastErr.Caption'); End;
     Try
         If Text = '' Then pnl_ErrBar.Height := 0
-        Else pnl_ErrBar.Height := 16;
+        Else pnl_ErrBar.Height := 22;
     Except End;
 End;
 
@@ -236,15 +244,17 @@ End;
 { Spinner glyph cycle. Classic terminal-spinner ASCII for max compatibility   }
 { with DelphiScript's TMemo / TLabel rendering, which doesn't reliably show   }
 { 3-byte UTF-8 sequences without a font fallback.                             }
-Function SpinnerGlyph(Frame : Integer) : String;
+{ The status dot is a round glyph: its font colour is the state. }
+Procedure SetStatusDot(Col : Cardinal);
 Begin
-    Case (Frame Mod SPINNER_FRAMES) Of
-        0: Result := '|';
-        1: Result := '/';
-        2: Result := '-';
-    Else
-        Result := '\';
-    End;
+    Try pnl_StatusDot.Font.Color := Col; Except End;
+End;
+
+{ While a call runs the dot beats: two ticks bright, two ticks low. }
+Function PulseColour(Frame : Integer) : Cardinal;
+Begin
+    If (Frame Mod SPINNER_FRAMES) < 2 Then Result := COLOR_ACCENT_AMBER
+    Else Result := COLOR_DIM_AMBER;
 End;
 
 
@@ -271,7 +281,7 @@ Begin
 End;
 
 
-{ Used to re-render mmo_Log from a TStringList buffer when filter flags     }
+{ Used to re-render lst_Log from a TStringList buffer when filter flags     }
 { changed. The buffer was a DelphiScript minefield, so we dropped it; this   }
 { procedure now just clears the visible memo. Callers that previously       }
 { wanted "apply new filter to old entries" now just see a clean slate after }
@@ -279,11 +289,11 @@ End;
 Procedure RebuildVisibleLog(Dummy : Integer);
 Begin
     Try
-        mmo_Log.Lines.BeginUpdate;
+        lst_Log.Items.BeginUpdate;
         Try
-            mmo_Log.Lines.Clear;
+            lst_Log.Items.Clear;
         Finally
-            mmo_Log.Lines.EndUpdate;
+            lst_Log.Items.EndUpdate;
         End;
     Except End;
 End;
@@ -420,6 +430,77 @@ End;
 { Public entry point called from Dispatcher.ProcessSingleRequest after every }
 { command. The row shows the part of RequestId that names ONE call, which is }
 { what bridge_trace.log writes, so grepping that log for it finds the call.  }
+
+{ The log is an owner-drawn list so each part of a row has its colour: the }
+{ time green under 100 ms, amber under a second, red beyond; the call id   }
+{ faint; the command bright. A detail row (it starts with spaces) is red   }
+{ under an error and muted otherwise. The list is 18 px wider than its     }
+{ panel, so the panel clips the light Windows scrollbar; the wheel scrolls. }
+Function LogTimeColour(Ms : Integer) : Cardinal;
+Begin
+    If Ms >= 1000 Then Result := COLOR_ACCENT_RED
+    Else If Ms >= 100 Then Result := COLOR_ACCENT_AMBER
+    Else Result := COLOR_ACCENT_GREEN;
+End;
+
+Procedure lst_LogDrawItem(Control : TWinControl; Idx : Integer; ARect : TRect;
+                          State : TOwnerDrawState);
+Var
+    S, TimePart, Rest, IdPart, Cmd : String;
+    P, X, Y, Ms : Integer;
+    Cv : TCanvas;
+Begin
+    Try
+        Cv := lst_Log.Canvas;
+        S := lst_Log.Items[Idx];
+        Cv.Brush.Color := COLOR_BG_LOG;
+        Cv.FillRect(ARect);
+        X := ARect.Left + 4;
+        Y := ARect.Top + 2;
+        P := Pos(' ms  ', S);
+        If P = 0 Then
+        Begin
+            { An error detail sits red under its command; a note is faint. }
+            P := Pos('`-- ', S);
+            If P > 0 Then
+            Begin
+                Cv.Font.Color := COLOR_ACCENT_RED;
+                Cv.TextOut(X + 64 + Cv.TextWidth('00000000'), Y,
+                           Copy(S, P + 4, Length(S)));
+            End
+            Else
+            Begin
+                Cv.Font.Color := COLOR_TEXT_FAINT;
+                Cv.TextOut(X, Y, Trim(S));
+            End;
+            Exit;
+        End;
+        TimePart := Trim(Copy(S, 1, P - 1));
+        Ms := StrToIntDef(TimePart, 0);
+        Rest := Copy(S, P + 5, Length(S));
+        P := Pos('  ', Rest);
+        If P > 0 Then
+        Begin
+            IdPart := Copy(Rest, 1, P - 1);
+            Cmd := Copy(Rest, P + 2, Length(Rest));
+        End
+        Else
+        Begin
+            IdPart := '';
+            Cmd := Rest;
+        End;
+        Cv.Font.Color := LogTimeColour(Ms);
+        Cv.TextOut(X + 44 - Cv.TextWidth(TimePart + ' ms'), Y, TimePart + ' ms');
+        Cv.Font.Color := COLOR_TEXT_FAINT;
+        { The id's leading 8 name the session, the same on every row; the }
+        { sequence after the dash names the call. Copy log keeps it whole. }
+        If Copy(IdPart, 9, 1) = '-' Then IdPart := Copy(IdPart, 10, 8);
+        Cv.TextOut(X + 54, Y, IdPart);
+        Cv.Font.Color := COLOR_TEXT_BODY;
+        Cv.TextOut(X + 54 + Cv.TextWidth('00000000') + 10, Y, Cmd);
+    Except { display only: a row that fails to paint stays blank } End;
+End;
+
 Procedure AppendLogLine(Command : String; DurationMs : Cardinal; IsError : Boolean;
                         RequestId : String; ErrorDetail : String);
 Var
@@ -448,16 +529,16 @@ Begin
           + IdShort + '  ' + Command;
 
     { Apply the filter at write time. The committed pattern wrote straight  }
-    { to mmo_Log.Lines via TStrings (TMemo property), which DelphiScript    }
+    { to lst_Log.Items via TStrings (TMemo property), which DelphiScript    }
     { routes through fine. Skipping an entry just means the user doesn't    }
     { see it until a future entry matches the new filter.                   }
     If Not ShouldShowLine(Line) Then Exit;
     Try
-        mmo_Log.Lines.Insert(0, Line);
+        lst_Log.Items.Insert(0, Line);
         If IsError And (ErrorDetail <> '') Then
-            mmo_Log.Lines.Insert(1, '      `-- ' + ErrorDetail);
-        While mmo_Log.Lines.Count > MAX_LOG_LINES Do
-            mmo_Log.Lines.Delete(mmo_Log.Lines.Count - 1);
+            lst_Log.Items.Insert(1, '      `-- ' + ErrorDetail);
+        While lst_Log.Items.Count > MAX_LOG_LINES Do
+            lst_Log.Items.Delete(lst_Log.Items.Count - 1);
     Except End;
 
     If IsError Then
@@ -488,10 +569,11 @@ Begin
         SpinnerFrame := 0;
         Try tmr_Spinner.Enabled := True; Except NoteWriteFailed('tmr_Spinner.Enabled'); End;
         Try
-            pnl_StatusDot.Color := COLOR_ACCENT_AMBER;
-            lbl_Spinner.Caption := SpinnerGlyph(SpinnerFrame);
-            lbl_Status.Caption := Command + '  (0.0 s)';
+            SetStatusDot(PulseColour(SpinnerFrame));
+            lbl_Status.Caption := 'Running';
             lbl_Status.Font.Color := COLOR_TEXT_BODY;
+            lbl_Version.Caption := Command + '  0.0 s';
+            lbl_Version.Font.Color := COLOR_TEXT_MUTED;
         Except End;
     Except { UI-only status display; no design write } End;
 End;
@@ -508,17 +590,18 @@ Begin
         End;
         Try tmr_Spinner.Enabled := False; Except NoteWriteFailed('tmr_Spinner.Enabled'); End;
         Try
-            lbl_Spinner.Caption := '';
+            lbl_Version.Caption := 'v' + SCRIPT_VERSION;
+            lbl_Version.Font.Color := COLOR_TEXT_FAINT;
             If PausedFlag Then
             Begin
-                pnl_StatusDot.Color := COLOR_TEXT_FAINT;
-                lbl_Status.Caption := 'paused';
+                SetStatusDot(COLOR_TEXT_FAINT);
+                lbl_Status.Caption := 'Paused';
                 lbl_Status.Font.Color := COLOR_TEXT_MUTED;
             End
             Else
             Begin
-                pnl_StatusDot.Color := COLOR_ACCENT_GREEN;
-                lbl_Status.Caption := 'idle';
+                SetStatusDot(COLOR_ACCENT_GREEN);
+                lbl_Status.Caption := 'Idle';
                 lbl_Status.Font.Color := COLOR_TEXT_BODY;
             End;
         Except End;
@@ -587,7 +670,6 @@ Begin
         + 'running a command, shown with its name and elapsed time. '
         + 'Grey: paused.';
     SetTip(pnl_StatusDot, Tip);  SetTip(lbl_Status, Tip);
-    SetTip(lbl_Spinner, Tip);
     SetTip(lbl_Version, 'Version of the eda-agent scripts loaded in Altium.');
 
     Tip := 'How long this bridge session has been running in Altium.';
@@ -670,6 +752,10 @@ Begin
         + 'makes, so you see the whole design. EDA_AGENT_KEEP_BOARD_IN_VIEW=1 '
         + 'in the AI client''s config also turns it on.';
     SetTip(lbl_CfgView, Tip);  SetTip(opt_ViewOff, Tip);  SetTip(opt_ViewOn, Tip);
+    Tip := 'The unit the AI gives and reads lengths in: coordinates, widths, '
+        + 'clearances, thicknesses. Each AI session starts in this unit and '
+        + 'may change its own; every reply says which unit it is in.';
+    SetTip(lbl_CfgUnits, Tip);  SetTip(opt_UnitsMil, Tip);  SetTip(opt_UnitsMm, Tip);
     Tip := 'What happens to a dialog a tool opens, such as the Engineering '
         + 'Change Order or the Teardrops options. Automatic: the AI answers '
         + 'it as the tool was asked, then reads the result back. Manual: the '
@@ -739,7 +825,7 @@ Procedure btn_UpdateEnter(Sender : TObject);
 Begin Try btn_Update.Color := COLOR_BG_HOVER; Except NoteWriteFailed('btn_Update.Color'); End; End;
 
 Procedure btn_UpdateLeave(Sender : TObject);
-Begin Try btn_Update.Color := COLOR_BG_CARD; Except NoteWriteFailed('btn_Update.Color'); End; End;
+Begin Try btn_Update.Color := COLOR_BG_RAIL; Except End; End;
 
 Procedure UpdateOpenWebState(Dummy : Integer);
 Var
@@ -776,9 +862,9 @@ Begin
     Try
         If NewEnabled Then
         Begin
-            btn_OpenWeb.Color := COLOR_BG_ELEVATED;
-            btn_OpenWeb.Font.Color := COLOR_TEXT_BODY;
-            Try ico_OpenWeb.Font.Color := COLOR_TEXT_BODY; Except NoteWriteFailed('ico_OpenWeb.Font.Color'); End;
+            btn_OpenWeb.Color := COLOR_ACCENT_BLUE;
+            btn_OpenWeb.Font.Color := COLOR_TEXT_ON_ACCENT;
+            Try ico_OpenWeb.Font.Color := COLOR_TEXT_ON_ACCENT; Except End;
             btn_OpenWeb.Cursor := crHandPoint;
             SetTip(btn_OpenWeb, TIP_OPENWEB_ON);
             SetTip(ico_OpenWeb, TIP_OPENWEB_ON);
@@ -853,7 +939,7 @@ Begin
     Granted := ParamEditGrantActive(0);
     Try
         If ParamGrantShown And (Not Granted) Then
-            mmo_Log.Lines.Insert(0, 'Parameter edit grant ended (a batch was applied, '
+            lst_Log.Items.Insert(0, 'Parameter edit grant ended (a batch was applied, '
                 + 'or the selection changed). Tick again for the next batch.');
         ParamGrantShown := Granted;
         If Granted Then
@@ -891,7 +977,7 @@ Begin
     Granted := PlaceEditGrantActive(0);
     Try
         If PlaceGrantShown And (Not Granted) Then
-            mmo_Log.Lines.Insert(0, 'Placement edit grant ended (a batch was applied, '
+            lst_Log.Items.Insert(0, 'Placement edit grant ended (a batch was applied, '
                 + 'or the selection changed). Tick again for the next batch.');
         PlaceGrantShown := Granted;
         If Granted Then
@@ -972,12 +1058,12 @@ Var
 Begin
     If Not InFlightActive Then Exit;
     SpinnerFrame := (SpinnerFrame + 1) Mod SPINNER_FRAMES;
-    Try lbl_Spinner.Caption := SpinnerGlyph(SpinnerFrame); Except NoteWriteFailed('lbl_Spinner.Caption'); End;
+    SetStatusDot(PulseColour(SpinnerFrame));
     ElapsedMs := GetTickCount - InFlightStartMs;
     Tenths := ElapsedMs Div 100;
     Try
-        lbl_Status.Caption := InFlightCommand + '  ('
-            + IntToStr(Tenths Div 10) + '.' + IntToStr(Tenths Mod 10) + ' s)';
+        lbl_Version.Caption := InFlightCommand + '  '
+            + IntToStr(Tenths Div 10) + '.' + IntToStr(Tenths Mod 10) + ' s';
     Except End;
 End;
 
@@ -1003,7 +1089,7 @@ Begin
     ProbeTickCount := ProbeTickCount + 1;
     ElapsedSec := (GetTickCount - ProbeStartMs) Div 1000;
     Try
-        mmo_Log.Lines.Insert(0, 'probe tick ' + IntToStr(ProbeTickCount)
+        lst_Log.Items.Insert(0, 'probe tick ' + IntToStr(ProbeTickCount)
             + '  at ' + IntToStr(ElapsedSec) + ' s');
     Except End;
     Try
@@ -1015,7 +1101,7 @@ Begin
     Begin
         Try tmr_Probe.Enabled := False; Except NoteWriteFailed('tmr_Probe.Enabled'); End;
         Try
-            mmo_Log.Lines.Insert(0, 'probe auto-stopped at the '
+            lst_Log.Items.Insert(0, 'probe auto-stopped at the '
                 + IntToStr(PROBE_MAX_TICKS) + '-tick cap');
         Except End;
     End;
@@ -1037,13 +1123,13 @@ Begin
         Pnl.Caption := LabelText;
         If Checked Then
         Begin
-            Pnl.Color := COLOR_BG_ELEVATED;
-            Pnl.Font.Color := COLOR_TEXT_BODY;
+            Pnl.Color := COLOR_BG_SELECTED;
+            Pnl.Font.Color := COLOR_ACCENT_BLUE;
         End
         Else
         Begin
-            Pnl.Color := COLOR_BG_BASE;
-            Pnl.Font.Color := COLOR_TEXT_MUTED;
+            Pnl.Color := COLOR_BG_ELEVATED;
+            Pnl.Font.Color := COLOR_TEXT_FAINT;
         End;
     Except End;
 End;
@@ -1051,8 +1137,8 @@ End;
 Procedure LeaveToggle(Pnl : TPanel; Checked : Boolean);
 Begin
     Try
-        If Checked Then Pnl.Color := COLOR_BG_ELEVATED
-        Else Pnl.Color := COLOR_BG_BASE;
+        If Checked Then Pnl.Color := COLOR_BG_SELECTED
+        Else Pnl.Color := COLOR_BG_ELEVATED;
     Except End;
 End;
 
@@ -1088,6 +1174,7 @@ Begin
     OwnPanelColours(opt_EditsAllowed); OwnPanelColours(opt_EditsReadOnly);
     OwnPanelColours(opt_AutoOn);    OwnPanelColours(opt_AutoOff);
     OwnPanelColours(opt_ViewOff);   OwnPanelColours(opt_ViewOn);
+    OwnPanelColours(opt_UnitsMil);  OwnPanelColours(opt_UnitsMm);
     OwnPanelColours(sep_Cfg1);      OwnPanelColours(sep_Cfg2);
     OwnPanelColours(sep_Cfg3);
     OwnPanelColours(opt_DeleteAllowed); OwnPanelColours(opt_DeleteRefused);
@@ -1097,6 +1184,16 @@ Begin
     OwnPanelColours(opt_EcoAuto);   OwnPanelColours(opt_EcoManual);
     OwnPanelColours(sep_Cfg7);      OwnPanelColours(tab_Stats);
     OwnPanelColours(opt_StatsOn);   OwnPanelColours(opt_StatsOff);
+    OwnPanelColours(pnl_Filter);    OwnPanelColours(pnl_FilterIn);
+    OwnPanelColours(pnl_TabRule);   OwnPanelColours(pnl_TabInk);
+    OwnPanelColours(pnl_Body);      OwnPanelColours(sep_Cfg8);
+    OwnPanelColours(pnl_Log);
+    OwnPanelColours(opt_ChkFpOn);   OwnPanelColours(opt_ChkFpOff);
+    OwnPanelColours(opt_ChkSymOn);  OwnPanelColours(opt_ChkSymOff);
+    OwnPanelColours(opt_ChkPadOn);  OwnPanelColours(opt_ChkPadOff);
+    OwnPanelColours(opt_ChkBodyOn); OwnPanelColours(opt_ChkBodyOff);
+    OwnPanelColours(opt_ChkSpiceOn); OwnPanelColours(opt_ChkSpiceOff);
+    OwnPanelColours(opt_ChkFabOn);  OwnPanelColours(opt_ChkFabOff);
 End;
 
 
@@ -1107,16 +1204,14 @@ Begin
     Try
         If SavingOff Then
         Begin
-            btn_Saving.Caption := 'Saving OFF';
             btn_Saving.Color := COLOR_ACCENT_AMBER;
-            btn_Saving.Font.Color := $00111111;
-            ico_Saving.Font.Color := $00111111;
+            btn_Saving.Font.Color := COLOR_TEXT_ON_ACCENT;
+            ico_Saving.Font.Color := COLOR_TEXT_ON_ACCENT;
             SetTip(btn_Saving, TIP_SAVING_OFF);
             SetTip(ico_Saving, TIP_SAVING_OFF);
         End
         Else
         Begin
-            btn_Saving.Caption := 'Saving on';
             btn_Saving.Color := COLOR_BG_ELEVATED;
             btn_Saving.Font.Color := COLOR_TEXT_BODY;
             ico_Saving.Font.Color := COLOR_TEXT_BODY;
@@ -1134,7 +1229,7 @@ Begin
         If Chosen Then
         Begin
             Pnl.Color := COLOR_ACCENT_BLUE;
-            Pnl.Font.Color := $00111111;
+            Pnl.Font.Color := COLOR_TEXT_ON_ACCENT;
         End
         Else
         Begin
@@ -1151,7 +1246,7 @@ Begin
         If Chosen Then
         Begin
             Pnl.Color := COLOR_ACCENT_AMBER;
-            Pnl.Font.Color := $00111111;
+            Pnl.Font.Color := COLOR_TEXT_ON_ACCENT;
         End
         Else
         Begin
@@ -1185,6 +1280,71 @@ Begin
     Except End;
 End;
 
+
+{ A check on the Config tab is off when its name is in ChecksOff. }
+Function CheckIsOff(CheckName : String) : Boolean;
+Begin
+    Result := Pos(',' + CheckName + ',', ',' + ChecksOff + ',') > 0;
+End;
+
+{ The checks on the Config tab: On is the default, Off shows amber, and the }
+{ hint names every check that is off.                                      }
+Procedure PaintChecks(Dummy : Integer);
+Var
+    Off : String;
+Begin
+    Try
+        Off := '';
+        PaintOption(opt_ChkFpOn, Not CheckIsOff('footprint_drawing'));
+        PaintWarnOption(opt_ChkFpOff, CheckIsOff('footprint_drawing'));
+        If CheckIsOff('footprint_drawing') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'footprints vs drawing';
+        End;
+        PaintOption(opt_ChkSymOn, Not CheckIsOff('symbol_pins'));
+        PaintWarnOption(opt_ChkSymOff, CheckIsOff('symbol_pins'));
+        If CheckIsOff('symbol_pins') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'symbols vs pin table';
+        End;
+        PaintOption(opt_ChkPadOn, Not CheckIsOff('pins_pads'));
+        PaintWarnOption(opt_ChkPadOff, CheckIsOff('pins_pads'));
+        If CheckIsOff('pins_pads') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'pins vs pads';
+        End;
+        PaintOption(opt_ChkBodyOn, Not CheckIsOff('model_body'));
+        PaintWarnOption(opt_ChkBodyOff, CheckIsOff('model_body'));
+        If CheckIsOff('model_body') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + '3D bodies vs drawing';
+        End;
+        PaintOption(opt_ChkSpiceOn, Not CheckIsOff('spice_model'));
+        PaintWarnOption(opt_ChkSpiceOff, CheckIsOff('spice_model'));
+        If CheckIsOff('spice_model') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'SPICE model files';
+        End;
+        PaintOption(opt_ChkFabOn, Not CheckIsOff('fab_export'));
+        PaintWarnOption(opt_ChkFabOff, CheckIsOff('fab_export'));
+        If CheckIsOff('fab_export') Then
+        Begin
+            If Off <> '' Then Off := Off + ', ';
+            Off := Off + 'fab exports';
+        End;
+        If Off = '' Then
+            lbl_CfgChecksHint.Caption := 'Every check runs before a part is '
+                + 'built or fab files are written.'
+        Else
+            lbl_CfgChecksHint.Caption := 'Off: ' + Off + '. Those run without '
+                + 'the check, and each result says it was skipped.';
+    Except End;
+End;
 
 { The agent and view settings on the Config tab, with what each does. }
 Procedure PaintAgentSettings(Dummy : Integer);
@@ -1227,6 +1387,14 @@ Begin
                 + 'to the whole board or sheet, at most every 2 seconds.'
         Else
             lbl_CfgViewHint.Caption := 'The view stays where you put it.';
+        PaintOption(opt_UnitsMil, LengthUnits <> 'mm');
+        PaintOption(opt_UnitsMm, LengthUnits = 'mm');
+        If LengthUnits = 'mm' Then
+            lbl_CfgUnitsHint.Caption := 'New AI sessions give and read lengths '
+                + 'in millimetres.'
+        Else
+            lbl_CfgUnitsHint.Caption := 'New AI sessions give and read lengths '
+                + 'in mils.';
         PaintOption(opt_EcoAuto, DialogMode <> 'manual');
         PaintOption(opt_EcoManual, DialogMode = 'manual');
         If DialogMode = 'manual' Then
@@ -1243,6 +1411,7 @@ Begin
         Else
             lbl_CfgStatsHint.Caption := 'Each tool call''s token cost is '
                 + 'estimated and kept per workspace. See the Stats tab.';
+        PaintChecks(0);
     Except End;
 End;
 
@@ -1316,9 +1485,9 @@ Begin
         Try StatusForm.WindowState := wsMinimized; Except NoteWriteFailed('StatusForm.WindowState'); End;
         Try StatusForm.Caption := 'EDA Agent MCP'; Except NoteWriteFailed('StatusForm.Caption'); End;
         Try lbl_Version.Caption := 'v' + SCRIPT_VERSION; Except NoteWriteFailed('lbl_Version.Caption'); End;
-        Try pnl_StatusDot.Color := COLOR_ACCENT_GREEN; Except NoteWriteFailed('pnl_StatusDot.Color'); End;
+        SetStatusDot(COLOR_ACCENT_GREEN);
         Try lbl_Status.Caption := 'idle'; Except NoteWriteFailed('lbl_Status.Caption'); End;
-        Try lbl_LastErr.Caption := ''; Except NoteWriteFailed('lbl_LastErr.Caption'); End;
+        ShowNotice('');
         cmb_Project.Visible := SELECTED_PROJECT_READ_ONLY;
         btn_UseProject.Visible := SELECTED_PROJECT_READ_ONLY;
         lbl_SelectedProject.Visible := SELECTED_PROJECT_READ_ONLY;
@@ -1365,6 +1534,8 @@ Begin
         { Button is always enabled: dashboard can run standalone. }
         UpdateOpenWebState(0);
     Except End;
+    { A grey hint in the empty filter field; older VCLs lack it. }
+    Try edt_Filter.TextHint := 'Filter the log'; Except { display only } End;
 End;
 
 Procedure HideStatusForm(Dummy : Integer);
@@ -1400,10 +1571,10 @@ Begin
     End;
     Try
         If ParamEditGrantActive(0) Then
-            mmo_Log.Lines.Insert(0, 'Parameter edits GRANTED by the operator, generation '
+            lst_Log.Items.Insert(0, 'Parameter edits GRANTED by the operator, generation '
                 + IntToStr(SelectedGeneration))
         Else
-            mmo_Log.Lines.Insert(0, 'Parameter edits revoked by the operator, generation '
+            lst_Log.Items.Insert(0, 'Parameter edits revoked by the operator, generation '
                 + IntToStr(SelectedGeneration));
         ParamGrantShown := ParamEditGrantActive(0);
     Except End;
@@ -1425,10 +1596,10 @@ Begin
     End;
     Try
         If PlaceEditGrantActive(0) Then
-            mmo_Log.Lines.Insert(0, 'Placement edits GRANTED by the operator, generation '
+            lst_Log.Items.Insert(0, 'Placement edits GRANTED by the operator, generation '
                 + IntToStr(SelectedGeneration))
         Else
-            mmo_Log.Lines.Insert(0, 'Placement edits revoked by the operator, generation '
+            lst_Log.Items.Insert(0, 'Placement edits revoked by the operator, generation '
                 + IntToStr(SelectedGeneration));
         PlaceGrantShown := PlaceEditGrantActive(0);
     Except End;
@@ -1444,7 +1615,7 @@ End;
 
 Procedure btn_ClearLogClick(Sender : TObject);
 Begin
-    Try mmo_Log.Lines.Clear; Except End;
+    Try lst_Log.Items.Clear; Except End;
     ShowNotice('');
 End;
 
@@ -1454,19 +1625,17 @@ Begin
         PausedFlag := Not PausedFlag;
         If PausedFlag Then
         Begin
-            btn_Pause.Caption := 'Resume';
             btn_Pause.Color := COLOR_ACCENT_AMBER;
-            btn_Pause.Font.Color := $00111111;
-            Try ico_Pause.Visible := False; Except NoteWriteFailed('ico_Pause.Visible'); End;
-            Try ico_Resume.Visible := True; Except NoteWriteFailed('ico_Resume.Visible'); End;
+            btn_Pause.Font.Color := COLOR_TEXT_ON_ACCENT;
+            Try ico_Pause.Visible := False; Except End;
+            Try ico_Resume.Visible := True; Except End;
             SetTip(btn_Pause, TIP_RESUME);
-            pnl_StatusDot.Color := COLOR_TEXT_FAINT;
-            lbl_Status.Caption := 'paused';
+            SetStatusDot(COLOR_TEXT_FAINT);
+            lbl_Status.Caption := 'Paused';
             lbl_Status.Font.Color := COLOR_TEXT_MUTED;
         End
         Else
         Begin
-            btn_Pause.Caption := 'Pause';
             btn_Pause.Color := COLOR_BG_ELEVATED;
             btn_Pause.Font.Color := COLOR_TEXT_BODY;
             Try ico_Resume.Visible := False; Except NoteWriteFailed('ico_Resume.Visible'); End;
@@ -1474,8 +1643,8 @@ Begin
             SetTip(btn_Pause, TIP_PAUSE);
             If Not InFlightActive Then
             Begin
-                pnl_StatusDot.Color := COLOR_ACCENT_GREEN;
-                lbl_Status.Caption := 'idle';
+                SetStatusDot(COLOR_ACCENT_GREEN);
+                lbl_Status.Caption := 'Idle';
                 lbl_Status.Font.Color := COLOR_TEXT_BODY;
             End;
         End;
@@ -1571,7 +1740,7 @@ Begin
         Else If mmo_Stats.Visible Then
             Clipboard.AsText := mmo_Stats.Lines.Text
         Else
-            Clipboard.AsText := mmo_Log.Lines.Text;
+            Clipboard.AsText := lst_Log.Items.Text;
         btn_CopyLog.Caption := #59643;
     Except End;
 End;
@@ -1619,9 +1788,9 @@ Begin
         StoreSavingSwitch(0);
         PaintSavingSwitch(0);
         If SavingOff Then
-            mmo_Log.Lines.Insert(0, '      saving switched OFF: the bridge writes no documents')
+            lst_Log.Items.Insert(0, '      saving switched OFF: the bridge writes no documents')
         Else
-            mmo_Log.Lines.Insert(0, '      saving switched on');
+            lst_Log.Items.Insert(0, '      saving switched on');
     Except End;
 End;
 
@@ -1632,12 +1801,48 @@ Begin
 End;
 
 
+{ A tab is text on the body colour. The open one is bright and semibold }
+{ with the blue underline moved beneath it; the others are faint.       }
+Procedure PaintTab(Pnl : TPanel; Open : Boolean);
+Begin
+    Try
+        Pnl.Color := COLOR_BG_BASE;
+        If Open Then
+        Begin
+            Pnl.Font.Color := COLOR_TEXT_BODY;
+            Pnl.Font.Name := 'Segoe UI Semibold';
+            pnl_TabInk.Left := Pnl.Left + 10;
+            pnl_TabInk.Width := Pnl.Width - 20;
+        End
+        Else
+        Begin
+            Pnl.Font.Color := COLOR_TEXT_FAINT;
+            Pnl.Font.Name := 'Segoe UI';
+        End;
+    Except End;
+End;
+
+
 { Hover handlers ============================================================ }
 
+{ Detach ends the bridge, so it is red, but only fills red under the }
+{ mouse: at rest it should not be the loudest thing in the window.    }
 Procedure btn_DetachEnter(Sender : TObject);
-Begin Try btn_Detach.Color := $004040E0; Except NoteWriteFailed('btn_Detach.Color'); End; End;
+Begin
+    Try
+        btn_Detach.Color := COLOR_ACCENT_RED;
+        btn_Detach.Font.Color := COLOR_TEXT_ON_ACCENT;
+        ico_Detach.Font.Color := COLOR_TEXT_ON_ACCENT;
+    Except End;
+End;
 Procedure btn_DetachLeave(Sender : TObject);
-Begin Try btn_Detach.Color := $003030C8; Except NoteWriteFailed('btn_Detach.Color'); End; End;
+Begin
+    Try
+        btn_Detach.Color := COLOR_BG_ELEVATED;
+        btn_Detach.Font.Color := COLOR_ACCENT_RED;
+        ico_Detach.Font.Color := COLOR_ACCENT_RED;
+    Except End;
+End;
 
 Procedure btn_ClearLogEnter(Sender : TObject);
 Begin Try btn_ClearLog.Color := COLOR_BG_HOVER; Except NoteWriteFailed('btn_ClearLog.Color'); End; End;
@@ -1647,7 +1852,7 @@ Begin Try btn_ClearLog.Color := COLOR_BG_ELEVATED; Except NoteWriteFailed('btn_C
 Procedure btn_PauseEnter(Sender : TObject);
 Begin
     Try
-        If PausedFlag Then btn_Pause.Color := $0070B4F0
+        If PausedFlag Then btn_Pause.Color := COLOR_HOVER_AMBER
         Else btn_Pause.Color := COLOR_BG_HOVER;
     Except End;
 End;
@@ -1662,7 +1867,7 @@ End;
 Procedure btn_SavingEnter(Sender : TObject);
 Begin
     Try
-        If SavingOff Then btn_Saving.Color := $0070B4F0
+        If SavingOff Then btn_Saving.Color := COLOR_HOVER_AMBER
         Else btn_Saving.Color := COLOR_BG_HOVER;
     Except End;
 End;
@@ -1679,12 +1884,12 @@ Begin Try btn_Renew.Color := COLOR_BG_ELEVATED; Except NoteWriteFailed('btn_Rene
 Procedure btn_OpenWebEnter(Sender : TObject);
 Begin
     If OpenWebEnabled Then
-        Try btn_OpenWeb.Color := COLOR_BG_HOVER; Except NoteWriteFailed('btn_OpenWeb.Color'); End;
+        Try btn_OpenWeb.Color := COLOR_HOVER_BLUE; Except End;
 End;
 Procedure btn_OpenWebLeave(Sender : TObject);
 Begin
     If OpenWebEnabled Then
-        Try btn_OpenWeb.Color := COLOR_BG_ELEVATED; Except NoteWriteFailed('btn_OpenWeb.Color'); End
+        Try btn_OpenWeb.Color := COLOR_ACCENT_BLUE; Except End
     Else
         Try btn_OpenWeb.Color := COLOR_BG_CARD; Except NoteWriteFailed('btn_OpenWeb.Color'); End;
 End;
@@ -1707,28 +1912,26 @@ Begin LeaveToggle(chk_OnTop, AlwaysOnTopFlag); End;
 Procedure tab_LogEnter(Sender : TObject);
 Begin
     Try
-        If Not mmo_Log.Visible Then tab_Log.Color := $004A4A4A;
+        If Not pnl_Log.Visible Then tab_Log.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 Procedure tab_LogLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Log.Visible Then tab_Log.Color := COLOR_BG_LOG
-        Else tab_Log.Color := COLOR_BG_CARD;
+        PaintTab(tab_Log, pnl_Log.Visible);
     Except End;
 End;
 
 Procedure tab_PerfEnter(Sender : TObject);
 Begin
     Try
-        If Not mmo_Perf.Visible Then tab_Perf.Color := $004A4A4A;
+        If Not mmo_Perf.Visible Then tab_Perf.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 Procedure tab_PerfLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Perf.Visible Then tab_Perf.Color := COLOR_BG_LOG
-        Else tab_Perf.Color := COLOR_BG_CARD;
+        PaintTab(tab_Perf, mmo_Perf.Visible);
     Except End;
 End;
 
@@ -1736,41 +1939,25 @@ End;
 Procedure tab_StatsEnter(Sender : TObject);
 Begin
     Try
-        If Not mmo_Stats.Visible Then tab_Stats.Color := $004A4A4A;
+        If Not mmo_Stats.Visible Then tab_Stats.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 Procedure tab_StatsLeave(Sender : TObject);
 Begin
     Try
-        If mmo_Stats.Visible Then tab_Stats.Color := COLOR_BG_LOG
-        Else tab_Stats.Color := COLOR_BG_CARD;
+        PaintTab(tab_Stats, mmo_Stats.Visible);
     Except End;
 End;
 
 
 { Show one of the four tabs: 0 Log, 1 Perf, 2 Config, 3 Stats. }
-Procedure PaintTab(Pnl : TPanel; Open : Boolean);
-Begin
-    Try
-        If Open Then
-        Begin
-            Pnl.Color := COLOR_BG_LOG;
-            Pnl.Font.Color := COLOR_TEXT_BODY;
-        End
-        Else
-        Begin
-            Pnl.Color := COLOR_BG_CARD;
-            Pnl.Font.Color := COLOR_TEXT_MUTED;
-        End;
-    Except End;
-End;
 
 Procedure ShowTab(Which : Integer);
 Begin
     Try
         If Which = 1 Then RefreshPerfPanel(0);
         If Which = 3 Then RefreshStatsPanel(True);
-        mmo_Log.Visible := Which = 0;
+        pnl_Log.Visible := Which = 0;
         mmo_Perf.Visible := Which = 1;
         pnl_Config.Visible := Which = 2;
         mmo_Stats.Visible := Which = 3;
@@ -1798,15 +1985,14 @@ Begin ShowTab(3); End;
 Procedure tab_ConfigEnter(Sender : TObject);
 Begin
     Try
-        If Not pnl_Config.Visible Then tab_Config.Color := $004A4A4A;
+        If Not pnl_Config.Visible Then tab_Config.Font.Color := COLOR_TEXT_BODY;
     Except End;
 End;
 
 Procedure tab_ConfigLeave(Sender : TObject);
 Begin
     Try
-        If pnl_Config.Visible Then tab_Config.Color := COLOR_BG_LOG
-        Else tab_Config.Color := COLOR_BG_CARD;
+        PaintTab(tab_Config, pnl_Config.Visible);
     Except End;
 End;
 
@@ -1819,7 +2005,7 @@ Begin
         ValueUnit := UnitChoice;
         StorePreferences(0);
         PaintValueFormat(0);
-        mmo_Log.Lines.Insert(0, '      value format set to ' + Choice + ', unit '
+        lst_Log.Items.Insert(0, '      value format set to ' + Choice + ', unit '
             + UnitChoice);
     Except End;
 End;
@@ -1845,11 +2031,12 @@ Begin
         Else If Setting = 'closing' Then ClosingMode := Choice
         Else If Setting = 'ui_automation' Then UiAutomationMode := Choice
         Else If Setting = 'keep_in_view' Then KeepInViewMode := Choice
+        Else If Setting = 'length_units' Then LengthUnits := Choice
         Else If Setting = 'dialogs' Then DialogMode := Choice
         Else If Setting = 'usage_stats' Then UsageStatsMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
-        mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
+        lst_Log.Items.Insert(0, '      ' + Setting + ' set to ' + Choice);
     Except End;
 End;
 
@@ -1894,6 +2081,90 @@ Begin ChooseAgentSetting('usage_stats', 'on'); End;
 
 Procedure opt_StatsOffClick(Sender : TObject);
 Begin ChooseAgentSetting('usage_stats', 'off'); End;
+Procedure opt_UnitsMilClick(Sender : TObject);
+Begin ChooseAgentSetting('length_units', 'mil'); End;
+
+Procedure opt_UnitsMmClick(Sender : TObject);
+Begin ChooseAgentSetting('length_units', 'mm'); End;
+
+{ A check switched on or off on the Config tab, stored at once. }
+Procedure ChooseCheck(CheckName : String; TurnOn : Boolean);
+Var
+    Rest, Item, Kept : String;
+    P : Integer;
+Begin
+    Try
+        Kept := '';
+        Rest := ChecksOff;
+        While Rest <> '' Do
+        Begin
+            P := Pos(',', Rest);
+            If P = 0 Then
+            Begin
+                Item := Rest;
+                Rest := '';
+            End
+            Else
+            Begin
+                Item := Copy(Rest, 1, P - 1);
+                Rest := Copy(Rest, P + 1, Length(Rest));
+            End;
+            If (Item <> '') And (Item <> CheckName) Then
+            Begin
+                If Kept <> '' Then Kept := Kept + ',';
+                Kept := Kept + Item;
+            End;
+        End;
+        If Not TurnOn Then
+        Begin
+            If Kept <> '' Then Kept := Kept + ',';
+            Kept := Kept + CheckName;
+        End;
+        ChecksOff := Kept;
+        StorePreferences(0);
+        PaintAgentSettings(0);
+        If TurnOn Then
+            lst_Log.Items.Insert(0, '      check ' + CheckName + ' on')
+        Else
+            lst_Log.Items.Insert(0, '      check ' + CheckName + ' off');
+    Except End;
+End;
+
+Procedure opt_ChkFpOnClick(Sender : TObject);
+Begin ChooseCheck('footprint_drawing', True); End;
+
+Procedure opt_ChkFpOffClick(Sender : TObject);
+Begin ChooseCheck('footprint_drawing', False); End;
+
+Procedure opt_ChkSymOnClick(Sender : TObject);
+Begin ChooseCheck('symbol_pins', True); End;
+
+Procedure opt_ChkSymOffClick(Sender : TObject);
+Begin ChooseCheck('symbol_pins', False); End;
+
+Procedure opt_ChkPadOnClick(Sender : TObject);
+Begin ChooseCheck('pins_pads', True); End;
+
+Procedure opt_ChkPadOffClick(Sender : TObject);
+Begin ChooseCheck('pins_pads', False); End;
+
+Procedure opt_ChkBodyOnClick(Sender : TObject);
+Begin ChooseCheck('model_body', True); End;
+
+Procedure opt_ChkBodyOffClick(Sender : TObject);
+Begin ChooseCheck('model_body', False); End;
+
+Procedure opt_ChkSpiceOnClick(Sender : TObject);
+Begin ChooseCheck('spice_model', True); End;
+
+Procedure opt_ChkSpiceOffClick(Sender : TObject);
+Begin ChooseCheck('spice_model', False); End;
+
+Procedure opt_ChkFabOnClick(Sender : TObject);
+Begin ChooseCheck('fab_export', True); End;
+
+Procedure opt_ChkFabOffClick(Sender : TObject);
+Begin ChooseCheck('fab_export', False); End;
 
 
 { ============================================================================ }
@@ -1994,7 +2265,7 @@ Begin
     Added := '"board_used":"' + EscapeJsonString(BoardFallbackPath) + '"'
         + ',"board_note":"No board was focused (' + EscapeJsonString(Front)
         + ' in front), so this used ' + EscapeJsonString(ExtractFileName(BoardFallbackPath))
-        + ', the first board of the open projects."';
+        + ', the one board of the open projects it could mean."';
     If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
     Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
 End;
@@ -2024,6 +2295,11 @@ Begin
     If (Command = 'application.create_document') Or (Command = 'generic.add_sheet') Then
     Begin
         Result := SavingOffError(RequestId, 'A new document is created by writing its file.');
+        Exit;
+    End;
+    If Command = 'project.rename_document' Then
+    Begin
+        Result := SavingOffError(RequestId, 'A rename is made by saving the document under its new name.');
         Exit;
     End;
     If (Command = 'pcb.make_library') Or (Command = 'pcb.make_pad_via_library') Then
@@ -2977,7 +3253,7 @@ Begin
                     PumpInterval := PollIntervalActiveMs;
                     Try tmr_Poll.Interval := PumpInterval; Except { only the poll rate } End;
                 End;
-                UpdateStatusHeader('MCP: idle');
+                UpdateStatusHeader('Idle');
                 UpdateStatsLine(
                     (GetTickCount - StatusStartTick) Div 1000,
                     StatusRequestCount,
@@ -3096,7 +3372,7 @@ Begin
     { The timer only ticks while the form is visible, so this is not just  }
     { cosmetic: showing the dashboard is what starts the pump running.     }
     ShowStatusForm(0);
-    UpdateStatusHeader('MCP: idle');
+    UpdateStatusHeader('Idle');
     UpdateStatsLine(0, 0, 0, AutoShutdownMs Div 1000);
     AppendLog(FormatLogStamp(0) + ',0,_session_start,version=' + SCRIPT_VERSION
               + ',protocol=' + IntToStr(PROTOCOL_VERSION));
@@ -3113,7 +3389,7 @@ Begin
     If Not Armed Then
     Begin
         AppendLog(FormatLogStamp(0) + ',0,_arm_failed,the poll timer did not start');
-        UpdateStatusHeader('MCP: poll timer did not start');
+        UpdateStatusHeader('Poll timer did not start');
     End;
 End;
 

@@ -3409,7 +3409,7 @@ Begin
                 Exit;
             End;
             If Command = 'pcb.get_component_placements' Then
-                Reply := PCB_GetComponentsForBoard(Board, RequestId)
+                Reply := PCB_GetComponentsForBoard(Board, SafeParams, RequestId)
             Else If Command = 'pcb.get_board_outline' Then
                 Reply := PCB_GetBoardOutlineForBoard(Board, RequestId)
             Else If Command = 'pcb.get_layer_stackup' Then

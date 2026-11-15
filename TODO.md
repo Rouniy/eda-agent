@@ -1,5 +1,18 @@
 # Fork integration TODO
 
+## MOREmbedded synchronization, 2026-11-15
+
+- [x] Reconcile the complete donor source through `a2a0fac4` with Rouniy's
+  selected-project runtime and existing extensions; package `0.8.2`, script
+  `2026.11.15.1`.
+- [x] Build/lint all 12 Pascal units with zero findings; build wheel/sdist
+  and verify clean installation plus the installed EasyEDA extension build.
+- [ ] Finish the full Python suite, repair failures and record final results.
+- [ ] Run hosted Python 3.11/3.12 and Free Pascal checks; qualify optional
+  Rust components with a Rust toolchain.
+- [ ] Recover the required shared operating runbook, then qualify the new
+  native behavior on disposable CAD documents before runtime deployment.
+
 ## Native unknown-property repair, 2026-10-29
 
 - [x] Fix `pcb.query_region` unknown-property handling with

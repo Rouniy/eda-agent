@@ -849,6 +849,15 @@ def code_stamp() -> float:
     return round(newest, 3)
 
 
+def _static_icon(name: str, mimetype: str) -> Response:
+    path = _HTML_PATH.parent / name
+    if not path.exists():
+        return Response(status=404)
+    resp = Response(path.read_bytes(), mimetype=mimetype)
+    resp.headers["Cache-Control"] = "max-age=86400"
+    return resp
+
+
 #: Set by whoever serves the app (server.py): stops this dashboard so a
 #: newer one can take the port.
 SHUTDOWN: dict[str, Any] = {}
@@ -961,6 +970,10 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     _register_stages(app)
     from .usage_view import register as _register_usage
     _register_usage(app)
+    from .toolkit_view import register as _register_toolkit
+    _register_toolkit(app)
+    from .features_view import register as _register_features
+    _register_features(app)
 
     @app.route("/")
     def workbench_page() -> Response:
@@ -968,6 +981,17 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         resp = Response(page.read_text(encoding="utf-8"), mimetype="text/html")
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return resp
+
+    @app.route("/favicon.ico")
+    @app.route("/eda-agent.ico")
+    def app_icon() -> Response:
+        """The app icon (scripts/build_icons.py builds it): the browser
+        tab, and the window of a dashboard installed as an app."""
+        return _static_icon("eda-agent.ico", "image/x-icon")
+
+    @app.route("/eda-agent.svg")
+    def app_icon_svg() -> Response:
+        return _static_icon("eda-agent.svg", "image/svg+xml")
 
     @app.route("/classic")
     def index() -> Response:

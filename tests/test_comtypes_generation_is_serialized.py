@@ -9,6 +9,8 @@ the next run of the same venv passed, because the wrapper then existed.
 from __future__ import annotations
 
 import subprocess
+import os
+from pathlib import Path
 import sys
 import textwrap
 import threading
@@ -94,7 +96,9 @@ def test_processes_generate_one_at_a_time(tmp_path):
         with open({str(log)!r}, "a") as f:
             f.write(f"{{start}} {{end}}\\n")
     """)
-    procs = [subprocess.Popen([sys.executable, "-c", child]) for _ in range(3)]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    procs = [subprocess.Popen([sys.executable, "-c", child], env=env) for _ in range(3)]
     for p in procs:
         assert p.wait(60) == 0
     spans = sorted(tuple(map(float, line.split())) for line in log.read_text().splitlines())

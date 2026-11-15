@@ -20,7 +20,9 @@ from ..bridge.payload import payload_safe, unsendable_chars
 from ..bridge import get_bridge
 from ..safety import refuse_process, untrusted_text_note
 from .library import _mils
+from ..units import format_length
 from .pin_hints import pin_location_hint
+from ..scope import ScopeError, refusal as scope_refusal, to_compact as scope_compact
 from ..scope import to_wire as scope_to_wire
 from .bulk_hints import BulkHintTracker
 from .editor_options import run_options
@@ -107,6 +109,7 @@ async def _erc_script_ready(bridge) -> dict[str, Any] | None:
 #: The keys a managed placement dict is read for.
 MANAGED_PLACEMENT_KEYS = frozenset({
     "design_item_id",
+    "part_id",
     "x",
     "y",
     "rotation",
@@ -529,23 +532,26 @@ def register_generic_tools(mcp):
             properties: Comma-separated property names to return.
 
                 SCHEMATIC objects use the dotted spelling:
-                "Text,Location.X,Location.Y" for net labels
-                "Designator,Name,ConnectionX,ConnectionY" for pins.
-                Pins also expose the SDK's read-only DescriptionString,
-                IdentifierString, error/display flags, and custom text margins.
-                ConnectionX/ConnectionY are the pin's ELECTRICAL end --
-                the point a wire or net label must sit on to attach.
-                Location is the BODY-side root and is NOT the connection
-                point; deriving the end by hand from Orientation and
-                PinLength is a common source of wrong conclusions about
-                what is wired.
-                "Designator.Text,Comment.Text,LibReference" for components
-                "DisplayMode,DisplayModeCount,DisplayModeNames,FootprintPinMap" for a placed
-                component's drawn symbol and current PCB model pin map.
-                "VerticesCount,Vertices,LineWidth" for graphic polylines.
-                Vertices is a semicolon-separated list of x,y pairs in mils;
-                eLine also returns two vertices from its Location and Corner;
-                the template's ePolyline objects have a real vertex array.
+                "Text,Location.X,Location.Y" for net labels;
+                "Designator,Name,ConnectionX,ConnectionY" for pins
+                (ConnectionX/Y is the ELECTRICAL end a wire must touch;
+                Location is the body-side root);
+                "Designator.Text,Comment.Text,LibReference" for
+                components, "DisplayMode,DisplayModeCount" and
+                "DisplayModeNames" (the alternate drawing; names
+                ";"-separated from Normal; settable) and
+                "FootprintPinMap" (the current footprint model's pin map,
+                "(G:1),(D:2),(S:3)"; obj_modify also takes "G:1;D:2" and
+                merges by schematic pin, so a map cannot be cleared).
+                "ComponentKind" is its Component Type, read and set by
+                name: standard, mechanical, graphical, net_tie_bom,
+                net_tie_no_bom, standard_no_bom or jumper; with scope
+                "lib_component:NAME" it sets a library symbol's.
+                "TextFontId" is a sheet or harness entry's label font;
+                "OwnerSheetSymbol" an entry's symbol. A
+                managed component also reads
+                "LibraryIdentifier,DesignItemId,ItemGUID,RevisionGUID"
+                and the other Vault/Symbol GUIDs.
 
                 PCB PRIMITIVES DO NOT. They are a separate, flat set,
                 and mixing the two is the single commonest mistake here:
@@ -573,7 +579,28 @@ def register_generic_tools(mcp):
                 IsRedundant, Mode, Height, StrokeWidth, IsDesignator,
                 IsComment, UseTTFonts, FontName (PCB text, read only).
 
-Board queries can page large result sets. Read the returned count and truncation fields before treating the reply as complete.
+                A board type returns EVERY primitive of that type;
+                filter "InComponent=false|InPolygon=false" for free
+                copper. Mechanical-layer tracks have no net.
+            scope: "active_doc" (default); "project" (every sheet of the
+                focused project); "doc:PATH" or the bare path (that sheet,
+                no focus change); "project:PATH"; "lib_component:NAME" (a
+                symbol in the active SchLib), "lib_component:NAME@3" for
+                part 3 of a multi-part one (else only part 1 is seen;
+                OwnerPartId 0 = shared). Anything else: INVALID_SCOPE.
+            filter: Pipe-separated property=value conditions (AND), e.g.
+                "Text=VCC" or "Designator.Text=R1"; "" matches all. A PCB
+                length matches as a number in mils ('.' or ',' decimal).
+                "Net!=GND" excludes; "Y>4250|Y<=5000" compares numbers
+                (a value that is not a number matches no < > <= >=);
+                "Name~POUR_*" matches a wildcard pattern (* any run, ? one
+                character, case ignored), "Net!~VCC*" excludes by one. A
+                PCB Layer (Layer1, Layer2) takes the internal name
+                ("Mechanical21") or the board's own name ("FluidGon"), in
+                any case; a ~ pattern meets either, and a name that is no
+                layer is refused. The same grammar holds for obj_modify,
+                obj_delete and obj_select.
+            limit: Maximum number of objects to return (0 = unlimited)
 
         Returns:
             Dictionary with "objects" array and "count"
@@ -581,9 +608,22 @@ Board queries can page large result sets. Read the returned count and truncation
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, objects=[], count=0)
+        if "|" in properties:
+            # A property name never holds a '|'. Sent on, the whole list
+            # came back as one key and its first name was called unknown.
+            return {"ok": False, "success": False, "error": "BAD_PROPERTIES",
+                    "reason": "properties are separated by ',' "
+                              f"({properties.replace('|', ',')!r}); '|' "
+                              "separates filter conditions and obj_modify "
+                              "settings. Nothing was read.",
+                    "objects": [], "count": 0}
+        try:
+            wire_scope = scope_to_wire(scope)
+        except ScopeError as exc:
+            return scope_refusal(exc, objects=[], count=0)
         bridge = get_bridge()
         params = {
-            "scope": scope,
+            "scope": wire_scope,
             "object_type": object_type,
             "filter": filter,
             "properties": properties,
@@ -860,8 +900,12 @@ Board queries can page large result sets. Read the returned count and truncation
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, matched=0)
+        try:
+            wire_scope = scope_to_wire(scope)
+        except ScopeError as exc:
+            return scope_refusal(exc, matched=0)
         wire = {
-            "scope": scope_to_wire(scope),
+            "scope": wire_scope,
             "object_type": object_type,
             "filter": filter,
             "set": set,
@@ -1009,8 +1053,12 @@ Board queries can page large result sets. Read the returned count and truncation
                 "or set confirm_delete_all=True to delete all.",
                 "matched": 0,
             }
+        try:
+            wire_scope = scope_to_wire(scope)
+        except ScopeError as exc:
+            return scope_refusal(exc, matched=0)
         wire = {
-            "scope": scope_to_wire(scope),
+            "scope": wire_scope,
             "object_type": object_type,
             "filter": filter,
         }
@@ -1734,7 +1782,10 @@ Board queries can page large result sets. Read the returned count and truncation
         # cannot, and nothing can hold '~~'; same refusal as obj_batch_delete.
         op_strings = []
         for i, op in enumerate(operations):
-            scope = op.get("scope", "active_doc")
+            try:
+                scope = scope_compact(op.get("scope", "active_doc"))
+            except ScopeError as exc:
+                return scope_refusal(exc, item=i, operations_processed=0)
             obj_type = op.get("object_type", "")
             filt = op.get("filter", "")
             set_str = op.get("set", "")
@@ -2314,26 +2365,33 @@ Board queries can page large result sets. Read the returned count and truncation
     @mcp.tool()
     async def proj_add_sheet(
         name: str = "NewSheet",
+        project_path: str = "",
     ) -> dict[str, Any]:
-        """Create a new schematic sheet and add it to the focused project.
+        """Create a new schematic sheet and add it to a project.
 
         The sheet is created in the same directory as the project file.
         Refused (FILE_EXISTS) when a file of that name is already there,
         as one removed with proj_delete_sheet is: it would open with its
-        old drawing.
+        old drawing. Refused (NO_PROJECT) when no project is named and
+        the focused document belongs to none, as a library opened on its
+        own does.
 
         Args:
             name: Name for the new sheet (without .SchDoc extension).
                   Default "NewSheet".
+            project_path: The open project to add it to; empty means the
+                focused project.
 
         Returns:
-            Dictionary with the path of the newly created sheet
+            ``path``, ``project_path``, ``saved``, ``added_to_project``
+            (read back from the project's document list) and
+            ``project_saved``; ``success`` only when saved and added.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "generic.add_sheet",
-            {"name": name},
-        )
+        params = {"name": name}
+        if project_path:
+            params["project_path"] = project_path
+        result = await bridge.send_command_async("generic.add_sheet", params)
         return result
 
     @mcp.tool()
@@ -2878,6 +2936,68 @@ Board queries can page large result sets. Read the returned count and truncation
         return reply
 
     @mcp.tool()
+    async def sch_sheet_template(
+        action: str = "get",
+        template_file: str = "",
+        vault: bool = False,
+        file_path: str = "",
+    ) -> dict[str, Any]:
+        """Read, set, update or remove the sheet template (.SchDot) of a
+        schematic sheet, with no dialog.
+
+        A template carries the sheet size, the border and the company
+        title block. Setting one switches the standard title block off
+        and keeps the sheet's parameters (Title and the rest), which the
+        title block then shows. Altium's own update and remove commands
+        ask for a scope in a dialog; these do not, and act on one sheet.
+        Every action is read back.
+
+        Args:
+            action: "get" (default), "set", "update" or "remove".
+            template_file: The .SchDot for "set". For "update" it is
+                optional: without it the sheet's own template file is
+                read again (it must still exist on this machine).
+            vault: Also read the vault link (vault, item and revision
+                GUIDs and names) a sheet set from the server carries.
+            file_path: The sheet (.SchDoc). Empty uses the sheet in front.
+                Set and update bring a named sheet forward for Altium's
+                template command and then restore the view you had.
+
+        Returns:
+            ``applied`` (the sheet reads back as asked), ``template_file``,
+            ``template_before``, ``template_objects`` (1 with a template,
+            0 without), ``template_graphics`` (the objects the template
+            draws), ``sheet_style``, ``title_block_on``, ``border_on``;
+            ``removed`` for "remove"; ``vault`` when asked.
+        """
+        action = (action or "get").strip().lower()
+        if action not in ("get", "set", "update", "remove"):
+            return {"ok": False,
+                    "reason": "action is get, set, update or remove"}
+        params: dict[str, Any] = {"action": action}
+        if template_file:
+            if action not in ("set", "update"):
+                return {"ok": False,
+                        "reason": "template_file is for set and update"}
+            if not template_file.lower().endswith(".schdot"):
+                return {"ok": False,
+                        "reason": "template_file must be a .SchDot file"}
+            params["template_file"] = template_file
+        elif action == "set":
+            return {"ok": False, "reason": "set needs template_file"}
+        if vault:
+            params["vault"] = "true"
+        if file_path:
+            params["file_path"] = file_path
+        reply = await get_bridge().send_command_async(
+            "generic.sheet_template", params)
+        if isinstance(reply, dict) and reply.get("applied") is False:
+            reply["ok"] = False
+            reply["reason"] = ("the sheet does not read back as asked: "
+                               "see template_file and template_objects")
+        return reply
+
+    @mcp.tool()
     async def sch_audit_outside_sheet(limit: int = 100,
                                       apply: bool = False) -> dict[str, Any]:
         """Find anything drawn outside the active schematic's sheet, and
@@ -3224,7 +3344,10 @@ Board queries can page large result sets. Read the returned count and truncation
             name: Port name (maps to net name)
             x: X coordinate in mils
             y: Y coordinate in mils
-            style: Arrow style, "none", "left", "right", "left_right"
+            style: The port's axis: "horizontal" (also "none", "left",
+                "right", "left_right") or "vertical" (also "top",
+                "bottom"). Altium keeps only the axis; the arrows follow
+                io_type and the end that is wired.
             io_type: I/O direction, "unspecified", "output", "input", "bidirectional"
             sheet_path: Optional absolute target .SchDoc path. If omitted,
                 the active schematic is used.
@@ -3433,10 +3556,14 @@ Board queries can page large result sets. Read the returned count and truncation
         bad = filter_problem(filter)
         if bad:
             return bad_filter(bad, count=0)
+        try:
+            wire_scope = scope_to_wire(scope)
+        except ScopeError as exc:
+            return scope_refusal(exc, count=0)
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "generic.get_object_count",
-            {"object_type": object_type, "scope": scope_to_wire(scope), "filter": filter},
+            {"object_type": object_type, "scope": wire_scope, "filter": filter},
         )
         # The PCB active-doc path runs the query handler, which ships a list of
         # (empty, since no properties were requested) objects alongside the
@@ -3477,7 +3604,10 @@ Board queries can page large result sets. Read the returned count and truncation
             active: False places it switched off.
 
         Returns:
-            Every option read back.
+            Every option read back. ``error_kinds`` and
+            ``connection_pairs`` are left out while ``suppress_all`` reads
+            back true: they suppress nothing more then, and they are some
+            3 KB a marker.
         """
         if orientation is not None and orientation not in (0, 1, 2, 3):
             return {"ok": False, "reason": "orientation is 0, 1, 2 or 3"}
@@ -3493,7 +3623,11 @@ Board queries can page large result sets. Read the returned count and truncation
         for key, flag in (("suppress_all", suppress_all), ("active", active)):
             if flag is not None:
                 args[key] = "true" if flag else "false"
-        return await get_bridge().send_command_async("generic.place_no_erc", args)
+        reply = await get_bridge().send_command_async("generic.place_no_erc", args)
+        if isinstance(reply, dict) and reply.get("suppress_all") is True:
+            reply = {k: v for k, v in reply.items()
+                     if k not in ("error_kinds", "connection_pairs")}
+        return reply
 
     @mcp.tool()
     async def sch_place_junction(
@@ -3537,18 +3671,19 @@ Board queries can page large result sets. Read the returned count and truncation
 
     @mcp.tool()
     async def obj_set_grid(
-        snap_grid: int = 0,
-        visible_grid: int = 0,
+        snap_grid: float = 0,
+        visible_grid: float = 0,
         snap_grid_on: Optional[bool] = None,
         visible_grid_on: Optional[bool] = None,
-        hotspot_grid: int = 0,
+        hotspot_grid: float = 0,
         hotspot_grid_on: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Set the snap, visible and electrical grids for the active
         schematic. pcb_set_grids sets a board's grids.
 
         Args:
-            snap_grid: Snap grid size in mils (0 = don't change)
+            snap_grid: Snap grid size in mils (0 = don't change); a metric
+                grid in mils keeps its fraction (0.5 mm = 19.685)
             visible_grid: Visible grid size in mils (0 = don't change)
             snap_grid_on: Switch the snap grid on or off (None = don't change)
             visible_grid_on: Switch the visible grid on or off (None = don't change)
@@ -3563,15 +3698,15 @@ Board queries can page large result sets. Read the returned count and truncation
         bridge = get_bridge()
         params: dict[str, str] = {}
         if snap_grid > 0:
-            params["snap_grid"] = str(snap_grid)
+            params["snap_grid"] = format_length(snap_grid)
         if visible_grid > 0:
-            params["visible_grid"] = str(visible_grid)
+            params["visible_grid"] = format_length(visible_grid)
         if snap_grid_on is not None:
             params["snap_grid_on"] = "true" if snap_grid_on else "false"
         if visible_grid_on is not None:
             params["visible_grid_on"] = "true" if visible_grid_on else "false"
         if hotspot_grid > 0:
-            params["hotspot_grid"] = str(hotspot_grid)
+            params["hotspot_grid"] = format_length(hotspot_grid)
         if hotspot_grid_on is not None:
             params["hotspot_grid_on"] = "true" if hotspot_grid_on else "false"
         result = await bridge.send_command_async("generic.set_grid", params)
@@ -3873,6 +4008,8 @@ Board queries can page large result sets. Read the returned count and truncation
         directive_y: float | None = None,
         line_style: int | None = None,
         collapsed: bool | None = None,
+        color: int | None = None,
+        area_color: int | None = None,
     ) -> dict[str, Any]:
         """Place a blanket on the active schematic: a polygon whose directive
         applies to every net it encloses (a net class, a differential pair,
@@ -3887,12 +4024,17 @@ Board queries can page large result sets. Read the returned count and truncation
                 Altium reads a blanket's directive from.
             line_style: Outline style, as Altium's integer.
             collapsed: Draw the blanket collapsed.
+            color, area_color: Border and fill, Altium's BGR integers;
+                omitted, the user's blanket defaults. The fill is always
+                see-through: the blanket is drawn above what it encloses,
+                and Altium keeps no opaque blanket fill on save.
 
         Reshape: obj_modify eBlanket "Vertices=x1,y1,x2,y2,...".
         Coverage: sch_get_blankets after a compile.
 
         Returns:
-            ``vertices`` and the ``directive`` read back.
+            ``vertices``, ``color``, ``area_color``, ``transparent``,
+            ``line_style`` and the ``directive`` read back.
         """
         if not vertices or len(vertices) < 3 or any(len(v) != 2 for v in vertices):
             return {"success": False, "error": {
@@ -3918,6 +4060,10 @@ Board queries can page large result sets. Read the returned count and truncation
             args["line_style"] = str(int(line_style))
         if collapsed is not None:
             args["collapsed"] = "true" if collapsed else "false"
+        if color is not None:
+            args["color"] = str(int(color))
+        if area_color is not None:
+            args["area_color"] = str(int(area_color))
         bridge = get_bridge()
         return await bridge.send_command_async("generic.place_blanket", args)
 
@@ -4428,18 +4574,43 @@ Board queries can page large result sets. Read the returned count and truncation
         width: float = 500,
         height: float = 800,
         harness_type: str = "",
+        entries: Optional[list[str]] = None,
+        entry_side: str = "left",
+        entry_pitch: float = 100,
     ) -> dict[str, Any]:
-        """Place a harness connector on the active schematic sheet.
+        """Place a harness connector on the active schematic sheet, with
+        its entries.
 
+        Draw the signal harness from it with sch_place_signal_harness.
+        Move a placed one with obj_modify Location.X / Location.Y on
+        eHarnessConnector: its entries go with it. eHarnessEntry and
+        eSignalHarness are obj_query / obj_delete types.
 
         Args:
-            x, y: Bottom-left corner in mils.
+            x, y: Top-left corner in mils; the body hangs below it.
             width, height: Connector rectangle size in mils.
             harness_type: Named harness type (optional).
+            entries: Entry names, top to bottom (e.g. ["USB+", "USB-"]).
+            entry_side: "left", "right", "top" or "bottom".
+            entry_pitch: mils from the top to the first entry and between
+                entries; keep the height long enough for them.
 
         Returns:
-            Dict with success, x, y, width, height, harness_type.
+            Dict with success, x, y, width, height, harness_type,
+            ``entries`` as read back and ``entries_placed`` (those at the
+            side and distance asked).
         """
+        side = (entry_side or "left").strip().lower()
+        if side not in ("left", "right", "top", "bottom"):
+            return {"ok": False, "success": False,
+                    "reason": "entry_side is left, right, top or bottom"}
+        names = [str(n).strip() for n in (entries or []) if str(n).strip()]
+        if any(";" in n for n in names):
+            return {"ok": False, "success": False,
+                    "reason": "an entry name cannot hold ';'"}
+        if entry_pitch <= 0:
+            return {"ok": False, "success": False,
+                    "reason": "entry_pitch must be above 0"}
         bridge = get_bridge()
         params: dict[str, Any] = {
             "x": str(x), "y": str(y),
@@ -4447,9 +4618,39 @@ Board queries can page large result sets. Read the returned count and truncation
         }
         if harness_type:
             params["harness_type"] = harness_type
+        if names:
+            params["entries"] = ";".join(names)
+            params["entry_side"] = side
+            params["entry_pitch"] = format_length(entry_pitch)
         return await bridge.send_command_async(
             "generic.place_harness_connector", params
         )
+
+    @mcp.tool()
+    async def sch_place_signal_harness(
+        vertices: list[list[float]],
+    ) -> dict[str, Any]:
+        """Draw a signal harness on the active sheet: the thick line that
+        carries a harness from a harness connector or harness port to a
+        sheet entry. Its ends must meet those objects' connection points.
+
+        Args:
+            vertices: [[x, y], ...] in mils, two points or more.
+
+        Returns:
+            ``success`` (every vertex read back), ``vertices``, ``asked``.
+        """
+        points = []
+        for v in vertices or []:
+            if not isinstance(v, (list, tuple)) or len(v) != 2:
+                return {"ok": False, "success": False,
+                        "reason": "each vertex is [x, y] in mils"}
+            points.append(f"{format_length(v[0])},{format_length(v[1])}")
+        if len(points) < 2:
+            return {"ok": False, "success": False,
+                    "reason": "a signal harness needs two points or more"}
+        return await get_bridge().send_command_async(
+            "generic.place_signal_harness", {"vertices": ",".join(points)})
 
     @mcp.tool()
     async def sch_place_cross_sheet_connector(
@@ -4668,8 +4869,8 @@ Board queries can page large result sets. Read the returned count and truncation
     async def sch_set_component_part_id(
         designator: str,
         part_id: int,
-        location_x: int | None = None,
-        location_y: int | None = None,
+        location_x: float | None = None,
+        location_y: float | None = None,
     ) -> dict[str, Any]:
         """Switch the active sub-part on a multi-part schematic component.
 
@@ -4688,17 +4889,18 @@ Board queries can page large result sets. Read the returned count and truncation
             location_y: Symbol Y in mils, to choose one of several.
 
         Returns:
-            Dict with success, designator, part_id, the location written
-            and how many symbols carried the designator. On ambiguity,
+            Dict with success, designator, part_id, the location written,
+            ``changed`` (always 1, the one symbol written) and
+            ``same_designator`` (how many carry it). On ambiguity,
             an AMBIGUOUS_DESIGNATOR error carrying `candidates`.
         """
         bridge = get_bridge()
         params: dict[str, str] = {
             "designator": designator, "part_id": str(part_id)}
         if location_x is not None:
-            params["location_x"] = str(int(location_x))
+            params["location_x"] = format_length(location_x)
         if location_y is not None:
-            params["location_y"] = str(int(location_y))
+            params["location_y"] = format_length(location_y)
         return await bridge.send_command_async(
             "generic.set_component_part_id", params,
         )
@@ -4853,8 +5055,8 @@ Board queries can page large result sets. Read the returned count and truncation
 
         Args:
             operations: List of create dicts, each with:
-                - scope: "active_doc" (default), only active_doc is
-                  currently honored for creates.
+                - scope: "active_doc" (default), the only scope a
+                  create takes; any other is refused.
                 - object_type: Altium type name (e.g. "eNetLabel",
                   "eJunction", "eNoERC").
                 - properties: pipe-separated ``Name=Value`` list, same
@@ -4883,7 +5085,16 @@ Board queries can page large result sets. Read the returned count and truncation
         """
         op_strs: list[str] = []
         for i, op in enumerate(operations):
-            scope = op.get("scope", "active_doc")
+            try:
+                scope = scope_compact(op.get("scope", "active_doc"))
+            except ScopeError as exc:
+                return scope_refusal(exc, item=i, created=0)
+            if scope != "active_doc":
+                return {"ok": False, "error": "SCOPE_NOT_SUPPORTED",
+                        "reason": f"operations[{i}].scope is {scope!r}; a "
+                        "create goes on the document in front, so bring "
+                        "that sheet forward first. Nothing was sent.",
+                        "created": 0}
             obj_type = op.get("object_type", "")
             props = op.get("properties", "")
             container = op.get("container", "")
@@ -4946,7 +5157,10 @@ Board queries can page large result sets. Read the returned count and truncation
         op_strs: list[str] = []
         sweeping: list[str] = []
         for i, op in enumerate(operations):
-            scope = op.get("scope", "active_doc")
+            try:
+                scope = scope_compact(op.get("scope", "active_doc"))
+            except ScopeError as exc:
+                return scope_refusal(exc, item=i, operations_processed=0)
             obj_type = op.get("object_type", "")
             filt = op.get("filter", "")
             # ';' separates fields within an op and '~~' separates ops,
@@ -5025,6 +5239,8 @@ Board queries can page large result sets. Read the returned count and truncation
 
         Args:
             wires: List of wire dicts, each with x1, y1, x2, y2 in mils.
+                Fractions are kept, so a pin end on a metric grid
+                (30905.45) is met exactly.
 
         Returns:
             Dict with placed, failed, total counts.
@@ -5032,8 +5248,8 @@ Board queries can page large result sets. Read the returned count and truncation
         op_strs: list[str] = []
         for w in wires:
             op_strs.append(
-                f"x1={_mils(w.get('x1', 0))};y1={_mils(w.get('y1', 0))};"
-                f"x2={_mils(w.get('x2', 0))};y2={_mils(w.get('y2', 0))}"
+                f"x1={format_length(w.get('x1', 0))};y1={format_length(w.get('y1', 0))};"
+                f"x2={format_length(w.get('x2', 0))};y2={format_length(w.get('y2', 0))}"
             )
         if not op_strs:
             return {"error": "No wires provided", "placed": 0}
@@ -5230,7 +5446,9 @@ For complete schematic blocks, use design_execute_plan or sch_draw_template. Thi
 
         Args:
             placements: dicts with "design_item_id" (required), ``x``,
-                ``y`` (mils), optional ``designator`` and ``rotation``.
+                ``y`` (mils), optional ``designator``, ``rotation`` and
+                ``part_id`` (which part of a multi-part component goes
+                down; default 1, set before the part reaches the sheet).
             vault: The Workspace name; usually read off managed parts on
                 an open sheet. If refused, ask the user, don't invent it.
             document_path: The .SchDoc to focus and place onto.
@@ -5240,8 +5458,9 @@ For complete schematic blocks, use design_execute_plan or sch_draw_template. Thi
         Returns:
             ``placed``, ``linked`` (read back a VaultGUID and ItemGUID),
             ``failed``, ``total``, ``vault``, lib_identifier_kind,
-            ``loader_callable``, ``note``, ``items`` (``reason``
-            PLACED_WITHOUT_LINK, NOT_FOUND_IN_VAULT or LOAD_RAISED).
+            ``loader_callable``, ``note``, ``items`` (``part_id`` as read
+            back; ``reason`` PLACED_WITHOUT_LINK, PART_REFUSED (on the
+            sheet as another part), NOT_FOUND_IN_VAULT or LOAD_RAISED).
         """
         refusal = _unknown_keys_refusal(
             placements, MANAGED_PLACEMENT_KEYS,
@@ -5261,6 +5480,13 @@ For complete schematic blocks, use design_execute_plan or sch_draw_template. Thi
             ]
             if p.get("designator"):
                 fields.append(f"designator={payload_safe(p['designator'])}")
+            if p.get("part_id") not in (None, ""):
+                try:
+                    fields.append(f"part_id={int(p['part_id'])}")
+                except (TypeError, ValueError):
+                    return {"error": "BAD_PART_ID", "reason":
+                            f"part_id {p['part_id']!r} is not a whole number; "
+                            "nothing was placed", "placed": 0}
             op_strs.append(";".join(fields))
         if not op_strs:
             return {"error": "No valid placements", "placed": 0}

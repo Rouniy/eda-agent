@@ -1,5 +1,17 @@
 
-# Release verification: 2026.11.11.4 candidate
+# Release verification: 2026.11.15.1 candidate
+
+The current source candidate merges MOREmbedded/main `a2a0fac4` into the
+Rouniy integration line at `5183f80a`. Its package version is `0.8.2` and
+its script version is `2026.11.15.1`. Verification for this candidate is
+in progress; the results below describe previous revisions. The installed
+shared runtime has not been replaced or qualified for these new changes.
+
+Expect `altium_script_version` = `2026.11.15.1` only after deploying this
+candidate's raw source runtime. A generated restricted runtime adds its
+own suffix; compare it with that configured runtime instead.
+
+## Previous candidate: 2026.11.11.4
 
 This candidate merges MOREmbedded/main at b1eacd57 into Rouniy/main at
 0a366f4b. Pascal lint/build and Python tests are offline checks; the new
@@ -240,7 +252,7 @@ failed while looking for an absent separate installed copy. The dry run
 prints `Dispatcher.pas>StartMCPServer` for the main project; 25 focused
 CLI tests pass.
 
-Expect `altium_script_version` = `2026.11.11.4` if the raw source project is
+The previous candidate expected `altium_script_version` = `2026.11.11.4` if the raw source project is
 installed and started. The raw source project was not deployed. Direct native
 `application.ping` instead returned `2026.11.11.4-shared` from the separate
 read-only runtime. Network `app_ping` from client `0.8.1` compared against
@@ -692,7 +704,7 @@ works elsewhere cannot be an undeclared identifier:
 | 36, assembly text | `UnderlyingString`, `Size`, `Width` on a new library text | yes, `Lib_AddFootprintText` | low |
 | 36, settle after an add | `SetState_CurrentComponent` on the footprint already current | yes, `Lib_Link3DModel` | low, ran after all eight add kinds and survived save and restart |
 | 36, modify bracket | `BeginModify`, `EndModify` round an obj_modify write and a placed body's move | yes, `PCB_SetTrackWidth` | low |
-| 36, mask sides | `UseSeparateExpansions`, `SolderMaskBottomExpansion` on the pad cache | yes, `Lib_SetPadProperties` | medium, missing from the API reference; read and written live on pads and vias |
+| 36, mask sides | `UseSeparateExpansions`, `SolderMaskBottomExpansion` on the pad cache | yes, `ApplyPadEdit` | medium, missing from the API reference; read and written live on pads and vias |
 | 36, via hole edge | `SolderMaskExpansionFromHoleEdge` written on a via | only by `PCBGeneric.pas`, through the pad cast, itself new | high, the expansion assigned straight onto a via faults (measured again); this member and the cache route did not |
 | 36, mechanical enabled | `MechanicalLayerEnabled` read on a library layer | yes, `Lib_GetMechLayers` | low |
 | 36, rule gap | `Gap` read on a typed clearance rule | yes, `PCB_SetRuleProperties` | low |
@@ -748,7 +760,7 @@ works elsewhere cannot be an undeclared identifier:
 | 43, library check | `Sch_LibraryRuleChecker_Create`, `ShowReport`, `Duplicate_Pins`, `Missing_Footprint` on a library's rule checker | no, nowhere | low, writes a report file only; ran live |
 | 44, drill pair | `AddLayerPair` on the board | no, nowhere | medium, ran live; a copy and a non-copper layer are refused first |
 | 44, net display | `ShowNetConnects`, `HideNetConnects`, `LoopRemoval` on a net | no, nowhere | low, ran live, read back and restored |
-| 44, one footprint | `SaveComponentWithLibrary` on a library | no, nowhere | low, writes a file only; ran live |
+| 44, one footprint | `CreateNewComponent`, `CopyTo`, `RegisterComponent` on a fresh library | yes, library copy helpers | low, saves a new destination only; AD21 handler acceptance recorded below |
 | 44, project library | `CreateLibraryFromProject` on a sheet | no, nowhere | low, writes a new library only; ran live |
 | 44, scope and output | `DM_SetHierarchyMode`, `DM_SetOutputPath` on a project | no, nowhere | medium, ran live, read back and restored |
 | 44, pin functions | `AddDefinedFunction`, `ClearDefinedFunctions` on a pin | no, nowhere | low, ran live and read back |
@@ -805,12 +817,55 @@ works elsewhere cannot be an undeclared identifier:
 | 52, library delete | `GetComponentByName` on the library | yes, `Library.pas` (PcbLibTarget) | medium, removes primitives; ran live after a clean restart |
 | 53, probes | `AddSchObject` of parameters on a probe | yes, on components and parameter sets | low, adds a probe's own parameters; ran live |
 | 53, settings reload | `DoFileLoad` on a settings document reporting `SupportsReload` False | no, nowhere | low, a .simcfg only; ran live |
-| 54, variant values | `DM_AddParameterVariation`, `DM_SetParameterName`, `DM_SetVariedValue`, `DM_RemoveParameterVariation` on a part's variant entry | yes, merged `Project.pas` | low, the .PrjPcb only; ran live upstream, saved and reopened on a scratch copy |
-| 54, variant names | `DM_SetName`, `DM_SetDescription` on an existing variant | yes, merged `Project.pas` | low, ran live upstream, saved and reopened |
-| 54, current variant | `DM_SetCurrentProjectVariant` on the project | yes, merged `Project.pas` | low, ran live upstream and set back to the base design |
-| 54, alternate link | `DM_SetLibIdentifierKind`, `DM_SetLibraryIdentifier`, `DM_SetSourceLibraryName`, `DM_SetSymbolReference`, `DM_SetDesignItemID`, `DM_SetFootprint`, `DM_SetIsSameFootprint` on an alternate's library link | yes, merged `Project.pas` | low, ran live upstream, saved and reopened |
-| 54, variant parameters | `DM_AddParameter` on a variant | yes, merged `Project.pas` | low, copies a variant's own parameters; the scratch variants had none |
-
+| 54, variant values | `DM_AddParameterVariation`, `DM_SetParameterName`, `DM_SetVariedValue`, `DM_RemoveParameterVariation` on a part's variant entry | no, nowhere | low, the .PrjPcb only; ran live, saved and reopened on a scratch copy |
+| 54, variant names | `DM_SetName`, `DM_SetDescription` on an existing variant | yes, `Proj_CreateVariant` on a new one | low, ran live, saved and reopened |
+| 54, current variant | `DM_SetCurrentProjectVariant` on the project | no, nowhere | low, ran live and set back to the base design |
+| 54, alternate link | `DM_SetLibIdentifierKind`, `DM_SetLibraryIdentifier`, `DM_SetSourceLibraryName`, `DM_SetSymbolReference`, `DM_SetDesignItemID`, `DM_SetFootprint`, `DM_SetIsSameFootprint` on an alternate's library link | no, nowhere | low, ran live, saved and reopened |
+| 54, variant parameters | `DM_AddParameter` on a variant | no, nowhere | low, copies a variant's own parameters; the scratch variants had none |
+| 55, PCB library from a board | `SetFileName`, `DoFileSave` on the library Altium's Make PCB Library opens | yes, `PCB_SaveCopyAs` | low, writes a new .PcbLib only; ran live on a scratch copy |
+| 55, integrated library from a project | `Focus` on a project document before Make Integrated Library | yes, `Application.pas` | low, writes <project>.IntLib only; ran live |
+| 55, PCB library check | `PrimPrimDistance` between a footprint's copper, `CurrentComponent` set per footprint and put back | yes, `Audit.pas` | none, reads only; ran live with a short, a loose track, a doubled track, a bottom-only footprint and an offset origin |
+| 55, pin timing | `PinPackageLength`, `PropagationDelay` on a symbol pin | no, nowhere | low, the symbol only; ran live, saved and reopened |
+| 55, supplier links | `RemoveSchObject`, `AddSchObject` of numbered parameters on a symbol | yes, `Lib_BatchSetParams` | low, the symbol's link parameters only; ran live, saved and reopened |
+| 55, pad/via templates | `AddTemplateByPrimitive`, `AddExternalTemplate` on a pad/via library | no, nowhere | low, the board's own template list and new .PvLib files; ran live and reopened |
+| 55, pad/via install | `InstallLibrary` on the pad/via library manager | yes, `Lib_InstallLibrary` | low, installed and uninstalled live |
+| 56, port width | `AutoSize` on a port, cleared before its width is set | no, nowhere | low, one port; ran live, 600 mil read back |
+| 56, sheet fonts | `TextFontID` on new ports, power ports, text frames and sheet entries | no, nowhere | low, ran live on a scratch sheet |
+| 56, loaded part link | `SourceLibraryName`, `LibraryIdentifier` on a part placed from a library | yes, `Library.pas` | low, ran live: `*` became the IntLib's name |
+| 57, model rotation | `SetState` on a footprint body's model before it is bound | yes, `Lib_Set3DBody` | low, ran live on a scratch library and restored |
+| 57, body position | `MoveByXY` on a footprint body | yes, `PCB.pas` | low, ran live on a scratch library and moved back |
+| 57, xSignal class | `AddMember` on an xSignal class | no, nowhere | low, ran live on a scratch board, unsaved |
+| 57, part parameters | `SetState_IterationDepth` on a part's parameter iterator | yes, `Project.pas` | low, narrows a write to the part's own parameters |
+| 57, layer display | `IsInLayerStack` on a layer | no, nowhere | none, read only; ran live |
+| 57, class members | `DM_Members` on a compiled object class | no, nowhere | none, read only |
+| 57, net directives | `DM_Directives` on a compiled net | no, nowhere | none, read only; ran live |
+| 60, part parameters on the board | `SetOrNewValueByName`, `TryRemoveByName` on a placed part's parameters | no, nowhere | low, one part; ran live on a scratch board, read back from the list, unsaved |
+| 60, local grids | `SetProperty_GridStepX`, `SetProperty_AngularStep` on a new grid | no, nowhere | low, the new grid only; ran live and deleted |
+| 60, baseline dimension | `SetState_Angle` on a new baseline dimension | no, nowhere | low, the new dimension only; ran live, four text locations read back |
+| 60, guides | `DeleteAllGuides` on the board's grid manager | no, nowhere | low, removes guides only; ran live |
+| 60, STEP settings | `SetState_ExportFoldedBoard` on the STEP exporter | no, nowhere | low, Altium's kept export settings; ran live, written back unchanged |
+| 60, generated documents | `DM_AddGeneratedDocument` on a project | no, nowhere | low, lists a file under Generated; ran live on a scratch project, unsaved |
+| 62, label rotation | `RotateBy90` by 90 and back on a part or sheet symbol, to reposition its labels | no, nowhere | low, the object returns to its rotation; ran live, size and entries unchanged, saved and reopened |
+| 62, label autoposition | `Autoposition` on a sheet symbol's name and file name | yes, `Library.pas` (a symbol's labels) | low, ran live on a scratch sheet |
+| 62, label font | `FontId` on a sheet symbol's name and file name, a part's designator and comment (issue #229) | yes, `Library.pas` (a symbol's labels), `TidyLoadedComponent` (a placed part's designator) | low, a font id below 1 or not a number is refused before the write; ran live on a scratch sheet, saved and reopened |
+| 62, note and text frame text | `TextColor`, `WordWrap`, `ClipToRect`, `TextMargin` on a note or text frame, `ShowBorder` on a text frame, `Author` on a note | yes, `Gen_PlaceTextFrame` (WordWrap, ClipToRect, ShowBorder) | low, one object; ran live on a scratch sheet, saved and reopened |
+| 62, net name display | `ShowNetName` on a power port, off-sheet connector or port | yes, `Gen_PlacePowerPort` (power ports) | low, one object; ran live, saved and reopened |
+| 62, off-sheet connector side | `CrossSheetStyle` on an off-sheet connector, through obj_modify; the placer's side option wrote a sheet entry's member and stopped the loop, and now writes this | yes, `Gen_PlaceCrossSheetConnector` | low, one object; ran live, saved and reopened |
+| 62, port height | `Height` on a port, in mils | yes, `Library.pas` (a footprint's height, not a port) | low, one object; ran live, saved and reopened |
+| 62, shape transparency and line style | `Transparent` on a rectangle or ellipse, `LineStyle` on a line or rectangle | no, nowhere | low, one object; ran live, saved and reopened; types that drop them on save are refused |
+| 63, flight time | `MaximumFlightTime` on a Flight Time rising or falling rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
+| 63, impedance limits | `Minimum`, `Maximum` on an Impedance rule | no, nowhere | low, one rule; ran live, read back and in Altium's descriptor |
+| 63, length limits | `MinLimit`, `MaxLimit` on a Length rule | yes, `PCB_CreateDesignRule` (hole size) | low, one rule; ran live, read back and in Altium's descriptor |
+| 64, selection filter | `SelectedObjects_FilterDisabled` on the board | no, nowhere | low, put back in a Finally; ran live through a connected-copper selection |
+| 64, Online DRC | `DoOnlineDRC` in the PCB editor options | no, nowhere | low, an editor preference; read live here, set by its author on AD 25.8.1 |
+| 64, embedded records | `Description` on an embedded object | yes, `Library.pas` (footprint descriptions) | low, one record; ran live, read back, undone |
+| 64, layer move | `IntelliMoveLayerUp`, `IntelliMoveLayerDown` on the Layer Stack Manager's editor | no, nowhere | medium, reorders the stack; ran live down and back up, tracks stayed on their layers |
+| 64, stack sync | `ApplyToPcb`, `SetState_IsSymmetric` on the Layer Stack Manager's document and stack | no, nowhere | medium, writes the manager's model into the board; ran live, board stack compared before and after, saved and reopened |
+| 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
+| 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | yes, `Gen_PlaceBlanket` (sch_place_blanket) | low, display only; ran live on a scratch sheet, read back |
+| 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
+| 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
+| 70, pad relief | `UseCustomRelief`, `DefinedType`, `ConductorWidth`, `AirGapWidth`, `ConnectStyle`, `Entries` on a pad's own thermal relief | no, nowhere | medium, changes how a pour joins the pad; ran live on a scratch board, read back and put back to the rule |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows
 write properties this codebase already exercises, so they are checking
@@ -2062,7 +2117,10 @@ exercised are `BoardOutline.SetState_XSizeYSize` and
    `already_clear`; DRC still shows none. Move one designator onto a
    neighbour's outline by hand: the call moves only that one, or lists it
    in `unplaced_designators` and leaves it where you put it. The reply
-   names the rules its clearances came from.
+   names the rules its clearances came from. With `rotations=[0, 90]`
+   a vertical designator that is clear at 90 is left alone, one at 45 is
+   turned to 0 or 90 (counted in `turned`), and one nothing clears keeps
+   its own angle and place.
 7. **app_click_menu checks what it clicked.** `app_click_menu
    menu_path="Tools|Update From PCB Libraries"` (no ellipsis) either
    opens the update wizard or fails naming the item it found; it never
@@ -4479,6 +4537,33 @@ On AD 25 or 26, with a scratch board and library:
 
 On AD 21, the same pad reads answer without stopping the loop, and the
 filtered visibility call returns.
+
+## 77. Checks before a part is built, switchable on the Config tab
+
+The Config tab has a CHECKS group: one On / Off row per check (footprint
+vs drawing, symbol vs pin table, symbol pins vs pads, 3D body vs drawing,
+SPICE model file, fab export), all On by default. The panel stores the
+rows switched off as `checks_off` in `preferences.json`; the server reads
+it on every call. A refusal names its check and says how the user can go
+ahead (`if_the_user_insists`, docs/CONFIG.md); a result built with a check
+off carries `unchecked`.
+
+With the scripts deployed, on scratch libraries:
+
+1. Open the Config tab: six rows under CHECKS, each On, and the hint says
+   every check runs.
+2. Click Off on "Symbol pins vs pads": the row turns amber, the hint names
+   it, the log says `check pins_pads off`, and `preferences.json` holds
+   `"checks_off":"pins_pads"`. Restart the pump: the row is still Off.
+3. With it On, `lib_link_footprint` linking a 3-pin symbol to a footprint
+   with pads 1, 2 and EP is refused, naming pin 3 and pad EP. With it Off,
+   the same link goes through and the reply carries `unchecked`.
+4. Switch it back On and confirm the hint again says every check runs.
+5. Fab export: on a scratch project whose OutJob has a Gerber container,
+   `proj_run_outjob` without `fab` is refused, naming the outputs; with
+   `fab="OSH Park"` and a 4 mil track on the board it is refused naming the
+   track, the board it examined and OSH Park's quote; with
+   `fab="JLCPCB"` it runs and the reply carries `fab_check`.
 
 ## Still open, and not blocking
 

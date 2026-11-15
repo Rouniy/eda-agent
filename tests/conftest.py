@@ -561,6 +561,25 @@ def _isolate_workspace_pointer(tmp_path_factory):
     os.environ.pop("EDA_AGENT_POINTER_FILE", None)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_feature_choices(tmp_path_factory):
+    """Keep the session away from the user's own features.json.
+
+    That file can switch the Rust kernels on (EDA_AGENT_COMPUTE=auto) and
+    hold program locations (EDA_AGENT_OPENEMS_DIR, EDA_AGENT_NGSPICE...),
+    which ``features.state.apply`` copies into the environment. A
+    developer who saved them would otherwise run every test with them.
+    Tests of the file itself point EDA_AGENT_FEATURES_FILE at their own.
+    """
+    before = os.environ.get("EDA_AGENT_FEATURES_FILE")
+    os.environ["EDA_AGENT_FEATURES_FILE"] = str(tmp_path_factory.mktemp("features") / "features.json")
+    yield
+    if before is None:
+        os.environ.pop("EDA_AGENT_FEATURES_FILE", None)
+    else:
+        os.environ["EDA_AGENT_FEATURES_FILE"] = before
+
+
 #: The name AltiumBridge gives its keep-alive thread.
 KEEPALIVE_THREAD_NAME = "altium-keepalive"
 
@@ -606,6 +625,19 @@ def _no_real_profile_preferences(request, monkeypatch):
         return
     from eda_agent import preferences
     monkeypatch.setattr(preferences, "_profile_layer", lambda: {})
+
+
+@pytest.fixture(autouse=True)
+def _usual_router_engine(monkeypatch):
+    """Route with the default engine in every test that does not pick one.
+
+    A developer who ran ``eda-agent router-use euan`` (the active profile's
+    router.json) or set EDA_AGENT_ROUTER would otherwise have every routing
+    test run Euan's router. The variable wins over the profile file, so
+    setting it is enough, and it imports nothing. A test of the choice
+    itself deletes it or sets it again.
+    """
+    monkeypatch.setenv("EDA_AGENT_ROUTER", "default")
 
 
 def pytest_configure(config):
@@ -852,3 +884,19 @@ def _no_leaked_easyeda_server():
         except Exception:
             pass
         easyeda_bridge._BRIDGE = None
+
+
+@pytest.fixture(autouse=True)
+def _library_session_marks_start_clear():
+    """The library tools remember, for the session, which symbol and
+    footprints were just made (their checks apply to those) and which pin
+    lists came from an import. A test that made a symbol left the mark for
+    whichever test ran next in the same process, where lib_add_pins then
+    asked for a datasheet it was never meant to need. Cleared after each
+    test."""
+    yield
+    from eda_agent.tools import library
+    from eda_agent.design import pin_table
+    library._NEW_SYMBOL.clear()
+    library._NEW_FOOTPRINTS.clear()
+    pin_table.IMPORTED.clear()

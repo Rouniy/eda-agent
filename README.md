@@ -1,8 +1,11 @@
+<div align="center">
+
 # eda-agent
 
 MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 800 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
 
-> **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
+An MCP server that gives Claude, or any MCP client, around 800 tools on the design you have open:
+schematic, PCB, library, project and review. You watch every change happen in Altium.
 
 Local fork reliability work and acceptance gaps: [integration TODO](TODO.md).
 Exact upstream and MOREmbedded merge points: [integration baseline](docs/INTEGRATION-BASELINE.md).
@@ -79,15 +82,22 @@ Claude Code with eda-agent designs a round 54 mm, 4-layer RGB LED display board 
 
 [![eda-agent demo: a round RGB LED board from spec to Gerbers in Altium Designer](assets/demo_round_led.jpg)](https://youtu.be/JnQsJlrpzBM)
 
-Claude Code with eda-agent draws a 12 V to 3.3 V, 2 A step-down supply around the TI TPS62130 in Altium Designer from one sentence. It fetches the datasheet, sizes the inductor, capacitors and feedback divider from it, builds the symbols, draws the schematic and verifies the netlist.
+*From a written spec to Gerbers: a 4-layer round LED board designed live in Altium ([watch the video](https://youtu.be/JnQsJlrpzBM)).*
 
-[![eda-agent demo: a schematic from a one-line spec in Altium Designer](assets/demo_schematic.jpg)](https://youtu.be/ZwF9c97ZS6Y)
+</div>
 
-## Dashboard
+> [!WARNING]
+> **Experimental.** Not every tool is tested on every Altium version, and some can crash Altium's script engine.
+> Back up your project first and read [Known limitations](docs/LIMITATIONS.md).
 
-<img src="assets/dashboard.png" alt="eda-agent status window inside Altium Designer, command log" width="320"> <img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="320">
+## Why eda-agent
 
-Two dashboards ship with eda-agent:
+- **Live, not batch.** Altium stays open and in charge. The AI reads the design you have open, answers questions about it, and edits it in place.
+- **Built for real review work.** One call gives a design snapshot. A 31-check lint sweep, schematic and PCB netlist cross-checks, and fab package verification come with it.
+- **Datasheet first.** The tools tell the AI to fetch the vendor datasheet, and never to make values up.
+- **Fast.** Nearly every tool takes a list, so 20 edits are one call and one undo step. The auto-placer scores only what each move changed (6 to 13 times faster), and an optional Rust core speeds up routing.
+- **Your house style.** Profiles hold pad rounding, design rules, ERC levels, fab stackups and templates, one per company or project.
+- **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface. 773+ with both backends registered.
 
 - **In-Altium status window** - a floating Altium-side window showing live status, request count, cumulative Altium-side time, auto-shutdown countdown, and a per-command log with durations. `Hide pings` filters the 30 s keep-alive traffic; `Only >100ms` isolates slow calls. Its native **Detach** button requests a no-save stop. API/browser Detach instead saves dirty documents. See [shutdown and recovery](docs/SHUTDOWN.md).
 - **Web dashboard** - a local browser dashboard at `http://127.0.0.1:8766`, focused on design review. A **Review** tab surfaces datasheet / MPN / manufacturer / footprint coverage gauges and an actionable issue queue (missing datasheet, missing MPN, orphan nets, ...); **Project**, **Components**, **Nets**, **Libraries** and **Plan** tabs give live structured views. Click any component or net to drill into a detail drawer; one click cross-probes it into Altium. Light / dark theme, server-sent-events live feed. It is auto-started by the MCP server - the **Open Dashboard** button on the in-Altium status window launches the browser. Set `EDA_AGENT_DASHBOARD_PORT=8877` before starting the MCP server if 8766 is occupied; the button follows the port that actually bound.
@@ -100,7 +110,7 @@ For pairwise layout feedback, install the optional web dependency with
 comparison UI on port 8765 and records votes for the preference model. Omit
 `--symbols` to read symbols through a running Altium bridge.
 
-## How it works
+You need **Windows**, **Python 3.11+** and **Altium Designer** (AD20 or newer is best).
 
 - Altium Designer stays open and in full control of your design
 - A DelphiScript polling loop runs inside Altium's scripting engine
@@ -169,33 +179,32 @@ The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), s
 git clone https://github.com/Rouniy/eda-agent
 cd eda-agent
 python -m pip install -e .
+eda-agent install-deps --all     # optional: every extra feature in one go
 ```
 
-Use `python -m pip` rather than a bare `pip`. It works even when pip's `Scripts` folder is not on your `PATH`, which is common when Python was installed for you by IT, and it guarantees the package goes into the same Python you will run it with.
+`eda-agent features` shows what is installed and what each feature needs;
+the dashboard's **Features** page does the same, with a choice of what to
+install. See
+[Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md).
 
-Register the server with your MCP client. The binary is `eda-agent` and runs on stdio; consult your client's docs for how to add a local stdio-based server. Everywhere this README says `eda-agent`, `python -m eda_agent` does exactly the same thing and does not depend on `PATH`.
-
-### Claude Code
-
-```bash
-claude mcp add altium eda-agent
-```
-
-Adds `eda-agent` as an MCP server named `altium` to your Claude Code project config. Use `-s user` to register it at the user level (available across every project):
+**2. Register it with your MCP client**
 
 ```bash
 claude mcp add -s user altium eda-agent
 ```
 
-If `eda-agent` isn't on your `PATH` ("'eda-agent' is not recognized"), register it through Python instead. This needs no path at all:
+<details>
+<summary>"eda-agent is not recognized", or a client other than Claude Code</summary>
+
+If `eda-agent` is not on your `PATH`, register it through Python. The `--` tells Claude Code that the rest is the command to run:
 
 ```bash
 claude mcp add -s user altium -- python -m eda_agent
 ```
 
-The `--` matters: it tells `claude mcp add` that everything after it is the command to run, rather than options for `claude` itself.
+Any other MCP client: add a local **stdio** server that runs `eda-agent` (or `python -m eda_agent`).
 
-To verify the connection: `/mcp` in a Claude Code session should list `altium` as connected.
+</details>
 
 On Windows, `scripts/setup-mcp.ps1` can register the server in both Claude
 Code and Claude Desktop. Preview its changes first with
@@ -218,7 +227,8 @@ Drop the Altium script project somewhere you can find it:
 eda-agent install-scripts
 ```
 
-or, if `eda-agent` is not recognised:
+In Altium, open **Preferences → Scripting System → Global Projects → Install from file** and pick `Altium_API.PrjScr`. You only do this once.
+Then use **File → Run Script → Altium_API → Dispatcher.pas → StartMCPServer** to start the link.
 
 ```bash
 python -m eda_agent install-scripts
@@ -255,16 +265,11 @@ any time; it never touches Altium.
 eda-agent doctor
 ```
 
-The full check, with Altium open and `StartMCPServer` running: everything
-`health` covers, plus that Altium is running, that the polling loop
-answers, that the deployed script version matches this source tree, and
-a save round-trip. Every line is a pass, a warning or a fix instruction.
+Every line should pass. In Claude Code, `/mcp` lists `altium` as connected. Now ask something like *"List every part on the 3V3 rail and flag any whose datasheet limit is below 3.3 V."*
 
-The common first failure is `workspace pointer matches config` reporting
-two different paths. That means Python resolved one workspace while the
-script was told another, which the next section explains.
+The full guide, with updates, workspaces and profiles, is in [Getting started](docs/GETTING_STARTED.md).
 
-## Workspace and profiles
+## What it can do
 
 Two separate ideas that are easy to confuse, because both are "somewhere
 on disk that affects how this behaves". One is plumbing, the other is
