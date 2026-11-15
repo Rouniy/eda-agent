@@ -21,12 +21,28 @@ Pascal lint/build: 12 units, zero errors and warnings. Wheel and sdist built;
 distribution verification installed the wheel into a clean environment,
 checked metadata/resources and CLI paths, and built the installed EasyEDA
 extension. Artifacts/logs are under `D:/ai/qa/dist-sync-20261115` and
-`D:/ai/qa/*resume*`. Full-suite results are pending completion.
+`D:/ai/qa/*resume*`. The final source artifacts from `bed5f06e`
+were independently rebuilt and clean-install verified under
+`D:/ai/qa/dist-bed5f06e` (SHA256SUMS.txt records all three artifacts).
+
+Final full Python 3.12 suite on immutable source `bed5f06e`: **13,829 passed, 272 skipped, 1 expected failure, zero failures**.
+Command: `python -m pytest tests -q -n 4 --tb=short`, with
+`OPENBLAS_NUM_THREADS=1`, `OMP_NUM_THREADS=1` and PYTHONPATH set to
+this checkout. JUnit/log: `D:/ai/qa/pytest-sync-final-green-20261115.*`.
+The initial full run had 34 failures; they were repaired and the
+complete suite was repeated. Additional focused bridge and project
+checks passed. `python -m mkdocs build --strict` also passed.
+
+Raw source SHA-256 (as built on this Windows host):
+
+- `Main.pas`: `9d1ec70b277d63cf2f0fe7c5ed63c407c5565272589c340a7d544367a57708cb`.
+- `Altium_MCP.pas`: `cd89ac097b3079ec021b26c9143918d337b1f8452ff0f0d27595334b51f25f3d`.
 
 Early runs hit Windows commit-limit exhaustion (including exit 0xC000012D);
-these are unsuccessful test launches, not passes. A subsequent two-worker
-run proceeds with `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1`.
-`threadpoolctl`, newly required by the donor, was installed for source tests.
+these are unsuccessful test launches, not passes. The later two-worker run
+completed, followed by the clean four-worker run above, both with BLAS/OMP
+thread limits. The donor's `threadpoolctl` and PyAMG dependencies were
+installed for source tests.
 
 No Altium runtime was replaced or restarted for this candidate. The shared
 operating runbook required by AGENTS.md is absent locally and its linked

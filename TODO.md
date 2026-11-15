@@ -7,7 +7,8 @@
   `2026.11.15.1`.
 - [x] Build/lint all 12 Pascal units with zero findings; build wheel/sdist
   and verify clean installation plus the installed EasyEDA extension build.
-- [ ] Finish the full Python suite, repair failures and record final results.
+- [x] Finish the full Python suite after repairs: 13,829 passed, 272 skipped, 1 expected failure, zero failures.
+  Build the documentation in strict mode and verify final source artifacts.
 - [ ] Run hosted Python 3.11/3.12 and Free Pascal checks; qualify optional
   Rust components with a Rust toolchain.
 - [ ] Recover the required shared operating runbook, then qualify the new
