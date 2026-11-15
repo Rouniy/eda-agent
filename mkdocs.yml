@@ -5,8 +5,8 @@
 site_name: eda-agent
 site_description: Let an AI work inside your live Altium Designer session. An MCP server with around 700 tools for schematic, PCB, library and design review.
 site_url: https://morembedded.github.io/eda-agent/
-repo_url: https://github.com/MOREmbedded/eda-agent
-repo_name: MOREmbedded/eda-agent
+repo_url: https://github.com/Rouniy/eda-agent
+repo_name: Rouniy/eda-agent
 edit_uri: edit/main/docs/
 copyright: Apache-2.0 · Maintained by MOREmbedded · Not affiliated with Altium Limited
 
@@ -162,3 +162,27 @@ nav:
       - AI field notes on Altium: AI_ALTIUM_FIELD_NOTES.md
       - Altium autonomy runbook: ALTIUM_AUTONOMY_RUNBOOK.md
       - Changelog: https://github.com/MOREmbedded/eda-agent/blob/main/CHANGELOG.md
+
+  - Fork integration:
+      - ALTIUM_MCP_RU.md
+      - CURRENT-STATE.md
+      - DELIVERY_ACCEPTANCE.md
+      - DESIGN-event-driven-dispatch.md
+      - FORK-ARGUMENT-AUDIT-2026-10-28.md
+      - FORK-BEHAVIOR-CHECK-2026-10-28.md
+      - FORK-INTEGRATION-AUDIT-2026-10-26.md
+      - INTEGRATION-BASELINE.md
+      - LEGACY_FORK_GUIDE.md
+      - LIBRARY-READS-DESIGN.md
+      - PARITY-ROADMAP.md
+      - pcb-quality/board-intent.template.md
+      - pcb-quality/README.md
+      - pcb-quality/rules.en.md
+      - pcb-quality/rules.zh.md
+      - PROJECT-SELECTION-AND-WRITES.md
+      - PROPOSAL-2026-09-28-metadata-write-increment.md
+      - PROPOSAL-2026-10-07-placement-write-increment.md
+      - PROPOSAL-2026-10-09-copper-write-increment.md
+      - PROPOSAL-2026-10-09-setup-write-increment.md
+      - SHUTDOWN.md
+      - UPSTREAM-SYNC-2026-10-27.md

@@ -5003,8 +5003,7 @@ def register_library_tools(mcp):
             package.parent.mkdir(parents=True, exist_ok=True)
         setup = await bridge.send_command_async(
             "project.create" if created else "project.open",
-            {"project_path": str(package), **({"project_type": "IntegratedLibrary"}
-              if created else {})})
+            {"project_path": str(package)})
         if not isinstance(setup, dict) or setup.get("success") is not True:
             return {"success": False, "stage": "create" if created else "open",
                     "reply": setup}

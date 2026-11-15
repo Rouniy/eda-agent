@@ -308,8 +308,7 @@ def _register_si_net_tools(mcp) -> None:
                              force: bool = False) -> dict[str, Any]:
         """Model a routed net or differential pair of the board, end to end.
 
-        Finds the net's routed path between its pins and models every part
-        of it: each trace section from its own cross-section (layer, width,
+        Models the routed path: each trace section's cross-section (layer, width,
         and for a pair the gap; eddy-current R and L, causal dielectrics),
         each via (barrel, stubs, pads, the return-via loop when the
         reference plane changes), and each stub off the path. Gives the
@@ -437,13 +436,10 @@ def _register_si_time_tools(mcp) -> None:
 
         The channel is a 2-port line or a 4-port pair (ports 1, 2 near P
         and N; 3, 4 far), from a file or from a si_net_channel job. The
-        ``eda-agent`` engine convolves its pulse response with a PRBS
-        pattern and adds the worst-case eye (peak distortion analysis:
-        no pattern can close it further). The ``spice`` engine fits the
-        channel as a passive rational macromodel, keeps it as
-        ``channel.sub`` with an LTspice symbol ``channel.asy``, and runs
-        the same pattern in ngspice or LTspice; it also reports how far
-        the circuit simulator's waveform is from the convolution's.
+        ``eda-agent`` convolves a PRBS and computes the worst-case eye.
+        ``spice`` fits a passive macromodel (``channel.sub``, plus
+        ``channel.asy``), runs it in ngspice or LTspice and compares
+        its waveform with the convolution.
 
         Args:
             data_rate_gbps: data rate in bits (options modulation "pam4"

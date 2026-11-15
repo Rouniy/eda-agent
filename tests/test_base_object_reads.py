@@ -53,6 +53,7 @@ def test_generated_pin_read_stays_inside_the_final_fallback():
     reader = _routine("Generic.pas", "GetSchProperty")
     pin = reader.index("Else If Obj.ObjectId = ePin Then")
     base = reader.index("If (Not Have) And (Obj.ObjectId <> ePin) Then")
-    final = reader.index("If Not Have Then Result := '';", base)
+    final = reader.index("If Not Have Then", base)
+    assert "NotePropertyDiag('unknown', PropName);" in reader[final:]
     close = reader.index("End;\n    Except", final)
     assert pin < base < final < close

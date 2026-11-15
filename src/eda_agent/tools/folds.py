@@ -46,12 +46,8 @@ class Fold:
 
 FOLDS: dict[str, Fold] = {
     "pcb_calc": Fold(
-        summary=("Engineering calculators: impedance, widths for current or "
-                 "impedance, terminations, length matching, thermal vias, "
-                 "reactance, resonance, wavelength, PDN target, wire gauge, "
-                 "fusing current, via and spiral inductance, padstacks. "
-                 "Offline, except polygon_area and toolkit_board, which "
-                 "read the open board."),
+        summary=("Engineering calculators. Offline except polygon_area "
+                 "and toolkit_board, which read the open board."),
         prefixes=("pcb_calc_",),
     ),
     "audit": Fold(

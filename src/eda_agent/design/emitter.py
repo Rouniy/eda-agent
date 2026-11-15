@@ -133,7 +133,7 @@ def _open_or_create_project(
     try:
         bridge.send_command(
             "project.create",
-            {"project_path": str(project), "project_type": "PCB"},
+            {"project_path": str(project)},
         )
         result.notes.append(f"Created project: {project}")
     except Exception as exc:

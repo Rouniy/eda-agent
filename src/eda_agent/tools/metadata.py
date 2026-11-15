@@ -122,7 +122,7 @@ _SIMULATOR_TOOLS = frozenset({
     "lib_add_symbol_rectangle", "lib_add_symbol_text",
     "lib_batch_rename", "lib_batch_set_params",
     "lib_create_3d_model", "lib_create_footprint",
-    "lib_create_ic_symbol", "lib_create_standard_footprint",
+    "lib_create_ic_symbol",
     "lib_create_symbol", "lib_create_symbol_in_parts",
     "lib_delete_footprint_primitives", "lib_diff_libraries",
     "lib_get_component_details", "lib_get_components",

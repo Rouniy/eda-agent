@@ -6,7 +6,7 @@ implemented/deployed; native qualification remains pending. Existing named `.1`
 profiles remain unchanged. Component editing below is a requested roadmap, not
 implemented or enabled write access.
 Runnable setup and limits: companion PLT-hw
-[shared-mode guide](../../PLT-hw/tools/eda-agent/SHARED-PROJECTS.md).
+[shared-mode guide](https://github.com/4pplet/PLT-hw/blob/main/tools/eda-agent/SHARED-PROJECTS.md).
 Latest runtime/evidence: [current-state handoff](CURRENT-STATE.md).
 
 ## One bridge, operator-selected project
@@ -88,7 +88,7 @@ The operator suggested read/write selection or granular permissions in the GUI.
 Configurable grants remain a proposal, not implemented access or authorization
 to enable writes. A first side-by-side candidate now includes the existing fixed
 read-only policy and unavailable writes/saves/output jobs; no permission toggles
-were added. Companion [ownership/status notes](../../PLT-hw/tools/eda-agent/CLIENT-OWNERSHIP.md)
+were added. Companion [ownership/status notes](https://github.com/4pplet/PLT-hw/blob/main/tools/eda-agent/CLIENT-OWNERSHIP.md)
 track deployment and the cooperating-client guard. Candidate preparation and its
 eight-tool schema and native startup/all eight 22p reads passed on 2026-09-09;
 new permissions-label visual verification and lifecycle acceptance remain pending.

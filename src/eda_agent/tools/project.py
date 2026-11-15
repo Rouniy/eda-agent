@@ -452,10 +452,8 @@ def register_project_tools(mcp):
         path), .LibPkg an integrated library package. An existing file is
         refused, never overwritten: open it with proj_open.
 
-        Not idempotent. The stub is written to disk and then opened, so
-        calling this for a project Altium already has open rewrites the
-        file underneath it; measured, the very next lookup by path then
-        failed with "No project found". Check proj_list_open first.
+        Not idempotent: an existing destination is refused. Check
+        proj_list_open and use proj_open for a project that already exists.
 
         Args:
             project_path: Full path for the new project file.

@@ -98,7 +98,7 @@ hide:
 === "1 · Install"
 
     ```bash
-    git clone https://github.com/MOREmbedded/eda-agent
+    git clone https://github.com/Rouniy/eda-agent
     cd eda-agent
     python -m pip install -e .
     ```

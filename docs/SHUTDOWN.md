@@ -7,7 +7,7 @@ separate change, not a new shutdown fix. Shared session ending at 23:05:07.604 o
 2026-09-08 logged `reason=stop-requested`; operator then reported closure and X2
 absence was checked. Repeat-cycle and shared stop-file-helper testing remain
 pending. Existing named profiles remain on `.1`. See the companion
-[shared runtime guide](../../PLT-hw/tools/eda-agent/SHARED-PROJECTS.md) for matching
+[shared runtime guide](https://github.com/4pplet/PLT-hw/blob/main/tools/eda-agent/SHARED-PROJECTS.md) for matching
 client/script paths. Do not use new `.2` source helpers with installed `.1` scripts.
 
 Shutdown observations below concern script `2026.09.08.1`, based on commit

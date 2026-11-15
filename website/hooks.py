@@ -21,7 +21,7 @@ from pathlib import Path
 
 from mkdocs.structure.files import File
 
-REPO = "https://github.com/MOREmbedded/eda-agent"
+REPO = "https://github.com/Rouniy/eda-agent"
 BRANCH = "main"
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets"

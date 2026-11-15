@@ -38,17 +38,11 @@ def register_thermal_tools(mcp) -> None:
         runs_dir: str = "",
         limit: int = 15,
     ) -> dict[str, Any]:
-        """Steady-state temperatures of a board from the power its parts
-        dissipate. Offline, changes nothing, needs no external program.
+        """Steady-state board temperatures from part power. No design edits.
 
-        Solves 3D heat conduction in the real copper (pours, planes with
-        their antipads, tracks, pads), the laminate and every plated hole,
-        with natural or forced convection and radiation from both faces,
-        the edges and part cases. Reports the peak, each layer's maximum,
-        hotspots with the nearest part, every powered part's pad, junction
-        and case temperature against ``tj_max_c``, the hottest unpowered
-        parts, the heat balance, and (``refine``) a grid-convergence error
-        estimate. Writes a heat map per layer.
+        Solves 3D conduction, convection and radiation. Reports hotspots,
+        part temperatures against ``tj_max_c``, heat balance and optional
+        grid-convergence error. Writes layer heat maps.
 
         Reads the whole board: on a very large board ask the user first.
 

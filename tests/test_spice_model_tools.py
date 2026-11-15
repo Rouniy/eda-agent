@@ -95,7 +95,8 @@ def tools(ws, monkeypatch):
 
 
 def _run(coro):
-    return asyncio.run(coro)
+    import inspect
+    return asyncio.run(coro) if inspect.isawaitable(coro) else coro
 
 
 def test_scan_writes_the_index_into_the_workspace(tools, ws):

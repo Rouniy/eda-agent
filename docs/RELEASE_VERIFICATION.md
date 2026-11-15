@@ -624,9 +624,6 @@ works elsewhere cannot be an undeclared identifier:
 | 68, footprint repoint | `Name` | yes, `Library.pas` | high, verify model identity after save |
 | 69, directives and compile masks | `Orientation` | yes, `Generic.pas` | medium, verify repeated channels and ERC output |
 | 70, pad relief and IPC batch | `SolderMaskExpansion` | yes, `PCB.pas` | high, verify copper and mask output |
-| 72, board rule policy | `Name` | yes, `PCB.pas` | high, verify rule values and scopes |
-| 75, board placement | `XLocation` | yes, `PCB.pas` | high, verify the exact board target |
-| 76, custom pad shapes | `TopShape` | yes, `PCB.pas` | high, verify custom geometry in the target Altium version |
 | 5, 3D placement | `StandoffHeight` | only by step 15, itself unverified | highest |
 | 5, 3D placement | `Rotation` on a body | other object types only | high |
 | 2, pin edges | `Symbol_OuterEdge`, `Symbol_InnerEdge` | only by `Library.pas` and, since step 44, `Generic.pas` | high, and can stop the loop; the inner edge has since run live through obj_modify |
@@ -864,7 +861,7 @@ works elsewhere cannot be an undeclared identifier:
 | 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
 | 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | yes, `Gen_PlaceBlanket` (sch_place_blanket) | low, display only; ran live on a scratch sheet, read back |
 | 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
-| 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
+| 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `SuppressAll` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | high, verify native ERC suppression and mask behavior on disposable documents |
 | 70, pad relief | `UseCustomRelief`, `DefinedType`, `ConductorWidth`, `AirGapWidth`, `ConnectStyle`, `Entries` on a pad's own thermal relief | no, nowhere | medium, changes how a pour joins the pad; ran live on a scratch board, read back and put back to the rule |
 
 Steps 5 and 2 are the ones that justify a live session. The bottom rows

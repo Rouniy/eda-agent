@@ -1232,7 +1232,10 @@ class AltiumBridge:
                         and maintenance_in_progress(workspace_dir)
                         and self._request_path(request_id).exists()):
                     continue
-                if early and early.get("blocked"):
+                # A different call's dialog can outlive this reply. Read a
+                # response that arrived during the probe before declaring
+                # this request blocked.
+                if early and early.get("blocked") and not response_path.exists():
                     waited = now - start
                     _trace_log(
                         workspace_dir,

@@ -553,12 +553,7 @@ def register_generic_tools(mcp):
                 "LibraryIdentifier,DesignItemId,ItemGUID,RevisionGUID"
                 and the other Vault/Symbol GUIDs.
 
-                PCB PRIMITIVES DO NOT. They are a separate, flat set,
-                and mixing the two is the single commonest mistake here:
-                a caller who used Designator.Text infers a dotted rule,
-                writes Net.Name on a track, and gets an error naming the
-                right spelling. Net is the one that catches people, and
-                it is plain "Net":
+                PCB properties use flat names: "Net", not "Net.Name":
                 "Net,Layer,Width" for tracks
                 "Net,Layer,HoleSize,Size" for vias
                 "Designator,Comment,Pattern,Rotation,X,Y" for components

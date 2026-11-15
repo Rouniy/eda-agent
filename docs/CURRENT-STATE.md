@@ -73,7 +73,7 @@ extension. Artifacts and checksums are in `D:\ai\qa\dist-fix-20261111`.
 
 The Windows MCP supervisor must recover through the same restricted runtime.
 Its launch target is now read from
-`C:\Users\Alex\EDA Agent\workspace\altium-script-project.txt`, which names
+`%USERPROFILE%\EDA Agent\workspace\altium-script-project.txt`, which names
 the deployed `.PrjScr`; recovery refuses a missing target or a source
 `Main.pas` without `SELECTED_PROJECT_READ_ONLY=True`. It also recognizes the
 selected-project status form as an active bridge. The marker currently names
