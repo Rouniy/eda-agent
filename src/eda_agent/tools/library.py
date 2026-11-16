@@ -2925,6 +2925,8 @@ def register_library_tools(mcp):
                 omit for the current part.
             grid: mils the corners snap to (default 100); 1 keeps them
                 exactly as given.
+            owner_part_id: 1..N selects a sub-part; 0 shares the rectangle
+                across all parts. Omit for the current part.
 
         Returns:
             Dictionary confirming rectangle addition, with the style it
@@ -2946,7 +2948,10 @@ def register_library_tools(mcp):
         if is_solid is not None:
             params["is_solid"] = "true" if is_solid else "false"
         if owner_part_id is not None:
-            params["owner_part_id"] = str(int(owner_part_id))
+            try:
+                params["owner_part_id"] = _nonnegative_owner_part(owner_part_id)
+            except ValueError as exc:
+                return {"ok": False, "reason": str(exc)}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "library.add_symbol_rectangle", params)
@@ -3015,8 +3020,9 @@ def register_library_tools(mcp):
         Args:
             lines: list of dicts, each with keys ``x1``, ``y1``,
                 ``x2``, ``y2`` (mils, int), ``width`` (int 0-3,
-                default 1), an optional ``color`` (Altium colour
-                integer) and ``owner_part_id`` (as in ``lib_add_pins``).
+                default 1), optional ``color`` (Altium colour integer)
+                and ``owner_part_id`` (1..N selects a sub-part, 0 shares
+                the line across all parts; omitted uses the current part).
             grid: snap grid (mils) for the line endpoints. Glyph lines do
                 NOT need the 100-mil pin grid (rule 15), so the default is
                 a finer 25 mils for clean glyph detail; pass 100 for the
@@ -3037,7 +3043,11 @@ def register_library_tools(mcp):
             if line.get("color") is not None:
                 fields.append(f"color={int(line['color'])}")
             if line.get("owner_part_id") is not None:
-                fields.append(f"owner_part_id={int(line['owner_part_id'])}")
+                try:
+                    owner_part_id = _nonnegative_owner_part(line["owner_part_id"])
+                except ValueError as exc:
+                    return {"ok": False, "reason": str(exc)}
+                fields.append(f"owner_part_id={owner_part_id}")
             op_strs.append(";".join(fields))
         if not op_strs:
             return {"error": "No lines provided", "added": 0}
@@ -4148,9 +4158,7 @@ def register_library_tools(mcp):
         compared: str = "",
     ) -> dict[str, Any]:
         """Add pads to the current footprint in ONE call (a list of one adds
-        a single pad). Coordinates are not snapped. A footprint new from
-        lib_create_footprint takes lands only with ``compared``, the id
-        footprint_compare_drawing returned for them.
+        a single pad). Coordinates are not snapped.
 
         Args:
             pads: List of pad dicts, each with:

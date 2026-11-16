@@ -1031,7 +1031,7 @@ def register_application_tools(mcp):
     @mcp.tool()
     async def app_checkpoint(label: str = "", save_first: bool = True,
                              project_path: str = "") -> dict[str, Any]:
-        """Snapshot a project so the session can be rolled back.
+        """Snapshot one named project so the session is revertible.
 
         Altium saves a copy of each design document in the project folder
         into a content-addressed store under the workspace, an open one as
@@ -1058,29 +1058,40 @@ def register_application_tools(mcp):
             worked, False with ``save_error`` and a ``note`` when it did
             not.
         """
-        import os
         saved: Optional[bool] = None
         save_error = ""
-        if not project_path:
-            project_dir, project_file, err = await _resolve_project_dir()
-            if err:
-                return err
-        elif os.path.isfile(project_path):
-            project_dir, project_file = os.path.split(project_path)
+        import os
+        listing = await get_bridge().send_command_async("project.get_open_projects", {})
+        projects = listing.get("projects", []) if isinstance(listing, dict) else []
+        paths = [str(item.get("project_path", "")) for item in projects
+                 if isinstance(item, dict) and item.get("project_path")
+                 and str(item["project_path"]).casefold() != "free documents"]
+        if project_path:
+            if not os.path.isabs(project_path) or not os.path.isfile(project_path):
+                return {"error": f"project file not found: {project_path}", "checkpoint": None}
+            wanted = os.path.normcase(os.path.normpath(project_path))
+            if save_first and not any(os.path.normcase(os.path.normpath(path)) == wanted
+                                      for path in paths):
+                return {"error": "the named project is not open for save",
+                        "project_path": project_path, "checkpoint": None}
+        elif len(paths) == 1:
+            project_path = paths[0]
         else:
-            return {"error": f"no project file at {project_path}", "checkpoint": None}
-        snapshot_of = os.path.join(project_dir or "", project_file or "")
-        others = await _other_open_projects(snapshot_of)
+            return {"error": "name project_path when zero or multiple projects are open",
+                    "open_projects": paths, "checkpoint": None}
+        project_dir, project_file = os.path.split(project_path)
+        snapshot_of = project_path
+        wanted = os.path.normcase(os.path.normpath(snapshot_of))
+        others = [path for path in paths
+                  if os.path.normcase(os.path.normpath(path)) != wanted]
         if save_first:
             # THE PROJECT BEING CHECKPOINTED, not the workspace. save_all
             # wrote every open document, other projects' included, to
             # snapshot one (issue #94 reports unrelated sheets rewritten).
-            # Both this and the path lookup above take the focused project.
+            # The path was selected above and is sent on the save command.
             try:
                 await get_bridge().send_command_async(
-                    "project.save",
-                    {"project_path": project_path} if project_path else {},
-                    timeout=60.0,
+                    "project.save", {"project_path": project_path}, timeout=60.0
                 )
                 saved = True
             except Exception as exc:  # noqa: BLE001 - reported, not raised
