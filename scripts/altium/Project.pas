@@ -324,6 +324,43 @@ Begin
     Result := Result + ']';
 End;
 
+{ A discarded project can leave edit records behind even though Altium's
+  Modified flag was cleared before close. Drop a record only after the
+  document itself is confirmed closed; a retained free document may still
+  contain an unsaved edit. }
+
+Procedure ForgetClosedEditedPaths(PathList : String);
+Var
+    Remaining, Path : String;
+    P : Integer;
+    ServerDoc : IServerDocument;
+    Readable : Boolean;
+Begin
+    Remaining := PathList;
+    While Remaining <> '' Do
+    Begin
+        P := Pos('|', Remaining);
+        If P > 0 Then
+        Begin
+            Path := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+        End
+        Else
+        Begin
+            Path := Remaining;
+            Remaining := '';
+        End;
+        If Path = '' Then Continue;
+        ServerDoc := Nil;
+        Readable := False;
+        Try
+            ServerDoc := Client.GetDocumentByPath(Path);
+            Readable := True;
+        Except End;
+        If Readable And (ServerDoc = Nil) Then ForgetDocEdited(Path);
+    End;
+End;
+
 {..............................................................................}
 { WorkspaceManager:CloseObject CLOSES THE FOCUSED PROJECT.                    }
 {                                                                             }
@@ -472,7 +509,7 @@ Begin
             { scratch project wrote every dirty document in the workspace,    }
             { client projects included. app_save_all is the tool for that,    }
             { and its name says so.                                           }
-            SaveProjectMembers(Project);
+            SaveEditedProjectMembers(Project);
             { The project file too: its document list changes without the }
             { modified flag, so SaveProjectMembers alone left it unwritten. }
             Result := BuildSuccessResponse(RequestId,
@@ -542,7 +579,7 @@ Begin
             End;
 
             If SaveFirst Then
-                SaveProjectMembers(Project)
+                SaveEditedProjectMembers(Project)
             Else
             Begin
                 { DISCARD BEFORE CLOSING, then check the discard took. A close }
@@ -609,13 +646,16 @@ Begin
             End;
 
             If Closed And (ClosedInstead = '') Then
+            Begin
+                If Not SaveFirst Then ForgetClosedEditedPaths(Discarded);
                 Result := BuildSuccessResponse(RequestId,
                     '{"success":true,"closed":true,"project_path":"'
                     + EscapeJsonString(ProjectPath) + '"'
                     + ',"saved":' + BoolToJsonStr(SaveFirst)
                     + ',"discarded":' + PipePathsToJsonArray(Discarded)
                     + ',"attempts":' + IntToStr(Attempts)
-                    + ',"closed_instead":[]}')
+                    + ',"closed_instead":[]}');
+            End
             Else
             Begin
                 If ClosedInstead <> '' Then
@@ -1394,6 +1434,30 @@ End;
 { pin one time, from a copy that names its net when one does (#296).         }
 {..............................................................................}
 
+{ Extraction report shared by the compiled BOM/net handlers. Reports HOW the
+  result was produced so a caller can reject uncertain reads instead of
+  trusting a silently partial one: which document enumeration was used
+  (physical is the flattened post-compile set; logical is the degenerate
+  fallback), how many nil documents/components/pins were skipped (all zero on
+  a healthy read), whether the row limit stopped enumeration early, and how
+  the compile requirement was satisfied (see LastCompileAction). }
+
+Function ExtractionJSON(DocCount : Integer; UsePhysical : Boolean;
+    SkippedDocs, SkippedComps, SkippedPins : Integer; LimitHit : Boolean) : String;
+Var
+    Mode : String;
+Begin
+    If UsePhysical Then Mode := 'physical'
+    Else Mode := 'logical';
+    Result := '{"enumeration_mode":"' + Mode + '"'
+        + ',"doc_count":' + IntToStr(DocCount)
+        + ',"skipped_nil_docs":' + IntToStr(SkippedDocs)
+        + ',"skipped_nil_components":' + IntToStr(SkippedComps)
+        + ',"skipped_nil_pins":' + IntToStr(SkippedPins)
+        + ',"limit_hit":' + BoolToJsonStr(LimitHit)
+        + ',"compile_action":"' + EscapeJsonString(LastCompileAction) + '"}';
+End;
+
 { A net name that says the pin has a net: not empty and not the '?' a copy }
 { of a multi-part symbol reads for a pin of a part on another sheet.       }
 Function IsNamedNet(NetName : String) : Boolean;
@@ -1408,13 +1472,18 @@ Var
     Project : IProject;
     Doc : IDocument;
     Comp : IComponent;
+    Part : IComponent;
     Pin : IPin;
-    I, J, K, Pass, Count, Limit, DocCount, Skipped, Repeats : Integer;
+    I, J, K, M, PartCount, Pass, Count, Limit, DocCount, Skipped, Repeats : Integer;
+    SkippedDocs, SkippedComps, SkippedPins : Integer;
     UsePhysical, LimitHit : Boolean;
     Data, CompDesig, NetName, Key : String;
     First : Boolean;
     Named, Listed : TStringList;
 Begin
+    SkippedDocs := 0;
+    SkippedComps := 0;
+    SkippedPins := 0;
     ProjectPath := ExtractJsonValue(Params, 'project_path');
     FilterComp := ExtractJsonValue(Params, 'component');
     FilterNet := ExtractJsonValue(Params, 'net_name');
@@ -1465,7 +1534,7 @@ Begin
                 Doc := GetCompiledDoc(Project, I, UsePhysical);
                 If Doc = Nil Then
                 Begin
-                    If Pass = 2 Then Inc(Skipped);
+                    If Pass = 2 Then Begin Inc(Skipped); Inc(SkippedDocs); End;
                     Continue;
                 End;
 
@@ -1475,53 +1544,80 @@ Begin
                     Comp := Doc.DM_Components(J);
                     If Comp = Nil Then
                     Begin
-                        If Pass = 2 Then Inc(Skipped);
+                        If Pass = 2 Then Begin Inc(Skipped); Inc(SkippedComps); End;
                         Continue;
                     End;
 
                     CompDesig := Comp.DM_PhysicalDesignator;
                     If (FilterComp <> '') And (CompDesig <> FilterComp) Then Continue;
 
-                    For K := 0 To Comp.DM_PinCount - 1 Do
+                    { A multi-part component keeps its pins on its sub-parts. }
+                    PartCount := 1;
+                    Try
+                        If Comp.DM_SubPartCount > 1 Then
+                            PartCount := Comp.DM_SubPartCount;
+                    Except
+                        PartCount := 1;
+                    End;
+
+                    For M := 0 To PartCount - 1 Do
                     Begin
-                        Pin := Comp.DM_Pins(K);
-                        If Pin = Nil Then
+                        If LimitHit Then Break;
+                        Try
+                            If PartCount > 1 Then
+                                Part := Comp.DM_SubParts(M)
+                            Else
+                                Part := Comp;
+                        Except
+                            Part := Nil;
+                        End;
+                        If Part = Nil Then
                         Begin
-                            If Pass = 2 Then Inc(Skipped);
+                            If Pass = 2 Then Begin Inc(Skipped); Inc(SkippedComps); End;
                             Continue;
                         End;
 
-                        NetName := Pin.DM_FlattenedNetName;
-                        Key := CompDesig + '|' + Pin.DM_PinNumber;
-                        If Pass = 1 Then
+                        For K := 0 To Part.DM_PinCount - 1 Do
                         Begin
-                            If IsNamedNet(NetName) Then Named.Add(Key);
-                            Continue;
-                        End;
+                            Pin := Part.DM_Pins(K);
+                            If Pin = Nil Then
+                            Begin
+                                If Pass = 2 Then Begin Inc(Skipped); Inc(SkippedPins); End;
+                                Continue;
+                            End;
 
-                        { Once per pin, from a copy naming its net when one does. }
-                        If (Listed.IndexOf(Key) >= 0)
-                            Or ((Not IsNamedNet(NetName)) And (Named.IndexOf(Key) >= 0)) Then
-                        Begin
-                            Inc(Repeats);
-                            Continue;
-                        End;
-                        If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
-                        If Count >= Limit Then
-                        Begin
-                            LimitHit := True;
-                            Break;
-                        End;
-                        Listed.Add(Key);
+                            NetName := Pin.DM_FlattenedNetName;
+                            Key := CompDesig + '|' + Pin.DM_PinNumber;
+                            If Pass = 1 Then
+                            Begin
+                                If IsNamedNet(NetName) Then Named.Add(Key);
+                                Continue;
+                            End;
 
-                        If Not First Then Data := Data + ',';
-                        First := False;
+                            { Once per pin, from a copy naming its net when one does. }
+                            If (Listed.IndexOf(Key) >= 0)
+                                Or ((Not IsNamedNet(NetName)) And (Named.IndexOf(Key) >= 0)) Then
+                            Begin
+                                Inc(Repeats);
+                                Continue;
+                            End;
+                            If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
+                            If Count >= Limit Then
+                            Begin
+                                LimitHit := True;
+                                Break;
+                            End;
+                            Listed.Add(Key);
 
-                        Data := Data + '{"component":"' + EscapeJsonString(CompDesig) + '"';
-                        Data := Data + ',"pin":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
-                        Data := Data + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
-                        Data := Data + ',"net":"' + EscapeJsonString(NetName) + '"}';
-                        Inc(Count);
+                            If Not First Then Data := Data + ',';
+                            First := False;
+
+                            Data := Data + '{"component":"' + EscapeJsonString(CompDesig) + '"';
+                            Data := Data + ',"pin":"' + EscapeJsonString(Pin.DM_PinNumber) + '"';
+                            Data := Data + ',"pin_name":"' + EscapeJsonString(Pin.DM_PinName) + '"';
+                            Data := Data + ',"net":"' + EscapeJsonString(NetName) + '"}';
+                            Inc(Count);
+                        End;
                     End;
                 End;
             End;
@@ -1532,12 +1628,18 @@ Begin
     End;
 
     Data := Data + ']';
+    { count is the number of rows RETURNED. `truncated` is what the Python }
+    { pager in tools/project.py branches on; `limit_hit` and `skipped_nil`  }
+    { are what its docstrings describe. Both spellings are kept.           }
     Result := BuildSuccessResponse(RequestId, '{"pins":' + Data
         + ',"count":' + IntToStr(Count)
         + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr(LimitHit)
         + ',"limit_hit":' + BoolToJsonStr(LimitHit)
         + ',"repeats_skipped":' + IntToStr(Repeats)
-        + ',"skipped_nil":' + IntToStr(Skipped) + '}');
+        + ',"skipped_nil":' + IntToStr(Skipped)
+        + ',"extraction":' + ExtractionJSON(DocCount, UsePhysical,
+            SkippedDocs, SkippedComps, SkippedPins, LimitHit) + '}');
 End;
 
 {..............................................................................}
@@ -1553,6 +1655,7 @@ Var
     Comp : IComponent;
     Pin : IPin;
     I, J, K, Count, Limit, DocCount, Skipped, Repeats : Integer;
+    SkippedDocs, SkippedComps, SkippedPins : Integer;
     UsePhysical, LimitHit : Boolean;
     Data, CompDesig, CompComment, CompFP, CompLib, PinList : String;
     First, FirstPin : Boolean;
@@ -1582,18 +1685,21 @@ Begin
     Listed.Sorted := True;
     Listed.Duplicates := dupIgnore;
 
+    SkippedDocs := 0;
+    SkippedComps := 0;
+    SkippedPins := 0;
     GetCompiledDocs(Project, DocCount, UsePhysical);
     For I := 0 To DocCount - 1 Do
     Begin
         If LimitHit Then Break;
         Doc := GetCompiledDoc(Project, I, UsePhysical);
-        If Doc = Nil Then Begin Inc(Skipped); Continue; End;
+        If Doc = Nil Then Begin Inc(SkippedDocs); Continue; End;
 
         For J := 0 To Doc.DM_ComponentCount - 1 Do
         Begin
             If LimitHit Then Break;
             Comp := Doc.DM_Components(J);
-            If Comp = Nil Then Begin Inc(Skipped); Continue; End;
+            If Comp = Nil Then Begin Inc(SkippedComps); Continue; End;
 
             CompDesig := Comp.DM_PhysicalDesignator;
             If Listed.IndexOf(CompDesig) >= 0 Then
@@ -1617,7 +1723,7 @@ Begin
             For K := 0 To Comp.DM_PinCount - 1 Do
             Begin
                 Pin := Comp.DM_Pins(K);
-                If Pin = Nil Then Begin Inc(Skipped); Continue; End;
+                If Pin = Nil Then Begin Inc(SkippedPins); Continue; End;
                 If Not FirstPin Then PinList := PinList + ',';
                 FirstPin := False;
                 PinList := PinList + '{"pin":"' + EscapeJsonString(Pin.DM_PinNumber) +
@@ -1638,12 +1744,17 @@ Begin
 
     Listed.Free;
     Data := Data + ']';
-    Result := BuildSuccessResponse(RequestId, '{"components":' + Data
-        + ',"count":' + IntToStr(Count)
+    { Same contract as Proj_GetNets: count is what came back, truncated    }
+    { says whether the cap cut it short.                                    }
+    Result := BuildSuccessResponse(RequestId,
+        '{"components":' + Data + ',"count":' + IntToStr(Count)
         + ',"limit":' + IntToStr(Limit)
+        + ',"truncated":' + BoolToJsonStr(LimitHit)
         + ',"limit_hit":' + BoolToJsonStr(LimitHit)
         + ',"repeats_skipped":' + IntToStr(Repeats)
-        + ',"skipped_nil":' + IntToStr(Skipped) + '}');
+        + ',"skipped_nil":' + IntToStr(SkippedDocs + SkippedComps + SkippedPins)
+        + ',"extraction":' + ExtractionJSON(DocCount, UsePhysical,
+            SkippedDocs, SkippedComps, SkippedPins, LimitHit) + '}');
 End;
 
 {..............................................................................}
@@ -2452,9 +2563,10 @@ Begin
 End;
 
 { Helper: compare two component entries by the requested annotation order.
-  Returns -1 if A should come before B, +1 if after, 0 if equal. X and Y
-  are Altium's own coordinates: whole mils put parts a fraction of a mil
-  apart on one sort key. }
+  Returns -1 if A should come before B, +1 if after, 0 if equal. X and Y are
+  native TCoord integers; converting to whole mils would collapse distinct
+  fractional-mil placements onto the same annotation sort key. }
+
 Function CompareAnnotationOrder(Order : String;
     AX, AY, ADocIdx : Integer;
     BX, BY, BDocIdx : Integer) : Integer;
@@ -2521,8 +2633,8 @@ Var
       pointers is unreliable). }
     CompList   : TInterfaceList;
     Prefixes   : TStringList;
-    XCoords    : TStringList;  { X, Altium's coordinate, as integer-string }
-    YCoords    : TStringList;  { Y, Altium's coordinate, as integer-string }
+    XCoords    : TStringList;  { native TCoord as integer-string }
+    YCoords    : TStringList;  { native TCoord as integer-string }
     DocIndices : TStringList;
 
     { Set of modified docs, PreProcess/PostProcess/Invalidate are scoped to these only }
@@ -3235,6 +3347,7 @@ End;
 { their file, sheet name, entries and how many child sheets the compiler   }
 { found for them (0: the file is not in the project).                       }
 {..............................................................................}
+
 Function Proj_GetHierarchy(Params : String; RequestId : String) : String;
 Var
     Workspace : IWorkspace;
@@ -3358,6 +3471,7 @@ End;
 { Altium finds for it (empty when it finds none), integrated or not.        }
 { Params: project_path, designator (optional), limit (default 300).          }
 {..............................................................................}
+
 Function Proj_ComponentModels(Params : String; RequestId : String) : String;
 Var
     Workspace : IWorkspace;
@@ -5781,7 +5895,8 @@ Begin
     End;
     After := Project.DM_GetNetColorByName(NetName);
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonStr('net', NetName) + ','
+        JsonStr('project_path', Project.DM_ProjectFullPath) + ','
+        + JsonStr('net', NetName) + ','
         + JsonInt('color_before', Before) + ','
         + JsonInt('color', After)));
 End;
@@ -5816,7 +5931,7 @@ End;
 {..............................................................................}
 Function Proj_GetDeclaredDesignObjects(Params : String; RequestId : String) : String;
 Var
-    ProjectPath, NetCls, CompCls, Pairs, Rooms, PosNet, NegNet, DocPath, Leg, Ending : String;
+    ProjectPath, NetCls, CompCls, Pairs, Rooms, PosNet, NegNet, DocPath, MemberName : String;
     Workspace : IWorkspace;
     Project : IProject;
     Doc : IDocument;
@@ -5863,16 +5978,22 @@ Begin
             Pair := Doc.DM_DifferentialPairs(I);
             If Pair = Nil Then Continue;
             PosNet := ''; NegNet := '';
-            { Reading DM_PositiveNet.DM_NetName raised an undeclared identifier }
-            { on AD 26.11. The pair is an object class listing its two nets by }
-            { name, and Altium pairs schematic nets by their _P and _N ends.   }
+            { IDifferentialPair inherits IObjectClass: members are names,
+              not INet objects. The old DM_PositiveNet.DM_NetName chain
+              raised a modal undeclared-identifier error in AD 26.11. }
             For J := 0 To Pair.DM_MemberCount - 1 Do
             Begin
-                Leg := '';
-                Try Leg := Pair.DM_Members(J); Except Leg := ''; End;
-                Ending := UpperCase(Copy(Leg, Length(Leg) - 1, 2));
-                If Ending = '_P' Then PosNet := Leg;
-                If Ending = '_N' Then NegNet := Leg;
+                MemberName := '';
+                Try MemberName := Pair.DM_Members(J); Except End;
+                If MemberName = '' Then Continue;
+                If UpperCase(Copy(MemberName, Length(MemberName) - 1, 2)) = '_P' Then
+                    PosNet := MemberName
+                Else If UpperCase(Copy(MemberName, Length(MemberName) - 1, 2)) = '_N' Then
+                    NegNet := MemberName
+                Else If PosNet = '' Then
+                    PosNet := MemberName
+                Else If NegNet = '' Then
+                    NegNet := MemberName;
             End;
             If Pairs <> '' Then Pairs := Pairs + ',';
             Pairs := Pairs + JsonObj(JsonStr('name', Pair.DM_Name) + ','
@@ -6031,11 +6152,11 @@ Function NetContentsJson(Net : INet; WithPins : Boolean; WithStructure : Boolean
 Var
     Item : INetItem;
     Labels, Powers, Ports, Entries, Cross, Directives, Pins, Text : String;
-    I, PinCount, Left : Integer;
+    I, PinCount, DirectiveCount : Integer;
     AutoGen : Boolean;
 Begin
-    Labels := ''; Powers := ''; Ports := ''; Entries := ''; Cross := ''; Pins := '';
-    Directives := '';
+    Labels := ''; Powers := ''; Ports := ''; Entries := ''; Cross := '';
+    Directives := ''; Pins := '';
     For I := 0 To Net.DM_NetLabelCount - 1 Do
     Begin
         Item := Nil; Text := '';
@@ -6081,20 +6202,18 @@ Begin
         If Cross <> '' Then Cross := Cross + ',';
         Cross := Cross + NetNamingItemJson(Item, Text);
     End;
-    { Directives as the compiled net holds them: which net a directive    }
-    { belongs to is the compiler's answer, not a guess from where it is  }
-    { drawn among the wires.                                              }
-    Left := 0;
-    Try Left := Net.DM_DirectiveCount; Except Left := 0; End;
-    While Left > 0 Do
+    { The compiled net itself names its attached directives. This resolves
+      ambiguous nearby wires without guessing from a directive's graphic. }
+    DirectiveCount := 0;
+    Try DirectiveCount := Net.DM_DirectiveCount; Except End;
+    For I := 0 To DirectiveCount - 1 Do
     Begin
-        Dec(Left);
         Item := Nil;
-        Try Item := Net.DM_Directives(Left); Except Item := Nil; End;
-        If Item <> Nil Then
-            Directives := NetNamingItemJson(Item, '') + ',' + Directives;
+        Try Item := Net.DM_Directives(I); Except Item := Nil; End;
+        If Item = Nil Then Continue;
+        If Directives <> '' Then Directives := Directives + ',';
+        Directives := Directives + NetNamingItemJson(Item, '');
     End;
-    If Directives <> '' Then Directives := Copy(Directives, 1, Length(Directives) - 1);
     PinCount := 0;
     Try PinCount := Net.DM_PinCount; Except End;
     If WithPins Then
@@ -6227,6 +6346,7 @@ Var
     I, Idx, Total, Mode : Integer;
     Order : TStringList;
     OutPath : String;
+    PcbType, ConfigName : String;
     Sub, AllowPort, AllowEntry, AppendSheet, SwapLabel, SwapPin : Boolean;
 Begin
     Order := TStringList.Create;
@@ -6294,6 +6414,13 @@ Begin
     Try AppendSheet := Project.DM_GetAppendSheetNumberToLocalNets; Except End;
     Try SwapLabel := Project.DM_GetPinSwapBy_Netlabel; Except End;
     Try SwapPin := Project.DM_GetPinSwapBy_Pin; Except End;
+    { The defaults a new document in this project inherits. Reported and    }
+    { written here rather than in a tool of their own: they are Project     }
+    { Options like the rest, and a second writer over the same state would  }
+    { be one more place for the two to disagree.                            }
+    PcbType := ''; ConfigName := '';
+    Try PcbType := Project.DM_GetDefaultPcbType; Except End;
+    Try ConfigName := Project.DM_GetDefaultConfigurationName; Except End;
     Result := JsonRaw('documents', '[' + Docs + ']') + ','
         + JsonRaw('search_paths', '[' + Paths + ']') + ','
         + JsonRaw('generated_documents', '[' + Gens + ']') + ','
@@ -6303,7 +6430,9 @@ Begin
         + JsonStr('output_path', OutPath) + ','
         + JsonBool('append_sheet_number_to_local_nets', AppendSheet) + ','
         + JsonBool('pin_swap_by_net_label', SwapLabel) + ','
-        + JsonBool('pin_swap_by_pin', SwapPin);
+        + JsonBool('pin_swap_by_pin', SwapPin) + ','
+        + JsonStr('default_pcb_type', PcbType) + ','
+        + JsonStr('default_configuration_name', ConfigName);
 End;
 
 {..............................................................................}
@@ -6321,6 +6450,8 @@ Function Proj_ProjectSetup(Params : String; RequestId : String) : String;
 Var
     ProjectPath, MoveDoc, MoveTo, AddPath, SubStr, PortStr, EntryStr, NotApplied : String;
     ModeStr, OutStr, AppendStr, SwapLabelStr, SwapPinStr : String;
+    PcbTypeStr, ConfigStr, WasType, WasConfig : String;
+    GotOut, WantOut : String;
     Workspace : IWorkspace;
     Project : IProject;
     SP : ISearchPath;
@@ -6339,6 +6470,9 @@ Begin
     AppendStr := LowerCase(ExtractJsonValue(Params, 'append_sheet_number_to_local_nets'));
     SwapLabelStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_net_label'));
     SwapPinStr := LowerCase(ExtractJsonValue(Params, 'pin_swap_by_pin'));
+    { Not lower-cased: these two are names, not flags. }
+    PcbTypeStr := ExtractJsonValue(Params, 'default_pcb_type');
+    ConfigStr := ExtractJsonValue(Params, 'default_configuration_name');
     If (ModeStr <> '') And (Not IsIntStr(ModeStr)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'hierarchy_mode must be a number');
@@ -6414,8 +6548,17 @@ Begin
     Begin
         Project.DM_SetOutputPath(OutStr);
         Changed := True;
-        If UpperCase(NoTrailingSlash(Project.DM_GetOutputPath))
-           <> UpperCase(NoTrailingSlash(OutStr)) Then
+        { A RELATIVE output path is resolved against the project folder, so  }
+        { the read-back is the absolute one and an exact compare called a    }
+        { write that worked not_applied. MEASURED: 'Outputs Test' read back  }
+        { as <project folder>\Outputs Test, and the tool reported it as not  }
+        { applied while the reader showed the new value. Matched by tail for }
+        { exactly that case; an absolute path still has to match in full.    }
+        GotOut := UpperCase(NoTrailingSlash(Project.DM_GetOutputPath));
+        WantOut := UpperCase(NoTrailingSlash(OutStr));
+        If (GotOut <> WantOut)
+           And (Copy(GotOut, Length(GotOut) - Length(WantOut), Length(WantOut) + 1)
+                <> '\' + WantOut) Then
             NotApplied := NotApplied + '"output_path",';
     End;
     If AppendStr <> '' Then
@@ -6438,6 +6581,35 @@ Begin
         Changed := True;
         If Project.DM_GetPinSwapBy_Pin <> (SwapPinStr = 'true') Then
             NotApplied := NotApplied + '"pin_swap_by_pin",';
+    End;
+    { These two are not free-text. MEASURED: setting the configuration   }
+    { name to one the project does not have did not take AND cleared the  }
+    { name it already had, from 'Sources' to empty, so a write that failed }
+    { left the project worse off than not calling at all. The previous     }
+    { value is put back when the read-back disagrees.                      }
+    If PcbTypeStr <> '' Then
+    Begin
+        WasType := '';
+        Try WasType := Project.DM_GetDefaultPcbType; Except End;
+        Try Project.DM_SetDefaultPcbType(PcbTypeStr); Except End;
+        Changed := True;
+        If Project.DM_GetDefaultPcbType <> PcbTypeStr Then
+        Begin
+            Try Project.DM_SetDefaultPcbType(WasType); Except End;
+            NotApplied := NotApplied + '"default_pcb_type",';
+        End;
+    End;
+    If ConfigStr <> '' Then
+    Begin
+        WasConfig := '';
+        Try WasConfig := Project.DM_GetDefaultConfigurationName; Except End;
+        Try Project.DM_SetDefaultConfigurationName(ConfigStr); Except End;
+        Changed := True;
+        If Project.DM_GetDefaultConfigurationName <> ConfigStr Then
+        Begin
+            Try Project.DM_SetDefaultConfigurationName(WasConfig); Except End;
+            NotApplied := NotApplied + '"default_configuration_name",';
+        End;
     End;
     If NotApplied <> '' Then NotApplied := Copy(NotApplied, 1, Length(NotApplied) - 1);
     Result := BuildSuccessResponse(RequestId, JsonObj(
@@ -6649,9 +6821,10 @@ Begin
             If Not First Then Data := Data + ',';
             First := False;
 
-            { Severity is deliberately omitted: DM_ErrorLevelString is a
-              compile-time undeclared identifier in DelphiScript, and
-              DM_ErrorLevel hasn't been confirmed as declared either. Use
+            { This legacy summary omits severity and suppression. For the
+              verified numeric DM_ErrorLevel and DM_IsSuppressed fields,
+              use Gen_GetErcViolations. DM_ErrorLevelString is not exposed.
+              Use
               DM_ShortDescriptorString (documented on IDMObject base) rather
               than the undocumented DM_DescriptorString. DM_OwnerDocumentName
               is documented on IDMObject and is safe. }
@@ -7389,7 +7562,7 @@ End;
 { Strategy:                                                                    }
 {   1. Compile the project and gather component mapping differences so useful  }
 {      counts are available regardless of what the ECO dialog does.            }
-{   2. Invoke WorkspaceManager:Compare (ObjectKind=Project, Action=UpdateOther)}
+{   2. Invoke WorkspaceManager:Compare (ObjectKind=Project, Action=UpdateMe)   }
 {      -- the documented/evidenced sch->PCB update. It BLOCKS on the modal     }
 {      ECO dialog until the user clicks Execute Changes.                       }
 {   3. Re-compile and recompute mappings; report the before/after delta.      }
@@ -7411,6 +7584,7 @@ Var
     Ok : Boolean;
     FocusedDoc : IDocument;
     FocusedProject : IProject;
+    ServerDoc : IServerDocument;
     FocusedKind, FocusedPath : String;
 Begin
     ProjectPath := ExtractJsonValue(Params, 'project_path');
@@ -7450,7 +7624,7 @@ Begin
       DIRECTION. With the PCB focused, the reference spells the two actions
       out: Action=UpdateOther is PCB -> Update Schematic, and Action=UpdateMe
       is PCB -> Import Changes From the schematic. This handler sent
-      UpdateOther while requiring the PCB in focus, so it back-annotated:
+       UpdateOther with the PCB focused, so it back-annotated:
       an ECO opened with the SchDoc as the affected document, and executing
       it reverted a footprint and a comment on the schematic. The PCB is
       focused here, checked, and asked to import.
@@ -7459,6 +7633,27 @@ Begin
       process raises that modal and BLOCKS the polling loop until a human
       clicks "Execute Changes" (or closes it). There is no documented silent
       variant. }
+    { ComputeECODifferences took this path from the project's primary PCB,
+      not from the caller. ResolvePCBBoard deliberately refuses to open an
+      arbitrary path; for this trusted project member, open it explicitly
+      when it is not resident yet so a closed board is a usable ECO target. }
+    ServerDoc := Nil;
+    Try ServerDoc := Client.GetDocumentByPath(PcbPath); Except End;
+    If ServerDoc = Nil Then
+    Begin
+        If Not FileExists(PcbPath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PCB_FILE_NOT_FOUND', PcbPath);
+            Exit;
+        End;
+        Try ServerDoc := Client.OpenDocument('PCB', PcbPath); Except End;
+        If ServerDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'PCB_OPEN_FAILED', PcbPath);
+            Exit;
+        End;
+    End;
+    Try Client.ShowDocument(ServerDoc); Except End;
     ResolvePCBBoard(PcbPath);
     FocusedKind := '';
     FocusedPath := '';
@@ -7472,21 +7667,8 @@ Begin
     Except
         FocusedKind := '';
     End;
-    { The compare runs on the FOCUSED project, so the board in focus has  }
-    { to be this one, in this project; another would be the one updated.  }
-    FocusedProject := Nil;
-    Try FocusedProject := Workspace.DM_FocusedProject; Except FocusedProject := Nil; End;
-    If FocusedKind = 'PCB' Then
-    Begin
-        If PathKey(FocusedPath) <> PathKey(PcbPath) Then
-            FocusedKind := 'PCB ' + FocusedPath
-        Else If FocusedProject = Nil Then
-            FocusedKind := 'PCB of another project'
-        Else If PathKey(FocusedProject.DM_ProjectFullPath)
-            <> PathKey(Project.DM_ProjectFullPath) Then
-            FocusedKind := 'PCB of another project';
-    End;
-    If FocusedKind <> 'PCB' Then
+    If (FocusedKind <> 'PCB') Or
+        (PathKey(FocusedPath) <> PathKey(PcbPath)) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'WRONG_FOCUS',
             'The project''s PCB could not be focused (the focused document is '
@@ -7494,6 +7676,16 @@ Begin
             + 'anything else focused the same request can update the '
             + 'schematic from the board. Focus ' + PcbPath
             + ' with app_set_active_document, then call this again.');
+        Exit;
+    End;
+    FocusedProject := Nil;
+    Try FocusedProject := Workspace.DM_FocusedProject; Except End;
+    If (FocusedProject = Nil) Or
+        (PathKey(FocusedProject.DM_ProjectFullPath) <>
+         PathKey(Project.DM_ProjectFullPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_PROJECT_FOCUSED',
+            'Opening the PCB changed the focused project; ECO was not fired');
         Exit;
     End;
     ResetParameters;
@@ -7855,6 +8047,29 @@ Begin
     Except
     End;
 
+    { Pin swapping, and the defaults a new document inherits. Reported so   }
+    { every option Proj_ProjectSetup can WRITE can also be read back here,  }
+    { which is what lets a caller diff a project against a stored policy    }
+    { without the writer's other machinery. The two channel settings above  }
+    { are the exception: readable, and the engine registers no setter for   }
+    { either under any spelling.                                            }
+    Try
+        Data := Data + ',"pin_swap_by_pin":' + BoolToJsonStr(Project.DM_GetPinSwapBy_Pin);
+    Except
+    End;
+    Try
+        Data := Data + ',"pin_swap_by_netlabel":' + BoolToJsonStr(Project.DM_GetPinSwapBy_Netlabel);
+    Except
+    End;
+    Try
+        Data := Data + ',"default_pcb_type":"' + EscapeJsonString(Project.DM_GetDefaultPcbType) + '"';
+    Except
+    End;
+    Try
+        Data := Data + ',"default_configuration_name":"' + EscapeJsonString(Project.DM_GetDefaultConfigurationName) + '"';
+    Except
+    End;
+
     Data := Data + '}';
     Result := BuildSuccessResponse(RequestId, Data);
 End;
@@ -8011,20 +8226,56 @@ Begin
     End;
 End;
 
-{ The violation type with this exact description (case ignored), or a      }
-{ number given as text. -1 when neither.                                    }
-Function ErcKindFromText(Workspace : IWorkspace; Text : String) : Integer;
+{ How many violation types Altium actually has.                             }
+{                                                                           }
+{ DM_ViolationTypeDescription answers by index and has no end marker, and   }
+{ past the end of the enum it hands back whatever adjacent memory reads as  }
+{ a string. MEASURED on AD 26.11: indices 0..166 are the real table, 167 to }
+{ 169 answer empty, and from 170 on it returns truncated fragments of other }
+{ string tables ('Out o', 'Unconnec', 'Gray') plus, at 350, a block of raw  }
+{ UTF-16 carrying NULs. Scanning a fixed 0..400 and keeping anything        }
+{ non-empty therefore reported 295 types where there are 167, and           }
+{ DM_SetErrorLevels would have been called on the 128 indices past the end  }
+{ of the array it indexes. The exact count moves between reads, because     }
+{ what is past the end is whatever that memory holds at the time.           }
+{                                                                           }
+{ The ids are a contiguous enum from 0, so the first empty description is   }
+{ the end of it. Nothing in the SDK gives a count: IWorkspace declares only }
+{ DM_ViolationTypeDescription and DM_ViolationTypeGroup, and IProject's     }
+{ DM_ViolationCount counts violations, not types.                           }
+Function ErcTypeCount(Workspace : IWorkspace) : Integer;
 Var
     I : Integer;
     Desc : String;
 Begin
+    Result := 0;
+    For I := 0 To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If Desc = '' Then Exit;
+        Result := I + 1;
+    End;
+End;
+
+{ The violation type with this exact description (case ignored), or a      }
+{ number given as text. -1 when neither.                                    }
+Function ErcKindFromText(Workspace : IWorkspace; Text : String) : Integer;
+Var
+    I, Stop : Integer;
+    Desc : String;
+Begin
     Result := -1;
+    Stop := ErcTypeCount(Workspace);
     If (Trim(Text) <> '') And (StrToIntDef(Trim(Text), -1) >= 0) Then
     Begin
         Result := StrToIntDef(Trim(Text), -1);
+        { A number past the end of the table names nothing, and writing to }
+        { it would reach past the array DM_SetErrorLevels indexes.          }
+        If Result >= Stop Then Result := -1;
         Exit;
     End;
-    For I := 0 To 400 Do
+    For I := 0 To Stop - 1 Do
     Begin
         Desc := '';
         Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
@@ -8039,12 +8290,16 @@ End;
 { Proj_GetErcLevels - every violation type with its current report level. }
 { Params: project_path (default the focused project), match (substring of  }
 { the description, optional).                                              }
+{ Reports type_count (how many types Altium has) and beyond_table (how     }
+{ many look-alike strings the reader found past the end and ignored: 127   }
+{ and 128 on two reads of the same AD 26.11, since it is uninitialised     }
+{ memory; see ErcTypeCount).                                               }
 Function Proj_GetErcLevels(Params : String; RequestId : String) : String;
 Var
     Project : IProject;
     Workspace : IWorkspace;
     Problem, Match, Desc, Items : String;
-    I, Level, Count : Integer;
+    I, Level, Count, Stop, Group, Beyond : Integer;
 Begin
     Project := ErcProject(Params, Problem);
     If Project = Nil Then
@@ -8056,7 +8311,8 @@ Begin
     Match := LowerCase(ExtractJsonValue(Params, 'match'));
     Items := '';
     Count := 0;
-    For I := 0 To 400 Do
+    Stop := ErcTypeCount(Workspace);
+    For I := 0 To Stop - 1 Do
     Begin
         Desc := '';
         Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
@@ -8064,16 +8320,32 @@ Begin
         Begin
             Level := -1;
             Try Level := Project.DM_ErrorLevels(I); Except Level := -1; End;
+            { The section the Error Reporting dialog files this type under. }
+            Group := -1;
+            Try Group := Workspace.DM_ViolationTypeGroup(I); Except Group := -1; End;
             If Items <> '' Then Items := Items + ',';
             Items := Items + '{"kind":' + IntToStr(I)
                 + ',"description":"' + EscapeJsonString(Desc) + '"'
+                + ',"group":' + IntToStr(Group)
                 + ',"level":"' + ErcLevelName(Level) + '"}';
             Inc(Count);
         End;
     End;
+    { Counted, not reported: it is the measurement that says the table ends }
+    { where it does, and a build where it reads 0 has either a different    }
+    { Altium or a reader that stopped too early.                            }
+    Beyond := 0;
+    For I := Stop To 400 Do
+    Begin
+        Desc := '';
+        Try Desc := Workspace.DM_ViolationTypeDescription(I); Except Desc := ''; End;
+        If Desc <> '' Then Inc(Beyond);
+    End;
     Result := BuildSuccessResponse(RequestId,
         '{"project":"' + EscapeJsonString(Project.DM_ProjectFullPath) + '"'
         + ',"count":' + IntToStr(Count)
+        + ',"type_count":' + IntToStr(Stop)
+        + ',"beyond_table":' + IntToStr(Beyond)
         + ',"levels":[' + Items + ']}');
 End;
 
@@ -8257,7 +8529,7 @@ Begin
             Inc(OpenCount);
 
             Try
-                If ServerDoc.Modified Then
+                If ServerDoc.Modified Or DocWasEdited(FullPath) Then
                 Begin
                     Inc(DirtyCount);
                     If Not First Then DirtyList := DirtyList + ',';

@@ -523,13 +523,11 @@ def test_a_size_read_off_the_wrong_document_is_refused():
     assert any("not the sheet asked for" in n for n in out["notes"])
 
 
-def test_a_sheet_of_the_same_name_in_another_folder_is_not_the_sheet():
-    elsewhere = _WithSize({"file_path": r"C:\other\Legacy.SchDoc",
-                           "sheet_size": "A0"})
-    out = plan_from_live_sheet("p.PrjPcb", r"C:\x\Legacy.SchDoc",
-                               bridge=elsewhere)
+def test_a_size_from_another_directory_with_the_same_sheet_name_is_refused():
+    sheet = _WithSize({"file_path": "C:/other/Legacy.SchDoc", "sheet_size": "A0"})
+    out = plan_from_live_sheet("p.PrjPcb", r"C:\x\Legacy.SchDoc", bridge=sheet)
     assert out["plan"]["sheets"] == [{"name": "Legacy"}]
-    assert any("not the sheet asked for" in n for n in out["notes"])
+    assert any("not the sheet asked for" in note for note in out["notes"])
 
 
 def test_a_size_the_layout_cannot_draw_is_said_rather_than_used():
@@ -563,13 +561,29 @@ def test_an_unreadable_document_info_says_the_size_is_a_default():
     assert any("could not read the sheet size" in n for n in out["notes"])
 
 
-def test_a_windows_sheet_path_is_named_by_its_file_under_wsl():
+def test_a_windows_sheet_path_is_named_by_its_file_under_wsl(monkeypatch):
     """Under WSL, Path() reads a whole Windows path as one file name."""
+    from pathlib import PurePosixPath
+    from eda_agent.design import orchestrator
+
+    monkeypatch.setattr(orchestrator, "Path", PurePosixPath)
     out = plan_from_live_sheet(r"C:\proj\p.PrjPcb",
                                r"C:\x\p__Legacy.SchDoc", bridge=_WithSize(
                                    {"file_path": r"C:\x\p__Legacy.SchDoc",
                                     "sheet_size": "A3"}))
     assert out["plan"]["sheets"][0]["name"] == "Legacy"
+
+
+def test_a_second_windows_project_stem_round_trips_under_wsl(monkeypatch):
+    from pathlib import PurePosixPath
+    from eda_agent.design import orchestrator
+
+    monkeypatch.setattr(orchestrator, "Path", PurePosixPath)
+    out = plan_from_live_sheet(r"D:\work\new-board.PrjPcb",
+                               r"D:\work\new-board__Power.SchDoc", bridge=_WithSize(
+                                   {"file_path": r"D:\work\new-board__Power.SchDoc",
+                                    "sheet_size": "A3"}))
+    assert out["plan"]["sheets"][0]["name"] == "Power"
 
 
 def test_a_bare_sheet_name_still_reads_the_size():

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""Stages to production, how far obj_query reaches into Altium's SDK,
-simulating a deck in ngspice or LTspice, a company's conventions, and
-Altium 365.
+"""Stages to production, simulating a deck in ngspice or LTspice, a
+company's conventions, and Altium 365.
 
 All offline. The ngspice and LTspice runs were measured on this machine
 (both gave 4.96629 V and 2.1972 ms on one RC deck); here the simulator
@@ -29,9 +28,27 @@ from eda_agent.tools.registry import ToolRegistry
 
 @pytest.fixture(scope="module")
 def tools():
+    """The Altium surface with the NPI gate switched ON.
+
+    It is off by default, so the three stage tools are not registered at
+    all. Everything below measures what they DO, which is a different
+    question from whether an owner has asked for them; the default, and
+    what each tool says when its stage is off, are measured in
+    test_phase_gates_switch.py.
+    """
+    import os
+
     from eda_agent.tools import register_backend
-    registry = ToolRegistry()
-    register_backend(registry, "altium")
+    before = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        registry = ToolRegistry()
+        register_backend(registry, "altium")
+    finally:
+        if before is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = before
     return registry
 
 
@@ -51,7 +68,7 @@ def test_a_product_is_in_the_first_stage_that_does_not_clear(tmp_path):
     for check in phase_gates.checks_of("feasibility"):
         ledger.add(check.key, phase_gates.MET, source="test", detail="done", revision="A")
     stage, reviews = phase_gates.standing(ledger.answers(), "A")
-    assert stage == "prototype" and reviews[0].cleared
+    assert stage == "research" and reviews[0].cleared
     # Answers given for another revision stop counting.
     stage, reviews = phase_gates.standing(ledger.answers(), "B")
     assert stage == "feasibility"
@@ -108,38 +125,6 @@ def test_the_stage_tools_record_and_review(tools, tmp_path, monkeypatch):
     assert row["outcome"] == "met" and "feasibility:outline-agreed" in gate["for_people"]
     standing = asyncio.run(tools.get("design_phase_standing").fn(product="lamp"))
     assert standing["stage"] == "feasibility" and not standing["in_production"]
-
-
-# --- how far the property tools reach into the SDK ---------------------------------------
-
-def test_the_chains_and_type_words_are_read_from_the_pascal():
-    from eda_agent.diag import sdk_reach
-    tested = sdk_reach.names_tested("Generic.pas", "GetSchProperty")
-    assert {"Location", "OverrideDisplayString", "UniqueId"} <= tested
-    assert sdk_reach.type_words("SCH")["port"] == "ePort"
-    assert sdk_reach.type_words("PCB")["track"] == "eTrackObject"
-
-
-def test_interfaces_are_found_in_the_index_and_inherited_members_count(tmp_path):
-    from eda_agent.diag import sdk_reach
-    index = {"interfaces": {
-        "IPCB_Primitive": {"bases": [], "methods": [["GetState_Layer", "", "Int32"],
-                                                    ["SetState_Layer", "", "Void"]]},
-        "IPCB_Track": {"bases": ["IPCB_Primitive"], "methods": [
-            ["GetState_Width", "", "Int32"], ["GetState_Mystery", "", "Int32"]]},
-        "IPCB_Polygon": {"bases": [], "methods": []},
-        "ISch_Component": {"bases": [], "methods": []}}}
-    path = tmp_path / "index.json"
-    path.write_text(json.dumps(index), encoding="utf-8")
-    sdk = sdk_reach.SdkIndex(path)
-    assert sdk.interface_for("eTrackObject", "IPCB_") == "IPCB_Track"
-    assert sdk.interface_for("ePolyObject", "IPCB_") == "IPCB_Polygon"
-    assert sdk.interface_for("eSchComponent", "ISch_") == "ISch_Component"
-    assert sdk.interface_for("eNothing", "IPCB_") is None
-    reads, writes = sdk.properties("IPCB_Track")
-    assert reads == {"Layer", "Width", "Mystery"} and writes == {"Layer"}
-    row = next(r for r in sdk_reach.measure(sdk) if r.interface == "IPCB_Track")
-    assert "Mystery" not in row.reached and {"Width", "Layer"} <= row.reached
 
 
 # --- simulating a deck ------------------------------------------------------------------------
@@ -394,6 +379,51 @@ def test_busy_answers_are_retried_and_then_given_up_on():
     with pytest.raises(altium365.Altium365Error, match="HTTP 503"):
         session.get_project("P2")
     assert len(requests) == 4           # three retries after the first
+
+
+def _paged_components(rows: int, size: int = 10):
+    """A components connection that, like the live one, answers ``size``
+    rows when not asked for more and follows ``after`` cursors."""
+    def answer(body):
+        variables = body.get("variables") or {}
+        start = int(variables.get("after") or 0)
+        step = variables.get("first") or size
+        names = [f"CMP-{i:05d}" for i in range(start, min(rows, start + step))]
+        end = start + len(names)
+        return {"data": {"desLibrary": {"components": {
+            "pageInfo": {"hasNextPage": end < rows, "endCursor": str(end)},
+            "nodes": [{"id": n, "name": n} for n in names]}}}}
+    return answer
+
+
+def test_list_components_pages_through_the_whole_library():
+    """Measured 2026-11-12: unpaged, the live server answered 10 of a
+    library of thousands, and the tool reported those 10 as all."""
+    session, requests = _session(_paged_components(250))
+    result = session.list_components("https://workspace.example.com/", limit=0)
+    assert len(result["components"]) == 250
+    assert result["components"][-1]["name"] == "CMP-00249"
+    assert result["cut_short"] is False and result["pages_read"] == len(requests) > 1
+
+
+def test_list_components_stops_at_the_limit_and_says_so():
+    session, _ = _session(_paged_components(250))
+    result = session.list_components("https://workspace.example.com/", limit=120)
+    assert len(result["components"]) == 120 and result["cut_short"] is True
+    filtered = session.list_components("https://workspace.example.com/",
+                                       name_contains="cmp-0024", limit=0)
+    assert [c["name"] for c in filtered["components"]] == [
+        f"CMP-0024{i}" for i in range(10)]
+
+
+def test_a_publish_asks_for_the_id_field_its_payload_has():
+    """Measured 2026-11-12: DesCreateFootprintPayload has footprintId, not
+    id, and the server refused the whole footprint publish over it."""
+    field, operation = altium365.publish_operation("footprint")
+    assert field == "desCreateFootprint"
+    assert operation.rstrip().endswith("{ errors { message } footprintId } }")
+    field, operation = altium365.publish_operation("symbol")
+    assert operation.rstrip().endswith("{ errors { message } id } }")
 
 
 def test_reading_queries_refuse_changes_and_changes_are_built_safely():

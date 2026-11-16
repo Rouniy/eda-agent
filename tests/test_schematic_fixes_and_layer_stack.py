@@ -348,35 +348,24 @@ def test_the_board_is_compared_with_the_wanted_stack_layer_by_layer():
     assert {m["what"] for m in mismatches(off, wanted)} == {"constant", "additive"}
 
 
-def test_the_stack_tool_plans_dry_and_wants_a_saved_board(monkeypatch):
-    board = {"layers": [{"kind": "copper", "name": "Top", "thickness_mils": 1.4},
-                        {"kind": "dielectric", "name": "D", "thickness_mils": 8},
-                        {"kind": "copper", "name": "Bot", "thickness_mils": 1.4}]}
-    answers = {"application.get_active_document": {"file_path": "C:/B.PcbDoc",
-                                                   "modified": True},
-               "pcb.physical_stack": board,
-               "pcb.copper_layers": {"layers": [{"name": "Top", "id": 1, "occupied": True},
-                                                {"name": "Bot", "id": 32, "occupied": True}]}}
-    tools, bridge = _registered(pcb, "register_pcb_tools", monkeypatch, answers)
+def test_fork_stack_entry_uses_the_verified_builder(monkeypatch):
+    tools, bridge = _registered(pcb, "register_pcb_tools", monkeypatch,
+                                {"application.get_open_documents": {"documents": []}})
     wanted = [_copper("T"), _dielectric(8), _copper("B")]
-    plan = asyncio.run(tools["pcb_make_layer_stack"](layers=wanted))
-    assert plan["dry_run"] and len(plan["copper_edits"]) == 4
-    refused = asyncio.run(tools["pcb_make_layer_stack"](layers=wanted, dry_run=False))
-    assert refused["ok"] is False and "save the board first" in refused["reason"]
-    assert not {c for c, _ in bridge.sent} & {"pcb.add_layer", "pcb.tune_copper_layer",
-                                              "pcb.drop_stack_layer", "pcb.set_dielectric"}
+    refused = asyncio.run(tools["pcb_make_layer_stack"](
+        layers=wanted, board_path="C:/B.PcbDoc", dry_run=False))
+    assert refused["ok"] is False and "not open" in refused["reason"]
+    assert "return await pcb_build_stack(board_path, layers, dry_run=dry_run)" in inspect.getsource(
+        tools["pcb_make_layer_stack"])
+    assert not {c for c, _ in bridge.sent} & {"pcb.stack_edit", "pcb.set_dielectric"}
 
 
 def test_the_stack_commands_keep_to_the_measured_calls():
-    drop = _routine("PCB.pas", "PCB_DropStackLayer")
-    assert "Stack.RemoveLayer(Layer)" in drop
-    assert "'OUTER_COPPER'" in drop and "'LAYER_OCCUPIED'" in drop
-    assert "Cu.IsAdditiveLayer := False" in _routine("PCB.pas", "CopperToPlain")
-    occupied = _routine("PCB.pas", "LayerCarriesObjects")
-    # An id past the old layer sets cannot be searched and counts as occupied.
-    assert occupied.index("Result := (Id < 1) Or (Id > 255)") < occupied.index("BoardIterator_Create")
-    assert "L.Name := NewName" in _routine("PCB.pas", "PCB_SetDielectric")
-    assert "'rename_to'" in _routine("PCB.pas", "PCB_SetDielectric")
+    edit = _routine("PCB.pas", "PCB_StackEdit")
+    assert "MLS.RemoveLayer(L)" in edit and "If L.UsedByPrims Then" in edit
+    assert "StackMakeOrdinaryCopper(MLS, NewL)" in edit
+    assert "EL.IsAdditiveLayer := False" in _routine("PCB.pas", "StackMakeOrdinaryCopper")
+    assert "If NewName <> '' Then L.Name := NewName" in edit
     assert "EL.IsAdditiveLayer" in _routine("PCB.pas", "PCB_PhysicalStack")
 
 
@@ -445,11 +434,12 @@ def test_parameters_and_descriptions_are_written_where_altium_keeps_them():
 
 def test_a_placed_part_is_matched_to_the_sheet_unless_asked_not_to():
     body = _routine("Generic.pas", "Gen_PlaceSchComponentsFromLibrary")
-    assert "MatchSheet := Not SameText(ExtractJsonValue(Params, 'tidy'), 'false')" in body
-    assert body.index("LibFileName := ExtractFileName(LibPath)") < body.index(
+    assert "TidyOn := LowerCase(ExtractJsonValue(Params, 'tidy')) <> 'false'" in body
+    assert body.index("LinkName := ExtractFileName(LibPath)") < body.index(
         "ResolvedLib := ResolveSchLibForLoad(LibPath, LibReason)")
-    tidy = _routine("Generic.pas", "TidyLoadedComponent")
-    assert "Part.SourceLibraryName := LibFileName" in tidy and "Param.IsHidden := True" in tidy
+    assert "TidyPlacedComponent(Comp, LinkName, LibRef, DesigFont)" in body
+    tidy = _routine("Generic.pas", "TidyPlacedComponent")
+    assert "Comp.SourceLibraryName := LibName" in tidy and "ParamObj.IsHidden := True" in tidy
 
 
 def test_the_schematic_tools_send_their_new_options(monkeypatch):
@@ -500,10 +490,10 @@ def test_screenshots_stay_at_size_and_only_the_recogniser_enlarges():
 
 
 def test_zoom_to_the_document_is_for_a_schematic_only():
-    text = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
-    assert "'|fit|selection|board|document|'" in text
-    assert "If (ZoomProcess <> 'Sch:Zoom') And (Action = 'document') Then" in text
-    assert "Else If Action = 'document' Then AddStringParameter('Action', 'Document')" in text
+    body = (ALTIUM / "Generic.pas").read_text(encoding="utf-8-sig")
+    assert "(Action = 'document') And (ZoomProcess <> 'Sch:Zoom')" in body
+    assert "Else If Action = 'document' Then AddStringParameter('Action', 'Document')" in body
+    assert "RunProcess(ZoomProcess)" in body
 
 
 def test_a_checkpoint_says_which_project_it_took(monkeypatch, tmp_path):

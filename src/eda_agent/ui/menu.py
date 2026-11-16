@@ -52,6 +52,7 @@ from __future__ import annotations
 import ctypes
 import functools
 import time
+from contextlib import contextmanager
 from ctypes import POINTER, byref, c_long, wintypes
 
 from . import altium_locale
@@ -64,7 +65,8 @@ try:                                            # pragma: no cover - platform
     from comtypes import COMError
     from comtypes.automation import VARIANT
 
-    comtypes.client.GetModule("oleacc.dll")
+    from .comgen import get_module
+    get_module("oleacc.dll")
     from comtypes.gen.Accessibility import IAccessible
 
     import win32gui
@@ -92,6 +94,26 @@ def available() -> bool:
 
 def _u():
     return ctypes.windll.user32
+
+
+@contextmanager
+def _physical_pixels():
+    """Use physical desktop pixels on this worker, then restore its context.
+
+    Physical cursor APIs alone were not sufficient on the live 125% desktop.
+    Set the thread context while reading accessibility data AND sending input.
+    Do not change process-wide DPI behavior for other MCP tools or windows.
+    """
+    set_context = _u().SetThreadDpiAwarenessContext
+    set_context.argtypes = [ctypes.c_void_p]
+    set_context.restype = ctypes.c_void_p
+    previous = set_context(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+    if not previous:
+        raise OSError('Cannot set physical-pixel DPI context; no menu click sent')
+    try:
+        yield
+    finally:
+        set_context(previous)
 
 
 def _acc(hwnd):
@@ -280,16 +302,20 @@ def _click(pid: int, x: int, y: int, after: float = 0.3, expect: str = "",
 
     user32 = _u()
     point = wintypes.POINT()
-    user32.GetCursorPos(byref(point))
+    if not user32.GetPhysicalCursorPos(byref(point)):
+        raise OSError('Cannot read physical cursor position; no menu click sent')
     origin = (point.x, point.y)
-    user32.SetCursorPos(x, y)
+    if not user32.SetPhysicalCursorPos(x, y):
+        raise OSError('Cannot position physical cursor; no menu click sent')
 
     def _arrived() -> bool:
         here = wintypes.POINT()
-        user32.GetCursorPos(byref(here))
+        user32.GetPhysicalCursorPos(byref(here))
         return abs(here.x - x) <= 2 and abs(here.y - y) <= 2
 
-    win.wait_until(_arrived, 0.2)
+    if not win.wait_until(_arrived, 0.2):
+        user32.SetPhysicalCursorPos(*origin)
+        raise OSError('Cursor did not reach menu target; no menu click sent')
     if expect:
         under = _name_at(x, y)
         if under and not _same(under, expect):
@@ -314,13 +340,13 @@ def _click(pid: int, x: int, y: int, after: float = 0.3, expect: str = "",
         time.sleep(0.08)
         user32.mouse_event(_MOUSE_UP, 0, 0, 0, 0)
     except win.ForegroundLost:
-        user32.SetCursorPos(*origin)
+        user32.SetPhysicalCursorPos(*origin)
         raise
     if until is not None:
         win.wait_until(until, wait)
     else:
         time.sleep(max(after, 0.15))
-    user32.SetCursorPos(*origin)
+    user32.SetPhysicalCursorPos(*origin)
     return ""
 
 
@@ -788,7 +814,8 @@ def list_path(pid: int, path: str = "", settle: float = 1.2) -> dict:
     except Exception:                            # pragma: no cover - guard
         owned = False
     try:
-        return _list_path(pid, path, settle)
+        with _physical_pixels():
+            return _list_path(pid, path, settle)
     finally:
         if owned:
             try:

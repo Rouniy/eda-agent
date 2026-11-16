@@ -79,6 +79,22 @@ def test_the_mode_is_readable_and_writable_only_on_a_no_erc():
         assert "Obj.ObjectId = eNoERC" in body[i - 80:i], func
 
 
+def test_no_erc_property_helpers_are_declared_before_their_callers():
+    """A lost helper makes the live script raise a modal undeclared identifier."""
+    source = (_ALTIUM / "Generic.pas").read_text(encoding="utf-8")
+    gen = load(_ALTIUM / "Generic.pas")
+    for name in ("ReadNoErcProp", "WriteNoErcProp"):
+        assert name in gen
+        assert source.index(f"{name}(") < source.index("Function GetSchProperty(")
+    getter = gen["ReadNoErcProp"]
+    setter = gen["WriteNoErcProp"]
+    assert "If Obj.ObjectId <> eNoERC Then Exit;" in getter
+    assert "If Obj.ObjectId <> eNoERC Then Exit;" in setter
+    for field in ("SuppressAll", "IsActive", "ErrorKindSetToSuppress",
+                  "ConnectionPairsToSuppress"):
+        assert field in getter and field in setter
+
+
 def test_the_tool_sends_levels_and_saves(monkeypatch):
     from eda_agent.tools import project as mod
     calls = []
@@ -137,3 +153,40 @@ def test_an_object_left_by_a_remove_is_tried_again_before_a_fault():
     assert "Continue;" in branch
     # The compiler kept a stale copy after such a delete until a reload.
     assert "NoteNextStep('An object here needed more than one remove." in branch
+
+
+def test_the_type_table_ends_at_the_first_empty_description():
+    """DM_ViolationTypeDescription answers by index with no end marker, and
+    past the end of the enum it hands back adjacent memory read as a
+    string. MEASURED on AD 26.11 against a real project: a fixed 0..400
+    scan reported 295 types where the project has 167, the extra 129 being
+    truncated fragments of other string tables and, at index 350, a block
+    of raw UTF-16 carrying NULs and an '='."""
+    body = _code(load(_ALTIUM / "Project.pas")["ErcTypeCount"])
+    assert "If Desc = '' Then Exit;" in body
+    assert "Result := I + 1;" in body
+
+
+@pytest.mark.parametrize("func", ["Proj_GetErcLevels", "ErcKindFromText"])
+def test_nothing_reads_past_the_end_of_the_table(func):
+    body = _code(load(_ALTIUM / "Project.pas")[func])
+    assert "ErcTypeCount(Workspace)" in body, func
+    assert "To 400 Do" not in body.replace("For I := Stop To 400 Do", ""), (
+        f"{func} still scans a fixed range")
+
+
+def test_a_kind_number_past_the_end_names_nothing():
+    """Writing to one would reach past the array DM_SetErrorLevels indexes,
+    and a bare integer is taken as a kind before any description is read."""
+    body = _code(load(_ALTIUM / "Project.pas")["ErcKindFromText"])
+    assert "If Result >= Stop Then Result := -1;" in body
+
+
+def test_the_reader_reports_what_it_ignored():
+    """A count of the look-alike strings past the end, so the measurement
+    that justifies the bound is in every reply rather than in a comment."""
+    # Not _code(): a Pascal brace comment opens with the same character a
+    # JSON object does, so stripping comments eats every literal here.
+    body = load(_ALTIUM / "Project.pas")["Proj_GetErcLevels"]
+    assert '"type_count":' in body and '"beyond_table":' in body
+    assert "For I := Stop To 400 Do" in body

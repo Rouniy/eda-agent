@@ -214,10 +214,12 @@ class Zone(BaseModel):
     """A rough placement region on a sheet, signal flow guidance.
 
     Coordinates here are MILLIMETRES (the ``_mm`` suffixes), while the
-    layout/canvas engines work in MILS. Zones are advisory grouping hints
-    only; no engine reads ``origin_mm``/``size_mm`` for geometry today.
-    If that ever changes, convert at the boundary (1 mm = 39.37 mils);
-    feeding these values into mils math silently lands 25.4x off.
+    layout/canvas engines work in MILS. ``origin_mm`` translates the zone's
+    placed group from the engines' natural placement, with the same offset
+    semantics as the earlier fork's fixed grid. Its default (0, 0) leaves
+    placement unchanged. ``size_mm`` remains advisory; it is not a hard
+    placement boundary. Conversion happens at the layout boundary
+    (1 mm = 39.37 mils), before sheet clamping and overlap repair.
     """
 
     model_config = ConfigDict(extra="forbid")

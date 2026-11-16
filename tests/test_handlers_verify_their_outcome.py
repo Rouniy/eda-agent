@@ -85,7 +85,7 @@ def test_project_scoped_saves_are_not_workspace_wide():
         assert "WorkspaceManager:SaveAll" not in body, (
             f"{func} saves the whole workspace despite taking a "
             f"project_path; use SaveProjectMembers")
-        assert "SaveProjectMembers" in body, (
+        assert "SaveEditedProjectMembers(Project)" in body, (
             f"{func} must save only the project it was given")
 
 
@@ -177,40 +177,19 @@ def test_a_zero_drc_cannot_masquerade_as_a_clean_board():
         "actually ran")
 
 
-def test_drc_is_confirmed_by_a_fresh_report_not_an_old_one():
-    """A cancelled check on a board checked before read as confirmed.
-
-    The confirmation used to be that a .DRC report EXISTED, and any
-    earlier run leaves one. Only a report rewritten during the call
-    proves the check ran, so the report is stamped on both sides of
-    RunProcess.
-    """
-    text = _decommented(_src("PCB.pas"))
-    assert "Result := FileAge(ReportPath)" in _body(text, "DrcReportAge")
-    whole = _body(text, "PCB_RunDRC")
-    # The batch check (the default) writes its own report in the workspace
-    # and deletes the old one FIRST, so there a report present afterwards
-    # is this run's, and existence is the right test. Only after that
-    # branch's Exit does the dialog route, where an old report proves
-    # nothing, begin.
-    batch_start = whole.index("If Not AllowModal Then")
-    batch_end = whole.index("Exit;", batch_start)
-    batch = whole[batch_start:batch_end]
-    assert batch.index("DeleteFile(ReportPath)") < batch.index(
-        "Board.RunBatchDesignRuleCheck(") < batch.index(
-        "ReportPresent := FileExists(ReportPath)")
-    body = whole[batch_end:]
-    run = body.index("RunProcess('PCB:DesignRuleCheck')")
-    before = body.index("ReportBefore := DrcReportAge(")
-    after = body.index("ReportAfter := DrcReportAge(")
-    assert before < run < after, (
-        "the report must be stamped before AND after the run")
-    fresh = body.index("If Not ReportFresh Then")
-    confirmed = body.index('"drc_confirmed":true')
-    assert confirmed > body.index("Else", fresh), (
-        "drc_confirmed true may only be emitted when the report is fresh")
-    assert "\"drc_confirmed\":' + BoolToJsonStr(ReportPresent)" not in body, (
-        "drc_confirmed must not be derived from the report's existence")
+def test_erc_targets_one_project_and_reports_its_compile_result():
+    """An active sheet can belong to a different project than DM_FocusedProject."""
+    src = _src("Generic.pas")
+    for func in ("Gen_RunERC", "Gen_GetErcViolations"):
+        body = _body(src, func)
+        assert "ExtractJsonValue(Params, 'project_path')" in body
+        assert "FindProjectByPath(Workspace, ProjectPath)" in body
+        assert "Free Documents" in body
+        assert "Project.DM_ProjectFullPath" in body
+    run = _body(src, "Gen_RunERC")
+    assert "SmartCompile(Project)" in run
+    assert "Project.DM_ViolationCount" in run
+    assert "RunProcess('Sch:ERC')" not in run
 
 
 # ---------------------------------------------------------------
@@ -293,10 +272,55 @@ def test_batch_failures_say_which_item_and_why():
 def test_the_measured_modal_tools_are_declared_modal():
     """Published as silent, each one blocks the bridge on a dialog."""
     from eda_agent.tools.metadata import INTERACTION_OVERRIDES, MODAL
-    for name in ("proj_export_pdf", "proj_run_output",
+    for name in ("proj_run_output",
                  "lib_reload_library", "proj_remove_document", "proj_close"):
         assert INTERACTION_OVERRIDES.get(name) == MODAL, (
             f"{name} was measured raising a modal that blocks the bridge")
+    # Direct PDF printing defaults to a refusal; its explicit opt-in opens
+    # Preview SCH and blocks the bridge.
+    assert INTERACTION_OVERRIDES["proj_export_pdf"] == MODAL
+
+
+def test_drc_defaults_to_batch_and_keeps_dialog_opt_in():
+    from eda_agent.tools.metadata import INTERACTION_OVERRIDES, SILENT
+    text = _decommented(_src("PCB.pas"))
+    body = _body(text, "PCB_RunDRC")
+    batch = body[body.index("If Not AllowModal Then"):]
+    assert "Board.RunBatchDesignRuleCheck(" in batch
+    assert batch.index("Board.RunBatchDesignRuleCheck(") < batch.index(
+        "RunProcess('PCB:DesignRuleCheck')")
+    assert INTERACTION_OVERRIDES["pcb_run_drc"] == SILENT
+
+
+def test_drc_tool_passes_modal_choice_to_bridge(monkeypatch):
+    import asyncio
+    from eda_agent.tools import pcb as pcb_tools
+
+    sent = []
+
+    class Bridge:
+        async def send_command_async(self, command, params=None, **kwargs):
+            sent.append((command, params))
+            return {"drc_confirmed": False}
+
+    class Mcp:
+        tools = {}
+
+        def tool(self, *args, **kwargs):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return register
+
+    monkeypatch.setattr(pcb_tools, "get_bridge", lambda: Bridge())
+    mcp = Mcp()
+    pcb_tools.register_pcb_tools(mcp)
+    asyncio.run(mcp.tools["pcb_run_drc"]())
+    asyncio.run(mcp.tools["pcb_run_drc"](allow_modal=True))
+    assert sent == [
+        ("pcb.run_drc", {"allow_modal": "false"}),
+        ("pcb.run_drc", {"allow_modal": "true"}),
+    ]
 
 
 def test_drc_runs_without_its_dialog_unless_asked():
@@ -338,11 +362,12 @@ def test_drc_runs_without_its_dialog_unless_asked():
         asyncio.run(mcp.tools["pcb_run_drc"](allow_modal=True))
     finally:
         mp.undo()
-    assert sent == [("pcb.run_drc", {}), ("pcb.run_drc", {"allow_modal": "true"})]
+    assert sent == [("pcb.run_drc", {"allow_modal": "false"}),
+                    ("pcb.run_drc", {"allow_modal": "true"})]
     body = _body(_decommented(_src("PCB.pas")), "PCB_RunDRC")
     batch = body.index("Board.RunBatchDesignRuleCheck(ReportPath, 0, False, False)")
     assert batch < body.index("RunProcess('PCB:DesignRuleCheck')")
-    assert "WorkspaceDir + 'drc_batch_report.html'" in body, (
+    assert "WorkspaceDir + 'drc_batch_' + RequestId + '.html'" in body, (
         "the batch report belongs in the workspace, not the project folder")
 
 

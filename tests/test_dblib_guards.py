@@ -211,7 +211,28 @@ def test_a_parts_database_link_is_readable_and_never_silently_empty():
     start = code.index("Function GetSchProperty(")
     body = code[start:code.index("Function SetSchProperty(", start)]
     branch = body[body.index("(PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName')"):]
-    branch = branch[:branch.index("Else If PropName")]
+    branch = branch[:branch.index("// Which part of a multi-part symbol")]
     assert "Obj.ObjectId = eSchComponent" in branch
     assert "Comp.DatabaseTableName" in branch and "Comp.DatabaseLibraryName" in branch
+    assert "Comp.UseDBTableName" in branch and "Comp.UseLibraryName" in branch
+    assert "BoolToJsonStr(Comp.UseDBTableName)" in branch
+    assert "BoolToJsonStr(Comp.UseLibraryName)" in branch
+    assert "Impl := CurrentFootprintImpl(Comp)" in branch
+    assert "(Impl <> Nil) And Impl.IsCurrent" in branch
+    assert "Result := Impl.ModelName" in branch
     assert "NotePropertyDiag('unreadable', PropName)" in branch
+
+
+def test_generic_dblib_edits_are_component_scoped_and_use_verified_footprint_choice():
+    from pathlib import Path
+
+    code = (Path(__file__).resolve().parents[1] / "scripts" / "altium" / "Generic.pas").read_text(
+        encoding="utf-8", errors="replace")
+    body = code.split("Function SetSchProperty(", 1)[1].split("Function FilterMatches(", 1)[0]
+    for field in ("DatabaseTableName", "UseDBTableName", "UseLibraryName", "FootprintModel"):
+        branch = body.split(f"Else If PropName = '{field}' Then", 1)[1].split("Else If PropName =", 1)[0]
+        assert "Obj.ObjectId = eSchComponent" in branch
+        assert "Else Matched := False" in branch
+    assert "ChooseFootprintModel(Comp, Value" in body
+    assert "If FootprintChoice <> 1 Then WroteOK := False" in body
+    assert "Obj.LibraryIdentifier :=" not in body

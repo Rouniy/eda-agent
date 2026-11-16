@@ -1,0 +1,236 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Offline coverage for visual cross-probe and multipart symbol composition."""
+
+from __future__ import annotations
+
+import pytest
+
+
+class _Mcp:
+    def __init__(self):
+        self.tools = {}
+
+    def tool(self):
+        def decorate(fn):
+            self.tools[fn.__name__] = fn
+            return fn
+        return decorate
+
+
+class _Bridge:
+    def __init__(self):
+        self.calls = []
+
+    async def send_command_async(self, command, params=None, timeout=None):
+        self.calls.append((command, params or {}))
+        if command == "library.create_symbol":
+            return {"success": True, "verified": True,
+                    "part_count": int(params["part_count"])}
+        if command == "library.add_pins":
+            return {"added": len(params["pins"].split("~~")), "failed": 0}
+        if command == "library.set_active_part":
+            return {"part_id": params["part_id"], "component": "DUAL_AMP"}
+        return {"success": True, "command": command}
+
+
+@pytest.mark.asyncio
+async def test_visual_cross_probe_captures_result_without_live_altium(monkeypatch):
+    from eda_agent.bridge import windows_ui
+    from eda_agent.tools import project
+
+    bridge = _Bridge()
+
+    class Inspector:
+        def main_window_handle(self):
+            return 101
+
+        def capture_window(self, handle, path):
+            return {"handle": handle, "path": path, "width": 1200}
+
+        def list_dialogs(self):
+            return [{"title": "Compiler", "handle": 202}]
+
+    monkeypatch.setattr(project, "get_bridge", lambda: bridge)
+    monkeypatch.setattr(
+        windows_ui, "get_altium_ui_inspector", lambda candidate: Inspector()
+    )
+    mcp = _Mcp()
+    project.register_project_tools(mcp)
+
+    result = await mcp.tools["proj_visual_cross_probe"](
+        "U7", "D:/captures/U7.bmp", target="pcb", settle_ms=0
+    )
+
+    assert bridge.calls == [
+        ("project.cross_probe", {"designator": "U7", "target": "pcb"})
+    ]
+    assert result["capture"]["handle"] == 101
+    assert result["dialogs"][0]["handle"] == 202
+
+
+@pytest.mark.asyncio
+async def test_multipart_symbol_assigns_parts_and_shared_pins(monkeypatch):
+    """Shared pins sit on owner part 0, so Altium shows them on every part.
+
+    The shape is upstream's: an object of ``left_pins``/``right_pins``
+    placed under each part's own pins, rather than this fork's earlier
+    flat list of pins carrying their own x and y.
+    """
+    from eda_agent.tools import library
+
+    bridge = _Bridge()
+    monkeypatch.setattr(library, 'get_bridge', lambda: bridge)
+    # No datasheet here: the pin-table check is switched off, as the
+    # Config tab would, so the composition itself is what is tested.
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, '_read',
+                        lambda workspace=None: {'checks_off': 'symbol_pins'})
+    mcp = _Mcp()
+    library.register_library_tools(mcp)
+
+    result = await mcp.tools['lib_create_symbol_in_parts'](
+        'DUAL_AMP',
+        parts=[
+            {'left_pins': [{'designator': '2', 'name': 'INA'}],
+             'right_pins': [{'designator': '1', 'name': 'OUTA'}]},
+            {'left_pins': [{'designator': '6', 'name': 'INB'}],
+             'right_pins': [{'designator': '7', 'name': 'OUTB'}]},
+        ],
+        shared_pins={'left_pins': [{'designator': '8', 'name': 'V+',
+                                    'electrical_type': 'power'}]},
+    )
+
+    assert result["part_count"] == 2
+    assert result["ok"] is True
+    created = next(params for command, params in bridge.calls
+                   if command == "library.create_symbol")
+    assert created["part_count"] == "2"
+    pins = next(params["pins"] for command, params in bridge.calls
+                if command == "library.add_pins")
+    assert "owner_part_id=1" in pins
+    assert "owner_part_id=2" in pins
+    assert "owner_part_id=0" in pins
+    assert result["shown_part"] == 2
+    assert ("generic.run_process", {"process": "SCH:NextComponentPart", "params": ""}) in bridge.calls
+    assert max(i for i, (command, _) in enumerate(bridge.calls)
+               if command == "library.add_symbol_rectangle") < next(
+                   i for i, (command, _) in enumerate(bridge.calls)
+                   if command == "library.add_pins")
+
+
+@pytest.mark.asyncio
+async def test_ic_symbol_parts_uses_custom_layout_and_rejects_duplicate_package_pin(monkeypatch):
+    from eda_agent.tools import library
+
+    bridge = _Bridge()
+    monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    library.register_library_tools(mcp)
+    parts = [
+        {"name": "A", "left_pins": [
+            {"designator": "1", "name": "VCC", "hidden": True},
+            None,
+            {"designator": "2", "name": "IN"}],
+         "right_pins": [{"designator": "3", "name": "OUT"}]},
+        {"name": "B", "left_pins": [
+            {"designator": "4", "name": "INB"}], "right_pins": None},
+    ]
+    result = await mcp.tools["lib_create_ic_symbol"](
+        "DUAL_AMP", parts=parts, pin_length=300, pin_spacing=150,
+        char_width=80, body_padding=250)
+    assert result["ok"] is True
+    pins = next(params["pins"] for command, params in bridge.calls
+                if command == "library.add_pins")
+    assert "designator=1" in pins and "hidden=true" in pins
+    assert "designator=2" in pins and "y=-300" in pins
+    assert "length=300" in pins
+
+    bridge.calls.clear()
+    parts[1]["left_pins"][0]["designator"] = "1"
+    duplicate = await mcp.tools["lib_create_ic_symbol"](
+        "DUAL_AMP", parts=parts)
+    assert duplicate["ok"] is False
+    assert "duplicate package pin" in duplicate["reason"]
+    assert bridge.calls == []
+
+
+@pytest.mark.asyncio
+async def test_multipart_validates_before_mutating(monkeypatch):
+    from eda_agent.tools import library
+
+    bridge = _Bridge()
+    monkeypatch.setattr(library, 'get_bridge', lambda: bridge)
+    # No datasheet here: the pin-table check is switched off, as the
+    # Config tab would, so the composition itself is what is tested.
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, '_read',
+                        lambda workspace=None: {'checks_off': 'symbol_pins'})
+    mcp = _Mcp()
+    library.register_library_tools(mcp)
+    make = mcp.tools['lib_create_symbol_in_parts']
+    two = [{'left_pins': [{'designator': '1', 'name': 'A'}]},
+           {'left_pins': [{'designator': '2', 'name': 'B'}]}]
+
+    # The flat list this fork once took is refused by shape, so a caller
+    # written against it is told what to send rather than half-served.
+    old = await make('BAD', parts=two, shared_pins=[{'designator': '8', 'name': 'V+'}])
+    assert old == {'ok': False,
+                   'reason': 'shared_pins is an object with left_pins and right_pins'}
+    clash = await make('BAD', parts=two,
+                       shared_pins={'left_pins': [{'designator': '2', 'name': 'V+'}]})
+    assert clash == {'ok': False, 'reason': 'part 2: pin 2 is also shared'}
+    blank = await make('BAD', parts=two, shared_pins={'left_pins': [{'name': 'GND'}]})
+    assert not blank['ok'] and 'non-empty' in blank['reason']
+    twice = await make('BAD', parts=two, shared_pins={
+        'left_pins': [{'designator': '8', 'name': 'V+'}],
+        'right_pins': [{'designator': '8', 'name': 'V-'}]})
+    assert twice == {'ok': False, 'reason': 'shared pin given twice: 8'}
+    assert bridge.calls == []
+
+
+@pytest.mark.asyncio
+async def test_multipart_stops_when_native_create_fails(monkeypatch):
+    from eda_agent.tools import library
+
+    bridge = _Bridge()
+
+    async def failed_create(command, params=None, timeout=None):
+        bridge.calls.append((command, params or {}))
+        return {"success": False, "reason": "symbol did not resolve"}
+
+    bridge.send_command_async = failed_create
+    monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    library.register_library_tools(mcp)
+    result = await mcp.tools["lib_create_multipart_symbol"](
+        "DUAL_AMP", parts=[{"left_pins": [{"designator": "1", "name": "IN"}]}])
+    assert result["stage"] == "create_symbol"
+    assert result["ok"] is False
+    assert [c[0] for c in bridge.calls] == ["library.create_symbol"]
+
+
+@pytest.mark.asyncio
+async def test_multipart_reports_partial_symbol_when_pins_fail(monkeypatch):
+    from eda_agent.tools import library
+
+    bridge = _Bridge()
+    original = bridge.send_command_async
+
+    async def partial_pins(command, params=None, timeout=None):
+        if command == "library.add_pins":
+            bridge.calls.append((command, params or {}))
+            return {"added": 0, "failed": 1}
+        return await original(command, params, timeout)
+
+    bridge.send_command_async = partial_pins
+    monkeypatch.setattr(library, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    library.register_library_tools(mcp)
+    result = await mcp.tools["lib_create_multipart_symbol"](
+        "DUAL_AMP", parts=[{"left_pins": [{"designator": "1", "name": "IN"}]}])
+    assert result["stage"] == "add_pins"
+    assert result["ok"] is False
+    assert [c[0] for c in bridge.calls] == [
+        "library.create_symbol", "library.set_active_part",
+        "library.add_symbol_rectangle", "library.set_active_part",
+        "library.add_pins"]

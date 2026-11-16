@@ -323,6 +323,17 @@ Var
 { still leaves the loop with sane values.                                     }
 {..............................................................................}
 
+Const
+    SELECTED_PROJECT_READ_ONLY = False;
+
+    SELECTED_PARAM_EDITS = False;
+    SELECTED_PLACE_EDITS = False;
+Var
+    SelectedCompileReady : Boolean;
+    SelectedCompileProject : IProject;
+    SaveWritten : Integer;
+    LastCompileAction : String;
+
 Procedure InitDefaultConfig(Dummy : Integer);
 Begin
     PollIntervalActiveMs := 10;
@@ -343,8 +354,8 @@ End;
 { unambiguous even when a single operation's property list contains '|'.       }
 {                                                                               }
 { Defined in Main.pas so Library.pas and Generic.pas can both use them,       }
-{ the Altium project compiles files in DesignN order (Main, ..., Library,     }
-{ ..., Generic) and a callee must come earlier than its caller.               }
+{ the Altium project compiles files in DesignN order (Main -> Library ->    }
+{ Generic) and a callee must come earlier than its caller.                  }
 {..............................................................................}
 
 Function NextBatchOp(Var Remaining : String) : String;
@@ -493,6 +504,14 @@ Begin
 
         If ServerDoc <> Nil Then
         Begin
+            { SetModified may stay False after an MCP edit. Our own edit
+              record still makes the cached compiled model unsafe. }
+            If Pos('|' + UpperCase(ExtractFileName(Doc.DM_FullPath)) + '|',
+                   EditedDocs) > 0 Then
+            Begin
+                Result := True;
+                Exit;
+            End;
             Try
                 If ServerDoc.Modified Then
                 Begin
@@ -511,6 +530,16 @@ End;
 Procedure SmartCompile(Project : IProject);
 Begin
     If Project = Nil Then Exit;
+    { Shared dispatcher already compiled and revalidated this exact selection.
+      Do not compile again inside a delegated handler after its lifetime check. }
+    If (SELECTED_PROJECT_READ_ONLY) And (SelectedCompileReady) Then
+    Begin
+        If Project = SelectedCompileProject Then
+        Begin
+            LastCompileAction := 'delegated';
+            Exit;
+        End;
+    End;
     // Honour the TTL window only when nothing in the project has changed
     // since the last compile. An external UI edit invalidates the cache
     // immediately, so the next MCP call after the user clicked "Add part"
@@ -523,8 +552,13 @@ Begin
        ((GetTickCount - LastCompileTick) < COMPILE_CACHE_TTL_MS) And
        (WriteSerial = CompiledAtSerial) And
        (Not ProjectHasDirtyDocs(Project)) Then
+    Begin
+        LastCompileAction := 'cache';
         Exit;
+    End;
+    LastCompileAction := '';
     Project.DM_Compile;
+    LastCompileAction := 'compiled';
     LastCompiledProject := Project;
     LastCompileTick := GetTickCount;
     CompiledAtSerial := WriteSerial;
@@ -579,13 +613,15 @@ Procedure SchBeginModify(Obj : ISch_BasicContainer);
 Begin
     WriteSerial := WriteSerial + 1;
     If (Obj <> Nil) And (SchServer <> Nil) Then
-        SchServer.RobotManager.SendMessage(Obj.I_ObjectAddress, Nil, SCHM_BeginModify, Nil);
+        SchServer.RobotManager.SendMessage(
+            Obj.I_ObjectAddress, c_BroadCast, SCHM_BeginModify, c_NoEventData);
 End;
 
 Procedure SchEndModify(Obj : ISch_BasicContainer);
 Begin
     If (Obj <> Nil) And (SchServer <> Nil) Then
-        SchServer.RobotManager.SendMessage(Obj.I_ObjectAddress, Nil, SCHM_EndModify, Nil);
+        SchServer.RobotManager.SendMessage(
+            Obj.I_ObjectAddress, c_BroadCast, SCHM_EndModify, c_NoEventData);
 End;
 
 { REMEMBERED LIBRARY SYMBOL. LastCreatedLibComponent is held across commands }
@@ -628,7 +664,7 @@ Procedure SchRegisterObject(Container, Obj : ISch_BasicContainer);
 Begin
     If (Container <> Nil) And (Obj <> Nil) And (SchServer <> Nil) Then
         SchServer.RobotManager.SendMessage(
-            Container.I_ObjectAddress, Nil, SCHM_PrimitiveRegistration,
+            Container.I_ObjectAddress, c_BroadCast, SCHM_PrimitiveRegistration,
             Obj.I_ObjectAddress);
 End;
 
@@ -790,11 +826,11 @@ End;
 
 Procedure PcbBeginEdit(Dummy : Integer);
 Begin
-    WriteSerial := WriteSerial + 1;
     If PcbEditDepth <= 0 Then
     Begin
         PcbEditDepth := 0;
         PCBServer.PreProcess;
+        WriteSerial := WriteSerial + 1;
     End;
     PcbEditDepth := PcbEditDepth + 1;
 End;
@@ -935,10 +971,6 @@ Begin
     SchServer.ProcessControl.PostProcess(Doc, Name);
 End;
 
-{ A write that raised inside a Try whose handler has nothing else to do.  }
-{ Counted and named for the reply (see WriteFailures, later in this unit, }
-{ and the note above it). Defined here, ahead of every helper that calls  }
-{ it: DelphiScript has no forward declarations.                           }
 Procedure NoteWriteFailed(Where : String);
 Begin
     Inc(WritesFailed);
@@ -955,20 +987,24 @@ Begin
     End;
 End;
 
+
 Procedure MarkDocDirtyByPath(FilePath : String);
 Var
     ServerDoc : IServerDocument;
 Begin
     If FilePath = '' Then Exit;
     NoteDocEdited(FilePath);
+    InvalidateCompileCache(0);
     ServerDoc := Client.GetDocumentByPath(FilePath);
     If ServerDoc = Nil Then Exit;
     Try ServerDoc.SetModified(True); Except NoteWriteFailed('mark document modified (save may skip it)'); End;
 End;
 
 {..............................................................................}
-{ Read that same flag back. The counterpart to MarkDocDirtyByPath, and the     }
-{ one definition of "unsaved" for every handler that reports it.               }
+{ Read both the native flag and our edit record. Altium can return Modified }
+{ False immediately after a successful library edit even though the changed }
+{ footprint has not been saved. The record is cleared after a confirmed save }
+{ or close, and makes app_context and app_get_active_document conservative. }
 {                                                                              }
 { A path with no resident IServerDocument reports False: a document that is    }
 { not open in the editor holds no unsaved edits. Treat a True as reliable and  }
@@ -987,7 +1023,10 @@ Begin
     Try
         ServerDoc := Client.GetDocumentByPath(FilePath);
         If ServerDoc <> Nil Then
-            If ServerDoc.Modified Then Result := True;
+        Begin
+            Result := DocWasEdited(FilePath);
+            Try If ServerDoc.Modified Then Result := True; Except End;
+        End;
     Except
         Result := False;
     End;
@@ -1195,6 +1234,23 @@ Begin
 End;
 
 {..............................................................................}
+{ Only the focused PCB is eligible for handlers that require exact focus.   }
+{ Unlike GetPCBBoardAnywhere, this never searches another open project.     }
+Function GetFocusedPCBBoard(Dummy : Integer) : IPCB_Board;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+Begin
+    Result := Nil;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc = Nil Then Exit;
+    If UpperCase(Doc.DM_DocumentKind) <> 'PCB' Then Exit;
+    Try Result := PCBServer.GetCurrentPCBBoard; Except Result := Nil; End;
+End;
+
+{..............................................................................}
 { ResolvePCBBoard - get a SPECIFIC board by path when several PcbDocs are     }
 { open. GetPCBBoardAnywhere returns the focused/current board, which is the   }
 { WRONG one when the caller meant a different (e.g. newly created) board.     }
@@ -1225,41 +1281,52 @@ Begin
         Result := GetPCBBoardAnywhere(0);
         Exit;
     End;
+
+    { Resolve against documents that are ALREADY loaded. Never            }
+    { Client.OpenDocument here. It loads the file but drops the project   }
+    { association, leaving a "free document" -- and when the path does    }
+    { not resolve at all it can register the document under a corrupted   }
+    { name instead of failing. Application.pas's App_SetActiveDocument    }
+    { avoids OpenDocument for exactly this reason; this function did not.  }
+    {                                                                    }
+    { Measured 2026-10-13: focus_board called with a path the JSON layer  }
+    { had mangled left the board DETACHED from its project and renamed    }
+    { M2S090T-1FG484?????????V1.0.PcbDoc, with the focused project        }
+    { becoming "Free Documents" -- so every project-scope tool afterwards }
+    { ran against the wrong project. The file on disk was untouched and   }
+    { nothing was dirty, but the session had to be reopened to recover.   }
+    {                                                                    }
+    { A path that is not loaded now returns Nil so the caller can say so, }
+    { rather than silently operating on whichever board was lying around. }
     ServerDoc := Nil;
     Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
-    If ServerDoc = Nil Then
-    Begin
-        InProject := False;
-        Try Workspace := GetWorkspace; Except Workspace := Nil; End;
-        If Workspace <> Nil Then
-            For P := 0 To Workspace.DM_ProjectCount - 1 Do
-            Begin
-                Project := Workspace.DM_Projects(P);
-                If Project = Nil Then Continue;
-                For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
-                Begin
-                    Doc := Project.DM_LogicalDocuments(I);
-                    If Doc = Nil Then Continue;
-                    DocPath := '';
-                    Try DocPath := Doc.DM_FullPath; Except End;
-                    If UpperCase(DocPath) = UpperCase(Path) Then InProject := True;
-                End;
-            End;
-        { A file in no project opens as a free document, which it is   }
-        { anyway (a scratch copy); a path naming no file is refused.   }
-        If Not InProject Then
-            If Not FileExists(Path) Then Exit;
-        Try ServerDoc := Client.OpenDocument('PCB', Path); Except ServerDoc := Nil; End;
-        If ServerDoc = Nil Then Exit;
-    End;
+    If ServerDoc = Nil Then Exit;
+
     Try Client.ShowDocument(ServerDoc); Except End;
     Try Result := PCBServer.GetCurrentPCBBoard; Except Result := Nil; End;
     If Result <> Nil Then
         If UpperCase(Result.FileName) <> UpperCase(Path) Then Result := Nil;
 End;
 
-{ The path of the board in front, '' when none is. For a check that a focus }
-{ took; it is focus-dependent on purpose.                                    }
+{..............................................................................}
+{ GetPCBBoardForMutation - the board an EDIT is allowed to touch.              }
+{                                                                              }
+{ GetPCBBoardAnywhere WANDERS, and that is correct for a read. When no PcbDoc  }
+{ is focused it walks every open project, opens the first board it finds,      }
+{ reads it, and restores the previous view so the focus change is invisible.   }
+{ For a query that is a convenience. For a DELETE it is a misfire: with a      }
+{ library focused and two boards open, obj_delete would remove primitives from }
+{ whichever board the walk reached first, and hide the fact that it had        }
+{ switched documents to do it.                                                 }
+{                                                                              }
+{ So an edit gets a board only when the target is UNAMBIGUOUS: a PcbDoc is     }
+{ focused, or exactly one is open anywhere. Two open and none focused is       }
+{ refused, and the refusal names them, because picking one is a guess the      }
+{ caller has to make rather than one this should make silently.                }
+{                                                                              }
+{ Why carries the reason when the Result is Nil.                               }
+{..............................................................................}
+
 Function FrontPCBBoardPath(Dummy : Integer) : String;
 Var
     Board : IPCB_Board;
@@ -1288,6 +1355,7 @@ End;
 {                                                                              }
 { Why carries the reason when the Result is Nil.                               }
 {..............................................................................}
+
 
 Function GetPCBBoardForMutation(Var Why : String) : IPCB_Board;
 Var
@@ -1354,8 +1422,9 @@ Begin
         Exit;
     End;
 
-    { Exactly one board open. Opening it is safe because there is no other }
-    { one it could have meant.                                             }
+    { Exactly one board open, so there is no other one it could have      }
+    { meant. ResolvePCBBoard only resolves documents already loaded, so   }
+    { this reaches that board without OpenDocument's free-document trap.  }
     Result := ResolvePCBBoard(OnePath);
     If Result = Nil Then
         Why := 'The only open board, ' + OnePath + ', could not be opened.';
@@ -1445,27 +1514,28 @@ Begin
         SaveAttempts := SaveAttempts + 1;
         AgeBefore := -1;
         Try AgeBefore := FileAge(Path); Except AgeBefore := -1; End;
-        Try ServerDoc.SetModified(True); Except { the file age below decides } End;
-        Try ServerDoc.DoFileSave(''); Except { the file age below decides } End;
-        { Once written, a document has nothing pending until the next edit. }
-        { Any kind, not only libraries: a stop saves what was edited, and a  }
-        { sheet left marked would be rewritten by every later stop.          }
+        Try ServerDoc.SetModified(True); Except NoteWriteFailed('.SetModified('); End;
+        Try ServerDoc.DoFileSave(''); Except NoteWriteFailed('.DoFileSave('); End;
+        { A confirmed write clears the edit marker for every document kind. }
+        { Otherwise a later detach can rewrite a now-clean schematic.       }
         AgeAfter := -1;
         Try AgeAfter := FileAge(Path); Except AgeAfter := -1; End;
-        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then ForgetDocEdited(Path);
+        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then
+        Begin
+            SaveWritten := SaveWritten + 1;
+            ForgetDocEdited(Path);
+        End;
 End;
 
-{ Write the project FILE itself. Adding or removing a document changes the  }
-{ project in memory without marking it modified, so a save that waits for   }
-{ the flag never writes the .PrjPcb and the change is gone after a reopen   }
-{ (issue #94; measured: two documents added, proj_save, file listed none).  }
-{ Called where membership changes, and by proj_save for the named project;  }
-{ never by the save-everything passes, which must not rewrite projects      }
-{ nobody touched.                                                           }
+{ Membership edits need the project file written explicitly. The editor's
+  Modified flag can stay False after DM_AddSourceDocument, so force the
+  exact project's server document and report only an observed disk write. }
+
 Function SaveProjectFile(Project : IProject) : Boolean;
 Var
     ProjDoc : IServerDocument;
     Path : String;
+    AgeBefore, AgeAfter : Integer;
 Begin
     Result := False;
     If Project = Nil Then Exit;
@@ -1476,13 +1546,14 @@ Begin
     ProjDoc := Nil;
     Try ProjDoc := Client.GetDocumentByPath(Path); Except End;
     If ProjDoc = Nil Then Exit;
-    Try ProjDoc.SetModified(True); Except { the save below decides Result } End;
-    Try
-        ProjDoc.DoFileSave('');
-        Result := True;
-    Except
-        Result := False;
-    End;
+    AgeBefore := -1;
+    Try AgeBefore := FileAge(Path); Except End;
+    Try ProjDoc.SetModified(True); Except NoteWriteFailed('.SetModified('); End;
+    Try ProjDoc.DoFileSave(''); Except Exit; End;
+    AgeAfter := -1;
+    Try AgeAfter := FileAge(Path); Except End;
+    Result := (AgeAfter >= 0) And (AgeAfter <> AgeBefore);
+    If Result Then ForgetDocEdited(Path);
 End;
 
 Function LoadTextFile(SL : TStringList; FilePath : String) : Boolean;
@@ -1710,6 +1781,27 @@ Begin
                 Try ProjectServerDoc.DoFileSave(''); Except { CountDirtyInProject reports what stayed unsaved } End;
             End;
     Except { CountDirtyInProject reports what stayed unsaved } End;
+End;
+
+{ Project-scoped save/close should leave clean open sheets untouched. The
+  editor's Modified bit can miss script edits, so SaveOneDocByDocRef also
+  checks our DocWasEdited marker when SaveScope is 'edited'. Keep the
+  workspace-wide app_save_all behaviour separate. }
+
+Procedure SaveEditedProjectMembers(Project : IProject);
+Var
+    PreviousScope, PreviousSeen : String;
+Begin
+    PreviousScope := SaveScope;
+    PreviousSeen := SavePassSeen;
+    SaveScope := 'edited';
+    SavePassSeen := '';
+    Try
+        SaveProjectMembers(Project);
+    Finally
+        SaveScope := PreviousScope;
+        SavePassSeen := PreviousSeen;
+    End;
 End;
 
 { CountDirtyInProject / CountDirtyDocuments - how many documents are STILL     }
@@ -2657,29 +2749,15 @@ Begin
     If Result = Nil Then Inc(SheetsSkipped);
 End;
 
-{ The reply with the sheet counts added when a project-wide read skipped a   }
-{ sheet. Only a success whose data is an object is touched; an error, or a   }
-{ reply that read no project sheet, goes back unchanged.                     }
-Function SheetCoverage(Response : String) : String;
-Var
-    Marker, Added : String;
-    P : Integer;
+{ Resolve one exact sheet already loaded in the editor, without changing
+  focus or silently opening it as a free document. ProjectSheet is not used
+  here because this is not a project-wide coverage walk. }
+
+Function LoadedSchDocByPath(Path : String) : ISch_Document;
 Begin
-    Result := Response;
-    If SheetsSkipped = 0 Then Exit;
-    Marker := '"success":true,"data":' + Chr(123);
-    P := Pos(Marker, Response);
-    If P = 0 Then Exit;
-    P := P + Length(Marker);
-    Added := '"sheets_seen":' + IntToStr(SheetsSeen)
-        + ',"sheets_skipped":' + IntToStr(SheetsSkipped)
-        + ',"sheets_warning":"' + IntToStr(SheetsSkipped) + ' of '
-        + IntToStr(SheetsSeen) + ' project sheets are not loaded in the editor '
-        + 'and were NOT read, so counts and findings cover only the rest. '
-        + 'Run proj_load_sheets and ask again."';
-    { A data object that was empty takes the fields without a comma. }
-    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
-    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+    Result := Nil;
+    If Path = '' Then Exit;
+    Try Result := SchServer.GetSchDocumentByPath(Path); Except Result := Nil; End;
 End;
 
 {..............................................................................}
@@ -2695,41 +2773,38 @@ End;
 { NoteWriteFailed itself is defined near the top of this unit, before the  }
 { first helper that calls it.                                                }
 
-{ The reply with the failed writes added. Only a success whose data is an    }
-{ object is touched: an error already says it failed.                        }
-Function WriteFailures(Response : String) : String;
+{ A project-wide read that skipped every sheet has no finding to report.    }
+{ Partially read projects retain their data with explicit coverage counts. }
+Function WithFullStop(S : String) : String;
 Var
-    Marker, Added : String;
-    P : Integer;
+    Last : String;
 Begin
-    Result := Response;
-    If WritesFailed = 0 Then Exit;
-    Marker := '"success":true,"data":' + Chr(123);
-    P := Pos(Marker, Response);
-    If P = 0 Then Exit;
-    P := P + Length(Marker);
-    Added := '"writes_failed":' + IntToStr(WritesFailed)
-        + ',"writes_failed_at":[' + WritesFailedAt + ']'
-        + ',"writes_warning":"' + IntToStr(WritesFailed) + ' write(s) in this '
-        + 'call raised and did not take effect, although the call went on: '
-        + 'read the objects back before relying on them."';
-    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
-    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+    Result := S;
+    If S = '' Then Exit;
+    Last := Copy(S, Length(S), 1);
+    If (Last <> '.') And (Last <> '!') And (Last <> '?') Then
+        Result := S + '.';
 End;
 
-{..............................................................................}
-{ CROSS-DOCUMENT HINTS                                                        }
-{                                                                              }
-{ "No PCB library is active" is true and unhelpful. It says what is missing    }
-{ and not that the SAME operation exists for the other document kind, so the   }
-{ reasonable conclusion from it is that the capability is absent. That         }
-{ conclusion has been drawn and reported more than once, and each time the     }
-{ tool was there under the other namespace.                                    }
-{                                                                              }
-{ The split is the thing worth stating: lib_ acts on .PcbLib and .SchLib, pcb_ }
-{ on .PcbDoc, sch_ and obj_ on .SchDoc. Attached here rather than at the 277   }
-{ call sites so it cannot be right in some of them and stale in the rest.      }
-{..............................................................................}
+Function CrossDocumentHint(ErrorCode : String) : String;
+Begin
+    Result := '';
+    If (ErrorCode = 'NO_PCBLIB') Then
+        Result := 'This is the LIBRARY tool and needs a .PcbLib. The same '
+                + 'operation on an open board is in the pcb_ namespace.'
+    Else If (ErrorCode = 'NO_SCHLIB') Then
+        Result := 'This is the LIBRARY tool and needs a .SchLib. For a '
+                + 'sheet, the sch_ and obj_ tools act on the open .SchDoc.'
+    Else If (ErrorCode = 'NO_PCB') Or (ErrorCode = 'NO_BOARD') Then
+        Result := 'This tool acts on an open .PcbDoc. To edit a footprint '
+                + 'inside a .PcbLib, use the lib_ tools instead.'
+    Else If (ErrorCode = 'NO_SCHDOC') Or (ErrorCode = 'NO_SCHEMATIC') Then
+        Result := 'This tool acts on an open .SchDoc sheet. To edit a '
+                + 'symbol inside a .SchLib, use the lib_ tools instead.'
+    Else If (ErrorCode = 'WRONG_PROJECT_FOCUSED') Then
+        Result := 'Open the requested project with proj_open and focus its '
+                + 'PCB with app_set_active_document, then retry.';
+End;
 
 Function MessageNamesATool(Msg : String) : Boolean;
 Begin
@@ -2773,34 +2848,6 @@ End;
 
 { Handler messages rarely end in a full stop, so a note appended to one ran  }
 { on, live: "No schematic document is active No document has editor focus."  }
-Function WithFullStop(S : String) : String;
-Var
-    Last : String;
-Begin
-    Result := S;
-    If S = '' Then Exit;
-    Last := Copy(S, Length(S), 1);
-    If (Last <> '.') And (Last <> '!') And (Last <> '?') Then
-        Result := S + '.';
-End;
-
-Function CrossDocumentHint(ErrorCode : String) : String;
-Begin
-    Result := '';
-    If (ErrorCode = 'NO_PCBLIB') Then
-        Result := 'This is the LIBRARY tool and needs a .PcbLib. The same '
-                + 'operation on an open board is in the pcb_ namespace.'
-    Else If (ErrorCode = 'NO_SCHLIB') Then
-        Result := 'This is the LIBRARY tool and needs a .SchLib. For a '
-                + 'sheet, the sch_ and obj_ tools act on the open .SchDoc.'
-    Else If (ErrorCode = 'NO_PCB') Or (ErrorCode = 'NO_BOARD') Then
-        Result := 'This tool acts on an open .PcbDoc. To edit a footprint '
-                + 'inside a .PcbLib, use the lib_ tools instead.'
-    Else If (ErrorCode = 'NO_SCHDOC') Or (ErrorCode = 'NO_SCHEMATIC') Then
-        Result := 'This tool acts on an open .SchDoc sheet. To edit a '
-                + 'symbol inside a .SchLib, use the lib_ tools instead.';
-End;
-
 Function BuildErrorResponseDetailed(RequestId : String; ErrorCode : String;
                                     ErrorMsg : String; DetailsJson : String) : String;
 Var
@@ -2876,6 +2923,72 @@ Function BuildErrorResponse(RequestId : String; ErrorCode : String; ErrorMsg : S
 Begin
     Result := BuildErrorResponseDetailed(RequestId, ErrorCode, ErrorMsg, '');
 End;
+
+Function SheetCoverage(Response : String; RequestId : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If SheetsSkipped = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    If (SheetsSeen > 0) And (SheetsSkipped >= SheetsSeen) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'SHEETS_NOT_LOADED',
+            'None of the project''s ' + IntToStr(SheetsSeen) + ' schematic '
+            + 'sheet(s) are loaded, so nothing was examined. Run '
+            + 'proj_load_sheets and ask again.');
+        Exit;
+    End;
+    P := P + Length(Marker);
+    Added := '"sheets_seen":' + IntToStr(SheetsSeen)
+        + ',"sheets_skipped":' + IntToStr(SheetsSkipped)
+        + ',"sheets_warning":"' + IntToStr(SheetsSkipped) + ' of '
+        + IntToStr(SheetsSeen) + ' project sheets are not loaded in the editor '
+        + 'and were NOT read, so counts and findings cover only the rest. '
+        + 'Run proj_load_sheets and ask again."';
+    { A data object that was empty takes the fields without a comma. }
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
+{ The reply with the failed writes added. Only a success whose data is an    }
+{ object is touched: an error already says it failed.                        }
+Function WriteFailures(Response : String) : String;
+Var
+    Marker, Added : String;
+    P : Integer;
+Begin
+    Result := Response;
+    If WritesFailed = 0 Then Exit;
+    Marker := '"success":true,"data":' + Chr(123);
+    P := Pos(Marker, Response);
+    If P = 0 Then Exit;
+    P := P + Length(Marker);
+    Added := '"writes_failed":' + IntToStr(WritesFailed)
+        + ',"writes_failed_at":[' + WritesFailedAt + ']'
+        + ',"writes_warning":"' + IntToStr(WritesFailed) + ' write(s) in this '
+        + 'call raised and did not take effect, although the call went on: '
+        + 'read the objects back before relying on them."';
+    If Copy(Response, P, 1) <> Chr(125) Then Added := Added + ',';
+    Result := Copy(Response, 1, P - 1) + Added + Copy(Response, P, Length(Response));
+End;
+
+{..............................................................................}
+{ CROSS-DOCUMENT HINTS                                                        }
+{                                                                              }
+{ "No PCB library is active" is true and unhelpful. It says what is missing    }
+{ and not that the SAME operation exists for the other document kind, so the   }
+{ reasonable conclusion from it is that the capability is absent. That         }
+{ conclusion has been drawn and reported more than once, and each time the     }
+{ tool was there under the other namespace.                                    }
+{                                                                              }
+{ The split is the thing worth stating: lib_ acts on .PcbLib and .SchLib, pcb_ }
+{ on .PcbDoc, sch_ and obj_ on .SchDoc. Attached here rather than at the 277   }
+{ call sites so it cannot be right in some of them and stale in the rest.      }
+{..............................................................................}
 
 Procedure EnsureWorkspaceDir(Dummy : Integer);
 Begin
@@ -3561,6 +3674,27 @@ Begin
     V := ExtractJsonValue(Content, 'auto_shutdown_ms');
     If V <> '' Then Begin Try N := StrToInt(V); If N >= 0 Then AutoShutdownMs := N; Except End; End;
     If AutoShutdownMs > 0 Then ConfiguredShutdownMs := AutoShutdownMs;
+
+    { Operator idle-timeout pin. The wheel's Python client rewrites            }
+    { mcp_config.json with its own defaults at connect time and repeatedly     }
+    { won the race against the client-side re-pin (twice on 2026-09-10, both   }
+    { times reverting the operator's 60-minute setting so the next bridge      }
+    { start read 10 minutes). This sidecar file is written once at runtime     }
+    { creation, is never touched by the wheel, and takes precedence over the   }
+    { racy JSON value - a stray default can no longer shorten a session.       }
+    Try
+        If FileExists(WorkspaceDir + 'idle-timeout-ms.txt') Then
+        Begin
+            V := Trim(ReadFileContent(WorkspaceDir + 'idle-timeout-ms.txt'));
+            If V <> '' Then
+            Begin
+                Try
+                    N := StrToInt(V);
+                    If N >= 60000 Then AutoShutdownMs := N;
+                Except End;
+            End;
+        End;
+    Except End;
 
     V := ExtractJsonValue(Content, 'yield_iterations');
     If V <> '' Then Begin Try N := StrToInt(V); If N > 0 Then YieldIterations := N; Except End; End;

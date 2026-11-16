@@ -249,6 +249,7 @@ def _capture_png_inline(hwnd: int, path: str, enlarge: int = 1) -> bool:
         # and give wrong measurements.
         if enlarge > 1:
             image = image.resize((width * enlarge, height * enlarge), Image.LANCZOS)
+        Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
         image.save(path)
         return True
     finally:

@@ -131,7 +131,7 @@ def test_the_outline_extents_come_from_its_segments(tmp_path):
 
 def test_every_outline_reply_uses_the_measured_extents_and_a_reshape_refreshes():
     pcb, gen = _code("PCB.pas"), _code("Generic.pas")
-    outline = _routine(pcb, "PCB_GetBoardOutline")
+    outline = _routine(pcb, "PCB_GetBoardOutlineForBoard")
     assert "OutlineExtents(Outline, EL, EB, ER, ET)" in outline
     assert "CoordToMils(BR." not in outline
     geometry = _routine(gen, "Gen_GetPcbGeometry")

@@ -463,5 +463,3 @@ def _resolve_bridge() -> Any:
         _last_bridge_failure = f"{type(exc).__name__}: {exc}"
         logger.warning("get_bridge failed: %s", exc)
         return None
-
-

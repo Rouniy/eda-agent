@@ -30,8 +30,62 @@ from typing import Any, Iterable
 
 DEFAULT_GRID_PITCH_MILS = 25
 
-# Cap on grid cells so a malformed bbox cannot allocate unbounded memory.
-_MAX_CELLS = 4_000_000
+# Cap on grid NODES (cells x routing layers) so a malformed bbox or an
+# over-fine pitch cannot allocate unbounded memory. Counting layers
+# matters: the obstacle map is per layer, so a 6-layer stack costs three
+# times a 2-layer one at the same pitch, and a cells-only cap under-reads
+# the real allocation by exactly that factor.
+_MAX_GRID_NODES = 6_000_000
+
+# Back-compat alias: the original cap was expressed in cells.
+_MAX_CELLS = _MAX_GRID_NODES
+
+
+class GridTooFineError(ValueError):
+    """The requested pitch would exceed the grid node budget.
+
+    A ValueError subclass so every existing ``except (ValueError,
+    TypeError)`` caller keeps working, but it carries the numbers a
+    caller needs to say WHICH resource ran out and by how much. The
+    alternative -- degrading to a coarser grid, or dropping whatever did
+    not fit -- would silently change the answer, and a router that
+    quietly re-resolves its input is a router whose "no such net" and
+    "no path" verdicts cannot be trusted.
+    """
+
+    reason_code = "grid_too_fine"
+
+    def __init__(self, nx: int, ny: int, layers: int, pitch: int,
+                 limit: int) -> None:
+        self.nx = nx
+        self.ny = ny
+        self.layers = layers
+        self.pitch = pitch
+        self.cells = nx * ny
+        self.nodes = nx * ny * layers
+        self.limit = limit
+        # Smallest pitch that fits the budget, rounded up to a whole mil.
+        self.suggested_pitch_mils = max(
+            pitch + 1,
+            int(math.ceil(pitch * math.sqrt(self.nodes / float(limit)))))
+        super().__init__(
+            f"grid too fine at grid_pitch_mils={pitch}: {nx}x{ny} cells "
+            f"x {layers} layer(s) = {self.nodes} nodes exceeds the "
+            f"{limit} node budget; raise grid_pitch_mils to at least "
+            f"{self.suggested_pitch_mils}")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "reason_code": self.reason_code,
+            "grid_pitch_mils": self.pitch,
+            "grid_nx": self.nx,
+            "grid_ny": self.ny,
+            "grid_cells": self.cells,
+            "routing_layers": self.layers,
+            "grid_nodes": self.nodes,
+            "grid_node_limit": self.limit,
+            "suggested_grid_pitch_mils": self.suggested_pitch_mils,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -265,10 +319,18 @@ class RoutingProblem:
         # geometric one.
         self.pad_cells: list[set[tuple[int, int]]] = [
             set() for _ in self.layers]
+        # The same three maps as flat arrays, for the compiled search
+        # (eda_agent.compute). None until the first call that wants it;
+        # from then on every write below updates it as well.
+        self._dense: DenseGrid | None = None
         self._margin_track = rules.clearance_mils + rules.max_track_halfwidth
         self._margin_via = rules.clearance_mils + rules.via_size_mils / 2.0
         # net -> terminals (pad centers).
         self.terminals: dict[str, list[Terminal]] = {}
+        self.pads_seen = 0
+        self.pads_used = 0
+        self.pad_nets_seen: set[str] = set()
+        self.pads_off_routing_layer: dict[str, int] = {}
         # Blocked terminals whose pad no cell centre lands on: the grid
         # is coarser than the pad, and a finer grid_pitch_mils fixes it.
         self.off_grid_terminals = 0
@@ -288,6 +350,62 @@ class RoutingProblem:
         ix = int(round((x - self.x0) / self.pitch))
         iy = int(round((y - self.y0) / self.pitch))
         return (max(0, min(self.nx - 1, ix)), max(0, min(self.ny - 1, iy)))
+
+    def grid_info(self) -> dict[str, Any]:
+        """Resolved grid scale, so a caller can see what the pitch bought.
+
+        Reported unconditionally: pitch is the one knob that changes
+        every downstream cost (rasterization, A* budget, memory) while
+        leaving the netlist untouched, so its numbers belong next to any
+        verdict that could otherwise be blamed on it.
+        """
+        return {
+            "grid_pitch_mils": self.pitch,
+            "grid_nx": self.nx,
+            "grid_ny": self.ny,
+            "grid_cells": self.nx * self.ny,
+            "grid_nodes": self.nx * self.ny * len(self.layers),
+            "grid_node_limit": _MAX_GRID_NODES,
+            "origin_mils": [self.x0, self.y0],
+        }
+
+    # -- flat view for the compiled search --------------------------------
+
+    def _map_keys(self) -> int:
+        return (sum(len(g) for g in self.blocked)
+                + sum(len(g) for g in self.via_blocked)
+                + sum(len(c) for c in self.pad_cells))
+
+    def dense_grid(self) -> "DenseGrid":
+        """The obstacle maps as flat arrays, kept in step with them.
+
+        Built on first use. Writes made through the rasterizers update it
+        cell by cell; a write made straight into the dicts (tests do this)
+        changes the key count, and that rebuilds it rather than letting
+        the two disagree.
+        """
+        d = self._dense
+        if d is None or d.keys != self._map_keys():
+            d = self._dense = DenseGrid.build(self)
+        return d
+
+    def _own(self, grid: list, which: int, indices: tuple[int, ...],
+             ix: int, iy: int, owner: str | None) -> None:
+        """Add ``owner`` to cell (ix, iy) of ``grid`` on each layer, and
+        to the flat view when there is one."""
+        d = self._dense
+        cell = (ix, iy)
+        for li in indices:
+            g = grid[li]
+            owners = g.get(cell)
+            if owners is None:
+                g[cell] = {owner}
+                if d is not None:
+                    d.keys += 1
+            else:
+                owners.add(owner)
+            if d is not None:
+                d.mark(which, li, ix, iy, owner)
 
     # -- queries -----------------------------------------------------------
 
@@ -367,9 +485,9 @@ class RoutingProblem:
         ny = int(math.ceil((y2 - y0) / pitch)) + 1
         if nx < 2 or ny < 2:
             raise ValueError("board area degenerate")
-        if nx * ny > _MAX_CELLS:
-            raise ValueError(
-                f"grid too large ({nx}x{ny} cells); raise grid_pitch_mils")
+        if nx * ny * len(rules.layers) > _MAX_GRID_NODES:
+            raise GridTooFineError(nx, ny, len(rules.layers), pitch,
+                                   _MAX_GRID_NODES)
 
         prob = cls(rules, net_classes, x0, y0, nx, ny, pitch)
         all_idx = tuple(range(len(prob.layers)))
@@ -383,6 +501,9 @@ class RoutingProblem:
             lay = str(p.get("layer", "") or "").lower()
             net = str(p.get("net", "") or "") or None
             owner = net  # None (unnetted) blocks every net.
+            prob.pads_seen += 1
+            if net:
+                prob.pad_nets_seen.add(net)
             if lay == "multilayer":
                 indices: tuple[int, ...] = all_idx
             elif lay == "keepoutlayer":
@@ -390,7 +511,11 @@ class RoutingProblem:
             elif lay in layer_idx:
                 indices = (layer_idx[lay],)
             else:
+                if net:
+                    prob.pads_off_routing_layer[net] = (
+                        prob.pads_off_routing_layer.get(net, 0) + 1)
                 continue  # mask/paste/mech artwork: not routing copper
+            prob.pads_used += 1
             prob._block_rect(indices, cx, cy, hw, hh, owner, rot)
             if lay != "keepoutlayer":
                 prob._mark_pad_cells(indices, cx, cy, hw, hh, rot)
@@ -537,7 +662,12 @@ class RoutingProblem:
                                                 cx + ex, cy + ey):
                 x, y = self.cell_center(ix, iy)
                 if dist_point_rect(x, y, cx, cy, hw, hh, rot) == 0.0:
-                    self.pad_cells[li].add((ix, iy))
+                    cells = self.pad_cells[li]
+                    if (ix, iy) not in cells:
+                        cells.add((ix, iy))
+                        if self._dense is not None:
+                            self._dense.keys += 1
+                            self._dense.pad_any[ix * self.ny + iy] = 1
 
     def _block_rect(self, indices: Iterable[int], cx: float, cy: float,
                     hw: float, hh: float, owner: str | None,
@@ -550,10 +680,9 @@ class RoutingProblem:
                 cx + ex + r_max, cy + ey + r_max):
             px, py = self.cell_center(ix, iy)
             d = dist_point_rect(px, py, cx, cy, hw, hh, rot)
-            for grid, margin in self._maps():
+            for which, (grid, margin) in enumerate(self._maps()):
                 if d < margin:
-                    for li in indices:
-                        grid[li].setdefault((ix, iy), set()).add(owner)
+                    self._own(grid, which, indices, ix, iy, owner)
 
     def _block_seg(self, indices: Iterable[int],
                    x1: float, y1: float, x2: float, y2: float,
@@ -565,10 +694,9 @@ class RoutingProblem:
                 max(x1, x2) + r_max, max(y1, y2) + r_max):
             px, py = self.cell_center(ix, iy)
             d = dist_point_seg(px, py, x1, y1, x2, y2)
-            for grid, margin in self._maps():
+            for which, (grid, margin) in enumerate(self._maps()):
                 if d < hw + margin:
-                    for li in indices:
-                        grid[li].setdefault((ix, iy), set()).add(owner)
+                    self._own(grid, which, indices, ix, iy, owner)
 
     def _block_circle(self, indices: Iterable[int], x: float, y: float,
                       radius: float, owner: str | None) -> None:
@@ -578,10 +706,74 @@ class RoutingProblem:
                 x - r_max, y - r_max, x + r_max, y + r_max):
             px, py = self.cell_center(ix, iy)
             d = math.hypot(px - x, py - y)
-            for grid, margin in self._maps():
+            for which, (grid, margin) in enumerate(self._maps()):
                 if d < radius + margin:
-                    for li in indices:
-                        grid[li].setdefault((ix, iy), set()).add(owner)
+                    self._own(grid, which, indices, ix, iy, owner)
+
+
+#: Flat-map cell values. A cell is passable for net id k when it holds
+#: FREE or k: exactly ``all(o == net for o in owners)`` over its owner set.
+FREE = -1
+#: Owned by None (unnetted copper, keepout) or by two different nets.
+NOBODY = -2
+
+
+class DenseGrid:
+    """``RoutingProblem``'s obstacle maps as flat int32 arrays.
+
+    Index ``li * nx * ny + ix * ny + iy``. ``blocked`` and ``via_blocked``
+    hold one owner code per cell (see FREE / NOBODY; k >= 0 is net id k
+    from ``net_ids``), ``pad_any`` is 1 where any layer has pad copper.
+    This is what the compiled A* reads; the dicts stay the truth for
+    everything else.
+    """
+
+    __slots__ = ("nx", "ny", "layers", "blocked", "via_blocked", "pad_any",
+                 "net_ids", "keys")
+
+    def __init__(self, nx: int, ny: int, layers: int) -> None:
+        from array import array
+        self.nx, self.ny, self.layers = nx, ny, layers
+        n = nx * ny * layers
+        self.blocked = array("i", [FREE]) * n
+        self.via_blocked = array("i", [FREE]) * n
+        self.pad_any = array("B", [0]) * (nx * ny)
+        self.net_ids: dict[str, int] = {}
+        self.keys = 0
+
+    def net_id(self, net: str) -> int:
+        """Id for ``net``; a net that owns nothing yet gets one too, so
+        that it matches no NOBODY or foreign cell."""
+        nid = self.net_ids.get(net)
+        if nid is None:
+            nid = self.net_ids[net] = len(self.net_ids)
+        return nid
+
+    def mark(self, which: int, li: int, ix: int, iy: int,
+             owner: str | None) -> None:
+        arr = self.via_blocked if which else self.blocked
+        k = li * self.nx * self.ny + ix * self.ny + iy
+        code = NOBODY if owner is None else self.net_id(owner)
+        v = arr[k]
+        if v == FREE:
+            arr[k] = code
+        elif v != code:
+            arr[k] = NOBODY
+
+    @classmethod
+    def build(cls, prob: "RoutingProblem") -> "DenseGrid":
+        d = cls(prob.nx, prob.ny, len(prob.layers))
+        for which, grid in enumerate((prob.blocked, prob.via_blocked)):
+            for li, cells in enumerate(grid):
+                # Sorted so net ids do not depend on set iteration order.
+                for (ix, iy), owners in cells.items():
+                    for o in sorted(owners, key=lambda o: (o is not None, o or "")):
+                        d.mark(which, li, ix, iy, o)
+        for cells in prob.pad_cells:
+            for ix, iy in cells:
+                d.pad_any[ix * prob.ny + iy] = 1
+        d.keys = prob._map_keys()
+        return d
 
 
 def _pad_shape(p: dict[str, Any]) -> tuple[float, float, float]:
@@ -641,6 +833,7 @@ def _board_bounds(geometry: dict[str, Any]) -> tuple[float, float, float, float]
 
 __all__ = [
     "DEFAULT_GRID_PITCH_MILS",
+    "GridTooFineError",
     "RouteRules",
     "RoutingProblem",
     "Terminal",

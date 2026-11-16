@@ -43,4 +43,3 @@ def _run(tmp_path, mode: str) -> str:
 @pytest.mark.skipif(os.name != "nt", reason="the shared pipe holds up the load on Windows only")
 def test_a_compiled_module_loads_while_a_request_read_waits(tmp_path):
     assert _run(tmp_path, "private") == "loaded"
-

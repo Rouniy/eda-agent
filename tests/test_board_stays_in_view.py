@@ -7,6 +7,7 @@ most of its layout: the agent placed and routed without ever zooming.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from eda_agent.bridge import altium_bridge as ab
@@ -72,3 +73,24 @@ def test_zoom_board_fits_the_outline_with_a_margin():
     body = pas[pas.index("Function Gen_Zoom("):]
     body = body[:body.index("\nFunction ", 10)]
     assert body.index("ZoomOnBoardOutline(Board)") < body.index("RunProcess(ZoomProcess)")
+
+
+def test_opted_in_edit_fits_after_the_reply(monkeypatch):
+    _fresh(monkeypatch)
+    bridge = ab.AltiumBridge()
+    calls = []
+    monkeypatch.setattr(bridge, "is_altium_running", lambda: True)
+    monkeypatch.setattr(bridge, "_ensure_keepalive", lambda: None)
+
+    async def dispatch(command, params, timeout, max_extensions=None):
+        calls.append(command)
+        return {"edit": "done"}
+
+    monkeypatch.setattr(bridge, "_execute_command_async", dispatch)
+    monkeypatch.setattr(bridge, "_execute_command",
+                        lambda command, params, timeout, max_extensions=None:
+                        calls.append(command) or {"edit": "done"})
+    result = asyncio.run(bridge.send_command_async("pcb.place_tracks", {}))
+    assert result == {"edit": "done"}
+    assert calls == ["pcb.place_tracks", "generic.zoom"]
+    bridge.detach()

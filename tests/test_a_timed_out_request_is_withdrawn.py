@@ -10,6 +10,7 @@ its own request when Altium never read it, and says which happened.
 """
 from __future__ import annotations
 
+import asyncio
 import pytest
 
 from eda_agent.bridge import AltiumBridge
@@ -30,7 +31,7 @@ def bridge(tmp_path, monkeypatch):
 
 def _timeout(bridge, monkeypatch, taken: bool):
     """Run one command whose poll times out; Altium read it or not."""
-    def poll(request_id, timeout):
+    def poll(request_id, timeout, max_extensions=None):
         if taken:
             bridge._request_path(request_id).unlink()
         raise AltiumTimeoutError("No response within 1s", details={})
@@ -61,3 +62,14 @@ def test_only_the_callers_own_request_is_touched(bridge, monkeypatch, tmp_path):
     bridge._publish_request(other)
     _timeout(bridge, monkeypatch, taken=False)
     assert bridge._request_path(other.id).exists()
+
+
+def test_async_timeout_withdraws_unread_request(bridge, monkeypatch, tmp_path):
+    async def poll(request_id, timeout, max_extensions=None):
+        raise AltiumTimeoutError("No response within 1s", details={})
+
+    monkeypatch.setattr(bridge, "_poll_response_async", poll)
+    with pytest.raises(AltiumTimeoutError) as info:
+        asyncio.run(bridge._execute_command_async("pcb.move_component", {}, 1.0))
+    assert info.value.details["request_withdrawn"] is True
+    assert not list(tmp_path.glob("request_*.json"))

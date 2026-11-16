@@ -9,7 +9,7 @@ change to the Python took effect only after the client reconnected
 With ``EDA_AGENT_RELOAD=1`` (or ``eda-agent --reload``) the client talks
 to this proxy instead, which runs the real server as a child process and
 passes messages through unchanged. When a ``.py`` file under the package
-or the bridge script's ``Main.pas`` changes and no call is in flight, it starts a new child, replays the
+changes and no call is in flight, it starts a new child, replays the
 client's ``initialize`` to it, and tells the client the tool list changed.
 The client's connection never drops.
 
@@ -59,18 +59,6 @@ def source_stamp(root: Path = _PACKAGE) -> dict:
     return stamps
 
 
-def script_version_stamp() -> dict:
-    """Modification time of the bridge script's Main.pas. The server
-    records its SCRIPT_VERSION at start and warns once Altium runs a newer
-    one, so a version bump restarts the server as a .py change does."""
-    try:
-        from .cli import get_bundled_scripts_path
-        path = get_bundled_scripts_path() / "Main.pas"
-        return {str(path): path.stat().st_mtime_ns}
-    except Exception:                                    # noqa: BLE001
-        return {}
-
-
 class Proxy:
     def __init__(self, child_args: list, stdin, stdout,
                  child_command: Optional[list] = None,
@@ -118,13 +106,6 @@ class Proxy:
                 self.client_init_id = message.get("id")
             elif method == "notifications/initialized":
                 self.initialized_line = line
-            elif method == "notifications/cancelled":
-                # The client no longer waits for it, so neither may a restart.
-                request_id = (message.get("params") or {}).get("requestId")
-                if request_id is not None:
-                    with self.state:
-                        self.pending.discard(_key(request_id))
-                        self.state.notify_all()
             self._forward(line, message)
         self.stop()
 
@@ -241,28 +222,17 @@ class Proxy:
             # New calls wait in the queue from here; those already sent
             # finish on the old child first.
             self.ready = False
-            if self.pending:
-                _log(f"source changed; restarting once {len(self.pending)} "
-                     f"call(s) in flight finish (at most {MAX_WAIT_FOR_CALLS_S:g} s)")
             deadline = time.monotonic() + MAX_WAIT_FOR_CALLS_S
             while self.pending and time.monotonic() < deadline:
                 self.state.wait(1.0)
             self.restarting = True
             old = self.child
-            # Calls the old server never answered: the client hears so
-            # rather than waiting on a reply that cannot come.
-            unanswered, self.pending = list(self.pending), set()
         if old is not None and old.poll() is None:
             old.terminate()
             try:
                 old.wait(10)
             except subprocess.TimeoutExpired:
                 old.kill()
-        for key in unanswered:
-            self.to_client({"jsonrpc": "2.0", "id": _unkey(key),
-                            "error": {"code": -32603, "message": (
-                                "the eda-agent server restarted for a code change "
-                                "before answering; run the call again")}})
         _log("source changed; restarting the server")
         self.start_child()
         if self.initialized_line is not None:
@@ -270,11 +240,11 @@ class Proxy:
                             "method": "notifications/tools/list_changed"})
 
     def watch(self) -> None:
-        stamp = {**source_stamp(self.root), **script_version_stamp()}
+        stamp = source_stamp(self.root)
         changed_at = None
         while True:
             time.sleep(POLL_S)
-            now = {**source_stamp(self.root), **script_version_stamp()}
+            now = source_stamp(self.root)
             if now != stamp:
                 stamp = now
                 changed_at = time.monotonic()

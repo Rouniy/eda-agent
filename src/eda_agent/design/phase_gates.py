@@ -4,12 +4,19 @@
 close each one.
 
     feasibility  Can it be made, for the money, from parts on sale?
+    research     Is the architecture chosen, with its biggest risks retired?
     prototype    Is there a board, and does it power up?
     evt          Does the design meet its electrical specification?
     dvt          Does it meet all of it: environment, safety, supply?
     pvt          Can the factory build it the same way every time?
 
 Clearing pvt is production; there is nothing after it to check.
+
+The gate is OFF until a profile, an environment variable or a flag names
+the stages to run (:func:`parse_stages`, and docs/NPI_PHASE_GATES.md for
+where each is written). With none named, the three tools that read this
+module are not advertised at all; this module stays importable either
+way, so what a check asks can be read without the gate being on.
 
 Each check states the question, why it is asked at this stage rather than
 later, what counts as done, and which tools of this server answer it.
@@ -30,10 +37,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
 
-STAGES = ("feasibility", "prototype", "evt", "dvt", "pvt")
+STAGES = ("feasibility", "research", "prototype", "evt", "dvt", "pvt")
 DONE = "production"
 TITLES = {
     "feasibility": "Feasibility",
+    "research": "Research",
     "prototype": "Prototype build",
     "evt": "Engineering validation (EVT)",
     "dvt": "Design validation (DVT)",
@@ -42,6 +50,9 @@ TITLES = {
 }
 _OTHER_SPELLINGS = {
     "feasability": "feasibility", "concept": "feasibility",
+    "r&d": "research", "rnd": "research", "r and d": "research",
+    "poc": "research", "proof of concept": "research",
+    "architecture": "research",
     "proto": "prototype", "prototype build": "prototype",
     "engineering validation": "evt", "engineering validation test": "evt",
     "design validation": "dvt", "design validation test": "dvt",
@@ -59,6 +70,62 @@ def stage_from(text: str) -> str:
     if key not in STAGES:
         raise ValueError(f"no stage {text!r}; the stages are {', '.join(STAGES)}")
     return key
+
+
+#: The stages in force when nothing says otherwise: none of them.
+#:
+#: The gate is off out of the box. A programme run under one wants every
+#: stage and says so once, in a profile. A board that is not run under one
+#: should not be answering for EVT, and should not carry three tools and a
+#: stage vocabulary through every prompt to be told so.
+DEFAULT_STAGES: tuple[str, ...] = ()
+
+#: Two words a setting may use that are not stage names.
+EVERY = "all"
+NO_STAGE = "none"
+
+
+def parse_stages(value) -> tuple[str, ...]:
+    """The stages a setting asks for, from a list or a string of names.
+
+    Takes the spellings :func:`stage_from` takes, separated by commas or
+    spaces, or a list of them. ``all`` is every stage; ``none`` is no
+    stage. ``none`` has to be sayable because the empty value already
+    means "say nothing", so without it an environment variable could turn
+    the gate on over a profile but never off.
+
+    The result is in :data:`STAGES` order with duplicates dropped. Their
+    order is the whole argument for having them -- a board that passes DVT
+    on a design whose regulator went end-of-life during EVT has validated
+    the wrong thing, thoroughly -- so a setting enables stages and does
+    not get to reorder them.
+
+    Raises ValueError naming the word that is not a stage.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        # Commas win where there are any, so "design validation, proto"
+        # survives: the multi-word spellings stage_from takes cannot be
+        # split on whitespace and still be themselves.
+        parts = (value.split(",") if "," in value else value.split())
+        words = [w.strip() for w in parts if w.strip()]
+    elif isinstance(value, (list, tuple)):
+        words = [str(w).strip() for w in value if str(w).strip()]
+    else:
+        raise ValueError(
+            f"stages must be a list or a string of stage names, got "
+            f"{type(value).__name__}")
+    wanted: set[str] = set()
+    for word in words:
+        folded = word.strip().lower()
+        if folded == EVERY:
+            wanted.update(STAGES)
+        elif folded == NO_STAGE:
+            wanted.clear()
+        else:
+            wanted.add(stage_from(word))
+    return tuple(s for s in STAGES if s in wanted)
 
 
 @dataclass(frozen=True)
@@ -119,6 +186,34 @@ _ALL: list[Check] = [
          "Creepage, isolation and EMC margin are layout rules that cannot be "
          "added to a finished board.",
          "the standards, insulation class and pollution degree are named"),
+    ),
+    *_checks(
+        "research",
+        ("architecture", "Is the architecture chosen, with the alternatives written down?",
+         "Every later check measures one architecture; changing it once layout "
+         "has started is a new board.",
+         "a block diagram names each function and its key part, and says why it "
+         "beat the alternatives", [], {"good_for_days": None}),
+        ("risks-ranked", "Are the technical risks listed, ranked and owned?",
+         "A risk nobody listed is retired on the first prototype, at the price "
+         "of a build.",
+         "each risk has a likelihood, an impact, an owner and a way to retire it",
+         [], {"good_for_days": None}),
+        ("risks-retired", "Are the top risks retired on an eval kit, a breadboard "
+         "or in simulation?",
+         "An eval kit answers in days what a prototype answers in weeks.",
+         "each high risk has a result that answers it, or a fallback designed in",
+         ["sim_get_readiness", "sim_run", "design_simulate_loops"]),
+        ("reference-designs", "Have the key parts' reference designs and "
+         "application notes been read against the plan?",
+         "Layout and decoupling rules in an application note are cheaper to "
+         "follow than to rediscover.",
+         "each key part's reference design is reviewed and every deviation has "
+         "a reason", ["part_fetch"]),
+        ("requirements-mapped", "Does every requirement map to a block that meets it?",
+         "A requirement no block owns is found missing at EVT.",
+         "each requirement names the block, and the figure, that meets it",
+         ["design_validate_requirement"], {"good_for_days": None}),
     ),
     *_checks(
         "prototype",
@@ -354,10 +449,22 @@ def review(stage: str, answers: Iterable[Answer], revision: str = "",
 
 
 def standing(answers: Iterable[Answer], revision: str = "",
-             today: Optional[datetime] = None) -> tuple[str, list[StageReview]]:
-    """The stage a product is in: the first one that does not clear."""
+             today: Optional[datetime] = None,
+             stages: Optional[Iterable[str]] = None) -> tuple[str, list[StageReview]]:
+    """The stage a product is in: the first ENABLED one that does not clear.
+
+    ``stages`` is the subset in force, None meaning all six. A stage that
+    is switched off is not reviewed and cannot hold the product, so a
+    programme running feasibility and prototype alone reaches production
+    by clearing those two.
+
+    That is a weaker claim than clearing all five, and the caller reports
+    which stages it asked for beside the answer, so the two can never be
+    read as the same thing.
+    """
     given = list(answers)
-    reviews = [review(s, given, revision, today) for s in STAGES]
+    wanted = STAGES if stages is None else tuple(stages)
+    reviews = [review(s, given, revision, today) for s in STAGES if s in wanted]
     for r in reviews:
         if not r.cleared:
             return r.stage, reviews

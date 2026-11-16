@@ -38,7 +38,7 @@ def _fake_registry(monkeypatch, installs: dict):
         if path == r"Software\Altium":
             return Key(path)
         install, _, rest = path.partition("\\")
-        if install in installs and rest == cli._GLOBAL_PROJECTS:
+        if install in installs and rest == cli._GLOBAL_PROJECTS_KEY:
             return Key(path)
         raise OSError(path)
 
@@ -95,9 +95,8 @@ def test_the_workspace_pointer_is_the_servers_not_beside_dest(
         monkeypatch, tmp_path):
     from eda_agent import config as config_module
     workspace = tmp_path / "server_ws"
-    monkeypatch.setattr(
-        config_module, "config",
-        config_module.config.model_copy(update={"workspace_dir": workspace}))
+    monkeypatch.setattr(config_module, "_default_workspace_dir",
+                        lambda: workspace)
     written = []
     monkeypatch.setattr(config_module, "write_workspace_pointer",
                         lambda p: written.append(Path(p)))

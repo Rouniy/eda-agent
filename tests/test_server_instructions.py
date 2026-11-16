@@ -108,15 +108,14 @@ def test_every_tool_the_preamble_names_exists(backend):
 
 @pytest.mark.parametrize("backend", _BACKENDS)
 def test_a_backend_says_how_it_draws_a_schematic(backend):
-    """The template route where the template tools exist, nothing
-    where they do not."""
+    """Name each drawing route the backend actually exposes."""
     text = build_server_instructions("full", backend)
-    has_template = bool({"sch_draw_template", "easyeda_emit_template"}
-                        & set(_SURFACES[backend]))
-    assert ("A SCHEMATIC IS DRAWN FROM A HAND TEMPLATE" in text) is has_template, (
+    has_template = "sch_draw_template" in _SURFACES[backend]
+    has_engine = "design_execute_plan" in _SURFACES[backend]
+    assert ("sch_draw_template" in text) is has_template
+    assert ("design_execute_plan" in text) is has_engine, (
         f"{backend}: the preamble's schematic paragraph does not match "
         f"its tools")
-    assert "DO NOT DRAW A SCHEMATIC BY HAND" not in text
 
 
 def test_it_names_at_least_the_two_it_is_for():

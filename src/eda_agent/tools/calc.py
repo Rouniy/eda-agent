@@ -439,6 +439,196 @@ def register_calc_tools(mcp) -> None:
             return _fail(e)
 
 
+def register_pcb_calc_tools(mcp) -> None:
+    """Calculators that exist on EVERY backend, because nothing else
+    defines them.
+
+    Separate from register_calc_tools, which is KiCad/EasyEDA-only: the
+    tools in that one duplicate names the Altium surface already
+    provides in tools/pcb.py, so registering it everywhere would define
+    them twice. These ten have no counterpart anywhere, so the opposite
+    rule applies -- registering them on the KiCad path alone would hide
+    them from Altium users, which is what happened when they were first
+    added here and the generated reference caught it.
+    """
+    # --- calculators ported from pcb-toolkit's coverage ---------------
+    #
+    # Thin wrappers: the maths lives in engineering/pcb_calc.py so it is
+    # testable without a tool surface and reachable from the CLI, which
+    # registers the same functions as `eda-agent calc-*` verbs.
+    #
+    # Each reply carries a `status` of exact / published / estimate.
+    # That is not decoration: an algebraic identity and a rule of thumb
+    # must not arrive looking alike, or the rule of thumb ends up in a
+    # specification. The convention is pcb-toolkit's own.
+
+    @mcp.tool()
+    async def pcb_calc_conductor_spacing(
+            voltage: float, environment: str = "B2") -> dict[str, Any]:
+        """Minimum conductor spacing for a voltage (IPC-2221 Table 6-1).
+
+        `voltage` is DC or AC PEAK **between the two conductors**, not
+        the supply rail: two opposite-polarity 400 V rails are an 800 V
+        problem. Environments are B1 internal, B2 external uncoated to
+        3050 m, B3 external uncoated above 3050 m, B4 polymer coated,
+        A5 conformal coated, A6 uncoated leads, A7 coated leads.
+
+        The table is TRANSCRIBED FROM SECONDARY SOURCES, because the
+        IPC document is not freely available, and two reproductions
+        disagree on two cells. The larger value is taken wherever they
+        conflict -- a wider spacing is never the unsafe mistake -- and
+        the disagreement is reported in `disputed` rather than decided
+        silently. Verify against the IPC publication before a design
+        review relies on it.
+        """
+        from ..engineering.pcb_calc import ipc2221_spacing
+        return ipc2221_spacing(voltage, environment)
+
+    @mcp.tool()
+    async def pcb_calc_fusing_current(
+            width_mils: float, copper_oz: float = 1.0, time_s: float = 1.0,
+            ambient_c: float = 25.0) -> dict[str, Any]:
+        """Current that MELTS a track in a given time (Onderdonk).
+
+        This is the destruction limit, not a rating: for continuous
+        current use pcb_calc_track_current_capacity, which answers a
+        different question and gives a much smaller number.
+
+        Onderdonk is adiabatic, so it is good under about a second and
+        reads far too low beyond that, where a track sheds heat into
+        the laminate. Results past one second say so in `out_of_range`.
+        """
+        from ..engineering.pcb_calc import fusing_current
+        return fusing_current(width_mils, copper_oz, time_s, ambient_c)
+
+    @mcp.tool()
+    async def pcb_calc_via_parasitics(
+            drill_mils: float, length_mils: float, pad_mils: float = 0.0,
+            antipad_mils: float = 0.0, dielectric_constant: float = 4.3,
+            plating_mils: float = 1.0) -> dict[str, Any]:
+        """Via inductance, capacitance and barrel resistance.
+
+        L and C are Johnson & Graham's rules of thumb, which ignore the
+        return path: they tell a via that matters from one that does
+        not, and they do not size a margin. Barrel resistance is exact
+        for the plating annulus given. Capacitance needs both pad and
+        antipad, and the antipad must be the larger.
+        """
+        from ..engineering.pcb_calc import via_parasitics
+        return via_parasitics(drill_mils, length_mils, pad_mils,
+                              antipad_mils, dielectric_constant,
+                              plating_mils)
+
+    @mcp.tool()
+    async def pcb_calc_spiral_inductor(
+            turns: float, outer_diameter_mils: float,
+            inner_diameter_mils: float,
+            shape: str = "square") -> dict[str, Any]:
+        """Planar spiral inductance (Mohan's modified Wheeler expression).
+
+        shape is square, hexagonal or octagonal. Assumes no close ground
+        plane beneath the spiral; one lowers the inductance materially.
+        """
+        from ..engineering.pcb_calc import spiral_inductor
+        return spiral_inductor(turns, outer_diameter_mils,
+                               inner_diameter_mils, shape)
+
+    @mcp.tool()
+    async def pcb_calc_reactance(
+            frequency_hz: float, capacitance_f: float = 0.0,
+            inductance_h: float = 0.0) -> dict[str, Any]:
+        """Capacitive and/or inductive reactance at a frequency."""
+        from ..engineering.pcb_calc import reactance
+        return reactance(frequency_hz, capacitance_f, inductance_h)
+
+    @mcp.tool()
+    async def pcb_calc_resonance(inductance_h: float,
+                                 capacitance_f: float) -> dict[str, Any]:
+        """LC resonant frequency and characteristic impedance."""
+        from ..engineering.pcb_calc import resonant_frequency
+        return resonant_frequency(inductance_h, capacitance_f)
+
+    @mcp.tool()
+    async def pcb_calc_wavelength(
+            frequency_hz: float,
+            dielectric_constant: float = 4.3) -> dict[str, Any]:
+        """Wavelength in a dielectric, with the quarter- and
+        twentieth-wave lengths.
+
+        The twentieth is the one usually wanted: past roughly that
+        length a track stops behaving as a lumped connection and starts
+        behaving as a transmission line.
+        """
+        from ..engineering.pcb_calc import wavelength_in_dielectric
+        return wavelength_in_dielectric(frequency_hz, dielectric_constant)
+
+    @mcp.tool()
+    async def pcb_calc_pdn_target(
+            voltage_v: float, ripple_percent: float,
+            transient_current_a: float) -> dict[str, Any]:
+        """Target power-distribution-network impedance.
+
+        Spends the whole ripple budget on the PDN and assumes the
+        transient current figure is right, which is the number least
+        often actually known.
+        """
+        from ..engineering.pcb_calc import pdn_target_impedance
+        return pdn_target_impedance(voltage_v, ripple_percent,
+                                    transient_current_a)
+
+    @mcp.tool()
+    async def pcb_calc_padstack(
+            drill_mils: float, annular_ring_mils: float,
+            pitch_mils: float = 0.0,
+            clearance_mils: float = 0.0) -> dict[str, Any]:
+        """Pad and antipad diameters, and the copper left between
+        neighbouring padstacks at a pitch.
+
+        Reports the DIAGONAL neighbour gap as well as the orthogonal
+        one, because on a grid array the diagonal pair is the one
+        nobody works out by hand.
+        """
+        from ..engineering.pcb_calc import padstack_geometry
+        return padstack_geometry(drill_mils, annular_ring_mils, pitch_mils,
+                                 clearance_mils)
+
+    @mcp.tool()
+    async def pcb_calc_wire_gauge(
+            awg: float, length_m: float = 1.0,
+            temperature_c: float = 20.0) -> dict[str, Any]:
+        """AWG wire diameter, area and resistance.
+
+        AWG counts DOWN through zero into the 0/00/000/0000 gauges, so
+        pass -1 for 00, -2 for 000 and -3 for 0000.
+        """
+        from ..engineering.pcb_calc import awg_properties
+        return awg_properties(awg, length_m, temperature_c)
+
+    @mcp.tool()
+    async def pcb_calc_cross_check(calculator: str,
+                                   arguments: dict) -> dict[str, Any]:
+        """Run a calculator here AND in pcb-toolkit, and compare.
+
+        OPTIONAL and absent for most people: pcb-toolkit's CLI is not
+        published as a binary, so it has to be built from source with
+        a Rust toolchain. Nothing here depends on it. When it is
+        missing this says how to get it rather than just failing.
+
+        `calculator` is the function name in engineering.pcb_calc
+        (ipc2221_spacing, fusing_current, wavelength_in_dielectric,
+        reactance, padstack_geometry, awg_properties). Four others are
+        deliberately unmapped and say why when asked.
+
+        Both replies come back in full. Fields are paired by NAME, not
+        through a mapping this project has verified, so a pair sharing
+        a name and not a meaning reports as a disagreement -- the safe
+        direction for it to fail. Unpaired fields are listed as not
+        compared.
+        """
+        from ..engineering.pcb_toolkit import cross_check
+        return cross_check(calculator, arguments or {})
+
+
 def register_physics_calc_tools(mcp) -> None:
     """Calculators with no Altium twin, registered on EVERY backend.
 
@@ -451,7 +641,7 @@ def register_physics_calc_tools(mcp) -> None:
     from ..design import calculators as calc
 
     @mcp.tool()
-    async def pcb_calc_reactance(
+    async def physics_calc_reactance(
             frequency_hz: float, inductance_h: float = 0.0,
             capacitance_f: float = 0.0) -> dict[str, Any]:
         """Reactance of an inductor and/or capacitor at a frequency.
@@ -462,14 +652,14 @@ def register_physics_calc_tools(mcp) -> None:
         return calc.reactance(frequency_hz, inductance_h, capacitance_f)
 
     @mcp.tool()
-    async def pcb_calc_resonance(inductance_h: float,
+    async def physics_calc_resonance(inductance_h: float,
                                  capacitance_f: float) -> dict[str, Any]:
         """Resonant frequency and characteristic impedance of an LC pair,
         in henries and farads. Exact."""
         return calc.resonance(inductance_h, capacitance_f)
 
     @mcp.tool()
-    async def pcb_calc_wavelength(frequency_hz: float, er_eff: float = 1.0,
+    async def physics_calc_wavelength(frequency_hz: float, er_eff: float = 1.0,
                                   length_mils: float = 0.0) -> dict[str, Any]:
         """Wavelength and quarter wave at a frequency, and the electrical
         length of ``length_mils`` in degrees. ``er_eff`` is the effective
@@ -487,14 +677,14 @@ def register_physics_calc_tools(mcp) -> None:
         return calc.pdn_target_impedance(supply_v, ripple_pct, transient_a)
 
     @mcp.tool()
-    async def pcb_calc_wire_gauge(awg: Optional[int] = None,
+    async def physics_calc_wire_gauge(awg: Optional[int] = None,
                                   diameter_mils: float = 0.0) -> dict[str, Any]:
         """AWG size: diameter, area and kcmil for a gauge (-3 for 0000 up
         to 40), or the nearest gauge for a diameter. Exact (ASTM B258)."""
         return calc.wire_gauge(awg, diameter_mils)
 
     @mcp.tool()
-    async def pcb_calc_fusing_current(
+    async def physics_calc_fusing_current(
             seconds: float, area_sq_mils: float = 0.0, width_mils: float = 0.0,
             copper_oz: float = 1.0, ambient_c: float = 20.0) -> dict[str, Any]:
         """Current that melts a copper conductor in ``seconds``
@@ -531,7 +721,7 @@ def register_physics_calc_tools(mcp) -> None:
                                       spacing_mils, inner_mils, shape)
 
     @mcp.tool()
-    async def pcb_calc_padstack(
+    async def physics_calc_padstack(
             vendor: str, copper_layers: int, drill_mils: float,
             kind: str = "via", outer_oz: float = 1.0,
             tier: str = "standard") -> dict[str, Any]:

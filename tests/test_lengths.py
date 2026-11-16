@@ -174,11 +174,33 @@ def test_converted_numbers_have_no_float_noise():
     assert lengths._tidy(0.1 / 0.0254) == pytest.approx(3.937008)
 
 
+def test_rouniy_placement_hints_convert_coordinates_but_keep_rotation():
+    args = {"placement_hints": {"U1": {"x": 2.54, "y": 5.08, "rotation": 90}}}
+    converted = lengths.args_in("design_execute_plan", args, "mm", args)
+    assert converted["placement_hints"]["U1"] == {"x": 100, "y": 200, "rotation": 90}
+
+
+def test_symbol_dimensions_and_expected_pour_bounds_follow_session_units():
+    args = {"pin_spacing": 2.54, "char_width": 1.27, "body_padding": 5.08}
+    assert lengths.args_in("lib_create_ic_symbol", args, "mm", args) == {
+        "pin_spacing": 100, "char_width": 50, "body_padding": 200}
+    args = {"expected_bounds": {"left": 2.54, "right": 5.08}}
+    assert lengths.args_in("pcb_grow_pour", args, "mm", args) == {
+        "expected_bounds": {"left": 100, "right": 200}}
+
+
+@pytest.mark.parametrize("tool", ["pcb_3d_capture", "pcb_render_2d"])
+def test_rouniy_picture_dimensions_remain_pixels(tool):
+    args = {"width_px": 800, "height_px": 600, "rect_mils": [0, 0, 100, 200]}
+    assert lengths.args_in(tool, args, "mm", args) == args
+
+
 # ------------------------------------------------- every length is declared
 
 #: Plain argument names that are not lengths on any tool.
 NOT_LENGTH_NAMES = re.compile(
-    r"count|index|indices|^n_|_n$|number|^rows?$|^cols?$|columns|angle|rotat|degree|"
+    # workers, ipc_class, part (a part number), length_m (metres): this fork's tools.
+    r"^workers$|^ipc_class$|^part$|_m$|count|index|indices|^n_|_n$|number|^rows?$|^cols?$|columns|angle|rotat|degree|"
     r"_deg$|ratio|factor|scale|pct|percent|fraction|weight|priority|limit|max_|"
     r"min_|timeout|seconds|_s$|_ms$|interval|retries|iterations|rounds|steps?$|"
     r"turns|_hz$|_khz$|_ghz$|freq|_ohms?$|impedance|^z0|_v$|^v_|volt|_a$|^i_|amps|"
@@ -196,7 +218,7 @@ NOT_LENGTH_NAMES = re.compile(
     r"colou?r|mode|style|orientation|type$|kind$|layers$|revision|^sides$|"
     r"increment|spokes|^symbol$|^entries$|^units$|pins|^f_|supplies|"
     r"^region$|^names_region$|^wires$|^pins$|direction|display|naming|"
-    r"multiple|_pair$|_move$")
+    r"multiple|_pair$|_move$|_gbps$|baud|^mech_layer$")
 
 
 def _surface():

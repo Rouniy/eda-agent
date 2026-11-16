@@ -15,6 +15,13 @@ from ..cli import get_bundled_scripts_path
 from .datasheet_hints import DATASHEET_RULES
 from ..atomicfile import replace_with_retry
 from .. import updates
+import asyncio
+import subprocess
+import threading
+import time
+import psutil
+from pathlib import Path
+from ..config import get_config
 
 
 _VERSION_RE = re.compile(r"SCRIPT_VERSION\s*=\s*'([^']+)'")
@@ -65,7 +72,7 @@ def _reminder_every() -> int:
 
 
 def _with_session_reminder(reply: dict[str, Any]) -> dict[str, Any]:
-    """Add ``_system_reminder`` to ``reply`` when this call is due one."""
+    """Include the session reminder on the first call and every Nth after."""
     global _reminder_calls
     _reminder_calls += 1
     if (_reminder_calls - 1) % _reminder_every() == 0:
@@ -245,6 +252,52 @@ def register_meta_tools(mcp):
     """
 
     @mcp.tool()
+    async def app_capability_probe(probe_live: bool = False) -> dict[str, Any]:
+        """Inventory installed script APIs and optional live bridge features.
+
+        The default is entirely offline: it parses the bundled handlers and
+        reports the exact command actions present. ``probe_live=True`` adds a
+        non-mutating process/ping/UI check; it never opens or edits a document.
+        """
+        from ..bridge.capabilities import inspect_script_capabilities
+        report = inspect_script_capabilities(get_bundled_scripts_path())
+        report.update({
+            "live_probed": probe_live,
+            "mcp_server_version": _mcp_server_version,
+            "bundled_script_version": _bundled_script_version(),
+        })
+        if not probe_live:
+            return report
+
+        bridge = get_bridge()
+        # Ask Altium, then report the scan against the answer. Gating the
+        # ping on the scan made this probe inherit the process table's
+        # blind spot: where the table cannot name a running Altium, every
+        # live feature read as missing while the bridge was answering.
+        # diag/doctor.py runs the same two-step for the same reason. The
+        # first attempt keeps the gate because it turns a real absence
+        # into an immediate answer instead of an IPC timeout.
+        response = bridge.ping_with_version()
+        if response is None:
+            response = bridge.ping_with_version(require_process=False)
+        scan_saw_altium = bool(bridge.is_altium_running())
+        report["altium_running"] = scan_saw_altium or response is not None
+        report["process_scan_saw_altium"] = scan_saw_altium
+        report["bridge_response"] = response
+        try:
+            inspector = _get_ui_inspector()
+            report["windows_ui"] = {
+                "available": True,
+                "window_count": len(inspector.list_windows()),
+                "dialog_count": len(inspector.list_dialogs()),
+            }
+        except Exception as exc:
+            report["windows_ui"] = {
+                "available": False, "error": str(exc),
+            }
+        return report
+
+    @mcp.tool()
     async def tool_catalog(
         category: str = "",
         maturity: str = "",
@@ -258,12 +311,20 @@ def register_meta_tools(mcp):
 
         Filters (all optional, AND-combined):
             category: core, application, project, library, generic,
-                schematic, pcb, audit, design, simulation, routing, meta,
-                parts, altium365 (and kicad on the KiCad backend). "core" is the
-                EDA-agnostic main flow and the usual start. No filter
-                returns the live ``categories`` map.
-            maturity: ``offline`` (no Altium), ``simulator`` or
-                ``live_only``.
+                schematic, pcb, audit, design, engineering, simulation, routing, meta,
+                parts, profile, altium365 (and kicad on the KiCad backend; the EasyEDA tools
+                file under the same subject headings as Altium's, so
+                "pcb" means the same thing on either). "core" holds the
+                EDA-agnostic main flow (review_design, get_board_info,
+                list_components, list_nets, run_drc, run_erc) and is the
+                usual starting point. Call with NO filter to get the live
+                ``categories`` map rather than trusting this list.
+            maturity: how far a tool can be exercised without Altium.
+                ``offline`` needs no Altium at all; ``simulator`` is
+                bridge-backed but every command it sends is implemented
+                by the in-repo Altium simulator; ``live_only`` sends at
+                least one command only real Altium answers. Filter on
+                ``offline`` to find what runs with nothing open.
             interaction: readonly | silent | modal | partial. ``modal``
                 pops a blocking dialog; ``partial`` leaves the job
                 incomplete.
@@ -503,6 +564,67 @@ def si_value_text(value: str, kind: str, with_unit: bool) -> Optional[str]:
     return f"{mantissa}{letter}{unit}"
 
 
+def _mcp_restart_command(executable: str, original_argv: list[str]) -> list[str] | None:
+    """Recreate the current stdio or HTTP entrypoint without changing transport."""
+    args = original_argv[1:]
+    if "-m" in args:
+        index = args.index("-m")
+        if index + 1 < len(args) and args[index + 1] == "eda_agent":
+            return [executable, *args]
+    if any(Path(arg.replace("\\", "/")).name.casefold() == "serve-altium-http.py"
+           for arg in args):
+        return [executable, *args]
+    return None
+
+
+def _current_altium_has_progress(bridge: Any, workspace: Path) -> bool:
+    """Ignore command markers left by an earlier, crashed Altium process."""
+    pid = bridge.process_manager.get_altium_pid()
+    if pid is None:
+        return False
+    try:
+        started = psutil.Process(pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    for marker in workspace.glob("progress_*.json"):
+        try:
+            if marker.stat().st_mtime >= started:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def _get_ui_inspector():
+    """Build a Win32 inspector for the live Altium PID (lazy for tests/Linux)."""
+    bridge = get_bridge()
+    from ..bridge.windows_ui import (
+        WindowsUiUnavailable,
+        get_altium_ui_inspector,
+    )
+    try:
+        return get_altium_ui_inspector(bridge)
+    except WindowsUiUnavailable as exc:
+        raise AltiumNotRunningError(str(exc)) from exc
+
+
+def _configured_readonly_runtime(workspace: Path) -> tuple[str, str] | None:
+    """Identify the read-only script explicitly paired with this MCP server."""
+    try:
+        marker = workspace / "altium-script-project.txt"
+        project = Path(marker.read_text(encoding="utf-8-sig").strip()).resolve(strict=True)
+        main = project.parent / "Main.pas"
+        source = main.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    if (not project.is_file() or project.name != "Altium_API.PrjScr"
+            or not re.search(r"^\s*SELECTED_PROJECT_READ_ONLY\s*=\s*True\s*;",
+                             source, re.MULTILINE)):
+        return None
+    version = _VERSION_RE.search(source)
+    return (str(main), version.group(1)) if version else None
+
+
 def register_application_tools(mcp):
     """Register application tools with the MCP server."""
 
@@ -666,10 +788,10 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def app_attach() -> dict[str, Any]:
-        """Connect to a running Altium Designer instance.
+        """Connect to Altium, starting the bundled script worker if stopped.
 
-        This verifies Altium is running and the polling script is responding.
-        The Altium_API.PrjScr script must be running (StartMCPServer) in Altium.
+        Altium must already be running. When the DelphiScript worker was stopped
+        by app_detach, the local URI launcher starts StartMCPServer again.
 
         Returns:
             Dictionary with attachment status
@@ -677,13 +799,48 @@ def register_application_tools(mcp):
         bridge = get_bridge()
         try:
             bridge.attach()
-            script_loaded = bridge.ping()
+            script_loaded = await asyncio.to_thread(bridge.ping)
+            relaunched = False
+            launch_error = None
+            if not script_loaded and sys.platform == "win32":
+                launcher = Path(__file__).resolve().parents[3] / "scripts" / "start-altium-bridge.ps1"
+                if _current_altium_has_progress(bridge, get_config().workspace_dir):
+                    launch_error = "Altium is still processing a command"
+                elif await asyncio.to_thread(bridge._dialog_probe):
+                    launch_error = "Altium has a modal dialog"
+                elif not launcher.is_file():
+                    launch_error = "local StartMCPServer launcher is unavailable"
+                else:
+                    try:
+                        proc = await asyncio.to_thread(
+                            subprocess.run,
+                            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                             "-File", str(launcher)],
+                            capture_output=True, text=True, timeout=15, check=False,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                        )
+                        if proc.returncode != 0:
+                            launch_error = (proc.stderr or proc.stdout or
+                                            f"launcher exited {proc.returncode}")[:300]
+                        else:
+                            relaunched = True
+                            for _ in range(12):
+                                await asyncio.sleep(1)
+                                if await asyncio.to_thread(bridge.ping):
+                                    script_loaded = True
+                                    break
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        launch_error = str(exc)
+            if not script_loaded:
+                bridge.detach()
             return _with_session_reminder({
-                "attached": True,
+                "attached": script_loaded,
                 "script_loaded": script_loaded,
+                "worker_launch_requested": relaunched,
+                "launch_error": launch_error,
                 "message": "Connected to Altium Designer, script is responding"
                 if script_loaded
-                else "Altium is running but script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
+                else "Altium is running but StartMCPServer did not respond.",
             })
         except AltiumNotRunningError as e:
             return _with_session_reminder({
@@ -702,8 +859,20 @@ def register_application_tools(mcp):
         ``libraries_left_unedited``); hand edits are not tracked, so save
         those with ``app_save_document``.
 
-        CHECK ``still_dirty``: Altium declines to save, silently, while a
-        command is active in the editor, and ``saved`` is false then. Run
+        Detach does not save documents; call this explicitly when a save is
+        wanted.
+
+        A LIBRARY NO TOOL EDITED IS NOT WRITTEN. Libraries opened only to
+        read from or copy out of are left untouched and listed in
+        ``libraries_left_unedited``. Edits made by hand in Altium are not
+        tracked, so save those in Altium or with ``app_save_document``.
+
+        CHECK ``still_dirty``, DO NOT ASSUME. Altium refuses to save while
+        a command is active in the editor and asks a human whether to
+        write a copy instead; DoFileSave does not raise when it declines.
+        MEASURED: this returned saved:true while every single save was
+        being refused. It now counts what is still modified afterwards,
+        and ``saved`` is false when anything is. If that happens, run
         ``app_exit_active_command`` and retry.
 
         Returns:
@@ -717,35 +886,45 @@ def register_application_tools(mcp):
         return result
 
     @mcp.tool()
-    async def app_save_document(file_path: str = "") -> dict[str, Any]:
-        """Save ONE open document: ``file_path``, or the focused one.
+    async def app_save_document(file_path: str) -> dict[str, Any]:
+        """Save one loaded Altium document at its exact absolute path.
 
-        ``app_save_all`` writes every open document, so one that cannot
-        be written, a sheet in a read-only folder say, stops a save you
-        never asked for. This touches only the named document, never
-        changes focus and never walks the workspace.
-
-        ``saved`` is measured from the file's age on disk: Altium does
-        not report a declined save. ``was_modified`` says whether Altium
-        thought there was anything to write, and it misses edits made
-        through scripts: a board changed only by this server's tools read
-        false and was saved all the same. A save Altium declines while
-        a command is active reads ``saved`` false; run
-        ``app_exit_active_command`` and retry.
-
-        Args:
-            file_path: Absolute path of an open document. Empty saves the
-                focused document.
-
-        Returns:
-            ``file_path``, ``saved``, ``was_modified`` and a ``reason``
-            when it was not saved. NOT_OPEN when the document is not open,
-            since only an open document can hold unsaved edits.
+        Unlike app_save_all, this never walks other open documents. The
+        result reports whether the named file was observably written on
+        disk; Altium's modified flag alone is not used as proof. For a
+        changed board grid this is the direct persistence step.
         """
-        bridge = get_bridge()
-        params = {"file_path": file_path} if file_path else {}
-        return await bridge.send_command_async(
-            "application.save_document", params, timeout=60.0)
+        target = Path(file_path)
+        if not target.is_absolute():
+            return {"saved": False, "reason": "file_path must be absolute"}
+        try:
+            before = target.stat() if target.exists() else None
+        except OSError as exc:
+            return {"saved": False, "reason": f"could not inspect file before save: {exc}"}
+        reply = await get_bridge().send_command_async(
+            "application.save_document", {"file_path": file_path}, timeout=120.0,
+        )
+        try:
+            after = target.stat()
+        except OSError as exc:
+            return {"saved": False, "reason": f"file absent after save: {exc}",
+                    "native_reply": reply}
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("file_path"), str)
+                or reply["file_path"].casefold() != file_path.casefold()
+                or reply.get("file_exists") is not True):
+            return {"saved": False, "reason": "native save did not identify the exact document",
+                    "native_reply": reply}
+        observed = (before is None or after.st_mtime_ns != before.st_mtime_ns
+                    or after.st_size != before.st_size)
+        return {"saved": observed, "file_path": file_path,
+                "disk_write_observed": observed,
+                "mtime_ns_before": before.st_mtime_ns if before else None,
+                "mtime_ns_after": after.st_mtime_ns,
+                "size_before": before.st_size if before else None,
+                "size_after": after.st_size,
+                "modified_after": reply.get("modified_after"),
+                "reason": "no disk write observed" if not observed else ""}
 
     @mcp.tool()
     async def app_exit_active_command() -> dict[str, Any]:
@@ -805,24 +984,33 @@ def register_application_tools(mcp):
         Args:
             file_path: the document's full path, as app_list_documents
                 reports it.
-            discard_changes: close it even when it reads modified, and
-                LOSE the unsaved edits: the modified flag is cleared first
-                so no save prompt appears. For scratch copies and documents
-                Altium changed by merely opening them, never for work. A
-                schematic an open project lists may keep the edit in the
-                project after its tab closes: ``discarded`` is then false
-                and ``project_may_hold_edit`` true; proj_close with
-                save=False drops it.
+            discard_changes: close it even when it reads modified. A sheet
+                in an open project may remain in Altium's project cache;
+                ``discarded=false`` and ``project_retains_sheet=true`` then
+                mean the tab closed but the edit is not proven gone. Close
+                the project with ``proj_close(save=False)`` to discard it.
+                Use this only for scratch copies and documents Altium
+                changed by merely opening them.
 
         Returns:
-            ``{"closed": bool, "discarded": bool, "project_may_hold_edit":
-            bool, "file_path": ...}``; an
+            ``{"closed": bool, "discarded": bool,
+            "project_retains_sheet": bool, "file_path": ...}``; an
             error when the path is not open, or when the document reads
             modified and ``discard_changes`` is not set.
         """
         params = {"file_path": file_path}
         if discard_changes:
             params["discard"] = "true"
+        else:
+            # Altium's modified flag misses scripted board edits; its title
+            # does not. Closing such a board would raise the modal save
+            # prompt, so it is refused here, as a modified read would be.
+            from ..ui.title_state import front_document_dirty
+            if front_document_dirty(file_path):
+                return {"closed": False, "file_path": file_path,
+                        "error": "the document has unsaved edits (Altium's title shows "
+                                 "'*'): save it first, or pass discard_changes=true to "
+                                 "drop them"}
         return await get_bridge().send_command_async(
             "application.close_document", params, timeout=120.0)
 
@@ -975,19 +1163,29 @@ def register_application_tools(mcp):
 
     @mcp.tool()
     async def app_detach() -> dict[str, Any]:
-        """Stop the Altium MCP polling loop. CALL THIS WHEN YOU'RE FINISHED.
+        """Release Altium's scripting engine by stopping its polling loop.
 
-        While the loop runs it holds Altium's scripting engine, so some of
-        Altium's own script-backed commands may not respond. This saves
-        edited and modified documents, leaves clean ones alone, and stops
-        the loop. Afterwards the user must run StartMCPServer again (File
-        > Run Script) before any more tools work, so detach only when done.
+        While the eda-agent MCP server is connected, a keep-alive thread pings
+        Altium every 30 s, which keeps Altium's scripting engine held by the
+        polling loop, Altium's own script-backed UI commands (some ribbon
+        buttons, Parameter Manager actions, etc.) may be unresponsive until the
+        loop is released.
+
+        Call this tool once you've finished your Altium work for the session.
+        It sends application.stop_server so the DelphiScript loop exits cleanly
+        and stops the Python keep-alive. The native stop attempts to save
+        editor-modified or tool-edited documents and leaves clean documents
+        untouched. The MCP transport remains available for tools that do not
+        need DelphiScript.
+
+        After detach, app_attach launches StartMCPServer again when the local
+        launcher is available.
 
         Returns:
             attached False always; stopped True only when Altium answered
-            that its loop stopped, with edited_saved and clean_left_alone
-            counts. Otherwise stopped False and the reason: the loop may
-            still be running.
+            that its loop stopped, with edited_saved (confirmed disk writes),
+            edited_attempted and clean_left_alone counts. Otherwise stopped
+            False and the reason: the loop may still be running.
         """
         bridge = get_bridge()
         reply: Any = None
@@ -1001,7 +1199,7 @@ def register_application_tools(mcp):
         if isinstance(reply, dict) and reply.get("stopped") is True:
             out = {"attached": False, "stopped": True,
                    "message": "Detached from Altium Designer and stopped MCP server"}
-            for key in ("edited_saved", "clean_left_alone",
+            for key in ("edited_saved", "edited_attempted", "clean_left_alone",
                         "saving_off", "not_saved", "saving_note"):
                 if key in reply:
                     out[key] = reply[key]
@@ -1012,9 +1210,8 @@ def register_application_tools(mcp):
             "attached": False,
             "stopped": False,
             "reason": reason,
-            "message": ("Detached on this side, but Altium did not confirm its "
-                        "polling loop stopped. If it was already stopped this is "
-                        "harmless; otherwise app_ping shows it still answering."),
+            "mcp_listening": True,
+            "message": "Released the Altium scripting engine; MCP transport remains available. Call app_attach to restart the script worker.",
         }
 
     @mcp.tool()
@@ -1074,6 +1271,11 @@ def register_application_tools(mcp):
                 "warnings": warnings,
                 "message": "Altium script is not responding. Run StartMCPServer in Altium_API.PrjScr.",
             }
+
+        if result.get("plt_profile") == "eda-selected-readonly-v1":
+            runtime = _configured_readonly_runtime(get_config().workspace_dir)
+            if runtime is not None:
+                script_path, bundled = runtime
 
         altium_ver = result.get("script_version") or ""
         if bundled is None:
@@ -1142,7 +1344,9 @@ def register_application_tools(mcp):
 
         Returns:
             Dictionary with mcp_server_version, bundled_script_version,
-            altium_running, altium_script_version, version_match,
+            altium_running (true when the scan saw Altium OR the bridge
+            answered), process_scan_saw_altium (what the scan alone
+            said), altium_script_version, version_match,
             round_trip_ms (None if Altium is down), workspace_dir,
             workspace_exists, and a file_counts breakdown.
         """
@@ -1174,22 +1378,40 @@ def register_application_tools(mcp):
                 pass
 
         bundled = _bundled_script_version()
-        running = bridge.is_altium_running()
         altium_ver: Optional[str] = None
         match = False
         round_trip_ms: Optional[float] = None
-        if running:
+
+        # The same two-step as app_capability_probe above: the scan is
+        # reported, never obeyed. Gating on it meant a blind process
+        # table produced a report saying Altium was down, with no version
+        # and no round trip, from the one tool whose whole job is saying
+        # what is actually wrong. The timer restarts before the attempt
+        # that does the IPC, so round_trip_ms stays the real round trip.
+        start = time.perf_counter()
+        ping = bridge.ping_with_version()
+        if ping is None:
             start = time.perf_counter()
-            ping = bridge.ping_with_version()
-            if ping is not None:
-                round_trip_ms = round((time.perf_counter() - start) * 1000.0, 1)
+            ping = bridge.ping_with_version(require_process=False)
+        if ping is not None:
+            round_trip_ms = round((time.perf_counter() - start) * 1000.0, 1)
+            # A reply that is not a dict means the handler answered in a
+            # shape this tool cannot read. The round trip is still a real
+            # measurement, so keep it and leave the version unknown. The
+            # old code reached this line only behind the process gate,
+            # which hid the assumption; raising here would hand an MCP
+            # client a stack trace, the one failure it cannot act on.
+            if isinstance(ping, dict):
                 altium_ver = ping.get("script_version") or ""
                 match = bundled is not None and altium_ver == bundled
+        scan_saw_altium = bool(bridge.is_altium_running())
+        running = scan_saw_altium or ping is not None
 
         return {
             "mcp_server_version": _mcp_server_version,
             "bundled_script_version": bundled,
             "altium_running": running,
+            "process_scan_saw_altium": scan_saw_altium,
             "altium_script_version": altium_ver,
             "version_match": match,
             "round_trip_ms": round_trip_ms,
@@ -1204,7 +1426,7 @@ def register_application_tools(mcp):
         file_path: str,
         name: Optional[str] = None,
         add_to_project: bool = True,
-        project_path: str = "",
+        project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a new blank document of a given kind and save it to disk.
 
@@ -1222,14 +1444,19 @@ def register_application_tools(mcp):
             file_path: Absolute path where the new document should live.
                 Use Windows backslashes.
             name: Optional display name. Defaults to the filename.
-            add_to_project: Attach the new file to a project. Default
-                True. Set False to leave it as a free document.
-            project_path: The .PrjPcb to attach it to. An unknown path is
-                refused before anything is created.
+            add_to_project: Attach the new file to the focused project.
+                Default True. Set False to leave it as a free document.
+            project_path: Explicit project to attach to. Prefer this whenever
+                more than one project is open; it avoids focus ambiguity.
 
         The new document is focused, and ``focused`` says whether that
         took, since the next tool acts on the focused one. A save that
         fails is an error naming the cause.
+
+        A path that is already OPEN is refused (``ALREADY_OPEN``): creating
+        over an open document crashed Altium's PCB editor. Focus it with
+        app_set_active_document instead. A file that exists on disk but is
+        not open is replaced by the blank document.
 
         A path that is already OPEN is refused (``ALREADY_OPEN``): creating
         over an open document crashed Altium's PCB editor. Focus it with
@@ -1320,6 +1547,9 @@ def register_application_tools(mcp):
         """
         bridge = get_bridge()
         result = await bridge.send_command_async("application.get_open_documents")
+        if isinstance(result, list):
+            from ..ui.title_state import mark_modified
+            result = [mark_modified(d) for d in result]
         return result
 
     @mcp.tool()
@@ -1367,7 +1597,8 @@ def register_application_tools(mcp):
         result = await bridge.send_command_async(
             "application.get_active_document",
             {} if session else {"front": "true"})
-        return result
+        from ..ui.title_state import mark_modified
+        return mark_modified(result)
 
     @mcp.tool()
     async def app_set_active_document(file_path: str) -> dict[str, Any]:
@@ -1487,7 +1718,8 @@ def register_application_tools(mcp):
     ) -> dict[str, Any]:
         """Read, write or clean up a component value. HOW IT IS WRITTEN IS
         THE USER'S CHOICE on the Config tab of the bridge panel in Altium,
-        read on every call: RKM (IEC 60062, a letter where the decimal
+        or in the active profile's preferences.json, which wins, read on
+        every call: RKM (IEC 60062, a letter where the decimal
         point would be: 4K7, 0R005, 2u2, 10uF, 3V3), SI (4.7k, 0.005, 2.2u,
         3.3V), SI with the unit (2.2uF, 100nF, 10uH; never on resistors), or
         None, which leaves values as written: cleanup returns the text
@@ -1553,21 +1785,21 @@ def register_application_tools(mcp):
         if act == "fromstring":
             return await get_bridge().send_command_async("application.format_value", params)
 
-        from ..preferences import value_format, value_unit
+        from ..preferences import value_format, value_unit, where_set
         style, unit = value_format(), value_unit()
         if style == "none" and act == "tostring":
+            where, undo = where_set("value_format")
             return {"ok": False, "value_format": "none",
-                    "reason": "No value format is chosen: the Config tab of the "
-                              "bridge panel in Altium says None, so values are "
-                              "left as written. The user can choose one there."}
+                    "reason": f"No value format is chosen: it is None {where}, "
+                              f"so values are left as written. {undo}"}
         reply = await get_bridge().send_command_async("application.format_value", params)
         if not isinstance(reply, dict) or reply.get("success") is False or "text" not in reply:
             return reply
         reply = dict(reply)
         if style == "none":
             reply["text"] = str(text)
-            reply["note"] = ("Left as written: the value format on the Config tab "
-                             "of the bridge panel is None.")
+            reply["note"] = (f"Left as written: the value format is None "
+                             f"{where_set('value_format')[0]}.")
         elif style == "si":
             exact = params.get("value") if act == "tostring" else reply.get("value")
             kind_of = kind if act == "tostring" else reply.get("kind")
@@ -1588,13 +1820,35 @@ def register_application_tools(mcp):
         Use ``app_click_menu`` when the command must actually run; it
         clicks the real menu and fails on a path that does not exist.
 
-        Any path in the focused editor's menu bar works, in English or
-        in any language Altium ships: it is looked up in Altium's own
-        menu definitions (``app_find_menu_command`` searches them) and
-        the command behind it is run, with no menu walk and no focus
-        taken. The reply names the ``command`` and ``params`` used. A
-        path the install does not declare is refused with
-        UNMAPPED_MENU_PATH and the nearest matches.
+        This sends the command and cannot tell you it ran. Altium's
+        ``RunProcess`` accepts an unknown process id in silence and
+        reports nothing back, so a typo, a command unavailable in the
+        current editor, and a command that worked are indistinguishable
+        from here. MEASURED 2026-08-17: "Tools|Preferences" returned in
+        0.11s with ``success: true`` and no dialog ever appeared. That is
+        why the reply says ``dispatched``, never ``executed``, and carries
+        ``outcome_verified: false``.
+
+        Use ``app_click_menu`` when you need the command to actually
+        happen. It walks the real menu bar and clicks the item, so it
+        fails loudly on a path that does not exist and reaches the many
+        commands that have no process id at all.
+
+        These paths are mapped to internal processes:
+        - "File|Save All"
+        - "Tools|Design Rule Check"
+        - "Tools|Electrical Rules Check"
+        - "Project|Compile"
+        - "Edit|Select All" / "Edit|Deselect All"
+        - "View|Zoom Fit"
+        - "Tools|Preferences"
+        - "Tools|Extensions and Updates"
+
+        Other paths are resolved against Altium's installed menu
+        definitions. ``app_find_menu_command`` can search those paths.
+        Paths not declared there are refused with UNMAPPED_MENU_PATH;
+        use ``app_click_menu`` to check a customised menu on screen.
+        The reply still says dispatched, never executed.
 
         Args:
             menu_path: Menu path using pipe separators (e.g., "File|Save All")
@@ -1686,3 +1940,470 @@ def register_application_tools(mcp):
         bridge = get_bridge()
         result = await bridge.send_command_async("application.get_clipboard_text")
         return result
+
+    @mcp.tool()
+    async def app_change_transaction(
+        operations: list[dict[str, Any]],
+        validations: Optional[list[dict[str, Any]]] = None,
+        label: str = "autonomous change",
+        dry_run: bool = True,
+        confirm: bool = False,
+        allow_destructive: bool = False,
+        rollback_on_failure: bool = True,
+    ) -> dict[str, Any]:
+        """Checkpoint, execute bridge commands, validate, then keep or rollback.
+
+        Each operation is ``{"command": "pcb...", "params": {...}}``.
+        Lifecycle commands are forbidden inside the transaction. Validation
+        commands must be read/audit-like. Default ``dry_run=true`` only returns
+        the checked plan. Execution requires ``confirm=true``; commands whose
+        names imply delete/remove/clear/prune/restore additionally require
+        ``allow_destructive=true``.
+        """
+        from ..bridge.change_transaction import validate_change_plan
+
+        validations = validations or []
+        errors = validate_change_plan(
+            operations, validations, allow_destructive=allow_destructive,
+        )
+        plan = {
+            "operations": operations,
+            "validations": validations,
+            "rollback_on_failure": rollback_on_failure,
+        }
+        if errors:
+            return {"success": False, "dry_run": dry_run, "errors": errors, "plan": plan}
+        if dry_run:
+            return {"success": True, "dry_run": True, "plan": plan}
+        if not confirm:
+            return {"success": False, "dry_run": False,
+                    "errors": ["confirm=true is required"], "plan": plan}
+
+        project_dir, _project_file, project_error = await _resolve_project_dir()
+        if project_error:
+            return {"success": False, "stage": "project", **project_error}
+        checkpoint_result = await app_checkpoint(label=label, save_first=True)
+        checkpoint = checkpoint_result.get("checkpoint") or {}
+        checkpoint_id = checkpoint.get("id")
+        if not checkpoint_id:
+            return {"success": False, "stage": "checkpoint", **checkpoint_result}
+
+        bridge = get_bridge()
+        applied: list[dict[str, Any]] = []
+        checked: list[dict[str, Any]] = []
+        failure: Optional[dict[str, Any]] = None
+        try:
+            for index, operation in enumerate(operations):
+                result = await bridge.send_command_async(
+                    operation["command"], operation.get("params") or {},
+                )
+                applied.append({"index": index, "command": operation["command"], "result": result})
+            for index, validation in enumerate(validations):
+                result = await bridge.send_command_async(
+                    validation["command"], validation.get("params") or {},
+                )
+                checked.append({"index": index, "command": validation["command"], "result": result})
+        except Exception as exc:
+            failure = {"error": str(exc), "applied_count": len(applied),
+                       "validation_count": len(checked)}
+
+        rollback = None
+        reloaded: list[dict[str, Any]] = []
+        if failure and rollback_on_failure:
+            rollback = await app_restore_checkpoint(checkpoint_id, prune_added=True)
+            project_dir = str(project_dir or "")
+            try:
+                docs = await bridge.send_command_async("application.get_open_documents")
+                for doc in docs if isinstance(docs, list) else []:
+                    path = str(doc.get("file_path", ""))
+                    if project_dir and not path.lower().startswith(project_dir.lower()):
+                        continue
+                    if not doc.get("loaded", True):
+                        continue
+                    result = await bridge.send_command_async(
+                        "application.reload_document",
+                        {"file_path": path, "save_before_close": "false",
+                         "discard_changes": "true"},
+                    )
+                    reloaded.append({"file_path": path, "result": result})
+            except Exception as exc:
+                reloaded.append({"error": str(exc)})
+
+        return {
+            "success": failure is None,
+            "checkpoint": checkpoint,
+            "applied": applied,
+            "validations": checked,
+            "failure": failure,
+            "rollback": rollback,
+            "reloaded": reloaded,
+        }
+
+    @mcp.tool()
+    async def app_open_document(
+        file_path: str,
+        kind: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Open an existing Altium document from disk and focus it.
+
+        Project members keep their project association because the live
+        script uses ``Client.OpenDocument`` rather than the UI open process.
+        The document kind is inferred from common Altium extensions, so
+        callers normally only need to provide the absolute path. A .WirDoc
+        always opens through the workspace manager, the one route that
+        leaves a wiring diagram sch_get_harness can read; ``kind`` is
+        ignored for it (``kind_ignored``). ``kind`` in the reply is what
+        Altium gave the document.
+
+        Args:
+            file_path: Absolute path to an existing document.
+            kind: Optional Altium server kind such as ``SCH``, ``PCB``,
+                ``SCHLIB``, ``PCBLIB``, or ``OUTPUTJOB``.
+        """
+        params: dict[str, Any] = {"file_path": file_path}
+        if kind:
+            params["kind"] = kind
+        return await get_bridge().send_command_async(
+            "application.open_document", params
+        )
+
+    @mcp.tool()
+    async def app_reload_document(
+        file_path: str,
+        kind: Optional[str] = None,
+        save_before_close: bool = False,
+        discard_changes: bool = False,
+    ) -> dict[str, Any]:
+        """Close and reopen a document so Altium rereads it from disk.
+
+        This is intended after checkpoint restoration, another external
+        file update, or a saved No ERC edit whose compiled ERC state remains
+        stale. By default it refuses to overwrite unsaved in-editor edits.
+        Set ``save_before_close=True`` to preserve them, or explicitly set
+        ``discard_changes=True`` to replace them with the disk version.
+
+        Args:
+            file_path: Absolute path of the document to reload.
+            kind: Optional Altium document kind; normally inferred.
+            save_before_close: Save dirty editor state before reopening.
+            discard_changes: Explicitly discard dirty editor state.
+        """
+        params: dict[str, Any] = {
+            "file_path": file_path,
+            "save_before_close": "true" if save_before_close else "false",
+            "discard_changes": "true" if discard_changes else "false",
+        }
+        if kind:
+            params["kind"] = kind
+        return await get_bridge().send_command_async(
+            "application.reload_document", params
+        )
+
+    @mcp.tool()
+    async def app_restart_mcp_server(delay_ms: int = 1000) -> dict[str, Any]:
+        """Restart the Python MCP process in place after returning a response.
+
+        The delayed ``exec`` preserves the current stdio or HTTP entrypoint
+        while re-importing the package. MCP clients cache the tool list; newly
+        registered tools may appear on the next reconnect.
+
+        This does not recompile Altium DelphiScript. If the script reports a
+        version mismatch, restart ``StartMCPServer`` inside Altium separately.
+
+        Args:
+            delay_ms: Grace period for the success response to flush before
+                process replacement. Allowed range 250..10000 ms.
+        """
+        if delay_ms < 250 or delay_ms > 10000:
+            return {"success": False,
+                    "reason": "delay_ms must be between 250 and 10000"}
+
+        executable = sys.executable
+        if not executable or not os.path.isfile(executable):
+            return {"success": False,
+                    "reason": "Python executable could not be resolved"}
+        command = _mcp_restart_command(executable, list(getattr(sys, "orig_argv", [])))
+        if command is None:
+            return {"success": False,
+                    "reason": "Current MCP entrypoint could not be identified for restart"}
+
+        def _restart() -> None:
+            time.sleep(delay_ms / 1000.0)
+            os.execv(executable, command)
+
+        threading.Thread(
+            target=_restart,
+            name="eda-agent-self-restart",
+            daemon=True,
+        ).start()
+        return {
+            "success": True,
+            "restart_scheduled": True,
+            "delay_ms": delay_ms,
+            "command": command,
+            "note": "Tool discovery refreshes after MCP reconnect.",
+        }
+
+    @mcp.tool()
+    async def app_list_windows(include_hidden: bool = False) -> dict[str, Any]:
+        """List native Altium windows without using the DelphiScript loop.
+
+        This remains useful when a modal dialog blocks file IPC. Each item has
+        a stable-for-the-moment Win32 handle, title, class, bounds and dialog
+        flag. Refresh before acting because handles can be recycled.
+        """
+        try:
+            windows = _get_ui_inspector().list_windows(include_hidden)
+            return {"success": True, "count": len(windows), "windows": windows}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "windows": []}
+
+    @mcp.tool()
+    async def app_list_dialogs() -> dict[str, Any]:
+        """Read visible Altium dialogs and their child controls via Win32.
+
+        Does not click, focus or dismiss anything and does not require the
+        DelphiScript polling loop to be responsive.
+        """
+        try:
+            dialogs = _get_ui_inspector().list_dialogs()
+            return {"success": True, "count": len(dialogs), "dialogs": dialogs}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "dialogs": []}
+
+    @mcp.tool()
+    async def app_capture_window(window_handle: int, output_path: str) -> dict[str, Any]:
+        """Capture an Altium window/dialog to PNG/BMP without changing focus.
+
+        Obtain a fresh handle from ``app_list_windows``. The output suffix is
+        ``.png`` is recommended for compact, lossless diagnostic artifacts.
+        """
+        try:
+            return _get_ui_inspector().capture_window(window_handle, output_path)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @mcp.tool()
+    async def app_capture_dialogs(output_dir: str) -> dict[str, Any]:
+        """Inventory and save every current Altium dialog as a PNG artifact."""
+        from pathlib import Path
+        try:
+            inspector = _get_ui_inspector()
+            target = Path(output_dir).expanduser().resolve()
+            target.mkdir(parents=True, exist_ok=True)
+            captures = []
+            for index, dialog in enumerate(inspector.list_dialogs(), 1):
+                handle = int(dialog["handle"])
+                path = target / f"{index:03d}_dialog_{handle}.png"
+                captures.append({
+                    "dialog": dialog,
+                    "capture": inspector.capture_window(handle, path),
+                })
+            return {
+                "success": True, "output_dir": str(target),
+                "count": len(captures), "captures": captures,
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "captures": []}
+
+    @mcp.tool()
+    async def app_click_dialog_button(
+        dialog_handle: int,
+        button_handle: int,
+        expected_caption: str,
+        confirm: bool = False,
+        allow_destructive: bool = False,
+    ) -> dict[str, Any]:
+        """Click one exact button from a freshly inventoried Altium dialog.
+
+        ``confirm=true`` is always required. Caption matching prevents a stale
+        handle from clicking a different control. Delete/discard/overwrite-like
+        captions additionally require ``allow_destructive=true``.
+        """
+        try:
+            return _get_ui_inspector().click_button(
+                dialog_handle, button_handle, expected_caption,
+                confirm=confirm, allow_destructive=allow_destructive,
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @mcp.tool()
+    async def app_get_script_errors() -> dict[str, Any]:
+        """Classify visible Altium compile/runtime dialogs structurally.
+
+        Returns detected file, line, symbol, buttons and an automation-safety
+        flag when those details can be extracted. This is Win32-only and does
+        not depend on a responsive DelphiScript loop.
+        """
+        try:
+            from ..bridge.dialog_diagnostics import diagnose_dialogs
+            errors = diagnose_dialogs(_get_ui_inspector().list_dialogs())
+            return {"success": True, "count": len(errors), "diagnostics": errors}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "diagnostics": []}
+
+    @mcp.tool()
+    async def app_interact_dialog_control(
+        dialog_handle: int,
+        control_handle: int,
+        expected_class: str,
+        expected_text: str,
+        action: str,
+        value: Any = None,
+        confirm: bool = False,
+        allow_destructive: bool = False,
+    ) -> dict[str, Any]:
+        """Safely edit/click a standard control from ``app_list_dialogs``.
+
+        Supported actions: ``click``, ``set_text``, ``set_checked`` and
+        ``select_index``. Exact class and current text must still match the
+        fresh inventory, which prevents stale Win32 handles from operating on
+        a changed dialog. Arbitrary coordinates and keystroke text are not
+        accepted.
+        """
+        try:
+            return _get_ui_inspector().interact_control(
+                dialog_handle, control_handle,
+                expected_class=expected_class,
+                expected_text=expected_text,
+                action=action,
+                value=value,
+                confirm=confirm,
+                allow_destructive=allow_destructive,
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @mcp.tool()
+    async def app_visual_context(output_path: str = "") -> dict[str, Any]:
+        """Bundle native UI, dialogs, fault state and optional screenshot.
+
+        The active-document probe is best-effort: if file IPC is blocked, the
+        native windows/dialog diagnostics are still returned. When
+        ``output_path`` is supplied the largest Altium top-level window is
+        captured without changing editor zoom or selection.
+        """
+        from ..bridge.dialog_diagnostics import diagnose_dialogs
+        from ..bridge.fault_state import read_fault
+        from ..config import get_config
+
+        result: dict[str, Any] = {"success": True}
+        inspector = None
+        try:
+            inspector = _get_ui_inspector()
+            result["windows"] = inspector.list_windows()
+            raw_dialogs = inspector.list_dialogs()
+            result["dialogs"] = diagnose_dialogs(raw_dialogs)
+        except Exception as exc:
+            result["windows"] = []
+            result["dialogs"] = []
+            result["ui_error"] = str(exc)
+        try:
+            result["active_document"] = await get_bridge().send_command_async(
+                "application.get_active_document", timeout=2.0,
+            )
+            result["bridge_responsive"] = True
+        except Exception as exc:
+            result["active_document"] = None
+            result["bridge_responsive"] = False
+            result["bridge_error"] = str(exc)
+        result["fault"] = read_fault(get_config().workspace_dir)
+        if output_path and inspector is not None:
+            try:
+                hwnd = inspector.main_window_handle()
+                result["capture"] = inspector.capture_window(hwnd, output_path)
+            except Exception as exc:
+                result["capture"] = {"success": False, "error": str(exc)}
+        return result
+
+    @mcp.tool()
+    async def app_restart_altium_bridge(
+        launch_hotkey: str,
+        delay_ms: int = 750,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Schedule autonomous restart of the DelphiScript polling bridge.
+
+        Before stopping a healthy bridge, this focuses ``Dispatcher.pas`` so
+        Altium's normal F9 command runs the script project's configured
+        ``StartProcName``. The supervisor then closes the MCP status window
+        (or sends Ctrl+F3 when a script error is already open), sends the
+        launch hotkey, and polls ``application.ping`` until the deployed
+        ``SCRIPT_VERSION`` is running. Protected save/license/update dialogs
+        block the restart and are reported instead of being dismissed.
+        """
+        if delay_ms < 250 or delay_ms > 10000:
+            return {"success": False, "reason": "delay_ms must be 250..10000"}
+        if timeout_seconds < 1 or timeout_seconds > 300:
+            return {"success": False, "reason": "timeout_seconds must be 1..300"}
+        try:
+            inspector = _get_ui_inspector()
+            bridge = get_bridge()
+            from ..bridge.altium_supervisor import AltiumBridgeSupervisor
+            from ..config import get_config
+            expected = _bundled_script_version() or ""
+            script_document = get_bundled_scripts_path() / "Dispatcher.pas"
+            prepare: dict[str, Any]
+            try:
+                documents = await bridge.send_command_async(
+                    "application.get_open_documents", {}, timeout=5.0,
+                )
+                if isinstance(documents, list):
+                    loaded_dispatcher = next((
+                        d for d in documents
+                        if str(d.get("file_name", "")).lower() == "dispatcher.pas"
+                        and d.get("loaded")
+                    ), None)
+                    if loaded_dispatcher and loaded_dispatcher.get("file_path"):
+                        script_document = Path(str(loaded_dispatcher["file_path"]))
+                prepare = await bridge.send_command_async(
+                    "application.set_active_document",
+                    {"file_path": str(script_document)},
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                # A compile/runtime fault may already have stopped IPC. The
+                # supervisor still has a valid direct-stop recovery path.
+                prepare = {"success": False, "error": str(exc)}
+
+            def run_restart() -> None:
+                time.sleep(delay_ms / 1000.0)
+                supervisor = AltiumBridgeSupervisor(
+                    inspector,
+                    get_config().workspace_dir,
+                    lambda: bridge.send_command(
+                        "application.ping", timeout=2.0
+                    ),
+                )
+                supervisor.restart(
+                    launch_hotkey=launch_hotkey,
+                    expected_script_version=expected,
+                    timeout_seconds=timeout_seconds,
+                )
+
+            threading.Thread(
+                target=run_restart,
+                name="eda-agent-altium-bridge-restart",
+                daemon=True,
+            ).start()
+            return {
+                "success": True,
+                "restart_scheduled": True,
+                "delay_ms": delay_ms,
+                "timeout_seconds": timeout_seconds,
+                "launch_hotkey": launch_hotkey,
+                "expected_script_version": expected,
+                "prepared_script_document": prepare,
+                "note": "Poll app_get_restart_status until state is running or failed.",
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    @mcp.tool()
+    async def app_get_restart_status() -> dict[str, Any]:
+        """Read the detached Altium bridge supervisor's latest status."""
+        from ..bridge.altium_supervisor import read_restart_status
+        from ..config import get_config
+        status = read_restart_status(get_config().workspace_dir)
+        return {"success": True, "status": status, "pending": status is None}

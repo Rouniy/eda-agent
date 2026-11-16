@@ -26,10 +26,13 @@ draws labelled bounding-box bodies with pin stubs, not the symbol art).
 from __future__ import annotations
 
 from pathlib import Path
+import math
+import tempfile
 from typing import Any, Optional
 
 from ..bridge import get_bridge
 from ..config import get_config
+from ..units import MM_PER_MIL
 from ..render import (
     render_sch_svg, SchRenderOptions,
     render_pcb_svg, PcbRenderOptions,
@@ -76,6 +79,45 @@ BACKDROP_CHOICES = {
 
 def register_render_tools(mcp):
     """Register rendering tools with the MCP server."""
+
+    @mcp.tool()
+    async def design_compare_svg(
+        before_path: str,
+        after_path: str,
+        output_path: Optional[str] = None,
+        rasterize: bool = True,
+        width: int = 2000,
+    ) -> dict[str, Any]:
+        """Create a self-contained before/after comparison from two EDA SVGs.
+
+        This tool is completely offline. It preserves the original structured
+        SVGs inside side-by-side panels and reports content hashes plus counts
+        of groups carrying EDA ``data-*`` identifiers.
+        """
+        from ..render.svg_compare import compare_svg_files
+        before = Path(before_path).expanduser().resolve()
+        after = Path(after_path).expanduser().resolve()
+        if not before.is_file() or not after.is_file():
+            return {
+                "ok": False,
+                "reason": "before_path and after_path must name readable files",
+            }
+        target = (
+            Path(output_path).expanduser().resolve()
+            if output_path else _renders_dir() / "before_after.svg"
+        )
+        if target.suffix.lower() != ".svg":
+            target = target.with_suffix(".svg")
+        result = compare_svg_files(before, after, target)
+        result["png_path"] = None
+        if rasterize:
+            png = str(target.with_suffix(".png"))
+            rr = rasterize_svg(str(target), png, width=int(width))
+            if rr.get("ok"):
+                result["png_path"] = rr["png_path"]
+            else:
+                result["rasterize_note"] = rr.get("reason")
+        return result
 
     @mcp.tool()
     async def sch_render_svg(
@@ -144,7 +186,7 @@ def register_render_tools(mcp):
         flip_y: bool = True,
         show_drills: bool = True,
         show_texts: bool = True,
-        show_designators: bool = True,
+        show_designators: bool = False,
         interactive_legend: bool = True,
         background: str = "#1f2937",
     ) -> dict[str, Any]:
@@ -168,7 +210,9 @@ def register_render_tools(mcp):
             flip_y: Flip Y to Altium's bottom-left origin (default True).
             show_drills: Draw pad and via holes.
             show_texts: Draw overlay texts.
-            show_designators: Draw designators.
+            show_designators: Add magenta italic labels at each part's
+                origin. The board's own designator text is drawn from its
+                actual layer with the other texts.
             interactive_legend: Add a clickable per-layer legend.
             background: Background fill; ``"none"`` for transparent.
 
@@ -204,6 +248,105 @@ def register_render_tools(mcp):
             "bbox": geometry.get("bbox") or {},
             "bytes": len(svg),
         }
+
+    @mcp.tool()
+    async def pcb_render_2d(
+        layers: list[str],
+        width_px: int,
+        output_path: str,
+        rect_mils: Optional[list[float]] = None,
+    ) -> dict[str, Any]:
+        """Rasterize selected PCB layers in an exact board-coordinate rectangle.
+
+        The image is generated from Altium's live geometry through the local
+        SVG renderer. It is a geometry rendering, not Altium's editor pixels;
+        colors, fonts, fills, and antialiasing may differ from the editor.
+        ``rect_mils`` is [left, bottom, right, top] in mils and defaults to
+        the whole board. Layer names accept Altium's spaced UI forms, such as
+        ``Top Layer`` and ``Mechanical 13``. ``Outline`` and ``MultiLayer``
+        may be included explicitly; no extra layers are added. The PNG
+        height follows the rectangle aspect ratio. The response reports the
+        actual rectangle and mils per pixel.
+        """
+        if (not isinstance(layers, list) or not layers or
+                any(not isinstance(layer, str) or not layer for layer in layers)):
+            return {"ok": False, "reason": "layers must be a nonempty list of names"}
+        if not isinstance(width_px, int) or not 1 <= width_px <= 8192:
+            return {"ok": False, "reason": "width_px must be 1..8192"}
+        target = Path(output_path).expanduser().resolve()
+        if target.suffix.lower() != ".png":
+            return {"ok": False, "reason": "output_path must end in .png"}
+
+        geometry = await get_bridge().send_command_async(
+            "generic.get_pcb_geometry", {}, timeout=120.0)
+        if not isinstance(geometry, dict):
+            return {"ok": False, "reason": "no PCB geometry returned"}
+        if rect_mils is None:
+            bbox = geometry.get("bbox") or {}
+            try:
+                x1, y1, x2, y2 = (float(bbox[key]) for key in ("x1", "y1", "x2", "y2"))
+            except (KeyError, TypeError, ValueError):
+                return {"ok": False, "reason": "board bounding box is unavailable"}
+        else:
+            if not isinstance(rect_mils, list) or len(rect_mils) != 4:
+                return {"ok": False, "reason": "rect_mils must contain four coordinates"}
+            try:
+                x1, y1, x2, y2 = (float(v) for v in rect_mils)
+            except (TypeError, ValueError):
+                return {"ok": False, "reason": "rect_mils must contain numbers"}
+        if not all(math.isfinite(v) for v in (x1, y1, x2, y2)) or x2 <= x1 or y2 <= y1:
+            return {"ok": False, "reason": "rect_mils must be finite [left, bottom, right, top]"}
+        height_px = round(width_px * (y2 - y1) / (x2 - x1))
+        if not 1 <= height_px <= 8192:
+            return {"ok": False, "reason": "resulting height must be 1..8192 pixels"}
+        available = set(geometry.get("layers") or {})
+        for kind in ("regions", "tracks", "arcs", "pads", "texts"):
+            available.update(item.get("layer") for item in geometry.get(kind) or [])
+        available.update(("Outline", "MultiLayer"))
+        compact = {str(name).casefold().replace(" ", "").replace("_", ""): name
+                   for name in available if name}
+        normalized = []
+        for layer in layers:
+            key = layer.casefold().replace(" ", "").replace("_", "")
+            normalized.append(compact.get(key, layer))
+        unknown = sorted(set(normalized) - available)
+        if unknown:
+            return {"ok": False, "reason": f"unknown PCB layers: {', '.join(unknown)}",
+                    "available_layers": sorted(str(x) for x in available if x)}
+
+        # The renderer normally honors Altium's layer visibility and adds
+        # an outline, labels, and drills. Here the caller's list is exact.
+        selected = set(normalized)
+        region = dict(geometry)
+        region["bbox"] = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+        region["outline"] = geometry.get("outline") if "Outline" in selected else []
+        region["components"] = []
+        region["vias"] = geometry.get("vias") if "MultiLayer" in selected else []
+        region["layers"] = {
+            name: {**meta, "visible": name in selected}
+            for name, meta in (geometry.get("layers") or {}).items()
+            if isinstance(meta, dict)
+        }
+        svg = render_pcb_svg(region, PcbRenderOptions(
+            margin_mils=0, layers=normalized, flip_y=True,
+            show_drills="MultiLayer" in selected,
+            show_designators=False, interactive_legend=False,
+        ))
+        svg = svg.replace("<svg ", f'<svg width="{width_px}" height="{height_px}" ', 1)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="pcb_render_") as tmp:
+            svg_path = Path(tmp) / "region.svg"
+            svg_path.write_text(svg, encoding="utf-8")
+            result = rasterize_svg(str(svg_path), str(target),
+                                   width=width_px, height=height_px, timeout=120.0)
+        if not result.get("ok"):
+            return {"ok": False, "reason": result.get("reason", "rasterization failed")}
+        return {"ok": True, "output_path": str(target), "width_px": width_px,
+                "height_px": height_px, "rect_mils": [x1, y1, x2, y2],
+                "layers": normalized,
+                "mils_per_pixel": (x2 - x1) / width_px,
+                "scale_px_per_mm": width_px / ((x2 - x1) * MM_PER_MIL),
+                "source": "Altium geometry; local SVG renderer"}
 
     @mcp.tool()
     async def pcb_render_3d(
@@ -545,6 +688,71 @@ def register_render_tools(mcp):
             f"Read {viewable} and critique it against `rubric`, then work "
             "through `loop_protocol`."
         )
+        return result
+
+    @mcp.tool()
+    async def design_capture_snapshot(
+        session_id: str,
+        phase: str = "before",
+        target: str = "auto",
+        include_ui: bool = True,
+        include_dialogs: bool = True,
+        width: int = 1600,
+    ) -> dict[str, Any]:
+        """Capture a versioned SVG/PNG/UI manifest for before-after review.
+
+        ``session_id`` groups multiple snapshots. ``phase`` is normally
+        ``before`` or ``after``. Files are stored below the MCP workspace's
+        artifacts directory and never beside the Altium project.
+        """
+        import json
+        import re
+        safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", session_id).strip("._")
+        safe_phase = re.sub(r"[^A-Za-z0-9_.-]+", "_", phase).strip("._")
+        if not safe_session or not safe_phase:
+            return {
+                "ok": False,
+                "reason": "session_id and phase must contain a safe character",
+            }
+        artifact_dir = get_config().workspace_dir / "artifacts" / safe_session
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        document = await design_visual_review(
+            target=target,
+            output_path=str(artifact_dir / f"document.{safe_phase}.svg"),
+            rasterize=True,
+            width=width,
+        )
+        result: dict[str, Any] = {
+            "ok": bool(document.get("ok")), "session_id": safe_session,
+            "phase": safe_phase, "artifact_dir": str(artifact_dir),
+            "document": document, "ui": None, "dialogs": [],
+        }
+        if include_ui or include_dialogs:
+            try:
+                from ..bridge.windows_ui import get_altium_ui_inspector
+                inspector = get_altium_ui_inspector(get_bridge())
+                if include_ui:
+                    result["ui"] = inspector.capture_window(
+                        inspector.main_window_handle(),
+                        artifact_dir / f"altium-ui.{safe_phase}.png",
+                    )
+                if include_dialogs:
+                    dialogs = inspector.list_dialogs()
+                    for index, dialog in enumerate(dialogs, 1):
+                        capture = inspector.capture_window(
+                            int(dialog["handle"]),
+                            artifact_dir / f"dialog.{safe_phase}.{index:03d}.png",
+                        )
+                        result["dialogs"].append({
+                            "metadata": dialog, "capture": capture,
+                        })
+            except Exception as exc:
+                result["ui_note"] = str(exc)
+        manifest = artifact_dir / f"manifest.{safe_phase}.json"
+        manifest.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        result["manifest_path"] = str(manifest)
         return result
 
     @mcp.tool()

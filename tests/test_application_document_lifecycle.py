@@ -1,0 +1,158 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Python-side coverage for document open/close/reload MCP tools."""
+
+from __future__ import annotations
+
+import pytest
+import os
+
+
+class _DummyMcp:
+    def __init__(self):
+        self.tools = {}
+
+    def tool(self):
+        def decorator(fn):
+            self.tools[fn.__name__] = fn
+            return fn
+        return decorator
+
+
+class _Bridge:
+    def __init__(self):
+        self.calls = []
+
+    async def send_command_async(self, command, params=None, timeout=None):
+        self.calls.append((command, params or {}))
+        return {"success": True}
+
+
+def _tools(monkeypatch):
+    from eda_agent.tools import application
+
+    bridge = _Bridge()
+    monkeypatch.setattr(application, "get_bridge", lambda: bridge)
+    mcp = _DummyMcp()
+    application.register_application_tools(mcp)
+    return mcp.tools, bridge
+
+
+@pytest.mark.asyncio
+async def test_open_document_infers_kind_in_live_script(monkeypatch):
+    tools, bridge = _tools(monkeypatch)
+    await tools["app_open_document"]("C:\\p\\board.PcbDoc")
+    assert bridge.calls[-1] == (
+        "application.open_document",
+        {"file_path": "C:\\p\\board.PcbDoc"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_document_refuses_unsaved_changes_by_default(monkeypatch):
+    tools, bridge = _tools(monkeypatch)
+    await tools["app_close_document"]("C:\\p\\main.SchDoc")
+    assert bridge.calls[-1][0] == "application.close_document"
+    assert bridge.calls[-1][1] == {"file_path": "C:\\p\\main.SchDoc"}
+
+
+@pytest.mark.asyncio
+async def test_reload_document_defaults_to_disk_without_discard(monkeypatch):
+    tools, bridge = _tools(monkeypatch)
+    await tools["app_reload_document"]("C:\\p\\main.SchDoc", kind="SCH")
+    assert bridge.calls[-1] == (
+        "application.reload_document",
+        {
+            "file_path": "C:\\p\\main.SchDoc",
+            "save_before_close": "false",
+            "discard_changes": "false",
+            "kind": "SCH",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_document_observes_only_exact_target_disk_write(monkeypatch, tmp_path):
+    from eda_agent.tools import application
+
+    target = tmp_path / "scratch.PcbDoc"
+    target.write_bytes(b"before")
+
+    class SavingBridge:
+        async def send_command_async(self, command, params, timeout=None):
+            assert command == "application.save_document"
+            assert params == {"file_path": str(target)}
+            old_ns = target.stat().st_mtime_ns
+            target.write_bytes(b"after")
+            os.utime(target, ns=(old_ns + 2_000_000_000, old_ns + 2_000_000_000))
+            return {"file_path": str(target), "file_exists": True,
+                    "modified_after": False}
+
+    monkeypatch.setattr(application, "get_bridge", lambda: SavingBridge())
+    mcp = _DummyMcp()
+    application.register_application_tools(mcp)
+    result = await mcp.tools["app_save_document"](str(target))
+    assert result["saved"] and result["disk_write_observed"]
+    assert target.read_bytes() == b"after"
+
+
+@pytest.mark.asyncio
+async def test_save_document_refuses_unobserved_or_wrong_file(monkeypatch, tmp_path):
+    from eda_agent.tools import application
+
+    target = tmp_path / "scratch.PcbDoc"
+    target.write_bytes(b"unchanged")
+
+    class NoopBridge:
+        def __init__(self, actual):
+            self.actual = actual
+
+        async def send_command_async(self, command, params, timeout=None):
+            return {"file_path": self.actual, "file_exists": True,
+                    "modified_after": False}
+
+    mcp = _DummyMcp()
+    application.register_application_tools(mcp)
+    monkeypatch.setattr(application, "get_bridge", lambda: NoopBridge(str(target)))
+    result = await mcp.tools["app_save_document"](str(target))
+    assert result["saved"] is False and result["reason"] == "no disk write observed"
+    monkeypatch.setattr(application, "get_bridge", lambda: NoopBridge(str(tmp_path / "other.PcbDoc")))
+    result = await mcp.tools["app_save_document"](str(target))
+    assert result["saved"] is False and "exact document" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_restart_mcp_server_schedules_delayed_exec(monkeypatch):
+    from eda_agent.tools import application
+
+    started = []
+
+    class _Thread:
+        def __init__(self, target, name, daemon):
+            started.append((target, name, daemon))
+
+        def start(self):
+            started.append("started")
+
+    monkeypatch.setattr(application.threading, "Thread", _Thread)
+    monkeypatch.setattr(application.sys, "orig_argv",
+                        [application.sys.executable, "-m", "eda_agent"])
+    tools, _ = _tools(monkeypatch)
+    out = await tools["app_restart_mcp_server"](delay_ms=750)
+    assert out["restart_scheduled"] is True
+    assert out["command"][-2:] == ["-m", "eda_agent"]
+    assert started[-1] == "started"
+
+
+def test_restart_command_preserves_http_entrypoint():
+    from eda_agent.tools.application import _mcp_restart_command
+
+    command = _mcp_restart_command(
+        r"C:\Python\python.exe",
+        [r"C:\Python\python.exe", r"D:\ai\eda-agent\scripts\serve-altium-http.py",
+         "--port", "14701"],
+    )
+    assert command == [r"C:\Python\python.exe",
+                       r"D:\ai\eda-agent\scripts\serve-altium-http.py",
+                       "--port", "14701"]
+    assert _mcp_restart_command(r"C:\Python\python.exe",
+                                [r"C:\Python\python.exe", "-c", "print(1)"]) is None

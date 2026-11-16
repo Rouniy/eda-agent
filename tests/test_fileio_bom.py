@@ -1,0 +1,167 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+"""Tests for the headless BOM consolidation (roadmap V1)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from eda_agent.fileio.altium_sch import read_schematic_components
+from eda_agent.fileio.bom import bom_from_file, bom_to_csv, consolidate_bom
+from eda_agent.fileio.review import review_project_file
+
+_FIXDIR = Path(__file__).resolve().parent / "integration" / "fixtures"
+FIXTURE = _FIXDIR / "main.SchDoc"
+PRJ = _FIXDIR / "EDAAgentTest.PrjPcb"
+
+
+def _c(designator, mpn="", value="", lib_reference="RES", manufacturer="M",
+       datasheet="u"):
+    return {"designator": designator, "mpn": mpn, "value": value,
+            "lib_reference": lib_reference, "manufacturer": manufacturer,
+            "datasheet": datasheet}
+
+
+def test_identical_parts_merge_into_one_line():
+    lines = consolidate_bom([
+        _c("R1", value="10k"), _c("R2", value="10k"), _c("R3", value="10k")])
+    assert len(lines) == 1
+    assert lines[0]["quantity"] == 3
+    assert lines[0]["designators"] == ["R1", "R2", "R3"]
+
+
+def test_distinct_values_stay_separate():
+    lines = consolidate_bom([_c("R1", value="10k"), _c("R2", value="1k")])
+    assert len(lines) == 2
+    assert all(line["quantity"] == 1 for line in lines)
+
+
+def test_designators_sort_naturally():
+    # R10 must come AFTER R2, not lexically before it.
+    lines = consolidate_bom([
+        _c("R10", value="10k"), _c("R2", value="10k"), _c("R1", value="10k")])
+    assert lines[0]["designators"] == ["R1", "R2", "R10"]
+
+
+def test_lines_ordered_by_first_designator():
+    lines = consolidate_bom([
+        _c("R5", value="1k"), _c("C1", value="100n", lib_reference="CAP")])
+    # C1 line sorts before R5 line.
+    assert lines[0]["designators"][0] == "C1"
+    assert lines[1]["designators"][0] == "R5"
+
+
+def test_component_without_designator_skipped():
+    lines = consolidate_bom([_c("", value="10k"), _c("R1", value="10k")])
+    assert sum(line["quantity"] for line in lines) == 1
+    assert lines[0]["designators"] == ["R1"]
+
+
+def test_mpn_distinguishes_same_value():
+    # Same value but different MPN -> different orderable parts.
+    lines = consolidate_bom([
+        _c("R1", value="10k", mpn="RC0603-10K-A"),
+        _c("R2", value="10k", mpn="RC0603-10K-B")])
+    assert len(lines) == 2
+
+
+def test_real_fixture_quantities_sum_to_component_count():
+    comps = read_schematic_components(FIXTURE)
+    lines = consolidate_bom(comps)
+    # Every placed component appears exactly once across all BOM lines.
+    assert sum(line["quantity"] for line in lines) == len(comps) == 14
+    all_desigs = [d for line in lines for d in line["designators"]]
+    assert len(all_desigs) == len(set(all_desigs)) == 14
+
+
+def test_bom_to_csv_has_header_and_rows():
+    lines = consolidate_bom([_c("R1", value="10k"), _c("R2", value="10k")])
+    csv_text = bom_to_csv(lines)
+    rows = csv_text.strip().split("\n")
+    assert rows[0].startswith("Quantity,Designators,MPN")
+    assert len(rows) == 2  # header + one consolidated line
+    assert '"R1, R2"' in csv_text  # grouped designators quoted as one cell
+
+
+def test_bom_from_schdoc_file():
+    lines = bom_from_file(FIXTURE)
+    assert sum(ln["quantity"] for ln in lines) == 14  # all placed components
+    all_desigs = [d for ln in lines for d in ln["designators"]]
+    assert len(all_desigs) == len(set(all_desigs)) == 14
+
+
+def test_bom_from_project_file():
+    # A .PrjPcb aggregates its sheets (here one sheet, main.SchDoc).
+    lines = bom_from_file(PRJ)
+    assert sum(ln["quantity"] for ln in lines) == 14
+
+
+def test_bom_to_csv_empty_is_header_only():
+    assert bom_to_csv([]).strip().split("\n") == ["Quantity,Designators,MPN,"
+                                                  "Manufacturer,Value,"
+                                                  "LibReference,Datasheet"]
+
+
+# ---------------------------------------------------------------------------
+# Empty-result refusal (2026-09-09): an empty BOM with success for a populated
+# design is failed extraction. Reproduced on a real 172-component project:
+# a nonexistent path (and any non-project suffix) returned [] with exit 0.
+
+import pytest
+
+from eda_agent.fileio.review import review_project_file
+
+
+def test_nonexistent_path_raises_not_empty(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        bom_from_file(tmp_path / "no-such-project.PrjPcb")
+
+
+def test_wrong_suffix_raises_not_empty(tmp_path):
+    fake = tmp_path / "board.PcbDoc"
+    fake.write_bytes(b"not a schematic")
+    with pytest.raises(ValueError, match="not a .SchDoc or .PrjPcb"):
+        bom_from_file(fake)
+
+
+def test_project_without_structure_file_raises(tmp_path):
+    prj = tmp_path / "board.PrjPcb"
+    prj.write_text("[Design]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no schematic sheets resolved"):
+        bom_from_file(prj)
+
+
+def test_structure_pointing_at_missing_sheets_raises(tmp_path):
+    prj = tmp_path / "board.PrjPcb"
+    prj.write_text("[Design]\n", encoding="utf-8")
+    (tmp_path / "board.PrjPcbStructure").write_text(
+        "Record=TopLevelDocument|FileName=gone.SchDoc|SheetNumber=\n",
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="no schematic sheets resolved"):
+        bom_from_file(prj)
+
+
+def test_review_nonexistent_path_raises_not_clean(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        review_project_file(tmp_path / "no-such-project.PrjPcb")
+
+
+def test_review_wrong_suffix_raises_not_clean(tmp_path):
+    fake = tmp_path / "board.PcbDoc"
+    fake.write_bytes(b"not a schematic")
+    with pytest.raises(ValueError, match="refusing to guess"):
+        review_project_file(fake)
+
+
+def test_review_project_without_structure_raises(tmp_path):
+    prj = tmp_path / "board.PrjPcb"
+    prj.write_text("[Design]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="silent clean pass"):
+        review_project_file(prj)
+
+
+def test_real_fixture_still_reads():
+    lines = bom_from_file(PRJ)
+    assert lines, "fixture project must yield a non-empty BOM"

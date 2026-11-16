@@ -215,23 +215,22 @@ def test_the_other_sheet_pin_readers_filter_the_same_way(func):
 
 
 def test_the_helper_is_the_same_rule():
-    body = load(_ALTIUM / "Utils.pas")["PinShownOn"]
+    body = load(_ALTIUM / "Generic.pas")["PinShownOn"]
     assert "Result := (Owner = 0) Or (Owner = PartId);" in body
 
 
 def test_the_placer_sets_the_part_and_reads_it_back():
     body = load(_ALTIUM / "Generic.pas")["Gen_PlaceSchComponentsFromLibrary"]
-    put = body.index("PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);")
+    put = body.index("SchDoc.AddSchObject(Comp)")
     # Set before the add, through both setters, part 1 included.
     assert body.index("Comp.SetState_CurrentPartID(PartId);") < put
     assert body.index("Comp.CurrentPartID := PartId;") < put
-    assert body.count("If PartId >= 1 Then") == 2
     # Defaulted to part 1, so a caller that sends no part_id (an older
     # server) still gets its part written and read back.
     assert "PartId := StrToIntDef(GetBatchField(Op, 'part_id'), 1);" in body
     assert "If PartId < 1 Then PartId := 1;" in body
     assert "If PartAfter <> PartId Then" in body
-    assert "':PART_REFUSED'" in body
+    assert '"issue":"PART_REFUSED"' in body
 
 
 def test_a_part_is_set_inside_the_modify_bracket_the_compiler_listens_to():
@@ -245,6 +244,6 @@ def test_a_part_is_set_inside_the_modify_bracket_the_compiler_listens_to():
     assert begin < helper.index("Comp.CurrentPartID := PartId;") < end
     assert end < helper.index("RefreshSchObjectRender(Comp);")
     placer = gen["Gen_PlaceSchComponentsFromLibrary"]
-    put = placer.index("PutLoadedComponent(SchDoc, Comp, X, Y, Rotation, Desig);")
+    put = placer.index("SchDoc.AddSchObject(Comp)")
     assert placer.index("SetSchPartId(Comp, PartId);") > put
     assert "SetSchPartId(Comp, PartId);" in gen["Gen_SetComponentPartId"]

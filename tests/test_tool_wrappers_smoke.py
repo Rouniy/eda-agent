@@ -82,7 +82,7 @@ class FakeBridge:
     def detach(self, *_a, **_k) -> dict:
         return {"detached": True}
 
-    def send_command(self, command, params=None, timeout=None):
+    def send_command(self, command, params=None, timeout=None, **_kwargs):
         self.calls.append((command, params or {}))
         return {
             "success": True, "count": 0, "checked": 0, "violations": 0,
@@ -90,8 +90,10 @@ class FakeBridge:
             "pins": [], "results": [], "pads": [], "layers": [],
         }
 
-    async def send_command_async(self, command, params=None, timeout=None):
-        return self.send_command(command, params, timeout)
+    async def send_command_async(
+        self, command, params=None, timeout=None, **kwargs
+    ):
+        return self.send_command(command, params, timeout, **kwargs)
 
 
 @pytest.fixture
@@ -162,6 +164,11 @@ def test_the_workspace_sandbox_actually_redirects(isolated_bridge, tmp_path):
 _WRAPPER_FAULTS = (TypeError, NameError, AttributeError, UnboundLocalError,
                    IndexError, ZeroDivisionError)
 
+# Calling this tool schedules ``os.execv`` on a daemon thread. It is valid in
+# a live MCP process but would replace pytest itself shortly after the smoke
+# call returns, preventing the rest of the suite and its summary from running.
+_PROCESS_CONTROL_TOOLS = {"app_restart_mcp_server"}
+
 
 def _no_argument_bridge_tools(backend="altium"):
     """Registered tools that take no required argument and use the bridge.
@@ -190,6 +197,7 @@ def _no_argument_bridge_tools(backend="altium"):
         backends.set_active_backend(previous or "")
     names = [t.name for t in tools
              if not (t.inputSchema or {}).get("required")
+             and t.name not in _PROCESS_CONTROL_TOOLS
              and tool_metadata(t.name)["maturity"] != "offline"]
     return registry, sorted(names)
 

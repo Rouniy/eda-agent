@@ -94,6 +94,8 @@ def test_register_exposes_route_tools(tools):
         "pcb_route_simulate",
         "pcb_autoplace",
         "pcb_autoplace_apply",
+        "route_build_offline_package",
+        "route_audit_plan",
     }
 
 
@@ -150,12 +152,186 @@ def test_route_plan_nets_filter_reports_unknown(tools):
 
 
 def test_route_plan_nets_filter_all_unknown(tools):
+    # Routing none of the requested nets must NOT read as a clean run.
+    # This used to return ok:True with completion 1.0, because the router
+    # divided by the nets it attempted (zero) -- which is how seven real
+    # nets came back as "unknown" alongside "100% complete".
     res = _run(tools["route_plan"](
         geometry=_two_net_geom(), rules=RULES, nets=["NOPE"]))
-    assert res["ok"] is True
+    assert res["ok"] is False
     assert res["summary"]["nets_total"] == 0
+    assert res["summary"]["completion"] == 0.0
+    assert res["summary"]["requested_count"] == 1
+    assert res["summary"]["unknown_count"] == 1
     assert res["unknown_nets"] == ["NOPE"]
+    assert (res["unknown_net_reasons"]["NOPE"]["reason"]
+            == "absent_from_geometry")
     assert res["tracks"] == []
+
+
+def test_route_plan_partial_unknown_scales_completion_to_requested(tools):
+    # One of two requested nets is routable: completion is 1/2, not 1/1.
+    res = _run(tools["route_plan"](
+        geometry=_two_net_geom(), rules=RULES, nets=["NET1", "NOPE"]))
+    assert res["ok"] is True
+    assert res["summary"]["routed"] == 1
+    assert res["summary"]["requested_count"] == 2
+    assert res["summary"]["completion"] == 0.5
+
+
+def test_route_plan_unknown_net_blames_the_routing_layers(tools):
+    # Pads exist and carry the net, but sit on a layer outside
+    # rules.layers. That is a reachability problem, not a missing net,
+    # and reporting it as "unknown" is what produced the wrong call.
+    geom = _geom([
+        _pad(100, 100, "INNER", layer="MidLayer1"),
+        _pad(900, 100, "INNER", layer="MidLayer1"),
+    ])
+    res = _run(tools["route_plan"](
+        geometry=geom, rules=RULES, nets=["INNER"]))
+    assert res["ok"] is False
+    assert res["unknown_nets"] == ["INNER"]
+    reason = res["unknown_net_reasons"]["INNER"]
+    assert reason["reason"] == "pads_off_routing_layers"
+    assert reason["pads_dropped"] == 2
+    assert res["geometry_summary"]["pads_dropped_off_routing_layers"] == 2
+    assert res["geometry_summary"]["nets_with_pads"] == 1
+    assert res["geometry_summary"]["nets_with_terminals"] == 0
+
+
+def test_route_plan_flags_geometry_short_of_declared_counts(tools):
+    # The payload says it holds 4 pads and delivers 2. Whatever dropped
+    # them, the routing input is incomplete, so the run must not present
+    # its unknown_nets as fact.
+    geom = _two_net_geom()
+    geom["counts"] = {"pads": 4, "tracks": 0, "vias": 0}
+    geom["pads"] = geom["pads"][:2]  # NET2's pads never arrived
+    res = _run(tools["route_plan"](
+        geometry=geom, rules=RULES, nets=["NET1", "NET2"]))
+    assert res["ok"] is False
+    assert res["geometry_summary"]["truncated"] is True
+    assert res["geometry_summary"]["count_mismatches"]["pads"] == {
+        "declared": 4, "received": 2}
+    assert "incomplete" in res["reason"]
+    assert res["unknown_nets"] == ["NET2"]
+
+
+def test_route_plan_intact_geometry_is_not_flagged_truncated(tools):
+    geom = _two_net_geom()
+    geom["counts"] = {"pads": 4, "tracks": 0, "vias": 0}
+    res = _run(tools["route_plan"](geometry=geom, rules=RULES))
+    assert res["ok"] is True
+    assert res["geometry_summary"]["truncated"] is False
+    assert res["geometry_summary"]["count_mismatches"] == {}
+    assert res["geometry_summary"]["pads_seen"] == 4
+    assert res["geometry_summary"]["pads_used_as_terminals"] == 4
+
+
+def test_route_plan_geometry_summary_without_counts_block(tools):
+    # Older payloads carry no `counts`; absence is not evidence of loss.
+    res = _run(tools["route_plan"](geometry=_two_net_geom(), rules=RULES))
+    assert res["ok"] is True
+    assert res["geometry_summary"]["truncated"] is False
+    assert res["geometry_summary"]["declared_counts"] == {}
+
+
+def test_route_plan_mechanism_failure_flips_ok_even_when_partial(tools):
+    # One requested net routes, the other was dropped by the model
+    # because its pads sit off rules.layers. ok used to stay True unless
+    # EVERY requested net vanished, so six of seven silently-dropped
+    # nets still read as a clean run.
+    geom = _geom([
+        _pad(100, 100, "NET1"), _pad(900, 100, "NET1"),
+        _pad(100, 500, "INNER", layer="MidLayer1"),
+        _pad(900, 500, "INNER", layer="MidLayer1"),
+    ])
+    res = _run(tools["route_plan"](
+        geometry=geom, rules=RULES, nets=["NET1", "INNER"]))
+    assert res["ok"] is False
+    assert res["unknown_nets"] == ["INNER"]
+    assert res["unknown_nets_mechanism_failures"] == ["INNER"]
+    assert res["unknown_net_reasons"]["INNER"]["mechanism_failure"] is True
+    assert "mechanism failure" in res["reason"]
+    assert res["nets"]["NET1"]["status"] == "routed"
+
+
+def test_route_plan_absent_net_is_the_only_benign_unknown(tools):
+    res = _run(tools["route_plan"](
+        geometry=_two_net_geom(), rules=RULES, nets=["NET1", "NOPE"]))
+    assert res["ok"] is True
+    reason = res["unknown_net_reasons"]["NOPE"]
+    assert reason["reason"] == "absent_from_geometry"
+    assert reason["mechanism_failure"] is False
+    assert "unknown_nets_mechanism_failures" not in res
+
+
+def test_route_plan_pad_less_payload_is_not_a_missing_net(tools):
+    # Zero pads with nets requested is never a netlist verdict: the pad
+    # list never arrived. Saying "no such net" here is the exact
+    # confidently-wrong answer unknown_net_reasons exists to prevent.
+    geom = {"bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 600},
+            "pads": [], "tracks": [], "vias": []}
+    res = _run(tools["route_plan"](
+        geometry=geom, rules=RULES, nets=["OCTOSPI_IO0"]))
+    assert res["ok"] is False
+    assert res["unknown_nets"] == ["OCTOSPI_IO0"]
+    reason = res["unknown_net_reasons"]["OCTOSPI_IO0"]
+    assert reason["reason"] == "geometry_has_no_pads"
+    assert reason["mechanism_failure"] is True
+    assert "fetch or payload failure" in reason["detail"]
+
+
+def test_route_plan_grid_pitch_never_changes_which_nets_are_known(tools):
+    # The reported defect: the same board and the same net list came back
+    # with the nets in unknown_nets at 5 and 10 mils but recognised at 20.
+    # grid_pitch_mils resizes the obstacle map and nothing else.
+    geom = _geom([
+        _pad(100, 100, "NET1"), _pad(900, 100, "NET1"),
+        _pad(100, 500, "NET2"), _pad(900, 500, "NET2"),
+    ], tracks=[{"x1": 400, "y1": 300, "x2": 600, "y2": 300, "width": 10,
+                "layer": "TopLayer", "net": "NET1"}],
+        vias=[{"x": 500, "y": 300, "size": 50, "net": "NET1"}])
+    for pitch in (5, 10, 20, 25):
+        res = _run(tools["route_plan"](
+            geometry=geom, rules=RULES, nets=["NET1", "NET2"],
+            grid_pitch_mils=pitch))
+        assert res["unknown_nets"] == [], f"pitch {pitch} lost a net"
+        assert res["summary"]["nets_total"] == 2
+        assert res["geometry_summary"]["grid_pitch_mils"] == pitch
+
+
+def test_route_plan_grid_too_fine_fails_by_name_not_by_losing_nets(tools):
+    geom = _geom([_pad(100, 100, "NET1"), _pad(900, 100, "NET1")],
+                 bbox=(0, 0, 4000, 4000))
+    res = _run(tools["route_plan"](
+        geometry=geom, rules={**RULES, "layers": ["A", "B", "C"]},
+        nets=["NET1"], grid_pitch_mils=1))
+    assert res["ok"] is False
+    assert res["reason_code"] == "grid_too_fine"
+    assert res["grid_nodes"] > res["grid_node_limit"]
+    assert res["suggested_grid_pitch_mils"] > 1
+    # The nets were never looked at, so none of them may be called unknown.
+    assert res["unknown_nets"] == []
+    assert res["requested_nets"] == ["NET1"]
+
+
+def test_route_plan_failed_net_carries_an_actionable_hint(tools):
+    # 0.8 mm BGA field: the 10 mil track + 2 x 10 mil clearance cannot fit
+    # through a 15 mil pad gap at any grid pitch, and saying so beats
+    # "no path between closest pair".
+    pads = [_pad(400 + i * 31, 400 + j * 31, size=16,
+                 net="S" if (i, j) in ((2, 2), (4, 4)) else f"F{i}{j}")
+            for i in range(7) for j in range(7)]
+    res = _run(tools["route_plan"](
+        geometry=_geom(pads, bbox=(300, 300, 900, 900)), rules=RULES,
+        nets=["S"], grid_pitch_mils=5))
+    net = res["nets"]["S"]
+    assert net["status"] == "failed"
+    assert net["hint"] == "no_corridor_at_any_pitch"
+    assert net["limiting_pad_pitch_mils"] == pytest.approx(31.0)
+    assert net["corridor_needed_mils"] == pytest.approx(30.0)
+    assert res["summary"]["failed_hints"] == {"no_corridor_at_any_pitch": 1}
+    assert res["summary"]["grid"]["grid_pitch_mils"] == 5
 
 
 def test_route_plan_nets_must_be_name_list(tools):

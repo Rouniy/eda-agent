@@ -30,9 +30,8 @@ these rules before producing a plan; they bound your choices.
 ## Hard rules
 
 1. **Output a DesignPlan that validates strictly against the schema below.**
-   No extra fields. No prose mixed in. When you hand a plan to
-   `sch_draw_template` (as plan_json) it must be valid JSON matching the schema; the
-   executor rejects malformed input.
+   No extra fields or prose. Validate the plan before drawing; the
+   template tools take a separate `template` object, not plan_json.
 
 2. **Every Part must either:**
    - resolve in the user's library inventory (status="existing", lib_ref
@@ -351,23 +350,20 @@ one design. They apply in every session.
    reads, prefer `scope=doc:<path>` (e.g. `obj_query`) over active-doc
    tools.
 
-6. **The ECO (schematic → PCB) is a dialog, and you drive it.** Altium's
-   change-review dialog cannot be suppressed, so `proj_sync_pcb` blocks the
-   bridge while it is open. Open it without blocking instead:
-   `app_click_menu("Design|Import Changes From <Project>.PrjPcb",
-   expect_dialog="Engineering Change Order")`, read it with
-   `app_screenshot(dialog_title=...)`, then
-   `app_press_dialog_button("Execute Changes", allow_irreversible=True)` and
-   "Close". Do not ask the user to click it. Read board rules and counts
-   before opening it, since every bridge call waits while it is open.
+6. **ECO (schematic → PCB) opens a blocking review dialog.** Before opening
+   it, read board rules and counts. Use `app_menu` with `how="click"`;
+   inspect the Engineering Change Order dialog, then use
+   `app_press_dialog_button` for Execute Changes and Close.
 
 7. **`pcb_place_components` has two modes.** *Geometry only* (footprint +
    designator) leaves the board UNSYNCED, no link, no pad nets; pads are
    unconnected (DRC flags them) and a later ECO treats the parts as "extra
    in PCB". Fine for artwork, panelization, or testing. *Synced*: also
-   pass `unique_id` (the schematic component's UniqueId, from
-   `obj_query(object_type="eSchComponent",
-   properties="Designator.Text,UniqueId")`) and
+   pass `unique_id` (the full PCB SourceUniqueId). In hierarchical projects
+   this is normally `\\SHEET_UNIQUE_ID\\COMPONENT_UNIQUE_ID`, NOT merely the
+   short schematic UniqueId. Derive the prefix from a known matched PCB
+   component on the same sheet (`pcb_get_components` returns
+   `source_unique_id`) or from compiled project mappings, and pass
    `pad_nets` `{pad: net}` (from the compiled netlist via
    `proj_get_connectivity_many`). That stamps the sch↔PCB link AND creates +
    assigns each pad's net, giving real connectivity (ratsnest + DRC) with
@@ -375,7 +371,38 @@ one design. They apply in every session.
    schematic. (The real ECO, driven as in rule 6, remains the canonical
    path.)
 
-8. **Connectivity review uses the netlist, never the render.** The FIRST
+   After placement, force a recompile and require zero extras on BOTH sides.
+   Equal schematic/PCB counts do not prove synchronization: the same
+   designator can be unmatched on both sides when SourceUniqueId is wrong.
+
+8. **Verify footprint resolution and serialization before ECO.** A footprint
+   name can exist in a PcbLib while its serialized geometry contains zero pads.
+   Confirm the exact library/name with `lib_get_pad_geometry`, save/reload it,
+   and require the expected pad count and exact pad designators. Pad names must
+   match schematic pins literally (`A/K` is not `1/2`; `EP`, `0`, and `MP` are
+   not interchangeable). A visible schematic Footprint parameter alone does
+   not prove that its implementation/model link resolves.
+
+9. **Focus the exact PCB explicitly.** With several PcbDocs open, Altium's
+   internal current PCB can differ from the visible document, and
+   `app_set_active_document` is not a reliable PCB selector. Call
+   `pcb_focus_board(absolute_path)` before PCB reads or writes; use
+   `board_path` wherever supported. An unexpected component count is a hard
+   stop condition.
+
+10. **ECO direction is focus-sensitive.** With the target PCB focused, the
+    verified schematic-to-PCB comparator uses `WorkspaceManager:Compare` with
+    `ObjectKind=Project|Action=UpdateMe`. `UpdateOther` can reverse the update
+    into PCB-to-schematic. Validate first, enable **Only Show Errors**, and do
+    not execute unless that view is empty. Never execute an unavailable/red
+    footprint operation or its dependent pin/net operations.
+
+11. **Modal workflows require a health check.** Closing an ECO after its IPC
+    client was killed can also stop the polling loop. Always ping afterward.
+    The full COM recovery sequence and verified Altium quirks are documented in
+    `docs/AI_ALTIUM_FIELD_NOTES.md` and `scripts/altium/COM_RESTART.md`.
+
+12. **Connectivity review uses the netlist, never the render.** The FIRST
    priority for any review or check that concerns electrical connection (what
    sits on a net, what a pin connects to, missing or extra connections,
    single-pin or no-driver nets, schematic-to-PCB drift) is the actual net
@@ -392,7 +419,7 @@ one design. They apply in every session.
    Connectivity comes from the netlist; the render comes from the geometry.
    Do not substitute one for the other.
 
-9. **Author components with the one-call generators, never primitive-by-
+13. **Author components with the one-call generators, never primitive-by-
    primitive.** When creating a NEW library part:
    - **Footprint:** `lib_create_standard_footprint(name, family, ...)` emits
      the WHOLE footprint (every pad + silkscreen + courtyard) in one call.
@@ -422,7 +449,7 @@ one design. They apply in every session.
      (rule 4). Glyph
      lines/arcs/polygons accept a finer `grid` than the 100-mil pin grid.
 
-10. **Build the netlist from canonical blocks, not pin-by-pin.** When a
+14. **Build the netlist from canonical blocks, not pin-by-pin.** When a
     plan needs a boilerplate sub-circuit -- a decoupling network, a
     reset pull-up, a feedback divider, an RC low/high-pass or Pi filter,
     a crystal + load caps, a status LED, a low- or high-side switch --
@@ -577,7 +604,7 @@ buck, an LDO, an MCU board, an audio amp, or a sensor frontend.
    part for its value. Write it as a template (parts by designator and
    position, wires through pin anchors such as `U1.EN`, power ports,
    labels) and check it with
-   `sch_preview_template(template, plan_json=...)`: read the PNG and
+   `sch_preview_template(template=...)`: read the PNG and
    fix every error and warning (a crossing, a wire through a body, a
    dangling end, an off-grid point) before drawing.
 
@@ -621,10 +648,22 @@ Once parts are on the PCB, moving them is a separate concern from the
 DesignPlan executor above. The same agent often drives both phases.
 Apply these rules whenever calling `pcb_move_components`.
 
+0. **Agree on cleanup, anchors, and assembly sides before placement.** Ask
+   whether obsolete PCB-only components should be removed; never delete parts
+   that still exist in the schematic merely to make placement easier. Ask
+   whether assembly is single-sided or double-sided. Offer the user a quick
+   manual baseline placement of the major ICs, connectors, controls, LEDs, and
+   mechanically constrained parts. Treat that human layout as functional
+   intent: refine it with small moves/rotations, then place passives and other
+   support parts around their anchors. If the user delegates the baseline too,
+   state the side policy and which major parts may move before applying it.
+
 1. **Plan the whole cluster before moving anything.** Call
    `pcb_get_components` once and read the full layout state: each
    component's current (x, y, rotation, layer, footprint) and its
-   `bbox` (axis-aligned bounding rectangle in mils). Sketch the target
+   `placement_bbox` and its `placement_bbox_fallback` flag. When the flag is
+   true, the box can contain designator/comment text and must not be treated
+   as a physical footprint courtyard. Sketch the target
    positions on paper or in text BEFORE issuing any move. A move tool
    call is for *applying* a placement decision, not for *exploring*
    one.
@@ -839,9 +878,10 @@ _DRAW_BLOCK = {
 }
 
 #: The first line of the schematic-to-PCB block, used as an anchor. The
-#: block runs from here to the start of rule 8.
-_ECO_ANCHOR = "6. **The ECO (schematic → PCB) is a dialog, and you drive it.**"
-_RULE_8_ANCHOR = "8. **Connectivity review uses the netlist, never the render.**"
+#: block runs from here to the first backend-neutral rule after the
+#: Altium-specific synchronization and recovery guidance.
+_ECO_ANCHOR = "6. **ECO (schematic"
+_RULE_8_ANCHOR = "12. **Connectivity review uses the netlist, never the render.**"
 
 #: Rules 6 and 7 explain Altium's Engineering Change Order: a dialog a
 #: human must click, and the trick for populating a board without it.
@@ -941,7 +981,8 @@ def get_discipline(include_schema: bool = True) -> str:
                 text = text.replace(f"`{altium_tool}`", f"`{swap}`")
                 text = text.replace(f"`{altium_tool}(", f"`{swap}(")
 
-        # Rules 6 and 7 are replaced wholesale rather than translated.
+        # The Altium-specific synchronization block is replaced wholesale
+        # rather than translated.
         # Slicing between two anchors that contain no tool names means
         # the substitution above cannot have moved them, whichever
         # order these two steps run in.

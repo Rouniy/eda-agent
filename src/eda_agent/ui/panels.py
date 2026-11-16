@@ -31,10 +31,13 @@ contents, only for finding the container.
 """
 from __future__ import annotations
 
-from typing import Optional
+import threading
+from typing import Any, Callable, Optional, TypeVar
 
 from . import controls, menu
 from . import windows as win
+
+T = TypeVar("T")
 
 #: The class that actually carries a panel's NAME, measured on a live
 #: AD26 frame rather than guessed.
@@ -73,6 +76,59 @@ def available() -> bool:
 #: Projects and Messages. Documents are TViewComponents too, but no
 #: caption carries a document's name, so a caption matching a view is a
 #: panel even where no panel button names it.
+_PANEL_CAPTION = "txppanel"
+_PANEL_VIEW = "tviewcomponent"
+#: A floating panel is a top-level window of its own, outside the frame.
+_FLOATING_PANEL = "TClientBarControl"
+
+
+def on_com_thread(work: Callable[[], T]) -> T:
+    """Run ``work`` on a new thread that initialises COM first, and wait.
+
+    COM is per thread. The panel tools used to run on the server's event
+    loop thread, which nothing had initialised: on AD 26.11 every
+    accessible call there failed with "CoInitialize has not been called"
+    and app_list_panels reported 0 panels while several were open. A
+    pooled executor worker is no better, because ``ui/menu`` initialises
+    and uninitialises the thread it runs on, which can leave a reused
+    worker without COM. A thread of its own, initialised here and torn
+    down after, was the arrangement that read the panels live.
+    """
+    box: dict[str, Any] = {}
+
+    def run() -> None:
+        owned = False
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+            owned = True
+        except Exception:                        # noqa: BLE001 - reported by work()
+            pass
+        try:
+            box["value"] = work()
+        except BaseException as exc:             # noqa: BLE001 - re-raised below
+            box["error"] = exc
+        finally:
+            if owned:
+                try:
+                    comtypes.CoUninitialize()
+                except Exception:                # pragma: no cover - guard
+                    pass
+
+    worker = threading.Thread(target=run, name="eda-agent-panels", daemon=True)
+    worker.start()
+    worker.join()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+#: AD 26.11 has no TPopupPanelButton for a panel docked with a header.
+#: MEASURED on a live 26.11 frame: each such panel is a TPanelFrame
+#: holding a TXPPanel caption ("Projects", "Properties") and a
+#: TViewComponent of the same name with the content inside it. Document
+#: views are TViewComponents too, but no caption carries their name, so
+#: a caption matching a view is what marks a panel.
 _PANEL_CAPTION = "txppanel"
 _PANEL_VIEW = "tviewcomponent"
 #: A floating panel is a top-level window of its own, outside the frame.

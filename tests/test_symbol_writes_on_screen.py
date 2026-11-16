@@ -113,6 +113,19 @@ def test_symbol_graphics_have_schematic_names_the_board_does_not_take():
     assert "polygon" in pcb and "polygon" not in sch
 
 
+def test_sheet_frame_names_cover_other_supported_schematic_types():
+    generic = (ALTIUM / "Generic.pas").read_text(encoding="ascii")
+    for parsed, const, emitted in (
+        ("parameterset", "eParameterSet", "parameter_set"),
+        ("pin", "ePin", "pin"),
+        ("polyline", "ePolyline", "polyline"),
+        ("designator", "eDesignator", "designator"),
+        ("roundrectangle", "eRoundRectangle", "round_rectangle"),
+    ):
+        assert f"N = '{parsed}'" in generic
+        assert f"Id = {const} Then Result := '{emitted}'" in generic
+
+
 def test_the_style_audit_can_save_and_reread_before_listing(monkeypatch):
     """MEASURED: the audit lists names from the saved file, so two symbols
     made this session were missing until the library was saved."""

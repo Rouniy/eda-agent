@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+﻿# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 # Copyright (c) 2026 Vincent Himpe <vincent.himpe@gmail.com>
 """A polygon's pour settings are read and written through the generic layer.
@@ -135,7 +135,7 @@ def test_a_polygon_name_is_read_and_written_and_an_empty_one_refused():
     assert "If Oid = ePolyObject Then Begin Poly := Obj; Result := Poly.Name; End;" in getter
     setter = fns["SetPCBProperty"]
     start = setter.index("Else If (PropName = 'Name') And (Oid = ePolyObject) Then")
-    branch = setter[start:setter.index("Else If (PropName = 'Name') Or", start)]
+    branch = setter[start:setter.index("Else If PropName = 'StandoffHeight'", start)]
     assert "If Trim(Value) = '' Then Refused := True" in branch
     assert "Else If Not PCBSetPoly(Obj, PropName, Value) Then Matched := False;" in branch
     writer = fns["PCBSetPoly"]

@@ -10,8 +10,8 @@ user tool calls.
 """
 
 import contextlib
-import functools
 import contextvars
+import functools
 import itertools
 import json
 import locale
@@ -57,6 +57,7 @@ from .recovery import (
     STUCK_HANDLER,
     DEAD_LOOP,
     CORRUPT_RESPONSE,
+    MODAL_DIALOG,
 )
 
 from ..safety import refuse_command
@@ -66,6 +67,8 @@ logger = logging.getLogger("eda_agent.bridge")
 # Wire protocol version. Must match scripts/altium/Main.pas:PROTOCOL_VERSION.
 # Bump together; mismatch raises AltiumProtocolError on either side.
 PROTOCOL_VERSION = 2
+
+
 
 # Heartbeat-aware deadline extension cap. The Pascal dispatcher writes a
 # progress_<id>.json marker while a handler runs; Python's poll loop extends
@@ -117,7 +120,7 @@ def _blocking_signature(report: Optional[dict], expected: frozenset = frozenset(
         f"{d.get('hwnd')}:{d.get('title')}" for d in dialogs
         if not any(e.lower() in str(d.get("title") or "").lower() for e in expected)))
 
-# Thread pool for blocking I/O
+#: Call diagnostics on the executing thread.
 _executor = ThreadPoolExecutor(max_workers=1)
 
 #: The command in flight on this thread and any error box answered for it,
@@ -556,6 +559,18 @@ def _short_id() -> str:
         call["sent"] = True
         tail = "k" + call["id"] + tail
     return f"{_SESSION_TAG}-{seq:08d}-{tail[:12]}"
+
+
+def trace_id(request_id: str) -> str:
+    """Short log key naming one call, including its sequence within a session.
+
+    Older bare UUID requests retain their first eight characters so their
+    existing trace and activity logs still correlate.
+    """
+    tag, dash, rest = request_id.partition("-")
+    if not dash:
+        return request_id[:8]
+    return f"{tag}-{rest.partition('-')[0]}"
 
 
 @dataclass
@@ -1011,11 +1026,10 @@ class AltiumBridge:
         self._detach_hint_shown = True
         data = dict(data)
         data["_hint_detach"] = (
-            "This MCP server has been holding Altium's scripting engine for "
-            "over 10 minutes. When your Altium work is done, call "
-            "detach_from_altium so Altium's own UI commands become responsive "
-            "again. The user will have to re-launch StartMCPServer in Altium "
-            "to run more MCP tools afterwards."
+            "The bridge has been attached for over 10 minutes. Its timer pump "
+            "returns control to Altium between requests. When finished, call "
+            "app_detach to stop the pump. StartMCPServer must be relaunched "
+            "in Altium before a later app_attach."
         )
         return data
 
@@ -1169,7 +1183,9 @@ class AltiumBridge:
             raise
         logger.debug("Published request %s: %s", request.id, request.command)
 
-    def _poll_response(self, request_id: str, timeout: float) -> CommandResponse:
+    def _poll_response(self, request_id: str, timeout: float,
+                       max_extensions: Optional[int] = None
+                       ) -> CommandResponse:
         """Poll for response_<id>.json. Returns when it appears, raises on
         timeout.
 
@@ -1183,6 +1199,14 @@ class AltiumBridge:
         operation truly stuck. Default ceiling: 30 * 10 s = 5 minutes per
         command, which covers heavy emits / compiles without losing the
         early failure detection of the original 10 s timeout.
+
+        ``max_extensions`` overrides that cap for a single call. The
+        progress file is written ONCE per request, not ticked, so a
+        handler blocked on a modal dialog looks identical to one making
+        progress and will burn the full default ceiling before failing.
+        A caller that knows its command can raise a modal (proj_sync_pcb)
+        passes a small value so it fails fast with an actionable error
+        instead of starving the loop for five minutes.
 
         Race window: Pascal writes the response THEN deletes the progress
         file, so at no instant are both absent. When the per-window
@@ -1199,7 +1223,7 @@ class AltiumBridge:
 
         _trace_log(
             workspace_dir,
-            f"POLL_START id={request_id[:8]} timeout={timeout}s "
+            f"POLL_START id={trace_id(request_id)} timeout={timeout}s "
             f"interval={poll_interval}s",
         )
 
@@ -1212,16 +1236,19 @@ class AltiumBridge:
             return self._poll_loop(
                 request_id, response_path, progress_path, workspace_dir,
                 poll_interval, deadline, timeout, start, watcher,
+                max_extensions,
             )
         finally:
             _close_dir_watcher(watcher)
 
     def _poll_loop(self, request_id, response_path, progress_path,
                    workspace_dir, poll_interval, deadline, timeout,
-                   start, watcher) -> CommandResponse:
+                   start, watcher, max_extensions=None) -> CommandResponse:
         """Inner poll loop for _poll_response. Split out so the watcher
         handle can be closed via a single try/finally regardless of which
         exit path (match / timeout / break) the loop takes."""
+        ext_cap = (_MAX_HEARTBEAT_EXTENSIONS if max_extensions is None
+                   else max(0, int(max_extensions)))
         extensions = 0
         queue_extensions = 0
         poll_count = 0
@@ -1255,6 +1282,11 @@ class AltiumBridge:
             if first_appearance is None and now >= next_dialog_probe:
                 next_dialog_probe = now + _DIALOG_PROBE_EVERY
                 early = self._dialog_probe()
+                signature = _blocking_signature(early)
+                if signature and signature != last_blocked:
+                    last_blocked = signature
+                    continue
+                last_blocked = signature
                 if early and early.get("blocked") and self._recover_script_crash(
                         request_id, response_path, early) == "continue":
                     continue
@@ -1270,14 +1302,14 @@ class AltiumBridge:
                         and maintenance_in_progress(workspace_dir)
                         and self._request_path(request_id).exists()):
                     continue
-                seen = _blocking_signature(early, self.expected_dialogs)
-                confirmed = bool(seen) and seen == last_blocked
-                last_blocked = seen
-                if confirmed:
+                # A different call's dialog can outlive this reply. Read a
+                # response that arrived during the probe before declaring
+                # this request blocked.
+                if early and early.get("blocked") and not response_path.exists():
                     waited = now - start
                     _trace_log(
                         workspace_dir,
-                        f"POLL_DIALOG id={request_id[:8]} "
+                        f"POLL_DIALOG id={trace_id(request_id)} "
                         f"after={waited:.1f}s "
                         f"summary={early.get('summary', '')[:120]}",
                     )
@@ -1311,7 +1343,7 @@ class AltiumBridge:
                 first_appearance = time.monotonic() - start
                 _trace_log(
                     workspace_dir,
-                    f"POLL_SEEN id={request_id[:8]} "
+                    f"POLL_SEEN id={trace_id(request_id)} "
                     f"after={first_appearance*1000:.0f}ms polls={poll_count}",
                 )
 
@@ -1330,7 +1362,7 @@ class AltiumBridge:
                     if parse_errors <= 3 or parse_errors % 50 == 0:
                         _trace_log(
                             workspace_dir,
-                            f"POLL_PARSE_ERR id={request_id[:8]} "
+                            f"POLL_PARSE_ERR id={trace_id(request_id)} "
                             f"err={type(e).__name__} count={parse_errors}",
                         )
                     # A handful of parse errors is normal while Pascal is
@@ -1346,7 +1378,7 @@ class AltiumBridge:
                         self._note_fault(
                             workspace_dir, recovery_guidance(CORRUPT_RESPONSE))
                         raise AltiumCommandError(
-                            f"Response file for request {request_id[:8]} was "
+                            f"Response file for request {trace_id(request_id)} was "
                             f"present but unparseable after {parse_errors} "
                             f"attempts -- Altium likely crashed mid-write. "
                             f"The corrupt file was removed; retry the call. "
@@ -1365,7 +1397,7 @@ class AltiumBridge:
                     elapsed = (time.monotonic() - start) * 1000
                     _trace_log(
                         workspace_dir,
-                        f"POLL_MATCH id={request_id[:8]} elapsed={elapsed:.0f}ms "
+                        f"POLL_MATCH id={trace_id(request_id)} elapsed={elapsed:.0f}ms "
                         f"polls={poll_count} parse_errs={parse_errors} "
                         f"extensions={extensions}",
                     )
@@ -1380,13 +1412,13 @@ class AltiumBridge:
                             request_id, response_path, None) == "continue"):
                     continue
                 # Window expired. Heartbeat still ticking? extend.
-                if progress_path.exists() and extensions < _MAX_HEARTBEAT_EXTENSIONS:
+                if progress_path.exists() and extensions < ext_cap:
                     extensions += 1
                     elapsed = (time.monotonic() - start) * 1000
                     _trace_log(
                         workspace_dir,
-                        f"POLL_EXTEND id={request_id[:8]} "
-                        f"extensions={extensions}/{_MAX_HEARTBEAT_EXTENSIONS} "
+                        f"POLL_EXTEND id={trace_id(request_id)} "
+                        f"extensions={extensions}/{ext_cap} "
                         f"elapsed={elapsed:.0f}ms",
                     )
                     deadline = time.monotonic() + timeout
@@ -1406,7 +1438,7 @@ class AltiumBridge:
                     queue_extensions += 1
                     _trace_log(
                         workspace_dir,
-                        f"POLL_QUEUED id={request_id[:8]} "
+                        f"POLL_QUEUED id={trace_id(request_id)} "
                         f"waits={queue_extensions}/{_MAX_QUEUE_EXTENSIONS}"
                         + (" restart" if restarting else ""),
                     )
@@ -1435,43 +1467,58 @@ class AltiumBridge:
         elapsed = (time.monotonic() - start) * 1000
         _trace_log(
             workspace_dir,
-            f"POLL_TIMEOUT id={request_id[:8]} elapsed={elapsed:.0f}ms "
+            f"POLL_TIMEOUT id={trace_id(request_id)} elapsed={elapsed:.0f}ms "
             f"polls={poll_count} parse_errs={parse_errors} "
             f"extensions={extensions} "
             f"first_seen_ms={first_appearance*1000 if first_appearance else -1}",
         )
+        self._raise_poll_timeout(
+            workspace_dir, timeout, extensions, ext_cap, max_extensions)
+
+    def _raise_poll_timeout(
+        self,
+        workspace_dir: Path,
+        timeout: float,
+        extensions: int,
+        ext_cap: int,
+        max_extensions: Optional[int],
+    ) -> None:
+        """Raise one consistent, dialog-aware timeout for both poll paths."""
         # Before blaming the loop, LOOK. A modal produces exactly this
-        # silence, and the two diagnoses call for opposite actions:
-        # restarting a loop that is merely waiting for a button press
-        # throws away whatever the handler was in the middle of.
+        # silence, and the two diagnoses call for opposite actions.
         probe = self._dialog_probe()
 
-        if extensions >= _MAX_HEARTBEAT_EXTENSIONS:
-            self._note_fault(workspace_dir, recovery_guidance(STUCK_HANDLER))
-            # PAST TENSE, because that is all the evidence supports. This
-            # message used to say "Altium IS responding to keepalives ...
-            # likely stuck in an infinite loop", present tense, as a fixed
-            # string on this branch. It is inferred from heartbeats seen
-            # EARLIER in the wait, and nothing rechecks at timeout.
-            #
-            # MEASURED: a handler hit an uncatchable DelphiScript fault, the
-            # polling loop DIED, app_ping was already failing well before the
-            # 300s mark, and this still reported the loop as answering and
-            # pointed recovery at a stuck handler rather than a dead one.
-            # Those two call for different actions, so the wrong guess costs
-            # real time.
+        if extensions >= ext_cap and ext_cap > 0:
+            bounded = max_extensions is not None
+            fault = MODAL_DIALOG if bounded else STUCK_HANDLER
+            self._note_fault(workspace_dir, recovery_guidance(fault))
+            total = ext_cap * timeout
+            if bounded:
+                detail = (
+                    f"Command did not return within the caller's {total:.0f}s "
+                    "budget. A progress marker was seen earlier, so the "
+                    "handler may be blocked on a modal dialog; that marker "
+                    "does not prove the polling loop is still alive. "
+                )
+            else:
+                detail = (
+                    f"Handler exceeded {ext_cap} heartbeat extensions "
+                    f"({total:.0f}s total). Altium WAS processing the call "
+                    "earlier, but that is not rechecked here, so the handler "
+                    "may be stuck in a long operation OR the loop may since "
+                    "have died. Confirm with app_ping before recovery. "
+                )
             raise AltiumTimeoutError(
-                f"Handler exceeded {_MAX_HEARTBEAT_EXTENSIONS} heartbeat "
-                f"extensions ({_MAX_HEARTBEAT_EXTENSIONS * timeout:.0f}s "
-                f"total). Altium WAS answering keepalives earlier in the "
-                f"wait, but that is not rechecked here, so the loop may be "
-                f"stuck in a long operation OR may since have died. Confirm "
-                f"with app_ping before choosing a recovery. "
-                + recovery_message(STUCK_HANDLER)
-                + self._dialog_suffix(probe, dialog_owner(workspace_dir) if probe else None),
-                details={"recovery": recovery_guidance(STUCK_HANDLER),
-                         "dialogs": probe},
+                detail + recovery_message(fault) + self._dialog_suffix(probe, dialog_owner(workspace_dir) if probe else None),
+                details={
+                    "recovery": recovery_guidance(fault),
+                    "fault": fault,
+                    "waited_seconds": total,
+                    "bounded_wait": bounded,
+                    "dialogs": probe,
+                },
             )
+
         self._note_fault(workspace_dir, recovery_guidance(DEAD_LOOP))
         from ..config import pointer_mismatch
         elsewhere = pointer_mismatch(workspace_dir)
@@ -1700,6 +1747,89 @@ class AltiumBridge:
         }
         return "continue"
 
+    def _clear_orphan_crash(self, request_id: str,
+                            probe: Optional[dict]) -> Optional[str]:
+        """Answer a script error box that an EARLIER call left behind.
+
+        _recover_script_crash only acts for the call whose handler crashed.
+        When that caller has gone (exited, timed out, or a client without
+        this recovery), nothing pressed OK, and every other session's call
+        failed on the box until a person closed it. Measured 2026-11-11 on
+        proj_set_parameter (#311).
+
+        Only while THIS call's request is still queued (the loop is not
+        running it) and no one holds the recovery marker. The crashed call
+        is given ORPHAN_GRACE_S to answer its own box; after that this
+        call claims the marker, recovers exactly as the crashed call would
+        have, and goes on waiting for the new loop. Returns "continue" while
+        it waits or after it recovered, None when there is nothing for it.
+        """
+        from . import script_crash
+
+        workspace_dir = self.config.workspace_dir
+        if not self._request_path(request_id).exists():
+            return None
+        dialog = script_crash.script_error_dialog(probe)
+        if dialog is None or maintenance_in_progress(workspace_dir):
+            return None
+        hwnd = int(dialog.get("hwnd") or 0)
+        seen = self.__dict__.setdefault("_orphan_seen", {})
+        first = seen.setdefault(hwnd, time.monotonic())
+        if time.monotonic() - first < script_crash.ORPHAN_GRACE_S:
+            return "continue"
+        try:
+            from ..ui import windows
+
+            if not windows.available():
+                return None
+            process = self.process_manager.get_altium_info()
+            if not process:
+                return None
+        except Exception:                        # pragma: no cover - guard
+            return None
+        marker = Path(workspace_dir) / MAINTENANCE_FILE
+        if not script_crash.claim_marker(marker,
+                                         "orphaned script crash recovery"):
+            return "continue"
+        seen.pop(hwnd, None)
+        _trace_log(workspace_dir,
+                   f"SCRIPT_CRASH_ORPHAN id={request_id[:8]} "
+                   f"box={dialog.get('title', '')[:40]}")
+
+        def drop_marker() -> None:
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+        outcome = None
+        try:
+            outcome = script_crash.recover_orphan(workspace_dir, process.pid,
+                                                  dialog, drop_marker)
+        finally:
+            restarting = bool(outcome and (outcome.get("restart") or {})
+                              .get("in_background"))
+            if not restarting:
+                drop_marker()
+        if outcome and outcome.get("halted"):
+            logger.error("An earlier call had crashed the Altium script and "
+                         "left its error box up; it was answered and the "
+                         "loop restarted. %s", outcome.get("record"))
+        _CALL.answered_box = {
+            "title": dialog.get("title"),
+            "said": dialog.get("message") or dialog.get("ocr_text") or [],
+            "screenshots": (outcome or {}).get("screenshots") or [],
+            "record": (outcome or {}).get("record") or "",
+            "note": ("An earlier call had crashed the Altium script and left "
+                     "this error box up with no one to answer it. OK was "
+                     "pressed"
+                     + (" and the loop restarted" if (outcome or {}).get("halted")
+                        else "")
+                     + "; this command then ran. That earlier call's change "
+                     "may be half applied."),
+        }
+        return "continue"
+
     @staticmethod
     def _dialog_suffix(probe: Optional[dict], owner: Optional[dict] = None) -> str:
         """One sentence naming what is blocking, for the timeout text."""
@@ -1724,67 +1854,6 @@ class AltiumBridge:
             "button with app_press_dialog_button; both work while the bridge "
             "does not.")
 
-    def _withdraw_or_warn(self, request: CommandRequest,
-                          exc: AltiumTimeoutError) -> None:
-        """After a timeout, take back our request if Altium never took it.
-
-        A timed-out request used to stay in the queue. When the modal that
-        blocked it was dismissed, Altium ran it, minutes later and with
-        nobody waiting: 26 stranded reads were seen in one session (issue
-        #94), and a stranded WRITE would apply an edit the caller had
-        already been told failed. Only this caller's own request file is
-        touched, never another session's.
-
-        Not there any more means Altium has read it, and then the edit may
-        still land; the error says which of the two happened.
-        """
-        workspace_dir = self.config.workspace_dir
-        request_path = self._request_path(request.id)
-        withdrawn = False
-        try:
-            if request_path.exists():
-                request_path.unlink()
-                withdrawn = True
-        except OSError:
-            withdrawn = False
-        details = exc.details if isinstance(exc.details, dict) else {}
-        details["request_withdrawn"] = withdrawn
-        exc.details = details
-        if withdrawn:
-            note = (" The request was withdrawn before Altium read it, so "
-                    "it will not run later.")
-        else:
-            note = (" Altium had already read the request, so it may still "
-                    "finish: read the design back before repeating a change.")
-        exc.message = f"{exc.message}{note}"
-        exc.args = (exc.message,)
-        _trace_log(workspace_dir,
-                   f"WITHDRAW id={request.id[:8]} cmd={request.command} "
-                   f"withdrawn={withdrawn}")
-
-    def _with_outdated_note(self, command: str, data: Any) -> Any:
-        """Say so on a reply when a deploy has made this server out of date.
-
-        Repeated every few minutes rather than on every reply, and never on
-        a keep-alive, which nobody reads. The disk is read only once the
-        versions already differ, which is rare.
-        """
-        if command == "application.ping" or not isinstance(data, dict):
-            return data
-        if not self._loop_script_version or self._loop_script_version == STARTED_WITH_VERSION:
-            return data
-        now = time.monotonic()
-        if self._outdated_noted_at and now - self._outdated_noted_at < _OUTDATED_NOTE_EVERY_S:
-            return data
-        note = outdated_note(STARTED_WITH_VERSION, self._loop_script_version,
-                             bundled_script_version())
-        if not note:
-            return data
-        self._outdated_noted_at = now
-        data = dict(data)
-        data["server_outdated"] = note
-        return data
-
     def _reshow_hidden_frame(self, command: str, request_id: str) -> list:
         """Show Altium's main window again if it is hidden. Never raises.
 
@@ -1808,14 +1877,60 @@ class AltiumBridge:
                         or ("none", time.time()))
             _trace_log(
                 self.config.workspace_dir,
-                f"FRAME_SHOWN id={request_id[:8]} cmd={command} "
+                f"FRAME_SHOWN id={trace_id(request_id)} cmd={command} "
                 f"hwnd={','.join(hex(h) for h in shown)} last_cmd={last} "
                 f"last_cmd_age={time.time() - at:.0f}s")
             logger.warning("Altium's main window was hidden; shown again "
                            "after %s (last command %s)", command, last)
         return shown
 
-    def _execute_command(self, command: str, params: dict[str, Any], timeout: float) -> Any:
+    def _with_outdated_note(self, command: str, data: Any) -> Any:
+        """Periodically flag replies from a server older than Altium's script."""
+        if command == "application.ping" or not isinstance(data, dict):
+            return data
+        if (not self._loop_script_version
+                or self._loop_script_version == STARTED_WITH_VERSION):
+            return data
+        now = time.monotonic()
+        if (self._outdated_noted_at
+                and now - self._outdated_noted_at < _OUTDATED_NOTE_EVERY_S):
+            return data
+        note = outdated_note(STARTED_WITH_VERSION, self._loop_script_version,
+                             bundled_script_version())
+        if not note:
+            return data
+        self._outdated_noted_at = now
+        return {**data, "server_outdated": note}
+
+    def _withdraw_or_warn(self, request: CommandRequest,
+                          exc: AltiumTimeoutError) -> None:
+        """Withdraw a timed-out request if Altium has not read it yet."""
+        request_path = self._request_path(request.id)
+        withdrawn = False
+        try:
+            if request_path.exists():
+                request_path.unlink()
+                withdrawn = True
+        except OSError:
+            pass
+        details = exc.details if isinstance(exc.details, dict) else {}
+        details["request_withdrawn"] = withdrawn
+        exc.details = details
+        note = (
+            " The request was withdrawn before Altium read it, so it will not run later."
+            if withdrawn else
+            " Altium had already read the request, so it may still finish: "
+            "read the design back before repeating a change."
+        )
+        exc.message = f"{exc.message}{note}"
+        exc.args = (exc.message,)
+        _trace_log(self.config.workspace_dir,
+                   f"WITHDRAW id={trace_id(request.id)} cmd={request.command} "
+                   f"withdrawn={withdrawn}")
+
+    def _execute_command(self, command: str, params: dict[str, Any],
+                         timeout: float,
+                         max_extensions: Optional[int] = None) -> Any:
         """Execute a command synchronously (blocking)."""
         if not _unpinned(command, params):
             self._load_session_doc()
@@ -1834,7 +1949,7 @@ class AltiumBridge:
 
         response_path = self._response_path(request.id)
         try:
-            response = self._poll_response(request.id, timeout)
+            response = self._poll_response(request.id, timeout, max_extensions)
         except AltiumTimeoutError as exc:
             self._withdraw_or_warn(request, exc)
             raise
@@ -1901,6 +2016,184 @@ class AltiumBridge:
         logger.warning("Command %s failed: %s - %s", command, code, message)
         raise_for_code(code, message, details)
 
+    async def _poll_response_async(
+        self,
+        request_id: str,
+        timeout: float,
+        max_extensions: Optional[int] = None,
+    ) -> CommandResponse:
+        """Async counterpart of ``_poll_response`` without a worker thread.
+
+        File polling is cheap and the sleep yields to the MCP event loop. This
+        also avoids depending on cross-thread event-loop wakeups, which can be
+        lost in embedded/WSL hosts even after the blocking worker has returned.
+        """
+        response_path = self._response_path(request_id)
+        progress_path = self._progress_path(request_id)
+        workspace_dir = self.config.workspace_dir
+        poll_interval = self.config.poll_interval
+        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        ext_cap = (_MAX_HEARTBEAT_EXTENSIONS if max_extensions is None
+                   else max(0, int(max_extensions)))
+        extensions = 0
+        poll_count = 0
+        first_appearance: Optional[float] = None
+        parse_errors = 0
+        next_dialog_probe = start + _DIALOG_PROBE_AFTER
+        last_blocked = ""
+
+        _trace_log(
+            workspace_dir,
+            f"POLL_START id={trace_id(request_id)} timeout={timeout}s "
+            f"interval={poll_interval}s",
+        )
+        while True:
+            poll_count += 1
+            now = time.monotonic()
+            if first_appearance is None and now >= next_dialog_probe:
+                next_dialog_probe = now + _DIALOG_PROBE_EVERY
+                early = self._dialog_probe()
+                signature = _blocking_signature(early)
+                if signature and signature != last_blocked:
+                    last_blocked = signature
+                    continue
+                last_blocked = signature
+                if early and early.get("blocked"):
+                    waited = now - start
+                    _trace_log(
+                        workspace_dir,
+                        f"POLL_DIALOG id={trace_id(request_id)} "
+                        f"after={waited:.1f}s "
+                        f"summary={early.get('summary', '')[:120]}",
+                    )
+                    owner = dialog_owner(workspace_dir)
+                    raise AltiumTimeoutError(
+                        f"Altium is showing a modal dialog {waited:.0f}s into "
+                        "this call, so the handler cannot run and waiting for "
+                        "the timeout would tell you nothing more."
+                        + self._dialog_suffix(early, owner),
+                        details={"dialogs": early, "raised_by": owner,
+                                 "blocked_after_seconds": round(waited, 1)},
+                    )
+            if response_path.exists():
+                if first_appearance is None:
+                    first_appearance = time.monotonic() - start
+                    _trace_log(
+                        workspace_dir,
+                        f"POLL_SEEN id={trace_id(request_id)} "
+                        f"after={first_appearance * 1000:.0f}ms "
+                        f"polls={poll_count}",
+                    )
+                try:
+                    data = _read_response_json(response_path)
+                except (json.JSONDecodeError, IOError, UnicodeDecodeError) as exc:
+                    parse_errors += 1
+                    if parse_errors >= 200:
+                        try:
+                            response_path.unlink()
+                        except OSError:
+                            pass
+                        self._note_fault(
+                            workspace_dir, recovery_guidance(CORRUPT_RESPONSE))
+                        raise AltiumCommandError(
+                            f"Response file for request {trace_id(request_id)} was "
+                            f"present but unparseable after {parse_errors} "
+                            f"attempts -- Altium likely crashed mid-write. "
+                            f"The corrupt file was removed; retry the call. "
+                            + recovery_message(CORRUPT_RESPONSE),
+                            details={
+                                "recovery": recovery_guidance(CORRUPT_RESPONSE),
+                            },
+                        ) from exc
+                else:
+                    try:
+                        response_path.unlink()
+                    except OSError:
+                        pass
+                    elapsed = (time.monotonic() - start) * 1000
+                    _trace_log(
+                        workspace_dir,
+                        f"POLL_MATCH id={trace_id(request_id)} "
+                        f"elapsed={elapsed:.0f}ms polls={poll_count} "
+                        f"parse_errs={parse_errors} extensions={extensions}",
+                    )
+                    return CommandResponse.from_dict(data)
+
+            if time.monotonic() >= deadline:
+                if progress_path.exists() and extensions < ext_cap:
+                    extensions += 1
+                    deadline = time.monotonic() + timeout
+                    continue
+                if first_appearance is None and response_path.exists():
+                    continue
+                break
+            await asyncio.sleep(poll_interval)
+
+        elapsed = (time.monotonic() - start) * 1000
+        _trace_log(
+            workspace_dir,
+            f"POLL_TIMEOUT id={trace_id(request_id)} elapsed={elapsed:.0f}ms "
+            f"polls={poll_count} parse_errs={parse_errors} "
+            f"extensions={extensions}",
+        )
+        self._raise_poll_timeout(
+            workspace_dir, timeout, extensions, ext_cap, max_extensions)
+
+    async def _execute_command_async(
+        self,
+        command: str,
+        params: dict[str, Any],
+        timeout: float,
+        max_extensions: Optional[int] = None,
+    ) -> Any:
+        request = CommandRequest(
+            command=command, params=params,
+            session_doc="" if _unpinned(command, params) else self._session_doc)
+        workspace_dir = self.config.workspace_dir
+        _trace_log(workspace_dir, f"SEND cmd={command} id={trace_id(request.id)}")
+        self._publish_request(request)
+        response_path = self._response_path(request.id)
+        try:
+            response = await self._poll_response_async(
+                request.id, timeout, max_extensions)
+        except AltiumTimeoutError as exc:
+            self._withdraw_or_warn(request, exc)
+            raise
+        finally:
+            try:
+                response_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        if response.protocol_version and response.protocol_version != PROTOCOL_VERSION:
+            raise AltiumProtocolError(
+                client_version=PROTOCOL_VERSION,
+                server_version=response.protocol_version,
+            )
+        if not _unpinned(command, params):
+            self._session_doc = next_session_doc(
+                self._session_doc, command, params, response)
+        shown = self._reshow_hidden_frame(command, request.id)
+        if response.success:
+            self._clear_fault_if_any(workspace_dir)
+            data = _with_envelope_notes(response.data, response)
+            if command == "application.ping" and isinstance(data, dict):
+                self._loop_script_version = str(data.get("script_version") or "")
+            data = self._with_outdated_note(command, data)
+            if shown and isinstance(data, dict):
+                data = {**data, "altium_window_shown_again":
+                        "Altium's main window was hidden and has been shown "
+                        "again. bridge_trace.log has a FRAME_SHOWN line naming "
+                        "what ran before it."}
+            return self._maybe_attach_detach_hint(command, data)
+        error = response.error or {}
+        raise_for_code(
+            error.get("code", "UNKNOWN_ERROR"),
+            error.get("message", "Unknown error"),
+            error.get("details"),
+        )
+
     def send_command(
         self,
         command: str,
@@ -1934,6 +2227,7 @@ class AltiumBridge:
         command: str,
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
+        max_extensions: Optional[int] = None,
     ) -> Any:
         # An item of a bulk call: its request waits with the others' and
         # goes to Altium in one bulk request. See bridge/bulk.py.
@@ -1941,23 +2235,19 @@ class AltiumBridge:
         collector = bulk.current()
         if collector is not None and refuse_command(command, params) is None:
             return await collector.submit(command, params or {}, timeout)
+        extra = {} if max_extensions is None else {"max_extensions": max_extensions}
         try:
-            return await self.send_command_direct(command, params, timeout)
+            return await self.send_command_direct(command, params, timeout, **extra)
         except AltiumError as exc:
             path = await self._library_to_focus(command, exc)
             if not path:
                 raise
-        # A library command with the other kind of library in front: with
-        # exactly one library of the kind it needs open, that is the one it
-        # meant. The agent otherwise focused libraries by hand, and a
-        # library focused early shows its last part until the next exists.
         await self.send_command_direct(
             "application.set_active_document", {"file_path": path})
-        return await self.send_command_direct(command, params, timeout)
+        return await self.send_command_direct(command, params, timeout, **extra)
 
     async def _library_to_focus(self, command: str, exc: Exception) -> str:
-        """The only open library of the kind a refused ``library.*``
-        command needs, else empty."""
+        """Find a single open library when a library command lacks focus."""
         ext = {"NO_PCBLIB": ".pcblib", "NO_SCHLIB": ".schlib"}.get(
             str(getattr(exc, "code", "") or ""))
         if not ext or not command.startswith("library."):
@@ -2032,6 +2322,7 @@ class AltiumBridge:
         command: str,
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
+        max_extensions: Optional[int] = None,
     ) -> Any:
         """Send one request now, collector or not."""
         refusal = refuse_command(command, params)
@@ -2043,24 +2334,16 @@ class AltiumBridge:
         if timeout is None:
             timeout = self.config.poll_timeout
         self._ensure_keepalive()
-        # Logged before the executor, whose one worker runs this server's
-        # calls one at a time: a CALL with no SEND after it is a call stuck
-        # behind an earlier one of the same session (a cancelled call keeps
-        # its worker until its own deadline), not a lost request. Measured
-        # 2026-10-23: a call that "never returned" had no SEND at all, and
-        # nothing in the trace could say where it was.
         _trace_log(self.config.workspace_dir,
                    f"CALL cmd={command} tag={_SESSION_TAG}")
         loop = asyncio.get_running_loop()
         # The caller's context, so the request carries its turn mark.
+        execute_args = (command, one_spelling(params or {}), timeout)
+        if max_extensions is not None:
+            execute_args += (max_extensions,)
         result = await loop.run_in_executor(
-            _executor,
-            contextvars.copy_context().run,
-            self._execute_command,
-            command,
-            one_spelling(params or {}),
-            timeout,
-        )
+            _executor, contextvars.copy_context().run,
+            self._execute_command, *execute_args)
         if _wants_board_in_view(command):
             try:
                 await loop.run_in_executor(
@@ -2077,9 +2360,17 @@ class AltiumBridge:
         except Exception:  # any failure is the answer: Altium did not reply
             return False
 
-    def ping_with_version(self) -> Optional[dict[str, Any]]:
+    def ping_with_version(
+        self, require_process: bool = True
+    ) -> Optional[dict[str, Any]]:
+        """Ping the script; doctor may bypass only the process-table gate."""
         try:
-            result = self.send_command("application.ping", timeout=3.0)
+            if require_process:
+                result = self.send_command("application.ping", timeout=3.0)
+            else:
+                # The diagnostic still uses the ordinary request/response
+                # protocol, but a hidden process must not prevent its ping.
+                result = self._execute_command("application.ping", {}, 3.0)
         except Exception:  # any failure is the answer: Altium did not reply
             return None
         if isinstance(result, dict):

@@ -7,14 +7,12 @@ tools)`` header matches the number of ``@mcp.tool`` decorators in that
 section's source files. That is a COUNT, and a count cannot see a wrong
 NAME: the table can advertise a tool nobody implemented and still add up.
 
-It did. ``pcb_fillet_corners`` sat in the track-operations row with a
-description of what it does, and no such tool has ever existed. The
-Pascal handler ``PCB_FilletCorners`` is real and dispatched, but exposing
-it was deliberately declined, and
-``tests/test_bridge_handlers_reachable.py`` records why: the handler's
-own header says it has not been validated against a live Altium session,
-so a first-class tool would present unvalidated code as ready. Both
-landed in commit 8853d93; only the README got the tool it described.
+It did. ``pcb_fillet_corners`` once sat in the track-operations row with a
+description of what it did while only an internal Pascal handler existed.
+Live AD26 testing later confirmed why it must remain internal: even dry-run
+wedges the scripting loop because it nests a spatial iterator inside an active
+board iterator. This incident is why catalog names are checked independently
+of catalog counts.
 
 The cost of the gap is specific. The README catalog is what a user or an
 agent reads to decide what to call, so an entry there is a promise. A
@@ -52,6 +50,25 @@ _NOT_TOOLS: set[str] = set()
 
 
 def _registered_tools() -> set[str]:
+    # A register_* function may also gate tools behind a setting rather
+    # than a keyword flag (the NPI phase gates, off until an owner asks
+    # for them). Same reasoning as the keyword flags below: a tool the
+    # walk cannot see reads as "not registered", and the catalog entry
+    # for it reads as a promise the code does not keep.
+    import os
+
+    was = os.environ.get("EDA_AGENT_PHASES")
+    os.environ["EDA_AGENT_PHASES"] = "all"
+    try:
+        return _walk_registrars()
+    finally:
+        if was is None:
+            os.environ.pop("EDA_AGENT_PHASES", None)
+        else:
+            os.environ["EDA_AGENT_PHASES"] = was
+
+
+def _walk_registrars() -> set[str]:
     captured: set[str] = set()
 
     class _Mcp:
@@ -80,7 +97,21 @@ def _registered_tools() -> set[str]:
                     fn(_Mcp())
                 except Exception:  # noqa: BLE001 - a backend may decline
                     pass
-    # The family tools are made at registration from their members.
+                # A register_* function may gate some tools behind a
+                # keyword flag (e.g. engineering.py's altium=True, which
+                # adds eng_compare_live_ipc_footprint). Call again with
+                # every such flag set so a flagged-off tool is still seen
+                # by this walk; otherwise a real catalog entry for it
+                # reads as "not registered" the moment the (generated,
+                # always-current) TOOL_REFERENCE.md lists it.
+                flags = {p.name: True for p in inspect.signature(fn).parameters.values()
+                         if p.kind == inspect.Parameter.KEYWORD_ONLY and p.default is False}
+                if flags:
+                    try:
+                        fn(_Mcp(), **flags)
+                    except Exception:  # noqa: BLE001 - a backend may decline
+                        pass
+    # Family dispatchers are created dynamically after member registration.
     from eda_agent.tools.folds import FOLDS
     return captured | set(FOLDS)
 
@@ -146,11 +177,7 @@ def test_a_registered_tool_is_recognised():
     """The comparison works in the direction that matters."""
     registered = _registered_tools()
     assert "pcb_place_tracks" in registered
-    assert "pcb_fillet_corners" not in registered, (
-        "exposing this was declined on purpose, see "
-        "tests/test_bridge_handlers_reachable.py; if that changed, this "
-        "assertion should be updated deliberately rather than deleted"
-    )
+    assert "pcb_fillet_corners" not in registered
 
 
 def test_the_readme_documents_every_backend_the_code_offers():

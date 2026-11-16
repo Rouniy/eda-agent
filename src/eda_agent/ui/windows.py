@@ -191,11 +191,15 @@ def _gate(what: str) -> None:
     in this package passes through here or through require_foreground.
     """
     if not automation_enabled():
+        if _panel_off():
+            from ..preferences import where_set
+            where, undo = where_set("ui_automation")
+            raise AutomationDisabled(
+                f"refusing {what}: UI automation (Menus, dialogs, keys) is "
+                f"switched off {where}. {undo}")
         raise AutomationDisabled(
-            f"refusing {what}: UI automation is switched off, by "
-            f"{UI_AUTOMATION_ENV} or on the Config tab of the bridge panel "
-            f"in Altium (Menus, dialogs, keys). The user can turn it back "
-            f"on there, or unset the variable")
+            f"refusing {what}: UI automation is switched off by "
+            f"{UI_AUTOMATION_ENV}. The user can unset the variable")
 
 
 class ForegroundLost(RuntimeError):
@@ -361,7 +365,7 @@ def _show_without_focus(hwnd: int) -> None:
 
 
 def show_without_focus(hwnd: int) -> None:
-    """Show a hidden window without activating it (see above)."""
+    """Show a hidden window without activating it for a menu frame lookup."""
     _show_without_focus(hwnd)
 
 
@@ -1006,16 +1010,14 @@ _KEYS = {
     "f6": 0x75, "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79,
     "f11": 0x7A, "f12": 0x7B, "insert": 0x2D, "ins": 0x2D,
 }
-# Letters and digits: their virtual-key codes are the upper-case ASCII
-# codes. send_keys documented "ctrl+s" while the table had no letters,
-# so every letter chord was refused (issue #94).
-_KEYS.update({chr(c).lower(): c for c in range(ord("A"), ord("Z") + 1)})
-_KEYS.update({str(d): 0x30 + d for d in range(10)})
+_KEYS.update({chr(code).lower(): code for code in range(0x41, 0x5B)})
+_KEYS.update({chr(code): code for code in range(0x30, 0x3A)})
+_KEYS.update({f"num{n}": 0x60 + n for n in range(10)})
 
-#: How a refusal names the known keys, without listing 36 letters.
-_KEYS_HELP = ("a-z, 0-9, enter, escape, tab, space, backspace, delete, "
-              "insert, up, down, left, right, home, end, pageup, pagedown, "
-              "f1-f12")
+# Keep refusals short while naming the supported key families.
+_KEYS_HELP = ("a-z, 0-9, num0-num9, enter, escape, tab, space, "
+              "backspace, delete, insert, arrows, home, end, "
+              "pageup, pagedown, f1-f12")
 
 #: Modifier virtual-key codes, held down around a key in a chord.
 _MODIFIERS = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10}

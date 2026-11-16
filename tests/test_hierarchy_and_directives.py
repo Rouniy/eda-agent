@@ -180,6 +180,25 @@ def test_compile_mask_sends_its_box(monkeypatch):
                       "collapsed": "true"})]
 
 
+def test_no_erc_template_is_forwarded_with_the_options(monkeypatch):
+    _, sent = _gen(monkeypatch, "sch_place_no_erc", x=10, y=20,
+                   template_unique_id="ABCD", template_document="a.SchDoc",
+                   active=True)
+    args = sent[0][1]
+    assert (args["template_unique_id"], args["template_document"],
+            args["active"]) == ("ABCD", "a.SchDoc", "true")
+
+
+def test_a_template_replica_keeps_its_specific_suppression():
+    """The template is checked to suppress specific violations only; the
+    suppress-everything defaults must not be written over its replica."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "altium"
+           / "Generic.pas").read_text(encoding="utf-8")
+    body = src[src.index("Function Gen_PlaceNoERC("):]
+    body = body[:body.index("\nEnd;")]
+    assert "If TemplateId = '' Then ApplyNoErcDefaults(NoERC);" in body
+    assert body.count("ApplyNoErcDefaults(") == 1
 def test_harness_members_match_their_harness_port():
     """The compiled entries of a signal harness come one per member; the
     child sheet offers the harness port. Neither side is missing."""

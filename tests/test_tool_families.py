@@ -54,9 +54,10 @@ def test_the_named_members_all_exist(altium):
 
 def test_a_family_tool_runs_its_member_with_converted_arguments(altium):
     out = _run(altium.call_tool("pcb_calc", {
-        "kind": "wavelength", "args": {"frequency_hz": "1e9"}}))
+        "kind": "wavelength", "args": {"frequency_hz": "1e9",
+                                      "dielectric_constant": 1.0}}))
     assert out["ok"] is True
-    assert round(out["wavelength_mm"], 3) == 299.792
+    assert out["wavelength_mm"] == pytest.approx(299.7925, abs=0.001)
 
 
 @pytest.mark.parametrize("call, reason", [

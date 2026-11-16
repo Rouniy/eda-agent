@@ -67,12 +67,11 @@ def test_register_exposes_expected_tools() -> None:
         "design_plan_from_sheet",
         "design_validate",
     }
-    # The automatic layout was retired (2026-10-20): a sheet is drawn
-    # from a hand template by sch_draw_template.
-    assert not set(tools) & {"design_execute_plan", "design_preview_plan",
-                             "design_layout_schematic",
-                             "design_hints_from_sheet",
-                             "design_learn_from_layout"}
+    # Our branch retains the DesignPlan workflow alongside hand templates.
+    assert set(tools) >= {"design_execute_plan", "design_preview_plan",
+                          "design_layout_schematic",
+                          "design_hints_from_sheet",
+                          "design_learn_from_layout"}
 
 
 def test_get_discipline_returns_text_and_schema() -> None:

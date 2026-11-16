@@ -202,8 +202,8 @@ def test_the_config_tab_is_wired_and_painted_at_start():
 
 def test_one_tab_shows_at_a_time():
     show = functions(strip_comments(_code("StatusForm.pas")))["ShowTab"]
-    for line in ("mmo_Log.Visible := Which = 0;", "mmo_Perf.Visible := Which = 1;",
-                 "pnl_Config.Visible := Which = 2;"):
+    for line in ("pnl_Log.Visible := Which = 0;", "mmo_Perf.Visible := Which = 1;",
+                 "pnl_Config.Visible := Which = 2;", "mmo_Stats.Visible := Which = 3;"):
         assert line in show
 
 
@@ -375,9 +375,41 @@ def test_python_refuses_deletes_and_closes_when_the_panel_says_so(monkeypatch, t
     assert safety.refuse_command("pcb.place_tracks") is None
 
 
+def test_a_profile_on_this_machine_is_hidden_from_unmarked_tests(monkeypatch, tmp_path):
+    """conftest hides the profile layer from tests not marked
+    profile_preferences, so a developer's own profile cannot make a safety
+    or value-format test see something else than the panel file it wrote."""
+    from eda_agent import safety
+    monkeypatch.delenv(safety.READONLY_ENV, raising=False)
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    (profile_dir / "preferences.json").write_text(
+        json.dumps({"edits": "readonly", "value_format": "si", "default_mode": "layout_only"}))
+    monkeypatch.setenv("EDA_AGENT_PROFILE_DIR", str(profile_dir))
+    monkeypatch.setenv("EDA_AGENT_MODE", "")
+    _workspace(monkeypatch, tmp_path, edits="allowed", value_format="rkm")
+    assert preferences.preferences()["edits"] == "allowed"
+    assert preferences.value_format() == "rkm"
+    from eda_agent.design.modes import selected_mode_name
+    assert selected_mode_name()[1] != "profile"
+
+
+def test_token_stats_are_kept_and_default_to_on(tmp_path):
+    """The Config tab's Token stats switch round-trips through the panel's
+    file and is the setting the server's usage counter reads."""
+    out = _run(tmp_path, [
+        "  LoadPreferences(0); WriteLn(UsageStatsMode);",
+        "  UsageStatsMode := 'off'; StorePreferences(0);",
+        "  UsageStatsMode := ''; LoadPreferences(0); WriteLn(UsageStatsMode);",
+        "  UsageStatsMode := 'on'; StorePreferences(0);",
+        "  UsageStatsMode := ''; LoadPreferences(0); WriteLn(UsageStatsMode);",
+    ])
+    assert out == ["on", "off", "on"]
+    assert preferences.usage_stats_on(tmp_path)
+    (tmp_path / "preferences.json").write_text('{"usage_stats":"off"}')
+    assert not preferences.usage_stats_on(tmp_path)
 _CHECK_STUBS = """
-type TLog = record Lines : TStringList; end;
-var mmo_Log : TLog;
+procedure LogLine(S : String); begin end;
 procedure PaintAgentSettings(Dummy : Integer); begin end;
 """
 
@@ -405,7 +437,6 @@ def test_the_panel_turns_checks_off_and_on_and_keeps_them(tmp_path):
     _STUBS = saved + _CHECK_STUBS
     try:
         out = _run(tmp_path, [
-            "  mmo_Log.Lines := TStringList.Create;",
             "  LoadPreferences(0); WriteLn('[', ChecksOff, ']');",
             "  ChooseCheck('spice_model', False); ChooseCheck('fab_export', False);",
             "  ChooseCheck('spice_model', False);",

@@ -45,8 +45,10 @@ class _Bridge:
         return {"success": True}
 
 
-def _call(monkeypatch, bridge, **kw):
+def _call(monkeypatch, bridge, present=None, **kw):
     monkeypatch.setattr(library_tools, "get_bridge", lambda: bridge)
+    monkeypatch.setattr(library_tools, "_intlib_source_kinds",
+                        lambda _path: {"schlib", "pcblib"} if present is None else present)
     mcp = _Mcp()
     library_tools.register_library_tools(mcp)
     return asyncio.run(mcp.tools["lib_build_integrated_library"](**kw))
@@ -69,7 +71,7 @@ def test_a_new_package_is_created_filled_and_compiled(monkeypatch, tmp_path):
     assert out["built"] and out["created"]
     assert out["intlib"].endswith("Parts.IntLib") and out["intlib_bytes"] == 64
     assert bridge.sent == ["project.create", "project.add_document",
-                           "project.add_document", "project.compile",
+                           "project.add_document", "project.save", "project.compile",
                            "library.install_library"]
 
 
@@ -78,7 +80,7 @@ def test_a_compile_that_writes_nothing_is_not_built(monkeypatch, tmp_path):
                 package_path=str(tmp_path / "Parts.LibPkg"),
                 source_libraries=_sources(tmp_path))
     assert out["built"] is False and out["success"] is False
-    assert "no new IntLib" in out["reason"]
+    assert "did not produce a new nonempty IntLib" in out["reason"]
 
 
 def test_an_old_intlib_left_from_before_does_not_count(monkeypatch, tmp_path):
@@ -92,11 +94,21 @@ def test_an_old_intlib_left_from_before_does_not_count(monkeypatch, tmp_path):
     assert out["built"] is False, "a stale IntLib was taken for a new build"
 
 
+def test_missing_requested_footprint_rejects_fresh_artifact(monkeypatch, tmp_path):
+    bridge = _Bridge()
+    out = _call(monkeypatch, bridge, present={"schlib"},
+                package_path=str(tmp_path / "Parts.LibPkg"),
+                source_libraries=_sources(tmp_path), install=True)
+    assert out["artifact_written"] and not out["built"] and not out["success"]
+    assert out["missing_source_kinds"] == ["pcblib"]
+    assert "library.install_library" not in bridge.sent
+
+
 def test_bad_inputs_send_nothing(monkeypatch, tmp_path):
     bridge = _Bridge()
     assert _call(monkeypatch, bridge, package_path=str(tmp_path / "x.PrjPcb"),
-                 source_libraries=_sources(tmp_path))["error"] == "BAD_PARAM"
+                 source_libraries=_sources(tmp_path))["error"] == "BAD_PACKAGE_PATH"
     assert _call(monkeypatch, bridge, package_path=str(tmp_path / "x.LibPkg"),
                  source_libraries=[str(tmp_path / "nope.SchLib")])["error"] \
-        == "MISSING_SOURCES"
+        == "BAD_SOURCE_LIBRARIES"
     assert bridge.sent == []

@@ -489,4 +489,3 @@ def overlap_area(a, b) -> float:
             elif inside(prev):
                 out.append(cut(prev, cur))
     return ring_area(out) if len(out) >= 3 else 0.0
-

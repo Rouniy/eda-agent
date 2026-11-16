@@ -63,10 +63,10 @@ def _check_pointer_file() -> Check:
     # The pointer is written in the ANSI codepage, so it is read the same
     # way. Read as ascii, a profile path with an accented letter raised
     # UnicodeDecodeError, which is not an OSError and escaped the check.
-    from ..config import _pointer_encoding
+    from .. import config as agent_config
     try:
-        contents = pointer.read_text(encoding=_pointer_encoding()).strip()
-    except (OSError, UnicodeDecodeError) as exc:
+        contents = pointer.read_text(encoding=agent_config._pointer_encoding()).strip()
+    except (OSError, UnicodeError) as exc:
         return Check(
             name="workspace pointer file readable",
             status=Status.FAIL,

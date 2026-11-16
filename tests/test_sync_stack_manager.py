@@ -18,6 +18,7 @@ compared before and after: the apply writes into the board.
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from pathlib import Path
 
 from eda_agent.tools import pcb as pcb_tools
@@ -128,7 +129,8 @@ _MANAGER = {"layers": [{"name": "Top Layer", "type": "copper", "thickness_mils":
             "model": _MODEL}
 _BOARD = {"layers": [{"name": "Top Layer", "kind": "copper", "thickness_mils": 2.8},
                      {"name": "Dielectric 1", "kind": "dielectric", "thickness_mils": 12.6,
-                      "constant": 4.8, "material": "FR-4"}]}
+                      "constant": 4.8, "material": "FR-4", "dielectric_type": 0,
+                      "loss_tangent": 0.02, "stiffener": False}]}
 
 
 class _Bridge:
@@ -158,7 +160,8 @@ def _tool(monkeypatch, bridge):
     monkeypatch.setattr(pcb_tools, "get_bridge", lambda: bridge)
     mcp = _Mcp()
     pcb_tools.register_pcb_tools(mcp)
-    return mcp.tools["pcb_sync_stack_manager"]
+    return partial(mcp.tools["pcb_sync_stack_manager"],
+                   board_path="C:/test/board.PcbDoc")
 
 
 def _loads(bridge):
@@ -168,7 +171,8 @@ def _loads(bridge):
 def test_the_model_is_read_as_records(monkeypatch):
     bridge = _Bridge()
     asyncio.run(_tool(monkeypatch, bridge)())
-    assert bridge.sent[0] == ("pcb.layer_stack_manager", {"include_model": "records"})
+    assert bridge.sent[0] == ("pcb.layer_stack_manager", {
+        "include_model": "records", "board_path": "C:/test/board.PcbDoc"})
 
 
 def test_a_dry_run_lists_the_changes_and_loads_nothing(monkeypatch):
@@ -223,9 +227,25 @@ def test_layers_only_one_side_has_are_refused(monkeypatch):
 class _WriteBridge(_Bridge):
     """A stack write recorded, then the sync's reads answered as above."""
     async def send_command_async(self, command, params=None, timeout=None):
+        if command == "pcb.physical_stack":
+            self.sent.append((command, dict(params or {})))
+            board = self.board_after if self.loaded else self.board
+            return dict(board, board_path=params["board_path"], style=0,
+                        layer_count=len(board["layers"]), total_thickness_mils=15.4)
         if command in ("pcb.set_dielectric", "pcb.modify_layer"):
             self.sent.append((command, dict(params or {})))
-            return {"layer": params.get("layer"), "not_applied": []}
+            if command == "pcb.set_dielectric":
+                self.board = {"layers": [dict(layer, constant=float(params["constant"]))
+                                         if layer["name"] == params["layer"] else layer
+                                         for layer in self.board["layers"]]}
+                self.board_after = self.board
+            return {"layer": params.get("layer"), "changed": True, "not_applied": []}
+        if command == "pcb.layer_stack_manager" and self.loaded:
+            self.sent.append((command, dict(params or {})))
+            return {"layers": [dict(layer, thickness_mils=2.8)
+                               if layer["name"] == "Top Layer" else
+                               dict(layer, dielectric_constant=str(self.board["layers"][1]["constant"]))
+                               for layer in self.manager["layers"]]}
         return await super().send_command_async(command, params, timeout)
 
 
@@ -239,15 +259,17 @@ def _writer(monkeypatch, name):
 
 def test_set_dielectric_brings_the_manager_in_step_after_the_write(monkeypatch):
     tool, bridge = _writer(monkeypatch, "pcb_set_dielectric")
-    out = asyncio.run(tool(layer="Dielectric 1", constant=4.35))
-    assert bridge.sent[0][0] == "pcb.set_dielectric"
+    out = asyncio.run(tool(board_path="C:/test/board.PcbDoc", layer="Dielectric 1",
+                           constant=4.35, dry_run=False))
+    assert any(command == "pcb.set_dielectric" for command, _ in bridge.sent)
     assert len(_loads(bridge)) == 1
     assert out["stack_manager"]["in_step_after"] is True
 
 
 def test_modify_layer_brings_the_manager_in_step_after_the_write(monkeypatch):
     tool, bridge = _writer(monkeypatch, "pcb_modify_layer")
-    out = asyncio.run(tool(layer="TopLayer", copper_thickness_mils=2.8))
+    out = asyncio.run(tool(layer="TopLayer", board_path="C:/test/board.PcbDoc",
+                           copper_thickness_mils=2.8))
     assert bridge.sent[0][0] == "pcb.modify_layer"
     assert len(_loads(bridge)) == 1
     assert out["stack_manager"]["changes"][0]["layer"] == "Top Layer"
@@ -255,12 +277,10 @@ def test_modify_layer_brings_the_manager_in_step_after_the_write(monkeypatch):
 
 def test_a_rebuild_that_matches_brings_the_manager_in_step():
     text = Path(pcb_tools.__file__).read_text(encoding="utf-8")
-    body = text[text.index("async def pcb_make_layer_stack("):
+    body = text[text.index("async def pcb_build_stack("):
                 text.index("async def pcb_set_dielectric(")]
-    done = body.index('result["done"] = trouble is None and not result["mismatches"]')
-    sync = body.index('result["stack_manager"] = await sync_stack_manager(bridge)')
-    assert done < sync < body.index('result["restored"] = True')
-    assert 'if result["done"]:' in body[done:sync]
+    sync = body.index('result["stack_manager"] = await sync_stack_manager(bridge, board_path)')
+    assert 'if ok:' in body[:sync]
 
 
 # ---- the handler ----------------------------------------------------------------
@@ -298,3 +318,58 @@ def test_the_command_is_dispatched():
     text = _PCB.read_text(encoding="utf-8-sig")
     assert ("'load_stack_manager_model': Result := "
             "PCB_LoadStackManagerModel(Params, RequestId);") in text
+
+
+# ---- a layer only the Layer Stack Manager can have -------------------------------
+
+# MEASURED on a real six-layer board (AD 26.11): the manager carries "Top
+# Surface Finish" and "Bottom Surface Finish", type "other". The board's
+# physical stack has no such layer object and never will, so the two could
+# not be brought in step and both tools refused, each pointing at the
+# other: pcb_move_layer said to run pcb_sync_stack_manager, and
+# pcb_sync_stack_manager said to add or remove the layers in the manager.
+_FINISH = {"name": "Top Surface Finish", "type": "other"}
+_WITH_FINISH = {"layers": _MANAGER["layers"] + [_FINISH], "model": _MODEL}
+
+
+def test_a_manager_only_other_layer_is_not_a_disagreement():
+    out = pcb_tools.stack_manager_out_of_step(_WITH_FINISH, _BOARD)
+    assert {"layer": "Top Surface Finish", "field": "manager_only",
+            "board": None, "stack_manager": "other"} in out
+    assert [d for d in out if d["field"] == "layer"] == []
+
+
+def test_a_manager_only_layer_of_any_other_type_still_is():
+    manager = {"layers": _MANAGER["layers"] + [{"name": "Inner 1", "type": "copper"}],
+               "model": _MODEL}
+    out = pcb_tools.stack_manager_out_of_step(manager, _BOARD)
+    assert {"layer": "Inner 1", "field": "layer",
+            "board": None, "stack_manager": "copper"} in out
+
+
+def test_a_board_layer_the_manager_lacks_still_blocks():
+    board = {"layers": _BOARD["layers"] + [{"name": "GND", "kind": "copper",
+                                            "thickness_mils": 1.2}]}
+    out = pcb_tools.stack_manager_out_of_step(_WITH_FINISH, board)
+    assert {"layer": "GND", "field": "layer",
+            "board": "copper", "stack_manager": None} in out
+
+
+def test_surface_finish_alone_reads_in_step_and_is_reported(monkeypatch):
+    board = {"layers": [dict(_BOARD["layers"][0], thickness_mils=1.4),
+                        _BOARD["layers"][1]]}
+    bridge = _Bridge(manager=_WITH_FINISH, board=board)
+    out = asyncio.run(_tool(monkeypatch, bridge)(dry_run=False))
+    assert out["in_step"] is True
+    assert out["manager_only"] == [{"layer": "Top Surface Finish",
+                                    "field": "manager_only",
+                                    "board": None, "stack_manager": "other"}]
+    assert _loads(bridge) == []
+
+
+def test_surface_finish_does_not_stop_the_values_being_written(monkeypatch):
+    bridge = _Bridge(manager=_WITH_FINISH)
+    out = asyncio.run(_tool(monkeypatch, bridge)(dry_run=True))
+    assert out["changes"] == [{"layer": "Top Layer", "field": "thickness_mils",
+                               "value": "2.8mil"}]
+    assert "layers_differ" not in out

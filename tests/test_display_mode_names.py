@@ -47,7 +47,7 @@ def test_the_property_is_wired_into_get_and_set_on_components_only():
     get = _units()["GetSchProperty"]
     assert "Else If PropName = 'DisplayModeNames' Then Result := ReadDisplayModeNames(Comp)" in get
     put = _units()["SetSchProperty"]
-    branch = put[put.index("Or (PropName = 'DisplayModeNames') Then"):]
+    branch = put[put.index("Else If PropName = 'DisplayModeNames' Then"):]
     assert branch.index("If Obj.ObjectId <> eSchComponent Then") < branch.index("WriteDisplayModeNames(Comp, Value)")
     assert "If Not WriteDisplayModeNames(Comp, Value) Then WroteOK := False;" in branch
 

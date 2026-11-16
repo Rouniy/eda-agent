@@ -114,7 +114,7 @@ class Criterion:
 #: sentence.
 AUDIT_CHECKS = ("placement_audit", "connectivity_summary", "drc",
                 "corner_audit", "return_via_audit", "plane_region_audit",
-                "loop_audit", "pad_entry_audit", "rotation_audit")
+                "rotation_audit", "loop_audit", "pad_entry_audit")
 
 _DRC = Criterion("drc", "violations", "==", 0,
                  also=(("pcb_run_drc", "violation_count"),
@@ -343,7 +343,8 @@ def apply_measured_gates(state, events) -> tuple:
             status[stage] = STATUS_FAILED
     if status == state.stage_status:
         return state, verdicts
-    nxt = next((s for s in STAGES if status.get(s) != STATUS_OK), None)
+    nxt = next((s for s in getattr(state, "stages", STAGES)
+                if status.get(s) != STATUS_OK), None)
     return replace(state, stage_status=status, next_stage=nxt,
                    complete=nxt is None), verdicts
 

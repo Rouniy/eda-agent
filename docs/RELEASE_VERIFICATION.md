@@ -17,6 +17,14 @@ works elsewhere cannot be an undeclared identifier:
 
 | Step | Property | Written elsewhere? | Risk |
 |---|---|---|---|
+| 60, local grids | `SetProperty_AngularStep` | yes, `PCB_LocalGrid` | medium, grid settings require native readback |
+| 62, sheet symbol labels | `SheetName.Location`, `SheetFileName.Location`, `FontId` | yes, `Generic.pas` | medium, positions and fonts require native readback |
+| 63, rule limits | `MinLimit`, `MaxLimit`, `Minimum`, `Maximum`, `MaximumFlightTime` | yes, `RuleLimitsReport` in `PCB.pas` | high, require native rule readback |
+| 64, board intake and stack manager | `Selected`, `CopperThickness` | yes, `PCB.pas` | high, board edits need save and reopen checks |
+| 65, blanket edits | `Location` | yes, `Generic.pas` | medium, verify blanket geometry and net coverage |
+| 68, footprint repoint | `Name` | yes, `Library.pas` | high, verify model identity after save |
+| 69, directives and compile masks | `Orientation` | yes, `Generic.pas` | medium, verify repeated channels and ERC output |
+| 70, pad relief and IPC batch | `SolderMaskExpansion` | yes, `PCB.pas` | high, verify copper and mask output |
 | 5, 3D placement | `StandoffHeight` | only by step 15, itself unverified | highest |
 | 5, 3D placement | `Rotation` on a body | other object types only | high |
 | 2, pin edges | `Symbol_OuterEdge`, `Symbol_InnerEdge` | only by `Library.pas` and, since step 44, `Generic.pas` | high, and can stop the loop; the inner edge has since run live through obj_modify |
@@ -30,7 +38,7 @@ works elsewhere cannot be an undeclared identifier:
 | 14, polygon pour options | `RemoveDead`, `RemoveNarrowNecks`, `RemoveIslandsByArea` | new here, and in two places at once | high, and it can stop the loop |
 | 15, 3D body on a board | `StandoffHeight` on a free body | only by step 5, itself unverified | highest, shared with step 5 |
 | 16, region kind | `Kind` on a region | read by four reference scripts, written by none | high, and it can stop the loop |
-| 17, component UniqueId | `UniqueId` on a placed component | no, nowhere | highest, and a wrong id costs the next Update PCB |
+| 17, component UniqueId | `UniqueId` on a placed component | yes, `Generic.pas`, `PCB.pas` and `SelectedProject.pas` now use it | highest, and a wrong id costs the next Update PCB |
 | 18, pin owner part | `OwnerPartId` | yes, by two independent reference scripts | medium, behavioural not declarative |
 | 6, mirrored text | `MirrorFlag` | yes, `PCB.pas` | lowest |
 | 20, bulk vias | `Size`, `HoleSize`, `LowLayer`, `HighLayer` on a via | yes, `PCB_PlaceVia` | low |
@@ -41,11 +49,11 @@ works elsewhere cannot be an undeclared identifier:
 | 23, via template | `CopyTo` on a via's template link | yes, `Library.pas`, on footprints only | highest, and it can stop the loop |
 | 23, via mode | `Mode` on a via | yes, on pads, `PCB.pas` | medium |
 | 23, via size | `Size`, `HoleSize` on a via | yes, `PCB_PlaceVia` | low |
-| 23, Routing Via rule | `PreferedWidth`, `PreferedHoleWidth`, `MinHoleWidth`, `MaxHoleWidth` | no, nowhere | high, and it can stop the loop |
+| 23, Routing Via rule | `PreferedWidth`, `PreferedHoleWidth`, `MinHoleWidth`, `MaxHoleWidth` | yes, `PCB.pas` and `SelectedProject.pas` | high, and it can stop the loop |
 | 25, DbLib connection | `ConnectionString`, `LoginPrompt`, `Connected` on an ADO connection | no, nowhere | highest, and it can stop the loop |
 | 25, DbLib query | `Connection` on an ADO query | no, nowhere | highest, and it can stop the loop |
 | 25, DbLib record key | `ParamByName`, `Value` on an ADO parameter | no, nowhere | high, and it can stop the loop |
-| 25, DbLib placement | `LoadComponentFromDatabaseLibrary` | no, nowhere | highest, and it edits the sheet |
+| 25, DbLib placement | `LoadComponentFromDatabaseLibrary` | yes, `Generic.pas` and `Library.pas` now use it | highest, and it edits the sheet |
 | 25, DbLib placement | `AddSchObject`, `SetState_Orientation` | yes, `Gen_PlaceSchComponentFromLibrary` | low |
 | 26, repour | `PolygonRepour` on the system options | no, nowhere | high, and it can stop the loop |
 | 26, ECO direction | `AddStringParameter` with `Action=UpdateMe` | yes, `Proj_UpdatePCB` | high, and executing it edits the board |
@@ -55,11 +63,12 @@ works elsewhere cannot be an undeclared identifier:
 | 26, copied footprint | `MoveByXY` on a footprint's primitives | yes, `Library.pas`, on a 3D body | medium |
 | 27, lengths in mm | `TopXSize`, `TopYSize` on a pad, now from `CoordFromUnits` | yes, `Lib_AddFootprintPads` | low |
 | 27, new document | `ShowDocument` on the new document | yes, `App_SetActiveDocument` | low |
+| 28, layer thickness | `CopperThickness`, `DielectricHeight`, now from `StrToFloatDef` and `MilsToCoordF` | yes, `PCB_ModifyLayer` wrote both already | low to declare, but it fixes a SILENT failure |
 | 28, simulation run | `AddStringParameter` with `ObjectKind=Simulator` | yes, `Proj_UpdatePCB` | medium, a process run rather than a write |
 | 28, results saved | `SetFileName`, `DoFileSave` on the results document | yes, `App_CreateDocument` | low |
 | 28, settings reload | `SupportsReload`, `DoFileLoad`, `UpdateModifiedDate` | no, nowhere | highest, and it can stop the loop |
 | 29, slotted hole | `HoleType`, `HoleWidth` on a library pad | only by `PCBGeneric.pas`, on a board pad, itself new | high, and it can stop the loop |
-| 29, pad mask expansion | `SolderMaskExpansion`, `SolderMaskExpansionValid` on a pad cache | yes, `PCB_SetViaSoldermaskRelief`, on a via's cache | medium, a library pad is new |
+| 29, pad mask expansion | `SolderMaskExpansion`, `SolderMaskExpansionValid` on a pad cache | yes, `Library.pas` and `PCB.pas` use pad caches; direct via expansion is refused after a script-engine crash | medium, a library pad is new |
 | 29, non-plated hole | `Plated` on a library pad | read in `PCB.pas`, written nowhere else | medium |
 | 29, pad paste expansion | `PasteMaskExpansion`, `PasteMaskExpansionValid`, `SetState_Cache` | yes, `PCB_MakePasteGrid` | low, but now on a library pad |
 | 29, paste windows | `SetOutlineContour`, `Replicate` on a region contour | yes, `PCB_PlaceRegion` | medium, a region in a footprint is new |
@@ -86,6 +95,9 @@ works elsewhere cannot be an undeclared identifier:
 | 35, freeing a removed primitive | `DestroyPCBObject` on a primitive just removed, inside the open iterator | no, nowhere | medium, a freed primitive used again takes the loop down; ran 25 cycles live without a fault |
 | 35, temporary holder | `GetUniqueCompName`, `DestroyPCBLibComp` on a footprint made for the delete | no, nowhere | low, ran live in a single-footprint library |
 | 36, body layer | `Layer` written on a library 3D body | yes, `PCB_Place3DBody` | low |
+| 55, supplier links and pin timing | `ISch_Parameter.Text` for supplier fields; `ISch_Pin.PropagationDelay` and `PinPackageLength` | existing parameter and pin setters cover related writes | medium; measured on a disposable library with save/reopen |
+| 56, schematic placement and stack | `FontId`, `Width`, `RemoveLayer` and `CopperThickness` | existing schematic object and stack editors write these properties | medium; save/reopen stack and font behavior need native verification after this merge |
+| 57, body position and designators | `MoveByXY`, `Designator` | existing footprint and schematic handlers use both | medium; the merged body and rename paths need native verification |
 | 36, mechanical check | `IsMechanicalLayer` on LayerUtils | no, nowhere | high, a wrong member stops the loop; ran live, and used by scripts in reference/ |
 | 36, assembly text | `UnderlyingString`, `Size`, `Width` on a new library text | yes, `Lib_AddFootprintText` | low |
 | 36, settle after an add | `SetState_CurrentComponent` on the footprint already current | yes, `Lib_Link3DModel` | low, ran after all eight add kinds and survived save and restart |
@@ -98,8 +110,8 @@ works elsewhere cannot be an undeclared identifier:
 | 32, footprint on a placed part | `ModelName` on a footprint implementation | yes, `Lib_SetModelName` | medium, now on a placed part rather than a library symbol |
 | 32, footprint link name | `EntityName` on a model datafile link | yes, `Lib_NormalizeImplementations` | low |
 | 37, via tenting | `SetState_IsTenting_Top`, `SetState_IsTenting_Bottom` on a footprint via | yes, `PCB_SetViaTenting` | low, written and read back live both ways; dropped silently unless the mask is manual |
-| 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | no, nowhere | low, written and read back live both ways; dropped silently unless the paste is manual |
-| 37, manual first | `SolderMaskExpansionValid`, `PasteMaskExpansionValid` set before the flag | yes, `PCB_SetViaSoldermaskRelief` | low |
+| 37, paste flag | `SetState_IsTopPasteEnabled` on a library pad | yes, `Library.pas` and `PCB.pas` now use it | low, written and read back live both ways; dropped silently unless the paste is manual |
+| 37, manual first | `SolderMaskExpansionValid`, `PasteMaskExpansionValid` set before the flag | yes, `Library.pas`; direct via expansion is refused after a script-engine crash | low |
 | 37, via sizes | `SizeOnLayer` written on a via, `HoleSize` | yes, `PCB.pas` | medium, the size write is new on a via; read back live in mm |
 | 37, grid switches | `SnapGridOn`, `VisibleGridOn` on a schematic | no, nowhere | low, switched off and on live and read back |
 | 37, pin labels | `ShowName`, `ShowDesignator` on a pin | yes, `Library.pas` | low |
@@ -132,7 +144,7 @@ works elsewhere cannot be an undeclared identifier:
 | 42, net clean-up | `CleanNet` on the board | no, nowhere | medium, edits routing; ran live |
 | 42, drill pairs | `IsBackdrill`, `PlotDrillGuide`, `PlotDrillDrawing` on a drill pair | no, nowhere | low, ran live and restored |
 | 42, part 3D | `SaveModelToFile` on a placed part | no, nowhere | low, writes a file only; ran live |
-| 42, fast lookup | `GetPcbComponentByRefDes` on the board | no, nowhere | medium, every designator lookup runs it first; ran live, with the walk behind it |
+| 42, fast lookup | `GetPcbComponentByRefDes` on the board | yes, `PCB.pas` and `SelectedProject.pas` now use it | medium, every designator lookup runs it first; ran live, with the walk behind it |
 | 42, generic board properties | `HolePositiveTolerance`, `MitreCorners`, `BorderWidth`, `EnablePinSwapping`, `BarCodeShowText` | no, nowhere | low, ran live and read back |
 | 42, multiline text | `Multiline` on a board text | yes, `PCB_PlaceText` (a justified text is framed) | low, ran live and read back |
 | 42, pin swapping | `SetState_SwapIdPart`, `SetState_SwapIdPin` on a symbol pin | no, nowhere | low, ran live and read back |
@@ -184,12 +196,12 @@ works elsewhere cannot be an undeclared identifier:
 | 48, rule settings | `MaxHeight`, `VerticalGap`, `MinSetBack`, `NetAntennaeTolerance`, `FanoutStyle`, `CheckConnectedCopper` on rules | no, nowhere | low, ran live, read back and restored |
 | 48, wire tidy | `OptimizeUseOfPolylines` on a sheet | no, nowhere | medium, rewrites a sheet's wires; ran live, closed unsaved |
 | 48, pre-routes | `IsPreRoute`, `UserRouted` on tracks, arcs and vias | no, nowhere | low, ran live and cleared |
-| 48, paste openings | `PasteMaskExpansionMode`, `PasteMaskUsePercent`, `PasteMaskPercent`, `PasteMaskEnabled` on pads and vias | no, nowhere | low, ran live, board closed unsaved |
+| 48, paste openings | `PasteMaskExpansionMode`, `PasteMaskUsePercent`, `PasteMaskPercent`, `PasteMaskEnabled` on pads and vias | yes, `PCB.pas` and `PCBGeneric.pas` now use these properties | low, ran live, board closed unsaved |
 | 49, split lines | `CreateSplitLine`, `DeleteSplitLine`, `RebuildSplitBoardRegions` on the outline | yes, `RefreshBoardOutline` (rebuild) | high, rebuilds regions; refused on a board whose regions are not all from split lines; ran live |
 | 49, region settings | `Locked3D` on a board region | no, nowhere | low, ran live and read back |
 | 49, layer stacks | `CreateSubstack`, `RemoveSubstack`, `EnableLayer`, `DisableLayer`, `IsFlex` on the layer stack | no, nowhere | medium, changes the stack; ran live and restored |
 | 49, bend lines | `CreateBendingLine`, `DeleteBendingLine`, `FoldIndex` on a region's bend lines | no, nowhere | low, ran live and restored |
-| 50, dielectrics | `DielectricLossTangent`, `IsStiffener`, `DielectricHeight` on a dielectric or mask layer | no, nowhere | medium, changes the stack; ran live and restored |
+| 50, dielectrics | `DielectricLossTangent`, `DielectricHeight` on a dielectric or mask layer; the stiffener flag was refused after a failed persistence check | yes, `PCB.pas` and `SelectedProject.pas` now use the dielectric properties | medium, changes the stack; ran live and restored |
 | 50, stack style | `LayerStackStyle` on the master stack | no, nowhere | medium, ran live and restored |
 | 50, impedance profiles | `CreateImpedanceProfile`, `RemoveImpedanceProfile`, `CreateTraceImpedance`, `TraceMinWidth`, `UseSolderMask` | no, nowhere | low, ran live on a copy |
 | 50, layer order | `InsertInStackBelow`, `InsertInStackAbove` on the stack | no, nowhere | medium, ran live on a copy |
@@ -250,7 +262,7 @@ works elsewhere cannot be an undeclared identifier:
 | 65, blanket outline | `VerticesCount`, `Vertex` on a blanket | yes, `Lib_AddSymbolPolygon` (symbol polygons) | low, the same vertex writes as a symbol polygon; ran live on a scratch sheet, read back |
 | 65, blanket style | `LineStyle`, `Collapsed`, `Transparent` on a blanket | yes, `Gen_PlaceBlanket` (sch_place_blanket) | low, display only; ran live on a scratch sheet, read back |
 | 68, placed footprint | `IsCurrent` on a placed part's footprint model | yes, `ChooseFootprintModel` (placing with a footprint) | low, the flag ends where it started; ran live on a scratch sheet, compiled footprint read back |
-| 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `Symbol` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | low, display only; ran live on a scratch sheet, read back |
+| 69, directive, No ERC and mask options | `Style`, `Orientation` on a directive, `SuppressAll` on a No ERC, `Collapsed` on a compile mask | yes, `Generic.pas` (obj_modify and blanket writes) | high, verify native ERC suppression and mask behavior on disposable documents |
 | 70, pad relief | `UseCustomRelief`, `DefinedType`, `ConductorWidth`, `AirGapWidth`, `ConnectStyle`, `Entries` on a pad's own thermal relief | no, nowhere | medium, changes how a pour joins the pad; ran live on a scratch board, read back and put back to the rule |
 | 78, text frame style | `AreaColor`, `TextColor`, `TextMargin` on a new text frame | yes, `SetSchProperty` (obj_modify on placed frames) | low, display only; ran live on a scratch sheet, read back |
 | 79, frame corner and part | `Corner` on a text frame, `SetState_CurrentPartID` before a DbLib part joins the sheet | yes, `SetSchProperty` | low; the corner ran live on a scratch sheet and read back, the DbLib part was not measured here |
@@ -3264,48 +3276,24 @@ before and after. All passed as described.
 
 ---
 
-## 53. Simulation probes, the setup a run uses, a run for a sheet
+## 53. Upstream simulation probes and sheet run (f3bd57f)
 
-`sch_place_probe` places the probe Altium's Place > Probes > Voltage
-makes and takes `name`; `sim_get_probes` lists the probes on the
-project's sheets; `sim_get_setup` reports the analyses a run would do and
-their settings; `sim_run` runs a sheet's setup the way the Simulation
-Dashboard does, takes `analyses` and `sheet`, and reports `run_mode` and
-`ran_analyses`. The settings file reloads on AD 26.11, which reports it
-cannot.
+Upstream tested this change on AD 26.11.1.5 with a scratch copy of the
+Simulation Quick Start project. Its `sch_place_probe` now creates the
+parameters of a native voltage probe (`SimulationProbe=V`,
+`ProbeVoltage=True`, `ProbeName`, `ProbeCustomName` and
+`ProbeValueDisplay`). `sim_get_probes` distinguishes it from an old bare
+probe that the simulator ignores. `sim_get_setup` reports the saved
+settings. `sim_run` runs a sheet and reports which analyses actually
+ran. Local `.112` acceptance found that an op-only request still ran
+all four analyses even after the project was reopened with an op-only
+saved setup. Reloading a `.simcfg` despite
+`SupportsReload=False` worked in that upstream test.
 
-1. **Probe.** A probe placed by Altium's own command carried
-   SimulationProbe=V (shown), ProbeVoltage=True (hidden), ProbeName,
-   ProbeCustomName (hidden) and ProbeValueDisplay; the probe the script
-   placed before had only ProbeValueDisplay and the simulator passed it
-   over. Placed now on a wire of the Simulation Quick Start example's
-   first sheet with name NODE_A: `sim_get_probes` lists it as a
-   simulation probe of kind V, Altium resolved ProbeName to V_NetQ11_3,
-   and every analysis of the next run carried v(netq11_3). The old bare
-   probe is listed with `simulation` false.
-2. **Setup.** `sim_get_setup` on that sheet read `affect` Document, the
-   sheet's own settings, the analyses on, the DC sweep (R7, 100 to 1k,
-   step 1, output v(out)), transient and AC settings, and the run history.
-3. **Run for a sheet.** With only DC switched on in the file, the
-   project's first simulator output (the old form) ran operating point,
-   DC, transient and AC; the dashboard's form for the sheet ran DC alone.
-   After the project was reopened, OP only in the file gave OP alone.
-4. **Selection kept.** A later change of the switches, with the settings
-   document reloaded or closed, did not change what ran: Altium keeps the
-   selection it read at the first run after the project opened, and each
-   run turns OP, DC, transient and AC back on in its copy. `sim_run`
-   reports what ran from the results and, with `analyses`, says
-   `selection_applied` false and why.
-5. **Reload.** On AD 26.11 the settings document reports SupportsReload
-   False; asked to load anyway, it did: OP and AC written to the file,
-   reloaded, saved by Altium, read back OP and AC. Before, the refusal
-   stopped `sim_setup_analysis`.
-
-Run live on AD 26.11.1.5 with that change's script on a scratch copy of
-Altium's Simulation Quick Start example; every document closed without
-saving. All passed as described.
-
----
+This merge carries the source and upstream's native observations.
+The merged `.112` bundle has now been checked on a disposable copy for
+probe persistence, setup readback and sheet-run results; reliable
+single-analysis selection remains unresolved.
 
 ## 54. Variant values, renaming and copying a variant, the BOM a variant builds
 
@@ -3410,8 +3398,8 @@ Altium's; `sch_place_components` matches a part placed from a library to
 the sheet (`tidy`); `sch_tidy_port_references` moves port cross-references
 to the port's free end; `pcb_resize_designators` sizes designators to
 their parts, on a mechanical layer if asked; `pcb_make_layer_stack` makes
-the board's stack match a wanted one through `copper_layers`,
-`drop_stack_layer` and `tune_copper_layer`.
+the board's stack match a wanted one through the existing `pcb_build_stack`
+and native `pcb.stack_edit` path.
 
 1. **Placement.** On a scratch sheet: a port 600 mil wide with AutoSize
    off, read back; the new objects carry the sheet's font id; a text
@@ -3502,7 +3490,9 @@ No Pascal changed.
 `design_phase_gate`, `design_phase_answer` and `design_phase_standing`
 hold a product to feasibility, prototype, EVT, DVT and PVT;
 `eda-agent sdk-reach` counts the properties Altium's SDK declares that
-the generic tools reach; `design_simulate_deck` runs a deck in ngspice or
+the generic tools reach (that command has since been merged into
+`eda-agent sdk-coverage`, which reads a reflected SDK rather than the
+index this run used); `design_simulate_deck` runs a deck in ngspice or
 LTspice; `footprint_read_ipc_name`, `lib_verify_ipc_names`,
 `lib_check_naming`, `lib_make_name`, `lib_read_pin_table`,
 `design_check_company_rules`, `design_read_rules_export` and
@@ -3514,7 +3504,9 @@ read and write Altium 365.
    prototype, and back in feasibility when asked about revision B.
 2. **SDK reach.** 802 of 2,221 declared properties reached (36.1 %)
    across 46 object types: 464 of 1,040 on the schematic, 338 of 1,181 on
-   the board.
+   the board. Measured with `sdk-reach` against its own SDK index; the
+   figure `sdk-coverage` reports is not comparable, because the two read
+   different dumps of the SDK.
 3. **Simulators.** One RC deck in ngspice-47 and LTspice 24.0.12:
    both 4.96629 V at 5 ms and a 2.1972 ms rise (RC ln 9). A deck calling
    an unknown subcircuit fails in both with the engine's error. A deck
@@ -4530,32 +4522,465 @@ Repeatable live acceptance on disposable documents:
 
 Live results for this candidate are recorded below once performed.
 
-## Fresh-destination footprint export on Altium 21
 
-Validated on Altium 21.4.1.30 on 2026-11-08 using neutral disposable libraries.
-The candidate export handler was temporarily substituted into an installed
-AD21-compatible bridge; a compiled unit stamp confirmed the loaded revision.
-The Python tools came from the isolated current-upstream worktree. This is
-handler acceptance on that host, not deployment of the entire upstream bridge
-or verification on AD25/26.
+## 28. A layer's copper thickness, in fractions of a mil
 
-- Explicit-source and focused-source exports to the source path were refused.
-- Existing closed and already-open destinations were refused. Invalid extension,
-  missing directory and missing footprint requests also returned errors.
-- With another library in front, an explicit source path selected the intended
-  library. A successful new export closed normally without discarding changes.
-- Reopening the output showed exactly one requested footprint. All three pad
-  records (SMD, drilled and slotted) and the STEP body metadata matched the source.
-- The source, existing destination and other open library kept their file hashes.
-  Scratch documents were closed without saving; the original installed script
-  was restored afterward. Production design files were not used as fixtures.
+**Why this one matters more than its size.** `PCB_ModifyLayer` parsed
+`copper_thickness_mils` and `dielectric_height_mils` with
+`StrToIntDef`. No real foil weight is a whole number of mils: 1 oz is
+1.378, 0.5 oz is 0.689. `StrToIntDef` does not round a value it cannot
+read, it returns the DEFAULT, which was 0. So a request for 1 oz
+copper set the layer to **zero thickness** and the tool reported
+success. The same applied to any fractional prepreg height, which is
+every real one.
 
-The handler rejects recorded copy/alignment write failures before saving and
-keeps any partially created destination marked dirty. That rejection is covered
-by offline source guards; an Altium alignment fault was not deliberately induced.
-A failed destination can remain open for inspection. The error promises that
-this export call did not save it, not that a later save-all cannot do so.
+Both now parse through `StrToFloatDef` (the locale-safe one, so a
+comma-decimal machine still reads `1.378`) and convert with
+`MilsToCoordF`, which keeps 1e-4 mil. The read-back verification uses
+the same parse; it previously compared a float read-back against an
+integer parse of the request and reported correct writes as rejected.
 
-These checks compare native readback, not rendered 3D output or byte-for-byte
-STEP payload identity. Other Altium versions and unsaved source libraries need
-separate native coverage. Existing destinations are intentionally never replaced.
+Risk: low as a declaration, since `StrToFloatDef` and `MilsToCoordF`
+are both used elsewhere in shipped code. The reason to verify is that
+the failure it fixes is silent.
+
+**On a disposable 4-layer board. Do not use a real one: this writes
+the layer stack.**
+
+1. `pcb_get_layer_stackup`. Record every `copper_thickness_mils` and
+   `dielectric_height_mils` so the board can be put back.
+2. `pcb_modify_layer` with `layer="Top"`, `copper_thickness_mils=1.378`.
+3. `pcb_get_layer_stackup` again. Expect Top at **1.378**, not 0 and
+   not 1. A 0 means the old script is still loaded; go back to step 0.
+4. `pcb_modify_layer` with `layer="Top"`, `dielectric_height_mils=8.2835`,
+   `dielectric_constant=4.6`. Read back and expect both.
+5. Confirm the reply does not list `copper_thickness_mils` under
+   rejected: the read-back check is the part that used to disagree
+   with itself.
+6. `pcb_apply_stackup_template("jlcpcb", "JLC04161H-7628")` with the
+   default dry run. Expect four `modify` operations, fractional
+   thicknesses, and NO write (`dry_run: true`).
+7. Run it again with `dry_run=False` on the disposable board, then
+   `pcb_check_stackup("jlcpcb", "JLC04161H-7628")`. Expect
+   `matches: true`.
+8. On a board with a different copper-layer count, expect
+   `pcb_apply_stackup_template` to refuse and name the Layer Stack
+   Manager rather than attempting to add a layer.
+9. Ping and read the stackup once more. No dialog, no debugger stop,
+   no polling restart. Restore focus and close the disposable board
+   without saving.
+
+**Live result, 2026-10-19, Altium 26.11.1.5, script from that day's build.**
+Run on a copy of the 2-layer test board, with two inner layers added
+for steps 6 and 7. Every step passed:
+
+| Step | Result |
+|---|---|
+| 0 | `version_match: true`, no stale units, script folder matches |
+| 2-3 | Top set to 1.378 mil, read back **1.378**, nothing rejected |
+| 4-5 | dielectric 8.2835 mil / 4.6 accepted and read back by the write itself. A 2-layer board's Top has no dielectric, so `pcb_get_layer_stackup` reports 0 there, by design; on the 4-layer board both read back |
+| 6 | dry run: four `modify` operations, fractional values, `dry_run: true`, nothing written |
+| 7 | applied, then `pcb_check_stackup`: `matches: true`, 62.4489 mil both sides |
+| 8 | on the 2-layer board, dry run and real run both refused, naming the Layer Stack Manager; nothing written |
+| 9 | ping healthy, no dialog open; board closed, file on disk unchanged |
+
+**Found by this run, and fixed:** the MCP tool declared
+`copper_thickness_mils` and `dielectric_height_mils` as integers, so a
+client validating against the schema refused 1.378 or rounded it to 1
+before the call reached the fixed Pascal. The run above called the
+tool function directly, which skips that validation. Both are numbers
+now, with a test that goes through FastMCP's own `call_tool`.
+
+Not explained: `app_close_document` with `discard_changes` reported
+`discarded: false` after the stack edits, so Altium did not mark the
+board modified. The file on disk was unchanged, which is the outcome
+wanted here, but an API stack edit may not prompt a save on close.
+
+# Drill layer pairs, 2026-10-27
+
+Script `.21` on Altium 26.11.1.5 read one TopLayer-BottomLayer pair on a
+disposable two-layer board. `pcb_set_drill_pair` returned a dry-run plan,
+then changed `plot_drill_drawing` to true; `pcb_get_drill_pairs` read the
+new value. A duplicate pair and wrong-board request were refused. Source
+tests: `tests/test_pcb_drill_pairs.py` (3 passed); Pascal lint/build clean.
+After adding MidLayer1 to the disposable board, a new TopLayer-MidLayer1
+pair raised the count from one to two and an independent read returned both
+spans. The owner's board hash was unchanged in the first test; the second
+test never selected the owner for a write.
+
+# Rule engine queries, 2026-10-27
+
+Script `.22` on Altium 26.11.1.5 answered `pcb_find_dominant_rule` for R62
+on a board with 47 rules. `pcb_check_rule_scope` returned native flags for a
+unary room rule and a binary clearance rule. A missing second object for the
+binary rule and a wrong PcbDoc path were refused. The owner file's SHA256 was
+unchanged. Source tests: `tests/test_pcb_rule_resolution.py` (2 passed);
+Pascal lint/build clean.
+
+# Existing 3D body edit, 2026-10-27
+
+Script `.23` on Altium 26.11.1.5 edited AD_FE38 in an isolated copy of
+the owner's PcbLib. A dry-run plan preceded the write. Setting STEP
+standoff to 10 mil and opacity to 0.7 was verified in memory; an exact
+save then showed model Z offset 10 mil in the saved file, with rotations
+still 90/0/360 degrees. A separate overall-height write to 50 mil read
+back and was discarded when the copy closed. Owner library and board
+hashes were unchanged. Three focused source tests and Pascal lint/build
+passed. Layer changes and multi-body STEP edits remain to be qualified.
+
+# Complete-footprint rotation, 2026-10-27
+
+Script `.24` on Altium 26.11.1.5 rotated AD_FE38 in an isolated PcbLib
+copy by 90 degrees. Dry run counted 580 supported primitives and no
+unsupported ones. Write turned all 580 with zero pad mismatches. Pad 14
+moved from (-2.77499826, -1.99890634) mm to (1.99890634, -2.77499826)
+mm and from 0 to 90 degrees; pads 38 and 10 also read back at their
+expected locations after exact save and reopen. The STEP model retained
+its 10-mil Z offset and rotated about Z with the body. Owner library and
+board hashes were unchanged. Three focused tests and Pascal lint/build
+passed.
+
+# PCB editor preferences, 2026-10-27
+
+Script `.25` on Altium 26.11.1.5 read the view, edit and route preference
+groups on the owner's board. Each of show-pad-numbers, auto-pan and
+auto-via had a dry-run plan, a write and independent readback, then was
+restored. The final values were false, true and true respectively. A
+wrong PcbDoc path was refused. The owner's file SHA256 was unchanged and
+its document remained unmodified. Three focused tests and Pascal
+lint/build passed.
+
+# Placed-component STEP export, 2026-10-27
+
+Script `.26` on Altium 26.11.1.5 exported U1 through both component
+APIs. The part export wrote 704,493 bytes and the model export wrote
+649,650 bytes to new files in `workspace/native-acceptance/step-exports`.
+Both began with `ISO-10303-21`; the tools reported distinct SHA256 hashes.
+A wrong-board request was refused. The owner PcbDoc stayed active and
+modified=false with unchanged SHA256. Two focused tests and Pascal
+lint/build passed.
+
+# Differential-pair impedance rule, 2026-10-27
+
+Script `.27` on Altium 26.11.1.5 read `DiffPairsRouting` on the owner's
+PcbDoc. On an isolated copy, `impedance_driven` persisted after exact
+save and reopen in both true and false states. Direct SDK writes of
+49/50/51 ohm limits read back in memory, but all three returned to 50
+ohms after exact save and reopen, regardless of the mode state. Script
+`.28` therefore exposes the numeric values for reading and refuses
+numeric writes. The owner's PcbDoc was never saved in this test.
+
+# Via structures, 2026-10-27
+
+Script `.29` on Altium 26.11.1.5 returned 730 vias in one structure
+group on the owner's PcbDoc, with `omitted_vias=0` and `truncated=false`.
+A different absolute PcbDoc path was refused. Two focused Python tests
+and Pascal lint/build passed. This was a read-only check.
+
+# Physical layer stack, 2026-10-27
+
+Script `.30` on Altium 26.11.1.5 returned all 13 physical layers of the
+owner's PcbDoc, from Top Paste to Bottom Paste, including four copper
+layers, three dielectrics and both solder masks. The total Z span was
+70.0078 mils. A different absolute PcbDoc path was refused. Two focused
+tests and Pascal lint/build passed. This was a read-only check.
+
+# Dielectric layer edit, 2026-10-27
+
+On an isolated copy of the owner's PcbDoc, script `.31` changed
+`Dielectric 1` material from `PP` to `PP_TEST`, Dk from 4.74 to 4.8,
+Df from 0.02 to 0.025 and thickness from 7.7165 to 7.8 mil.
+Exact save, close and reopen preserved all four. A second exact save
+and reopen preserved a type change from 2 to 1. Setting `IsStiffener`
+to true read back immediately but reopened as false. Script `.32`
+therefore refuses that field in both the Python tool and native handler;
+the native refusal was observed. Four related tests and Pascal lint/build
+passed. The owner PcbDoc was restored active and was not saved.
+
+# Impedance profile lifecycle, 2026-10-27
+
+Script `.33` on Altium 26.11.1.5 created `EDA_AGENT_TEST_100` on an
+isolated PcbDoc copy (100 ohms, 10% tolerance, differential=true,
+coplanar=false). Exact save, close and reopen retained all fields. A
+second write renamed it `EDA_AGENT_TEST_110` and changed the target to
+110 ohms, tolerance to 8%, differential=false and coplanar=true;
+these also persisted after exact save/reopen. Removal then persisted
+with profile count zero. The owner's PcbDoc SHA256 stayed unchanged.
+Twenty related tests and Pascal lint/build passed.
+
+# Impedance profile layer, 2026-10-27
+
+Script `.34` on Altium 26.11.1.5 created a profile's Top Layer record on
+an isolated PcbDoc. Enabled, width lock and gap lock were true, with
+4 mil width and 6 mil gap. Exact save/reopen preserved them and Altium
+normalized the unspecified minimum width from 0 to 4 mil. A second edit
+set width bounds 3.5/4.5 mil, gap bounds 5/7 mil, 8 mil plane clearance,
+and solder-mask use and thicknesses 0.4/0.5 mil. These persisted after
+another exact save/reopen. A wrong-board write was refused. Six related
+tests and Pascal lint/build passed; the owner's PcbDoc SHA256 was unchanged.
+
+# Layer-stack style, 2026-10-27
+
+Script `.35` on Altium 26.11.1.5 changed numeric style 0 to 1 on an
+isolated PcbDoc copy. An exact save, close and reopen retained style 1,
+the 13 physical layers and 70.0078-mil Z span. A wrong-board write was
+refused. Four related tests and Pascal lint/build passed; the owner's
+PcbDoc SHA256 stayed unchanged.
+
+# Relative copper-layer order, 2026-10-27
+
+Script `.38` on Altium 26.11.1.5 read both visible copper names and
+canonical IDs. `Int1` was shown as `MidLayer1`, so inserting that ID was
+refused before a write. On an isolated PcbDoc copy, `MidLayer3` was
+inserted above `Int2` and persisted after exact save/reopen. The empty
+new layer was then moved below `Int2` and that order also persisted.
+Five focused tests and Pascal lint/build passed. The owner's PcbDoc
+SHA256 stayed unchanged. Movement of a populated layer was not tested.
+
+# Rigid-flex inventory, 2026-10-27
+
+Script `.39` on Altium 26.11.1.5 read one board region assigned to the
+`Board Layer Stack`, four copper layers, and zero split and bend lines
+on the owner's PcbDoc. A wrong-board path was refused. Two focused tests
+and Pascal lint/build passed; the owner's PcbDoc SHA256 was unchanged.
+A board with multiple flex regions still needs native read acceptance.
+
+# PCB component origin repair, 2026-10-27
+
+Script `.53` added `pcb_recenter_component_origins` from `wizd/6d6cb62`,
+adapted with an exact board path and a dry-run plan precondition. On an
+isolated copy of `vd-tx-imod-QPA2237.PcbDoc`, the 100 mil dry run proposed
+12 of 351 components. A stale plan failed with `PLAN_CHANGED`. Applying
+J12's current plan changed one origin with zero reported failures. The
+result survived exact save, close and reopen; a second plan for J12 found
+zero candidates. All six pad names, coordinates, layers and rotations
+matched the source board after reopen. The source board SHA-256 remained
+`DDECD5314589EFC38D059A11000743E6C452A1F8209C8DEA603A63D2B5C17B05`.
+The scratch copy is at
+`%TEMP%\eda-agent-recenter-20261027.PcbDoc`;
+command policy rejected its removal after the test. Larger bulk writes and
+footprints with unsupported grouped primitive kinds remain unverified.
+
+# Altium nested fab-package readback, 2026-10-27
+
+The MOREmbedded-derived `pcb_check_fab_output` was exercised on the
+production-review `modem-stm32-2trx-lr2021` export. The reader now selects
+copper/Profile from `GerberX2` and plated/nonplated/slot drills from
+`NC Drill`, and verifies that the 991-hole Type_7 file is a subset of the
+base plated drill file before omitting it. The package and exact live board
+both reported eight copper layers and 1053 holes (62 drilled pads plus
+991 vias). The package Profile measured 107.9755 × 43.9757 mm; the board
+reported 90.0002 × 40.0000 mm. The checker reported `passed=false` with
+two outline errors, so this package must not be represented as a match.
+The PANEL PcbDoc measured 231 × 180 mm and was also not the source of
+that Profile size. The documents were closed without modification. Twenty-five
+focused Gerber/fab tests passed. Revision provenance and a board with more
+than 5000 drilled holes remain to verify.
+The same call through the restarted HTTP MCP on port 14701 returned all
+three required checks and the same two outline errors; Altium's loaded
+DelphiScript stayed at `.53` because this patch changed only Python.
+## 2026.10.27.54 - Workspace component integration
+
+Script `2026.10.27.54` loaded in Altium 26.11.1.5 after an exact
+`application.stop_server` and relaunch from the main project directory.
+The live `application.ping` returned `.54` with zero cast errors. MCP on
+port 14701 listed both `lib_resolve_workspace_component` and
+`sch_place_workspace_components`; the TCP relay remained on port 14700.
+The resolver reached its native handler and returned
+`NO_WORKSPACE_MANAGER` on this Altium session, which has no connected
+EDMS Workspace Manager. No placement was attempted. The source fork's
+managed placement API therefore still needs a disposable-sheet acceptance
+test when a Workspace connection is available. Eight focused Workspace
+tests and the 25 fabrication tests passed; Pascal build/lint passed with
+zero errors and warnings.
+
+## 2026.10.27.55 - Generic schematic object creation repair
+
+Script `2026.10.27.55` loaded in Altium 26.11.1.5 with zero cast errors.
+The updated `Gen_CreateObject` removes duplicate property writes and
+refuses a failed assignment before registration. Thirty-five related
+tests passed (three optional FPC tests skipped); the Pascal build/lint
+reported zero errors and warnings. On isolated
+`<workspace>\qa\eda-agent-create-object-20261027.SchDoc`,
+creating an `eLabel` with unsupported `IsHidden` returned
+`UNSUPPORTED_PROPERTY` and left zero matching objects. A valid label at
+100,100 mil persisted after save, close and reopen. The source SchDoc
+SHA-256 stayed `59E937628D564566E7F3BFBFFE4675FD02B5CCEFE83D69687F1C30EF88BABA2F`.
+
+## Exact SchLib inventory and batch rename acceptance (2026-10-27)
+
+Script `.56` loaded in Altium 26.11.1.5. The fast inventory of an isolated
+70-component SchLib reported part count 2 for each row; the exact open-library
+mode reported 1, matching `lib_get_component_details`. The exact mode marks
+those rows `part_count_exact=true`; the fast mode marks them false. A batch
+with an occupied target name and then a free name returned one failure and
+one rename. After exact save and reopen, the old name was absent and the new
+name appeared once with one part. The source library SHA-256 remained
+`62CD36DBA4B4372CCF5CF01077550464D5BC27D6E33B4D02D8E2ED6D2BB4B45B`.
+Nineteen focused tests and Pascal lint/build passed.
+
+## Multipart SchLib symbol acceptance (2026-10-27)
+
+On Altium 26.11.1.5 with script `.56`, the composite
+`lib_create_multipart_symbol` tool created two- and three-part symbols in
+the isolated `eda-agent-multipart-20261027.SchLib`. The three-part symbol
+had seven pins: two owned by each part and one shared supply pin owned by
+part 0. Its three body rectangles were owned by parts 1, 2 and 3. Exact
+save, close and reopen retained `part_count=3`, `parts_with_pins=3` and
+`pin_count=7`. The tool now checks the native result at each step and can
+focus an explicit absolute SchLib path before writing. The source library
+was not used for these writes.
+
+## Footprint body and embedded STEP readback (2026-10-27)
+
+On script `.56`, `library.get_footprint_primitives` read a named STEP body
+from `AD_FE38` in the disposable 38-footprint
+`BodyEdit_20261027.PcbLib`. It reported Mechanical13, model type 1,
+`LTC3895EFE.STEP`, 1.20000014 mm overall height and zero standoff. A
+separate `TEST PAD` read returned a model type 2 body. Selecting `AD_FE38`
+in `lib_extract_embedded_models` wrote only its associated original STEP
+to `workspace/native-acceptance/StepExtract_20261027`; the saved model
+checksum verified and the output SHA-256 was
+`B5B123B0B7B89D446A648885C3979F56A3810F7E76BCC358F43980B61393C4CF`.
+
+## Exact 3D body position write (2026-10-27)
+
+Script `.57` loaded with zero cast errors. In the disposable
+`BodyEdit_20261027.PcbLib`, a stale-centre precondition returned
+`BODY_POSITION_CHANGED` without writing. `lib_position_3d_body` moved
+`TEST PAD`'s non-STEP body to (1, -1) mm and `AD_FE38`'s STEP body to
+(0.5, -0.5) mm. Both centres persisted after exact save, close and reopen.
+The STEP file name, [90, 0, 90] degree saved rotations and 10-mil model
+Z offset remained intact. Native movement uses `MoveByXY`; the Python
+wrapper sends fixed decimal strings because Altium's `IsFloatStr` rejects
+scientific notation for a centre close to zero.
+Script `.58` also rejects a missing PcbLib with `NO_LIBRARY_FILE` before
+Altium can open an empty editor tab. A no-op on the moved STEP body returned
+`changed=0` and `save_required=false`.
+
+## STEP standoff in live footprint reads (2026-10-27)
+
+The clean saved `AD_FE38` scratch PcbLib has a 10-mil STEP model Z offset,
+while Altium's live body field reports zero. The Python footprint read now
+returns `standoff_mm=0.254`, `body_standoff_mm=0` and
+`standoff_source=saved_model_z_offset` after matching the focused, unmodified
+library to its saved body records. The land-pattern model then reports
+`z0=0.254` and `z1=1.20000014` mm. The PcbLib SHA-256 remained
+`F4A08E82AC6807564893AB0C692D42D9DAAE69128416A1F311663EF125E16EDC`
+through the read.
+
+## Bottom-side footprint placement (2026-10-27)
+
+With script `.58`, `pcb_place_components` placed the same asymmetric
+three-pad SOT-23 on TopLayer and BottomLayer in isolated
+`PlacementBottom_20261027.PcbDoc`, both requested at 0 degrees. The
+bottom placement's follow-up flip used the exact returned board path.
+After exact save, close and reopen, both components retained the
+requested layer and rotation. The pad triangle's orientation cross
+product was about +5890 square mils on top and -5890 on bottom;
+the pad geometry was mirrored, not merely assigned a bottom-layer flag.
+The source board SHA-256 remained
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+
+## Exact-board via tenting (2026-10-27)
+
+Script `.60` requires an exact `board_path` and defaults to a read-only
+plan. Its token binds the selected live via objects and their current
+top/bottom flags; a write requires the reviewed token. On isolated
+`PlacementBottom_20261027.PcbDoc`, a plan selected one free via at
+(2609.7464, 2074.8383) mils on `NetJ1_1`, initially tented on both
+sides. Writing `top=false` reported one changed via and zero failures.
+Exact save, close and reopen preserved `top=false, bottom=true`; the
+new read had a new object-address token, as expected after reload.
+The same live session compiled and answered `pcb.focus_board` after
+removing an undeclared `FrontPCBBoardPath` reference found during this
+acceptance run. Altium reported version 26.11.1.5 and script `.60`.
+
+## Fork branch audit and generic DbLib reads (2026-10-27)
+
+The live fork-tip audit covered 62 default branches and 117 branches
+overall. Twenty newly discovered branches were fetched into local
+remote-tracking refs; all 117 refs then matched their live tips. The
+`andrzej-sikora-elte/elte` branch contributed generic reads of
+`UseDBTableName`, `UseLibraryName` and `FootprintModel` on placed schematic
+components. The footprint read uses the existing typed implementation
+iterator and returns a name only when that model is current. The first native
+query with script `.61` exposed an old call to an undefined
+`SchDocByPathLoading`; after that was replaced with an exact, loaded-document
+lookup, the same query exposed an uninitialized `SymbolRef` read in the
+schematic object loop. Script `.62` removes the dead read. Altium 26.11.1.5
+then answered `generic.query_objects` on an exact, already loaded DCDC
+schematic path with two placed components, `unknown_count=0`,
+`failed_count=0`, and `unreadable_count=0`. R13 returned
+`UseDBTableName=true`, `UseLibraryName=true`, and
+`FootprintModel=RESC640X320X80L95`; U4 returned the same two flags and
+`FootprintModel=SON9P80_400X400X80L52X30T300X220`. This was a read-only
+query; the source sheet was not saved or changed. Pascal lint/build reported
+12 files and zero errors or warnings; the selected Python regression suite
+reported 37 passed and one skipped.
+
+## Fractional-mil leftovers (2026-10-27)
+
+Adapted additional paths from `vincent-himpe/fix/decimal-mils-leftovers`:
+PCB snap-grid context reads, schematic off-grid audits, stub-wire lengths,
+Workspace component positions, and library label positions. The corresponding
+Python wrappers now retain four decimal places of a mil where Altium's
+coordinate API supports them. On live Altium 26.11.1.5, script `.63` answered
+`audit.find_off_grid_components` with `grid_mils=12.5`, then with
+`grid_mils=0.3`: the latter found 135 violations among 147 inspected
+components. Altium reported one of two project sheets skipped because it
+was not loaded, so the count is limited to the read sheet. Script `.64`
+rounds reported dx/dy to the editor's 0.0001-mil resolution. After reloading
+`.64`, the same native query again found 135 violations; the first two
+offsets read back as 0.1 and 0.2 mil with no floating-point tail.
+
+## Schematic decimal positions and pin reads (2026-10-27)
+
+Script `.65` adapts the next `vincent-himpe/fix/decimal-mils-leftovers`
+portion: distance measurement, multipart symbol lookup by exact decimal
+location, file/DbLib/managed component positions, and placed pin coordinates.
+The Python placement wrappers and distance tool now accept fractional mils.
+Live Altium 26.11.1.5 returned `dx=3.5`, `dy=5.625`, and
+`distance_mils=6.625` for (1.25, -2.5) to (4.75, 3.125). A read-only query
+on R13 returned its two pins and connection endpoints; the whole sheet
+returned 397 pins without error. Those existing pins sit on whole-mil
+coordinates, so this native check proves compilation and read paths, while
+a fractional placed-pin readback remains to be tested on a disposable sheet.
+The expanded source audit from the fork now passes its decimal symbol
+location check. It still identifies PCB geometry and audit/reply conversions
+for later reconciliation.
+
+## Decimal via grids on a disposable board (2026-10-27)
+
+Script `.66` adapts `vincent-himpe/fix/decimal-mils-leftovers` for
+`pcb_place_via_array`: fractional rectangle corners and pitch survive both
+the Python wire format and DelphiScript conversion. The index-based loop
+computes each coordinate from the origin to avoid cumulative float drift.
+The companion stitching-via wrapper no longer rounds fractional geometry;
+its outline-filter grid uses the same index-based calculation.
+
+Native Altium 26.11.1.5 placed four vias on the isolated copy
+`D:\AI\eda-agent-integration-safety\ViaArrayDecimal_20261027.PcbDoc` at
+(10000.125, 10000.25), (10020.25, 10000.25), (10000.125, 10020.375),
+and (10020.25, 10020.375) mil. Exact save, close, reopen and `pcb.get_vias`
+returned the same four coordinates. The owner source PcbDoc retained
+SHA-256 `F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+Pascal lint/build passed 12 files with zero errors/warnings; 31 selected
+Python tests and the fork's via-array source gate passed.
+
+## Fractional PCB alignment and distribution (2026-10-27)
+
+Script `.68` adapts `vincent-himpe/fix/decimal-mils-leftovers` for
+`pcb_align_components`, `pcb_snap_to_grid`, and
+`pcb_distribute_components`. The Python grid/distribution parameters accept
+fractional mils; the DelphiScript path reads current component positions
+without integer rounding, moves the component with `MoveByXY`, and reports
+the decimal values. On the disposable via-array PcbDoc, aligning R62 and
+R13 left put both at x=3242.0074 mil. Distribution set R13 to 3100.125
+and R14 to 3200.375 mil. Snapping R62 to a 39.37-mil grid returned
+(3228.34, 1299.21) mil. The first `.67` distribution reply rounded its
+start/end fields despite placing at the requested coordinates; `.68` fixed
+the reply. Exact save, close, reopen and component readback preserved all
+three final coordinates. The owner board SHA-256 remained
+`F19A44DFBFC7D710E43B9C2D758C1F71E0471C857EB9D600DFBA45EFEC6FF76D`.
+Pascal lint/build passed; 32 selected Python tests passed.

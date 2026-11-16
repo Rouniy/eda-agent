@@ -168,7 +168,8 @@ def wait_until(predicate, timeout: float = 5.0, interval: float = 0.005,
 # automatically below so individual tests do not each need a guard.
 _FIXTURE_DIR = Path(__file__).resolve().parent / "integration" / "fixtures"
 _LOCAL_ONLY_FIXTURES = ("main.SchDoc", "EDAAgentTest.PcbDoc",
-                        "EDAAgentTest_ICs.SchLib", "EDAAgentTest_Export.OutJob")
+                        "EDAAgentTest_ICs.SchLib", "EDAAgentTest_Export.OutJob",
+                        "EDAAgentTest.PcbLib")
 # Committed fixtures that are only useful together with a local-only one: the
 # project files aggregate main.SchDoc, so a project test needs it too.
 _AGGREGATOR_FIXTURES = ("EDAAgentTest.PrjPcb", "EDAAgentTest.PrjPcbStructure")
@@ -224,6 +225,104 @@ def pytest_collection_modifyitems(config, items):
         if needs:
             item.add_marker(skip)
 
+
+@pytest.fixture(autouse=True)
+def _no_saved_user_environment(monkeypatch, tmp_path_factory):
+    """Keep this machine's saved Altium 365 settings out of every test.
+
+    ``altium365.read_environment`` fills in what the process lacks from
+    the user's saved environment (HKCU, Environment), so a developer
+    who ran ``setx EDA_AGENT_NEXAR_APP_ID ...`` would otherwise see the
+    tests reach for Nexar. A test that wants it patches it back.
+    """
+    import eda_agent.altium365 as a365
+    monkeypatch.setattr(a365, "saved_user_environment", lambda names=None: {})
+    # A shell that already has them is the same case: take them out of
+    # the process environment too. A test that wants one sets it again.
+    for name in a365.SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+    # And a real login from altium365-login stays where it is: a test that
+    # sets an app id must not find it and reach Nexar with it.
+    monkeypatch.setattr(a365, "default_login_path",
+                        lambda: tmp_path_factory.getbasetemp() / "no-nexar-login.bin")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_altium_global_projects(monkeypatch):
+    """Keep this machine's Altium registry out of every test.
+
+    ``get_default_scripts_dest`` follows the folder Altium's Global
+    Projects list names, so on a developer's machine an unpatched test
+    would read, and an install-scripts without ``dest`` would WRITE, the
+    script folder a live Altium compiles from.
+
+    Done by closing one key rather than by stubbing
+    ``registered_script_projects`` or the platform. Stubbing the function
+    leaves unread the fake registry that some tests install; stubbing
+    ``cli.sys.platform`` reaches the real ``sys`` module and turns off
+    every other Windows branch in the run, which took eight unrelated
+    tests with it. Replacing the whole ``winreg`` module broke four more,
+    because other libraries read the registry too (dateutil wants
+    ``ConnectRegistry`` for time zones). So the real module is kept and
+    only ``HKCU\\Software\\Altium`` is refused. A test that wants entries
+    installs its own fake over this one.
+    """
+    import sys as _sys
+    import types
+
+    try:
+        import winreg as real
+    except ImportError:                      # not Windows: nothing to hide
+        return
+
+    proxy = types.ModuleType("winreg")
+    proxy.__dict__.update(real.__dict__)
+    _real_open = real.OpenKey
+
+    def _open(key, sub_key, *args, **kwargs):
+        if isinstance(sub_key, str) and sub_key.lower().startswith("software\\altium"):
+            raise OSError("this machine's Altium registry is hidden from tests")
+        return _real_open(key, sub_key, *args, **kwargs)
+
+    proxy.OpenKey = _open
+    monkeypatch.setitem(_sys.modules, "winreg", proxy)
+
+
+@pytest.fixture(autouse=True)
+def _restore_global_config():
+    """Put the global config back after a test calls ``configure()``.
+
+    ``configure`` replaces a module-level singleton and nothing undid it,
+    so a test that pointed the workspace at its own tmp_path left every
+    later test pointed there too. It surfaced as
+    test_install_scripts_points_altium_at_the_servers_workspace writing
+    another test's directory into the pointer file, and only when the two
+    ran in the same process.
+
+    Compared by VALUE, not identity: a test that sets a field on the
+    existing object instead of calling ``configure`` leaks just the same,
+    and that version of this fixture missed it.
+    """
+    from eda_agent import config as config_module
+
+    before = config_module.config
+    try:
+        snapshot = before.model_dump()
+    except Exception:                                    # noqa: BLE001
+        snapshot = None
+    yield
+    now = config_module.config
+    changed = now is not before
+    if not changed and snapshot is not None:
+        try:
+            changed = now.model_dump() != snapshot
+        except Exception:                                # noqa: BLE001
+            changed = False
+    if changed:
+        config_module.config = (before if snapshot is None
+                                else type(before)(**snapshot))
+        from eda_agent.bridge.altium_bridge import reset_bridge
+        reset_bridge()
 
 @pytest.fixture(autouse=True)
 def _fresh_bulk_hint_counts():
@@ -422,6 +521,34 @@ def validate_error_response(resp: dict, request_id: str,
         assert resp["error"]["code"] == expected_code
 
 
+@pytest.fixture(autouse=True)
+def _no_live_altium_titles(monkeypatch):
+    """The document tools read Altium's window title for unsaved edits
+    (ui/title_state.py). A test never sees the real windows of the machine
+    it runs on, or a developer's open board could change its answer."""
+    from eda_agent.ui import title_state
+    monkeypatch.setattr(title_state, "_titles", lambda: [])
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _stop_dashboard_threads():
+    """Stop the dashboard threads a test module started, when it ends.
+
+    ``create_app`` starts a log tailer, a sentinel watcher and a heartbeat
+    as daemon threads, and nothing stopped them: every module that built an
+    app left three threads polling in its xdist worker for the rest of the
+    run. A later test that patched ``time.sleep`` then counted the tailer's
+    sleeps too (592 of them, where it expected 2). Per module, not per
+    test, so a module whose tests share one app keeps its tailer running.
+    The dashboard is only looked up, never imported here, so Flask is not
+    loaded for modules that never touched it."""
+    import sys
+    yield
+    dashboard = sys.modules.get("eda_agent.web.dashboard")
+    if dashboard is not None and hasattr(dashboard, "stop_background"):
+        dashboard.stop_background()
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_workspace_pointer(tmp_path_factory):
     r"""Keep the whole test session away from the machine-global pointer.
@@ -440,6 +567,25 @@ def _isolate_workspace_pointer(tmp_path_factory):
     os.environ["EDA_AGENT_POINTER_FILE"] = str(scratch)
     yield
     os.environ.pop("EDA_AGENT_POINTER_FILE", None)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_feature_choices(tmp_path_factory):
+    """Keep the session away from the user's own features.json.
+
+    That file can switch the Rust kernels on (EDA_AGENT_COMPUTE=auto) and
+    hold program locations (EDA_AGENT_OPENEMS_DIR, EDA_AGENT_NGSPICE...),
+    which ``features.state.apply`` copies into the environment. A
+    developer who saved them would otherwise run every test with them.
+    Tests of the file itself point EDA_AGENT_FEATURES_FILE at their own.
+    """
+    before = os.environ.get("EDA_AGENT_FEATURES_FILE")
+    os.environ["EDA_AGENT_FEATURES_FILE"] = str(tmp_path_factory.mktemp("features") / "features.json")
+    yield
+    if before is None:
+        os.environ.pop("EDA_AGENT_FEATURES_FILE", None)
+    else:
+        os.environ["EDA_AGENT_FEATURES_FILE"] = before
 
 
 #: The name AltiumBridge gives its keep-alive thread.
@@ -472,24 +618,73 @@ def _no_bridge_left_pinging():
         f"fake instead of letting it resolve the global bridge")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_profile_preferences(request, monkeypatch):
+    """Hide the profile layer of the preferences from every test that does
+    not ask for it with ``@pytest.mark.profile_preferences``.
+
+    A profile's preferences.json can switch edits to read-only, change the
+    value format and pick the default design mode. A developer's machine
+    usually has a central profile in effect, and an unmarked test (a safety
+    refusal, a value-format reply, a design run that names no mode) would
+    then see that profile's choices instead of the panel file it set up.
+    """
+    if request.node.get_closest_marker("profile_preferences"):
+        return
+    from eda_agent import preferences
+    monkeypatch.setattr(preferences, "_profile_layer", lambda: {})
+
+
+@pytest.fixture(autouse=True)
+def _usual_router_engine(monkeypatch):
+    """Route with the default engine in every test that does not pick one.
+
+    A developer who ran ``eda-agent router-use euan`` (the active profile's
+    router.json) or set EDA_AGENT_ROUTER would otherwise have every routing
+    test run Euan's router. The variable wins over the profile file, so
+    setting it is enough, and it imports nothing. A test of the choice
+    itself deletes it or sets it again.
+    """
+    monkeypatch.setenv("EDA_AGENT_ROUTER", "default")
+
+
 def pytest_configure(config):
-    # Without pytest-asyncio every async test fails with "async def
-    # functions are not natively supported", hundreds of them across
-    # unrelated modules, and the only hint is a warning about an unknown
-    # ini option. Stop at once and name the missing package instead. The
-    # plugin is checked rather than the ini value, which raises on its
-    # own when the plugin is missing.
+    # FAIL FAST when pytest-asyncio is absent.
+    #
+    # MEASURED 2026-09-24: without it, pyproject's `asyncio_mode = "auto"`
+    # is an unrecognised ini option and every `async def` test fails with
+    # "async def functions are not natively supported" - 276 failures
+    # across 40 modules on this repo. pytest says so only as a
+    # PytestConfigWarning buried in the warnings summary, so the visible
+    # signal is a wall of red in unrelated modules that reads exactly like
+    # a real regression. It cost ~25 minutes and a bisect to identify as a
+    # missing declared dev dependency (pyproject: "pytest-asyncio>=0.21").
+    #
+    # A missing test dependency must not be able to masquerade as broken
+    # code. This turns it into one line naming the fix.
+    # Checking the plugin directly, not the ini value: when the plugin is
+    # absent the option is unregistered, so config.getini("asyncio_mode")
+    # would itself raise and bury the real message.
     if not config.pluginmanager.hasplugin("asyncio"):
         raise pytest.UsageError(
-            "pytest-asyncio is not installed, and the async tests cannot "
-            "run without it. Install the dev dependencies: "
-            'python -m pip install -e ".[dev]"')
+            "pytest-asyncio is NOT installed, but pyproject sets "
+            "asyncio_mode = \"auto\". Every async test would fail with "
+            "'async def functions are not natively supported', which looks "
+            "like a code regression and is not one. Install the declared "
+            "dev dependency:\n"
+            '    python -m pip install "pytest-asyncio>=0.21"')
 
     config.addinivalue_line(
         "markers",
         "network: test genuinely needs the internet; exempt from the "
         "session-wide block. Use sparingly, it makes CI depend on a "
         "third party being reachable.")
+    config.addinivalue_line(
+        "markers",
+        "profile_preferences: test reads the active profile's "
+        "preferences.json (value format, safety switches, default_mode). "
+        "Every other test has that layer hidden, so a profile on the "
+        "developer's machine cannot change what it sees.")
     config.addinivalue_line(
         "markers",
         "kicad_libs: test reads the KiCad symbol/footprint libraries "

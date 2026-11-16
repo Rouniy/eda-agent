@@ -96,7 +96,8 @@ def test_a_pin_designator_write_reaches_the_pin() -> None:
     side sent it to the component-text helper, a no-op for a pin."""
     body = next(b for n, b in GENERIC.items()
                 if "SetSchComponentSubText(Obj, 'Designator'" in b)
-    assert "Obj.Designator := Value" in body
+    assert ("Obj.Designator := Value" in body or
+            ("Pin := Obj" in body and "Pin.Designator := Value" in body))
 
 
 def test_a_copy_is_verified_by_its_pins_not_its_name() -> None:

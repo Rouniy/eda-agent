@@ -38,17 +38,34 @@ import re
 import sys
 import threading
 import time
+
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 from eda_agent.atomicfile import replace_with_retry
 
 from flask import Flask, Response, jsonify, send_from_directory, stream_with_context
 
 from eda_agent.config import get_config
+# One rule for what names a call, shared with the perf report rather
+# than spelled a second time here. perf.py parses text and imports
+# nothing from the package, so this costs the dashboard nothing.
+from eda_agent.diag.perf import request_key
 
 logger = logging.getLogger("eda_agent.web.dashboard")
+
+
+def publish_dashboard_url(workspace_dir: Path, host: str, port: int) -> str:
+    """Publish the bound dashboard address for Altium's Open Dashboard button."""
+    address = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    url = f"http://{address}:{port}/"
+    target = workspace_dir / "dashboard.url"
+    staged = workspace_dir / "dashboard.url.tmp"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    staged.write_text(url, encoding="utf-8")
+    replace_with_retry(staged, target)
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +257,13 @@ _ERR_RE = re.compile(
     r'"message"\s*:\s*"(?P<msg>(?:[^"\\]|\\.)*)"'
 )
 
-_ID_RE = re.compile(r'"id"\s*:\s*"(?P<id>[0-9a-f]{8,32})"')
+#: The envelope id, which Pascal writes at the head of every payload.
+#: Hex only until now, so it stopped at the first dash of
+#: ``<tag>-<sequence>-<random>``, never met its closing quote and
+#: matched nothing at all: every row logged since request ids gained a
+#: session tag arrived here with no id, and the drawer had nothing to
+#: say but "no request id captured".
+_ID_RE = re.compile(r'"id"\s*:\s*"(?P<id>[0-9a-f][0-9a-f-]*)"')
 
 
 @dataclass
@@ -250,7 +273,8 @@ class LogEntry:
     command: str
     tag: str               # OK | WARN | SLOW | ERR  | EXCEPTION | EMPTY
     response_bytes: int
-    request_id: str        # extracted from payload's "id" or "" if not found
+    request_id: str        # payload's "id", cut down to what names one
+                           # call, or "" if the payload held none
     error_code: str        # extracted from payload's error.code, "" if none
     error_msg: str         # extracted from payload's error.message, "" if none
     payload_prefix: str    # full prefix as it appeared on the line
@@ -332,7 +356,7 @@ def _parse_line(line: str) -> Optional[LogEntry | SessionEvent]:
         command=cmd,
         tag=m["tag"].strip(),
         response_bytes=int(m["bytes"]),
-        request_id=(id_m.group("id")[:8] if id_m else ""),
+        request_id=(request_key(id_m.group("id")) if id_m else ""),
         error_code=(err_m.group("code") if err_m else ""),
         error_msg=(err_m.group("msg") if err_m else ""),
         payload_prefix=payload[:200],
@@ -450,19 +474,48 @@ class ActivityTailer:
         return offset
 
     def _run(self) -> None:
+        # The pauses wait on the stop event, not time.sleep: stop() then
+        # ends the thread at once, and a test that patches time.sleep for
+        # its own thread does not turn this loop into a busy spin.
         offset = 0
+        # Initial backfill: read everything that's there so the UI has
+        # session context immediately on first paint.
+        try:
+            if self.log_path.exists():
+                with open(self.log_path, "rb") as f:
+                    while True:
+                        raw = f.readline()
+                        if not raw.endswith(b"\n"):
+                            break
+                        offset = f.tell()
+                        self._ingest(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+        except OSError as e:
+            logger.debug("dashboard tailer initial read failed: %s", e)
+
         while not self._stop.is_set():
             try:
                 if not self.log_path.exists():
-                    time.sleep(0.5)
+                    self._stop.wait(0.5)
                     continue
                 if self.log_path.stat().st_size == offset:
-                    time.sleep(0.3)
+                    self._stop.wait(0.3)
                     continue
-                offset = self.read_new(offset)
+                # Bytes, and readline rather than iteration: a text file
+                # refuses tell() inside a for loop, and the error left the
+                # offset where it was, so one line was read again and again.
+                with open(self.log_path, "rb") as f:
+                    f.seek(offset)
+                    while True:
+                        raw = f.readline()
+                        if not raw.endswith(b"\n"):
+                            # End, or a partial line: keep the position
+                            # before it and retry.
+                            break
+                        offset = f.tell()
+                        self._ingest(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
             except OSError as e:
                 logger.debug("dashboard tailer read failed: %s", e)
-                time.sleep(0.5)
+                self._stop.wait(0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -785,9 +838,39 @@ def code_stamp() -> float:
     return round(newest, 3)
 
 
+def _static_icon(name: str, mimetype: str) -> Response:
+    path = _HTML_PATH.parent / name
+    if not path.exists():
+        return Response(status=404)
+    resp = Response(path.read_bytes(), mimetype=mimetype)
+    resp.headers["Cache-Control"] = "max-age=86400"
+    return resp
+
+
 #: Set by whoever serves the app (server.py): stops this dashboard so a
 #: newer one can take the port.
 SHUTDOWN: dict[str, Any] = {}
+
+
+#: One stop function per app create_app built: its log tailer, sentinel
+#: watcher and heartbeat, which otherwise run as daemon threads until the
+#: process ends. The dashboard process never needs this; a test run that
+#: builds an app in many test modules does, or every module leaves three
+#: threads polling in its xdist worker.
+_BACKGROUND: list[Callable[[], None]] = []
+
+
+def stop_background() -> int:
+    """Stop the background threads of every app built so far; how many."""
+    n = 0
+    while _BACKGROUND:
+        stop = _BACKGROUND.pop()
+        try:
+            stop()
+        except Exception:  # noqa: BLE001 - stopping is best effort
+            logger.debug("dashboard background stop failed", exc_info=True)
+        n += 1
+    return n
 
 
 def create_app(workspace_dir: Optional[Path] = None) -> Flask:
@@ -854,6 +937,14 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
     import atexit as _atexit
     _atexit.register(_remove_heartbeat)
 
+    def _stop_threads() -> None:
+        tailer.stop()
+        sentinel_stop.set()
+        heartbeat_stop.set()
+        sentinel_thread.join(timeout=2.0)
+        heartbeat_thread.join(timeout=2.0)
+    _BACKGROUND.append(_stop_threads)
+
     app = Flask("eda-agent-dashboard")
     # Before any route, and before anything reads the body.
     install_origin_guard(app)
@@ -862,6 +953,12 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
 
     from .workbench import register as _register_workbench
     _register_workbench(app)
+    from .workspace_view import register as _register_workspace
+    _register_workspace(app)
+    from .toolkit_view import register as _register_toolkit
+    _register_toolkit(app)
+    from .features_view import register as _register_features
+    _register_features(app)
 
     @app.route("/")
     def workbench_page() -> Response:
@@ -869,6 +966,17 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         resp = Response(page.read_text(encoding="utf-8"), mimetype="text/html")
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return resp
+
+    @app.route("/favicon.ico")
+    @app.route("/eda-agent.ico")
+    def app_icon() -> Response:
+        """The app icon (scripts/build_icons.py builds it): the browser
+        tab, and the window of a dashboard installed as an app."""
+        return _static_icon("eda-agent.ico", "image/x-icon")
+
+    @app.route("/eda-agent.svg")
+    def app_icon_svg() -> Response:
+        return _static_icon("eda-agent.svg", "image/svg+xml")
 
     @app.route("/classic")
     def index() -> Response:
@@ -2054,11 +2162,18 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         ``Copy(ResponseContent, 1, 200)``). For richer inspection we also
         peek at bridge_trace.log around the request_id to confirm the
         full IPC story (POLL_SEEN / POLL_MATCH / extensions / timing).
+
+        ``rid`` is the id this dashboard handed out with the entry,
+        which is the token bridge_trace.log writes, so both the lookup
+        and the peek land on one call. Cutting it to 8 characters
+        first, as this did, left the session tag: the lookup then
+        matched nothing, and the peek would have shown a whole
+        session's lines under one call's heading.
         """
         entry = None
         with tailer._lock:
             for e in tailer.entries:
-                if e.request_id == rid[:8]:
+                if e.request_id == rid:
                     entry = e
                     break
         if entry is None:
@@ -2068,10 +2183,9 @@ def create_app(workspace_dir: Optional[Path] = None) -> Flask:
         try:
             trace_path = workspace_dir / "bridge_trace.log"
             if trace_path.exists():
-                short = rid[:8]
                 with open(trace_path, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
-                        if short in line:
+                        if rid in line:
                             trace_lines.append(line.rstrip())
                             if len(trace_lines) >= 40:
                                 break
@@ -2238,6 +2352,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     import logging as _log
     _log.getLogger("werkzeug").setLevel(_log.WARNING)
     srv = make_server(args.host, args.port, app, threaded=True)
+    try:
+        publish_dashboard_url(pid_path.parent, args.host, args.port)
+    except OSError as exc:
+        logger.warning("dashboard bound but could not publish URL: %s", exc)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

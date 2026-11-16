@@ -311,6 +311,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "schematic",
         "backends": ("altium",),
         "use": ["sch_place_components", "sch_draw_template",
+                "design_execute_plan",
                 "lib_get_components"],
         "avoid": [
             ("app_run_ui_command", "driving Altium's own dialogs through UI automation is a last resort, not a route; it is how placement ended in a crash"),
@@ -325,7 +326,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "an .IntLib is resolved to its source .SchLib, including the "
             "library-package layout where it compiles into a Project "
             "Outputs folder. Adding parts to a sheet that exists is this "
-            "tool; drawing a whole block or sheet is sch_draw_template."),
+            "tool; draw a whole sheet with design_execute_plan or a whole "
+            "specified block with sch_draw_template."),
     },
     {
         "task": "Draw a schematic sheet or block",
@@ -337,14 +339,16 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "schematic",
         "backends": ("altium",),
         "use": ["lib_get_pin_list", "sch_preview_template",
-                "sch_draw_template"],
+                "sch_draw_template", "design_preview_plan",
+                "design_execute_plan"],
         "avoid": [
             ("sch_place_wires", "segment by segment, with pin ends worked out "
                                 "by hand; the template tool computes them and "
                                 "checks the wiring"),
         ],
         "note": (
-            "Plan the block as an engineer draws it, every coordinate on "
+            "Use design_execute_plan for a DesignPlan, or plan a block as "
+            "an engineer draws it, every coordinate on "
             "the 100 mil grid: IC in the middle, rails as straight wires, "
             "capacitors hanging straight down to ground, a divider whose "
             "midpoint runs straight to its pin, labels only where a signal "
@@ -1084,13 +1088,14 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "note": "lib_get_pin_list reads both values back for every pin.",
     },
     {
-        "task": "Stages to production: feasibility, prototype, EVT, DVT, PVT",
-        "keywords": ("evt", "dvt", "pvt", "npi", "gate", "feasibility", "prototype",
+        "task": "Stages to production: feasibility, research, prototype, EVT, DVT, PVT",
+        "keywords": ("evt", "dvt", "pvt", "npi", "gate", "feasibility", "research", "prototype",
                      "production", "phase"),
         "when": (("evt",), ("dvt",), ("pvt",), ("npi",), ("phase", "gate"),
                  ("ready", "production")),
         "document_kind": "any",
         "backends": ("altium", "easyeda"),
+        "needs": "phase_gates",
         "use": ["design_phase_standing", "design_phase_gate", "design_phase_answer"],
         "avoid": [],
         "note": ("A product is in the first stage that does not clear. Each "
@@ -1194,48 +1199,6 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  "outline and holes. A hatched pour's tracks are read by pcb_get_copper."),
     },
     {
-        "task": "Store an application's own data inside the board file",
-        "keywords": ("embedded", "store", "record", "hidden"),
-        "when": (("store", "board"), ("embedded", "data"), ("hidden", "data"),
-                 ("record", "board")),
-        "document_kind": "board",
-        "backends": ("altium",),
-        "use": ["pcb_embedded_data"],
-        "avoid": [("pcb_place_text",
-                   "a visible text, which a designer can move, delete or print")],
-        "note": ("Named plain-text records kept as embedded objects: saved with the "
-                 "PcbDoc, not drawn or selectable. A visible text can be moved or "
-                 "deleted by a designer. Not for secrets."),
-    },
-    {
-        "task": "List or resolve a board's special strings (.Layer_Count, .Total_Thickness)",
-        "keywords": ("special", "string", "strings"),
-        "when": (("special", "string"), ("special", "strings"), ("resolve", "string")),
-        "document_kind": "board",
-        "backends": ("altium",),
-        "use": ["pcb_special_strings"],
-        "avoid": [("pcb_place_text",
-                   "leaves the text on the board; pcb_special_strings removes it again")],
-        "note": ("list names every special string Altium offers on a board; resolve "
-                 "places each as a temporary free text, reads what Altium draws and "
-                 "removes it. Part strings (.Designator, .Comment) and project "
-                 "parameters (.Designer) do not resolve on a free text."),
-    },
-    {
-        "task": "Find the copper physically connected to a pad or other object",
-        "keywords": ("connected", "touches", "touching"),
-        "when": (("connected", "copper"), ("copper", "touches"),
-                 ("copper", "touching"), ("touches", "pad")),
-        "document_kind": "board",
-        "backends": ("altium",),
-        "use": ["pcb_connected_copper"],
-        "avoid": [("obj_select",
-                   "selects by net or object type, so copper of another net "
-                   "touching it, a short, is missed")],
-        "note": ("Walks the copper by geometry, not net name: other nets in its "
-                 "nets list are shorts. Seed with pad='U1.3' or object_type and filter."),
-    },
-    {
         "task": "Rename or swap designators across a whole project",
         "keywords": ("swap", "designator", "designators"),
         "when": (("swap", "designator"), ("rename", "designator"),
@@ -1243,9 +1206,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "document_kind": "schematic",
         "backends": ("altium",),
         "use": ["sch_rename_designators"],
-        "avoid": [("obj_modify",
-                   "renames one part at a time with no collision check, so a "
-                   "swap collides halfway")],
+        "avoid": [("obj_modify", "Renaming parts one by one cannot swap names safely")],
         "note": ("Collisions are refused before any write; parts go through "
                  "temporary names, so a swap works. proj_annotate renumbers a "
                  "whole design."),
@@ -1525,11 +1486,14 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "when": (("pre", "route"), ("paste", "percent"), ("mask", "mode")),
         "document_kind": "board",
         "backends": ("altium",),
-        "use": ["obj_query", "obj_modify"],
+        "use": ["obj_query", "obj_modify", "pcb_lock_net_routing",
+                "pcb_edit_options"],
         "avoid": [],
-        "note": ("obj_modify IsPreRoute on tracks, arcs and vias; on pads "
-                 "PasteMaskUsePercent with PasteMaskPercent, and the mask "
-                 "modes (Altium's numbers: rule or manual)."),
+        "note": ("A pad percentage opening needs PasteMaskExpansionMode=2 "
+                 "(Manual Expansion), PasteMaskUsePercent=true and "
+                 "PasteMaskEnabled=true; read back after saving. IsPreRoute "
+                 "reverted after save/reopen on AD 26.11; lock the net's "
+                 "routing and enable Protect Locked Objects instead."),
     },
     {
         "task": "Set up a rigid-flex board: split it into regions, give each a layer stack, add bend lines",
@@ -2071,9 +2035,17 @@ _NOT_POSSIBLE: tuple[dict[str, Any], ...] = (
     {
         "capability": "Apply an ECO without a human click",
         "backends": ("altium",),
-        "why": ("The Engineering Change Order dialog is non-suppressible by "
-                "design. It can be launched, not completed."),
-        "do_instead": [],
+        "why": ("The Engineering Change Order dialog itself is "
+                "non-suppressible by design and still opens. Its buttons "
+                "CAN be pressed without a literal human click, through the "
+                "same reactive UI Automation driver app_drive_dialogs "
+                "already uses against a live ECO dialog -- gated behind "
+                "allow_commit=True, an explicit opt-in rather than a "
+                "silent default. A CLI-only variant, eco-execute "
+                "(--confirm required; see docs/ENGINEERING_TOOLS.md), runs "
+                "it from a terminal instead of the MCP tool surface. "
+                "Unverified against a live Altium session either way."),
+        "do_instead": ["app_drive_dialogs"],
     },
     {
         "capability": "Use hierarchical sheets in a schematic",
@@ -2443,6 +2415,34 @@ def derived_recipes(task: str, docs: dict[str, str],
     return [r for _s, _n, r in out[:limit]]
 
 
+#: Recipes whose tools are only advertised when a setting switches them
+#: on, keyed by the ``needs`` they declare. The guide exists because
+#: capabilities were reported absent when they were present; sending a
+#: caller to a tool this server is not advertising is the same failure
+#: with more confidence behind it, so an off feature's recipe is withheld
+#: rather than offered with a caveat.
+def _phase_gates_on() -> bool:
+    from ..profile import get_phase_stages
+    return bool(get_phase_stages())
+
+
+_FEATURE_IS_ON = {"phase_gates": _phase_gates_on}
+
+
+def switched_on(entry) -> bool:
+    """Whether a recipe's feature is enabled, for one that declares a ``needs``.
+
+    An unrecognised ``needs`` counts as on: a recipe that named a feature
+    nobody wired up would otherwise vanish silently, which is the harder
+    failure to notice of the two.
+    """
+    needs = entry.get("needs")
+    if not needs:
+        return True
+    predicate = _FEATURE_IS_ON.get(needs)
+    return True if predicate is None else bool(predicate())
+
+
 def guidance_for(task: str = "", document_kind: str = "",
                  backend: str = "",
                  docs: Optional[dict[str, str]] = None) -> dict[str, Any]:
@@ -2460,7 +2460,7 @@ def guidance_for(task: str = "", document_kind: str = "",
 
     ranked = sorted(
         ((_score(r, task, document_kind), i, r)
-         for i, r in enumerate(_RECIPES) if on_backend(r)),
+         for i, r in enumerate(_RECIPES) if on_backend(r) and switched_on(r)),
         key=lambda t: (-t[0], t[1]))
     recipes = []
     for score, _i, r in ranked:

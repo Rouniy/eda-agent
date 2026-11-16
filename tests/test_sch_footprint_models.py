@@ -23,6 +23,16 @@ def _body(name: str) -> str:
     return _routine(_source(), name)
 
 
+def test_footprint_model_choice_and_rename_mirror_the_footprint_parameter():
+    body = _body("SetPlacedFootprintName")
+    assert body.count("SetCompParamText(Comp, 'Footprint', NewName)") == 2
+    assert body.count("GetCompParamText(Comp, 'Footprint') = NewName") == 2
+    assert body.index("If Choice <> 0 Then") < body.index(
+        "SetCompParamText(Comp, 'Footprint', NewName)")
+    assert body.rindex("SetCompParamText(Comp, 'Footprint', NewName)") > body.index(
+        "Result := (After = NewName)")
+
+
 def test_the_chooser_clears_then_sets_then_reads_every_flag_back():
     body = _body("ChooseFootprintModel")
     # Collected during the walk, written only after it.
@@ -60,12 +70,14 @@ def test_placement_chooses_the_named_model_and_warns_on_a_miss():
 
 
 def test_the_component_properties_are_gated_to_components():
-    for name in ("GetSchProperty", "SetSchProperty"):
-        body = _body(name)
-        branch = body[body.index("(PropName = 'DisplayMode') Or"):]
-        branch = branch[:branch.index("Else If PropName = 'FontId'")] \
-            if "Else If PropName = 'FontId'" in branch else branch[:1500]
-        assert "eSchComponent" in branch
+    getter = _body("GetSchProperty")
+    read = getter[getter.index("Else If (PropName = 'DisplayMode') Or"):]
+    read = read[:read.index("Else If (PropName = 'Designator') Or")]
+    assert "If Obj.ObjectId = eSchComponent Then" in read
+    setter = _body("SetSchProperty")
+    write = setter[setter.index("Else If PropName = 'DisplayMode' Then"):]
+    write = write[:write.index("Else If PropName = 'FootprintPinMap' Then")]
+    assert "If Obj.ObjectId = eSchComponent Then" in write
     pre = _body("UnsupportedSchProperty")
     gate = pre[pre.index("(PropName = 'FootprintPinMap')"):]
     assert gate.index("(PropName = 'ComponentKind'))") < gate.index(

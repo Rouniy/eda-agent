@@ -79,7 +79,13 @@ class _Bridge:
 
     async def send_command_async(self, command, params=None, timeout=None):
         self.sent.append((command, dict(params or {})))
-        return {"success": True}
+        if params.get("dry_run") == "true":
+            return {"success": True, "dry_run": True,
+                    "board_path": params["board_path"], "matched": 1,
+                    "plan_token": "via:unchanged", "vias": [{}]}
+        return {"success": True, "dry_run": False,
+                "board_path": params["board_path"], "matched": 1,
+                "changed": 1, "failed": 0, "vias": [{}]}
 
 
 def _call(monkeypatch, **kw):
@@ -87,6 +93,7 @@ def _call(monkeypatch, **kw):
     monkeypatch.setattr(pcb_tools, "get_bridge", lambda: bridge)
     mcp = _Mcp()
     pcb_tools.register_pcb_tools(mcp)
+    kw.setdefault("board_path", str(Path.cwd().resolve() / "qa.PcbDoc"))
     out = asyncio.run(mcp.tools["pcb_set_via_tenting"](**kw))
     return out, bridge.sent
 
@@ -94,13 +101,18 @@ def _call(monkeypatch, **kw):
 def test_points_and_sides_reach_the_script(monkeypatch):
     _, sent = _call(monkeypatch, points=[{"x": 14710, "y": 5783.2256}],
                     top=True, bottom=True)
-    assert sent == [("pcb.set_via_tenting", {
-        "points": "14710.0,5783.2256", "top": "true", "bottom": "true"})]
+    assert sent[0][0] == "pcb.set_via_tenting"
+    assert sent[0][1]["points"] == "14710.000000,5783.225600"
+    assert sent[0][1]["top"] == sent[0][1]["bottom"] == "true"
+    assert sent[0][1]["dry_run"] == "true"
+    assert sent[0][1]["board_path"].endswith("qa.PcbDoc")
 
 
 def test_a_side_left_out_is_not_sent(monkeypatch):
     _, sent = _call(monkeypatch, net="GND", bottom=False)
-    assert sent[0][1] == {"net": "GND", "bottom": "false"}
+    assert sent[0][1]["net"] == "GND"
+    assert sent[0][1]["bottom"] == "false"
+    assert "top" not in sent[0][1]
 
 
 def test_nothing_to_set_or_no_vias_is_refused_before_sending(monkeypatch):
@@ -108,3 +120,15 @@ def test_nothing_to_set_or_no_vias_is_refused_before_sending(monkeypatch):
     assert out["ok"] is False and not sent
     out, sent = _call(monkeypatch, top=True)
     assert out["ok"] is False and not sent
+
+
+def test_write_requires_reviewed_plan_and_exact_board(monkeypatch):
+    out, sent = _call(monkeypatch, net="GND", top=True, dry_run=False)
+    assert out["ok"] is False and len(sent) == 1
+    assert sent[0][1]["dry_run"] == "true"
+    out, sent = _call(monkeypatch, net="GND", top=True, dry_run=False,
+                      expected_plan="via:unchanged")
+    assert out["ok"] is True and out["save_required"] is True
+    assert len(sent) == 2
+    assert sent[1][1]["expected_plan"] == "via:unchanged"
+    assert sent[1][1]["board_path"] == sent[0][1]["board_path"]

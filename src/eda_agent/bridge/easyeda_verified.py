@@ -183,4 +183,3 @@ def sample_of(command: str) -> str:
     answer for the same reason shape_of gives it.
     """
     return str(load_verified().get("samples", {}).get(command, ""))
-

@@ -11,16 +11,10 @@ tools, so an unreachable handler is unreachable full stop.
 The point of the allowlist is that it should SHRINK. A new entry means
 somebody wrote Pascal with no way to call it.
 
-Most current entries are singular forms whose bulk equivalent is the one
+All current entries are singular forms whose bulk equivalent is the one
 actually exposed, matching the standing preference for batch tools over
 per-item loops (``move_component`` is superseded by
-``pcb.batch_move_components``, and so on). These are not superseded by
-anything and are genuinely unexposed:
-
-* ``fillet_corners`` -- rounds acute track joins. Its own header says it
-  has NOT been validated against a live Altium session, so exposing it
-  would present unvalidated code as a first-class tool.
-* ``measure_distance`` -- no equivalent found.
+``pcb.batch_move_components``, and so on).
 """
 
 from __future__ import annotations
@@ -68,20 +62,21 @@ KNOWN_UNREACHABLE = {
     "set_label_format",
     "set_sch_component_parameters",
     "attach_spice_primitive",
-    # Callers were the retired schematic layout engine (2026-10-20).
-    # get_sch_doc_pins covers the first; the second places designator
-    # and value text and is a candidate for the template drawer.
-    "get_sch_component_pins",
-    "set_sch_text_positions",
-    # Genuinely unexposed.
+    # AD26 live test: the handler nests SpatialIterator_Create inside an
+    # active board iterator. Even dry_run with max_tracks=10 wedges the
+    # scripting loop on the first track. It needs a two-pass snapshot before
+    # it can be exposed safely.
     "fillet_corners",
-    "measure_distance",
     # The schematic emitter placed its junctions through this until
     # it stopped placing any: Altium draws its own at every T, in the
     # colour interactive wiring gives them (see AUTO JUNCTIONS in
     # design/emitter.py). The handler stays for a manual junction
     # where two wires cross and must connect.
     "place_junctions",
+    # Superseded by the exact-board STEP export wrappers, which verify a
+    # fresh file. These older handlers resolve whichever PCB is focused.
+    "export_component_model",
+    "save_component_model",
 }
 
 #: The modules do NOT all dispatch the same way, and matching only one
@@ -212,12 +207,13 @@ def test_allowlist_does_not_go_stale(unreachable):
 
 
 def test_scan_finds_the_bundle_is_excluded():
-    """The built bundle must not be scanned as a source module.
+    """A built bundle, when present, must not be scanned as source.
 
     Altium_MCP.pas concatenates the modules, so counting it would double
-    every handler and mask a real gap behind a duplicate.
+    every handler and mask a real gap behind a duplicate. The bundle is a
+    generated install artifact, so a clean source checkout need not contain
+    it.
     """
-    assert (PASCAL_DIR / "Altium_MCP.pas").exists()
     assert "Altium_MCP.pas" not in {
         m for m, _ in _dispatched_handlers().values()}
 
@@ -239,11 +235,12 @@ KNOWN_UNHANDLED: dict[str, str] = {}
 #
 # The check below matches on the ACTION only ("pcb.get_components" ->
 # "get_components"), which cannot tell a handler in the right module
-# from one in the wrong module. Four action names are dispatched in TWO
+# from one in the wrong module. Several action names are dispatched in TWO
 # modules each, with different parameter names on each side:
 #
 #     get_components  Library.pas + PCB.pas
 #     get_nets        PCB.pas + Project.pas
+#     query_region    Generic.pas + PCB.pas
 #     run_process     Application.pas + Generic.pas
 #     save_all        Application.pas + Project.pas
 #
@@ -343,6 +340,7 @@ def test_the_duplicate_action_names_are_still_duplicated():
     assert duplicated == {
         "get_components": ["Library.pas", "PCB.pas"],
         "get_nets": ["PCB.pas", "Project.pas"],
+        "query_region": ["Generic.pas", "PCB.pas"],
         "run_process": ["Application.pas", "Generic.pas"],
         # The same operation on the two document kinds that have
         # mechanical layers. A library and a board resolve their target

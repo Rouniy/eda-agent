@@ -99,10 +99,11 @@ def test_a_live_queue_is_told_from_a_leftover(tmp_path):
 
 
 @pytest.fixture
-def bridge(tmp_path):
+def bridge(tmp_path, monkeypatch):
     from eda_agent.config import configure
     configure(workspace_dir=tmp_path)
     b = ab.AltiumBridge()
+    monkeypatch.setattr(b, "_dialog_probe", lambda: None)
     yield b
     b.detach()
 

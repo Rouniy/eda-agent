@@ -1,0 +1,369 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
+"""Read a saved PcbDoc's layer stack from the file, without Altium.
+
+A PcbDoc's ``Board6/Data`` stream keeps the stack twice:
+
+- ``V9_STACK_LAYERn_*``: the AD19+ physical stack, top to bottom, every
+  layer its own entry (paste, overlay, solder mask, copper, each dielectric).
+  This is what the Layer Stack Manager and the fab outputs work from.
+- ``LAYERn_*`` with ``PREV`` / ``NEXT``: the pre-AD19 chain of copper layers,
+  each carrying one "dielectric below". ``pcb_get_layer_stackup`` and
+  ``pcb_modify_layer`` read and write this view through LayerStack_V7.
+
+On the Rosen controller (AD 25.8.1, 2026-10-27) writes through the old view
+read back as intended there, while the V9 stack held two dielectrics between
+L1 and L2, one of them -0.39 mil thick. Reading the V9 records and comparing
+the two views is how such a write is caught.
+"""
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import re
+import zlib
+from typing import Any, Optional
+
+from ..units import MILS_PER_MM
+
+#: Dielectric type numbers in the stack records.
+DIELECTRIC_TYPES = {"0": "none", "1": "core", "2": "prepreg",
+                    "3": "surface_material", "4": "embedded"}
+
+_MASK_OVERLAY_PASTE = {
+    0x1030006: "overlay", 0x1030007: "overlay",
+    0x1030008: "paste", 0x1030009: "paste",
+    0x103000A: "solder_mask", 0x103000B: "solder_mask",
+}
+
+#: Legacy copper layer numbers: 1 top, 2..31 mid, 32 bottom, 39..54 planes.
+_LEGACY_COPPER = list(range(1, 33)) + list(range(39, 55))
+
+_TOL_MILS = 0.05
+_NON_CONDUCTIVE_RESISTIVITY = 1e9
+
+
+def layer_kind(layer_id: int) -> str:
+    """Kind of a V9 stack entry from its layer id."""
+    family = layer_id >> 16
+    if family in (0x100, 0x101):
+        return "copper"
+    if family == 0x104:
+        return "dielectric"
+    return _MASK_OVERLAY_PASTE.get(layer_id, "other")
+
+
+def to_mils(text: str) -> Optional[float]:
+    """'1.378mil', '0.035mm', '35um' or a bare number (mils) to mils."""
+    if text is None:
+        return None
+    m = re.fullmatch(r"\s*(-?[0-9.]+(?:[eE]-?\d+)?)\s*(mil|mm|um|in)?\s*", str(text))
+    if not m:
+        return None
+    value = float(m.group(1))
+    unit = m.group(2) or "mil"
+    return {"mil": value, "mm": value * MILS_PER_MM, "um": value * MILS_PER_MM / 1000.0,
+            "in": value * 1000.0}[unit]
+
+
+def board_keys(data: bytes) -> dict[str, str]:
+    """The key/value pairs of the board record that holds the stack."""
+    text = data.decode("latin-1")
+    records = [r for r in re.split(r"\x00[\x00-\xff]{4}(?=\|)", text) if "V9_STACK" in r]
+    source = records[0] if records else text
+    keys: dict[str, str] = {}
+    for pair in source.split("|"):
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            keys.setdefault(key.strip(), value.strip("\x00").strip())
+    return keys
+
+
+def read_board_data(path: str) -> bytes:
+    import olefile
+
+    with olefile.OleFileIO(path) as ole:
+        return ole.openstream("Board6/Data").read()
+
+
+def physical_stack(keys: dict[str, str]) -> list[dict[str, Any]]:
+    """V9 stack entries top to bottom."""
+    indexes = sorted({int(m.group(1)) for k in keys
+                      for m in [re.fullmatch(r"V9_STACK_LAYER(\d+)_NAME", k)] if m})
+    layers = []
+    for i in indexes:
+        def get(field: str) -> str:
+            return keys.get(f"V9_STACK_LAYER{i}_{field}", "")
+        try:
+            layer_id = int(get("LAYERID"))
+        except ValueError:
+            layer_id = 0
+        kind = layer_kind(layer_id)
+        entry: dict[str, Any] = {"order": len(layers), "name": get("NAME"),
+                                 "kind": kind, "layer_id": layer_id,
+                                 "id": get("ID").strip("{}").lower()}
+        if kind == "copper":
+            entry["thickness_mils"] = to_mils(get("COPTHICK"))
+            entry["additive"] = get("ISADDITIVELAYER").upper() == "TRUE"
+            try:
+                entry["resistivity"] = (float(get("ELECTRICALRESISTIVITY"))
+                                         if get("ELECTRICALRESISTIVITY") else None)
+            except ValueError:
+                entry["resistivity"] = None
+        elif kind in ("dielectric", "solder_mask"):
+            entry["thickness_mils"] = to_mils(get("DIELHEIGHT"))
+            entry["dielectric_type"] = DIELECTRIC_TYPES.get(get("DIELTYPE"), get("DIELTYPE"))
+            entry["material"] = get("DIELMATERIAL")
+            try:
+                entry["dielectric_constant"] = float(get("DIELCONST"))
+            except ValueError:
+                entry["dielectric_constant"] = None
+            try:
+                entry["loss_tangent"] = float(get("DIELLOSSTANGENT"))
+            except ValueError:
+                entry["loss_tangent"] = None
+        layers.append(entry)
+    return layers
+
+
+def legacy_chain(keys: dict[str, str]) -> list[dict[str, Any]]:
+    """The pre-AD19 copper chain from LAYER1 by NEXT, each with its dielectric below."""
+    present = {n for n in _LEGACY_COPPER if f"LAYER{n}NAME" in keys}
+    chain: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    n = 1 if 1 in present else 0
+    while n and n not in seen and n in present:
+        seen.add(n)
+        chain.append({
+            "legacy_layer": n,
+            "name": keys.get(f"LAYER{n}NAME", ""),
+            "copper_mils": to_mils(keys.get(f"LAYER{n}COPTHICK", "")),
+            "dielectric_type": DIELECTRIC_TYPES.get(keys.get(f"LAYER{n}DIELTYPE", ""), ""),
+            "dielectric_mils": to_mils(keys.get(f"LAYER{n}DIELHEIGHT", "")),
+        })
+        try:
+            n = int(keys.get(f"LAYER{n}NEXT", "0"))
+        except ValueError:
+            n = 0
+    return chain
+
+
+def check(layers: list[dict[str, Any]], chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What is wrong with a stack, most serious first."""
+    findings: list[dict[str, Any]] = []
+    board = [layer for layer in layers if layer["kind"] in ("copper", "dielectric")]
+    copper = [layer for layer in layers if layer["kind"] == "copper"]
+    if len(copper) < 2:
+        findings.append({"severity": "error", "check": "missing_physical_stack",
+                         "detail": "fewer than top and bottom copper layers in saved V9 stack"})
+    if not chain:
+        findings.append({"severity": "error", "check": "missing_legacy_chain",
+                         "detail": "saved legacy copper chain is absent; views cannot be compared"})
+    for layer in board:
+        t = layer.get("thickness_mils")
+        if t is None or t <= 0:
+            findings.append({"severity": "error", "check": "thickness",
+                             "layer": layer["name"],
+                             "detail": f"{layer['kind']} thickness is {t} mil"})
+        if layer["kind"] == "copper":
+            if layer.get("additive"):
+                findings.append({"severity": "error", "check": "additive",
+                                 "layer": layer["name"],
+                                 "detail": f"{layer['name']} is marked as additive copper"})
+            if (layer.get("resistivity") or 0) >= _NON_CONDUCTIVE_RESISTIVITY:
+                findings.append({"severity": "error", "check": "non_conductive",
+                                 "layer": layer["name"],
+                                 "detail": f"{layer['name']} has non-conductive resistivity "
+                                           f"{layer['resistivity']:g}"})
+    for upper, lower in zip(board, board[1:]):
+        if upper["kind"] == "copper" and lower["kind"] == "copper":
+            findings.append({"severity": "error", "check": "no_dielectric",
+                             "layer": upper["name"],
+                             "detail": f"no dielectric between {upper['name']} and {lower['name']}"})
+    if chain and [c["name"] for c in chain] != [c["name"] for c in copper]:
+        findings.append({"severity": "error", "check": "views_disagree",
+                         "detail": "copper order differs between the physical stack "
+                                   f"{[c['name'] for c in copper]} and the legacy chain "
+                                   f"{[c['name'] for c in chain]}"})
+    elif chain:
+        positions = [layers.index(c) for c in copper]
+        for i, (top, bottom) in enumerate(zip(positions, positions[1:])):
+            gap = [layers[j] for j in range(top + 1, bottom) if layers[j]["kind"] == "dielectric"]
+            v9 = sum((d.get("thickness_mils") or 0.0) for d in gap)
+            legacy = chain[i].get("dielectric_mils")
+            if legacy is not None and abs(v9 - legacy) > _TOL_MILS:
+                findings.append({"severity": "error", "check": "views_disagree",
+                                 "layer": copper[i]["name"],
+                                 "detail": f"below {copper[i]['name']} the physical stack has "
+                                           f"{round(v9, 4)} mil of dielectric in {len(gap)} "
+                                           f"layer(s); the legacy view says {legacy} mil"})
+            if len(gap) > 1:
+                findings.append({"severity": "info", "check": "split_dielectric",
+                                 "layer": copper[i]["name"],
+                                 "detail": f"{len(gap)} dielectrics below {copper[i]['name']}: "
+                                           + ", ".join(f"{d['name']} {d.get('thickness_mils')} mil"
+                                                       for d in gap)})
+    order = {"error": 0, "warning": 1, "info": 2}
+    return sorted(findings, key=lambda f: order[f["severity"]])
+
+
+def manager_model(keys: dict[str, str]) -> list[dict[str, Any]] | None:
+    """Decode the saved Layer Stack Manager model, when present."""
+    blob = keys.get("V9_STACKCUSTOMDATA")
+    if not blob:
+        return None
+    try:
+        xml = zlib.decompress(base64.b64decode(blob, validate=True)).decode("utf-8")
+    except (ValueError, binascii.Error, zlib.error, UnicodeError):
+        return None
+    out: list[dict[str, Any]] = []
+    for match in re.finditer(r'<Layer Id="([^"]+)" TypeId="[^"]+" Name="[^"]*"(.*?)</Layer>',
+                             xml, re.S):
+        body = match.group(2)
+        def property_text(name: str) -> str | None:
+            prop = re.search(rf'Name="{name}"[^>]*>([^<]*)<', body)
+            return prop.group(1) if prop else None
+
+        def property_float(name: str) -> float | None:
+            value = property_text(name)
+            if not value:
+                return None
+            try:
+                return float(value)
+            except ValueError:
+                return None
+
+        material = property_text("Material")
+        out.append({"id": match.group(1).strip("{}").lower(),
+                    "thickness_mils": to_mils(property_text("Thickness")),
+                    "material": material.split(":")[-1] if material else None,
+                    "dielectric_constant": property_float("DielectricConstant"),
+                    "loss_tangent": property_float("LossTangent")})
+    return out
+
+
+def check_manager_model(layers: list[dict[str, Any]],
+                        model: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Warn if the manager's saved copy disagrees with the physical stack."""
+    if not model:
+        return []
+    by_id = {entry["id"]: entry for entry in model}
+    differences = []
+    for layer in layers:
+        if layer["kind"] not in ("copper", "dielectric"):
+            continue
+        entry = by_id.get(layer.get("id", ""))
+        if entry is None:
+            continue
+        actual, displayed = layer.get("thickness_mils"), entry["thickness_mils"]
+        if actual is not None and displayed is not None and abs(actual - displayed) > _TOL_MILS:
+            differences.append(f"{layer['name']} thickness: manager {displayed:g} mil, stack {actual:g} mil")
+        if layer["kind"] != "dielectric":
+            continue
+        for field, tolerance in (("dielectric_constant", 0.01), ("loss_tangent", 0.001)):
+            actual, displayed = layer.get(field), entry.get(field)
+            if actual is not None and displayed is not None and abs(actual - displayed) > tolerance:
+                differences.append(f"{layer['name']} {field}: manager {displayed:g}, stack {actual:g}")
+        actual_material, displayed_material = layer.get("material"), entry.get("material")
+        if (actual_material and displayed_material and
+                actual_material.casefold() != displayed_material.casefold()):
+            differences.append(f"{layer['name']} material: manager {displayed_material}, "
+                               f"stack {actual_material}")
+    if not differences:
+        return []
+    return [{"severity": "warning", "check": "stack_manager_model_stale",
+             "detail": "Layer Stack Manager's saved model differs from the physical stack: "
+                       + "; ".join(differences), "layers": differences}]
+
+
+def reset_manager_model(path: str, *, expected_sha256: str | None = None,
+                        dry_run: bool = True) -> dict[str, Any]:
+    """Invalidate a saved manager model so Altium rebuilds it at next open.
+
+    Only the first byte of the key name changes, preserving the OLE stream
+    length. The caller must ensure that the board is closed in Altium.
+    """
+    import olefile
+
+    marker = b"|V9_STACKCUSTOMDATA="
+    renamed = b"|X9_STACKCUSTOMDATA="
+    with open(path, "rb") as board_file:
+        actual_sha256 = hashlib.file_digest(board_file, "sha256").hexdigest()
+    if not dry_run and not expected_sha256:
+        raise ValueError("expected_sha256 is required to change the saved board")
+    if expected_sha256 and actual_sha256.casefold() != expected_sha256.casefold():
+        raise ValueError("saved PcbDoc SHA-256 differs from expected_sha256")
+    with olefile.OleFileIO(path) as ole:
+        data = ole.openstream("Board6/Data").read()
+    found = data.count(marker)
+    if found != 1:
+        raise ValueError(f"expected one manager model key; found {found}")
+    result = {"path": path, "before_sha256": actual_sha256, "found": found,
+              "dry_run": dry_run}
+    if dry_run:
+        return result
+    with olefile.OleFileIO(path, write_mode=True) as ole:
+        ole.write_stream("Board6/Data", data.replace(marker, renamed, 1))
+    with olefile.OleFileIO(path) as ole:
+        changed = ole.openstream("Board6/Data").read()
+    if changed.count(renamed) != 1 or changed.count(marker) != 0:
+        raise OSError("manager model key write failed verification")
+    with open(path, "rb") as board_file:
+        result["after_sha256"] = hashlib.file_digest(board_file, "sha256").hexdigest()
+    result["dry_run"] = False
+    result["renamed"] = 1
+    return result
+
+
+def summarize(layers: list[dict[str, Any]]) -> dict[str, Any]:
+    copper = [layer for layer in layers if layer["kind"] == "copper"]
+    dielectric = [layer for layer in layers if layer["kind"] == "dielectric"]
+    mask = [layer for layer in layers if layer["kind"] == "solder_mask"]
+
+    def total(group):
+        return round(sum((layer.get("thickness_mils") or 0.0) for layer in group), 4)
+
+    return {"copper_layers": len(copper), "dielectric_layers": len(dielectric),
+            "copper_mils": total(copper), "dielectric_mils": total(dielectric),
+            "board_mils": total(copper + dielectric),
+            "with_mask_mils": total(copper + dielectric + mask)}
+
+
+def read_stack(path: str) -> dict[str, Any]:
+    """The saved stack of a PcbDoc: layers, legacy chain, summary, findings."""
+    keys = board_keys(read_board_data(path))
+    layers = physical_stack(keys)
+    chain = legacy_chain(keys)
+    findings = check(layers, chain) + check_manager_model(layers, manager_model(keys))
+    return {"path": path, "layers": layers, "legacy_chain": chain,
+            "summary": summarize(layers), "findings": findings,
+            "ok": not any(f["severity"] == "error" for f in findings)}
+
+
+def compare_expected(layers: list[dict[str, Any]], expected: list[dict[str, Any]],
+                     tol_mils: float = _TOL_MILS) -> list[dict[str, Any]]:
+    """Differences between the copper and dielectric layers and an expected list.
+
+    ``expected`` is top to bottom, each ``{"kind": "copper"|"dielectric",
+    "name"?, "thickness_mils"?, "dielectric_type"?, "dielectric_constant"?,
+    "loss_tangent"?}``.
+    """
+    board = [layer for layer in layers if layer["kind"] in ("copper", "dielectric")]
+    out: list[dict[str, Any]] = []
+    if len(board) != len(expected):
+        out.append({"check": "count", "detail": f"{len(board)} copper and dielectric "
+                    f"layers, expected {len(expected)}"})
+    for i, (got, want) in enumerate(zip(board, expected)):
+        for field in ("kind", "name", "dielectric_type"):
+            if field in want and str(want[field]) != str(got.get(field)):
+                out.append({"check": field, "order": i, "got": got.get(field),
+                            "expected": want[field]})
+        for field, tol in (("thickness_mils", tol_mils), ("dielectric_constant", 0.01),
+                           ("loss_tangent", 0.001)):
+            if field in want:
+                g = got.get(field)
+                if g is None or abs(float(g) - float(want[field])) > tol:
+                    out.append({"check": field, "order": i, "layer": got.get("name"),
+                                "got": g, "expected": want[field]})
+    return out

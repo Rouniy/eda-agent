@@ -39,6 +39,11 @@ from ..layout import pad_relief
 from .library import _angle_text, _edge_arc, _mils
 from ..bridge.payload import payload_safe
 from ..units import MILS_PER_MM, format_length, length_in, normalise_units
+import hashlib
+import html
+import os
+from pathlib import Path
+from ..bridge.exceptions import AltiumError
 
 #: What pcb_place_components passes on for a part's designator ("name_")
 #: and comment ("comment_") text.
@@ -73,7 +78,10 @@ def stack_manager_out_of_step(manager: dict[str, Any],
     and a script write to the board's stack does not reach it, so the
     manager can go on showing old values. Each difference is one entry
     (layer, field, board, stack_manager); none means the two agree.
-    Paste layers are the board's only (the manager has none).
+    Paste layers are the board's only (the manager has none), and a
+    manager layer of type "other" is the manager's own (surface finish):
+    that one is reported with field ``manager_only`` and does not mean
+    the stacks disagree.
     """
     out: list[dict[str, Any]] = []
     lsm = {l.get("name"): l for l in manager.get("layers") or []}
@@ -111,7 +119,13 @@ def stack_manager_out_of_step(manager: dict[str, Any],
                             "board": kind, "stack_manager": m.get("type")})
     for name, m in lsm.items():
         if name not in board:
-            out.append({"layer": name, "field": "layer",
+            # A manager entry of type "other" (surface finish is one) has no
+            # board layer object and never will, so it is not something the
+            # two disagree about: reported as manager_only, not blocking.
+            # Paste is dropped above for the mirror reason. A manager-only
+            # layer of any other type IS a real structural difference.
+            out.append({"layer": name,
+                        "field": "manager_only" if m.get("type") == "other" else "layer",
                         "board": None, "stack_manager": m.get("type")})
     return out
 
@@ -262,7 +276,7 @@ def stack_model_edits(model: str, out_of_step: list[dict[str, Any]],
     for diff in out_of_step:
         name, field, value = diff.get("layer"), diff.get("field"), diff.get("board")
         n = index.get(name)
-        if n is None or field == "layer" or value is None:
+        if n is None or field in ("layer", "manager_only") or value is None:
             continue
         if field == "thickness_mils":
             copper = kinds.get(name) == "copper"
@@ -877,110 +891,100 @@ def _outline_vertices(points: list) -> tuple[str, str]:
 
 
 def _outline_ring(outline: Any, step_deg: float = 5.0) -> list[tuple[float, float]]:
-    """The board outline from pcb.get_board_outline as one polygon, in mils.
-
-    An arc vertex runs about its centre from its own point to the next
-    vertex: counter-clockwise when its point sits at angle1 (Altium draws
-    arcs counter-clockwise from angle1 to angle2), clockwise when it sits
-    at angle2. Arcs are cut into chords of at most ``step_deg``. Empty when
-    the reply carries no usable outline.
-    """
-    import math
-
+    """Turn the board outline, including arc edges, into a polygon in mils."""
     if not isinstance(outline, dict):
         return []
-    verts = outline.get("vertices") or []
-    if len(verts) < 3:
+    vertices = outline.get("vertices") or []
+    if len(vertices) < 3:
         return []
     ring: list[tuple[float, float]] = []
-    for i, v in enumerate(verts):
+    for i, vertex in enumerate(vertices):
         try:
-            x, y = float(v["x"]), float(v["y"])
+            x, y = float(vertex["x"]), float(vertex["y"])
+            ring.append((x, y))
+            if vertex.get("kind") != "arc":
+                continue
+            nxt = vertices[(i + 1) % len(vertices)]
+            cx, cy = float(vertex["cx"]), float(vertex["cy"])
+            radius = math.hypot(x - cx, y - cy)
+            start = math.degrees(math.atan2(y - cy, x - cx)) % 360
+            angle1 = float(vertex["angle1"]) % 360
+            angle2 = float(vertex["angle2"]) % 360
+            end = math.degrees(math.atan2(float(nxt["y"]) - cy,
+                                               float(nxt["x"]) - cx)) % 360
         except (KeyError, TypeError, ValueError):
             return []
-        ring.append((x, y))
-        if v.get("kind") != "arc":
-            continue
-        nxt = verts[(i + 1) % len(verts)]
-        cx, cy = float(v["cx"]), float(v["cy"])
-        r = math.hypot(x - cx, y - cy)
-        a_here = math.degrees(math.atan2(y - cy, x - cx)) % 360
-        a1, a2 = float(v["angle1"]) % 360, float(v["angle2"]) % 360
 
-        def near(a: float, b: float) -> bool:
-            return abs((a - b + 180) % 360 - 180) < 1.0
+        def near(left: float, right: float) -> bool:
+            return abs((left - right + 180) % 360 - 180) < 1.0
 
-        a_next = math.degrees(math.atan2(float(nxt["y"]) - cy,
-                                         float(nxt["x"]) - cx)) % 360
-        sweep = (a2 - a1) % 360 or 360.0
-        ccw = near(a_here, a1) or not near(a_here, a2)
-        if not ccw:
+        sweep = (angle2 - angle1) % 360 or 360.0
+        if near(start, angle2) and not near(start, angle1):
             sweep = -sweep
-        if not (near(a_here + sweep, a_next)):
-            # The vertices disagree with the angles: go the short way round.
-            sweep = ((a_next - a_here + 180) % 360) - 180
-        n = max(1, int(abs(sweep) // step_deg))
-        for k in range(1, n):
-            a = math.radians(a_here + sweep * k / n)
-            ring.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+        if not near(start + sweep, end):
+            sweep = ((end - start + 180) % 360) - 180
+        segments = max(1, int(abs(sweep) // step_deg))
+        for k in range(1, segments):
+            angle = math.radians(start + sweep * k / segments)
+            ring.append((cx + radius * math.cos(angle),
+                         cy + radius * math.sin(angle)))
     return ring
 
 
 def _grid_points(x1: float, y1: float, x2: float, y2: float,
-                 spacing: float) -> list[tuple[int, int]]:
-    """A ``spacing`` grid over the rectangle, corners in any order."""
-    lo_x, hi_x = sorted((x1, x2))
-    lo_y, hi_y = sorted((y1, y2))
+                 spacing: float) -> list[tuple[float, float]]:
+    """Inclusive rectangular grid, regardless of corner ordering."""
+    low_x, high_x = sorted((x1, x2))
+    low_y, high_y = sorted((y1, y2))
     spacing = spacing if spacing > 0 else 50
-    pts = []
-    y = lo_y
-    while y <= hi_y:
-        x = lo_x
-        while x <= hi_x:
-            pts.append((int(round(x)), int(round(y))))
-            x += spacing
-        y += spacing
-    return pts
+    points = []
+    row = 0
+    y = low_y
+    while y <= high_y + 0.000001:
+        col = 0
+        x = low_x
+        while x <= high_x + 0.000001:
+            points.append((x, y))
+            col += 1
+            x = low_x + col * spacing
+        row += 1
+        y = low_y + row * spacing
+    return points
 
 
-def _inside_ring(p: tuple[float, float], ring: list[tuple[float, float]],
+def _inside_ring(point: tuple[float, float], ring: list[tuple[float, float]],
                  margin: float) -> bool:
-    """True when ``p`` lies inside the ring and ``margin`` or more from its edge."""
-    import math
-
-    x, y = p
+    """Check polygon membership and distance from every outline edge."""
+    x, y = point
     inside = False
-    n = len(ring)
     nearest = math.inf
-    for i in range(n):
-        ax, ay = ring[i]
-        bx, by = ring[(i + 1) % n]
+    for i, (ax, ay) in enumerate(ring):
+        bx, by = ring[(i + 1) % len(ring)]
         if (ay > y) != (by > y):
             cross = ax + (y - ay) * (bx - ax) / (by - ay)
             if x < cross:
                 inside = not inside
         dx, dy = bx - ax, by - ay
         length2 = dx * dx + dy * dy
-        t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / length2))
-        nearest = min(nearest, math.hypot(x - ax - t * dx, y - ay - t * dy))
+        fraction = (0.0 if length2 == 0 else
+                    max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / length2)))
+        nearest = min(nearest, math.hypot(x - ax - fraction * dx,
+                                         y - ay - fraction * dy))
     return inside and nearest >= margin
 
 
 def _layer_names(layer: str, layers: Any) -> list[str]:
-    """The layer names asked for: ``layers`` (a list, or a JSON list sent
-    as text, as a client sent it), else the single ``layer``."""
-    import json
-
+    """Accept a single layer or a list supplied by a client."""
     if isinstance(layers, str):
-        text = layers.strip()
+        source = layers.strip()
         try:
-            layers = json.loads(text) if text.startswith("[") else [
-                p for p in (q.strip() for q in text.split(",")) if p]
+            layers = json.loads(source) if source.startswith("[") else [
+                part for part in (item.strip() for item in source.split(",")) if part]
         except ValueError:
-            layers = [text]
-    names = [str(n).strip() for n in (layers or []) if str(n).strip()]
+            layers = [source]
+    names = [str(item).strip() for item in (layers or []) if str(item).strip()]
     if not names and layer:
-        names = [layer]
+        names = [layer.strip()]
     return names
 
 
@@ -992,7 +996,7 @@ _TEXT_ANCHORS = (
 
 
 def _text_anchor(value: Any) -> Optional[int]:
-    """An anchor name or number to Altium's number, or None."""
+    """Translate an anchor name or number to Altium's enum value."""
     text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
     if text in _TEXT_ANCHORS:
         return _TEXT_ANCHORS.index(text)
@@ -1203,18 +1207,362 @@ async def _rule_edit(tool: str, args: dict[str, Any], command: str,
         bridge, tool, args, lambda: bridge.send_command_async(command, params))
 
 
+def _drc_report_counts(report_path: str) -> dict[str, int]:
+    """Read Altium's active/waived totals from a fresh batch HTML report."""
+    path = Path(report_path)
+    if path.suffix.casefold() != ".html" or not path.is_file():
+        return {}
+    try:
+        report = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    counts: dict[str, int] = {}
+    for label, key in (("Warnings:", "warnings"),
+                       ("Rule Violations:", "rule_violations"),
+                       ("Waived Violations:", "waived_violations")):
+        match = re.search(
+            r'<td class="DRC_summary_header_col1">' + re.escape(label)
+            + r'</td>\s*<td class="DRC_summary_header_col2">.*?</td>\s*'
+            + r'<td class="DRC_summary_header_col3"[^>]*>\s*(\d+)\s*</td>',
+            report, re.IGNORECASE | re.DOTALL)
+        if match:
+            counts[key] = int(match.group(1))
+    return counts if "rule_violations" in counts else {}
+
+
+def _drc_report_rules(report_path: str) -> list[dict[str, Any]] | None:
+    """Read every rule row in the fresh batch report's summary table.
+
+    ``None`` means the table could not be located; an empty list means
+    Altium included the table but listed no rules. Keep the full label,
+    including scopes, because several rules share the same kind.
+    """
+    path = Path(report_path)
+    if path.suffix.casefold() != ".html" or not path.is_file():
+        return None
+    try:
+        report = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    table = re.search(
+        r'<th\b[^>]*class="column1"[^>]*>\s*Rule Violations\s*</th>'
+        r'.*?</table>', report, re.IGNORECASE | re.DOTALL,
+    )
+    if not table:
+        return None
+    rows: list[dict[str, Any]] = []
+    total_seen = False
+    for label_html, count_html in re.findall(
+        r'<td\b[^>]*class="column1"[^>]*>(.*?)</td>\s*'
+        r'<td\b[^>]*class="column2"[^>]*>(.*?)</td>',
+        table.group(), re.IGNORECASE | re.DOTALL,
+    ):
+        label = html.unescape(re.sub(r"<[^>]+>", "", label_html)).strip()
+        count = html.unescape(re.sub(r"<[^>]+>", "", count_html)).strip()
+        if label.casefold() == "total":
+            total_seen = True
+            continue
+        if not label or not count.isdecimal():
+            return None
+        rows.append({"label": label, "violations": int(count)})
+    # A format change must not turn an unparsed zero-count rule into an
+    # apparent empty report. The first header's opening <tr> precedes the
+    # matched section, so each <tr> here is a rule row or the Total row.
+    if not total_seen or len(re.findall(r"<tr\b", table.group(), re.IGNORECASE)) != len(rows) + 1:
+        return None
+    return rows
+
+
+def _drc_report_stop_limit(report_path: str) -> int | None:
+    """Read Altium's explicit maximum-violations stop from a batch report."""
+    path = Path(report_path)
+    if path.suffix.casefold() != ".html" or not path.is_file():
+        return None
+    try:
+        report = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(
+        r"More than\s+(\d+)\s+violations detected,\s*DRC was stopped",
+        report, re.IGNORECASE,
+    )
+    return int(match.group(1)) if match else None
+
+
+def _fab_board_facts(reply: dict[str, Any], expected_path: str) -> dict[str, Any]:
+    """Accept only a complete, internally consistent exact-board snapshot."""
+    if not isinstance(reply, dict) or reply.get("board_path", "").casefold() != expected_path.casefold():
+        raise ValueError("native fab facts did not identify the requested board")
+    for key in ("copper_layers", "pad_holes", "via_holes", "hole_count"):
+        if type(reply.get(key)) is not int or reply[key] < 0:
+            raise ValueError(f"native fab facts lack a valid {key}")
+    if reply["copper_layers"] == 0 or reply["hole_count"] != reply["pad_holes"] + reply["via_holes"]:
+        raise ValueError("native fab layer or hole totals are inconsistent")
+    outline = reply.get("outline_mm")
+    if not isinstance(outline, dict):
+        raise ValueError("native fab facts lack an outline")
+    for axis in ("width", "height"):
+        value = outline.get(axis)
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"native fab outline has no valid {axis}")
+    return {key: reply[key] for key in ("copper_layers", "outline_mm", "hole_count")}
+
+
+def _drill_pairs_snapshot(reply: dict[str, Any], board_path: str) -> list[dict[str, Any]]:
+    """Refuse a partial drill-pair read before it can authorize a write."""
+    if not isinstance(reply, dict) or not isinstance(reply.get("board_path"), str):
+        raise ValueError("drill pair read lacks board identity")
+    if reply["board_path"].casefold() != board_path.casefold():
+        raise ValueError("drill pair read came from another board")
+    pairs = reply.get("pairs")
+    count = reply.get("count")
+    if (not isinstance(pairs, list) or type(count) is not int
+            or count < 0 or len(pairs) != count
+            or reply.get("reported_count") != count
+            or reply.get("unreadable_count") != 0):
+        raise ValueError("drill pair read is incomplete")
+    for i, pair in enumerate(pairs):
+        if (not isinstance(pair, dict) or pair.get("index") != i
+                or type(pair.get("low_layer_id")) is not int
+                or type(pair.get("high_layer_id")) is not int
+                or any(type(pair.get(field)) is not bool for field in
+                       ("backdrill", "plot_drill_drawing", "plot_drill_guide"))):
+            raise ValueError("drill pair entry is incomplete")
+    return pairs
+
+
+def _pair_impedance_snapshot(reply: Any, board_path: str,
+                             rule_name: str) -> dict[str, Any]:
+    if (not isinstance(reply, dict)
+            or not isinstance(reply.get("board_path"), str)
+            or reply["board_path"].casefold() != board_path.casefold()
+            or str(reply.get("rule_name", "")).casefold() != rule_name.casefold()
+            or reply.get("rule_kind") != 51
+            or not isinstance(reply.get("after"), dict)):
+        raise ValueError("pair impedance read is incomplete or from another rule")
+    state = reply["after"]
+    if type(state.get("impedance_driven")) is not bool:
+        raise ValueError("pair impedance mode is missing")
+    for field in ("min_ohms", "max_ohms", "preferred_ohms"):
+        value = state.get(field)
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f"pair impedance {field} is missing")
+    return state
+
+
+def _offset_pair_polyline(
+    points: list[tuple[float, float]],
+    center_offset: float,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Return positive/negative parallel polylines around a centerline.
+
+    Interior vertices use a miter intersection, so the pair spacing remains
+    constant through ordinary corners instead of opening at every bend.
+    """
+    if len(points) < 2:
+        raise ValueError("at least two centerline points are required")
+    normals: list[tuple[float, float]] = []
+    for (x1, y1), (x2, y2) in zip(points, points[1:]):
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            raise ValueError("centerline contains a zero-length segment")
+        normals.append((-dy / length, dx / length))
+
+    offsets: list[tuple[float, float]] = []
+    for index in range(len(points)):
+        if index == 0:
+            ox, oy = normals[0]
+        elif index == len(points) - 1:
+            ox, oy = normals[-1]
+        else:
+            ax, ay = normals[index - 1]
+            bx, by = normals[index]
+            denom = 1.0 + ax * bx + ay * by
+            if denom <= 1e-6:
+                raise ValueError("centerline contains a 180-degree reversal")
+            ox, oy = (ax + bx) / denom, (ay + by) / denom
+        offsets.append((ox * center_offset, oy * center_offset))
+
+    positive = [(x + ox, y + oy) for (x, y), (ox, oy) in zip(points, offsets)]
+    negative = [(x - ox, y - oy) for (x, y), (ox, oy) in zip(points, offsets)]
+    return positive, negative
+
+
+def _mils(value: Any) -> str:
+    """A length in mils for the wire: whole numbers as integers, the rest
+    to 1e-4 mil, which is one Altium internal unit."""
+    v = float(value)
+    if v.is_integer():
+        return str(int(v))
+    return f"{v:.4f}".rstrip("0").rstrip(".")
+
+
+_PCB_OPTION_FLOATS = {"rotation_step", "draft_track_threshold_mils",
+                      "repeat_angle", "repeat_x_mils", "repeat_y_mils"}
+
+
+_PCB_OPTION_SIGNED = {"repeat_x_mils", "repeat_y_mils"}
+
+
+_PCB_OPTION_INTS = {"plane_draw_mode", "pad_types_display", "from_tos_display",
+                    "layer_name_display", "drag_mode", "component_move",
+                    "route_mode", "shove_depth", "text_as_box_below",
+                    "pad_net_min_font_size", "pad_net_font_color",
+                    "pad_net_font_background", "board_area_color",
+                    "board_line_color", "sheet_area_color", "sheet_line_color",
+                    "auto_pan_mode", "auto_pan_step", "auto_pan_big_step",
+                    "auto_pan_speed", "pour_redraw_threshold", "repeat_count"}
+
+
+_PCB_OPTION_COLORS = {"pad_net_font_color", "pad_net_font_background",
+                      "board_area_color", "board_line_color", "sheet_area_color",
+                      "sheet_line_color"}
+
+
+_PCB_OPTION_TEXTS = {"pad_net_font", "default_truetype_font",
+                     "repeat_increment"}
+
+
+def _pcb_option_text(value: bool | int | float) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+async def _pcb_editor_options(board_path: str, names: dict[str, str],
+                              values: dict[str, Any], dry_run: bool) -> dict[str, Any]:
+    """Exact-board read, old-value preflight and native readback for preferences."""
+    if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+        return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+    updates = {key: value for key, value in values.items() if value is not None}
+    for key, value in updates.items():
+        if key in _PCB_OPTION_FLOATS:
+            valid = (not isinstance(value, bool) and isinstance(value, (int, float))
+                     and math.isfinite(value)
+                     and (key in _PCB_OPTION_SIGNED or value >= 0))
+        elif key in _PCB_OPTION_INTS:
+            valid = (type(value) is int and value >= 0
+                     and (key not in _PCB_OPTION_COLORS or value <= 0xFFFFFF))
+        elif key in _PCB_OPTION_TEXTS:
+            valid = (isinstance(value, str) and bool(value.strip())
+                     and all(ch not in value for ch in "|\r\n"))
+        else:
+            valid = type(value) is bool
+        if not valid:
+            return {"ok": False, "reason": f"invalid value for {key}"}
+    bridge = get_bridge()
+    base = {"board_path": board_path, "names": ",".join(names.values())}
+    snapshot = await bridge.send_command_async("pcb.editor_options", base, timeout=120.0)
+    raw = snapshot.get("options") if isinstance(snapshot, dict) else None
+    if (not isinstance(snapshot, dict) or not isinstance(snapshot.get("board_path"), str)
+            or snapshot["board_path"].casefold() != board_path.casefold()
+            or not isinstance(raw, dict) or set(raw) != set(names.values())
+            or snapshot.get("refused") != [] or snapshot.get("unknown") != []):
+        return {"ok": False, "reason": "PCB preference read is incomplete",
+                "native_reply": snapshot}
+    old = {key: raw[native] for key, native in names.items()}
+    if not updates:
+        return {**snapshot, "options": old}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "board_path": board_path,
+                "before": old, "would_set": updates}
+    params = {**base,
+              "expect": "|".join(f"{native}={_pcb_option_text(raw[native])}"
+                                  for native in names.values()),
+              "set": "|".join(f"{names[key]}={_pcb_option_text(value)}"
+                              for key, value in updates.items())}
+    reply = await bridge.send_command_async("pcb.editor_options", params, timeout=120.0)
+    after = reply.get("options") if isinstance(reply, dict) else None
+    if (not isinstance(reply, dict) or not isinstance(reply.get("board_path"), str)
+            or reply["board_path"].casefold() != board_path.casefold()
+            or not isinstance(after, dict) or set(after) != set(names.values())
+            or reply.get("refused") != [] or reply.get("unknown") != []
+            or reply.get("not_applied") != []):
+        return {"ok": False, "reason": "PCB preference write was not fully verified",
+                "native_reply": reply}
+    for key, value in updates.items():
+        actual = after[names[key]]
+        if key in _PCB_OPTION_FLOATS:
+            matches = type(actual) in (int, float) and math.isclose(
+                actual, value, abs_tol=0.0001)
+        else:
+            matches = actual == value and type(actual) is type(value)
+        if not matches:
+            return {"ok": False, "reason": f"{key} did not read back",
+                    "native_reply": reply}
+    reply["options"] = {key: after[native] for key, native in names.items()}
+    return reply
+
+
+async def _pcb_export_component_step(board_path: str, designator: str,
+                                     out_path: str, mode: str) -> dict[str, Any]:
+    """Export one placed model and verify the exact new STEP file on disk."""
+    if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+        return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+    target = Path(out_path)
+    if not target.is_absolute() or target.suffix.casefold() not in (".step", ".stp"):
+        return {"ok": False, "reason": "out_path must be an absolute .step or .stp path"}
+    if not designator.strip():
+        return {"ok": False, "reason": "designator is required"}
+    if target.exists():
+        return {"ok": False, "reason": "out_path already exists; choose a new filename"}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    reply = await get_bridge().send_command_async(
+        "pcb.export_component_step",
+        {"board_path": board_path, "designator": designator.strip(),
+         "out_path": str(target), "mode": mode}, timeout=120.0,
+    )
+    identity = (isinstance(reply, dict)
+                and isinstance(reply.get("board_path"), str)
+                and reply["board_path"].casefold() == board_path.casefold()
+                and reply.get("designator", "").casefold() == designator.strip().casefold()
+                and isinstance(reply.get("out_path"), str)
+                and reply["out_path"].casefold() == str(target).casefold()
+                and reply.get("mode") == mode)
+    if not identity:
+        return {"ok": False, "reason": "export answer does not identify the requested target",
+                "native_reply": reply}
+    if not target.is_file() or target.stat().st_size < 30:
+        return {"ok": False, "reason": "Altium did not write a STEP file",
+                "native_reply": reply}
+    with target.open("rb") as stream:
+        header = stream.read(256).lstrip()
+    if not header.startswith(b"ISO-10303-21"):
+        return {"ok": False, "reason": "output is not a STEP file",
+                "native_reply": reply}
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    return {**reply, "written": True, "bytes": target.stat().st_size,
+            "sha256": digest}
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
     @mcp.tool()
-    async def pcb_get_nets() -> dict[str, Any]:
-        """Get all unique net names from the active PCB board.
+    async def pcb_get_nets(board_path: str = "") -> dict[str, Any]:
+        """Get all unique net names from the active or specified PCB board.
+
+        When several boards are open, call pcb_focus_board(board_path)
+        before passing that path. The native read refuses a different
+        selected board instead of returning its nets.
 
         Returns:
             Dictionary with "nets" array of net name strings and "count"
         """
+        params: dict[str, Any] = {}
+        if board_path:
+            if (not Path(board_path).is_absolute()
+                    or Path(board_path).suffix.casefold() != ".pcbdoc"):
+                return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+            params["board_path"] = board_path
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_nets", {})
+        result = await bridge.send_command_async("pcb.get_nets", params)
+        if board_path and (not isinstance(result, dict)
+                           or not isinstance(result.get("board_path"), str)
+                           or result["board_path"].casefold() != board_path.casefold()):
+            return {"ok": False, "reason": "net inventory came from another board",
+                    "native_reply": result}
         return result
 
     @mcp.tool()
@@ -1449,7 +1797,9 @@ def register_pcb_tools(mcp):
         Returns:
             Dict with ``bound`` / ``failed`` counts plus
             ``missing_components`` / ``missing_pads`` / ``missing_nets``
-            name lists (each capped at 50 entries).
+            name lists. Each list stops at 50 entries and carries its
+            own ``*_total`` and ``*_truncated`` fields -- read those
+            before treating a list as the complete set of failures.
         """
         encoded = _encode_bindings_param(bindings)
         if not encoded:
@@ -1537,42 +1887,42 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_find_dominant_rule(
+        board_path: str,
         object1: str,
         object2: str = "",
         rule_name: str = "",
         rule_kind: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Which rule Altium itself applies to an object, or a pair of objects.
+        """Ask Altium which rule applies to a component, pad or net.
 
-        Altium's own resolution (scopes and priorities), the rule DRC and
-        the router use, not a reading of the scope text. Use it to check a
-        rule really reaches the copper it was written for.
-
-        Args:
-            object1: "U1" a part, "U1.3" pad 3 of U1, or "net:GND" a net.
-            object2: A second object, for a rule between two objects
-                (clearance, for example). Empty for a one-object rule.
-            rule_name: Any rule of the kind wanted (pcb_get_design_rules
-                lists them); its kind is used. Or give rule_kind.
-            rule_kind: The rule kind number, as pcb_get_design_rules
-                reports it.
-
-        Returns:
-            ``found`` and ``rule`` (``name``, ``kind``, ``priority``,
-            ``enabled``, ``scope1``, ``scope2``, ``descriptor``).
+        Object syntax: U1, U1.3 or net:GND. Give a rule name or its
+        Altium rule-kind integer from pcb_get_design_rules.
         """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         if not object1.strip():
             return {"ok": False, "reason": "object1 is required"}
-        if not rule_name.strip() and rule_kind is None:
-            return {"ok": False, "reason": "give rule_name or rule_kind"}
-        params: dict[str, Any] = {"object1": object1.strip()}
+        if not rule_name.strip() and (type(rule_kind) is not int or rule_kind < 0):
+            return {"ok": False, "reason": "give rule_name or a nonnegative rule_kind"}
+        params = {"board_path": board_path, "object1": object1.strip()}
         if object2.strip():
             params["object2"] = object2.strip()
         if rule_name.strip():
             params["rule_name"] = rule_name.strip()
-        elif rule_kind is not None:
-            params["rule_kind"] = str(int(rule_kind))
-        return await get_bridge().send_command_async("pcb.find_dominant_rule", params)
+        else:
+            params["rule_kind"] = str(rule_kind)
+        reply = await get_bridge().send_command_async(
+            "pcb.find_dominant_rule", params, timeout=120.0,
+        )
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or type(reply.get("found")) is not bool
+                or type(reply.get("rule_kind")) is not int
+                or (reply["found"] and not isinstance(reply.get("rule"), dict))):
+            return {"ok": False, "reason": "dominant-rule answer is incomplete",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_measure_clearance(object1: str, object2: str) -> dict[str, Any]:
@@ -1614,33 +1964,33 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_check_rule_scope(
+        board_path: str,
         rule_name: str,
         object1: str,
         object2: str = "",
     ) -> dict[str, Any]:
-        """Whether a rule's scopes take in an object, or a pair of objects.
-
-        Altium's own test of the rule's scope queries against the real
-        objects, before priorities: the check that a rule written as
-        InNet('VBUS') really matches the VBUS pads.
-
-        Args:
-            rule_name: The rule.
-            object1: "U1", "U1.3" or "net:GND".
-            object2: A second object, for a two-scope rule.
-
-        Returns:
-            ``scope1_includes_object1``, ``scope2_includes_object2``,
-            ``applies`` (Altium's unary or binary scope check), ``unary``
-            and the rule's summary.
-        """
+        """Ask Altium whether a rule's scopes include real PCB objects."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         if not rule_name.strip() or not object1.strip():
             return {"ok": False, "reason": "rule_name and object1 are required"}
-        params: dict[str, Any] = {"rule_name": rule_name.strip(),
-                                  "object1": object1.strip()}
+        params = {"board_path": board_path, "rule_name": rule_name.strip(),
+                  "object1": object1.strip()}
         if object2.strip():
             params["object2"] = object2.strip()
-        return await get_bridge().send_command_async("pcb.rule_scope_check", params)
+        reply = await get_bridge().send_command_async(
+            "pcb.rule_scope_check", params, timeout=120.0,
+        )
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or not isinstance(reply.get("rule"), dict)
+                or any(type(reply.get(field)) is not bool for field in
+                       ("unary", "scope1_includes_object1",
+                        "scope2_includes_object2", "applies"))):
+            return {"ok": False, "reason": "rule-scope answer is incomplete",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_clean_net(net: str) -> dict[str, Any]:
@@ -1661,139 +2011,200 @@ def register_pcb_tools(mcp):
         return await get_bridge().send_command_async("pcb.clean_net", {"net": net.strip()})
 
     @mcp.tool()
-    async def pcb_get_drill_pairs() -> dict[str, Any]:
-        """List the board's drill layer pairs.
-
-        Returns:
-            ``count`` and ``pairs``: ``index``, ``low_layer``,
-            ``high_layer``, ``description``, ``backdrill``,
-            ``plot_drill_drawing``, ``plot_drill_guide``.
-        """
-        return await get_bridge().send_command_async("pcb.get_drill_pairs", {})
+    async def pcb_get_drill_pairs(board_path: str) -> dict[str, Any]:
+        """Read all drill layer pairs, their spans and backdrill/plot flags."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.get_drill_pairs", {"board_path": board_path}, timeout=120.0,
+        )
+        try:
+            _drill_pairs_snapshot(reply, board_path)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_set_drill_pair(
+        board_path: str,
         index: int,
         backdrill: Optional[bool] = None,
         plot_drill_drawing: Optional[bool] = None,
         plot_drill_guide: Optional[bool] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Mark a drill pair as a backdrill, and choose whether its drill
-        drawing and drill guide are plotted.
+        """Set one drill pair's flags with exact identity and old-state checks.
 
-        Args:
-            index: The pair, from pcb_get_drill_pairs.
-            backdrill, plot_drill_drawing, plot_drill_guide: True or
-                False; omit to leave as it is.
-
-        Returns:
-            ``pair``, read back after the write.
+        Returns a plan by default. A write requires dry_run=false and reads
+        the selected pair back. Saving the PcbDoc remains a separate step.
         """
-        params: dict[str, Any] = {"index": str(index)}
-        for key, value in (("backdrill", backdrill),
-                           ("plot_drill_drawing", plot_drill_drawing),
-                           ("plot_drill_guide", plot_drill_guide)):
-            if value is not None:
-                params[key] = "true" if value else "false"
-        if len(params) == 1:
-            return {"ok": False, "reason": "give at least one setting"}
-        return await get_bridge().send_command_async("pcb.set_drill_pair", params)
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(index) is not int or index < 0:
+            return {"ok": False, "reason": "index must be non-negative"}
+        updates = {"backdrill": backdrill, "plot_drill_drawing": plot_drill_drawing,
+                   "plot_drill_guide": plot_drill_guide}
+        if not any(value is not None for value in updates.values()):
+            return {"ok": False, "reason": "give at least one drill pair flag"}
+        if any(type(value) is not bool for value in updates.values() if value is not None):
+            return {"ok": False, "reason": "drill pair flags must be booleans"}
+        bridge = get_bridge()
+        snapshot = await bridge.send_command_async(
+            "pcb.get_drill_pairs", {"board_path": board_path}, timeout=120.0,
+        )
+        try:
+            pairs = _drill_pairs_snapshot(snapshot, board_path)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": snapshot}
+        if index >= len(pairs):
+            return {"ok": False, "reason": "drill pair index is out of range"}
+        old = pairs[index]
+        changes = {key: value for key, value in updates.items() if value is not None}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "before": old, "would_set": changes}
+        params = {"board_path": board_path, "index": str(index),
+                  "expected_count": str(len(pairs)),
+                  "expect_low_layer_id": str(old["low_layer_id"]),
+                  "expect_high_layer_id": str(old["high_layer_id"])}
+        for key in updates:
+            params["expect_" + key] = "true" if old[key] else "false"
+        for key, value in changes.items():
+            params[key] = "true" if value else "false"
+        result = await bridge.send_command_async("pcb.set_drill_pair", params, timeout=120.0)
+        pair = result.get("pair") if isinstance(result, dict) else None
+        if (not isinstance(result, dict)
+                or not isinstance(result.get("board_path"), str)
+                or result["board_path"].casefold() != board_path.casefold()
+                or result.get("count") != len(pairs)
+                or not isinstance(pair, dict) or pair.get("index") != index
+                or pair.get("low_layer_id") != old["low_layer_id"]
+                or pair.get("high_layer_id") != old["high_layer_id"]
+                or any(pair.get(key) is not value for key, value in changes.items())):
+            return {"ok": False, "reason": "drill pair write was not fully verified",
+                    "native_reply": result}
+        result["save_required"] = bool(result.get("changed"))
+        return result
 
     @mcp.tool()
-    async def pcb_export_component_3d(designator: str, out_path: str) -> dict[str, Any]:
-        """Write a placed part's 3D model to a STEP file.
-
-        The part's own bodies as placed on the board, through Altium.
-
-        Args:
-            designator: The part, e.g. "U3".
-            out_path: Full path of the .step file.
-
-        Returns:
-            ``written`` (a new file is at out_path) and ``reported``
-            (what Altium said).
-        """
-        import os
-        if not designator.strip():
-            return {"ok": False, "reason": "designator is required"}
-        if not out_path or not os.path.isabs(out_path):
-            return {"ok": False, "reason": "out_path must be a full path"}
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        return await get_bridge().send_command_async(
-            "pcb.save_component_model",
-            {"designator": designator.strip(), "out_path": out_path}, timeout=120.0)
+    async def pcb_export_component_3d(
+        board_path: str, designator: str, out_path: str,
+    ) -> dict[str, Any]:
+        """Export one placed part's model through Altium's model API."""
+        return await _pcb_export_component_step(
+            board_path, designator, out_path, "model")
 
     @mcp.tool()
-    async def pcb_get_xsignals() -> dict[str, Any]:
-        """List the board's xSignals with their lengths.
+    async def pcb_get_xsignals(board_path: str) -> dict[str, Any]:
+        """Read every xSignal, its lengths and path items from one exact PcbDoc.
 
-        An xSignal is a signal path from pin to pin that may run through
-        series parts (a resistor or an AC-coupling capacitor), so a bus
-        can be length-matched across them.
-
-        Returns:
-            ``count`` and ``xsignals``: ``name``, ``length_mils``,
-            ``routed_length_mils``, ``unrouted_length_mils``,
-            ``node_count`` and ``items`` (the pins and parts it runs
-            through, as Altium names them).
+        The reply names the board. A missing native pair or mismatched count
+        is reported as incomplete rather than silently returning a short list.
         """
-        return await get_bridge().send_command_async("pcb.get_xsignals", {})
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.get_xsignals", {"board_path": board_path}, timeout=120.0,
+        )
+        pairs = reply.get("xsignals") if isinstance(reply, dict) else None
+        count = reply.get("count") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or type(count) is not int or count < 0
+                or not isinstance(pairs, list) or len(pairs) != count):
+            return {"ok": False, "reason": "native xSignal read is incomplete or from a different board",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_create_xsignals(
+        board_path: str,
+        expected_count: int,
         pins: list[str],
         class_name: str = "",
     ) -> dict[str, Any]:
-        """Create xSignals between pins, through any series parts.
+        """Create xSignals between at least two pads on an exact board.
 
-        Altium works out the paths between the pins given, the same as
-        its Create xSignals command, and can put the new xSignals in an
-        xSignal class for length-matching rules.
-
-        Args:
-            pins: At least two pins as "U1.3" (designator.pad).
-            class_name: Optional xSignal class to put them in.
-
-        Returns:
-            ``count_before``, ``count_after``, ``created`` (the new
-            xSignals, as pcb_get_xsignals lists them),
-            ``class_assigned`` (every new xSignal read back as a member of
-            the class) and ``not_in_class`` (the ones that were not).
+        Obtain expected_count from pcb_get_xsignals immediately before the
+        write. The native handler rejects a changed count and reads back
+        created pairs; a failed or partial result is exposed to the caller.
         """
-        items = [p.strip() for p in (pins or []) if p and p.strip()]
-        if len(items) < 2:
-            return {"ok": False, "reason": "give at least two pins"}
-        bad = [p for p in items if "." not in p.strip(".") or "\t" in p]
-        if bad:
-            return {"ok": False, "reason": f"pins are 'U1.3': {', '.join(bad)}"}
-        params: dict[str, Any] = {"pins": "\t".join(items)}
-        if class_name.strip():
-            params["class_name"] = class_name.strip()
-        return await get_bridge().send_command_async(
-            "pcb.create_xsignals", params, timeout=120.0)
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(expected_count) is not int or expected_count < 0:
+            return {"ok": False, "reason": "expected_count must be non-negative"}
+        if not isinstance(pins, list) or len(pins) < 2 or any(
+            not isinstance(p, str) or "\t" in p or "." not in p
+            or not p.split(".", 1)[0] or not p.split(".", 1)[1]
+            for p in pins
+        ):
+            return {"ok": False, "reason": "pins must contain at least two designator.pad names"}
+        if len({p.casefold() for p in pins}) != len(pins) or "\t" in class_name:
+            return {"ok": False, "reason": "pins must be unique and class_name cannot contain tabs"}
+        reply = await get_bridge().send_command_async(
+            "pcb.create_xsignals",
+            {"board_path": board_path, "expected_count": str(expected_count),
+             "pins": "\t".join(pins), "class_name": class_name}, timeout=120.0,
+        )
+        created = reply.get("created") if isinstance(reply, dict) else None
+        after = reply.get("count_after") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or reply.get("count_before") != expected_count
+                or type(after) is not int or after <= expected_count
+                or not isinstance(created, list) or len(created) != after - expected_count
+                or not reply.get("returned_pairs")
+                or (class_name and not reply.get("class_membership_verified"))):
+            return {"ok": False, "reason": "xSignal creation was not fully verified",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
-    async def pcb_find_same_package(designator: str = "") -> dict[str, Any]:
-        """Find placed parts that share a package, as Altium judges it.
+    async def pcb_find_same_package(
+        board_path: str,
+        designator: str = "",
+    ) -> dict[str, Any]:
+        """Find placed parts with the same native Altium package geometry.
 
-        Useful before copying a layout between repeated channels: parts
-        with the same package can take each other's placement.
-
-        Args:
-            designator: One part, to list the parts with its package.
-                Empty lists every group of two or more.
-
-        Returns:
-            With a designator: ``footprint`` and ``same_package``.
-            Without: ``groups`` (``footprint``, ``count``,
-            ``designators``), ``group_count``, ``parts_examined`` and
-            ``parts_without_hash``.
+        With a designator, return other matching parts. Without one, group
+        all matching parts, including packages with no package hash. The
+        complete read names the exact PcbDoc and reports comparison errors.
         """
-        params: dict[str, Any] = {}
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        params = {"board_path": board_path}
         if designator.strip():
             params["designator"] = designator.strip()
-        return await get_bridge().send_command_async(
-            "pcb.find_same_package", params, timeout=120.0)
+        reply = await get_bridge().send_command_async(
+            "pcb.find_same_package", params, timeout=120.0,
+        )
+        count = reply.get("parts_examined") if isinstance(reply, dict) else None
+        errors = reply.get("compare_errors") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or type(count) is not int or count < 0
+                or type(errors) is not int or errors < 0):
+            return {"ok": False, "reason": "package comparison did not identify a complete board read",
+                    "native_reply": reply}
+        if errors:
+            return {"ok": False, "reason": f"{errors} native package comparisons failed",
+                    "native_reply": reply}
+        if designator.strip():
+            matches = reply.get("same_package")
+            if not isinstance(matches, list) or len(matches) >= count:
+                return {"ok": False, "reason": "package match list is incomplete",
+                        "native_reply": reply}
+        else:
+            groups = reply.get("groups")
+            group_count = reply.get("group_count")
+            if (not isinstance(groups, list) or type(group_count) is not int
+                    or len(groups) != group_count):
+                return {"ok": False, "reason": "package groups are incomplete",
+                        "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_auto_position_text(
@@ -1844,122 +2255,258 @@ def register_pcb_tools(mcp):
 
     @mcp.tool()
     async def pcb_delete_xsignals(
-        names: Optional[list[str]] = None,
+        board_path: str,
+        expected_count: int,
+        names: list[str] | None = None,
         all: bool = False,
     ) -> dict[str, Any]:
-        """Delete xSignals by name, or all of them.
-
-        Args:
-            names: xSignal names, as pcb_get_xsignals lists them (any case).
-            all: Delete every xSignal on the board.
-
-        Returns:
-            ``count_before``, ``count_after`` and ``deleted`` (names).
-        """
-        items = [n.strip() for n in (names or []) if n and n.strip()]
-        if all and items:
-            return {"ok": False, "reason": "give names or all, not both"}
-        if not all and not items:
-            return {"ok": False, "reason": "give names, or all=True"}
-        if any("\t" in n for n in items):
-            return {"ok": False, "reason": "a name cannot hold a tab"}
-        params: dict[str, Any] = {"all": "true"} if all else {"names": "\t".join(items)}
-        return await get_bridge().send_command_async(
-            "pcb.delete_xsignals", params, timeout=120.0)
+        """Delete named xSignals, or all, with exact-board/count preconditions."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(expected_count) is not int or expected_count < 0:
+            return {"ok": False, "reason": "expected_count must be non-negative"}
+        names = names or []
+        if not isinstance(names, list) or any(not isinstance(n, str) or not n.strip() or "\t" in n for n in names):
+            return {"ok": False, "reason": "names must be a list of nonempty xSignal names"}
+        if all and names:
+            return {"ok": False, "reason": "names and all=true cannot be combined"}
+        if not all and not names:
+            return {"ok": False, "reason": "give names, or all=true"}
+        reply = await get_bridge().send_command_async(
+            "pcb.delete_xsignals",
+            {"board_path": board_path, "expected_count": str(expected_count),
+             "names": "\t".join(names), "all": "true" if all else "false"},
+            timeout=120.0,
+        )
+        deleted = reply.get("deleted") if isinstance(reply, dict) else None
+        after = reply.get("count_after") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict)
+                or not isinstance(reply.get("board_path"), str)
+                or reply["board_path"].casefold() != board_path.casefold()
+                or reply.get("count_before") != expected_count
+                or type(after) is not int or after < 0 or after > expected_count
+                or not isinstance(deleted, list) or len(deleted) != expected_count - after
+                or (all and after != 0)):
+            return {"ok": False, "reason": "xSignal deletion was not fully verified",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
-    async def pcb_add_drill_pair(low_layer: str, high_layer: str) -> dict[str, Any]:
-        """Add a drill layer pair between two copper layers, for blind and
-        buried vias.
-
-        Args:
-            low_layer, high_layer: Layer names as the board shows them
-                ("Top Layer", "Mid-Layer 1", ...).
-
-        Returns:
-            ``count_before``, ``count_after`` and ``pairs`` (as
-            pcb_get_drill_pairs lists them).
-        """
-        if not low_layer.strip() or not high_layer.strip():
-            return {"ok": False, "reason": "low_layer and high_layer are required"}
-        if low_layer.strip().lower() == high_layer.strip().lower():
-            return {"ok": False, "reason": "low_layer and high_layer are the same"}
-        return await get_bridge().send_command_async(
+    async def pcb_add_drill_pair(
+        board_path: str,
+        low_layer: str,
+        high_layer: str,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Add a drill span between two copper layers on one exact PcbDoc."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if (not low_layer.strip() or not high_layer.strip()
+                or low_layer.strip().casefold() == high_layer.strip().casefold()):
+            return {"ok": False, "reason": "give two distinct copper layer names"}
+        bridge = get_bridge()
+        snapshot = await bridge.send_command_async(
+            "pcb.get_drill_pairs", {"board_path": board_path}, timeout=120.0,
+        )
+        try:
+            pairs = _drill_pairs_snapshot(snapshot, board_path)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": snapshot}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "count_before": len(pairs), "low_layer": low_layer.strip(),
+                    "high_layer": high_layer.strip()}
+        result = await bridge.send_command_async(
             "pcb.add_drill_pair",
-            {"low_layer": low_layer.strip(), "high_layer": high_layer.strip()})
+            {"board_path": board_path, "low_layer": low_layer.strip(),
+             "high_layer": high_layer.strip(), "expected_count": str(len(pairs))},
+            timeout=120.0,
+        )
+        after = result.get("pairs") if isinstance(result, dict) else None
+        old_spans = {(p["low_layer_id"], p["high_layer_id"]) for p in pairs}
+        valid_after = isinstance(after, list) and len(after) == len(pairs) + 1
+        if valid_after:
+            for i, pair in enumerate(after):
+                if (not isinstance(pair, dict) or pair.get("index") != i
+                        or type(pair.get("low_layer_id")) is not int
+                        or type(pair.get("high_layer_id")) is not int):
+                    valid_after = False
+                    break
+        after_spans = {(p["low_layer_id"], p["high_layer_id"]) for p in after} if valid_after else set()
+        if (not isinstance(result, dict)
+                or not isinstance(result.get("board_path"), str)
+                or result["board_path"].casefold() != board_path.casefold()
+                or result.get("count_before") != len(pairs)
+                or result.get("count_after") != len(pairs) + 1
+                or result.get("returned_count") != len(pairs) + 1
+                or result.get("unreadable_count") != 0
+                or not valid_after or not old_spans.issubset(after_spans)
+                or len(after_spans - old_spans) != 1):
+            return {"ok": False, "reason": "new drill pair was not fully verified",
+                    "native_reply": result}
+        result["save_required"] = True
+        return result
 
     @mcp.tool()
     async def pcb_net_display(
+        board_path: str,
         nets: Optional[list[str]] = None,
         show_connections: Optional[bool] = None,
         loop_removal: Optional[bool] = None,
         use_net_color: Optional[bool] = None,
         show_jumpers: Optional[bool] = None,
-        color: str = "",
+        color: Optional[str] = None,
+        dry_run: bool = True,
         from_project: bool = False,
+        project_path: str = "",
     ) -> dict[str, Any]:
-        """Read, or set, whether nets show their connection lines,
-        whether loop removal applies to them, their net colour and
-        whether they draw in it, and whether their jumpers show.
+        """Read or set PCB net display flags on an exact PcbDoc.
 
-        ``color`` with ``use_net_color=True`` draws nets in your colour;
-        ``from_project=True`` gives each net its project colour
-        (proj_net_color) so board and schematic highlight alike.
-
-        Args:
-            nets: Net names; with from_project and no nets, every net on
-                the board.
-            show_connections: Show (True) or hide (False) their
-                connection lines; omit to leave as they are.
-            loop_removal: Loop removal on or off; omit to leave.
-            use_net_color: Draw the net in its own net colour on the
-                board; omit to leave.
-            show_jumpers: Show the net's jumpers; omit to leave.
-            color: "#RRGGBB" to give the nets this colour; empty to leave.
-            from_project: Give each net its project colour and draw it in
-                it; a net the project gives no colour is listed in
-                ``no_project_color`` and left as it is.
-
-        Returns:
-            ``board``, ``project`` (with from_project), ``nets``
-            (``connections_shown``, ``loop_removal``, ``use_net_color``,
-            ``color`` as "#RRGGBB", ``jumpers_shown`` and
-            ``in_differential_pair``, read back), ``no_project_color`` and
-            ``not_found``.
+        Without any flags, reads all requested nets. With flags, the default
+        dry run returns the current state and proposed settings. Set
+        dry_run=false to write; the native handler verifies the old state of
+        every net before touching any and returns a per-net readback.
+        With from_project, supply the exact PrjPcb path. Each net with a
+        project colour receives it in one guarded board write; nets without
+        a project colour are left unchanged. Omit nets to use all board nets.
+        With several boards open, call pcb_focus_board(board_path) first;
+        the exact-path guard rejects a different selected board.
         """
-        items = [n.strip() for n in (nets or []) if n and n.strip()]
-        if not items and not from_project:
-            return {"ok": False, "reason": "nets is required"}
-        if color.strip() and from_project:
-            return {"ok": False, "reason": "give color or from_project, not both"}
-        if any("\t" in n for n in items):
-            return {"ok": False, "reason": "a net name cannot hold a tab"}
-        params: dict[str, Any] = {"nets": "\t".join(items)}
-        for key, value in (("show_connections", show_connections),
-                           ("loop_removal", loop_removal),
-                           ("use_net_color", use_net_color),
-                           ("show_jumpers", show_jumpers)):
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if from_project and color is not None:
+            return {"ok": False, "reason": "color and from_project cannot be combined"}
+        if from_project and use_net_color is False:
+            return {"ok": False, "reason": "from_project requires use_net_color=true or omitted"}
+        if from_project and (not Path(project_path).is_absolute()
+                             or Path(project_path).suffix.casefold() != ".prjpcb"):
+            return {"ok": False, "reason": "from_project requires an absolute PrjPcb path"}
+        bridge = get_bridge()
+        if nets is None and from_project:
+            inventory = await bridge.send_command_async(
+                "pcb.get_nets", {"board_path": board_path})
+            discovered = inventory.get("nets") if isinstance(inventory, dict) else None
+            if (not isinstance(inventory, dict)
+                    or not isinstance(inventory.get("board_path"), str)
+                    or inventory["board_path"].casefold() != board_path.casefold()
+                    or not isinstance(discovered, list)
+                    or inventory.get("count") != len(discovered)):
+                return {"ok": False, "reason": "board net inventory is incomplete",
+                        "native_reply": inventory}
+            nets = discovered
+        if (not isinstance(nets, list) or not nets
+                or any(not isinstance(n, str) or not n.strip() or "\t" in n for n in nets)):
+            return {"ok": False, "reason": "nets must be nonempty net names without tabs"}
+        names = [n.strip() for n in nets]
+        if len({n.casefold() for n in names}) != len(names):
+            return {"ok": False, "reason": "nets must be unique"}
+        updates = {"show_connections": show_connections,
+                   "loop_removal": loop_removal,
+                   "use_net_color": use_net_color,
+                   "show_jumpers": show_jumpers}
+        if any(type(v) is not bool for v in updates.values() if v is not None):
+            return {"ok": False, "reason": "display settings must be booleans"}
+        wanted_color: int | None = None
+        if color is not None:
+            if use_net_color is False:
+                return {"ok": False, "reason": "color cannot be combined with use_net_color=false"}
+            hexpart = color.strip().removeprefix("#")
+            if len(hexpart) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexpart):
+                return {"ok": False, "reason": "color must be #RRGGBB"}
+            red, green, blue = (int(hexpart[i:i + 2], 16) for i in (0, 2, 4))
+            wanted_color = red | (green << 8) | (blue << 16)
+        params = {"board_path": board_path, "nets": "\t".join(names)}
+        before = await bridge.send_command_async("pcb.net_display", params)
+        rows = before.get("nets") if isinstance(before, dict) else None
+        bits = before.get("before_bits") if isinstance(before, dict) else None
+        flag_fields = ("connections_shown", "loop_removal", "use_net_color", "jumpers_shown")
+        if (not isinstance(before, dict)
+                or not isinstance(before.get("board_path"), str)
+                or before["board_path"].casefold() != board_path.casefold()
+                or before.get("count") != len(names)
+                or not isinstance(rows, list) or len(rows) != len(names)
+                or not isinstance(bits, str) or len(bits) != 4 * len(names)
+                or any(not isinstance(row, dict) or row.get("net") != name
+                       or any(type(row.get(field)) is not bool for field in flag_fields)
+                       or type(row.get("color_bgr")) is not int
+                       for row, name in zip(rows, names))):
+            return {"ok": False, "reason": "native net display read is incomplete or from another board",
+                    "native_reply": before}
+        project_colors: list[int] = []
+        no_project_color: list[str] = []
+        if from_project:
+            for name in names:
+                source = await bridge.send_command_async("project.net_color", {
+                    "project_path": project_path, "net": name,
+                })
+                value = source.get("color") if isinstance(source, dict) else None
+                if (not isinstance(source, dict) or source.get("ok") is False
+                        or not isinstance(source.get("project_path"), str)
+                        or source["project_path"].casefold() != project_path.casefold()
+                        or source.get("net") != name or type(value) is not int
+                        or (value != 536870912 and not 0 <= value <= 16777215)):
+                    return {"ok": False, "reason": "project net color read is incomplete or from another project",
+                            "native_reply": source}
+                project_colors.append(value if value != 536870912 else -1)
+                if value == 536870912:
+                    no_project_color.append(name)
+        if not any(v is not None for v in updates.values()) and wanted_color is None and not from_project:
+            return before
+        if dry_run:
+            proposed = {k: v for k, v in updates.items() if v is not None}
+            if color is not None:
+                proposed["color"] = "#" + hexpart.upper()
+            if from_project:
+                proposed["project_colors_bgr"] = dict(zip(names, project_colors))
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "before": rows, "would_set": proposed,
+                    "no_project_color": no_project_color}
+        if from_project and all(value < 0 for value in project_colors) and not any(
+                v is not None for v in updates.values()):
+            return {"ok": True, "board_path": board_path, "wrote": False,
+                    "nets": rows, "no_project_color": no_project_color}
+        params["expected_bits"] = bits
+        params["expected_colors"] = "\t".join(str(row["color_bgr"]) for row in rows)
+        if wanted_color is not None:
+            params["colors"] = "\t".join([str(wanted_color)] * len(names))
+        elif from_project:
+            params["colors"] = "\t".join(str(value) for value in project_colors)
+        for key, value in updates.items():
             if value is not None:
                 params[key] = "true" if value else "false"
-        if color.strip():
-            hexpart = color.strip().lstrip("#")
-            if len(hexpart) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexpart):
-                return {"ok": False, "reason": "color is #RRGGBB"}
-            r_, g_, b_ = (int(hexpart[i:i + 2], 16) for i in (0, 2, 4))
-            params["color"] = str(r_ | (g_ << 8) | (b_ << 16))
+        result = await bridge.send_command_async("pcb.net_display", params)
+        after = result.get("nets") if isinstance(result, dict) else None
+        expected_fields = {"show_connections": "connections_shown",
+                           "loop_removal": "loop_removal",
+                           "use_net_color": "use_net_color",
+                           "show_jumpers": "jumpers_shown"}
+        if (not isinstance(result, dict) or result.get("ok") is False
+                or not isinstance(result.get("board_path"), str)
+                or result["board_path"].casefold() != board_path.casefold()
+                or result.get("before_bits") != bits
+                or result.get("count") != len(names)
+                or result.get("wrote") is not True
+                or not isinstance(after, list) or len(after) != len(names)
+                or any(not isinstance(row, dict) or row.get("net") != name
+                       or any(row.get(expected_fields[key]) is not value
+                              for key, value in updates.items() if value is not None)
+                       or (wanted_color is not None and
+                           (row.get("color_bgr") != wanted_color or
+                            row.get("use_net_color") is not True))
+                       or (from_project and project_colors[index] >= 0 and
+                           (row.get("color_bgr") != project_colors[index] or
+                            row.get("use_net_color") is not True))
+                       for index, (row, name) in enumerate(zip(after, names)))):
+            return {"ok": False, "reason": "net display write was not fully verified",
+                    "native_reply": result}
         if from_project:
-            params["from_project"] = "true"
-        reply = await get_bridge().send_command_async("pcb.net_display", params)
-        # Altium keeps colours as blue, green, red bytes.
-        for entry in (reply.get("nets") if isinstance(reply, dict) else None) or []:
-            if isinstance(entry, dict) and isinstance(entry.get("color"), int):
-                bgr = entry["color"]
-                entry["color"] = "#%02X%02X%02X" % (bgr & 0xFF, (bgr >> 8) & 0xFF,
-                                                    (bgr >> 16) & 0xFF)
-        return reply
+            result["project_path"] = project_path
+            result["no_project_color"] = no_project_color
+        return result
 
     @mcp.tool()
     async def pcb_set_grids(
+        board_path: str,
         snap_x: Optional[float] = None,
         snap_y: Optional[float] = None,
         track: Optional[float] = None,
@@ -1971,61 +2518,101 @@ def register_pcb_tools(mcp):
         snap_unit: Optional[str] = None,
         visible_unit: Optional[str] = None,
         visible_big_unit: Optional[str] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Read, or set, the active board's grids, in mils.
+        """Read or set PCB grids in mils on one exact PcbDoc.
 
-        Call with nothing to read. Every value set is read back, and any
-        that did not take is listed in ``not_applied``. The grid for
-        moving parts (``component_x`` / ``component_y``) is read only: it
-        follows the snap grid. obj_set_grid is the schematic's grid.
-
-        Args:
-            snap_x: Snap grid across.
-            snap_y: Snap grid up.
-            track: Grid for routing tracks.
-            via: Grid for placing vias.
-            visible: The fine visible grid.
-            visible_big: The coarse visible grid.
-            dot_grid: Draw the visible grid as dots (True) or lines.
-            visible_big_factor: The coarse visible grid as a multiple of
-                the snap grid. The fine one's (``visible_factor``) is
-                read only.
-            snap_unit / visible_unit / visible_big_unit: "mm" or "mil",
-                the unit each grid is shown and stepped in.
-
-        Returns:
-            ``snap_x``, ``snap_y``, ``component_x``, ``component_y``,
-            ``track``, ``via``, ``visible``, ``visible_big``,
-            ``visible_factor``, ``visible_big_factor``, ``snap_unit``,
-            ``visible_unit``, ``visible_big_unit``, ``dot_grid`` and
-            ``not_applied``.
+        Omitted values are unchanged. Component movement grids are returned
+        for inspection; Altium 26.11 follows the snap grid for those. A
+        change defaults to a dry-run plan. On an explicit write, all old
+        values are checked natively before any setter runs, then read back.
+        A changed grid remains in memory until an explicit save; on a free
+        PcbDoc, app_reload_document with save_before_close=true can save
+        that exact document and reopen it for persistence readback.
         """
-        params: dict[str, Any] = {}
-        for key, value in (("snap_x", snap_x), ("snap_y", snap_y),
-                           ("track", track), ("via", via), ("visible", visible),
-                           ("visible_big", visible_big)):
-            if value is None:
-                continue
-            if value <= 0:
-                return {"ok": False, "reason": f"{key} is more than 0 mils"}
-            params[key] = repr(float(value))
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        requested = {"snap_x": snap_x, "snap_y": snap_y, "track": track,
+                     "via": via, "visible": visible, "visible_big": visible_big}
+        if any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+               for value in requested.values() if value is not None):
+            return {"ok": False, "reason": "grid sizes must be finite positive mils"}
+        if dot_grid is not None and type(dot_grid) is not bool:
+            return {"ok": False, "reason": "dot_grid must be boolean"}
+        if (visible_big_factor is not None and
+                (type(visible_big_factor) not in (int, float)
+                 or not math.isfinite(visible_big_factor) or visible_big_factor <= 0)):
+            return {"ok": False, "reason": "visible_big_factor must be finite and positive"}
+        units = {"snap_unit": snap_unit, "visible_unit": visible_unit,
+                 "visible_big_unit": visible_big_unit}
+        if any(value is not None and value not in ("mm", "mil")
+               for value in units.values()):
+            return {"ok": False, "reason": "grid units must be mm or mil"}
+        bridge = get_bridge()
+        before = await bridge.send_command_async(
+            "pcb.set_grids", {"board_path": board_path}, timeout=120.0,
+        )
+        old = before.get("grids") if isinstance(before, dict) else None
+        if (not isinstance(before, dict)
+                or not isinstance(before.get("board_path"), str)
+                or before["board_path"].casefold() != board_path.casefold()
+                or not isinstance(old, dict)
+                or any(type(old.get(key)) not in (int, float)
+                       or not math.isfinite(old[key])
+                       for key in (*requested, "component_x", "component_y",
+                                   "visible_factor", "visible_big_factor"))
+                or type(old.get("dot_grid")) is not bool
+                or any(old.get(key) not in ("mm", "mil") for key in units)):
+            return {"ok": False, "reason": "native grid read is incomplete or from another board",
+                    "native_reply": before}
+        changes = {key: value for key, value in requested.items() if value is not None}
         if dot_grid is not None:
-            params["dot_grid"] = "true" if dot_grid else "false"
+            changes["dot_grid"] = dot_grid
         if visible_big_factor is not None:
-            if visible_big_factor <= 0:
-                return {"ok": False, "reason": "visible_big_factor is more than 0"}
-            params["visible_big_factor"] = repr(float(visible_big_factor))
-        for key, value in (("snap_unit", snap_unit), ("visible_unit", visible_unit),
-                           ("visible_big_unit", visible_big_unit)):
-            if value is None:
-                continue
-            if value.strip().lower() not in ("mm", "mil"):
-                return {"ok": False, "reason": f"{key} is mm or mil"}
-            params[key] = value.strip().lower()
-        return await get_bridge().send_command_async("pcb.set_grids", params)
+            changes["visible_big_factor"] = visible_big_factor
+        changes.update({key: value for key, value in units.items() if value is not None})
+        if not changes:
+            return before
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "before": old, "would_set": changes}
+        params = {"board_path": board_path}
+        for key in requested:
+            params["expect_" + key] = repr(float(old[key]))
+        params["expect_dot_grid"] = "true" if old["dot_grid"] else "false"
+        params["expect_visible_big_factor"] = repr(float(old["visible_big_factor"]))
+        for key in units:
+            params["expect_" + key] = old[key]
+        for key, value in changes.items():
+            if key == "dot_grid":
+                params[key] = "true" if value else "false"
+            elif key in units:
+                params[key] = value
+            else:
+                params[key] = repr(float(value))
+        result = await bridge.send_command_async("pcb.set_grids", params, timeout=120.0)
+        actual = result.get("grids") if isinstance(result, dict) else None
+        if (not isinstance(result, dict)
+                or not isinstance(result.get("board_path"), str)
+                or result["board_path"].casefold() != board_path.casefold()
+                or result.get("wrote") is not True
+                or not isinstance(actual, dict)
+                or result.get("not_applied") != []
+                or any(type(actual.get(key)) not in (int, float)
+                       or abs(float(actual[key]) - float(value)) > 0.001
+                       for key, value in changes.items()
+                       if key != "dot_grid" and key not in units)
+                or ("dot_grid" in changes and actual.get("dot_grid") is not dot_grid)
+                or any(actual.get(key) != value for key, value in units.items()
+                       if value is not None)):
+            return {"ok": False, "reason": "board grid write was not fully verified",
+                    "native_reply": result}
+        result["save_required"] = bool(result.get("changed"))
+        return result
 
     @mcp.tool()
     async def pcb_view_options(
+        board_path: str,
         show_pad_nets: Optional[bool] = None,
         show_pad_numbers: Optional[bool] = None,
         show_via_nets: Optional[bool] = None,
@@ -2055,67 +2642,10 @@ def register_pcb_tools(mcp):
         board_line_color: Optional[int] = None,
         sheet_area_color: Optional[int] = None,
         sheet_line_color: Optional[int] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Read, or set, how the board editor draws a board: net names
-        and numbers on pads and vias, test points, single layer mode,
-        special strings shown as their values, and net highlighting.
-
-        These are Altium's own preferences and apply to every board. A
-        board must be open. Call with nothing to read; every option set
-        is read back.
-
-        Args:
-            show_pad_nets: Net names on pads.
-            show_pad_numbers: Pad numbers on pads.
-            show_via_nets: Net names on vias.
-            show_test_points: Mark test points.
-            single_layer_mode: Show only the current layer.
-            show_special_strings: Show special strings as their values.
-            highlight_in_net_color: Highlight a net in its own colour.
-            highlight_full: Highlight with a solid fill.
-            highlight_whole_net: Highlight every object of the net.
-            show_component_reference_point: Mark each part's origin.
-            plane_draw_mode: How internal planes are drawn (Altium's
-                number: read the current one first).
-            pad_types_display: How pad types are shown (Altium's number).
-            from_tos_display: How connection lines are drawn (Altium's
-                number).
-            layer_name_display: How layer names are shown on the layer
-                tabs (Altium's number).
-            draft_track_threshold_mils: Tracks narrower than this are
-                drawn in outline in draft mode.
-            show_invisible_objects: Draw objects on hidden layers too.
-            transparent_layers: Draw layers see-through.
-            clean_redraw: Clear the view before each redraw.
-            redraw_layer_on_toggle: Redraw when a layer is switched.
-            text_as_box_below: Text smaller than this many pixels is
-                drawn as a box.
-            pad_net_font: Font of the net names and numbers drawn on pads
-                and vias; pad_net_min_font_size the smallest size it is
-                drawn at.
-            pad_net_font_color / pad_net_font_background: Its colours.
-            default_truetype_font: TrueType font new board text starts
-                with.
-            board_area_color, board_line_color, sheet_area_color,
-                sheet_line_color: Colours of the board area and outline
-                and of the sheet area and border.
-                Colours are Altium's numbers: red + 256 * green +
-                65536 * blue, 0 to 16777215.
-
-        Returns:
-            ``options`` (each option by these names), ``changed``,
-            ``not_applied``, ``refused`` and ``unknown``.
-        """
-        refusal = _option_number_refusal({
-            "text_as_box_below": text_as_box_below,
-            "pad_net_min_font_size": pad_net_min_font_size}, {
-            "pad_net_font_color": pad_net_font_color,
-            "pad_net_font_background": pad_net_font_background,
-            "board_area_color": board_area_color, "board_line_color": board_line_color,
-            "sheet_area_color": sheet_area_color, "sheet_line_color": sheet_line_color})
-        if refusal:
-            return refusal
-        return await run_options("pcb.editor_options", _PCB_VIEW_OPTIONS, {
+        """Read or plan a change to Altium's global PCB display preferences."""
+        return await _pcb_editor_options(board_path, _PCB_VIEW_OPTIONS, {
             "show_pad_nets": show_pad_nets, "show_pad_numbers": show_pad_numbers,
             "show_via_nets": show_via_nets, "show_test_points": show_test_points,
             "single_layer_mode": single_layer_mode,
@@ -2128,21 +2658,26 @@ def register_pcb_tools(mcp):
             "pad_types_display": pad_types_display,
             "from_tos_display": from_tos_display,
             "layer_name_display": layer_name_display,
-            "draft_track_threshold_mils": None if draft_track_threshold_mils is None
-            else float(draft_track_threshold_mils),
+            "draft_track_threshold_mils": draft_track_threshold_mils,
             "show_invisible_objects": show_invisible_objects,
-            "transparent_layers": transparent_layers, "clean_redraw": clean_redraw,
+            "transparent_layers": transparent_layers,
+            "clean_redraw": clean_redraw,
             "redraw_layer_on_toggle": redraw_layer_on_toggle,
-            "text_as_box_below": text_as_box_below, "pad_net_font": pad_net_font,
+            "text_as_box_below": text_as_box_below,
+            "pad_net_font": pad_net_font,
             "pad_net_min_font_size": pad_net_min_font_size,
             "pad_net_font_color": pad_net_font_color,
             "pad_net_font_background": pad_net_font_background,
             "default_truetype_font": default_truetype_font,
-            "board_area_color": board_area_color, "board_line_color": board_line_color,
-            "sheet_area_color": sheet_area_color, "sheet_line_color": sheet_line_color})
+            "board_area_color": board_area_color,
+            "board_line_color": board_line_color,
+            "sheet_area_color": sheet_area_color,
+            "sheet_line_color": sheet_line_color,
+        }, dry_run)
 
     @mcp.tool()
     async def pcb_edit_options(
+        board_path: str,
         rotation_step: Optional[float] = None,
         protect_locked: Optional[bool] = None,
         select_only_visible: Optional[bool] = None,
@@ -2172,67 +2707,11 @@ def register_pcb_tools(mcp):
         auto_pan_speed: Optional[int] = None,
         pour_redraw_threshold: Optional[int] = None,
         online_drc: Optional[bool] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Read, or set, how the board editor behaves while editing.
-
-        These are Altium's own preferences and apply to every board. A
-        board must be open. Call with nothing to read; every option set
-        is read back. ``undo_levels`` is read only.
-
-        Args:
-            rotation_step: Degrees per rotate (Space), 0 or more.
-            protect_locked: Locked objects cannot be moved or deleted.
-            select_only_visible: Selection takes visible objects only.
-            click_clears_selection: A click on empty space clears the
-                selection.
-            double_click_runs_inspector: Double-click opens the
-                Inspector instead of the properties.
-            snap_to_centre: Objects are picked up by their centre.
-            allow_duplicate_designators: Parts may share a designator.
-            auto_pan: Pan the view when dragging to its edge.
-            drag_mode: What follows a dragged track (Altium's number).
-            component_move: What a moved part takes with it (Altium's
-                number).
-            confirm_delete / confirm_global_edit / confirm_drag /
-                confirm_selection_memory_clear: Ask before a delete, a
-                change to many objects, dragging a selection, or clearing
-                a selection memory.
-            shift_to_select: Objects are picked only with Shift held.
-            global_edit_includes_arcs: A change to tracks takes arcs along.
-            pick_nearest_component: A click picks the nearest component.
-            defaults_permanent: Object defaults stay as set, not taken
-                from the last object placed.
-            check_board_on_load: Check a board's objects when it opens.
-            netlist_remove_unconnected_parts /
-                netlist_remove_unconnected_objects: A netlist load removes
-                components the netlist leaves out, and copper on no net.
-            netlist_check_footprints / netlist_check_comments: A netlist
-                load checks footprints and comments.
-            auto_pan_mode: How the view pans at its edge (Altium's
-                number); auto_pan_step, auto_pan_big_step (Shift held)
-                and auto_pan_speed its steps and speed.
-            pour_redraw_threshold: Pours of more pieces than this are drawn
-                as outlines while they are edited.
-            online_drc: Altium's Online DRC preference (PCB Editor >
-                General): every object placed or changed is checked as it
-                goes. Switching it off speeds up bulk edits a lot; read it
-                first and put it back afterwards.
-
-        Returns:
-            ``options`` (each option by these names), ``changed``,
-            ``not_applied``, ``refused`` and ``unknown``.
-        """
-        if rotation_step is not None and rotation_step < 0:
-            return {"ok": False, "reason": "rotation_step is 0 or more"}
-        refusal = _option_number_refusal({
-            "drag_mode": drag_mode, "component_move": component_move,
-            "auto_pan_mode": auto_pan_mode, "auto_pan_step": auto_pan_step,
-            "auto_pan_big_step": auto_pan_big_step, "auto_pan_speed": auto_pan_speed,
-            "pour_redraw_threshold": pour_redraw_threshold}, {})
-        if refusal:
-            return refusal
-        return await run_options("pcb.editor_options", _PCB_EDIT_OPTIONS, {
-            "rotation_step": None if rotation_step is None else float(rotation_step),
+        """Read or plan a change to global PCB editing preferences."""
+        return await _pcb_editor_options(board_path, _PCB_EDIT_OPTIONS, {
+            "rotation_step": rotation_step, "undo_levels": None,
             "protect_locked": protect_locked,
             "select_only_visible": select_only_visible,
             "click_clears_selection": click_clears_selection,
@@ -2241,7 +2720,8 @@ def register_pcb_tools(mcp):
             "allow_duplicate_designators": allow_duplicate_designators,
             "auto_pan": auto_pan, "drag_mode": drag_mode,
             "component_move": component_move,
-            "confirm_delete": confirm_delete, "confirm_global_edit": confirm_global_edit,
+            "confirm_delete": confirm_delete,
+            "confirm_global_edit": confirm_global_edit,
             "confirm_drag": confirm_drag,
             "confirm_selection_memory_clear": confirm_selection_memory_clear,
             "shift_to_select": shift_to_select,
@@ -2253,13 +2733,17 @@ def register_pcb_tools(mcp):
             "netlist_remove_unconnected_objects": netlist_remove_unconnected_objects,
             "netlist_check_footprints": netlist_check_footprints,
             "netlist_check_comments": netlist_check_comments,
-            "auto_pan_mode": auto_pan_mode, "auto_pan_step": auto_pan_step,
-            "auto_pan_big_step": auto_pan_big_step, "auto_pan_speed": auto_pan_speed,
+            "auto_pan_mode": auto_pan_mode,
+            "auto_pan_step": auto_pan_step,
+            "auto_pan_big_step": auto_pan_big_step,
+            "auto_pan_speed": auto_pan_speed,
             "pour_redraw_threshold": pour_redraw_threshold,
-            "online_drc": online_drc})
+            "online_drc": online_drc,
+        }, dry_run)
 
     @mcp.tool()
     async def pcb_paste_options(
+        board_path: str,
         paste_same_net: Optional[bool] = None,
         paste_same_class: Optional[bool] = None,
         paste_same_layer: Optional[bool] = None,
@@ -2271,14 +2755,14 @@ def register_pcb_tools(mcp):
         repeat_rotate: Optional[bool] = None,
         repeat_x_mils: Optional[float] = None,
         repeat_y_mils: Optional[float] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
         """Read, or set, what the board editor keeps when pasting, and
         its paste array (Paste Special > Paste Array): how many
         instances, how designators step, and a line or circle of them.
 
-        These are Altium's own preferences and apply to every board. A
-        board must be open. Call with nothing to read; every option set
-        is read back.
+        These are Altium's own preferences and apply to every board. An
+        exact active board is required; changes are planned by default.
 
         Args:
             paste_same_net / paste_same_class / paste_same_layer /
@@ -2303,7 +2787,7 @@ def register_pcb_tools(mcp):
             return refusal
         if repeat_angle is not None and repeat_angle < 0:
             return {"ok": False, "reason": "repeat_angle is 0 or more"}
-        reply = await run_options("pcb.editor_options", _PCB_PASTE_OPTIONS, {
+        reply = await _pcb_editor_options(board_path, _PCB_PASTE_OPTIONS, {
             "paste_same_net": paste_same_net, "paste_same_class": paste_same_class,
             "paste_same_layer": paste_same_layer,
             "paste_same_designator": paste_same_designator,
@@ -2314,16 +2798,19 @@ def register_pcb_tools(mcp):
             # Altium keeps the steps at 10000 to the mil (measured: 1000 mils
             # read 10000000).
             "repeat_x_mils": None if repeat_x_mils is None else float(repeat_x_mils) * 10000,
-            "repeat_y_mils": None if repeat_y_mils is None else float(repeat_y_mils) * 10000})
-        options = reply.get("options") if isinstance(reply, dict) else None
-        if isinstance(options, dict):
-            for key in ("repeat_x_mils", "repeat_y_mils"):
-                if isinstance(options.get(key), (int, float)):
-                    options[key] = options[key] / 10000
+            "repeat_y_mils": None if repeat_y_mils is None else float(repeat_y_mils) * 10000},
+            dry_run)
+        for field in ("options", "before", "would_set"):
+            options = reply.get(field) if isinstance(reply, dict) else None
+            if isinstance(options, dict):
+                for key in ("repeat_x_mils", "repeat_y_mils"):
+                    if isinstance(options.get(key), (int, float)):
+                        options[key] = options[key] / 10000
         return reply
 
     @mcp.tool()
     async def pcb_route_options(
+        board_path: str,
         route_mode: Optional[int] = None,
         plow_through_pours: Optional[bool] = None,
         auto_via: Optional[bool] = None,
@@ -2331,64 +2818,90 @@ def register_pcb_tools(mcp):
         lock_pre_routes: Optional[bool] = None,
         delete_dead_ends: Optional[bool] = None,
         smart_track_ends: Optional[bool] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Read, or set, the board editor's routing preferences.
-
-        These are Altium's own preferences and apply to every board. A
-        board must be open. Call with nothing to read; every option set
-        is read back.
-
-        Args:
-            route_mode: The interactive routing conflict mode (Altium's
-                number: ignore, walkaround, push ...; read it first).
-            plow_through_pours: Route through pours rather than around.
-            auto_via: Add a via when the routing layer changes.
-            shove_depth: How far placement may push other parts.
-            lock_pre_routes: Keep existing routes when re-routing.
-            delete_dead_ends: Remove track stubs left after a reroute.
-            smart_track_ends: Track ends follow the connection they make.
-
-        Returns:
-            ``options`` (each option by these names), ``changed``,
-            ``not_applied``, ``refused`` and ``unknown``.
-        """
-        for key, value in (("route_mode", route_mode), ("shove_depth", shove_depth)):
-            if value is not None and value < 0:
-                return {"ok": False, "reason": f"{key} is 0 or more"}
-        return await run_options("pcb.editor_options", _PCB_ROUTE_OPTIONS, {
-            "route_mode": route_mode, "plow_through_pours": plow_through_pours,
+        """Read or plan a change to global PCB routing preferences."""
+        return await _pcb_editor_options(board_path, _PCB_ROUTE_OPTIONS, {
+            "route_mode": route_mode,
+            "plow_through_pours": plow_through_pours,
             "auto_via": auto_via, "shove_depth": shove_depth,
             "lock_pre_routes": lock_pre_routes,
             "delete_dead_ends": delete_dead_ends,
-            "smart_track_ends": smart_track_ends})
+            "smart_track_ends": smart_track_ends,
+        }, dry_run)
 
     @mcp.tool()
-    async def pcb_grow_pour(name: str, distance_mils: float) -> dict[str, Any]:
-        """Move a pour's outline out by a distance all round, or in with a
-        negative distance, as Altium's own Grow does: to pull a pour back
-        from the board edge or spread it to a new keepout.
+    async def pcb_grow_pour(
+        board_path: str, index: int, expected_name: str, expected_layer: str,
+        distance_mils: float, expected_bounds: Optional[dict[str, float]] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Preview or grow one polygon outline on an exact PcbDoc.
 
-        The copper is not repoured: call pcb_repour_polygons afterwards.
-
-        Args:
-            name: The pour's name (pcb_get_polygons lists them).
-            distance_mils: How far to move the outline; negative shrinks.
-
-        Returns:
-            ``name``, ``distance_mils``, ``bounds_before`` and
-            ``bounds_after`` (left, bottom, right, top in mils).
+        Use the index, name and layer reported by ``pcb_get_polygons``.
+        Read with dry_run first, then pass its ``bounds_before`` as
+        ``expected_bounds`` for a write. Polygon indices may reorder after
+        Altium saves and reloads a PcbDoc.
+        Repour the polygon separately after the outline change.
         """
-        if not name.strip():
-            return {"ok": False, "reason": "name is required"}
-        if distance_mils == 0:
-            return {"ok": False, "reason": "distance_mils is not 0"}
-        return await get_bridge().send_command_async(
-            "pcb.grow_pour", {"name": name.strip(),
-                              "distance_mils": repr(float(distance_mils))})
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if (type(index) is not int or index < 0 or not expected_name.strip()
+                or not expected_layer.strip() or type(distance_mils) not in (int, float)
+                or not math.isfinite(distance_mils) or distance_mils == 0
+                or abs(distance_mils) > 1000):
+            return {"ok": False, "reason": "invalid polygon selector or distance_mils"}
+        bridge = get_bridge()
+        params = {"board_path": board_path, "index": index,
+                  "expected_name": expected_name, "expected_layer": expected_layer,
+                  "distance_mils": distance_mils, "dry_run": True}
+        preview = await bridge.send_command_async("pcb.grow_pour", params, timeout=120.0)
+        if not isinstance(preview, dict) or preview.get("error"):
+            return preview
+        bounds = preview.get("bounds_before")
+        if (str(preview.get("board_path", "")).casefold() != board_path.casefold()
+                or preview.get("index") != index
+                or str(preview.get("name", "")).casefold() != expected_name.casefold()
+                or str(preview.get("layer", "")).casefold() != expected_layer.casefold()
+                or type(preview.get("point_count_before")) is not int
+                or preview["point_count_before"] < 3
+                or preview.get("dry_run") is not True
+                or not isinstance(bounds, dict)
+                or any(type(bounds.get(side)) not in (int, float)
+                       or not math.isfinite(bounds[side])
+                       for side in ("left", "bottom", "right", "top"))):
+            return {"ok": False, "reason": "incomplete or wrong-board pour preview",
+                    "native_reply": preview}
+        if expected_bounds is not None:
+            if (not isinstance(expected_bounds, dict)
+                    or any(type(expected_bounds.get(side)) not in (int, float)
+                           or not math.isfinite(expected_bounds[side])
+                           or not math.isclose(expected_bounds[side], bounds[side],
+                                               abs_tol=0.01, rel_tol=0)
+                           for side in ("left", "bottom", "right", "top"))):
+                return {"ok": False, "reason": "polygon bounds differ from reviewed plan",
+                        "current_bounds": bounds}
+        if dry_run:
+            return preview
+        if expected_bounds is None:
+            return {"ok": False, "reason": "expected_bounds from a reviewed dry-run is required for writes"}
+        params.update({"dry_run": False, "expected_points": preview["point_count_before"],
+                       **{f"expected_{side}": bounds[side]
+                          for side in ("left", "bottom", "right", "top")}})
+        result = await bridge.send_command_async("pcb.grow_pour", params, timeout=120.0)
+        if not isinstance(result, dict) or result.get("error"):
+            return result
+        if (str(result.get("board_path", "")).casefold() != board_path.casefold()
+                or result.get("index") != index or result.get("dry_run") is not False
+                or result.get("bounds_before") != bounds
+                or not isinstance(result.get("bounds_after"), dict)):
+            return {"ok": False, "reason": "incomplete or wrong-board pour write reply",
+                    "native_reply": result}
+        return result
 
     @mcp.tool()
     async def pcb_plane_connections(
-        designator: str = "", pad: str = "", kind: str = "", net: str = "",
+        board_path: str, designator: str = "", pad: str = "", kind: str = "", net: str = "",
         limit: int = 500,
     ) -> dict[str, Any]:
         """How pads and vias meet the internal planes.
@@ -2421,12 +2934,14 @@ def register_pcb_tools(mcp):
             ``manual_reliefs`` and ``plane_contacts``; free objects also
             carry ``x`` / ``y`` in mils from the board origin.
         """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         kind = kind.strip().lower()
         if not designator.strip() and kind not in ("via", "pad"):
             return {"ok": False,
                     "reason": 'designator is required, or kind="via" / "pad" '
                               "for the free vias / pads"}
-        params: dict[str, Any] = {}
+        params: dict[str, Any] = {"board_path": board_path}
         if designator.strip():
             params["designator"] = designator.strip()
             if pad.strip():
@@ -2438,7 +2953,18 @@ def register_pcb_tools(mcp):
         if limit != 500:
             params["limit"] = str(int(limit))
         reply = await get_bridge().send_command_async("pcb.plane_connections", params)
-        if isinstance(reply, dict):
+        if isinstance(reply, dict) and not reply.get("error"):
+            if str(reply.get("board_path", "")).casefold() != board_path.casefold():
+                return {"ok": False, "reason": "wrong-board plane connection reply",
+                        "native_reply": reply}
+            if designator and "pad_count" in reply:
+                pads = reply.get("pads")
+                if (not isinstance(pads, list) or len(pads) != reply["pad_count"]
+                        or str(reply.get("designator", "")).casefold() != designator.casefold()
+                        or (pad and (len(pads) != 1 or
+                                     str(pads[0].get("pad", "")).casefold() != pad.casefold()))):
+                    return {"ok": False, "reason": "incomplete plane connection reply",
+                            "native_reply": reply}
             for item in (reply.get("pads") or []) + (reply.get("vias") or []):
                 style = item.get("rule_style")
                 # Measured on AD 26.11 by switching the rule.
@@ -2627,19 +3153,37 @@ def register_pcb_tools(mcp):
                 "x2": repr(float(x2)), "y2": repr(float(y2))}
 
     @mcp.tool()
-    async def pcb_get_board_regions() -> dict[str, Any]:
-        """Read the active board's rigid-flex setup: its board regions
-        (index, name, layer stack, 3D lock and bend lines), the split
-        lines that divide it, and the layer stacks with their copper
-        layers and whether each is flex.
+    async def pcb_get_board_regions(board_path: str) -> dict[str, Any]:
+        """Read rigid-flex regions, split/bend lines and named layer stacks.
 
-        Returns:
-            ``regions`` (each with its ``bend_lines``: ``from``, ``to``
-            in mils, ``radius_mils``, ``angle``, ``fold_index``),
-            ``split_lines`` (by index) and ``layer_stacks``. A region is
-            named in the other tools by its name or by "#<index>".
+        Coordinates of bend endpoints are in mils from the board origin.
+        The exact active PcbDoc path is required.
         """
-        return await _board_regions({"action": "read"})
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.flex_state", {"board_path": board_path}, timeout=120.0,
+        )
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        if (str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or type(reply.get("split_line_count")) is not int
+                or type(reply.get("layer_stack_count")) is not int
+                or not isinstance(reply.get("regions"), list)
+                or not isinstance(reply.get("split_lines"), list)
+                or not isinstance(reply.get("layer_stacks"), list)
+                or len(reply["split_lines"]) != reply["split_line_count"]
+                or len(reply["layer_stacks"]) != reply["layer_stack_count"]
+                or any(not isinstance(region, dict)
+                       or not isinstance(region.get("bend_lines"), list)
+                       for region in reply["regions"])
+                or any(not isinstance(stack, dict)
+                       or not isinstance(stack.get("copper_layers"), list)
+                       or type(stack.get("flex")) is not bool
+                       for stack in reply["layer_stacks"])):
+            return {"ok": False, "reason": "incomplete or wrong-board rigid-flex snapshot",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_split_board(x1: float, y1: float, x2: float, y2: float) -> dict[str, Any]:
@@ -2956,7 +3500,8 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_sync_stack_manager(dry_run: bool = True) -> dict[str, Any]:
+    async def pcb_sync_stack_manager(board_path: str,
+                                     dry_run: bool = True) -> dict[str, Any]:
         """Bring the Layer Stack Manager's own copy of the stack back in step
         with the board.
 
@@ -2968,7 +3513,10 @@ def register_pcb_tools(mcp):
         manager's model, loads it and applies it to the board, all through
         Altium; the board's own values do not change. A layer only one side
         has is refused: the manager's layers are added or removed in the
-        Layer Stack Manager itself.
+        Layer Stack Manager itself. A manager layer of type ``other``
+        (surface finish) is the exception: the board has no layer object
+        for one, so it is reported as ``manager_only`` and nothing is
+        refused over it.
 
         Args:
             dry_run: Only list what would change (the default).
@@ -2977,155 +3525,32 @@ def register_pcb_tools(mcp):
             ``in_step`` before, ``changes`` (layer, field, value) and, once
             run, ``in_step_after``, ``out_of_step_after``, ``symmetric`` and
             ``symmetric_after`` (Altium keeps a stack symmetric only when it
-            is). Refused: ``layers_differ``.
+            is). Refused: ``layers_differ``. ``manager_only`` when the
+            manager has a layer of type ``other``.
         """
-        return await sync_stack_manager(get_bridge(), dry_run)
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        return await sync_stack_manager(get_bridge(), board_path, dry_run)
 
     @mcp.tool()
     async def pcb_make_layer_stack(
-        layers: list[dict[str, Any]],
-        dry_run: bool = True,
-        board_path: str = "",
+        layers: list[dict[str, Any]], dry_run: bool = True, board_path: str = "",
     ) -> dict[str, Any]:
-        """Make the board's layer stack match a wanted one, copper and
-        dielectrics, top to bottom.
+        """Plan or build a physical layer stack using the verified board-specific builder.
 
-        Copper first: outer layers renamed, inner ones kept where the wanted
-        stack has the same kind in the same order (a plane keeps its pour),
-        the rest dropped (refused when objects lie on them), new ones added
-        as plain copper. Then each gap's dielectrics are trimmed to the
-        wanted count and set. A dielectric cannot be added, so a gap with
-        fewer than wanted is refused: plan one per gap.
-
-        The board must be saved first. Any failure closes it unsaved and
-        reopens it, which restores it. A run that matches also brings the
-        Layer Stack Manager's own copy of the stack in step
-        (``stack_manager``, as pcb_sync_stack_manager reports it); save
-        afterwards.
-
-        Args:
-            layers: Top to bottom: ``{"kind": "copper", "name",
-                "thickness_mils", "plane": false}`` or ``{"kind":
-                "dielectric", "thickness_mils", "type": "core" | "prepreg",
-                "constant", "loss_tangent", "material", "name"}``.
-            dry_run: Only plan (the default).
-            board_path: The .PcbDoc; it is brought to the front.
-
-        Returns:
-            ``wanted``, ``copper_edits`` (and ``dielectric_edits`` once run),
-            ``mismatches`` (empty when the board reads as wanted), ``done``,
-            ``stack_manager`` after a run that matches, and ``restored``
-            after a failure.
+        This compatibility entry point accepts the fork's layer format. A board
+        path may be omitted when the active document is the target PcbDoc.
         """
-        from ..design.layer_stack_plan import (StackError, copper_round,
-                                               dielectric_round, mismatches,
-                                               read_wanted)
-        try:
-            wanted = read_wanted(layers)
-        except StackError as exc:
-            return {"ok": False, "reason": str(exc)}
-        bridge = get_bridge()
-        if board_path:
-            front = await bridge.send_command_async(
-                "application.set_active_document", {"file_path": board_path})
-            if isinstance(front, dict) and front.get("success") is False:
-                return {"ok": False, "reason": f"{board_path} could not be brought to the front",
-                        "reply": front}
-        doc = await bridge.send_command_async("application.get_active_document", {}) or {}
-        board = str(doc.get("file_path", "")) if isinstance(doc, dict) else ""
-        if not board.lower().endswith(".pcbdoc"):
+        if not board_path:
+            doc = await get_bridge().send_command_async("application.get_active_document", {})
+            board_path = str(doc.get("file_path", "")) if isinstance(doc, dict) else ""
+        if not board_path.lower().endswith(".pcbdoc"):
             return {"ok": False, "reason": "no board is in front; give board_path"}
-        on_board = {"board_path": board}
-
-        async def rows() -> list[dict[str, Any]]:
-            reply = await bridge.send_command_async("pcb.physical_stack", {})
-            return (reply or {}).get("layers", []) if isinstance(reply, dict) else []
-
-        async def copper() -> list[dict[str, Any]]:
-            reply = await bridge.send_command_async("pcb.copper_layers", on_board)
-            return (reply or {}).get("layers", []) if isinstance(reply, dict) else []
-
-        try:
-            first = copper_round(await rows(), wanted, await copper())
-        except StackError as exc:
-            return {"ok": False, "reason": str(exc)}
-        result: dict[str, Any] = {"board": board, "dry_run": dry_run,
-                                  "wanted": [w.describe() for w in wanted],
-                                  "copper_edits": first}
-        if dry_run:
-            return result
-        if doc.get("modified"):
-            return {**result, "ok": False,
-                    "reason": "save the board first; a failed run is undone by reopening it"}
-
-        async def apply(edit: dict[str, Any]) -> Optional[Any]:
-            """None when the edit held, else what Altium answered."""
-            if edit["do"] == "drop":
-                reply = await bridge.send_command_async(
-                    "pcb.drop_stack_layer", {**on_board, "layer": edit["layer"]})
-                return None if isinstance(reply, dict) and reply.get("still_there") is False \
-                    else reply
-            if edit["do"] == "rename":
-                ask = {**on_board, "layer": edit["layer"], "rename_to": edit["to"]}
-                if "thickness_mils" in edit:
-                    ask["thickness_mils"] = repr(float(edit["thickness_mils"]))
-                reply = await bridge.send_command_async("pcb.tune_copper_layer", ask)
-                return None if isinstance(reply, dict) and reply.get("missed") == [] else reply
-            if edit["do"] == "add":
-                names_before = {c["name"] for c in await copper()}
-                await bridge.send_command_async(
-                    "pcb.add_layer", {"layer": edit["slot"], "below": edit["under"]})
-                added = [c["name"] for c in await copper() if c["name"] not in names_before]
-                if len(added) != 1:
-                    return {"added": added}
-                reply = await bridge.send_command_async("pcb.tune_copper_layer", {
-                    **on_board, "layer": added[0], "rename_to": edit["name"],
-                    "thickness_mils": repr(float(edit["thickness_mils"])), "plain": "true"})
-                return None if isinstance(reply, dict) and reply.get("missed") == [] else reply
-            ask = {"layer": edit["layer"], "rename_to": edit["to"]}
-            for key in ("type", "material"):
-                if key in edit:
-                    ask[key] = str(edit[key])
-            for key in ("thickness_mils", "constant", "loss_tangent"):
-                if key in edit:
-                    ask[key] = repr(float(edit[key]))
-            reply = await bridge.send_command_async("pcb.set_dielectric", ask)
-            return None if isinstance(reply, dict) and not reply.get("not_applied") else reply
-
-        trouble: Optional[dict[str, Any]] = None
-        for edit in first:
-            answer = await apply(edit)
-            if answer is not None:
-                trouble = {"edit": edit, "reply": answer}
-                break
-        if trouble is None:
-            try:
-                result["dielectric_edits"] = dielectric_round(await rows(), wanted)
-            except StackError as exc:
-                trouble = {"edit": "dielectrics", "reply": str(exc)}
-        for edit in result.get("dielectric_edits", []) if trouble is None else []:
-            answer = await apply(edit)
-            if answer is not None:
-                trouble = {"edit": edit, "reply": answer}
-                break
-        result["mismatches"] = None if trouble else mismatches(await rows(), wanted)
-        result["failed"] = trouble
-        result["done"] = trouble is None and not result["mismatches"]
-        if result["done"]:
-            # The rebuild does not reach the Layer Stack Manager's own copy of
-            # the layers it kept; bring that copy in step before the save.
-            result["stack_manager"] = await sync_stack_manager(bridge)
-        if not result["done"]:
-            await bridge.send_command_async(
-                "application.close_document", {"file_path": board, "discard": "true"})
-            await bridge.send_command_async("generic.run_process", {
-                "process": "WorkspaceManager:OpenObject",
-                "params": f"ObjectKind=Document|FileName={board}"})
-            result["restored"] = True
-        return result
+        return await pcb_build_stack(board_path, layers, dry_run=dry_run)
 
     @mcp.tool()
     async def pcb_set_dielectric(
+        board_path: str,
         layer: str,
         dielectric_type: Optional[int] = None,
         material: Optional[str] = None,
@@ -3133,52 +3558,89 @@ def register_pcb_tools(mcp):
         loss_tangent: Optional[float] = None,
         thickness_mils: Optional[float] = None,
         stiffener: Optional[bool] = None,
-        rename_to: Optional[str] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Set a dielectric or solder mask (coverlay) layer of the stack:
-        its type (Altium's number), material, dielectric constant (Dk),
-        loss tangent (Df), thickness and whether it is a stiffener. Each
-        value is read back; any that did not take is in ``not_applied``.
-        The Layer Stack Manager's own copy of the stack is then brought in
-        step (``stack_manager``, as pcb_sync_stack_manager reports it).
+        """Plan or set a named dielectric or solder-mask layer.
 
-        Args:
-            layer: The layer's name as pcb_physical_stack lists it.
-            rename_to: Its new name.
+        Requires an exact board path and old values. Save the PcbDoc
+        separately after checking the result.
         """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         if not layer.strip():
             return {"ok": False, "reason": "layer is required"}
-        params: dict[str, Any] = {"layer": layer.strip()}
-        if dielectric_type is not None:
-            if dielectric_type < 0:
-                return {"ok": False, "reason": "dielectric_type is 0 or more"}
-            params["type"] = str(dielectric_type)
-        if material is not None:
-            params["material"] = material
-        for key, value, low in (("constant", constant, 1.0),
-                                ("loss_tangent", loss_tangent, 0.0),
-                                ("thickness_mils", thickness_mils, 0.0)):
-            if value is not None:
-                if value < low:
-                    return {"ok": False, "reason": f"{key} is {low} or more"}
-                params[key] = repr(float(value))
-        if stiffener is not None:
-            params["stiffener"] = "true" if stiffener else "false"
-        if rename_to is not None:
-            if not rename_to.strip():
-                return {"ok": False, "reason": "rename_to is empty"}
-            params["rename_to"] = rename_to.strip()
-        if len(params) == 1:
-            return {"ok": False, "reason": "nothing to set"}
-        bridge = get_bridge()
-        reply = await bridge.send_command_async("pcb.set_dielectric", params)
-        if isinstance(reply, dict) and reply.get("success") is not False:
-            # The write does not reach the Layer Stack Manager's own copy.
-            reply["stack_manager"] = await sync_stack_manager(bridge)
+        updates = {"dielectric_type": dielectric_type, "material": material,
+                   "constant": constant, "loss_tangent": loss_tangent,
+                   "thickness_mils": thickness_mils, "stiffener": stiffener}
+        updates = {key: value for key, value in updates.items() if value is not None}
+        if not updates:
+            return {"ok": False, "reason": "give at least one dielectric setting"}
+        if "stiffener" in updates:
+            return {"ok": False, "reason":
+                    "Altium 26.11 did not persist the stiffener flag after save/reopen"}
+        if ("dielectric_type" in updates and
+                (type(dielectric_type) is not int or dielectric_type < 0)):
+            return {"ok": False, "reason": "dielectric_type must be a nonnegative integer"}
+        if "material" in updates and (not isinstance(material, str) or not material.strip()):
+            return {"ok": False, "reason": "material must be nonempty"}
+        for key, minimum in (("constant", 1), ("loss_tangent", 0),
+                             ("thickness_mils", 0)):
+            if key in updates:
+                value = updates[key]
+                if (type(value) not in (int, float) or not math.isfinite(value)
+                        or value < minimum or (key == "thickness_mils" and value == 0)):
+                    return {"ok": False, "reason": f"invalid {key}"}
+        before_stack = await pcb_physical_stack(board_path)
+        if not isinstance(before_stack.get("layers"), list):
+            return {"ok": False, "reason": "could not read exact-board physical stack",
+                    "native_reply": before_stack}
+        matches = [item for item in before_stack["layers"]
+                   if item.get("name", "").casefold() == layer.strip().casefold()]
+        if len(matches) != 1 or matches[0].get("kind") not in ("dielectric", "solder_mask"):
+            return {"ok": False, "reason": "named dielectric or solder mask layer not found"}
+        old = {key: matches[0][key] for key in
+               ("dielectric_type", "material", "constant", "loss_tangent",
+                "thickness_mils", "stiffener")}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "layer": matches[0]["name"], "before": old, "would_set": updates}
+        params = {"board_path": board_path, "layer": matches[0]["name"]}
+        for key, value in old.items():
+            params[f"expect_{key}"] = ("true" if value else "false") if key == "stiffener" else str(value)
+        for key, value in updates.items():
+            params[key] = ("true" if value else "false") if key == "stiffener" else str(value)
+        reply = await get_bridge().send_command_async("pcb.set_dielectric", params,
+                                                       timeout=120.0)
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        after_stack = await pcb_physical_stack(board_path)
+        if not isinstance(after_stack.get("layers"), list):
+            return {"ok": False, "reason": "could not verify dielectric readback",
+                    "native_reply": reply}
+        after = next((item for item in after_stack["layers"]
+                      if item.get("name", "").casefold() == layer.strip().casefold()), None)
+        if after is None:
+            return {"ok": False, "reason": "dielectric vanished after write",
+                    "native_reply": reply}
+        for key, value in updates.items():
+            actual = after.get(key)
+            matched = (math.isclose(actual, value, abs_tol=0.01) if key in
+                       ("constant", "loss_tangent", "thickness_mils") and
+                       isinstance(actual, (int, float)) else actual == value)
+            if not matched:
+                return {"ok": False, "reason": f"{key} did not read back",
+                        "after": after, "native_reply": reply}
+        reply["save_required"] = bool(reply.get("changed"))
+        try:
+            reply["stack_manager"] = await sync_stack_manager(get_bridge(), board_path)
+        except Exception as exc:
+            reply["stack_manager"] = {"ok": False, "reason": str(exc),
+                                      "needs_review": True}
         return reply
 
     @mcp.tool()
     async def pcb_impedance_profile(
+        board_path: str,
         action: str,
         profile: str,
         name: str = "",
@@ -3186,44 +3648,98 @@ def register_pcb_tools(mcp):
         tolerance: Optional[float] = None,
         differential: Optional[bool] = None,
         coplanar: Optional[bool] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Create, change or remove an impedance profile in the Layer Stack
-        Manager. pcb_get_impedance_profiles reads them, with the width
-        Altium's solver works out per layer; pcb_impedance_profile_layer
-        sets a profile's limits on one layer.
+        """Plan, create, change or remove one exact-board impedance profile.
 
-        Args:
-            action: create, set or remove.
-            profile: The profile's name (the new one's, for create).
-            name: A new name (set).
-            target_ohms: The target impedance.
-            tolerance: The tolerance, in percent.
-            differential: A differential pair profile.
-            coplanar: Coplanar (reference copper beside the trace).
-
-        Returns:
-            ``profiles_before``, ``profiles_after`` and ``not_applied``.
+        Checks the current profile count and old values before any write.
+        Saving the PcbDoc is a separate operation.
         """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         action = action.strip().lower()
-        if action not in ("create", "set", "remove"):
-            return {"ok": False, "reason": "action is create, set or remove"}
-        if not profile.strip():
-            return {"ok": False, "reason": "profile is required"}
-        params: dict[str, Any] = {"action": action, "profile": profile.strip()}
-        if name.strip():
-            params["name"] = name.strip()
-        for key, value in (("target_ohms", target_ohms), ("tolerance", tolerance)):
-            if value is not None:
-                if value <= 0:
-                    return {"ok": False, "reason": f"{key} is more than 0"}
-                params[key] = repr(float(value))
-        for key, value in (("differential", differential), ("coplanar", coplanar)):
-            if value is not None:
-                params[key] = "true" if value else "false"
-        return await get_bridge().send_command_async("pcb.impedance_profile", params)
+        profile = profile.strip()
+        name = name.strip()
+        if action not in ("create", "set", "remove") or not profile:
+            return {"ok": False, "reason": "action must be create/set/remove and profile required"}
+        updates = {"name": name or None, "target_ohms": target_ohms,
+                   "tolerance": tolerance, "differential": differential,
+                   "coplanar": coplanar}
+        updates = {key: value for key, value in updates.items() if value is not None}
+        if action == "create" and target_ohms is None:
+            return {"ok": False, "reason": "target_ohms required for create"}
+        if action == "set" and not updates:
+            return {"ok": False, "reason": "give at least one profile setting"}
+        if action == "remove" and updates:
+            return {"ok": False, "reason": "remove accepts no profile settings"}
+        if action == "create" and name:
+            return {"ok": False, "reason": "use profile as the new name for create"}
+        for key in ("target_ohms", "tolerance"):
+            if key in updates:
+                value = updates[key]
+                if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                    return {"ok": False, "reason": f"{key} must be positive and finite"}
+        for key in ("differential", "coplanar"):
+            if key in updates and type(updates[key]) is not bool:
+                return {"ok": False, "reason": f"{key} must be boolean"}
+        before = await pcb_get_impedance_profiles(board_path)
+        if (not isinstance(before, dict) or before.get("board_path", "").casefold() != board_path.casefold()
+                or type(before.get("profile_count")) is not int
+                or type(before.get("read_errors")) is not int
+                or before["read_errors"] != 0
+                or not isinstance(before.get("profiles"), list)
+                or len(before["profiles"]) != before["profile_count"]):
+            return {"ok": False, "reason": "incomplete profile preflight", "native_reply": before}
+        found = [p for p in before["profiles"] if p.get("name", "").casefold() == profile.casefold()]
+        if (action == "create" and found) or (action != "create" and len(found) != 1):
+            return {"ok": False, "reason": "profile existence differs from action"}
+        if name and any(p.get("name", "").casefold() == name.casefold()
+                        for p in before["profiles"] if p not in found):
+            return {"ok": False, "reason": "new profile name already exists"}
+        old = found[0] if found else None
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "action": action, "profile": profile, "before": old,
+                    "would_set": updates, "profile_count": before["profile_count"]}
+        params = {"board_path": board_path, "action": action, "profile": profile,
+                  "expect_count": str(before["profile_count"])}
+        if old is not None:
+            for key in ("name", "target_ohms", "tolerance", "differential", "coplanar"):
+                value = old[key]
+                params[f"expect_{key}"] = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        for key, value in updates.items():
+            params[key] = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        reply = await get_bridge().send_command_async("pcb.impedance_profile", params,
+                                                       timeout=120.0)
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        after = await pcb_get_impedance_profiles(board_path)
+        expected_count = before["profile_count"] + (1 if action == "create" else -1 if action == "remove" else 0)
+        if (not isinstance(after, dict) or after.get("board_path", "").casefold() != board_path.casefold()
+                or after.get("profile_count") != expected_count
+                or after.get("read_errors") != 0
+                or not isinstance(after.get("profiles"), list)):
+            return {"ok": False, "reason": "profile count/readback failed", "native_reply": reply,
+                    "after": after}
+        result_name = name or profile
+        matches = [p for p in after["profiles"] if p.get("name", "").casefold() == result_name.casefold()]
+        if (action == "remove" and matches) or (action != "remove" and len(matches) != 1):
+            return {"ok": False, "reason": "profile identity readback failed", "after": after}
+        if action != "remove":
+            for key, value in updates.items():
+                actual = matches[0].get(key)
+                if key in ("target_ohms", "tolerance"):
+                    matched = isinstance(actual, (int, float)) and math.isclose(actual, value, abs_tol=0.001)
+                else:
+                    matched = actual == value
+                if not matched:
+                    return {"ok": False, "reason": f"{key} did not read back", "after": after}
+        reply["save_required"] = True
+        return reply
 
     @mcp.tool()
     async def pcb_impedance_profile_layer(
+        board_path: str,
         profile: str,
         layer: str,
         enabled: Optional[bool] = None,
@@ -3239,69 +3755,116 @@ def register_pcb_tools(mcp):
         use_solder_mask: Optional[bool] = None,
         mask_between_mils: Optional[float] = None,
         mask_on_top_mils: Optional[float] = None,
+        dry_run: bool = True,
     ) -> dict[str, Any]:
-        """Read, or set, one impedance profile's settings on one layer:
-        whether it applies there, the trace width (locked, or worked out by
-        Altium within its limits), the pair gap and its limits, clearance
-        to plane for coplanar work, and how the solder mask over the trace
-        is modelled. Every value set is read back.
+        """Read or plan/set one impedance profile's copper-layer settings.
 
-        Args:
-            profile: The profile's name.
-            layer: The copper layer's name.
-
-        A layer the profile does not hold yet is added to it
-        (``layer_added``); it starts disabled with no width until Altium's
-        solver runs in the Layer Stack Manager.
-
-        Returns:
-            The layer's settings with ``calculated_ohms`` (a maximum of
-            ``null`` is no limit), and ``not_applied``.
+        An absent profile-layer entry is reported as ``after=null`` and is
+        created by a write. Save the exact PcbDoc separately.
         """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         if not profile.strip() or not layer.strip():
-            return {"ok": False, "reason": "profile and layer are required"}
-        params: dict[str, Any] = {"profile": profile.strip(), "layer": layer.strip()}
-        for key, value in (("enabled", enabled), ("width_locked", width_locked),
-                           ("gap_locked", gap_locked), ("use_solder_mask", use_solder_mask)):
-            if value is not None:
-                params[key] = "true" if value else "false"
-        for key, value in (("width_mils", width_mils), ("min_width_mils", min_width_mils),
-                           ("max_width_mils", max_width_mils), ("gap_mils", gap_mils),
-                           ("min_gap_mils", min_gap_mils), ("max_gap_mils", max_gap_mils),
-                           ("clearance_to_plane_mils", clearance_to_plane_mils),
-                           ("mask_between_mils", mask_between_mils),
-                           ("mask_on_top_mils", mask_on_top_mils)):
-            if value is not None:
-                if value < 0:
-                    return {"ok": False, "reason": f"{key} is 0 or more"}
-                params[key] = repr(float(value))
-        reply = await get_bridge().send_command_async("pcb.impedance_profile_layer", params)
-        if isinstance(reply, dict):
-            # Altium keeps "no limit" as the largest coordinate, 214748.36 mils.
-            for key in ("max_width_mils", "max_gap_mils"):
-                if isinstance(reply.get(key), (int, float)) and reply[key] > 200000:
-                    reply[key] = None
-        return reply
+            return {"ok": False, "reason": "profile and layer required"}
+        updates = {"enabled": enabled, "width_locked": width_locked,
+                   "gap_locked": gap_locked, "width_mils": width_mils,
+                   "min_width_mils": min_width_mils,
+                   "max_width_mils": max_width_mils, "gap_mils": gap_mils,
+                   "min_gap_mils": min_gap_mils, "max_gap_mils": max_gap_mils,
+                   "clearance_to_plane_mils": clearance_to_plane_mils,
+                   "use_solder_mask": use_solder_mask,
+                   "mask_between_mils": mask_between_mils,
+                   "mask_on_top_mils": mask_on_top_mils}
+        updates = {key: value for key, value in updates.items() if value is not None}
+        bool_fields = {"enabled", "width_locked", "gap_locked", "use_solder_mask"}
+        for key, value in updates.items():
+            if key in bool_fields:
+                if type(value) is not bool:
+                    return {"ok": False, "reason": f"{key} must be boolean"}
+            elif type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                return {"ok": False, "reason": f"{key} must be nonnegative and finite"}
+        base = {"board_path": board_path, "profile": profile.strip(), "layer": layer.strip()}
+        bridge = get_bridge()
+
+        def checked(reply: Any) -> dict[str, Any]:
+            if (not isinstance(reply, dict)
+                    or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                    or str(reply.get("profile", "")).casefold() != profile.strip().casefold()
+                    or str(reply.get("layer", "")).casefold() != layer.strip().casefold()
+                    or type(reply.get("profile_count")) is not int
+                    or not isinstance(reply.get("profile_token"), str)
+                    or not isinstance(reply.get("state_token"), str)
+                    or reply.get("after") is not None and not isinstance(reply.get("after"), dict)):
+                raise ValueError("incomplete or wrong-board profile-layer reply")
+            return reply
+
+        first = await bridge.send_command_async("pcb.impedance_profile_layer", base,
+                                                timeout=120.0)
+        try:
+            old_reply = checked(first)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": first}
+        if not updates:
+            return old_reply
+        if dry_run:
+            return {"ok": True, "dry_run": True, **base,
+                    "before": old_reply["after"], "would_set": updates,
+                    "layer_would_be_added": old_reply["after"] is None}
+        params = {**base, "expect_count": str(old_reply["profile_count"]),
+                  "expect_profile_token": old_reply["profile_token"],
+                  "expect_state_token": old_reply["state_token"]}
+        for key, value in updates.items():
+            params[key] = ("true" if value else "false") if key in bool_fields else str(value)
+        reply = await bridge.send_command_async("pcb.impedance_profile_layer", params,
+                                                timeout=120.0)
+        try:
+            changed = checked(reply)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        reread = await bridge.send_command_async("pcb.impedance_profile_layer", base,
+                                                 timeout=120.0)
+        try:
+            confirmed = checked(reread)
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reread}
+        state = confirmed["after"]
+        if state is None:
+            return {"ok": False, "reason": "profile layer absent after write"}
+        for key, value in updates.items():
+            actual = state.get(key)
+            matched = (actual is value if key in bool_fields else
+                       type(actual) in (int, float) and math.isclose(actual, value, abs_tol=0.01))
+            if not matched:
+                return {"ok": False, "reason": f"{key} did not read back",
+                        "after": state, "native_reply": reply}
+        changed["save_required"] = bool(changed.get("changed"))
+        return changed
 
     @mcp.tool()
-    async def pcb_via_structures(limit: int = 200) -> dict[str, Any]:
-        """How the board's vias are protected and drilled: each via's
-        structure type and its features (the IPC-4761 tenting, plugging,
-        filling and capping, each with side and material; Altium's numbers)
-        and its back drilling (stub lengths and hole oversize). Vias that
-        agree are counted together.
+    async def pcb_via_structures(board_path: str, limit: int = 200) -> dict[str, Any]:
+        """Count via structure, protection and back-drill configurations.
 
-        Args:
-            limit: The most distinct kinds listed.
-
-        Returns:
-            ``vias`` and ``structures`` (``vias``, ``structure_type``,
-            ``features``, ``back_drilled``, ``top_stub_mils``,
-            ``bottom_stub_mils``, ``oversize_mils``).
+        The exact PcbDoc path is required. ``truncated`` and
+        ``omitted_vias`` show whether the distinct-kind limit hid entries.
         """
-        if limit < 1:
-            return {"ok": False, "reason": "limit is 1 or more"}
-        return await get_bridge().send_command_async("pcb.via_structures", {"limit": str(limit)})
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(limit) is not int or not 1 <= limit <= 2000:
+            return {"ok": False, "reason": "limit must be an integer from 1 to 2000"}
+        reply = await get_bridge().send_command_async(
+            "pcb.via_structures", {"board_path": board_path, "limit": str(limit)},
+            timeout=120.0,
+        )
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        if (str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or type(reply.get("vias")) is not int
+                or type(reply.get("omitted_vias")) is not int
+                or type(reply.get("truncated")) is not bool
+                or not isinstance(reply.get("structures"), list)):
+            return {"ok": False, "reason": "incomplete or wrong-board via structure reply",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_pours_at(x: float, y: float) -> dict[str, Any]:
@@ -3328,29 +3891,34 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_board_options(
         polygon_name_template: Optional[int] = None,
+        expect_file: str = "",
     ) -> dict[str, Any]:
-        """Read, or set, settings saved in the active board: the template
-        new pours are named from, and (read only) whether split planes
-        are made automatically.
+        """Read board naming options, or set the new-pour name template.
 
-        Args:
-            polygon_name_template: Altium's number for the naming
-                template (read the current one first). A pour with
-                AutoGenerateName set takes its name from it.
-
-        Returns:
-            ``polygon_name_template``, ``automatic_split_planes``,
-            ``changed`` and ``not_applied``.
+        A write requires the exact focused ``expect_file``. The reply
+        includes the actual board path, value readback and ``not_applied``.
+        ``automatic_split_planes`` is read only.
         """
-        params: dict[str, Any] = {}
+        params: dict[str, Any] = {"expect_file": expect_file}
         if polygon_name_template is not None:
             if polygon_name_template < 0:
-                return {"ok": False, "reason": "polygon_name_template is 0 or more"}
+                return {"success": False, "error":
+                        "polygon_name_template must be nonnegative"}
+            if not expect_file:
+                return {"success": False, "error":
+                        "expect_file is required to change board options"}
             params["polygon_name_template"] = str(polygon_name_template)
-        return await get_bridge().send_command_async("pcb.board_options", params)
+        reply = await get_bridge().send_command_async("pcb.board_options", params)
+        if expect_file and (not isinstance(reply, dict)
+                            or not isinstance(reply.get("board_file"), str)
+                            or reply["board_file"].casefold() != expect_file.casefold()):
+            return {"ok": False, "reason": "board options did not identify the requested board",
+                    "native_reply": reply}
+        return reply
 
     @mcp.tool()
     async def pcb_gerber_options(
+        board_path: str,
         units: Optional[int] = None,
         decimals: Optional[int] = None,
         sort_output: Optional[bool] = None,
@@ -3369,13 +3937,14 @@ def register_pcb_tools(mcp):
         border_mils: Optional[float] = None,
         max_aperture_mils: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Read, or set, the Gerber setup saved in the active board: the
+        """Read, or set, the Gerber setup saved in the exact active board: the
         units and decimals, apertures, flashing, film size and border.
 
         Call with nothing to read; every option set is read back.
         proj_generate_fab_package writes the files.
 
         Args:
+            board_path: Absolute path of the active PcbDoc.
             units: Altium's number for the Gerber units (read it first).
             decimals: Altium's number for the coordinate format.
             sort_output: Sort the plot output.
@@ -3412,11 +3981,14 @@ def register_pcb_tools(mcp):
                     return {"ok": False, "reason": f"{key} is 0 or more"}
                 if key.endswith("_mils"):
                     values[key] = float(value)
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         return await run_options("pcb.output_options", _GERBER_OPTIONS, values,
-                                 {"group": "gerber"})
+                                 {"group": "gerber", "board_path": board_path})
 
     @mcp.tool()
     async def pcb_print_options(
+        board_path: str,
         scale: Optional[float] = None,
         scale_to_fit_page: Optional[bool] = None,
         x_correction: Optional[float] = None,
@@ -3430,13 +4002,14 @@ def register_pcb_tools(mcp):
         composite_type: Optional[int] = None,
         batch_type: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Read, or set, the print setup saved in the active board:
+        """Read, or set, the print setup saved in the exact active board:
         scale, fit to page, corrections, holes and pad labels.
 
         Call with nothing to read; every option set is read back.
         proj_export_pdf prints.
 
         Args:
+            board_path: Absolute path of the active PcbDoc.
             scale: Print scale (1 is full size).
             scale_to_fit_page: Fit the board to the page instead.
             x_correction / y_correction: Scale corrections for the
@@ -3470,45 +4043,18 @@ def register_pcb_tools(mcp):
                 return {"ok": False, "reason": f"{key} is 0 or more"}
         if border_mils is not None:
             values["border_mils"] = float(border_mils)
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
         return await run_options("pcb.output_options", _PRINT_OPTIONS, values,
-                                 {"group": "print"})
+                                 {"group": "print", "board_path": board_path})
 
     @mcp.tool()
     async def pcb_export_component_model(
-        designator: str,
-        out_path: str,
+        board_path: str, designator: str, out_path: str,
     ) -> dict[str, Any]:
-        """Write one placed part's 3D model, as it sits on the board, to
-        a STEP file. No dialog.
-
-        proj_export_step writes the whole board; lib_export_3d_model
-        writes a model from a library footprint.
-
-        Args:
-            designator: The part, e.g. "U1".
-            out_path: Full path of the .step file to write.
-
-        Returns:
-            ``saved`` (what Altium answered) and ``written`` (a file is
-            at out_path that was not there before, or is newer).
-        """
-        import os
-        if not designator.strip():
-            return {"ok": False, "reason": "designator is required"}
-        if not out_path or not os.path.isabs(out_path):
-            return {"ok": False, "reason": "out_path must be a full path"}
-        if os.path.splitext(out_path)[1].lower() not in (".step", ".stp"):
-            return {"ok": False, "reason": "out_path is a .step or .stp file"}
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        before = os.path.getmtime(out_path) if os.path.isfile(out_path) else None
-        reply = await get_bridge().send_command_async(
-            "pcb.export_component_model",
-            {"designator": designator.strip(), "out_path": out_path},
-            timeout=120.0)
-        if isinstance(reply, dict) and "saved" in reply:
-            after = os.path.getmtime(out_path) if os.path.isfile(out_path) else None
-            reply["written"] = after is not None and after != before
-        return reply
+        """Export one placed part as a dialog-free STEP assembly file."""
+        return await _pcb_export_component_step(
+            board_path, designator, out_path, "part")
 
     @mcp.tool()
     async def pcb_get_design_rules() -> dict[str, Any]:
@@ -3524,10 +4070,17 @@ def register_pcb_tools(mcp):
         schematic: the next update from the schematic rewrites it, so
         change it there.
 
+        ``enabled`` is NOT the flag that decides whether DRC checks the
+        rule: that is ``drc_enabled``, which is what
+        ``pcb_set_rules_enabled`` writes and what Altium shows as
+        ``(Disabled)`` inside the descriptor. The two differ often; on a
+        real six-layer board 37 of 159 rules read ``enabled`` true with
+        DRC ignoring them.
+
         Returns:
             Dictionary with "rules" array (each with name, rule_kind,
-            enabled, priority, scope_1, scope_2, comment, descriptor,
-            from_schematic, and
+            enabled, drc_enabled, priority, scope_1, scope_2, comment,
+            descriptor, from_schematic, and
             gap_mm for clearance, component, hole-to-hole and board
             outline clearance rules) and "count".
         """
@@ -3660,9 +4213,28 @@ def register_pcb_tools(mcp):
         passes: with no DRC run this session it is 0 either way (see
         ``note``). ``pcb_run_drc`` runs a fresh check, with no dialog.
 
-        Each violation has ``x_mils``, ``y_mils``, ``layer`` and
-        ``primitive1`` / ``primitive2`` ``{detail, type, net, layer,
-        x_mils, y_mils}``.
+        It used to trigger ``PCB:DesignRuleCheck`` first, which raises
+        Altium's MODAL "Design Rule Checker" setup dialog: on a
+        241-component board that wedged the whole bridge for 30+ min
+        until the client timed out. A "get" tool must not do that, so
+        the trigger is gone. ``pcb_run_drc()`` runs a fresh batch check;
+        ``allow_modal=True`` opens the interactive dialog instead.
+
+        CAVEAT -- ``violation_count: 0`` means "no violations are
+        stored on this board", NOT "the board passes". If DRC has
+        never been run in this Altium session, there is nothing to
+        read and the answer is 0 either way. The response carries
+        ``drc_triggered: false`` and a ``note`` saying so. To get
+        fresh data, call ``pcb_run_drc()`` and verify that its report was
+        written.
+
+        Filter is substring-matched against the violation's Description
+        and Name, so it catches both "Net USB_DP and Net GND" clearance
+        warnings and net-named via antennas.
+
+        Each violation carries ``x_mils`` / ``y_mils`` / ``layer`` for
+        the agent to navigate to, plus ``primitive1`` / ``primitive2``
+        objects with ``{detail, type, net, layer, x_mils, y_mils}``.
 
         Args:
             net: Substring matched against each violation's description
@@ -4010,18 +4582,11 @@ def register_pcb_tools(mcp):
     ) -> dict[str, Any]:
         """Add teardrops through Altium's Teardrops dialog.
 
-        With Dialogs Automatic (Config tab) the tool sets Add, the scope
-        and the options given, then OK; None keeps the dialog's value.
-        Otherwise the dialog waits for the user. A repour can delete them.
-
-        Args:
-            scope: "all" or "selected".
-            via_th_pads, smd_pads, tracks, t_junctions: Objects to treat.
-            force: Place even where a rule is broken.
-            adjust_size: Shrink one that would not fit.
-
-        Returns:
-            ``teardrops_before``, ``teardrops_after``, ``dialog``.
+        Opens Altium's modal Teardrop dialog, which no script parameter
+        suppresses: choose Add, the scope and the settings there, then OK.
+        The reply comes when the dialog closes, and the bridge waits until
+        then; app_ui and app_press_dialog_button can answer it meanwhile. The selection is not changed. A later repour can
+        delete teardrops, so count them after it.
         """
         return await _teardrops("Add", scope, {
             "Via/TH Pad": via_th_pads, "SMD Pad": smd_pads, "Tracks": tracks,
@@ -4810,6 +5375,22 @@ def register_pcb_tools(mcp):
                 "raw": comp_resp,
             }
 
+        approximate = [
+            str(c.get("designator", "")) for c in raw_comps
+            if c.get("placement_bbox_fallback")
+        ]
+        if approximate:
+            return {
+                "error": "PHYSICAL_BBOX_UNAVAILABLE",
+                "reason": (
+                    "The bridge returned component boxes that may include "
+                    "designator or comment text. Placement planning requires "
+                    "physical footprint bounds."
+                ),
+                "affected_count": len(approximate),
+                "affected_designators": approximate[:20],
+            }
+
         # Resolve placement region from the board outline if not given.
         region_used: dict[str, float]
         if region and all(k in region for k in ("x1", "y1", "x2", "y2")):
@@ -4851,7 +5432,9 @@ def register_pcb_tools(mcp):
             if not ref:
                 continue
             all_designators.append(ref)
-            bbox = c.get("bbox") or {}
+            # The fallback flag above prevents visual text bounds from being
+            # treated as physical footprint bounds by the solver.
+            bbox = c.get("placement_bbox") or c.get("bbox") or {}
             try:
                 w = max(1.0, float(bbox.get("width", 0)))
                 h = max(1.0, float(bbox.get("height", 0)))
@@ -5449,8 +6032,6 @@ def register_pcb_tools(mcp):
 
         Pads are sorted by position and numbered in sequence; rows and
         columns are banded by a small tolerance so a grid numbers cleanly.
-        A pad's position is its copper centre, not its origin, so a custom
-        pad numbers where it is drawn.
         Acts on the active PCB library's current footprint.
 
         Args:
@@ -6115,7 +6696,7 @@ def register_pcb_tools(mcp):
             clearance_mils}``, plus ``outside_board`` (grid points left out).
         """
         bridge = get_bridge()
-        params: dict[str, Any] = {
+        params = {
             "net": net,
             "x1_mils": _mils(x1_mils),
             "y1_mils": _mils(y1_mils),
@@ -6134,22 +6715,23 @@ def register_pcb_tools(mcp):
             outline = await bridge.send_command_async("pcb.get_board_outline", {})
             ring = _outline_ring(outline)
             if not ring:
-                return {"success": False,
-                        "error": "the board outline could not be read",
+                return {"success": False, "error": "the board outline could not be read",
                         "outline": outline}
             if no_rect:
                 xs = [p[0] for p in ring]
                 ys = [p[1] for p in ring]
                 x1_mils, y1_mils, x2_mils, y2_mils = min(xs), min(ys), max(xs), max(ys)
             grid = _grid_points(x1_mils, y1_mils, x2_mils, y2_mils, spacing_mils)
-            inside = ([p for p in grid if _inside_ring(p, ring, edge_clearance_mils)]
+            inside = ([point for point in grid
+                       if _inside_ring(point, ring, edge_clearance_mils)]
                       if within_board else grid)
             outside = len(grid) - len(inside)
             if not inside:
-                return {"net": net, "dry_run": dry_run, "placed": 0, "skipped": 0,
-                        "outside_board": outside,
+                return {"net": net, "dry_run": dry_run, "placed": 0,
+                        "skipped": 0, "outside_board": outside,
                         "note": "no grid point lies inside the board"}
-            params["points"] = ";".join(f"{x},{y}" for x, y in inside)
+            params["points"] = ";".join(
+                f"{_mils(x)},{_mils(y)}" for x, y in inside)
         result = await bridge.send_command_async(
             "pcb.place_stitching_vias", params, timeout=120.0)
         if isinstance(result, dict):
@@ -6657,36 +7239,37 @@ def register_pcb_tools(mcp):
         """IPC-2221 current-carrying capacity for a PCB track.
 
         Offline math. ``I = k (dT)^0.44 (h w)^0.725`` in mils and degrees
-        C, with k 0.048 external and 0.024 internal, at rises of 1, 5,
-        10, 20 and 30 C. A length adds DC resistance (annealed copper,
-        20 C) and the voltage drop at each current.
+        C, with k 0.048 external and 0.024 internal. Returns the current
+        at ``delta_t_c`` as well as the established 1/5/10/20/30 C table.
+        A length adds DC resistance (annealed copper, 20 C) and the
+        voltage drop at each tabulated current.
 
         Args:
             width_mils: Track width in mils.
             copper_oz: Copper weight in oz/ft² (1 oz = 1.378 mil).
             layer: ``"external"`` (default) or ``"internal"``.
             length_mils: If > 0, also return resistance and voltage drop.
-            delta_t_c: The temperature rise asked about, in C (10 by
-                default). The 1, 5, 10, 20 and 30 C table is returned too.
+            delta_t_c: Requested temperature rise in C (default 10).
 
         Returns:
             ``width_mils``, ``copper_oz``, ``thickness_mils``, ``layer``,
-            ``delta_t_c`` with ``current_a`` for it, ``current_amps``
-            (keys ``1c`` ... ``30c``), and with a length
+            ``current_a`` at ``delta_t_c``, ``current_amps`` (keys
+            ``1c`` ... ``30c``), and with a length
             ``resistance_mohm`` and ``voltage_drop_mv``.
         """
         if width_mils <= 0:
             return {"ok": False, "reason": "width_mils must be > 0"}
         if copper_oz <= 0:
             return {"ok": False, "reason": "copper_oz must be > 0"}
-        if not 0 < delta_t_c < math.inf:
-            return {"ok": False, "reason": "delta_t_c must be a positive number"}
+        if not math.isfinite(delta_t_c) or delta_t_c <= 0:
+            return {"ok": False, "reason": "delta_t_c must be finite and > 0"}
         layer_norm = layer.strip().lower()
         if layer_norm not in ("external", "internal"):
             return {"ok": False,
                     "reason": "layer must be 'external' or 'internal'"}
 
         from ..units import OZ_TO_MILS
+        from ..design.trace_sizing import current_capacity_amps
 
         thickness_mils = copper_oz * OZ_TO_MILS
         k = 0.024 if layer_norm == "internal" else 0.048
@@ -6696,6 +7279,9 @@ def register_pcb_tools(mcp):
 
         rises = (1, 5, 10, 20, 30)
         current = {f"{t}c": round(k * (t ** b) * hw_c, 3) for t in rises}
+        selected_current = current_capacity_amps(
+            width_mils, copper_oz=copper_oz, delta_t_c=delta_t_c,
+            layer=layer_norm)
         out: dict[str, Any] = {
             "ok": True,
             "width_mils": width_mils,
@@ -6703,7 +7289,7 @@ def register_pcb_tools(mcp):
             "thickness_mils": round(thickness_mils, 3),
             "layer": layer_norm,
             "delta_t_c": delta_t_c,
-            "current_a": round(k * hw_c * delta_t_c ** b, 3),
+            "current_a": round(selected_current, 4),
             "current_amps": current,
         }
         if length_mils > 0:
@@ -6841,8 +7427,8 @@ def register_pcb_tools(mcp):
         use_current_variant: bool = False,
     ) -> dict[str, Any]:
         """Suppress stencil paste on Not-Fitted (DNP) components, so no
-        paste lands on empty pads. Each surface pad gets a paste expansion
-        of minus its larger size; through-hole pads are skipped.
+        paste lands on empty pads. Each surface pad's paste opening is
+        disabled; through-hole pads are skipped.
 
         Apply with no ``designators`` uses the current variant's
         Not-Fitted list. RESTORE THE SAME LIST YOU APPLIED: restore
@@ -6977,8 +7563,9 @@ def register_pcb_tools(mcp):
         Returns:
             ``{designator, pad_name, grid_x, grid_y, grid_size_mils,
             gap_x_mils, gap_y_mils, fills_placed, coverage_pct}``. The
-            pad's own paste opening is suppressed with a manual
-            negative paste-mask expansion before the fills go down.
+            pad's own paste opening is disabled before the fills go down.
+            A pad with paste already disabled is refused, preventing a
+            duplicate grid.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -7394,8 +7981,20 @@ def register_pcb_tools(mcp):
         rotation]) would overlap another component on the same side.
         Use before ``pcb_move_components`` on a populated board.
 
-        Bounding boxes only: a non-quarter rotation reuses the current
-        box, and courtyards and pad clearances are not checked (use DRC).
+        DOES NOT actually move the component. Computes the predicted
+        axis-aligned bounding box at the proposed pose, then AABB-tests
+        against every other same-side component. Use this BEFORE every
+        `pcb_move_components` call when placing parts on a board that
+        already has placed parts.
+
+        What a bbox covers: the union of the footprint's pads, tracks,
+        arcs, fills and regions on ALL layers. That includes the
+        silkscreen OUTLINE and any mechanical courtyard shapes, and
+        excludes every text primitive (designator, comment, free text).
+        It is therefore a body/courtyard box, NOT the Altium component
+        bounding rectangle, which is text-inflated and made 0201s look
+        hundreds of mils tall. Target and colliders are measured
+        identically; each result carries a `bbox_basis` field.
 
         Args:
             designator: Component to test.
@@ -7404,8 +8003,34 @@ def register_pcb_tools(mcp):
             margin_mils: Extra clearance; at 0, touching boxes collide.
 
         Returns:
-            ``{designator, proposed: {x, y, rotation, bbox, margin_mils},
-            clear, colliding_count, colliding: [{designator, bbox}]}``.
+            Dict with:
+              - designator: target.
+              - layer: the target's side, e.g. "TopLayer".
+              - same_side_filter: True when the side rule was applied.
+                False means the target's layer was unreadable and the
+                check fell back to comparing against every component.
+              - bbox_basis: "footprint_body", or
+                "component_rect_including_text" when the footprint had
+                no measurable non-text primitive and the text-inflated
+                rectangle had to be used as a fallback.
+              - bbox_includes: plain-text description of the above.
+              - proposed: {x, y, rotation, bbox:{x1,y1,x2,y2}, margin_mils}.
+              - clear: True if no collisions, False otherwise.
+              - colliding_count: number of collisions.
+              - colliding: list of {designator, layer, bbox_basis,
+                bbox:{...}} per collider. Each bbox is measured from the
+                component named next to it.
+
+        Caveats:
+            - AABB only; rotated non-square footprints will report an
+              inflated bbox.
+            - Same-side check is automatic; the target's bbox is compared
+              only against components on the same layer (Top vs Bottom).
+            - The box is a body/courtyard box including silkscreen
+              outline, not a pad-copper-only box, so it is slightly
+              larger than the package body.
+            - Does not detect courtyard violations or pad-to-pad clearances,
+              only solid-box overlap. Use DRC for actual clearance rules.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
@@ -7833,7 +8458,8 @@ def register_pcb_tools(mcp):
         }
 
     @mcp.tool()
-    async def pcb_add_layer(layer: str, above: str = "", below: str = "") -> dict[str, Any]:
+    async def pcb_add_layer(layer: str, above: str = "", below: str = "",
+                            legacy_stack_write: bool = False) -> dict[str, Any]:
         """Insert a copper layer into the PCB layer stack.
 
         Valid names include MidLayer1..MidLayer30 (signal layers) and
@@ -7846,10 +8472,16 @@ def register_pcb_tools(mcp):
             layer: Layer name, e.g. "MidLayer1", "InternalPlane1"
             above: Put it directly above this layer.
             below: Put it directly below this layer.
+            legacy_stack_write: Explicit opt-in to the legacy V7 stack path.
 
         Returns:
             ``layer`` and ``stack_order``, the copper layers top down.
         """
+        if not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "The V7 stack path can corrupt the saved physical stack. "
+                    "Use pcb_build_stack on an exact PcbDoc, or opt in and "
+                    "verify the saved file with pcb_stack_from_file."}
         if above.strip() and below.strip():
             return {"ok": False, "reason": "give above or below, not both"}
         params: dict[str, Any] = {"layer": layer}
@@ -7857,7 +8489,10 @@ def register_pcb_tools(mcp):
             params["above"] = above.strip()
         if below.strip():
             params["below"] = below.strip()
-        return await get_bridge().send_command_async("pcb.add_layer", params)
+        result = await get_bridge().send_command_async("pcb.add_layer", params)
+        if isinstance(result, dict):
+            result.setdefault("verify", "save and check with pcb_stack_from_file")
+        return result
 
     @mcp.tool()
     async def pcb_move_layer(
@@ -7896,7 +8531,9 @@ def register_pcb_tools(mcp):
             steps: How many places, 1 to 64.
             alone: Move only this layer on a symmetric stack.
             force: Move even when the Layer Stack Manager disagrees with
-                the board's stack (its values are then written back).
+                the board's stack (its values are then written back). A
+                manager layer of type ``other`` (surface finish) is not a
+                disagreement: the board has no layer object for one.
 
         Returns:
             ``layer``, ``direction``, ``steps_requested``, ``steps_done``,
@@ -7918,13 +8555,17 @@ def register_pcb_tools(mcp):
             manager = await bridge.send_command_async("pcb.layer_stack_manager", {})
             physical = await bridge.send_command_async("pcb.physical_stack", {})
             diff = stack_manager_out_of_step(manager, physical)
-            if diff:
+            # A manager-only layer (surface finish) is not a disagreement:
+            # the board has no such layer to be written over. See
+            # stack_manager_out_of_step.
+            blocking = [d for d in diff if d.get("field") != "manager_only"]
+            if blocking:
                 return {"ok": False,
                         "reason": ("the Layer Stack Manager disagrees with the board's "
                                    "stack; a move would write its values back over the "
                                    "board's. pcb_sync_stack_manager brings it in step "
                                    "(force=True moves anyway)"),
-                        "out_of_step": diff}
+                        "out_of_step": blocking}
         params: dict[str, Any] = {"layer": layer.strip(), "direction": direction,
                                   "steps": str(steps),
                                   "alone": "true" if alone else "false"}
@@ -7932,32 +8573,42 @@ def register_pcb_tools(mcp):
             "pcb.move_layer", params, timeout=120.0)
 
     @mcp.tool()
-    async def pcb_remove_layer(layer: str) -> dict[str, Any]:
+    async def pcb_remove_layer(layer: str,
+                               legacy_stack_write: bool = False) -> dict[str, Any]:
         """Remove a copper layer from the PCB layer stack.
 
         Does nothing if the layer is not in the stack.
 
         Args:
             layer: Layer name, e.g. "MidLayer1", "InternalPlane2"
+            legacy_stack_write: Explicit opt-in to the legacy V7 stack path.
 
         Returns:
             Dictionary confirming the layer was removed.
         """
+        if not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "Use pcb_build_stack on an exact PcbDoc, or opt in and "
+                    "verify the saved file with pcb_stack_from_file."}
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "pcb.remove_layer", {"layer": layer}
         )
+        if isinstance(result, dict):
+            result.setdefault("verify", "save and check with pcb_stack_from_file")
         return result
 
     @mcp.tool()
     async def pcb_modify_layer(
         layer: str,
+        board_path: str = "",
         name: str = "",
-        copper_thickness_mils: float = 0,
+        copper_thickness_mils: float = 0.0,
         dielectric_type: str = "",
-        dielectric_height_mils: float = 0,
+        dielectric_height_mils: float = 0.0,
         dielectric_constant: float = 0.0,
         dielectric_material: str = "",
+        legacy_stack_write: bool = False,
     ) -> dict[str, Any]:
         """Tune properties on an existing copper layer.
 
@@ -7966,21 +8617,31 @@ def register_pcb_tools(mcp):
         Args:
             layer: Target layer name, e.g. "MidLayer1"
             name: New layer name (optional)
-            copper_thickness_mils: New copper thickness in mils (optional);
-                fractions are kept, 1 oz is 1.378
+            copper_thickness_mils: New copper thickness in mils, fractional
+                (1 oz is 1.378) (optional)
             dielectric_type: "none" | "core" | "prepreg" | "surface" (optional)
-            dielectric_height_mils: New dielectric height in mils (optional);
-                fractions are kept
+            dielectric_height_mils: New dielectric height in mils, fractional
+                (optional)
             dielectric_constant: New Dk value (optional)
             dielectric_material: New dielectric material string (optional)
+            legacy_stack_write: Explicit opt-in for any dielectric field.
 
         Returns:
             Dictionary confirming the changes, and ``stack_manager``: the
             Layer Stack Manager's own copy of the stack brought in step, as
             pcb_sync_stack_manager reports it.
         """
+        if (dielectric_type or dielectric_height_mils or dielectric_constant
+                or dielectric_material) and not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "Legacy dielectric writes can corrupt the saved physical stack. "
+                    "Use pcb_build_stack or opt in and verify with pcb_stack_from_file."}
         bridge = get_bridge()
         params: dict[str, str] = {"layer": layer}
+        if board_path:
+            if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+                return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+            params["board_path"] = board_path
         if name:
             params["name"] = name
         if copper_thickness_mils:
@@ -7994,9 +8655,11 @@ def register_pcb_tools(mcp):
         if dielectric_material:
             params["dielectric_material"] = dielectric_material
         result = await bridge.send_command_async("pcb.modify_layer", params)
-        if isinstance(result, dict) and result.get("success") is not False:
-            # The write does not reach the Layer Stack Manager's own copy.
-            result["stack_manager"] = await sync_stack_manager(bridge)
+        if (board_path and isinstance(result, dict)
+                and result.get("success") is not False and not result.get("error")):
+            result["stack_manager"] = await sync_stack_manager(bridge, board_path)
+        if legacy_stack_write and isinstance(result, dict):
+            result.setdefault("verify", "save and check with pcb_stack_from_file")
         return result
 
     @mcp.tool()
@@ -8500,10 +9163,11 @@ def register_pcb_tools(mcp):
         Returns:
             ``edges``, ``added``, ``already_there`` and ``width_mils``.
         """
-        # Sent through _mils, so 12.5 mil stays 12.5 rather than 12.
-        if type(width_mils) not in (int, float) or not 0 < width_mils < math.inf:
-            return {"success": False, "error": "width_mils must be a number above 0"}
-        return await get_bridge().send_command_async(
+        if (type(width_mils) not in (int, float)
+                or not math.isfinite(width_mils) or width_mils <= 0):
+            return {"success": False, "error": "width_mils must be finite and positive"}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
             "pcb.keepout_board_outline", {"width": _mils(width_mils)})
 
     @mcp.tool()
@@ -8543,16 +9207,18 @@ def register_pcb_tools(mcp):
             ``repour_mode``) and ``keepout`` (what the keep-out outline
             added).
         """
-        if type(edge_clearance_mils) not in (int, float) \
-                or not 0 <= edge_clearance_mils < math.inf:
+        if (type(edge_clearance_mils) not in (int, float)
+                or not math.isfinite(edge_clearance_mils)
+                or edge_clearance_mils < 0):
             return {"success": False,
-                    "error": "edge_clearance_mils must be a number, 0 or more"}
+                    "error": "edge_clearance_mils must be finite and nonnegative"}
         bridge = get_bridge()
         keepout: Any = None
         if edge_clearance_mils > 0:
             # The keep-out track is centred on the edge, so twice as wide.
             keepout = await bridge.send_command_async(
-                "pcb.keepout_board_outline", {"width": _mils(edge_clearance_mils * 2)})
+                "pcb.keepout_board_outline",
+                {"width": _mils(2 * edge_clearance_mils)})
             if isinstance(keepout, dict) and keepout.get("success") is False:
                 return {"success": False, "error": "the keep-out outline failed",
                         "keepout": keepout}
@@ -8697,12 +9363,30 @@ def register_pcb_tools(mcp):
                    "width": 10, "net_name": "NetC8_2"},
                 ]
 
+        Connectivity: each segment is registered with the board
+        individually and, when it names a net, joined to that net's
+        primitive list; the batch then triggers a connectivity rebuild
+        so ``pcb_get_unrouted_nets`` is trustworthy immediately after.
+        A net name that does not exist on the board is NOT created, and
+        the segment is NOT placed: it is counted in ``failed`` and
+        ``nets_not_found`` and named in ``unknown_nets``. It used to be
+        placed netless, which left copper that looked routed and was not.
+
         Returns:
-            Dictionary with "placed" and "failed" counts, "zero_length"
-            (tracks not placed because both ends are the same point),
-            "unknown_layers" and "unknown_nets" naming what did not
-            resolve, and, when any track took "current", "current_layer"
-            and "on_current_layer".
+            Dictionary with:
+              - placed, skipped_existing (exact direction-insensitive
+                duplicates), failed: segment counts.
+              - zero_length: tracks not placed because both ends are
+                the same point (Altium drops them; counted in failed).
+              - nets_not_found: segments refused because ``net_name``
+                matched no net on the board. Non-zero here is the usual
+                reason a net still looks unrouted.
+              - unknown_nets, unknown_layers: the names that did not
+                resolve, so a typo can be read off the reply.
+              - current_layer and on_current_layer, when any track took
+                "current" for its layer.
+              - connectivity_rebuilt: the rebuild was issued (only when
+                something was actually placed).
         """
         parts = []
         for t in tracks:
@@ -8834,10 +9518,10 @@ def register_pcb_tools(mcp):
                 start_angle (default 0), end_angle (default 360),
                 and optionally its own width, layer, net, keepout
             width: Line width for every arc that gives none (default 10)
-            layer: Layer for every arc that gives none (default
-                "TopLayer"). "current" = the editor's CURRENT layer, set
-                with pcb_layer_view current_layer; it is read once per call
-                and named in the reply, since a click on another layer tab
+            layer: Layer for every arc that gives none. Empty (or
+                "current") = the editor's CURRENT layer, set with
+                pcb_layer_view current_layer; it is read once per call and
+                named in the reply, since a click on another layer tab
                 between calls moves it.
             net: Net for every arc that gives none (empty = no net); an
                 arc on a net the board does not have is skipped
@@ -8917,9 +9601,8 @@ def register_pcb_tools(mcp):
             plated: False for a non-plated hole
             mask_expansion, paste_expansion: Manual solder / paste mask
                 expansion (omitted = the board's rules)
-            layer: Copper layer of an SMD pad (default "TopLayer").
-                "current" = the editor's CURRENT layer, read once and named
-                in the reply.
+            layer: Copper layer of an SMD pad. Empty (or "current") = the
+                editor's CURRENT layer, read once and named in the reply.
             net: Net for every pad that gives none; a pad on a net the
                 board does not have is skipped
             units: "mil" (default) or "mm" for every length
@@ -9157,13 +9840,10 @@ def register_pcb_tools(mcp):
                 "solder_mask_expansion" / "paste_mask_expansion" (value =
                 SIGNED radial expansion; negative with scope "IsVia" tents
                 vias), "vias_under_smd" (set ``allowed``, not value),
-                "length" (value = min length in mils, max_value = max),
-                "signal_impedance" (value = min ohms, max_value = max),
                 "flight_time_rising" / "flight_time_falling" (value =
-                max flight time in ns). These four read their limits back
-                in ``limits``; change them later with
-                pcb_set_rule_properties.
-            value: Primary value in mils (the MIN for ranged kinds).
+                maximum flight time in seconds).
+            value: Primary value in mils (the MIN for ranged kinds), or
+                seconds for the two flight-time kinds.
             max_value: MAX for ranged kinds (default 5x value).
             favored_value: Preferred value (default value).
             max_uncoupled_length: differential_pairs only, mils
@@ -9186,6 +9866,8 @@ def register_pcb_tools(mcp):
         be created; existing ones can be changed with
         pcb_set_rule_properties.
         """
+        if not math.isfinite(value) or (max_value is not None and not math.isfinite(max_value)):
+            return {"ok": False, "reason": "rule limits must be finite"}
         params = create_rule_params(
             name, rule_type, value, max_value, favored_value, max_uncoupled_length,
             scope, net_scope, allowed, connect_style)
@@ -9441,6 +10123,9 @@ def register_pcb_tools(mcp):
         net: str = "",
         top: Optional[bool] = None,
         bottom: Optional[bool] = None,
+        board_path: str = "",
+        dry_run: bool = True,
+        expected_plan: str = "",
     ) -> dict[str, Any]:
         """Set a board via's own Tenting Top / Bottom flags.
 
@@ -9451,29 +10136,41 @@ def register_pcb_tools(mcp):
         PcbLib.
 
         Args:
+            board_path: Exact loaded PcbDoc path. Required for reads and writes.
             points: ``[{x, y}]`` in mils; each picks the via whose pad
                 covers that point (nearest centre wins).
             net: Without points, every free via on this net; with points,
                 only vias on this net are considered.
             top, bottom: True tents that side, False opens it; leave one
                 out to keep it as it is.
+            dry_run: True by default. Return the selected vias and a plan token.
+            expected_plan: The token from that dry run, required for a write.
 
         Returns:
             ``matched``, ``changed``, ``failed``, ``points_without_a_via``,
             ``footprint_vias_skipped`` and ``vias`` [{x_mils, y_mils, net,
             tenting_top, tenting_bottom, mask_made_manual, ok}].
         """
+        if (not board_path or not Path(board_path).is_absolute()
+                or Path(board_path).suffix.casefold() != ".pcbdoc"):
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if (top is not None and type(top) is not bool) or (bottom is not None and type(bottom) is not bool):
+            return {"ok": False, "reason": "top and bottom must be booleans"}
         if top is None and bottom is None:
             return {"ok": False, "reason": "top and/or bottom say what to set"}
         if not points and not net.strip():
             return {"ok": False, "reason": "points or net say which vias"}
-        params: dict[str, Any] = {}
+        params: dict[str, Any] = {"board_path": board_path, "dry_run": "true"}
         if points:
             try:
+                coords = [(float(p["x"]), float(p["y"])) for p in points]
+                if any(not math.isfinite(v) or abs(v) > 1_000_000
+                       for pair in coords for v in pair):
+                    raise ValueError("point coordinate outside board range")
                 params["points"] = ";".join(
-                    f"{float(p['x'])},{float(p['y'])}" for p in points)
+                    f"{x:.6f},{y:.6f}" for x, y in coords)
             except (KeyError, TypeError, ValueError):
-                return {"ok": False, "reason": "each point is {x, y} in mils"}
+                return {"ok": False, "reason": "each point needs finite {x, y} in mils"}
         if net.strip():
             params["net"] = net.strip()
         if top is not None:
@@ -9481,7 +10178,31 @@ def register_pcb_tools(mcp):
         if bottom is not None:
             params["bottom"] = "true" if bottom else "false"
         bridge = get_bridge()
-        return await bridge.send_command_async("pcb.set_via_tenting", params)
+        plan = await bridge.send_command_async("pcb.set_via_tenting", params)
+        if (not isinstance(plan, dict) or plan.get("dry_run") is not True
+                or str(plan.get("board_path", "")).casefold() != board_path.casefold()
+                or type(plan.get("matched")) is not int
+                or not isinstance(plan.get("plan_token"), str)):
+            return {"ok": False, "reason": "via tenting plan was incomplete or targeted another board",
+                    "native_reply": plan}
+        if dry_run or plan.get("success") is not True:
+            return plan
+        if not expected_plan or expected_plan != plan["plan_token"]:
+            return {"ok": False, "reason": "expected_plan differs from the current via selection",
+                    "current_plan": plan}
+        reply = await bridge.send_command_async(
+            "pcb.set_via_tenting",
+            {**params, "dry_run": "false", "expected_plan": expected_plan})
+        if (not isinstance(reply, dict) or reply.get("success") is not True
+                or reply.get("dry_run") is not False
+                or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or reply.get("matched") != plan["matched"]
+                or reply.get("failed") != 0):
+            return {"ok": False, "reason": "via tenting write was not fully verified",
+                    "native_reply": reply, "plan": plan}
+        reply["ok"] = True
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
 
     @mcp.tool()
     async def pcb_get_mech_layer_names(
@@ -9565,14 +10286,16 @@ def register_pcb_tools(mcp):
         return result or {}
 
     @mcp.tool()
-    async def pcb_get_layer_display() -> dict[str, Any]:
+    async def pcb_get_layer_display(board_path: str = "") -> dict[str, Any]:
         """Visibility and colour for every layer on the active board.
 
         Covers signal, plane, mechanical, mask, paste, silk, keepout and
         multilayer. Each entry gives the internal ``layer`` id, the user's
-        ``name`` for it, whether it is ``visible``, ``in_stack``
-        (a mid layer the stack does not use still reads as displayed), and
-        its colour both as Altium's raw integer and as ``color_hex``.
+        ``name`` for it, the stored ``visibility_setting`` (also returned
+        as ``visible`` for compatibility), ``in_physical_stack``, and its
+        colour both as Altium's raw integer and as ``color_hex``. For copper
+        layers absent from the physical stack, a true visibility setting
+        does not mean a layer tab exists in the PCB editor.
 
         ``color_hex`` is #RRGGBB; the raw integer is byte-reversed.
 
@@ -9580,7 +10303,8 @@ def register_pcb_tools(mcp):
             Dict with ``layers``, ``count`` and ``visible_count``.
         """
         bridge = get_bridge()
-        return await bridge.send_command_async("pcb.get_layer_display", {})
+        params = {"board_path": board_path} if board_path else {}
+        return await bridge.send_command_async("pcb.get_layer_display", params)
 
     @mcp.tool()
     async def pcb_layer_view(
@@ -9768,6 +10492,10 @@ def register_pcb_tools(mcp):
                 "region" - Region / split-plane
                 "component" - Placed component
                 (for bulk/filter-based deletes use ``obj_delete``)
+
+        Connectivity is rebuilt afterwards, because removing copper
+        changes the net topology and the ratsnest would otherwise stay
+        stale.
 
         Returns:
             Dictionary with deleted status, object_type, distance_mils,
@@ -10953,9 +11681,12 @@ def register_pcb_tools(mcp):
         Args:
             name: Design rule name (e.g., "Clearance", "Width", "RoutingVias").
 
+        ``drc_enabled`` is the flag that decides whether DRC checks the
+        rule, and it is not ``enabled``; see ``pcb_get_design_rules``.
+
         Returns:
-            Dict with name, rule_kind, enabled, priority, descriptor, and
-            gap_mm for a clearance-family rule.
+            Dict with name, rule_kind, enabled, drc_enabled, priority,
+            descriptor, and gap_mm for a clearance-family rule.
         """
         bridge = get_bridge()
         return await bridge.send_command_async(
@@ -11014,8 +11745,13 @@ def register_pcb_tools(mcp):
         width_max_impedance: float | None = None,
         width_preferred_impedance: float | None = None,
         check_connected_copper: bool | None = None,
-        min_hole_size_mils: float | None = None,
-        max_hole_size_mils: float | None = None,
+        min_hole_size_mils: int | None = None,
+        max_hole_size_mils: int | None = None,
+        min_length_mils: float | None = None,
+        max_length_mils: float | None = None,
+        min_signal_impedance_ohms: float | None = None,
+        max_signal_impedance_ohms: float | None = None,
+        max_flight_time_seconds: float | None = None,
         min_via_size_mils: float | None = None,
         max_via_size_mils: float | None = None,
         preferred_via_size_mils: float | None = None,
@@ -11023,89 +11759,62 @@ def register_pcb_tools(mcp):
         max_via_hole_mils: float | None = None,
         preferred_via_hole_mils: float | None = None,
         testpoint: dict[str, Any] | None = None,
-        min_length_mils: float | None = None,
-        max_length_mils: float | None = None,
-        min_signal_impedance_ohms: float | None = None,
-        max_signal_impedance_ohms: float | None = None,
         max_flight_time_ns: float | None = None,
     ) -> dict[str, Any]:
         """Update metadata AND constraint values of a named PCB design rule.
 
-        Pass only what should change. Constraint fields by rule kind:
-        clearance kinds (Clearance, ComponentClearance, HoleToHole,
-        BoardOutline, MinimumSolderMaskSliver, SilkToSolderMaskClearance,
-        SilkToSilkClearance): ``gap_mils`` or ``gap_mm`` (0.2 mm cannot
-        be said in whole mils); Width: the three width fields, every layer;
-        HoleSize: the hole fields; Routing Via: the via size and hole
-        fields, checked as a set (min <= preferred <= max, diameter >
-        hole). Writes are read back: ``gap_written``, ``via_sizes_written``
-        and ``properties_updated`` count only what took. A template-mode
-        via rule keeps its templates (``via_note``). Priority cannot be
-        changed from a script; reorder rules in Altium's rules editor.
+        Metadata fields always apply. Constraint fields are dispatched
+        by the rule's underlying RuleKind:
 
-        Args:
-            name: Rule name to update.
-            enabled: Whether DRC enforces the rule.
-            scope1 / scope2: Rule scope query expressions. A comparison
-                joined by And/Or/Xor/Not must be bracketed
-                (``"IsPad And (HoleSize > 3)"``) or joined with ``&&``;
-                an unbracketed one is refused before anything is sent.
-            comment: Free-form comment.
-            gap_mils: Clearance gap, or the sliver width for a
-                MinimumSolderMaskSliver rule. Applies to every kind
-                listed above.
-            min_width_mils / max_width_mils / favored_width_mils:
-                Width constraint values (applied to every layer); decimals
-                allowed. The *_mm forms are exact (0.09 mm is 3.543 mil).
-                On a Differential Pairs Routing rule (kind 51) they set the
-                pair's track widths.
-            dp_min_gap_mils / dp_max_gap_mils / dp_preferred_gap_mils and
-                the *_mm forms: a Differential Pairs Routing rule's gaps,
-                every layer. Read back in ``diff_pair_descriptor``.
-            dp_impedance_driven, dp_min_impedance / dp_max_impedance /
-                dp_preferred_impedance: a Differential Pairs Routing
-                rule's width and gap follow an impedance profile, and its
-                limits in ohms. Read back in ``impedance``; any that did not
-                take is in ``impedance_not_applied``.
-            height_min_mils / height_max_mils / height_preferred_mils: a
-                Height rule's part height limits.
-            vertical_gap_mils, show_distances, collision_check_mode: a
-                Component Clearance rule's vertical gap, whether it shows
-                the distances, and its check mode (Altium's number).
-            corner_min_setback_mils / corner_max_setback_mils: a Routing
-                Corners rule's setbacks.
-            antenna_tolerance_mils: a Net Antennae rule's tolerance.
-            fanout_style, fanout_direction, bga_fanout_direction,
-                bga_via_mode (Altium's numbers) and fanout_via_grid_mils:
-                a Fanout Control rule.
-            width_impedance_driven, width_min_impedance /
-                width_max_impedance / width_preferred_impedance (ohms) and
-                check_connected_copper: a Width rule.
-                These settings are read back in ``settings``; any that did
-                not take is in ``settings_not_applied``. A setting for a
-                rule of another kind is refused.
-            connect_style: Polygon Connect (kind 20) or Power Plane Connect
-                (kind 6) rule: "relief", "direct" or "none". Confirmed from
-                the rule's own descriptor (``connect_style_confirmed``).
-            relief_width_mils / relief_width_mm, air_gap_mils / air_gap_mm,
-                entries (2 or 4), relief_angle (45 or 90, polygon only),
-                relief_expansion_mils (plane only): the relief's settings.
-            min_hole_size_mils / max_hole_size_mils: HoleSize
-                constraint limits.
-            min_length_mils / max_length_mils: a Length rule's limits.
-            min_signal_impedance_ohms / max_signal_impedance_ohms: a
-                Signal Integrity Impedance rule's limits.
-            max_flight_time_ns: a Flight Time (rising or falling edge)
-                rule's limit. These three are read back in limits; one
-                that did not hold, or that belongs to another kind of rule,
-                is named in limits_note.
-            testpoint: a Testpoint Style rule's settings, by name:
-                min_size_mils, max_size_mils, preferred_size_mils,
-                min_hole_mils, max_hole_mils, preferred_hole_mils,
-                grid_mils, grid_tolerance_mils, min_spacing_mils,
-                body_clearance_mils, edge_clearance_mils (0 or more) and
-                under_component, use_grid (True / False). Read back in
-                ``settings`` like the settings above.
+        - Clearance (kind 0), ComponentClearance (kind 24),
+          HoleToHoleClearance (kind 52), MinimumSolderMaskSliver
+          (kind 53), SilkToSolderMaskClearance (kind 54),
+          SilkToSilkClearance (kind 55), and BoardOutlineClearance
+          (kind 63): ``gap_mils``, or ``gap_mm`` when the value is
+          metric. An integer mil field cannot express 0.2mm; it lands
+          on 8 mils, which is 0.2032mm. Pass one or the other.
+        - Width (kind 2): ``min_width_mils`` / ``max_width_mils`` /
+          ``favored_width_mils`` (applied to every layer).
+        - HoleSize (kind 42): ``min_hole_size_mils`` / ``max_hole_size_mils``.
+        - Length (kind 3): ``min_length_mils`` / ``max_length_mils``.
+          The reply includes the limits read back from Altium.
+        - Signal Integrity Impedance (kind 33):
+          ``min_signal_impedance_ohms`` / ``max_signal_impedance_ohms``.
+        - Flight Time Rising/Falling Edge (kinds 36/37):
+          ``max_flight_time_seconds``.
+        - Routing Via: ``min_via_size_mils`` / ``max_via_size_mils`` /
+          ``preferred_via_size_mils`` and the three ``*_via_hole_mils``.
+          Checked as a set first (minimum <= preferred <= maximum, every
+          diameter larger than its hole) and each read back; the reply
+          carries ``via_sizes_mils`` and ``via_sizes_written``. A rule in
+          template mode keeps checking its templates, and ``via_note``
+          says so; this cannot switch a rule between modes.
+
+        THE GAP WRITE IS READ BACK, not assumed. A rule kind that does
+        not really carry Gap can accept the assignment and keep its old
+        value, so the reply carries ``gap_written``, ``gap_after_mm``
+        and, when it did not take, a note saying the rule still holds
+        the old number. Kind 63 in particular is included on the
+        strength of its position in the TRuleKind order rather than a
+        documented interface, so let ``gap_written`` decide whether it
+        worked rather than the count.
+
+        Pass only the parameters you want to change; everything else
+        stays untouched. ``properties_updated`` counts native write
+        groups (for example, all Height settings together), while
+        ``settings_not_applied`` names individual values that did not
+        read back. A call without a property is refused before Altium
+        can mark the document dirty.
+
+        NOTE: Priority is NOT writable from this tool. ``IPCB_Rule.Priority``
+        is a read-only function in the PCB scripting API
+        (``Function Priority : TRulePrecedence``), not a property; there
+        is no ``SetState_Priority`` or ``SetPriority`` method either.
+        Assigning to it crashes the DelphiScript engine. To reorder rule
+        priorities, drag them in Altium's UI (PCB > Rules and Constraints
+        Editor; rules earlier in a category have higher priority).
+
+Args: name selects an existing rule. Pass only fields to change. Lengths use mils, impedance uses ohms, and max_flight_time_ns uses nanoseconds. See pcb_get_design_rules to inspect the rule before and after writing.
 
         Returns:
             Dict with name, rule_kind, and properties_updated count.
@@ -11143,6 +11852,11 @@ def register_pcb_tools(mcp):
             ("dp_preferred_gap_mm", dp_preferred_gap_mm),
             ("min_hole_size_mils", min_hole_size_mils),
             ("max_hole_size_mils", max_hole_size_mils),
+            ("min_length_mils", min_length_mils),
+            ("max_length_mils", max_length_mils),
+            ("min_signal_impedance_ohms", min_signal_impedance_ohms),
+            ("max_signal_impedance_ohms", max_signal_impedance_ohms),
+            ("max_flight_time_seconds", max_flight_time_seconds),
             ("min_via_size_mils", min_via_size_mils),
             ("max_via_size_mils", max_via_size_mils),
             ("preferred_via_size_mils", preferred_via_size_mils),
@@ -11193,6 +11907,20 @@ def register_pcb_tools(mcp):
                     "min_length_mils", "max_length_mils"):
             if key in params and float(params[key]) < 0:
                 return {"ok": False, "reason": f"{key} is 0 or more"}
+        for key in ("min_length_mils", "max_length_mils"):
+            if key in params and (not math.isfinite(float(params[key])) or float(params[key]) < 0):
+                return {"ok": False, "reason": f"{key} must be finite and 0 or more"}
+        if min_length_mils is not None and max_length_mils is not None and min_length_mils > max_length_mils:
+            return {"ok": False, "reason": "min_length_mils exceeds max_length_mils"}
+        for key in ("min_signal_impedance_ohms", "max_signal_impedance_ohms"):
+            if key in params and (not math.isfinite(float(params[key])) or float(params[key]) <= 0):
+                return {"ok": False, "reason": f"{key} must be finite and more than 0"}
+        if (min_signal_impedance_ohms is not None and max_signal_impedance_ohms is not None
+                and min_signal_impedance_ohms > max_signal_impedance_ohms):
+            return {"ok": False, "reason": "min_signal_impedance_ohms exceeds max_signal_impedance_ohms"}
+        if max_flight_time_seconds is not None and (not math.isfinite(max_flight_time_seconds)
+                                                   or max_flight_time_seconds <= 0):
+            return {"ok": False, "reason": "max_flight_time_seconds must be finite and more than 0"}
         for key, value in (("width_impedance_driven", width_impedance_driven),
                            ("check_connected_copper", check_connected_copper)):
             if value is not None:
@@ -11216,7 +11944,8 @@ def register_pcb_tools(mcp):
         # Nothing to change: answered here, so the board is not marked
         # edited by a call that wrote nothing.
         if set(params) <= {"name"}:
-            return {"ok": False, "reason": "give at least one rule property to change",
+            return {"ok": False, "success": False, "error": "NO_PROPERTIES",
+                    "reason": "provide at least one rule property to change",
                     "properties_updated": 0}
 
         return await _rule_edit("pcb_set_rule_properties", params,
@@ -11265,3 +11994,1784 @@ def register_pcb_tools(mcp):
                 "layer": layer,
             },
         )
+
+    @mcp.tool()
+    async def pcb_get_object_classes() -> dict[str, Any]:
+        """Get every object class on the active PCB, with resolved membership.
+
+        Answers what pcb_get_net_classes cannot: whether a differential-pair or
+        component class exists and what is actually in it. Membership is probed
+        with IPCB_ObjectClass.IsMember against nets, components and differential
+        pairs, because MemberCount/MemberName[] are not exposed in DelphiScript.
+
+        The declared MemberKind is reported only as "is_net_class": the
+        component and differential-pair kind constants are undeclared in this
+        DelphiScript host, and referencing one is a compile-time failure. Class
+        membership is therefore reported from what probing actually returned,
+        not from the declared kind.
+
+        Returns:
+            Dictionary with "object_classes" (each with name, super_class,
+            is_net_class, per-kind counts and member name arrays), "count"
+            including Altium's built-in superclasses, "user_class_count"
+            excluding those superclasses,
+            and "member_names_truncated" when a class exceeded the name cap.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("pcb.get_object_classes", {})
+        return result
+
+    @mcp.tool()
+    async def pcb_recenter_component_origins(
+        board_path: str,
+        min_offset_mils: float = 100,
+        designator: str = "",
+        apply: bool = False,
+        expected_plan: str = "",
+    ) -> dict[str, Any]:
+        """Plan or fix component origins far from their pad centroids.
+
+        The origin moves while pads and artwork stay in place. Use the
+        dry run first; pass its exact ``plan`` as ``expected_plan`` with
+        ``apply=True``. Give ``designator`` to limit work to one component.
+        ``board_path`` must be the exact focused PcbDoc. This repairs
+        imported footprints whose remote origin breaks Fit Document.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "error": "BAD_BOARD_PATH"}
+        if not math.isfinite(min_offset_mils) or min_offset_mils < 0:
+            return {"ok": False, "error": "BAD_MIN_OFFSET"}
+        if apply and not expected_plan:
+            return {"ok": False, "error": "PLAN_REQUIRED"}
+        params = {"board_path": board_path,
+                  "min_offset_mils": str(min_offset_mils),
+                  "designator": designator,
+                  "apply": "true" if apply else "false"}
+        if apply:
+            params["expected_plan"] = expected_plan
+        result = await get_bridge().send_command_async(
+            "pcb.recenter_component_origins", params, timeout=120.0)
+        if not isinstance(result, dict) or str(result.get("board_path", "")).casefold() != board_path.casefold():
+            return {"ok": False, "error": "BOARD_MISMATCH", "native_reply": result}
+        return result
+
+    @mcp.tool()
+    async def pcb_apply_silk_clip_plan(
+        board_path: str, plan_path: str, apply: bool = False,
+    ) -> dict[str, Any]:
+        """Validate or apply a reviewed JSONL plan of overlay track changes.
+
+        One JSON object per line. ``pcb_get_overlay_tracks`` reports every
+        field a line needs, and ALL of these are required:
+
+        * ``address`` -- the track's object address.
+        * ``layer`` -- "TopOverlay" or "BottomOverlay". Nothing else is
+          accepted.
+        * ``assembly_layer`` -- "Mechanical11" for a top track,
+          "Mechanical12" for a bottom one. The other pairing is refused.
+        * ``x1``, ``y1``, ``x2``, ``y2`` -- the RAW coordinates that
+          reader gives. They are compared as TEXT, so a value converted
+          to millimetres and back never matches.
+        * ``width`` -- raw too. MEASURED: a line without it is refused
+          with STALE_PLAN naming the address, because the missing field
+          reads as a width that changed.
+        * ``component`` -- the owning designator, and the track must
+          actually have an owner. A free overlay track is refused with
+          BAD_OWNER however complete the rest of the line is.
+
+        ``segments`` is optional and clips the track rather than moving
+        it whole.
+
+        Applying twice is safe: the second pass reports the line under
+        ``already_applied`` and changes nothing.
+        """
+        return await get_bridge().send_command_async(
+            "pcb.apply_silk_clip_plan",
+            {"board_path": board_path, "plan_path": plan_path, "apply": str(apply).lower()},
+            timeout=240.0,
+        )
+
+    @mcp.tool()
+    async def pcb_get_overlay_tracks(
+        board_path: str = "",
+        layer: str = "",
+        designator: str = "",
+        limit: int = 0,
+    ) -> dict[str, Any]:
+        """Silkscreen tracks, with the address the two silk tools take.
+
+        ``pcb_clone_silk_track_fragment`` and ``pcb_apply_silk_clip_plan``
+        both identify a track by its object address, and nothing emitted
+        one: the only place an overlay track address appeared was in
+        clone's own reply, which you need an address to get. Both were
+        unreachable without this.
+
+        ``x1``..``y2`` are RAW Altium coordinates, which is what a clip
+        plan compares against; ``*_mils`` are the same values for a human
+        and must not be put in a plan.
+
+        Args:
+            board_path: The .PcbDoc, which must be the focused board, as
+                both writers require. Empty uses the active board.
+            layer: "TopOverlay" or "BottomOverlay". Empty means both.
+            designator: Only tracks owned by that component. Empty means
+                all, including tracks owned by no component.
+            limit: Stop after this many. 0 means every one.
+
+        Returns:
+            ``tracks``: [{address, layer, component, x1, y1, x2, y2,
+            width, and the _mils of each}], ``count`` and ``board``.
+        """
+        params: dict[str, Any] = {"limit": str(int(limit))}
+        for key, value in (("board_path", board_path), ("layer", layer),
+                           ("designator", designator)):
+            if value:
+                params[key] = value
+        return await get_bridge().send_command_async(
+            "pcb.get_overlay_tracks", params, timeout=180.0)
+
+    @mcp.tool()
+    async def pcb_clone_silk_track_fragment(
+        board_path: str, address: str,
+        x1_mm: float, y1_mm: float, x2_mm: float, y2_mm: float,
+    ) -> dict[str, Any]:
+        """Clone an overlay track segment while preserving its component.
+
+        ``address`` comes from ``pcb_get_overlay_tracks``; there was no
+        other way to obtain one.
+        """
+        coords = dict(zip(("x1", "y1", "x2", "y2"), (x1_mm, y1_mm, x2_mm, y2_mm)))
+        if not all(math.isfinite(value) for value in coords.values()):
+            raise ValueError("fragment coordinates must be finite")
+        params = {"board_path": board_path, "address": address}
+        params.update({key: str(round(value / .00000254)) for key, value in coords.items()})
+        return await get_bridge().send_command_async("pcb.clone_silk_track_fragment", params)
+
+    @mcp.tool()
+    async def pcb_adjust_designators(
+        pcbdoc_path: str,
+        designators: Optional[list[str]] = None,
+        top_layer: str = "Mechanical10",
+        bottom_layer: str = "Mechanical11",
+        outline_layers: Optional[list[str]] = None,
+        min_mm: float = 0.1,
+        max_mm: float = 1.0,
+        stroke_ratio: float = 0.25,
+        fit: str = "script",
+        comment: str = "leave",
+        dry_run: bool = True,
+        expected_plan: str = "",
+    ) -> dict[str, Any]:
+        """Put each designator on the assembly layer, centred and sized to its part.
+
+        The house AdjustDesignators.pas convention, run inside the bridge so
+        it can be repeated whenever placement changes. Each part's
+        designator moves to ``top_layer`` (a top part) or ``bottom_layer``,
+        mirrored (a bottom part), in the stroke font, bold, centred on the
+        part (autoposition centre), its height fitted to the part's outline:
+        the box of its tracks on ``outline_layers``, or its bounding
+        rectangle when it has none there. A part taller than wide gets 90
+        degrees on top and 270 on the bottom. Safe to run again: a
+        designator already on the mechanical layer is simply re-fitted.
+
+        Args:
+            pcbdoc_path: the board, as app_list_documents reports it. It is
+                brought to the front; a different board found is refused.
+            designators: only these parts (default all).
+            top_layer, bottom_layer: the designator layers.
+            outline_layers: the layers whose tracks outline a part (default
+                TopOverlay, BottomOverlay, Mechanical13, Mechanical1).
+            min_mm, max_mm: the height is clamped to these.
+            stroke_ratio: stroke as a share of the height under 1 mm (0.254
+                mm stroke from 1 mm up).
+            fit: "script" (the script's rule: when the long side does not
+                fit, the short side over the text length) or "short_side"
+                (the height capped at the short side). Parts that hit the
+                rule are listed either way.
+            comment: "leave" (default) or "hide" the comment text.
+            dry_run: True (default) only plans.
+            expected_plan: The exact token returned by a dry run, required
+                for apply so changed component outlines cannot be used.
+
+        Returns:
+            ``parts`` (per part: side, outline, layer, height, stroke,
+            rotation, flags), ``totals`` and the lists ``bounding_rectangle``
+            (no outline tracks), ``turned``, ``short_side_fallback`` and
+            ``clamped``. Applied, also ``applied``, ``not_taken`` (parts
+            whose read-back differs, with what), ``off_centre`` (text more
+            than 0.25 mm from the outline centre: Altium centres on the whole
+            part, as the script does) and ``undo``.
+        """
+        from ..design import designators as desig
+
+        if fit not in desig.FITS:
+            return {"ok": False, "reason": f"fit is one of {desig.FITS}"}
+        if comment not in ("leave", "hide"):
+            return {"ok": False, "reason": "comment is leave or hide"}
+        if not Path(pcbdoc_path).is_absolute() or Path(pcbdoc_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "pcbdoc_path must be an absolute PcbDoc path"}
+        if (not all(math.isfinite(v) for v in (min_mm, max_mm, stroke_ratio))
+                or not 0 < min_mm <= max_mm or not 0 < stroke_ratio <= 1):
+            return {"ok": False, "reason": "invalid designator size or stroke limits"}
+        if designators and any(not d or any(c in d for c in ",;=|~") for d in designators):
+            return {"ok": False, "reason": "designator contains an invalid batch delimiter"}
+        opt = desig.Options(top_layer=top_layer, bottom_layer=bottom_layer,
+                            min_mm=min_mm, max_mm=max_mm,
+                            stroke_ratio=stroke_ratio, fit=fit)
+        layers = outline_layers or ["TopOverlay", "BottomOverlay",
+                                    "Mechanical13", "Mechanical1"]
+        bridge = get_bridge()
+        focused = await bridge.send_command_async(
+            "application.set_active_document", {"file_path": pcbdoc_path})
+        if (not isinstance(focused, dict) or not focused.get("success")
+                or str(focused.get("file_path", "")).casefold() != pcbdoc_path.casefold()):
+            return {"ok": False, "reason": "could not focus the exact PCB",
+                    "native_reply": focused}
+        docs = await bridge.send_command_async("application.get_open_documents") or []
+        if isinstance(docs, dict):
+            docs = docs.get("documents", [])
+        entry = next((d for d in docs if isinstance(d, dict)
+                      and str(d.get("file_path", "")).lower() == pcbdoc_path.lower()), {})
+        params = {"op": "outlines", "board_path": pcbdoc_path,
+                  "outline_layers": ",".join(layers)}
+        if designators:
+            params["designators"] = ",".join(designators)
+        found = await bridge.send_command_async("pcb.designators", params, timeout=180.0)
+        if (not isinstance(found, dict)
+                or str(found.get("board", "")).casefold() != pcbdoc_path.casefold()
+                or not isinstance(found.get("parts"), list)):
+            return {"ok": False, "reason": "designator outline read did not identify the exact board",
+                    "native_reply": found}
+        outlines = found["parts"]
+        plans, by_name = [], {}
+        for part in outlines:
+            plan = desig.plan_part(part, opt)
+            if not plan["designator"] or plan["designator"].upper() in by_name:
+                return {"ok": False, "reason": "empty or duplicate component designator in outline read"}
+            plans.append(plan)
+            by_name[plan["designator"].upper()] = (plan, part)
+        plan_token = hashlib.sha256(json.dumps(
+            {"board": pcbdoc_path.casefold(), "outlines": outlines,
+             "options": {"top_layer": top_layer, "bottom_layer": bottom_layer,
+                         "outline_layers": layers, "min_mm": min_mm,
+                         "max_mm": max_mm, "stroke_ratio": stroke_ratio,
+                         "fit": fit, "comment": comment}},
+            sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        todo = [p for p in plans if "skip" not in p]
+        out: dict[str, Any] = {
+            "ok": True, "dry_run": dry_run, "board": (found or {}).get("board"),
+            "totals": {"parts": len(plans), "to_adjust": len(todo),
+                       "top": sum(p["side"] == "top" for p in todo),
+                       "bottom": sum(p["side"] == "bottom" for p in todo)},
+            "bounding_rectangle": [p["designator"] for p in plans
+                                   if p["source"] == "bounding_rectangle"],
+            "turned": [p["designator"] for p in todo if p["rotation"]],
+            "short_side_fallback": [p["designator"] for p in todo
+                                    if p.get("short_side_fallback")],
+            "clamped": [p["designator"] for p in todo if "clamped_from_mm" in p],
+            "skipped": [p["designator"] for p in plans if "skip" in p],
+            "parts": plans,
+            "plan": plan_token,
+        }
+        if designators:
+            missing = sorted({d.upper() for d in designators} - set(by_name))
+            if missing:
+                out["not_found"] = missing
+        if dry_run or not todo:
+            return out
+        if out.get("not_found"):
+            return {**out, "ok": False, "reason": "requested designators were not found; nothing applied"}
+        if expected_plan != plan_token:
+            return {**out, "ok": False, "reason": "plan changed; rerun dry-run and pass its plan token"}
+        items = "~~".join(desig.apply_item(p) for p in todo)
+        done = await bridge.send_command_async(
+            "pcb.designators", {"op": "apply", "board_path": pcbdoc_path,
+                                "items": items, "comment": comment}, timeout=300.0)
+        returned = done.get("parts") if isinstance(done, dict) else None
+        wanted = {p["designator"].upper() for p in todo}
+        names = ([str(p.get("designator", "")).upper() for p in returned]
+                 if isinstance(returned, list) else [])
+        if (not isinstance(done, dict) or str(done.get("board", "")).casefold() != pcbdoc_path.casefold()
+                or done.get("applied") != len(todo) or len(names) != len(todo)
+                or len(set(names)) != len(names) or set(names) != wanted):
+            return {**out, "ok": False, "reason": "native apply did not confirm every requested designator",
+                    "native_reply": done}
+        not_taken, off_centre = [], []
+        for got in returned:
+            plan, outline = by_name[str(got.get("designator", "")).upper()]
+            issues = desig.check_part(plan, outline, got)
+            # Altium centres the text on the part's whole bounding box, which
+            # differs from the outline box on parts whose pads or body stick
+            # out of it (LEDs, a USB-C connector on the Rosen board). The
+            # house script does the same, so that is reported, not failed.
+            centre = [i for i in issues if i.startswith("text centre")]
+            rest = [i for i in issues if not i.startswith("text centre")]
+            if rest:
+                not_taken.append({"designator": plan["designator"], "issues": rest})
+            if centre:
+                off_centre.append({"designator": plan["designator"], "issue": centre[0]})
+        out.update({"applied": (done or {}).get("applied", 0), "not_taken": not_taken,
+                    "off_centre": off_centre,
+                    "ok": not not_taken,
+                    "undo": ("no API undo: close the board without saving to "
+                             "revert" + ("" if not entry.get("modified") else
+                                         ", which also loses edits made before "
+                                         "this run (the board was unsaved)"))})
+        return out
+
+    @mcp.tool()
+    async def pcb_get_net_routing(net: str) -> dict[str, Any]:
+        """Return every track, via and arc assigned to one exact PCB net.
+
+        This is the authoritative structural getter for copying reference
+        routing.  Unlike generic ``obj_query``, net filtering happens inside
+        DelphiScript through ``primitive.Net.Name``.
+        """
+        if not net:
+            return {"error": "net is required"}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.get_net_routing", {"net": net}, timeout=120.0,
+        )
+
+    @mcp.tool()
+    async def pcb_stack_from_file(
+        pcbdoc_path: str, expected: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Check a SAVED PcbDoc's physical and legacy layer stacks offline.
+
+        Reads the Board6/Data V9 stack and compares it with the legacy
+        copper chain. Use after saving stack edits; this does not contact
+        Altium and cannot observe unsaved changes.
+        """
+        from ..fileio import altium_pcb_stack
+
+        path = Path(pcbdoc_path)
+        if not path.is_absolute() or path.suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "pcbdoc_path must be an absolute PcbDoc path"}
+        if not path.is_file():
+            return {"ok": False, "reason": f"no such file: {pcbdoc_path}"}
+        try:
+            out = altium_pcb_stack.read_stack(str(path))
+            if expected is not None:
+                out["mismatches"] = altium_pcb_stack.compare_expected(out["layers"], expected)
+                out["ok"] = out["ok"] and not out["mismatches"]
+            return out
+        except Exception as exc:  # malformed or unsupported CAD file
+            return {"ok": False, "reason": f"could not read the stack: {exc}"}
+
+    @mcp.tool()
+    async def pcb_reset_stack_manager_model(
+        pcbdoc_path: str, expected_sha256: str = "", dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Invalidate a saved Layer Stack Manager model on a CLOSED PcbDoc.
+
+        Altium rebuilds the model from the physical stack on the next open.
+        The default dry run only reports whether the saved model exists.
+        Supply the file's SHA-256 from that dry run for an apply call;
+        reopen and save the board separately after examining the result.
+        """
+        from ..fileio import altium_pcb_stack
+
+        path = Path(pcbdoc_path)
+        if not path.is_absolute() or path.suffix.casefold() != ".pcbdoc" or not path.is_file():
+            return {"ok": False, "reason": "pcbdoc_path must be an existing absolute PcbDoc"}
+        if (expected_sha256 and (len(expected_sha256) != 64 or
+                                 any(c not in "0123456789abcdefABCDEF" for c in expected_sha256))):
+            return {"ok": False, "reason": "expected_sha256 must be a SHA-256 hex digest"}
+        if not dry_run and not expected_sha256:
+            return {"ok": False, "reason": "expected_sha256 is required to change the board"}
+        if not dry_run:
+            try:
+                docs = await get_bridge().send_command_async("application.get_open_documents", {})
+            except Exception as exc:
+                return {"ok": False, "reason": f"could not verify closed-board state: {exc}"}
+            if isinstance(docs, dict):
+                docs = docs.get("documents")
+            if not isinstance(docs, list):
+                return {"ok": False, "reason": "could not verify closed-board state"}
+            target = os.path.normcase(os.path.abspath(path))
+            for doc in docs:
+                if not isinstance(doc, dict) or doc.get("loaded") is not True:
+                    continue
+                candidate = str(doc.get("file_path", ""))
+                if not candidate:
+                    continue
+                same = os.path.normcase(os.path.abspath(candidate)) == target
+                if not same:
+                    try:
+                        same = os.path.samefile(candidate, path)
+                    except OSError:
+                        pass
+                if same:
+                    return {"ok": False, "reason": "the board is open in Altium; close it first",
+                            "open_as": candidate}
+        try:
+            return {"ok": True, **altium_pcb_stack.reset_manager_model(
+                str(path), expected_sha256=expected_sha256, dry_run=dry_run)}
+        except Exception as exc:
+            return {"ok": False, "reason": f"could not reset the manager model: {exc}"}
+
+    @mcp.tool()
+    async def pcb_build_stack(
+        board_path: str, layers: list[dict[str, Any]], dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Plan or build an entire copper/dielectric stack on one exact PcbDoc.
+
+        The dry run lists the first copper edits. Applying requires an open,
+        saved board. Altium adds dielectric layers when copper is inserted;
+        the second phase fits those layers to the requested dielectric plan.
+        A dielectric plan may include ``loss_tangent``; the final readback
+        checks it along with thickness, material and dielectric constant.
+        A failed phase leaves the board open and unsaved for inspection or
+        explicit discard. Save only after checking the returned stack.
+        When copper layers are inserted or removed, the tool asks Altium's
+        document preferences to rebuild the editor's layer tabs while
+        preserving the Top Layer's current visibility setting.
+        """
+        from ..design import stack_build
+
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        try:
+            plan = stack_build.normalise(layers)
+        except stack_build.StackPlanError as exc:
+            return {"ok": False, "reason": str(exc)}
+        bridge = get_bridge()
+        docs = await bridge.send_command_async("application.get_open_documents", {}) or []
+        if isinstance(docs, dict):
+            docs = docs.get("documents", [])
+        entry = next((d for d in docs if isinstance(d, dict)
+                      and str(d.get("file_path", "")).casefold() == board_path.casefold()), None)
+        if entry is None:
+            return {"ok": False, "reason": "the named PcbDoc is not open"}
+        await bridge.send_command_async("application.set_active_document", {"file_path": board_path})
+        current = await pcb_physical_stack(board_path)
+        if not isinstance(current, dict) or current.get("ok") is False or "layers" not in current:
+            return {"ok": False, "reason": "could not read the exact board stack", "native_reply": current}
+        inspected = await bridge.send_command_async(
+            "pcb.stack_edit", {"board_path": board_path, "op": "inspect"})
+        if (not isinstance(inspected, dict)
+                or str(inspected.get("board_path", "")).casefold() != board_path.casefold()
+                or not isinstance(inspected.get("layers"), list)):
+            return {"ok": False, "reason": "incomplete or wrong-board layer inventory",
+                    "native_reply": inspected}
+        try:
+            copper_ops = stack_build.plan_ops(current["layers"], plan, inspected["layers"])
+        except stack_build.StackPlanError as exc:
+            return {"ok": False, "reason": str(exc)}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "copper_ops": copper_ops,
+                    "dielectric_phase": "planned from Altium readback after copper edits",
+                    "current": stack_build.board_section(current["layers"])}
+        if entry.get("modified") is not False:
+            return {"ok": False, "reason": "save the board before building its stack",
+                    "copper_ops": copper_ops}
+
+        applied: list[dict[str, Any]] = []
+        native_state_unknown = False
+
+        async def run(ops: list[dict[str, str]]) -> dict[str, Any] | None:
+            nonlocal native_state_unknown
+            for op in ops:
+                try:
+                    reply = await bridge.send_command_async(
+                        "pcb.stack_edit", {"board_path": board_path, **op}, timeout=120.0)
+                except Exception as exc:  # a timeout can leave an unknown native state
+                    native_state_unknown = True
+                    return {"op": op, "error": str(exc)}
+                if (not isinstance(reply, dict) or reply.get("error")
+                        or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                        or (op["op"] == "remove" and reply.get("removed") is not True)):
+                    native_state_unknown = True
+                    return {"op": op, "native_reply": reply}
+                applied.append(op)
+                if reply.get("ordinary_copper") is False:
+                    return {"op": op, "error": "copper remains additive or non-conductive",
+                            "native_reply": reply}
+            return None
+
+        all_ops = list(copper_ops)
+        failure = await run(copper_ops)
+        if failure is None:
+            try:
+                middle = await pcb_physical_stack(board_path)
+            except Exception as exc:
+                native_state_unknown = True
+                middle = {"error": str(exc)}
+            if not isinstance(middle, dict) or "layers" not in middle or middle.get("ok") is False:
+                failure = {"op": "read_copper", "native_reply": middle}
+            else:
+                try:
+                    dielectric_ops = stack_build.dielectric_ops(middle["layers"], plan)
+                except stack_build.StackPlanError as exc:
+                    failure = {"op": "plan_dielectrics", "error": str(exc)}
+                else:
+                    all_ops.extend(dielectric_ops)
+                    failure = await run(dielectric_ops)
+        try:
+            readback = await pcb_physical_stack(board_path)
+        except Exception as exc:
+            native_state_unknown = True
+            readback = {"error": str(exc)}
+        if not isinstance(readback, dict) or "layers" not in readback or readback.get("ok") is False:
+            failure = failure or {"op": "read_final", "native_reply": readback}
+            mismatches: list[dict[str, Any]] = []
+            section: list[dict[str, Any]] = []
+        else:
+            try:
+                final_inspect = await bridge.send_command_async(
+                    "pcb.stack_edit", {"board_path": board_path, "op": "inspect"})
+            except Exception as exc:
+                native_state_unknown = True
+                final_inspect = {"error": str(exc)}
+            if (not isinstance(final_inspect, dict)
+                    or str(final_inspect.get("board_path", "")).casefold() != board_path.casefold()
+                    or not isinstance(final_inspect.get("layers"), list)):
+                failure = failure or {"op": "inspect_final", "native_reply": final_inspect}
+                mismatches = []
+            else:
+                mismatches = stack_build.check(readback["layers"], plan,
+                                               final_inspect["layers"])
+                mismatches.extend(stack_build.check_copper_flags(
+                    final_inspect["layers"]))
+            section = stack_build.board_section(readback["layers"])
+        ok = failure is None and not mismatches
+        view_refresh: dict[str, Any] = {"requested": False}
+        if ok and any(op["op"] in ("insert", "remove") for op in copper_ops):
+            try:
+                display = await bridge.send_command_async(
+                    "pcb.get_layer_display", {"board_path": board_path})
+                if (not isinstance(display, dict)
+                        or str(display.get("board_path", "")).casefold() != board_path.casefold()):
+                    raise ValueError("could not read display settings for the exact board")
+                top = next((layer for layer in display.get("layers", [])
+                            if layer.get("layer") == "TopLayer"), None)
+                if not isinstance(top, dict) or type(top.get("visibility_setting")) is not bool:
+                    raise ValueError("Top Layer visibility setting is unavailable")
+                top_visible = top["visibility_setting"]
+                reply = await bridge.send_command_async(
+                    "pcb.set_layer_visibility",
+                    {"board_path": board_path, "layer": "TopLayer",
+                     "visible": "true" if top_visible else "false"})
+                view_refresh = {
+                    "requested": True,
+                    "api_confirmed": (
+                        isinstance(reply, dict)
+                        and str(reply.get("board_path", "")).casefold() == board_path.casefold()
+                        and reply.get("visibility_setting") is top_visible),
+                    "method": "Pcb:DocumentPreferences",
+                }
+            except Exception as exc:
+                view_refresh = {"requested": False, "error": str(exc)}
+        result = {"ok": ok, "dry_run": False, "board_path": board_path,
+                "ops": all_ops, "applied": len(applied), "failure": failure,
+                "mismatches": mismatches, "stack": section,
+                "view_refresh": view_refresh,
+                "partial_unsaved": not ok and (bool(applied) or native_state_unknown),
+                "native_state_unknown": native_state_unknown,
+                "next": ("inspect layer tabs, then save the named PcbDoc and verify its saved stack; "
+                         "reopen the board if tabs remain stale"
+                         if ok else "inspect the named PcbDoc and explicitly discard or repair edits")}
+        if ok:
+            result["stack_manager"] = await sync_stack_manager(bridge, board_path)
+        return result
+
+    @mcp.tool()
+    async def pcb_set_stack_style(
+        board_path: str, style: int, dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Plan or set Altium's layer-stack style for one exact PcbDoc.
+
+        Read the current style first with ``pcb_physical_stack``. Save the
+        PcbDoc separately after inspecting the resulting physical stack.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if type(style) is not int or style < 0:
+            return {"ok": False, "reason": "style must be a nonnegative integer"}
+        before = await pcb_physical_stack(board_path)
+        if not isinstance(before, dict) or type(before.get("style")) is not int:
+            return {"ok": False, "reason": "could not read exact-board stack",
+                    "native_reply": before}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "before_style": before["style"], "would_set_style": style,
+                    "layer_count": before["layer_count"]}
+        params = {"board_path": board_path, "style": str(style),
+                  "expect_style": str(before["style"]),
+                  "expect_layer_count": str(before["layer_count"])}
+        reply = await get_bridge().send_command_async("pcb.set_stack_style", params,
+                                                       timeout=120.0)
+        if (not isinstance(reply, dict)
+                or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or reply.get("before_style") != before["style"]
+                or reply.get("after_style") != style):
+            return {"ok": False, "reason": "native stack style readback failed",
+                    "native_reply": reply}
+        after = await pcb_physical_stack(board_path)
+        if not isinstance(after, dict) or after.get("style") != style:
+            return {"ok": False, "reason": "independent stack style readback failed",
+                    "native_reply": reply, "after": after}
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
+
+    @mcp.tool()
+    async def pcb_query_region(
+        object_type: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        layer: str = "",
+        properties: str = "ObjectId,X,Y,Layer,Net,Name",
+        filter: str = "",
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Query PCB primitives intersecting a rectangular area.
+
+        Uses ``IPCB_Board.SpatialIterator_Create`` and therefore avoids a
+        whole-board scan. Group objects such as components and dimensions are
+        not spatial-iterator primitives; query their children (pads, tracks,
+        arcs, fills, regions) or use their dedicated getters instead.
+
+        Args:
+            object_type: PCB primitive constant such as ``eTrackObject``,
+                ``ePadObject``, ``eViaObject``, ``eArcObject`` or
+                ``eTextObject``.
+            x1, y1, x2, y2: Opposite rectangle corners in mils.
+            layer: Optional exact PCB layer; empty searches all layers.
+            properties: Flat PCB property names accepted by ``obj_query``.
+                ``Owner`` is an alias for the owning component designator
+                (``Component``); it is empty for a free primitive.
+            filter: Optional property=value filters joined with ``|``.
+            limit: Maximum returned primitives (1..10000).
+
+        Returns:
+            Dict with objects, count, normalized bounds, layer, board path and
+            an explicit truncation flag.
+        """
+        requested_properties = [name.strip() for name in properties.split(",")]
+        wire_properties = ",".join(
+            "Component" if name == "Owner" else name
+            for name in requested_properties
+        )
+        wire_filter = "|".join(
+            "Component=" + clause.split("=", 1)[1]
+            if clause.startswith("Owner=") else clause
+            for clause in filter.split("|")
+        )
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "pcb.query_region",
+            {
+                "object_type": object_type,
+                "x1": str(x1), "y1": str(y1),
+                "x2": str(x2), "y2": str(y2),
+                "layer": layer,
+                "properties": wire_properties,
+                "filter": wire_filter,
+                "limit": str(limit),
+            },
+        )
+        if "Owner" in requested_properties and isinstance(result, dict):
+            for obj in result.get("objects", []):
+                if isinstance(obj, dict):
+                    obj["Owner"] = obj.get("Component", "")
+                    if "Component" not in requested_properties:
+                        obj.pop("Component", None)
+        return result
+
+    @mcp.tool()
+    async def pcb_get_used_layers() -> dict[str, Any]:
+        """Return PCB layers that actually contain design primitives.
+
+        This reads ``IPCB_Board.LayerIsUsed``. It is intentionally different
+        from ``pcb_get_layer_display``: a hidden layer can still contain
+        fabrication or copper data, while a visible layer can be empty.
+
+        Returns:
+            Dict with ``layers`` (layer id, user name, displayed), ``count``,
+            ``scanned_count``, ``unreadable_count`` and ``board_path``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.get_used_layers", {})
+
+    @mcp.tool()
+    async def pcb_get_drill_layer_pairs() -> dict[str, Any]:
+        """Return every through/blind/buried drill span on the active PCB.
+
+        Reads the documented ``DrillLayerPairsCount`` and
+        ``LayerPair[index]`` interfaces. This is the authoritative way to
+        check whether via drilling spans match the intended stackup.
+
+        Returns:
+            Dict with ``layer_pairs`` (index, low_layer, high_layer),
+            ``count``, ``reported_count``, ``unreadable_count`` and board path.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.get_drill_layer_pairs", {})
+
+    @mcp.tool()
+    async def pcb_get_internal_planes() -> dict[str, Any]:
+        """Return internal-plane layers and their assigned net names.
+
+        Only planes physically present in the current layer stack are
+        returned. ``net_read`` distinguishes an unassigned plane (empty name)
+        from an Altium build that did not expose the net-name accessor.
+
+        Returns:
+            Dict with ``internal_planes`` (layer, name, net_name, net_read,
+            displayed), ``count``, ``unreadable_net_count`` and board path.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async("pcb.get_internal_planes", {})
+
+    @mcp.tool()
+    async def pcb_get_special_strings(limit: int = 1000) -> dict[str, Any]:
+        """Read authored and rendered PCB special strings.
+
+        For text such as ``.Designator``, ``.PCB_FILE_NAME`` or
+        ``.LAYER_NAME``, returns both the raw token and Altium's
+        ``ConvertedString`` used by output generation. This avoids mistaking
+        rendered display text for the authored token.
+
+        Args:
+            limit: Maximum special strings returned (1..10000).
+
+        Returns:
+            Dict with ``special_strings`` (raw, converted, layer and location),
+            ``count``, ``limit``, ``truncated`` and ``board_path``.
+        """
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.get_special_strings", {"limit": str(limit)},
+        )
+
+    @mcp.tool()
+    async def pcb_order_copper_layer(
+        board_path: str,
+        action: str = "list",
+        layer: str = "",
+        above: str = "",
+        below: str = "",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """List, insert or move a copper layer relative to another layer.
+
+        Insert accepts a free MidLayer1..30 or InternalPlane1..16 ID.
+        Move accepts an existing layer. Changes require an exact board path
+        and the complete old copper order; saving is separate.
+        """
+        import re
+
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        action = action.strip().lower()
+        layer, above, below = layer.strip(), above.strip(), below.strip()
+        if action not in ("list", "insert", "move"):
+            return {"ok": False, "reason": "action must be list, insert or move"}
+        if action != "list" and not layer:
+            return {"ok": False, "reason": "layer is required"}
+        if above and below or action == "move" and not (above or below):
+            return {"ok": False, "reason": "give exactly one above or below reference for move"}
+        if action == "insert" and not re.fullmatch(
+                r"(?i)(?:MidLayer(?:[1-9]|[12][0-9]|30)|InternalPlane(?:[1-9]|1[0-6]))",
+                layer):
+            return {"ok": False, "reason": "insert layer must be MidLayer1..30 or InternalPlane1..16"}
+        bridge = get_bridge()
+        base = {"board_path": board_path, "action": "list"}
+
+        async def read_order() -> dict[str, Any]:
+            result = await bridge.send_command_async("pcb.order_copper_layer", base,
+                                                     timeout=120.0)
+            if (not isinstance(result, dict)
+                    or str(result.get("board_path", "")).casefold() != board_path.casefold()
+                    or type(result.get("count")) is not int
+                    or not isinstance(result.get("order"), list)
+                    or not isinstance(result.get("canonical_order"), list)
+                    or len(result["order"]) != result["count"]
+                    or len(result["canonical_order"]) != result["count"]
+                    or not isinstance(result.get("order_token"), str)):
+                return {"ok": False, "reason": "incomplete or wrong-board copper order",
+                        "native_reply": result}
+            return result
+
+        before = await read_order()
+        if "order" not in before:
+            return before
+        if action == "list":
+            return before
+        names = [name.casefold() for name in before["order"]]
+        canonical = [name.casefold() for name in before["canonical_order"]]
+        target = layer.casefold()
+        reference = (above or below).casefold()
+        if action == "insert" and target in canonical:
+            return {"ok": False, "reason": "layer ID already in stack under an existing name"}
+        if action == "move" and target not in names:
+            return {"ok": False, "reason": "layer not in stack"}
+        if reference and (reference not in names or reference == target):
+            return {"ok": False, "reason": "reference layer missing or same as target"}
+        if action == "move":
+            distance = names.index(target) - names.index(reference)
+            if distance == (-1 if above else 1):
+                return {"ok": True, "board_path": board_path, "action": action,
+                        "changed": False, "save_required": False,
+                        "order_before": before["order"], "order_after": before["order"]}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "action": action, "layer": layer, "above": above, "below": below,
+                    "order_before": before["order"]}
+        params = {"board_path": board_path, "action": action, "layer": layer,
+                  "expect_order": before["order_token"]}
+        if above:
+            params["above"] = above
+        if below:
+            params["below"] = below
+        reply = await bridge.send_command_async("pcb.order_copper_layer", params,
+                                                timeout=120.0)
+        if (not isinstance(reply, dict)
+                or str(reply.get("board_path", "")).casefold() != board_path.casefold()
+                or not isinstance(reply.get("order_after"), list)
+                or reply.get("order_before") != before["order"]):
+            return {"ok": False, "reason": "native copper-order reply failed",
+                    "native_reply": reply}
+        after = await read_order()
+        if "order" not in after or after["order"] != reply["order_after"]:
+            return {"ok": False, "reason": "independent copper-order readback failed",
+                    "native_reply": reply, "after": after}
+        expected_count = before["count"] + (1 if action == "insert" else 0)
+        order = [name.casefold() for name in after["order"]]
+        result_name = str(reply.get("target_name", "")).casefold()
+        if after["count"] != expected_count or order.count(result_name) != 1:
+            return {"ok": False, "reason": "target layer count/readback failed",
+                    "after": after}
+        if reference:
+            ref_name = str(reply.get("reference_name", "")).casefold()
+            if ref_name not in order or ref_name != reference:
+                return {"ok": False, "reason": "reference identity changed", "after": after}
+            distance = order.index(result_name) - order.index(ref_name)
+            if distance != (-1 if above else 1):
+                return {"ok": False, "reason": "requested layer position did not take",
+                        "after": after}
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
+
+    @mcp.tool()
+    async def pcb_configure_multilayer_stackup(
+        operations: list[dict[str, Any]],
+        dry_run: bool = True,
+        legacy_stack_write: bool = False,
+    ) -> dict[str, Any]:
+        """Apply a validated sequence of multilayer stack operations.
+
+        Each operation has ``action`` = ``add``, ``modify``, or ``remove``.
+        Add/remove require ``layer``. Modify accepts the same fields as
+        ``pcb_modify_layer``: name, copper thickness, dielectric type/height,
+        dielectric constant, and material. Dry-run is the default because
+        layer-stack changes can invalidate existing routing.
+        Applying uses the legacy V7 stack path and requires explicit
+        ``legacy_stack_write=True``; verify the saved physical stack.
+        """
+        normalized = []
+        for index, raw in enumerate(operations):
+            op = dict(raw)
+            action = str(op.pop("action", "modify")).lower()
+            layer = str(op.get("layer", ""))
+            if action not in {"add", "modify", "remove"} or not layer:
+                return {"success": False, "reason": f"invalid operation {index}"}
+            if action == "modify":
+                dtype = str(op.get("dielectric_type", ""))
+                if dtype and dtype.lower() not in {"none", "core", "prepreg", "surface"}:
+                    return {"success": False, "reason": f"invalid dielectric_type in operation {index}"}
+                for key in ("copper_thickness_mils", "dielectric_height_mils"):
+                    if key in op and float(op[key]) < 0:
+                        return {"success": False, "reason": f"negative {key} in operation {index}"}
+                if "dielectric_constant" in op and float(op["dielectric_constant"]) <= 0:
+                    return {"success": False, "reason": f"invalid dielectric_constant in operation {index}"}
+            normalized.append({"action": action, **op})
+        if dry_run:
+            return {"success": True, "dry_run": True, "operations": normalized,
+                    "warning": "Stack changes can invalidate existing routing."}
+        if not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "Use pcb_build_stack on an exact PcbDoc, or opt in and "
+                    "verify the saved file with pcb_stack_from_file."}
+        bridge = get_bridge()
+        results = []
+        for op in normalized:
+            action = op["action"]
+            command = {"add": "pcb.add_layer", "modify": "pcb.modify_layer",
+                       "remove": "pcb.remove_layer"}[action]
+            params = {k: str(v) for k, v in op.items() if k != "action" and v != ""}
+            result = await bridge.send_command_async(command, params)
+            results.append({"operation": op, "result": result})
+        return {"success": True, "dry_run": False, "results": results,
+                "operations_applied": len(results),
+                "verify": "save and check with pcb_stack_from_file"}
+
+    @mcp.tool()
+    async def pcb_apply_impedance_rules(
+        rule_name: str,
+        scope: str,
+        target_ohms: float,
+        geometry: str,
+        dielectric_height_mils: float,
+        dielectric_constant: float,
+        copper_oz: float = 1.0,
+        spacing_mils: float = 0.0,
+        width_tolerance_mils: int = 1,
+        gap_tolerance_mils: int = 1,
+        max_uncoupled_length_mils: int = 100,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Size and optionally create controlled-impedance PCB rules.
+
+        Creates a Width rule and, for ``*_diff`` geometries, a Differential
+        Pairs Routing gap rule. Values come from the existing verified inverse
+        impedance calculator. Closed-form sizing is an initial engineering
+        value; fabrication-house field-solver values remain authoritative.
+        """
+        from ..design.impedance_sizing import trace_width_for_impedance
+
+        try:
+            sized = trace_width_for_impedance(
+                target_ohms, geometry, dielectric_height_mils,
+                dielectric_constant=dielectric_constant,
+                copper_oz=copper_oz,
+                spacing_mils=spacing_mils,
+            )
+        except (TypeError, ValueError) as exc:
+            return {"success": False, "reason": str(exc)}
+        if not sized.feasible:
+            return {"success": False, "reason": "target impedance is infeasible",
+                    "sizing": sized.__dict__}
+        width = max(1, round(sized.width_mils))
+        rules = [{
+            "rule_type": "width", "name": f"{rule_name}_WIDTH",
+            "value": max(1, width - width_tolerance_mils),
+            "max_value": width + width_tolerance_mils,
+            "favored_value": width, "scope": scope,
+        }]
+        is_diff = geometry.lower().endswith("_diff")
+        if is_diff:
+            if spacing_mils <= 0:
+                return {"success": False, "reason": "spacing_mils is required for differential geometry"}
+            gap = max(1, round(spacing_mils))
+            rules.append({
+                "rule_type": "differential_pairs",
+                "name": f"{rule_name}_GAP",
+                "value": max(1, gap - gap_tolerance_mils),
+                "max_value": gap + gap_tolerance_mils,
+                "favored_value": gap, "scope": scope,
+                "max_uncoupled_length": max_uncoupled_length_mils,
+            })
+        plan = {"success": True, "dry_run": dry_run, "target_ohms": target_ohms,
+                "geometry": geometry, "sizing": sized.__dict__, "rules": rules,
+                "fab_field_solver_required": True}
+        if dry_run:
+            return plan
+        bridge = get_bridge()
+        plan["apply_results"] = [
+            await bridge.send_command_async(
+                "pcb.create_design_rule", {k: str(v) for k, v in rule.items()}
+            ) for rule in rules
+        ]
+        return plan
+
+    @mcp.tool()
+    async def pcb_plan_bga_fanout(
+        pads: list[dict[str, Any]],
+        center_x: float,
+        center_y: float,
+        escape_mils: float = 20,
+        track_width_mils: float = 4,
+        via_size_mils: float = 18,
+        via_hole_mils: float = 8,
+        layer: str = "TopLayer",
+        apply: bool = False,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Plan radial BGA dog-bone escapes; optionally place them.
+
+        Defaults to an offline dry run. Applying requires ``confirm=True``.
+        Collision/DRC validation remains a separate mandatory audit step.
+        """
+        from eda_agent.design.pcb_planning import plan_bga_fanout
+        if not pads:
+            return {"ok": False, "reason": "pads must not be empty"}
+        plan = plan_bga_fanout(
+            pads, center_x, center_y, escape_mils, track_width_mils,
+            via_size_mils, via_hole_mils, layer,
+        )
+        plan["applied"] = False
+        if not apply:
+            return plan
+        if not confirm:
+            raise ValueError("confirm=True is required when apply=True")
+        bridge = get_bridge()
+        track_parts = [
+            f"{t['x1']},{t['y1']},{t['x2']},{t['y2']},{t['width']},{t['layer']},{t['net_name']}"
+            for t in plan["tracks"]
+        ]
+        plan["track_result"] = await bridge.send_command_async(
+            "pcb.place_tracks", {"tracks": "|".join(track_parts)}
+        )
+        plan["via_results"] = [
+            await bridge.send_command_async("pcb.place_via", {
+                "x": str(v["x"]), "y": str(v["y"]), "net": v["net"],
+                "size": str(v["size"]), "hole_size": str(v["hole_size"]),
+                "low_layer": "TopLayer", "high_layer": "BottomLayer",
+            }) for v in plan["vias"]
+        ]
+        plan["applied"] = True
+        return plan
+
+    @mcp.tool()
+    async def pcb_render_route_plan_svg(
+        plan: dict[str, Any],
+        output_path: str,
+    ) -> dict[str, Any]:
+        """Render planned tracks/vias/obstacles to SVG without using Altium."""
+        from pathlib import Path
+        from eda_agent.render.route_plan_svg import write_route_plan_svg
+        if not any(plan.get(key) for key in ("tracks", "vias", "obstacles")):
+            return {"ok": False, "reason": "route plan contains no geometry"}
+        target = Path(output_path).expanduser().resolve()
+        if target.suffix.lower() != ".svg":
+            target = target.with_suffix(".svg")
+        return write_route_plan_svg(plan, target)
+
+    @mcp.tool()
+    async def pcb_plan_return_vias(
+        transitions: list[dict[str, Any]],
+        reference_net: str = "GND",
+        offset_mils: float = 40,
+        via_size_mils: float = 30,
+        via_hole_mils: float = 14,
+        apply: bool = False,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Plan nearby reference vias for signal layer transitions."""
+        from eda_agent.design.pcb_planning import plan_return_vias
+        vias = plan_return_vias(
+            transitions, reference_net, offset_mils,
+            via_size_mils, via_hole_mils,
+        )
+        result: dict[str, Any] = {
+            "vias": vias, "count": len(vias), "applied": False,
+            "reference_net": reference_net,
+        }
+        if not apply:
+            return result
+        if not confirm:
+            raise ValueError("confirm=True is required when apply=True")
+        bridge = get_bridge()
+        result["via_results"] = [
+            await bridge.send_command_async("pcb.place_via", {
+                "x": str(v["x"]), "y": str(v["y"]), "net": v["net"],
+                "size": str(v["size"]), "hole_size": str(v["hole_size"]),
+                "low_layer": "TopLayer", "high_layer": "BottomLayer",
+            }) for v in vias
+        ]
+        result["applied"] = True
+        return result
+
+    @mcp.tool()
+    async def pcb_audit_placement_plan(
+        components: list[dict[str, Any]],
+        board: dict[str, float],
+        decoupling_max_mils: float = 200,
+        termination_max_mils: float = 300,
+        connector_edge_max_mils: float = 150,
+        courtyard_mils: float = 10,
+    ) -> dict[str, Any]:
+        """Offline placement acceptance: bounds, overlaps and role proximity."""
+        from eda_agent.design.placement_audit import audit_placement
+        try:
+            return audit_placement(
+                components, board, decoupling_max_mils,
+                termination_max_mils, connector_edge_max_mils,
+                courtyard_mils,
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"ok": False, "reason": str(exc), "findings": []}
+
+    @mcp.tool()
+    async def pcb_set_component_side(
+        designators: list[str],
+        side: str,
+    ) -> dict[str, Any]:
+        """Put many components deterministically on Top or Bottom in one call.
+
+        Unlike repeatedly calling ``pcb_flip_component``, this operation is
+        idempotent: components already on the requested side are not toggled.
+        Use it after the user chooses single- or double-sided assembly and
+        before auto-placement so the placer legalizes each side separately.
+
+        Args:
+            designators: Component reference designators to assign.
+            side: ``"top"`` or ``"bottom"``.
+        """
+        normalized = side.strip().lower()
+        if normalized not in {"top", "bottom"}:
+            return {"ok": False, "reason": "side must be 'top' or 'bottom'"}
+        refs = [str(x).strip() for x in designators if str(x).strip()]
+        if not refs:
+            return {"side": normalized, "requested": 0, "changed": 0,
+                    "already": 0, "missing": 0}
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "pcb.batch_set_component_side",
+            {"designators": "~~".join(refs), "side": normalized},
+        )
+
+    @mcp.tool()
+    async def pcb_get_tracks(
+        net: str = "",
+        layer: str = "",
+        offset: int = 0,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Get routed copper tracks and arcs on the active PCB board, one page at a time.
+
+        Copper layers only; primitives inside components, polygons and
+        dimensions are left out (they are not routing). Arcs are included
+        because corners routed with arcs are part of the path. Coordinates
+        and widths are RAW Altium units (TCoord, 10000 per mil) so a
+        0.15 mm gap keeps full precision; the response says so.
+
+        Args:
+            net: Only primitives on this exact net (optional).
+            layer: Only this copper layer: TopLayer, MidLayerN or BottomLayer
+                (optional; default all copper).
+            offset: First matching primitive to return (default 0).
+            limit: Rows per page, 1..2000 (default 500).
+
+        Returns:
+            Dict with ``tracks`` (each: kind "track" with x1/y1/x2/y2, or
+            kind "arc" with xc/yc/radius/start_angle/end_angle; plus net,
+            layer, width and teardrop), ``count`` (rows in this page),
+            ``total`` (matching primitives), ``offset``, ``limit``,
+            ``units`` ("coord") and ``coord_per_mil`` (10000).
+        """
+        if offset < 0 or limit < 0:
+            return {"ok": False, "reason": "offset and limit are 0 or more"}
+        ask: dict[str, Any] = {}
+        if net:
+            ask["net"] = net
+        if offset:
+            ask["offset"] = str(offset)
+        if limit:
+            ask["limit"] = str(limit)
+        bridge = get_bridge()
+        params: dict[str, Any] = {"offset": str(max(0, int(offset))),
+                                  "limit": str(min(2000, max(1, int(limit))))}
+        if net:
+            params["net"] = net
+        if layer:
+            params["layer"] = layer
+        result = await bridge.send_command_async("pcb.get_tracks", params)
+        return result
+
+    @mcp.tool()
+    async def pcb_rebuild_connectivity() -> dict[str, Any]:
+        """Recompute the board's net topology and ratsnest.
+
+        Adding or removing copper through the API does not by itself
+        refresh Altium's connectivity model, and the ratsnest lines that
+        ``pcb_get_unrouted_nets`` counts are generated from that model.
+        ``pcb_place_tracks``, ``pcb_delete_object`` and
+        ``obj_batch_delete`` already call this at the end of their own
+        work; use this tool directly after a sequence of other mutations
+        (vias, pads, polygons, net binding) or when a routing result
+        looks stale.
+
+        ``obj_refresh_document`` is NOT a substitute -- it issues a Zoom
+        Redraw, which repaints the view without recomputing anything.
+
+        Returns:
+            Dictionary with "rebuilt" and an explanatory "note".
+            ``rebuilt`` means the connectivity process was issued without
+            raising, NOT that Altium is confirmed to have recomputed;
+            verify with ``pcb_get_unrouted_nets``.
+        """
+        bridge = get_bridge()
+        result = await bridge.send_command_async("pcb.rebuild_connectivity", {})
+        return result
+
+    @mcp.tool()
+    async def pcb_get_net_object_ids(net: str) -> dict[str, Any]:
+        """Inspect the internal net-object address used by every primitive.
+
+        Use this diagnostic when pads and copper have the same visible net
+        name but Altium still treats them as disconnected. Different
+        ``net_address`` values reveal duplicate internal net objects.
+        """
+        if not net.strip():
+            return {"success": False, "reason": "net is required"}
+        return await get_bridge().send_command_async(
+            "pcb.get_net_object_ids", {"net": net.strip()}
+        )
+
+    @mcp.tool()
+    async def pcb_get_connections_detail(net: str) -> dict[str, Any]:
+        """Return the live ratsnest connection endpoints for one net."""
+        if not net.strip():
+            return {"success": False, "reason": "net is required"}
+        return await get_bridge().send_command_async(
+            "pcb.get_connections_detail", {"net": net.strip()}
+        )
+
+    @mcp.tool()
+    async def pcb_delete_connections_for_net(
+        net: str,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Remove stale ratsnest objects for one independently verified net.
+
+        This is a repair escape hatch, not a routing operation. Confirm only
+        after independently proving that the copper graph connects every pad;
+        otherwise the removal can hide a genuine unrouted connection.
+        """
+        if not net.strip():
+            return {"success": False, "reason": "net is required"}
+        if not confirm:
+            return {
+                "success": False,
+                "reason": (
+                    "refusing to remove ratsnest objects without confirm=true; "
+                    "first prove that the copper graph connects every endpoint"
+                ),
+            }
+        return await get_bridge().send_command_async(
+            "pcb.delete_connections_for_net", {"net": net.strip()}
+        )
+
+    @mcp.tool()
+    async def pcb_rebind_vias() -> dict[str, Any]:
+        """Re-register every net-associated via and rebuild connectivity."""
+        return await get_bridge().send_command_async("pcb.rebind_vias", {})
+
+    @mcp.tool()
+    async def pcb_rebind_copper_to_pad_nets() -> dict[str, Any]:
+        """Canonicalize copper net objects against pad nets, then rebuild."""
+        return await get_bridge().send_command_async(
+            "pcb.rebind_copper_to_pad_nets", {}
+        )
+
+    @mcp.tool()
+    async def pcb_get_polygon_outline(
+        index: int,
+        expected_name: str = "",
+        expected_layer: str = "",
+        board_path: str = "",
+    ) -> dict[str, Any]:
+        """Read one polygon's saved outline, including line and arc segments.
+
+        Use the index from ``pcb_get_polygons``. Supply its name and layer
+        to guard against polygon reordering. Arc rows include centre,
+        radius and angles in mils/degrees. ``closing`` is the extra saved
+        vertex and ``closed`` checks that it matches the first vertex.
+        This reads the polygon outline, not the tessellated poured copper.
+        """
+        if type(index) is not int or index < 0:
+            return {"success": False, "error": "index must be nonnegative"}
+        if board_path and (not Path(board_path).is_absolute()
+                           or Path(board_path).suffix.casefold() != ".pcbdoc"):
+            return {"success": False,
+                    "error": "board_path must be an absolute PcbDoc path"}
+        params: dict[str, Any] = {"index": index}
+        if expected_name:
+            params["expected_name"] = expected_name
+        if expected_layer:
+            params["expected_layer"] = expected_layer
+        if board_path:
+            params["board_path"] = board_path
+        return await get_bridge().send_command_async(
+            "pcb.get_polygon_outline", params)
+
+    @mcp.tool()
+    async def pcb_route_diff_pair(
+        positive_net: str,
+        negative_net: str,
+        centerline: list[dict[str, float]],
+        width_mils: float,
+        gap_mils: float,
+        layer: str = "TopLayer",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Route two matched parallel tracks from one centerline polyline.
+
+        The edge-to-edge gap is held through corners with mitered parallel
+        offsets. Both conductors receive the same number and length pattern
+        of segments. This is a deterministic geometry operation, not an
+        obstacle-avoiding autorouter; run DRC after applying it.
+
+        Args:
+            positive_net / negative_net: Existing board net names.
+            centerline: Ordered ``[{"x": mils, "y": mils}, ...]`` points.
+            width_mils: Width of each conductor.
+            gap_mils: Edge-to-edge pair gap.
+            layer: Copper routing layer, including inner signal layers.
+            dry_run: Return generated geometry without modifying PCB.
+        """
+        if width_mils <= 0 or gap_mils <= 0:
+            return {"success": False, "reason": "width_mils and gap_mils must be > 0"}
+        try:
+            points = [(float(p["x"]), float(p["y"])) for p in centerline]
+            separation = float(width_mils) + float(gap_mils)
+            pos, neg = _offset_pair_polyline(points, separation / 2.0)
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"success": False, "reason": str(exc)}
+
+        tracks: list[dict[str, Any]] = []
+        for net, vertices in ((positive_net, pos), (negative_net, neg)):
+            for start, end in zip(vertices, vertices[1:]):
+                tracks.append({
+                    "x1": round(start[0]), "y1": round(start[1]),
+                    "x2": round(end[0]), "y2": round(end[1]),
+                    "width": round(width_mils), "layer": layer,
+                    "net_name": net,
+                })
+        result: dict[str, Any] = {
+            "success": True, "dry_run": dry_run,
+            "positive_net": positive_net, "negative_net": negative_net,
+            "width_mils": width_mils, "gap_mils": gap_mils,
+            "center_separation_mils": separation, "layer": layer,
+            "tracks": tracks, "drc_checked": False,
+        }
+        if dry_run:
+            return result
+        parts = [
+            f"{t['x1']},{t['y1']},{t['x2']},{t['y2']},{t['width']},{t['layer']},{t['net_name']}"
+            for t in tracks
+        ]
+        applied = await get_bridge().send_command_async(
+            "pcb.place_tracks", {"tracks": "|".join(parts)}
+        )
+        result["apply_result"] = applied
+        return result
+
+    @mcp.tool()
+    async def pcb_place_diff_pair_vias(
+        positive_net: str,
+        negative_net: str,
+        center_x_mils: float,
+        center_y_mils: float,
+        pair_axis_degrees: float,
+        center_separation_mils: float,
+        size_mils: int = 24,
+        hole_size_mils: int = 10,
+        low_layer: str = "TopLayer",
+        high_layer: str = "BottomLayer",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Place a symmetric via pair for a differential layer transition.
+
+        Supports through, blind, buried, and microvia spans through the
+        existing ``low_layer``/``high_layer`` via API. The two via centers are
+        symmetric about the requested point and preserve pair separation.
+        """
+        if center_separation_mils <= 0 or size_mils <= hole_size_mils:
+            return {"success": False, "reason": "invalid separation or via geometry"}
+        angle = math.radians(pair_axis_degrees)
+        dx = math.cos(angle) * center_separation_mils / 2.0
+        dy = math.sin(angle) * center_separation_mils / 2.0
+        vias = [
+            {"net": positive_net, "x": round(center_x_mils + dx),
+             "y": round(center_y_mils + dy)},
+            {"net": negative_net, "x": round(center_x_mils - dx),
+             "y": round(center_y_mils - dy)},
+        ]
+        out: dict[str, Any] = {
+            "success": True, "dry_run": dry_run, "vias": vias,
+            "center_separation_mils": center_separation_mils,
+            "low_layer": low_layer, "high_layer": high_layer,
+            "size_mils": size_mils, "hole_size_mils": hole_size_mils,
+            "drc_checked": False,
+        }
+        if dry_run:
+            return out
+        results = []
+        for via in vias:
+            results.append(await get_bridge().send_command_async(
+                "pcb.place_via",
+                {"x": str(via["x"]), "y": str(via["y"]),
+                 "net": via["net"], "size": str(size_mils),
+                 "hole_size": str(hole_size_mils),
+                 "low_layer": low_layer, "high_layer": high_layer},
+            ))
+        out["apply_results"] = results
+        return out
+
+    @mcp.tool()
+    async def pcb_audit_diff_pair(
+        positive_net: str,
+        negative_net: str,
+        max_skew_mils: float = 10.0,
+        require_same_via_count: bool = True,
+    ) -> dict[str, Any]:
+        """Audit routed length skew and layer-transition symmetry of a pair."""
+        bridge = get_bridge()
+        lengths = await bridge.send_command_async("pcb.get_trace_lengths", {})
+        positive_vias = await bridge.send_command_async(
+            "pcb.get_vias", {"net": positive_net, "limit": "1000"},
+        )
+        negative_vias = await bridge.send_command_async(
+            "pcb.get_vias", {"net": negative_net, "limit": "1000"},
+        )
+        by_net = {
+            str(item.get("net")): float(item.get("length_mils") or 0)
+            for item in (lengths.get("trace_lengths") or [])
+        }
+        p_len, n_len = by_net.get(positive_net, 0.0), by_net.get(negative_net, 0.0)
+        p_via_count = positive_vias.get("count")
+        if positive_vias.get("net") != positive_net or type(p_via_count) is not int:
+            p_via_count = sum(
+                v.get("net") == positive_net for v in (positive_vias.get("vias") or [])
+            )
+        n_via_count = negative_vias.get("count")
+        if negative_vias.get("net") != negative_net or type(n_via_count) is not int:
+            n_via_count = sum(
+                v.get("net") == negative_net for v in (negative_vias.get("vias") or [])
+            )
+        skew = abs(p_len - n_len)
+        violations = []
+        if skew > max_skew_mils:
+            violations.append("length_skew")
+        if require_same_via_count and p_via_count != n_via_count:
+            violations.append("via_count_mismatch")
+        return {
+            "success": True, "positive_net": positive_net,
+            "negative_net": negative_net, "positive_length_mils": p_len,
+            "negative_length_mils": n_len, "skew_mils": skew,
+            "max_skew_mils": max_skew_mils,
+            "positive_via_count": p_via_count,
+            "negative_via_count": n_via_count,
+            "violations": violations, "passed": not violations,
+            "note": "Track/arc length only; package pin delay is not included.",
+        }
+
+    @mcp.tool()
+    async def pcb_place_region_poly(
+        vertices: list[dict[str, float]],
+        layer: str = "TopLayer",
+        net: str = "",
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Place a copper region from three or more polygon vertices.
+
+        Args:
+            vertices: Ordered ``{"x": ..., "y": ...}`` points in mils.
+            layer: Target layer.
+            net: Optional net assignment.
+            name: Optional region name for later lookup with ``Name=...``.
+        """
+        if len(vertices) < 3:
+            return {"success": False, "reason": "at least 3 vertices required"}
+        try:
+            pts = ";".join(
+                f"{float(point['x']):.15g}:{float(point['y']):.15g}"
+                for point in vertices
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"success": False, "reason": f"invalid vertex: {exc}"}
+        return await get_bridge().send_command_async(
+            "pcb.place_region_poly",
+            {"pts": pts, "layer": layer, "net": net, "name": name},
+        )
+
+    @mcp.tool()
+    async def pcb_place_image(
+        image_path: str,
+        x: float,
+        y: float,
+        width: float,
+        units: str = "mil",
+        layer: str = "TopOverlay",
+        threshold: int = 128,
+        invert: bool = False,
+        dry_run: bool = True,
+        max_regions: int = 2000,
+    ) -> dict[str, Any]:
+        """Draw a raster image (logo, QR code, artwork) as PCB regions.
+
+        Verified on a live board (2026-10-15): an asymmetric test glyph
+        placed at a known origin was read back with pcb_query_region,
+        confirming the scale, the bottom-left origin corner, the layer,
+        and that the art is neither mirrored nor flipped. Still worth a
+        dry_run first on anything real, for the primitive count.
+
+        Putting a logo on silkscreen has no API of its own; this converts
+        the image to region primitives and places them. The image is
+        decomposed into non-overlapping RECTANGLES rather than traced
+        outlines, which is exact (nothing is approximated away from the
+        source art) and needs no special handling for holes, at the cost
+        of primitive COUNT.
+
+        That count is the thing to look at, which is why **dry_run
+        defaults to True**: it returns the plan (how many regions, the
+        area covered, the scale) and touches nothing. Anti-aliased or
+        dithered artwork can decompose into thousands of pieces, and
+        raising ``threshold`` or supplying cleaner two-colour art fixes
+        that far better than undoing a placement. Call again with
+        dry_run=False to commit.
+
+        Args:
+            image_path: PNG/BMP/JPG etc. Any format Pillow reads.
+            x, y: Where the image's BOTTOM-LEFT corner sits on the board.
+            width: Target width on the board; height follows the image's
+                aspect ratio.
+            units: "mil" (default) or "mm", for x, y and width.
+            layer: Target layer, default "TopOverlay" (silkscreen). Any
+                copper or mechanical layer works too.
+            threshold: A pixel is ink when its luminance is below this
+                (0-255). Raise it to catch more of a washed-out image,
+                lower it to drop anti-aliasing fringes.
+            invert: For artwork drawn light-on-dark.
+            dry_run: True (default) plans without placing.
+            max_regions: Refuse rather than place more than this many
+                primitives. A photograph will blow straight through it,
+                which is the point.
+
+        Returns:
+            The plan (region_count, bounds, scale, image) and, when
+            committed, how many regions were placed.
+        """
+        from ..design.image_regions import plan_image_regions
+
+        if normalise_units(units) is None:
+            return {"error": f"units must be 'mil' or 'mm', not {units!r}"}
+        if normalise_units(units) == "mm":
+            x, y, width = (v * MILS_PER_MM for v in (x, y, width))
+
+        plan = plan_image_regions(image_path, origin_x=x, origin_y=y,
+                                  target_width_mils=width,
+                                  threshold=threshold, invert=invert)
+        if not plan["ok"]:
+            return {"success": False, "reason": plan["reason"]}
+
+        regions = plan.pop("regions")
+        summary = {**plan, "layer": layer, "dry_run": dry_run}
+
+        if dry_run:
+            summary["note"] = (
+                f"planned {plan['region_count']} region(s); nothing placed. "
+                f"Call again with dry_run=False to commit.")
+            return summary
+
+        if plan["region_count"] > max_regions:
+            return {"success": False, "reason":
+                    f"{plan['region_count']} regions exceeds max_regions "
+                    f"({max_regions}). Raise the cap deliberately, raise "
+                    f"threshold, or use cleaner two-colour artwork: this "
+                    f"many primitives is slow to place and slow to edit.",
+                    **{k: plan[k] for k in ("scale", "bounds", "image")}}
+
+        bridge = get_bridge()
+        placed = 0
+        for region in regions:
+            pts = ";".join(f"{v['x']:g}:{v['y']:g}" for v in region["vertices"])
+            result = await bridge.send_command_async(
+                "pcb.place_region_poly",
+                {"pts": pts, "layer": layer, "net": ""},
+            )
+            # Stop at the first refusal rather than pressing on: a wrong
+            # layer name fails identically every time, and finishing the
+            # run would leave a thousand of them to undo.
+            if isinstance(result, dict) and result.get("success") is False:
+                return {"success": False, "placed": placed,
+                        "reason": f"region {placed + 1} failed: "
+                                  f"{result.get('reason', result)}",
+                        **{k: plan[k] for k in ("scale", "bounds", "image")}}
+            placed += 1
+
+        return {"success": True, "placed": placed, **summary}
+
+    @mcp.tool()
+    async def pcb_get_pair_impedance_rule(
+        board_path: str, rule_name: str,
+    ) -> dict[str, Any]:
+        """Read numeric impedance limits of one Differential Pairs Routing rule."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not rule_name.strip():
+            return {"ok": False, "reason": "rule_name is required"}
+        reply = await get_bridge().send_command_async(
+            "pcb.pair_impedance_rule",
+            {"board_path": board_path, "rule_name": rule_name.strip()}, timeout=120.0,
+        )
+        try:
+            _pair_impedance_snapshot(reply, board_path, rule_name.strip())
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_set_pair_impedance_rule(
+        board_path: str,
+        rule_name: str,
+        impedance_driven: Optional[bool] = None,
+        min_ohms: Optional[float] = None,
+        max_ohms: Optional[float] = None,
+        preferred_ohms: Optional[float] = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Plan or set the pair impedance-driven flag with exact-board checks.
+
+        Numeric fields remain readable but Altium 26.11 did not persist their
+        direct SDK writes across an exact save and reopen. Saving is separate.
+        """
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not rule_name.strip():
+            return {"ok": False, "reason": "rule_name is required"}
+        updates = {"impedance_driven": impedance_driven,
+                   "min_ohms": min_ohms, "max_ohms": max_ohms,
+                   "preferred_ohms": preferred_ohms}
+        updates = {key: value for key, value in updates.items() if value is not None}
+        if not updates:
+            return {"ok": False, "reason": "give at least one impedance setting"}
+        if any(key in updates for key in ("min_ohms", "max_ohms", "preferred_ohms")):
+            return {"ok": False, "reason":
+                    "numeric pair impedance fields did not persist after Altium 26.11 save/reopen"}
+        if ("impedance_driven" in updates
+                and type(updates["impedance_driven"]) is not bool):
+            return {"ok": False, "reason": "impedance_driven must be boolean"}
+        bridge = get_bridge()
+        base = {"board_path": board_path, "rule_name": rule_name.strip()}
+        snapshot = await bridge.send_command_async(
+            "pcb.pair_impedance_rule", base, timeout=120.0,
+        )
+        try:
+            old = _pair_impedance_snapshot(snapshot, board_path, rule_name.strip())
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": snapshot}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "board_path": board_path,
+                    "rule_name": rule_name.strip(), "before": old,
+                    "would_set": updates}
+        params = {**base,
+                  "expect_impedance_driven": "true" if old["impedance_driven"] else "false",
+                  "expect_min_ohms": str(old["min_ohms"]),
+                  "expect_max_ohms": str(old["max_ohms"]),
+                  "expect_preferred_ohms": str(old["preferred_ohms"])}
+        for key, value in updates.items():
+            params[key] = ("true" if value else "false") if key == "impedance_driven" else str(value)
+        reply = await bridge.send_command_async("pcb.pair_impedance_rule", params, timeout=120.0)
+        try:
+            after = _pair_impedance_snapshot(reply, board_path, rule_name.strip())
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        for key, value in updates.items():
+            actual = after[key]
+            matched = (actual is value if key == "impedance_driven" else
+                       math.isclose(actual, value, abs_tol=0.001))
+            if not matched:
+                return {"ok": False, "reason": f"{key} did not read back",
+                        "native_reply": reply}
+        reread = await bridge.send_command_async("pcb.pair_impedance_rule", base, timeout=120.0)
+        try:
+            confirmed = _pair_impedance_snapshot(reread, board_path, rule_name.strip())
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reread}
+        if any((confirmed[key] is not value if key == "impedance_driven" else
+                not math.isclose(confirmed[key], value, abs_tol=0.001))
+               for key, value in updates.items()):
+            return {"ok": False, "reason": "independent impedance readback disagrees",
+                    "native_reply": reread}
+        reply["save_required"] = bool(reply.get("changed"))
+        return reply
+
+    @mcp.tool()
+    async def pcb_get_fab_board_facts(board_path: str) -> dict[str, Any]:
+        """Read one uncapped fab comparison snapshot from the exact PcbDoc."""
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        reply = await get_bridge().send_command_async(
+            "pcb.get_fab_board_facts", {"board_path": board_path}, timeout=120.0,
+        )
+        try:
+            _fab_board_facts(reply, board_path)
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"ok": False, "reason": str(exc), "native_reply": reply}
+        return reply
+
+    @mcp.tool()
+    async def pcb_check_fab_output(
+        directory: str,
+        board_path: str,
+        min_drill_mm: float = 0.0,
+        min_feature_mm: float = 0.0,
+        board_name: str = "board",
+        require_manifest: bool = False,
+    ) -> dict[str, Any]:
+        """Compare Gerber/Excellon output with one focused, exact PCB.
+
+        Requires the absolute path of the focused PcbDoc. Native facts are
+        captured in one uncapped pass; incomplete reads cannot pass. The
+        optional gerbonara extra is required to parse the exported package.
+        Thresholds are millimetres; zero skips each respective threshold.
+        When an export manifest exists, verify the saved board and every
+        exported file before comparing geometry. ``require_manifest``
+        refuses an unsealed external package.
+        """
+        from ..fileio.gerber_check import compare_with_board, summarise_package
+        from ..fileio.fab_manifest import MANIFEST_NAME, verify_package
+
+        if not Path(board_path).is_absolute() or Path(board_path).suffix.casefold() != ".pcbdoc":
+            return {"ok": False, "reason": "board_path must be an absolute PcbDoc path"}
+        if not math.isfinite(min_drill_mm) or not math.isfinite(min_feature_mm) or min_drill_mm < 0 or min_feature_mm < 0:
+            return {"ok": False, "reason": "fab limits must be finite and non-negative millimetres"}
+        provenance = verify_package(directory, board_path, required=require_manifest)
+        if (require_manifest or (Path(directory) / MANIFEST_NAME).is_file()) and not provenance["verified"]:
+            return {"ok": False, "passed": False,
+                    "reason": "fab manifest verification failed: " + provenance["reason"],
+                    "provenance": provenance}
+        summary = summarise_package(directory, board_name=board_name)
+        if not summary.get("ok"):
+            return {"ok": False, "reason": summary.get("reason"),
+                    "files": summary.get("files", [])}
+        try:
+            facts_reply = await get_bridge().send_command_async(
+                "pcb.get_fab_board_facts", {"board_path": board_path}, timeout=120.0,
+            )
+            board = _fab_board_facts(facts_reply, board_path)
+        except (AltiumError, ValueError, TypeError, KeyError, OSError) as exc:
+            return {"ok": False, "reason": f"board facts unavailable: {exc}"}
+        if min_drill_mm:
+            board["min_drill_mm"] = min_drill_mm
+        if min_feature_mm:
+            board["min_feature_mm"] = min_feature_mm
+        result = compare_with_board(summary, board)
+        required = {"copper_layers", "outline", "hole_count"}
+        missing = sorted(required - set(result.get("checks_run", [])))
+        if missing:
+            result["ok"] = False
+            result["passed"] = False
+            result["reason"] = "required fab comparisons did not run: " + ", ".join(missing)
+        result["board_path"] = board_path
+        result["board_facts"] = facts_reply
+        result["provenance"] = provenance
+        return result
+
+    @mcp.tool()
+    async def pcb_drop_stack_layer(board_path: str, layer: str) -> dict[str, Any]:
+        """Remove one named stack layer on the exact board path."""
+        return await get_bridge().send_command_async(
+            "pcb.drop_stack_layer", {"board_path": board_path, "layer": layer})
+
+    @mcp.tool()
+    async def pcb_tune_copper_layer(
+        board_path: str, layer: str, rename_to: str = "",
+        thickness_mils: float | None = None, plain: bool = False,
+    ) -> dict[str, Any]:
+        """Set a copper layer's name or thickness on the exact board path."""
+        params: dict[str, Any] = {"board_path": board_path, "layer": layer,
+                                  "rename_to": rename_to,
+                                  "plain": "true" if plain else "false"}
+        if thickness_mils is not None:
+            params["thickness_mils"] = repr(thickness_mils)
+        return await get_bridge().send_command_async("pcb.tune_copper_layer", params)

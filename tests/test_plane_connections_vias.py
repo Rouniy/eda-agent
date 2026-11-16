@@ -47,7 +47,7 @@ class _Bridge:
 
     async def send_command_async(self, command, params, **kwargs):
         self.sent.append((command, params))
-        return self.reply
+        return dict(self.reply, board_path=params["board_path"])
 
 
 def _run(monkeypatch, reply, **kwargs):
@@ -55,19 +55,22 @@ def _run(monkeypatch, reply, **kwargs):
     monkeypatch.setattr(pcb, "get_bridge", lambda: bridge)
     mcp = _Mcp()
     pcb.register_pcb_tools(mcp)
-    return asyncio.run(mcp.tools["pcb_plane_connections"](**kwargs)), bridge.sent
+    return asyncio.run(mcp.tools["pcb_plane_connections"](
+        board_path="C:/test/board.PcbDoc", **kwargs)), bridge.sent
 
 
 def test_free_vias_are_asked_for_with_net_and_limit(monkeypatch):
     reply = {"vias": [{"rule_style": 1}, {"rule_style": 2}]}
     result, sent = _run(monkeypatch, reply, kind="Via", net="GND", limit=20)
-    assert sent == [("pcb.plane_connections", {"kind": "via", "net": "GND", "limit": "20"})]
+    assert sent == [("pcb.plane_connections", {"board_path": "C:/test/board.PcbDoc",
+                                                "kind": "via", "net": "GND", "limit": "20"})]
     assert [v["connection"] for v in result["vias"]] == ["direct", "none"]
 
 
 def test_a_part_still_goes_by_designator(monkeypatch):
     _, sent = _run(monkeypatch, {"pads": []}, designator="U1", kind="via")
-    assert sent == [("pcb.plane_connections", {"designator": "U1"})]
+    assert sent == [("pcb.plane_connections", {"board_path": "C:/test/board.PcbDoc",
+                                                "designator": "U1"})]
 
 
 def test_nothing_to_read_is_refused_before_the_bridge(monkeypatch):

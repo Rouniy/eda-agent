@@ -447,3 +447,16 @@ async def test_bad_plan_json_is_reported_not_fatal(monkeypatch):
     # The placement still runs; the plan problem is surfaced, not raised.
     assert out["dry_run"] is True
     assert "plan_json_error" in out["auto_constraints"]
+
+
+@pytest.mark.asyncio
+async def test_visual_text_bounds_cannot_drive_placement(monkeypatch):
+    bridge = _scenario()
+    bridge._components[0]["placement_bbox_fallback"] = True
+    tool = _capture_tool(monkeypatch, bridge)
+
+    out = await tool(designators=["R1"], apply=True)
+
+    assert out["error"] == "PHYSICAL_BBOX_UNAVAILABLE"
+    assert out["affected_designators"] == ["R1"]
+    assert [name for name, _ in bridge.calls] == ["pcb.get_components"]

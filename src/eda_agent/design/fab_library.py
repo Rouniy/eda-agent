@@ -85,6 +85,8 @@ def _mils(fig: dict) -> Optional[float]:
         return round(fig["mm"] * MILS_PER_MM, 3)
     if "mil" in fig:
         return float(fig["mil"])
+    if "um" in fig:                                  # micrometres, as Multi-CB
+        return round(fig["um"] / 1000.0 * MILS_PER_MM, 3)
     return None
 
 
@@ -107,6 +109,23 @@ def _matches(when: dict, copper_layers: int, outer_oz: float) -> bool:
     return oz is None or math.isclose(oz, outer_oz)
 
 
+def pick_tier(data: dict, tier: str, copper_layers: int = 0) -> str:
+    """The tier to read for a build. A tier the fab has is taken as asked.
+    "standard", the default, at a fab that names its tiers otherwise (OSH
+    Park's two_layer / four_layer, Eurocircuits' standard_pool, PCBCart's
+    typical) means that fab's first tier listing the board's layer count,
+    else its first tier. Any other name is returned unchanged, for the
+    caller to refuse."""
+    tiers = data.get("tiers") or {}
+    if tier in tiers or tier != "standard" or not tiers:
+        return tier
+    for name, figs in tiers.items():
+        for listed in figs.get("copper_layer_counts") or []:
+            if copper_layers and copper_layers in (listed.get("counts") or []):
+                return name
+    return next(iter(tiers))
+
+
 def figure(name: str, key: str, *, copper_layers: int, outer_oz: float = 1.0,
            tier: str = "standard") -> dict:
     """One published figure for one build, in mils, with its quote, or
@@ -115,6 +134,7 @@ def figure(name: str, key: str, *, copper_layers: int, outer_oz: float = 1.0,
     got = vendor(name)
     if not got["ok"]:
         return got
+    tier = pick_tier(got, tier, copper_layers)
     figs = got["tiers"].get(tier, {})
     options = [f for f in figs.get(key, [])
                if _matches(f.get("when", {}), copper_layers, outer_oz)]
@@ -162,6 +182,7 @@ def fab_profile(name: str, *, copper_layers: int, outer_oz: float = 1.0,
     got = vendor(name, today)
     if not got["ok"]:
         return got
+    tier = pick_tier(got, tier, copper_layers)
     if tier not in got["tiers"]:
         return {"ok": False, "reason": f"{got['vendor']} has no tier {tier!r}",
                 "tiers": sorted(got["tiers"])}

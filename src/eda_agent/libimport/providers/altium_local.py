@@ -47,11 +47,42 @@ _DEFAULT_ROOTS = (
 )
 
 
+def _split_roots(raw: str) -> list[str]:
+    """Split a path list without cutting Windows drive-letter colons.
+
+    The server commonly runs under WSL while the configured libraries are
+    Windows paths. On POSIX, ``os.pathsep`` is ``:``, so a plain split turns
+    ``A:/one:B:/two`` into four unusable fragments. A colon immediately after
+    the first letter of the current item and before a slash belongs to its
+    drive; every other path separator still starts the next item.
+    """
+    if os.pathsep != ":":
+        return raw.split(os.pathsep)
+
+    roots: list[str] = []
+    start = 0
+    for index, char in enumerate(raw):
+        if char != ":":
+            continue
+        drive_colon = (
+            index == start + 1
+            and raw[start:index].isalpha()
+            and index + 1 < len(raw)
+            and raw[index + 1] in "/\\"
+        )
+        if drive_colon:
+            continue
+        roots.append(raw[start:index])
+        start = index + 1
+    roots.append(raw[start:])
+    return roots
+
+
 def _roots() -> list[Path]:
     raw = os.environ.get("EDA_AGENT_ALTIUM_LIBRARIES", "").strip()
     if raw:
         return [Path(os.path.expandvars(p)).expanduser()
-                for p in raw.split(os.pathsep) if p.strip()]
+                for p in _split_roots(raw) if p.strip()]
     return [Path(os.path.expandvars(r)).expanduser() for r in _DEFAULT_ROOTS]
 
 

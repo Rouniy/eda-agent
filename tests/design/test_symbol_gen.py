@@ -102,6 +102,22 @@ def test_deterministic():
     assert a == b
 
 
+def test_custom_layout_preserves_group_gap_and_hidden_pin():
+    geom = generate_ic_symbol(
+        [{"designator": "1", "name": "IN", "hidden": True}, None,
+         {"designator": "2", "name": "GND"}],
+        [{"designator": "3", "name": "OUT"}],
+        pin_length=300, pin_spacing=150, char_width=80, body_padding=250,
+    )
+    assert [(p["designator"], p["y"]) for p in geom.pins] == [
+        ("1", 0), ("2", -300), ("3", 0)]
+    assert geom.pins[0]["hidden"] is True
+    assert geom.pins[0]["x"] - geom.pins[0]["length"] == 0
+    assert geom.body["x1"] == 300
+    assert geom.body["y2"] == -450
+    assert geom.body["x2"] - geom.body["x1"] >= 2 * 250
+
+
 # --- passive symbols --------------------------------------------------------
 
 from eda_agent.design.symbol_gen import generate_passive_symbol, PassiveSymbol

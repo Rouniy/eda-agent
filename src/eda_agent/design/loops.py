@@ -472,7 +472,7 @@ def _gate_drive(graph: CircuitGraph) -> list[Loop]:
 
 def _feedback(graph: CircuitGraph) -> list[Loop]:
     """Regulator FB dividers and op-amp feedback networks."""
-    from eda_agent.design.symbol_gen import classify_amplifier_pins
+    from eda_agent.design.amplifier_pins import classify_amplifier_pins
 
     loops: list[Loop] = []
     for ic, part in graph.parts.items():

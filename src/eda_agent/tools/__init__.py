@@ -26,14 +26,25 @@ from .guidance import register_guidance_tools
 from .update import register_update_tools
 from .length_units import register_length_units_tools
 from .uiauto import register_uiauto_tools
+from .pcb3d import register_pcb3d_tools
 from .project import register_project_tools
 from .convert import register_convert_tools
 from .library import register_library_tools
 from .ipc_batch import register_ipc_batch_tools
 from .generic import register_generic_tools
 from .pcb import register_pcb_tools
+from .rules import register_rule_tools
+from .rule_floors import register_rule_floor_tools
+from .erc import register_erc_tools
+from .profile_apply import register_profile_apply_tools
 from .review import register_review_tools
 from .sim import register_sim_tools
+from .spice_models import register_spice_model_tools
+from .emc import register_emc_tools
+from .thermal import register_thermal_tools
+from .pdn import register_pdn_tools
+from .simulation import register_simulation_tools
+from .si import register_si_tools
 from .design import register_design_tools
 from .render import register_render_tools
 from .audit import register_audit_tools
@@ -45,14 +56,19 @@ from .kicad_board import register_kicad_board_tools
 from .kicad_sch import register_kicad_sch_tools
 from .kicad_lib import register_kicad_lib_tools
 from .eda import register_eda_tools
-from .calc import register_calc_tools, register_physics_calc_tools
+from .calc import register_calc_tools, register_pcb_calc_tools, register_physics_calc_tools
+from .toolkit import register_toolkit_tools
+from .stackup import register_stackup_tools
 from .plan import register_plan_tools
 from .parts import register_parts_tools
 from .live import register_live_tools
 from .footprint import register_footprint_tools
+from .engineering import register_engineering_tools
+from .profile import register_profile_tools
+from .resource_catalog import register_resource_catalog_tools
 from .conventions import register_convention_tools
 from .altium365 import register_altium365_tools
-from .requests import register_request_prompts
+from .requests import register_mode_prompts, register_request_prompts
 
 # Recognised backends. "altium" is the default and stays the full historical
 # suite; "kicad" exposes only the KiCad-native tools; "easyeda" drives
@@ -107,9 +123,14 @@ OFFLINE_DESIGN_TOOLS = (
     "design_get_laminate",
     "design_get_stackup",
     "design_get_discipline",
+    "design_get_mode",
     "design_list_circuit_blocks",
     "design_list_fab_vendors",
+    "design_list_modes",
     "design_list_stackups",
+    "design_list_fabs",
+    "design_fab_rules",
+    "design_fab_compare",
     "design_load_fab_profile",
     "design_next_action",
     "design_phase_answer",
@@ -129,6 +150,19 @@ OFFLINE_DESIGN_TOOLS = (
 )
 
 
+#: The NPI phase-gate tools, which a profile switches on and which are
+#: off by default (eda_agent.design.phase_gates, docs/NPI_PHASE_GATES.md).
+#:
+#: They are named in OFFLINE_DESIGN_TOOLS with the rest, because they are
+#: as bridge-free as the rest; this list is what lets the check below tell
+#: a tool that is switched off from one that has been renamed away.
+PHASE_GATE_TOOLS = (
+    "design_phase_answer",
+    "design_phase_gate",
+    "design_phase_standing",
+)
+
+
 def register_offline_design_tools(mcp) -> None:
     """Register the plan-building design tools that need no bridge.
 
@@ -137,13 +171,20 @@ def register_offline_design_tools(mcp) -> None:
     re-registered. That keeps the split in one list rather than
     scattering conditionals through a 2000-line module.
     """
+    from ..profile import get_phase_stages
     from .design import register_design_tools
     from .registry import ToolRegistry
 
     capture = ToolRegistry()
     register_design_tools(capture)
 
-    missing = [n for n in OFFLINE_DESIGN_TOOLS if capture.get(n) is None]
+    # A phase tool that is switched off was never defined, so it is not
+    # missing. One that is switched ON and absent has been renamed, which
+    # is exactly what this check exists to catch, so the exemption lasts
+    # only as long as the gate is off.
+    optional = () if get_phase_stages() else PHASE_GATE_TOOLS
+    missing = [n for n in OFFLINE_DESIGN_TOOLS
+               if capture.get(n) is None and n not in optional]
     if missing:
         # A renamed tool would otherwise drop silently off this backend.
         raise RuntimeError(
@@ -151,7 +192,9 @@ def register_offline_design_tools(mcp) -> None:
             f"{missing}")
 
     for name in OFFLINE_DESIGN_TOOLS:
-        mcp.tool()(capture.get(name).fn)
+        tool = capture.get(name)
+        if tool is not None:
+            mcp.tool()(tool.fn)
 
 
 #: Review tools that need no bridge. Measured the same way as
@@ -196,6 +239,8 @@ def register_all_tools(mcp):
     # has no API at all, so they do not belong on any other
     # backend and are registered with the Altium suite alone.
     register_uiauto_tools(mcp)
+    register_resource_catalog_tools(mcp)
+    register_pcb3d_tools(mcp)
     register_application_tools(mcp)
     register_project_tools(mcp)
     register_convert_tools(mcp)
@@ -203,8 +248,18 @@ def register_all_tools(mcp):
     register_ipc_batch_tools(mcp)
     register_generic_tools(mcp)
     register_pcb_tools(mcp)
+    register_rule_tools(mcp)
+    register_rule_floor_tools(mcp)
+    register_erc_tools(mcp)
+    register_profile_apply_tools(mcp)
     register_review_tools(mcp)
     register_sim_tools(mcp)
+    register_spice_model_tools(mcp)
+    register_emc_tools(mcp)
+    register_thermal_tools(mcp)
+    register_pdn_tools(mcp)
+    register_simulation_tools(mcp)
+    register_si_tools(mcp)
     register_design_tools(mcp)
     register_render_tools(mcp)
     register_audit_tools(mcp)
@@ -239,6 +294,8 @@ def register_backend(
     # The canned requests go on the real server under either toolset: a
     # minimal server hides tools, not the prompts a user picks from.
     register_request_prompts(mcp, name)
+    # One prompt per design mode, to start a run in it (design/modes.py).
+    register_mode_prompts(mcp)
     return name
 
 
@@ -323,6 +380,8 @@ def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
         register_kicad_board_tools(mcp)
         register_kicad_sch_tools(mcp)
         register_kicad_lib_tools(mcp)
+    register_engineering_tools(mcp, altium=backend in ("altium", "both"))
+    register_profile_tools(mcp, altium=backend in ("altium", "both"))
     # The engineering calculators (pcb_calc_*) are pure physics and
     # EDA-independent. Altium's register_all_tools already defines them, so add
     # them only for a KiCad-only server to reach calculator parity without
@@ -333,6 +392,22 @@ def _register_surface(mcp, backend: str = DEFAULT_BACKEND) -> str:
         # The plan-building half of the design family. EasyEDA draws the
         # plan with its own template tools, KiCad with kicad_generate_*.
         register_offline_design_tools(mcp)
+    # Conductor spacing, fusing current, via parasitics, spiral
+    # inductance, reactance, resonance, wavelength, PDN target,
+    # padstack geometry and wire gauge. Pure physics with no Altium
+    # counterpart, so unlike register_calc_tools below they register
+    # EVERYWHERE; scoping them to the KiCad path hid all ten from
+    # Altium users, which is this project's main backend.
+    register_pcb_calc_tools(mcp)
+    # The PCB calculator toolkit: field-solver impedance, thermal trace
+    # current and the rest, behind one tool (list, describe, run) on
+    # every backend, plus the board's stackup as inputs where Altium is.
+    register_toolkit_tools(mcp, altium=backend in ("altium", "both"))
+    # Bundled fab capabilities, stackup templates and laminate data.
+    # Everywhere, for the same reason: four of the five are local file
+    # reads with no editor involved, and the fifth only needs Altium to
+    # fetch the board's own stackup.
+    register_stackup_tools(mcp, altium=backend in ("altium", "both"))
     if backend in ("kicad", "easyeda"):
         register_calc_tools(mcp)
         register_plan_tools(mcp)
@@ -380,7 +455,10 @@ __all__ = [
     "register_kicad_lib_tools",
     "register_eda_tools",
     "register_calc_tools",
+    "register_pcb_calc_tools",
     "register_physics_calc_tools",
+    "register_toolkit_tools",
+    "register_stackup_tools",
     "register_plan_tools",
     "register_offline_design_tools",
     "OFFLINE_DESIGN_TOOLS",
@@ -393,6 +471,8 @@ __all__ = [
     "register_application_tools",
     "register_guidance_tools",
     "register_uiauto_tools",
+    "register_pcb3d_tools",
+    "register_resource_catalog_tools",
     "register_meta_tools",
     "register_update_tools",
     "register_length_units_tools",
@@ -402,18 +482,31 @@ __all__ = [
     "register_convention_tools",
     "register_altium365_tools",
     "register_request_prompts",
+    "register_mode_prompts",
     "register_project_tools",
     "register_convert_tools",
     "register_library_tools",
     "register_ipc_batch_tools",
     "register_generic_tools",
     "register_pcb_tools",
+    "register_rule_tools",
+    "register_rule_floor_tools",
+    "register_erc_tools",
+    "register_profile_apply_tools",
     "register_review_tools",
     "register_sim_tools",
+    "register_spice_model_tools",
+    "register_emc_tools",
+    "register_thermal_tools",
+    "register_pdn_tools",
+    "register_si_tools",
+    "register_simulation_tools",
     "register_design_tools",
     "register_render_tools",
     "register_audit_tools",
     "register_route_tools",
     "register_sch_template_tools",
     "register_kicad_tools",
+    "register_engineering_tools",
+    "register_profile_tools",
 ]

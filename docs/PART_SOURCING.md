@@ -22,15 +22,15 @@ tells you whether you can draw it.
 | Provider | Kind | What it is | Network | Credential |
 |---|---|---|---|---|
 | `altium_local` | library | The `.SchLib` libraries already on this machine. The only source that answers whether you **already own** a part, which is what stops an import creating a second symbol with a slightly different name. Reads the OLE files directly, so it works with Altium closed. Nothing to download: a hit is already an Altium symbol. Point it with `EDA_AGENT_ALTIUM_LIBRARIES` | no | no |
-| `digikey` | catalogue | Digi-Key's catalogue: MPN, datasheet, lifecycle and live stock. Needs an OAuth client from their developer portal via `DIGIKEY_CLIENT_ID` and `DIGIKEY_CLIENT_SECRET` | yes | yes |
+| `digikey` | catalogue | Digi-Key's catalogue: MPN, datasheet, lifecycle, live stock and the full parametric map. Needs an OAuth client from their developer portal via `DIGIKEY_CLIENT_ID` and `DIGIKEY_CLIENT_SECRET` | yes | yes |
 | `easyeda` | library | EasyEDA / LCSC component data. Fetch by LCSC part number works; **search is unavailable** because the upstream endpoint was withdrawn | yes | no |
-| `element14` | catalogue | element14 (Farnell, Newark): MPN, datasheet and stock. Needs `ELEMENT14_API_KEY`; `ELEMENT14_STORE` picks the regional storefront, which changes the catalogue you see | yes | yes |
+| `element14` | catalogue | element14 (Farnell, Newark): MPN, datasheet, stock and attributes. No lifecycle: its product-status vocabulary does not map onto the others, so it is left out rather than guessed at. Needs `ELEMENT14_API_KEY`; `ELEMENT14_STORE` picks the regional storefront, which changes the catalogue you see | yes | yes |
 | `kicad_local` | library | The libraries KiCad installed on this machine. A fetch resolves the symbol's footprint reference against the installed `.pretty` libraries and the footprint's model reference against the `3dmodels` tree, so a hit can be a whole part with a 3D body (18003 of the 22728 symbols shipped with KiCad 10.0.1 name a footprint). No MPN or datasheet for most entries | no | no |
 | `mouser` | catalogue | Mouser's catalogue: MPN, datasheet and stock. Needs `MOUSER_API_KEY` | yes | yes |
 | `nexar` | catalogue | Nexar, the API behind Octopart: part number, manufacturer, description and datasheet link, no prices or stock. Needs `NEXAR_CLIENT_ID` and `NEXAR_CLIENT_SECRET` | yes | yes |
 | `partreel` | library | An open registry of verified KiCad parts, no login and no key: `/api/v1/parts.json` serves 21,657 parts. Yields KiCad files, usable in Altium through `lib_kicad_import`. Points at PartReel the way the Digi-Key client points at Digi-Key; `PARTS_REGISTRY_URL` redirects it at any API-compatible registry, since the API shape is the contract rather than the host. Run by a third party, proposed in issue #12 by its operator | yes | no |
 | `public_libraries` | library | Openly published KiCad libraries, no login and no key: KiCad's own 12,011 footprints, Digi-Key's 936, and JLCPCB's 20 symbol libraries plus footprints. Mostly **land patterns rather than symbols**, which is what you want once the part is chosen but its geometry is not. Indexed through GitHub's documented API, one request per repository, cached on disk for a week. `EDA_AGENT_CACHE_DIR` relocates the cache | yes | no |
-| `tme` | catalogue | TME: MPN, datasheet and stock, strongest on European availability. Requests are HMAC signed; needs `TME_TOKEN` and `TME_SECRET`, and `TME_COUNTRY` selects the market | yes | yes |
+| `tme` | catalogue | TME: MPN and product page, strongest on European availability. **No stock figure**: `Search.json` does not return one, it comes from `Products/GetPrices`, which this client does not call. Requests are HMAC signed; needs `TME_TOKEN` and `TME_SECRET`, and `TME_COUNTRY` selects the market | yes | yes |
 
 **No provider is a default and none is preferred.** All are searched equally,
 and the merged order is alphabetical by provider then part, which is not a
@@ -76,7 +76,10 @@ establish, without a paid credential, is the request and response shapes. So
 every catalogue publishes `verified_live: false`, and the parsers are written
 to degrade a single hit on a renamed field rather than assume a shape and lose
 the whole search. The flag flips only when a client has actually run against
-the live API.
+the live API. Nexar has: on 2026-11-12 its search answered `LM317` and
+`GRM188R71H104KA93D` with every requested field (stock, prices, lifecycle,
+parameters, similar parts) and no schema error, so `nexar` publishes
+`verified_live: true`.
 
 **Access policy of the hosts, checked rather than assumed.** Every host these
 providers reach was checked for a `robots.txt` before anything was built
@@ -125,6 +128,120 @@ while KiCad 10.0.1 writes `20251024`, and KiCad's symbol parser refuses the
 newer file outright ("Unable to load library") though its footprint parser
 accepts it. Any such file comes back with a `*_warning` naming both versions,
 rather than looking like a clean download.
+
+## Finding a replacement part
+
+`part_find_replacements(mpn, candidates="")` judges candidate
+substitutes on the three things a catalogue can actually answer --
+parameters, lifecycle, stock -- and states plainly what it could not
+check. It never says two parts are equivalent, and no wording in its
+output implies it.
+
+```
+part_find_replacements("GRM188R71C104KA01D")
+part_find_replacements("LM358DR", candidates="LM358BIDR,MCP6002T-I/SN")
+```
+
+Candidates come from the MPNs you pass, or, when you pass none, from
+the aggregator's own "similar parts" list for the original -- which is
+a catalogue's idea of similar, not an engineering judgement, and the
+result says so. Each candidate costs a full search across every enabled
+provider, so `max_candidates` (default 8) caps it.
+
+### How a parameter is judged
+
+Every attribute carries a direction, because the direction is the whole
+safety argument: more voltage rating is safe and more ESR is not, and a
+tool that applied one rule to both would approve the wrong part half
+the time.
+
+| Rule | Meaning | Attributes |
+|---|---|---|
+| `at_least` | candidate may exceed, falling short blocks | voltage rating, current rating, power rating, memory size |
+| `at_most` | candidate may undercut, exceeding blocks | tolerance, ESR, DCR, R<sub>DS(on)</sub>, quiescent and leakage current, propagation delay, height |
+| `close` | must be the same value | capacitance, resistance, inductance, frequency, gain, output voltage |
+| `contains` | candidate's range must span the original's | operating temperature, supply voltage |
+| `equal` | categorical, any difference blocks | dielectric, package, mounting type, polarity, pin count, composition |
+
+Values are parsed into base SI with their unit, so `100 nF` and
+`0.1 uF` compare equal while `16 V` and `16 A` are refused rather than
+compared. Attribute names are matched across catalogues, so Nexar's
+`voltagerating_dc`, Digi-Key's `Voltage - Rated` and Mouser's
+`Voltage Rating` all meet.
+
+An attribute with **no rule** is compared as text and reported as
+unreviewed -- never as a pass. There is no default direction, because
+defaulting to `equal` would block harmless differences and defaulting
+to `at_least` would approve dangerous ones.
+
+### What it does not check
+
+Every result repeats these, because a reader who takes silence for a
+clean bill of health is worse off than one who never ran it:
+
+- **Product-change notices and errata.** No distributor API serves
+  them -- not Digi-Key's, not Mouser's, not Nexar's. A PCN is the
+  commonest reason a part that passes everything here is still the
+  wrong choice this month.
+- **Pad geometry.** The package *name* is compared, never the land
+  pattern, because a catalogue states "SOIC-8" and never states the
+  pads. Run `lib_audit_footprint_vs_datasheet` against the candidate's
+  datasheet, which the result links, to check the footprint properly.
+- **Anything the catalogues do not publish**, which routinely includes
+  the parameter that actually decides the swap.
+- **An attribute the candidate simply does not state.** Saying nothing
+  about a rating is not the same as meeting it, and it is reported as
+  unreviewed.
+
+Candidates are ordered by fewest blocking findings, then fewest
+unreviewed, then MPN. That is a mechanical order, stated so it is not
+mistaken for a quality ranking.
+
+## Reading an LCSC reel label
+
+`part_parse_lcsc_label` decodes the QR payload printed on an LCSC reel or
+bag, which a handheld scanner types as text:
+
+```
+{pbn:PICK2403120102,on:GB2403120671,pc:C916399,pm:JSM2301S,qty:50,mc:,cc:1,pdi:107160244,hp:0,wc:ZH}
+```
+
+It returns the LCSC part number (`pc`), the manufacturer part number
+(`pm`) and the quantity (`qty`). Those three are the only keys with a
+documented meaning, and even that documentation is a community source
+rather than anything LCSC publishes. The remaining keys are returned
+verbatim under `fields` and are deliberately **not** given invented
+names, because a guessed label is indistinguishable from a known one to
+whoever reads the result next. A quantity the label did not state comes
+back as null rather than 0.
+
+It decodes text only. Reading the QR code out of an image is the
+scanner's job.
+
+## Caching a datasheet
+
+Every component-surfacing response already carries a vendor search query,
+because values must come from the datasheet rather than from memory.
+`part_cache_datasheet` finishes that thought by putting the document on
+disk, where it can be re-read, compared against a later revision, and
+cited by path after the conversation that found it is gone.
+`part_list_cached_datasheets` lists what is cached, each entry with its
+URL, SHA-256 and fetch time.
+
+Fetching reuses the same hardened path every provider call uses: HTTPS
+only, a host allowlist, a byte cap, a timeout. Two things are specific to
+datasheets:
+
+- **The allowlist is deny-by-default**, from `EDA_AGENT_DATASHEET_HOSTS`
+  (comma-separated). A datasheet URL usually comes from a model or a web
+  page, so there is no built-in list of vendor domains trusted on your
+  behalf; such a list would be a guess that rots. The refusal names the
+  host it declined, so allowing it is one step.
+- **The payload must really be a PDF**, checked by its magic bytes rather
+  than its `Content-Type`. A vendor page that redirects to a sign-in form
+  is the usual failure, and it routinely still claims to be a PDF.
+
+Re-requesting a cached URL returns the stored copy without fetching.
 
 ## Getting a KiCad-format part into Altium
 
@@ -254,4 +371,3 @@ The KiCad backend covers, at parity with what KiCad's API and CLI expose:
 The neutral tools (`review_design`, `run_drc`, `run_erc`, `get_board_info`, `list_components`, `list_nets`) work on whichever backend is active.
 
 > If you'd rather not register the script globally, you can also open `Altium_API.PrjScr` via **File > Open...** and launch `StartMCPServer` from the **Run Script...** dialog the same way; the dialog picks up any loaded script project.
-

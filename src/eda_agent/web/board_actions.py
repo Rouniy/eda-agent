@@ -18,6 +18,17 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger("eda_agent.web.board_actions")
 
+
+def _result_line(record: dict[str, Any]) -> dict[str, Any]:
+    """Summarize an action while retaining the DRC verdict and its context."""
+    reply = record.get("reply")
+    out = {"tool": record["tool"], "problem": _failed(reply)}
+    if isinstance(reply, dict) and reply.get("verdict"):
+        out["verdict"] = reply["verdict"]
+        out["verdict_reason"] = reply.get("verdict_reason", "")
+        out["violation_count"] = reply.get("violation_count")
+    return out
+
 #: Actions that change copper: the cockpit reads the whole board after them
 #: (its copper stamp is only counted on a large board).
 _COPPER = {"route", "unroute", "tidy", "teardrops", "repour"}
@@ -213,20 +224,9 @@ class Runner:
     def snapshot(self) -> dict[str, Any]:
         """The current or last action, its calls summarised for the page."""
         cur = dict(self.current)
-        cur["results"] = [_result_line(r) for r in cur.get("results") or []]
+        cur["results"] = [{"tool": r["tool"], "problem": _failed(r["reply"])}
+                          for r in cur.get("results") or []]
         return cur
-
-
-def _result_line(r: dict[str, Any]) -> dict[str, Any]:
-    """One call's outcome for the page; a DRC keeps its verdict, so the page
-    never shows a pass without the rules it was under."""
-    out = {"tool": r["tool"], "problem": _failed(r["reply"])}
-    reply = r.get("reply")
-    if isinstance(reply, dict) and reply.get("verdict"):
-        out["verdict"] = reply["verdict"]
-        out["verdict_reason"] = reply.get("verdict_reason", "")
-        out["violation_count"] = reply.get("violation_count")
-    return out
 
 
 _RUNNER: Optional[Runner] = None

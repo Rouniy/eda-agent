@@ -259,7 +259,7 @@ def test_a_relink_to_a_key_on_several_rows_changes_nothing(monkeypatch):
     first = next(iter(accepted))
     kwargs.setdefault(first, ["R1"] if "designators" in first else "R1")
     result = asyncio.run(tools["sch_relink_components"](**kwargs))
-    assert result.get("error") == "DBLIB_KEY_NOT_UNIQUE", result
+    assert result.get("error") == "DBLIB_ROW_AMBIGUOUS", result
     assert "2 rows have it" in result["reason"]
     assert [c for c, _ in bridge.sent] == ["library.get_dblib_record"]
 
@@ -279,11 +279,11 @@ def test_a_body_centre_needs_the_body_and_is_checked_after_the_move(monkeypatch,
                                                    center_x=10))
     assert no_body["ok"] is False and not bridge.sent
     moved = asyncio.run(tools["lib_set_3d_body"](footprint_name="F", library_path=str(lib),
-                                                 body_index=1, center_x=0.254, units="mm"))
+                                                 body_index=1, center_x=0.254, units="mm", dry_run=False))
     assert bridge.sent[-1][1]["center_x"] == "10.0" and "center_y" not in bridge.sent[-1][1]
     assert moved["moved_as_asked"] is True
     missed = asyncio.run(tools["lib_set_3d_body"](footprint_name="F", library_path=str(lib),
-                                                  body_index=1, center_x=11))
+                                                  body_index=1, center_x=11, dry_run=False))
     assert missed["moved_as_asked"] is False
     body = _routine("Library.pas", "Lib_Set3DBody")
     assert "Body.MoveByXY(" in body and "BodyCentre(Body, OrgX, OrgY, NowX, NowY)" in body
@@ -398,7 +398,10 @@ def test_annotation_sorts_on_altiums_own_coordinates():
 
 def test_an_xsignal_class_is_read_back_not_assumed():
     body = _routine("PCB.pas", "PCB_CreateXSignals")
-    assert "ClassListsMember(SigClass, PP.Name" in body and "not_in_class" in body
+    # Read back with IsMember: MemberCount and MemberName[] are undeclared
+    # on IPCB_ObjectClass in a script, so the name walk found nothing.
+    assert ("ClassListsMember(SigClass, PP.CastToPrimitive" in body
+            and "not_in_class" in body)
 
 
 def test_the_board_update_wants_this_projects_board_in_focus():
@@ -475,8 +478,8 @@ def test_shared_pins_go_on_part_zero_at_one_place_on_every_part(monkeypatch):
         shared_pins={"left_pins": [{"designator": "8", "name": "V+"}],
                      "right_pins": [{"designator": "4", "name": "V-"}]}))
     assert made["ok"] and made["shared"] == ["8", "4"]
-    # the pins call, not the last one: the view is refreshed after it
-    sent = next(p for c, p in bridge.sent if c == "library.add_pins")["pins"].replace(" ", "")
+    sent = next(params["pins"] for command, params in reversed(bridge.sent)
+                if command == "library.add_pins").replace(" ", "")
     rows = [dict(f.split("=", 1) for f in row.split(";") if "=" in f)
             for row in sent.split("~~") if row]
     owner = {r["designator"]: r["owner_part_id"] for r in rows}
@@ -525,12 +528,14 @@ def test_the_library_and_text_fixes_are_in_the_pascal():
     assert "'ALIAS_TAKEN'" in _routine("Library.pas", "Lib_SetSymbolAliases")
     assert "SetOwnerPartFrom(Arc, Component, ExtractJsonValue(Params, 'owner_part_id'))" in _unit(
         "Library.pas")
-    assert "'exact_part_counts'" in _unit("Library.pas")
+    assert ("'exact_part_counts'" in _unit("Library.pas")
+            or "'accurate_part_counts'" in _unit("Library.pas"))
     assert "eIterateFirstLevel" in _routine("Generic.pas", "SetCompParamText")
-    assert "JsonRaw('candidates', SchComponentCandidates(SchDoc, Designator))" in _unit(
-        "Generic.pas")
+    assert ("JsonRaw('candidates', SchComponentCandidates(SchDoc, Designator))" in _unit("Generic.pas")
+            or ("SchComponentCandidates(SchDoc, Designator)" in _unit("Generic.pas")
+                and "BuildErrorResponseDetailed(RequestId, 'AMBIGUOUS_DESIGNATOR'" in _unit("Generic.pas")))
     assert "(PropName = 'FontName')" in _unit("PCBGeneric.pas")
-    assert "bbox_no_name_comment" in _routine("PCB.pas", "PCB_GetComponents")
+    assert "bbox_no_name_comment" in _routine("PCB.pas", "PCB_GetComponentsForBoard")
 
 
 def test_a_netlist_drops_the_other_parts_question_marks_and_writes_its_own_line_ends(

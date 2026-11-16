@@ -126,8 +126,7 @@ def test_no_primitive_is_written_inside_a_board_walk(source: str):
 #: The handlers that walk the board and then write to what they found.
 #: PCB_SetTrackWidth is where the pattern was worked out; the other one
 #: had the defect and nobody had reported it.
-_COLLECTORS = ("PCB_SetTrackWidth", "PCB_MoveTracksToLayer",
-               "PCB_SetViaSoldermaskRelief")
+_COLLECTORS = ("PCB_SetTrackWidth", "PCB_MoveTracksToLayer")
 
 
 def _body(source: str, name: str) -> str:
@@ -207,11 +206,8 @@ def test_the_list_of_primitives_is_not_freed(source: str, name: str):
     assert f"{_list_name(body)}.Free" not in body
 
 
-def test_the_via_relief_never_assigns_the_expansion_on_the_via(source: str):
-    """The one write measured to fault, twice in 2026-09 and again on
-    2026-10-11, is SolderMaskExpansion assigned onto an IPCB_Via. The
-    value goes into the via's pad cache instead."""
+def test_the_via_relief_uses_the_cache_after_collection(source: str):
+    """The direct via property faults; the cache write follows the walk."""
     body = _body(source, "PCB_SetViaSoldermaskRelief")
     assert not re.search(r"\bVia\.SolderMaskExpansion\s*:=", body)
-    assert "Cache.SolderMaskExpansion := Exp;" in body
-    assert "Via.SetState_Cache := Cache;" in body
+    assert body.index("Board.BoardIterator_Destroy(Iterator)") < body.index("Via.SetState_Cache := Cache;")

@@ -2,6 +2,7 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Project management tools for Altium Designer MCP Server."""
 
+import asyncio
 import re
 from typing import Any, Optional
 from ..bridge import get_bridge
@@ -9,11 +10,139 @@ from ..units import MM_PER_MIL
 from .option_hints import project_option_collision
 from .datasheet_hints import tag_response
 from .bulk_hints import BulkHintTracker
-from ..export.variant_bom import apply_variant, find_variant
 from ..ui import change_order
 from .answering import send_answering
 from .bulk import bulk_items_by
 from ..prjpcb import removals_together
+
+from .schematic_pdf import checked_output_path, export_root, remove_stage, stage_schematic_project
+
+# Pads fetched per round-trip when verifying an ECO. pcb_get_pad_properties
+# windows its output, so a dense board needs paging -- reading only the
+# first page is exactly the mistake this verification exists to catch.
+_PAD_PAGE = 500
+_PAD_PAGE_LIMIT = 40  # 20k pads; a guard against a runaway pager, not a cap
+
+
+def _list_open_dialogs() -> list[dict[str, Any]]:
+    """Current Altium dialogs, via Win32.
+
+    Deliberately does NOT go through the bridge: when a modal is up the
+    polling loop cannot answer, so any bridge-based inventory would block
+    on the very condition it is trying to report. Never raises -- a failed
+    inventory must not mask the caller's real error.
+    """
+    try:
+        from .application import _get_ui_inspector
+        return list(_get_ui_inspector().list_dialogs())
+    except Exception:  # a failed inventory must not mask the real error
+        return []
+
+
+def _modal_blocked_response(code: str, message: str,
+                            dialogs: list[dict[str, Any]],
+                            *, eco_fired: bool) -> dict[str, Any]:
+    """Structured 'a dialog is in the way' result.
+
+    Returned rather than raised so the caller keeps the dialog inventory
+    and the exact steps to clear it. ``eco_fired`` matters: the changes
+    are pending behind the dialog in one case and untouched in the other,
+    and the caller must not guess which.
+    """
+    from ..bridge.recovery import recovery_guidance, MODAL_DIALOG
+    return {
+        "success": False,
+        "error": {"code": code, "message": message},
+        "eco_fired": eco_fired,
+        "eco_state": ("pending_on_dialog" if eco_fired else "not_started"),
+        "dialog_count": len(dialogs),
+        "dialogs": dialogs,
+        "recovery": recovery_guidance(MODAL_DIALOG),
+        "next_steps": [
+            "app_list_dialogs -- read the open dialog and its buttons.",
+            "app_click_dialog_button -- click 'Execute Changes' to apply "
+            "the ECO, or 'Close' to abandon it.",
+            "Re-run proj_sync_pcb afterwards if you closed without applying.",
+        ],
+    }
+
+
+async def _fetch_all_pads(bridge) -> tuple[list[dict[str, Any]], bool]:
+    """Every component pad on the board, paging until the window closes.
+
+    Returns ``(pads, complete)``. ``complete`` is False when the pager hit
+    its guard rail -- reporting an unbound-pad list computed from a partial
+    sweep as if it were the whole board would repeat the original bug in a
+    new place.
+    """
+    pads: list[dict[str, Any]] = []
+    offset = 0
+    for _ in range(_PAD_PAGE_LIMIT):
+        page = await bridge.send_command_async(
+            "pcb.get_pad_properties",
+            {"offset": str(offset), "limit": str(_PAD_PAGE)},
+        )
+        if not isinstance(page, dict):
+            return pads, False
+        batch = page.get("pads") or []
+        pads.extend(p for p in batch if isinstance(p, dict))
+        if not page.get("truncated") or not batch:
+            return pads, True
+        offset = int(page.get("next_offset") or (offset + len(batch)))
+    return pads, False
+
+
+async def _verify_pad_nets(bridge) -> dict[str, Any]:
+    """Compare the compiled netlist against the board's pad nets.
+
+    Any failure to gather either side is reported as ``checked:false`` with
+    a reason. A verification that could not run must never look like a
+    verification that passed.
+    """
+    from ..core.eco_verify import verify_eco
+
+    try:
+        pads, complete = await _fetch_all_pads(bridge)
+    except Exception as exc:
+        return {"checked": False,
+                "reason": f"could not read board pads: {exc}"}
+    if not complete:
+        return {"checked": False,
+                "reason": "pad sweep did not reach the end of the board; "
+                          "the comparison would be based on a partial "
+                          "board and is not reported",
+                "pads_read": len(pads)}
+
+    designators = sorted({
+        str(p.get("component") or "").strip()
+        for p in pads if str(p.get("component") or "").strip()
+    })
+    if not designators:
+        return {"checked": False,
+                "reason": "no component pads on the board to verify"}
+
+    try:
+        netlist = await bridge.send_command_async(
+            "project.get_connectivity_batch",
+            {"designators": "~~".join(designators)},
+        )
+    except Exception as exc:
+        return {"checked": False,
+                "reason": f"could not read the compiled netlist: {exc}"}
+    if not isinstance(netlist, dict):
+        return {"checked": False,
+                "reason": "compiled netlist response was not a dict"}
+
+    report = verify_eco(netlist.get("components") or [], pads)
+    report["checked"] = True
+    report["hint"] = (
+        "Repair anything in pads_unbound with pcb_bind_pad_nets; a "
+        "non-empty list means the ECO reported success but did not "
+        "finish the job."
+    )
+    return report
+from ..export.variant_bom import apply_variant, find_variant
+
 
 
 def _rows(result: Any, key: str) -> list:
@@ -46,27 +175,6 @@ async def _pair_names(bridge) -> set:
             if isinstance(p, dict) and p.get("name")}
 
 
-def _record_change_order(result, driven) -> list[str]:
-    """Put what was done to the change order on the reply, with the lines
-    that failed and the raw rows moved out of the way; the failed lines."""
-    if not isinstance(result, dict) or driven is None:
-        return []
-    failed = change_order.failed_lines(driven)
-    rows = driven.pop("read", None)
-    filtered = driven.pop("read_filtered", None)
-    if filtered:
-        driven["failed_lines"] = failed
-        driven["failed_lines_note"] = (
-            "read from the dialog by OCR with Only Show Errors ticked: the "
-            "rows that fit in the dialog, a long line sometimes split in "
-            "two, names with 0/O and 1/l slips")
-    elif rows is not None:
-        driven["failed_lines"] = None
-        driven["failed_lines_note"] = (
-            "Only Show Errors could not be ticked, so which lines failed "
-            "was not read")
-    result["change_order"] = driven
-    return failed
 
 
 async def _footprint_source(bridge, designator: str) -> dict:
@@ -186,19 +294,36 @@ async def _after_sync(bridge, pairs_before: set, failed: list[str] = ()) -> dict
     out: dict[str, Any] = {"footprint_mismatch": mismatch,
                            "missing_on_board": missing,
                            "diff_pairs_removed": removed}
-    problems = []
+    problems: list[str] = []
     on_both = sorted(d for d in sch if d in pcb)
     if on_both:
         from ..core.eco_verify import verify_eco
         pins = await bridge.send_command_async(
             "project.get_connectivity_batch", {"designators": "~~".join(on_both)})
-        pads = await bridge.send_command_async("pcb.get_pad_properties", {})
-        nets = verify_eco(_rows(pins, "components"), _rows(pads, "pads"))
+        # Paged, NOT one call: pcb.get_pad_properties windows at 500 pads
+        # by default and says so in `truncated`. Reading page one and
+        # reporting the unbound list as the board's is the original bug in
+        # a new place, and every real board is past that window.
+        try:
+            pads, complete = await _fetch_all_pads(bridge)
+        except Exception as exc:
+            out["error"] = f"could not verify board pad nets: {exc}"
+            return out
+        nets = verify_eco(_rows(pins, "components"), pads)
+        # Distinct names on purpose: verify_eco's own `complete` means
+        # "nothing was wrong" and its `pads_checked` counts pads it could
+        # pair with a pin. These two are about the SWEEP that fed it.
+        nets["pads_swept"] = len(pads)
+        nets["sweep_complete"] = complete
         out["pad_nets"] = nets
-        if nets["unbound_count"] or nets["mismatched_count"]:
+        if not complete:
             problems.append(
-                f"{nets['unbound_count']} pad(s) have no net and "
-                f"{nets['mismatched_count']} carry another net than their pin "
+                "the pad sweep hit its guard rail, so pad_nets describes "
+                "part of the board only")
+        if nets["pads_unbound_count"] or nets["pads_mismatched_count"]:
+            problems.append(
+                f"{nets['pads_unbound_count']} pad(s) have no net and "
+                f"{nets['pads_mismatched_count']} carry another net than their pin "
                 f"(pad_nets lists them; pcb_bind_pad_nets repairs unbound ones)")
     if mismatch:
         explained = sum(1 for row in mismatch if row.get("eco_line"))
@@ -300,8 +425,32 @@ def _netlist_nodes(pins: list) -> tuple[list[tuple[str, str, str, str]], int]:
     return nodes, dropped
 
 
+def _record_change_order(result, driven) -> list[str]:
+    """Put what was done to the change order on the reply, with the lines
+    that failed and the raw rows moved out of the way; the failed lines."""
+    if not isinstance(result, dict) or driven is None:
+        return []
+    failed = change_order.failed_lines(driven)
+    rows = driven.pop("read", None)
+    filtered = driven.pop("read_filtered", None)
+    if filtered:
+        driven["failed_lines"] = failed
+        driven["failed_lines_note"] = (
+            "read from the dialog by OCR with Only Show Errors ticked: the "
+            "rows that fit in the dialog, a long line sometimes split in "
+            "two, names with 0/O and 1/l slips")
+    elif rows is not None:
+        driven["failed_lines"] = None
+        driven["failed_lines_note"] = (
+            "Only Show Errors could not be ticked, so which lines failed "
+            "was not read")
+    result["change_order"] = driven
+    return failed
+
+
 def register_project_tools(mcp):
     """Register project tools with the MCP server."""
+    pdf_export_lock = asyncio.Lock()
 
     @mcp.tool()
     async def proj_create(
@@ -315,6 +464,9 @@ def register_project_tools(mcp):
         app_create_document kind "HarnessWiringDiagram" and a .WirDoc
         path), .LibPkg an integrated library package. An existing file is
         refused, never overwritten: open it with proj_open.
+
+        Not idempotent: an existing destination is refused. Check
+        proj_list_open and use proj_open for a project that already exists.
 
         Args:
             project_path: Full path for the new project file.
@@ -342,17 +494,48 @@ def register_project_tools(mcp):
     async def proj_open(project_path: str) -> dict[str, Any]:
         """Open an existing Altium project.
 
+        Altium's open process reports nothing when the file is missing or
+        is not a project, so the open is confirmed by looking for the
+        project among the open ones afterwards.
+
         Args:
             project_path: Full path to the project file
 
         Returns:
-            Dictionary with opened project information
+            ``success``, ``project_path`` and ``focused``. When the project
+            is not open afterwards: ``success`` false, ``opened`` false
+            and ``reason``.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "project.open", {"project_path": project_path}
         )
-        return result
+        if not isinstance(result, dict) or result.get("success") is False:
+            return result
+        listing = await bridge.send_command_async("project.get_open_projects", {})
+        projects = listing.get("projects") if isinstance(listing, dict) else None
+        if not isinstance(projects, list):
+            # No list to check against: say so instead of confirming.
+            result["opened"] = None
+            return result
+
+        def _key(path: Any) -> str:
+            return str(path or "").replace("/", "\\").rstrip("\\").lower()
+
+        wanted = _key(project_path)
+        if any(_key(p.get("project_path")) == wanted
+               for p in projects if isinstance(p, dict)):
+            result["opened"] = True
+            return result
+        return {
+            "success": False,
+            "opened": False,
+            "project_path": project_path,
+            "focused": False,
+            "reason": "Altium has no such project open after the open "
+                      "command: the file is missing, is not a project, or "
+                      "Altium could not read it. Check the path.",
+        }
 
     @mcp.tool()
     async def proj_save(project_path: Optional[str] = None) -> dict[str, Any]:
@@ -383,10 +566,8 @@ def register_project_tools(mcp):
         stops and reports it as ``closed_instead``. Without saving, it
         clears each member's modified flag so no save prompt appears; if
         one appears anyway it answers "Save None" then "OK", but only
-        when every listed document belongs to this project. A prompt
-        that lists another project's documents is cancelled, in either
-        mode, and the close reported as not done with
-        ``foreign_documents``. A document shared with another
+        when every listed document belongs to this project, else it
+        presses nothing. A document shared with another
         open project loses its edits too. A prompt left open blocks the
         bridge: answer it with app_press_dialog_button.
 
@@ -869,9 +1050,18 @@ def register_project_tools(mcp):
                 tells whether any doc is dirty.
 
         Returns:
-            Dict with "pins", "count", "limit", "limit_hit" (true when
-            the list stopped at ``limit`` with pins left over) and
-            "skipped_nil" (entries Altium returned empty).
+            Dict with "pins", "count" (rows RETURNED), "limit" and
+            "truncated". ``truncated`` True means the cap cut the list
+            short -- raise ``limit`` or filter, and do not read the
+            absence of a pin as evidence it has no net.
+
+        Examples:
+            # PREFERRED, one unfiltered call, then filter locally:
+            all_pins = proj_get_nets(limit=10000)["pins"]
+            u1_pins = [p for p in all_pins if p["component"] == "U1"]
+
+            # Guaranteed-fresh read after user edits:
+            fresh = proj_get_nets(force_recompile=True, limit=10000)
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"limit": str(limit)}
@@ -1175,6 +1365,7 @@ def register_project_tools(mcp):
                 base design.
 
         Returns:
+
             Dictionary with "components" array and "count", "limit",
             "limit_hit" (true when the list stopped at ``limit`` with
             components left over), "skipped_nil", plus
@@ -1182,6 +1373,7 @@ def register_project_tools(mcp):
             also ``variant``, ``not_fitted``, ``alternates``, ``varied``
             and ``entries_not_in_bom``; each component carries
             ``variation`` (none, fitted or alternate).
+
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"limit": str(limit)}
@@ -1367,28 +1559,182 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
-    async def proj_export_pdf(output_path: str) -> dict[str, Any]:
-        """Open Altium's PRINT dialog for the active document, for a PDF.
+    async def proj_export_pdf(output_path: str,
+                              open_print_dialog: bool = False) -> dict[str, Any]:
+        """Open the focused document's print dialog for a PDF on request.
 
-        NOT UNATTENDED. This opens the print preview / print setup dialog
-        with the user's real printer selected and a live Print button,
-        and blocks the bridge until a person finishes or cancels it; a
-        wrong press prints paper. ``written`` says whether the PDF exists
-        afterwards. For a PDF with nobody at the machine, run an OutJob
-        container whose medium is PDF (proj_list_outjob_containers, then
-        proj_run_outjob).
+        Direct printing opens Preview SCH and blocks the bridge until the
+        dialog is answered. The default refuses; use
+        ``proj_export_schematic_pdf`` for an unattended export. With
+        ``open_print_dialog=True``, finish the dialog in Altium. An existing
+        output file is refused so a cancelled print cannot look successful.
 
         Args:
-            output_path: Full path for the output PDF file
+            output_path: Full path for the output PDF file.
+            open_print_dialog: Explicitly open Altium's modal print dialog.
 
         Returns:
             Dictionary confirming export
         """
-        bridge = get_bridge()
-        result = await bridge.send_command_async(
-            "project.export_pdf", {"output_path": output_path}
-        )
+        if not open_print_dialog:
+            return {
+                "success": False,
+                "error": {
+                    "code": "PREVIEW_NOT_SILENT",
+                    "message": "Direct print opens Preview SCH on this Altium build. "
+                               "Use proj_export_schematic_pdf(project_path, output_path), "
+                               "or pass open_print_dialog=True for manual printing.",
+                },
+            }
+        import os
+
+        if os.path.exists(output_path):
+            return {"success": False, "error": {"code": "OUTPUT_PATH_EXISTS",
+                "message": "Choose a new output path for the interactive print."}}
+        result = await get_bridge().send_command_async(
+            "project.export_pdf", {"output_path": output_path}, timeout=120.0)
+        if not isinstance(result, dict):
+            return result
+        result["modal_expected"] = True
+        if result.get("success"):
+            try:
+                with open(output_path, "rb") as pdf:
+                    valid = pdf.read(5) == b"%PDF-"
+            except OSError:
+                valid = False
+            if not valid:
+                result["success"] = False
+                result["error"] = "EXPORT_FILE_INVALID"
         return result
+
+    @mcp.tool()
+    async def proj_export_schematic_pdf(project_path: str, output_path: str) -> dict[str, Any]:
+        """Silently publish all physical schematic sheets as one PDF.
+
+        Both the disposable project and its OutJob are created under
+        D:\\AI\\ALTIUM\\testprojects\\_screens. Original project files and
+        SchDocs are only read. The PDF's sheet bookmarks report page order.
+        The project must not be edited concurrently during the export.
+        """
+        # Opening a stage, changing focus, publishing, and closing are one
+        # Altium UI transaction. Concurrent callers must not interleave them.
+        async with pdf_export_lock:
+            return await _export_schematic_pdf(project_path, output_path)
+
+    async def _export_schematic_pdf(project_path: str, output_path: str,
+                                    variant_name: str | None = None) -> dict[str, Any]:
+        from pathlib import Path
+        import os
+        from pypdf import PdfReader
+        from ..atomicfile import replace_with_retry
+
+        try:
+            target = checked_output_path(output_path)
+            staged_project, first_sheet, temporary_pdf, sheet_count = (
+                stage_schematic_project(project_path, output_path, variant_name))
+        except (OSError, ValueError) as exc:
+            return {"success": False, "error": {"code": "STAGING_FAILED", "message": str(exc)}}
+
+        bridge = get_bridge()
+        original_active = None
+        try:
+            original_active = await bridge.send_command_async("application.get_active_document")
+        except Exception:  # no prior focus to restore if the read failed
+            pass
+        opened = False
+        outcome: dict[str, Any] = {"success": False}
+        try:
+            opened_reply = await bridge.send_command_async(
+                "project.open", {"project_path": str(staged_project)})
+            if not isinstance(opened_reply, dict) or not opened_reply.get("success"):
+                raise RuntimeError(f"could not open staged project: {opened_reply}")
+            opened = True
+            open_sheet = await bridge.send_command_async(
+                "application.open_document", {"file_path": str(first_sheet)})
+            if not isinstance(open_sheet, dict) or not open_sheet.get("success"):
+                raise RuntimeError(f"could not open staged SchDoc: {open_sheet}")
+            focus = await bridge.send_command_async(
+                "application.set_active_document", {"file_path": str(first_sheet)})
+            if not isinstance(focus, dict) or not focus.get("success"):
+                raise RuntimeError(f"could not focus staged SchDoc: {focus}")
+            if variant_name is not None:
+                staged_listing = await bridge.send_command_async(
+                    "project.get_variants", {"project_path": str(staged_project)})
+                staged_names = [v.get("name") for v in
+                                (staged_listing or {}).get("variants", [])
+                                if isinstance(v, dict)]
+                if variant_name not in staged_names:
+                    raise RuntimeError(
+                        f"staged project does not contain variant {variant_name}: "
+                        f"{staged_names}")
+            run = await bridge.send_command_async(
+                "project.run_outjob",
+                {"outjob_path": str(staged_project.parent / "Documentation.OutJob"),
+                 "container_name": "Schematic PDF"},
+                timeout=120.0,
+            )
+            if not isinstance(run, dict) or not run.get("process_issued"):
+                raise RuntimeError(f"PDF container did not run: {run}")
+            if not temporary_pdf.is_file() or temporary_pdf.stat().st_size < 100:
+                raise RuntimeError("Altium did not write the expected PDF")
+            reader = PdfReader(temporary_pdf)
+            if not reader.pages:
+                raise RuntimeError("Altium wrote a PDF with no pages")
+            page_order = []
+
+            def collect_bookmarks(entries):
+                for item in entries:
+                    if isinstance(item, list):
+                        collect_bookmarks(item)
+                    elif hasattr(item, "title") and ".schdoc" in item.title.lower():
+                        page_order.append({"page": reader.get_destination_page_number(item) + 1,
+                                           "sheet": item.title})
+
+            collect_bookmarks(reader.outline)
+            outcome = {"success": True,
+                       "project_path": str(Path(project_path).resolve()),
+                       "output_path": str(target),
+                       "color_set": "Color",
+                       "page_count": len(reader.pages),
+                       "source_schdoc_count": sheet_count,
+                       "page_order": page_order,
+                       "order_note": "page_order is read from Altium's PDF sheet bookmarks"}
+            if variant_name is not None:
+                outcome["variant"] = variant_name
+        except Exception as exc:
+            outcome = {"success": False,
+                       "error": {"code": "SCHEMATIC_PDF_EXPORT_FAILED", "message": str(exc)},
+                       "staging_project": str(staged_project)}
+
+        closed = not opened
+        if opened:
+            try:
+                close_result = await proj_close(str(staged_project), save=False)
+                closed = bool(close_result.get("closed")) and not close_result.get("closed_instead")
+            except Exception as exc:
+                close_result = {"error": str(exc)}
+            if not closed:
+                outcome = {"success": False,
+                           "error": {"code": "STAGING_CLOSE_FAILED",
+                                     "message": "PDF staging project remained open"},
+                           "close_result": close_result,
+                           "staging_project": str(staged_project)}
+        if closed:
+            if outcome.get("success"):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                replace_with_retry(temporary_pdf, target)
+                outcome["size_bytes"] = target.stat().st_size
+            remove_stage(staged_project)
+        if isinstance(original_active, dict) and original_active.get("file_path"):
+            try:
+                await bridge.send_command_async(
+                    "application.set_active_document",
+                    {"file_path": original_active["file_path"]})
+            except Exception:  # report restoration failure in the returned outcome
+                outcome["focus_restored"] = False
+            else:
+                outcome["focus_restored"] = True
+        return outcome
 
     @mcp.tool()
     async def proj_cross_probe(
@@ -1410,6 +1756,50 @@ def register_project_tools(mcp):
             {"designator": designator, "target": target},
         )
         return result
+
+    @mcp.tool()
+    async def proj_visual_cross_probe(
+        designator: str,
+        output_path: str,
+        target: str = "schematic",
+        settle_ms: int = 500,
+    ) -> dict[str, Any]:
+        """Cross-probe a component and capture the resulting Altium viewport.
+
+        The capture uses Win32 rather than the DelphiScript polling loop, so it
+        also inventories modal dialogs that may explain why the requested view
+        did not appear. It does not change zoom, focus, or selection beyond the
+        normal ``project.cross_probe`` operation.
+        """
+        if target not in {"schematic", "pcb"}:
+            return {"ok": False, "reason": "target must be 'schematic' or 'pcb'"}
+        if not output_path.strip():
+            return {"ok": False, "reason": "output_path is required"}
+        if settle_ms < 0 or settle_ms > 10000:
+            return {
+                "ok": False,
+                "reason": "settle_ms must be between 0 and 10000",
+            }
+
+        bridge = get_bridge()
+        cross_probe = await bridge.send_command_async(
+            "project.cross_probe",
+            {"designator": designator, "target": target},
+        )
+        if settle_ms:
+            await asyncio.sleep(settle_ms / 1000)
+
+        from ..bridge.windows_ui import get_altium_ui_inspector
+        inspector = get_altium_ui_inspector(bridge)
+        window_handle = inspector.main_window_handle()
+        capture = inspector.capture_window(window_handle, output_path)
+        return {
+            "designator": designator,
+            "target": target,
+            "cross_probe": cross_probe,
+            "capture": capture,
+            "dialogs": inspector.list_dialogs(),
+        }
 
     @mcp.tool()
     async def proj_get_stats(
@@ -1953,23 +2343,22 @@ def register_project_tools(mcp):
         format: str = "pdf",
         width: int = 1920,
         height: int = 1080,
+        open_print_dialog: bool = False,
     ) -> dict[str, Any]:
-        """Export the active schematic / PCB document, silent (no dialog).
+        """Export an image, or explicitly open the PDF print dialog.
 
-        Only PDF is silent; it prints the focused document, as
-        ``proj_export_pdf`` does, so make the wanted tab active first.
-        png/jpg/bmp return ``IMAGE_FORMAT_UNSUPPORTED``: they need an
-        OutJob with an image container, run by ``proj_run_outjob``.
-        An old file at ``output_path`` is deleted first, and a run that
-        leaves no file is ``EXPORT_FILE_MISSING``.
+        Direct PDF printing opens Preview SCH on this Altium build, so this
+        handler refuses ``format="pdf"`` unless ``open_print_dialog=True``.
+        A pre-existing PDF path is refused before Altium can delete it. Raster
+        formats still use the native handler and may return
+        ``IMAGE_FORMAT_UNSUPPORTED``.
 
         Args:
-            output_path: Full path for the output file. The directory must
-                already exist. The extension should be ``.pdf``.
-            format: Output format. Only ``"pdf"`` is silent today
-                (default). ``"png"``, ``"jpg"``, ``"bmp"`` return an
-                explicit ``IMAGE_FORMAT_UNSUPPORTED`` error.
-            width, height: Unused by the PDF path.
+            output_path: Full path for the output file.
+            format: Output format; PDF returns PREVIEW_NOT_SILENT.
+            width: Kept for API compatibility.
+            height: Kept for API compatibility.
+            open_print_dialog: Explicitly open Altium's modal PDF preview.
 
         Returns:
             Dictionary confirming the export with the resolved path,
@@ -1977,6 +2366,20 @@ def register_project_tools(mcp):
             ``file_exists`` based on a Python-side existence check.
         """
         import os
+
+        if format.lower().lstrip(".") == "pdf" and not open_print_dialog:
+            return {
+                "success": False,
+                "error": {
+                    "code": "PREVIEW_NOT_SILENT",
+                    "message": "Direct print opens Preview SCH on this Altium build. "
+                               "Use proj_export_schematic_pdf(project_path, output_path), "
+                               "or pass open_print_dialog=True for manual printing.",
+                },
+            }
+        if format.lower().lstrip(".") == "pdf" and os.path.exists(output_path):
+            return {"success": False, "error": {"code": "OUTPUT_PATH_EXISTS",
+                "message": "Choose a new output path for the interactive print."}}
 
         bridge = get_bridge()
         result = await bridge.send_command_async(
@@ -2006,7 +2409,7 @@ def register_project_tools(mcp):
                         head = fh.read(5)
                 except OSError:
                     pass
-                if str(format).lower() == "pdf" and head != b"%PDF-":
+                if str(format).lower().lstrip(".") == "pdf" and head != b"%PDF-":
                     result["success"] = False
                     result["error"] = "EXPORT_FILE_INVALID"
                     result["details"] = (
@@ -2054,6 +2457,8 @@ def register_project_tools(mcp):
         container_name: str,
         outjob_path: str = "",
         fresh_window_seconds: float = 5.0,
+        board_path: str = "",
+        seal_manifest: bool = False,
         fab: str = "",
         fab_tier: str = "standard",
         outer_oz: float = 1.0,
@@ -2086,6 +2491,9 @@ def register_project_tools(mcp):
             fresh_window_seconds: files modified up to this many seconds
                 before the run started still count as written, for file
                 systems with coarse timestamps. Default 5s.
+            board_path: Exact focused PcbDoc path when sealing a package.
+            seal_manifest: Hash the saved board, OutJob and exported files
+                into a sidecar after a successful GeneratedFiles run.
             fab, fab_tier, outer_oz: the fab the files go to
                 (design_list_fab_vendors), its tier and the finished outer
                 copper in oz. A container writing Gerber, NC drill, ODB++
@@ -2102,9 +2510,40 @@ def register_project_tools(mcp):
             count), ``written`` (up to 50 paths), ``fab_check``, and
             ``reason`` when nothing was written.
         """
+        import os as _os
         import time as _time
+        from pathlib import Path
 
+        from ..fileio.fab_manifest import seal_package, sha256_file
+
+        # MEASURED: Altium opens a path that is not there as a NEW, empty
+        # OutJob and focuses it, so the run failed and left a phantom
+        # document active that every later tool then refused to work on.
+        # Checked first, while the path is still a string and before the
+        # fab check asks Altium anything about it.
+        if outjob_path and not _os.path.isfile(outjob_path):
+            return {"success": False, "container_name": container_name,
+                    "outjob_path": outjob_path, "reason": (
+                        f"{outjob_path} is not a file; Altium would open "
+                        "a new empty OutJob at that path and focus it. "
+                        "Nothing was run.")}
         bridge = get_bridge()
+        board_hash = outjob_hash = ""
+        if seal_manifest:
+            board_file, outjob_file = Path(board_path), Path(outjob_path)
+            if (not board_file.is_absolute() or board_file.suffix.casefold() != ".pcbdoc"
+                    or not board_file.is_file() or not outjob_file.is_absolute()
+                    or outjob_file.suffix.casefold() != ".outjob" or not outjob_file.is_file()):
+                return {"success": False, "reason":
+                        "sealing requires existing absolute board_path and outjob_path"}
+            active = await bridge.send_command_async(
+                "application.get_active_document", {"front": "true"})
+            if (not isinstance(active, dict)
+                    or str(active.get("file_path", "")).casefold() != board_path.casefold()
+                    or active.get("modified") is True):
+                return {"success": False, "reason":
+                        "focus the exact saved, unmodified PcbDoc before sealing"}
+            board_hash, outjob_hash = sha256_file(board_file), sha256_file(outjob_file)
         refusal, checked = await _fab_gate(bridge, outjob_path, [container_name],
                                            fab, fab_tier, outer_oz, fab_limits)
         if refusal:
@@ -2125,8 +2564,24 @@ def register_project_tools(mcp):
         judged = _judge_outjob_run(result, started_at, fresh_window_seconds)
         if isinstance(judged, dict) and checked:
             judged = {**judged, **checked}
+        if seal_manifest and isinstance(judged, dict):
+            if not judged.get("success") or judged.get("dialog"):
+                judged["manifest"] = {"verified": False,
+                                       "reason": "export did not finish cleanly"}
+            elif judged.get("container_type") != "GeneratedFiles":
+                judged["manifest"] = {"verified": False,
+                                       "reason": "only GeneratedFiles containers can be sealed"}
+            else:
+                try:
+                    judged["manifest"] = seal_package(
+                        judged["output_dir"], board_path, outjob_path,
+                        board_hash, outjob_hash)
+                except (OSError, ValueError) as exc:
+                    judged["manifest"] = {"verified": False, "reason": str(exc)}
+            if not judged["manifest"].get("sealed"):
+                judged["success"] = False
+                judged["reason"] = "package was not sealed: " + judged["manifest"]["reason"]
         return judged
-
     async def _the_board(bridge, board_path):
         """``(board, problem)``: the board a board-wide export reads, brought
         forward. Altium otherwise answers from whichever board it resolves,
@@ -2415,28 +2870,35 @@ def register_project_tools(mcp):
                    "Nothing new was found in the output folder"))
             return out
         if not fresh:
-            if run.get("outjob_active") is False:
+            inactive = run.get("outjob_active") is False
+            hint = (
+                " Also check that the OutJob is the ACTIVE document: "
+                "Altium's output batch follows the active document, and an "
+                "OutJob that is open but not the active document can run cleanly and "
+                "write nothing. Set it with "
+                "app_set_active_document(<outjob path>) and retry.")
+            if inactive:
                 out["reason"] = (
-                    "the container ran, but the OutJob was not the active "
-                    "document, and Altium writes nothing then. Make it "
-                    "active with app_set_active_document and run again")
+                    "the OutJob is not the active document; the container "
+                    "ran without writing a file. Activate the exact OutJob "
+                    "with app_set_active_document and retry.")
             elif not out_dir:
                 out["reason"] = (
                     "the container ran, but the OutJob gives it no output "
                     "path, so there was no folder to check and no file is "
-                    "known to have been written")
+                    "known to have been written." + hint)
             elif not exists:
                 out["reason"] = (
                     f"the container ran, but {out_dir} does not exist, so "
                     f"nothing was written there. A container bound to a "
                     f"managed release, or with its outputs switched off, "
-                    f"runs cleanly and writes no local file")
+                    f"runs cleanly and writes no local file." + hint)
             else:
                 out["reason"] = (
                     f"the container ran, but no file under {out_dir} was "
                     f"written or changed after it started. Outputs switched "
                     f"off in the OutJob, or bound to a managed release, "
-                    f"produce this")
+                    f"produce this." + hint)
         return out
 
     @mcp.tool()
@@ -2768,14 +3230,18 @@ def register_project_tools(mcp):
         """Switch the active project variant, or back to the base design.
 
         Args:
+
             variant_name: The variant's name or description, or
+
                 "[No Variations]" for the base design.
             project_path: Optional project path. If None, uses active project.
 
         Returns:
+
             ``success``, ``variant_name`` (the variant now current) and
             ``verified``, read back from the project; ``success`` false
             with ``current_variant`` and a ``reason`` otherwise.
+
         """
         bridge = get_bridge()
         params: dict[str, Any] = {"variant_name": variant_name}
@@ -2841,10 +3307,11 @@ def register_project_tools(mcp):
         output_dir: str = "",
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Export a PDF for every project variant.
+        """Silently export one verified schematic PDF per saved variant.
 
-        One ``<variant>.pdf`` per variant, each made active in turn; the
-        original variant is restored at the end.
+        Each variant runs through a disposable copy of the project and a
+        variant-specific OutJob. The original project's active variant is
+        checked before and after, but never switched by this tool.
 
         Args:
             output_dir: Folder for the per-variant PDFs. Defaults to the
@@ -2853,89 +3320,90 @@ def register_project_tools(mcp):
                 project.
 
         Returns:
-            {"exported": [{variant, output_path, ok, error}], "count"} plus
-            ``restored``: the variant put back, or null if putting it
-            back FAILED: the project is then on another variant, and any
-            variant-sensitive call (a BOM, an export,
-            ``pcb_apply_dnp_paste_exclusion``) acts on the wrong set. A
-            failure also carries ``restore_error`` and a ``note``.
+            Per-variant PDF results, a count of PDFs actually written,
+            unattempted variants, and the original variant readback.
         """
         from pathlib import Path
-
+        from uuid import uuid4
+        from ..atomicfile import replace_with_retry
         from ..config import get_config
+        async with pdf_export_lock:
+            bridge = get_bridge()
+            if not project_path:
+                focused = await bridge.send_command_async("project.get_focused")
+                project_path = (focused or {}).get("project_path") if isinstance(focused, dict) else None
+            if not project_path or not Path(project_path).is_file():
+                return {"success": False, "error": "PROJECT_PATH_REQUIRED",
+                        "exported": [], "count": 0}
+            params = {"project_path": project_path}
+            listing = await bridge.send_command_async("project.get_variants", params)
+            if not isinstance(listing, dict) or not isinstance(listing.get("variants"), list):
+                return {"success": False, "error": "VARIANT_LIST_FAILED",
+                        "exported": [], "count": 0}
+            variants = [v.get("name") for v in listing["variants"]
+                        if isinstance(v, dict) and v.get("name")]
+            active = await bridge.send_command_async("project.get_active_variant", params)
+            original = active.get("name") if isinstance(active, dict) else None
+            base = Path(output_dir) if output_dir else get_config().workspace_dir
 
-        bridge = get_bridge()
-        params: dict[str, Any] = {}
-        if project_path:
-            params["project_path"] = project_path
+            def _safe(s: str) -> str:
+                return "".join(c if c.isalnum() or c in "-_." else "_" for c in s) or "variant"
 
-        listing = await bridge.send_command_async("project.get_variants", params)
-        variants = (listing or {}).get("variants", []) if isinstance(listing, dict) else []
-        active = await bridge.send_command_async("project.get_active_variant", params)
-        original = (active or {}).get("name") if isinstance(active, dict) else None
+            names = [_safe(v).casefold() for v in variants]
+            if len(names) != len(set(names)):
+                return {"success": False, "error": "VARIANT_FILENAME_COLLISION",
+                        "exported": [], "count": 0}
+            base.mkdir(parents=True, exist_ok=True)
+            exported: list[dict[str, Any]] = []
+            for vname in variants:
+                out_pdf = base / f"{_safe(vname)}.pdf"
+                intermediate = export_root() / f"_variant_{uuid4().hex}.pdf"
+                entry: dict[str, Any] = {"variant": vname,
+                                         "output_path": str(out_pdf),
+                                         "ok": False, "error": ""}
+                try:
+                    result = await _export_schematic_pdf(
+                        project_path, str(intermediate), variant_name=vname)
+                    if not isinstance(result, dict) or not result.get("success"):
+                        entry["error"] = str(result.get("error") if isinstance(result, dict)
+                                             else result)
+                    else:
+                        replace_with_retry(intermediate, out_pdf)
+                        entry["ok"] = True
+                        entry["page_count"] = result["page_count"]
+                except Exception as exc:
+                    entry["error"] = str(exc)
+                finally:
+                    try:
+                        intermediate.unlink(missing_ok=True)
+                    except OSError as exc:
+                        entry["cleanup_error"] = str(exc)
+                exported.append(entry)
+                if not entry["ok"]:
+                    break
 
-        base = Path(output_dir) if output_dir else get_config().workspace_dir
-        base.mkdir(parents=True, exist_ok=True)
-
-        def _safe(s: str) -> str:
-            return "".join(c if c.isalnum() or c in "-_." else "_" for c in s) or "variant"
-
-        exported: list[dict[str, Any]] = []
-        for var in variants:
-            vname = var.get("name") if isinstance(var, dict) else str(var)
-            if not vname:
-                continue
-            out_pdf = base / f"{_safe(vname)}.pdf"
-            entry: dict[str, Any] = {"variant": vname, "output_path": str(out_pdf),
-                                     "ok": False, "error": ""}
+            readback_error = ""
             try:
-                set_params = dict(params, variant_name=vname)
-                await bridge.send_command_async("project.set_active_variant", set_params)
-                res = await bridge.send_command_async(
-                    "project.export_pdf", {"output_path": str(out_pdf)}
-                )
-                entry["ok"] = bool(isinstance(res, dict) and res.get("success", True))
-                if isinstance(res, dict) and res.get("error"):
-                    entry["error"] = str(res["error"])
-            except Exception as exc:  # keep going across variants
-                entry["error"] = str(exc)
-            exported.append(entry)
-
-        # Restore the variant that was active before we started.
-        #
-        # Report whether that WORKED, not merely that it was attempted.
-        # This loop leaves the project on the last variant it touched,
-        # so a swallowed failure here hands back a project whose active
-        # variant is not the one the caller had, and every
-        # variant-sensitive operation after it acts on the wrong set:
-        # an export, a BOM, or pcb_apply_dnp_paste_exclusion stripping
-        # paste off the components the OTHER variant does not fit.
-        restored: Optional[str] = None
-        restore_error = ""
-        if original:
-            try:
-                await bridge.send_command_async(
-                    "project.set_active_variant", dict(params, variant_name=original)
-                )
-                restored = original
+                current = await bridge.send_command_async(
+                    "project.get_active_variant", params)
+                current_name = current.get("name") if isinstance(current, dict) else None
             except Exception as exc:
-                restore_error = str(exc)
-
-        result: dict[str, Any] = {
-            "exported": exported,
-            "count": sum(1 for e in exported if e["ok"]),
-            "restored": restored,
-        }
-        if restore_error:
-            result["restore_error"] = restore_error
-            result["active_variant_unknown"] = True
-            result["note"] = (
-                "the originally-active variant could not be restored, so "
-                "the project is left on the last variant exported. Set it "
-                "back with proj_set_active_variant before any "
-                "variant-sensitive operation."
-            )
-        return result
+                current_name = None
+                readback_error = str(exc)
+            report = {
+                "success": all(e["ok"] for e in exported) and len(exported) == len(variants),
+                "exported": exported,
+                "count": sum(e["ok"] for e in exported),
+                "not_run": variants[len(exported):],
+                "restored": original if original and current_name == original else None,
+                "original_variant": original,
+                "current_variant": current_name,
+                "source_snapshot": "saved_files",
+            }
+            if readback_error:
+                report["active_variant_unknown"] = True
+                report["readback_error"] = readback_error
+            return report
 
     @mcp.tool()
     async def proj_create_variant(
@@ -3244,16 +3712,12 @@ def register_project_tools(mcp):
                 model: ``sub_wires``, ``lines``, ``all_items``,
                 ``removed_items``, ``scope``, ``signal_type``,
                 ``calculated_name``, ``hidden_name``, ``bus_width``,
-                ``net_number``, ``non_pin_items`` (labels, ports and other
-                objects on it), ``harness_type`` and the count of
-                ``output_pins``, ``io_pins``, ``power_pins`` and
-                ``open_collector_pins`` it joins (two outputs on one net
-                drive against each other). For buses: ``bus_section``
-                (the bus itself, e.g. D[0..7]) with ``bus_kind``,
-                ``bus_range_from`` / ``bus_range_to`` as written,
-                ``bus_range_value_from`` / ``bus_range_value_to`` and
-                ``bus_range_by_value``; ``bus_element`` (one member) with
-                ``bus_section_parent`` naming its bus.
+                ``net_number``, ``non_pin_items``, ``harness_type`` and
+                the count of ``output_pins``, ``io_pins``, ``power_pins``
+                and ``open_collector_pins``. Bus details include
+                ``bus_element``, ``bus_section``, ``bus_kind``,
+                ``bus_range_from``, ``bus_range_to`` and
+                ``bus_section_parent``.
 
         Returns:
             ``nets_examined``, ``nets_listed``, ``truncated`` and
@@ -3319,34 +3783,6 @@ def register_project_tools(mcp):
         params = {"project_path": project_path} if project_path else {}
         return await get_bridge().send_command_async(
             "project.get_channels", params, timeout=120.0)
-
-    @mcp.tool()
-    async def proj_get_hierarchy(project_path: str = "") -> dict[str, Any]:
-        """The compiled sheet hierarchy: each sheet's ``parents``,
-        ``ports`` and ``sheet_symbols`` with their ``entries``, and the
-        ``problems``: a missing child, an entry without a port or a port
-        without an entry, opposite directions, an orphan sheet.
-
-        Each port and entry gives ``net``, the net's name on its own sheet,
-        and ``physical``: per copy of the sheet (one per channel), the
-        ``instance`` and the ``net`` it joins across the project. They
-        differ when a name from another sheet wins. ``x`` / ``y`` (mils)
-        tell apart items of one name.
-
-        Args:
-            project_path: The .PrjPcb. Default: the focused project.
-        """
-        params = {"project_path": project_path} if project_path else {}
-        out = await get_bridge().send_command_async(
-            "project.get_hierarchy", params, timeout=180.0)
-        sheets = _rows(out, "sheets")
-        if sheets:
-            for s in sheets:
-                if isinstance(s, dict) and isinstance(s.get("parents"), list):
-                    s["parents"] = list(dict.fromkeys(s["parents"]))
-            body = out.get("result", out) if isinstance(out.get("result"), dict) else out
-            out["problems"] = hierarchy_problems(sheets, str(body.get("top") or ""))
-        return out
 
     @mcp.tool()
     async def proj_component_models(project_path: str = "", designator: str = "",
@@ -3464,11 +3900,13 @@ def register_project_tools(mcp):
         append_sheet_number_to_local_nets: Optional[bool] = None,
         pin_swap_by_net_label: Optional[bool] = None,
         pin_swap_by_pin: Optional[bool] = None,
+        default_pcb_type: str = "",
+        default_configuration_name: str = "",
         project_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read, or change, a project's document order, library search
-        paths, net naming options, net identifier scope, output path and
-        pin swap options.
+        paths, net naming options, net identifier scope, output path,
+        pin swap options and the defaults a new document inherits.
 
         Call with no changes to read. Every change is read back, and
         any that did not take is listed in ``not_applied``. Save the
@@ -3491,6 +3929,16 @@ def register_project_tools(mcp):
                 net labels on the schematic.
             pin_swap_by_pin: Pin swaps on the board may move pins on
                 the schematic.
+            default_pcb_type: The PCB type a new board in this project
+                starts as. Empty leaves it alone. Not free text: Altium
+                keeps its own value for anything it does not recognise,
+                and the name comes back in ``not_applied``.
+            default_configuration_name: The project configuration used
+                when none is named. Empty leaves it alone, and it must
+                name a configuration the project has. Measured: naming
+                one it does not have both failed AND cleared the name
+                already set, so a failed write now puts the previous
+                value back and reports ``not_applied``.
             project_path: The .PrjPcb. Defaults to the focused project.
 
         Returns:
@@ -3500,6 +3948,7 @@ def register_project_tools(mcp):
             ``hierarchy_mode_name``, ``output_path``,
             ``append_sheet_number_to_local_nets``,
             ``pin_swap_by_net_label``, ``pin_swap_by_pin``,
+            ``default_pcb_type``, ``default_configuration_name``,
             ``changed``, ``moved_from`` / ``moved_to`` and
             ``not_applied``.
         """
@@ -3534,6 +3983,11 @@ def register_project_tools(mcp):
                         + ", ".join(_HIERARCHY_MODES) + " or 0 to 4"}
         if output_path.strip():
             params["output_path"] = output_path.strip()
+        for key, text in (("default_pcb_type", default_pcb_type),
+                          ("default_configuration_name",
+                           default_configuration_name)):
+            if text.strip():
+                params[key] = text.strip()
         if project_path:
             params["project_path"] = project_path
         reply = await get_bridge().send_command_async(
@@ -3724,13 +4178,17 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Get all messages from the Messages panel (compile errors, ERC violations, etc.).
 
-        Compiles the project first.
+        Compiles the project first. A short text summary only: each entry
+        has the message and its source document, with no severity, no
+        suppression state and no objects. For ERC triage use
+        proj_get_erc_violations, which gives each violation's level and
+        the pins, nets and parts it is about (cross_probe strings).
 
         Args:
             project_path: Optional project path. If None, uses active project.
 
         Returns:
-            Dictionary with "messages" array (each: message, severity, source) and "count"
+            Dictionary with "messages" array (each: message, source) and "count"
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}
@@ -3938,13 +4396,25 @@ def register_project_tools(mcp):
         """The project's ERC report level for every violation type (Project
         Options > Error Reporting): no_report, warning, error or fatal.
 
+        The types are a contiguous enum from 0, and Altium's reader has no
+        end marker: asked past the end it returns whatever adjacent memory
+        reads as a string. ``type_count`` is where the real table stops and
+        ``beyond_table`` counts the look-alike strings found after it and
+        ignored: 127 and 128 on two reads of the same AD 26.11, because
+        what is past the end is whatever that memory holds at the time.
+        Among them are truncated fragments of other string tables and a
+        block of raw UTF-16.
+
         Args:
             match: only types whose description contains this text, e.g.
                 "multiple names" or "driving source".
             project_path: the .PrjPcb; default the focused project.
 
         Returns:
-            ``levels``: [{kind, description, level}], and ``count``.
+            ``levels``: [{kind, description, group, level}], ``count`` (how
+            many matched), ``type_count`` and ``beyond_table``. ``group`` is
+            the section the Error Reporting dialog files the type under, or
+            -1 where Altium would not say.
         """
         params: dict[str, Any] = {"match": match}
         if project_path:
@@ -3969,7 +4439,8 @@ def register_project_tools(mcp):
         Args:
             levels: {violation type: level}. A type is its exact description
                 as proj_get_erc_levels lists it ("Nets with multiple names")
-                or its kind number; a level is no_report, warning, error or
+                or its kind number, which must be inside that reply's
+                ``type_count``; a level is no_report, warning, error or
                 fatal. Example: {"Nets with no driving source": "no_report"}.
             project_path: the .PrjPcb; default the focused project.
             save: save the project file afterwards so the setting persists.
@@ -4143,36 +4614,119 @@ def register_project_tools(mcp):
         return result
 
     @mcp.tool()
-    async def proj_sync_pcb() -> dict[str, Any]:
-        """Push schematic changes to the PCB (Design > Update PCB Document).
+    async def proj_sync_pcb(
+        wait_seconds: float = 360.0,
+        verify_pad_nets: bool = False,
+    ) -> dict[str, Any]:
+        """Push schematic changes to PCB (ECO): Design > Update PCB Document.
 
         With Dialogs Automatic (Config tab) the tool executes and closes
         the change order (``change_order``); otherwise it waits for the
         user and blocks the bridge (``app_list_open_dialogs`` reads it).
         Focuses the PCB first (WRONG_FOCUS if it cannot).
 
+        The wait is BOUNDED (``wait_seconds``). It used to inherit the
+        bridge's full 300 s heartbeat budget and then report the handler as
+        stuck in an infinite loop, the wrong diagnosis, and it cost a
+        script restart. Now, if the ECO does not return in time, the call
+        gives up and returns a structured ``ECO_DIALOG_BLOCKING`` error
+        naming the open dialogs. Giving up does NOT cancel the ECO: Altium
+        is still sitting on that dialog, and the changes are neither
+        applied nor discarded until someone answers it.
+
+        Why step 6 exists: an ECO has been observed to return success having
+        silently skipped a component: one part's pads were left with no
+        nets while its identical sibling was fully assigned. Nothing in the
+        ECO's own response revealed it. Repair anything in ``pads_unbound``
+        with ``pcb_bind_pad_nets``.
+
+        THE DIRECTION DEPENDS ON FOCUS, so the tool sets it. A schematic
+        in focus makes Altium refuse with "Cannot compare a source document
+        against its owner project"; the PCB in focus with Action=UpdateOther
+        updates the SCHEMATIC from the board, which is what this tool used
+        to send, and an ECO came up with the SchDoc as the affected
+        document. Refuses with WRONG_FOCUS when the PCB cannot be focused.
+        Before executing, check that the ECO's affected documents are the
+        PcbDoc.
+
+The ECO reply does not prove which button was pressed. after_sync compares footprints, missing parts, removed differential pairs and pad nets; review the change order before trusting a clean count.
+
+        For unattended board population without a schematic, use
+        ``pcb_place_components`` instead (places geometry only: see its note
+        about leaving the project unsynced).
+
+        Args:
+            wait_seconds: How long to wait for the ECO to return before
+                reporting the dialog as blocking. The ECO itself is
+                unaffected by this.
+
         Returns:
-            success, pcb_path, mapping counts, components added, removed
-            and in sync, ``change_order``, and ``after_sync``:
-            ``footprint_mismatch``, ``missing_on_board``,
-            ``diff_pairs_removed`` (board-only pairs),
-            ``pad_nets`` (pads ``unbound`` or ``mismatched``).
-            ``change_order.failed_lines``: failed lines read by OCR (0/O,
-            1/l slips); a mismatch it explains carries ``eco_line``
-            and, for Footprint Not Found, ``footprint_source``: each
-            library and ``found_at`` ('' if none).
+            success, pcb_path, before/after mapping counts,
+            components_added_to_pcb, components_removed_from_pcb,
+            components_in_sync (component presence only), and
+            dialog_outcome_verified; plus ``after_sync`` and
+            ``pad_net_verification`` (with
+            ``pads_unbound``) when ``verify_pad_nets`` is set.
+            On a bounded-wait expiry: ``success:false`` with
+            ``error.code == "ECO_DIALOG_BLOCKING"``, the dialog inventory,
+            and the steps to clear it.
         """
+        from ..bridge.exceptions import AltiumTimeoutError
+
         bridge = get_bridge()
+
+        # Refuse to queue behind a dialog that is ALREADY up. The polling
+        # loop is single-threaded, so firing the ECO now would just stack a
+        # second modal behind the first and guarantee the timeout below.
+        pre_existing = _list_open_dialogs()
+        if pre_existing:
+            return _modal_blocked_response(
+                "MODAL_DIALOG_ALREADY_OPEN",
+                "An Altium dialog is already open, so the ECO was NOT "
+                "fired -- the polling loop cannot reach it until that "
+                "dialog is dismissed.",
+                pre_existing,
+                eco_fired=False,
+            )
+
         pairs_before = await _pair_names(bridge)
-        result, driven = await send_answering(
-            bridge, "project.update_pcb", {}, change_order.TITLE, change_order.STEPS,
-            on_the_way=change_order.ON_THE_WAY)
+
+        # Bound the wait. The heartbeat is a presence marker written once,
+        # not a tick, so a handler parked on a modal looks exactly like one
+        # doing slow work; only an explicit cap distinguishes them.
+        try:
+            poll_window = max(1.0, float(bridge.config.poll_timeout))
+        except (AttributeError, TypeError, ValueError):
+            # Lightweight bridge adapters and test doubles may not expose the
+            # AltiumBridge config object. Keep the wait bounded in that case.
+            poll_window = min(5.0, max(1.0, float(wait_seconds)))
+        extensions = max(1, int(round(float(wait_seconds) / poll_window)))
+        try:
+            result, driven = await send_answering(
+                bridge, "project.update_pcb", {}, change_order.TITLE,
+                change_order.STEPS, timeout=poll_window,
+                max_extensions=extensions,
+                on_the_way=change_order.ON_THE_WAY)
+        except AltiumTimeoutError as exc:
+            return _modal_blocked_response(
+                "ECO_DIALOG_BLOCKING",
+                f"The ECO did not return within {wait_seconds:.0f}s. Altium "
+                f"created a progress marker, but that one-time marker does "
+                f"not prove the polling loop is still alive. The modal ECO "
+                f"was NOT cancelled and is expected to remain pending until "
+                f"its dialog is answered; inspect the returned dialog list "
+                f"before deciding whether recovery is needed. ({exc})",
+                _list_open_dialogs(),
+                eco_fired=True,
+            )
+
+        if not isinstance(result, dict):
+            return result
         failed = _record_change_order(result, driven)
-        if isinstance(result, dict):
-            try:
-                result["after_sync"] = await _after_sync(bridge, pairs_before, failed)
-            except Exception as exc:            # noqa: BLE001 - a report only
-                result["after_sync"] = {"error": f"not read: {exc}"}
+        if result.get("success") is True:
+            result["after_sync"] = await _after_sync(bridge, pairs_before, failed)
+        if verify_pad_nets:
+            result["pad_net_verification"] = await _verify_pad_nets(bridge)
         return result
 
     @mcp.tool()
@@ -4228,6 +4782,7 @@ def register_project_tools(mcp):
             if not driven.get("appeared"):
                 out["note"] = "no change order appeared: nothing to update"
         return out
+
 
     @mcp.tool()
     async def proj_sync_schematic() -> dict[str, Any]:
@@ -4307,8 +4862,14 @@ def register_project_tools(mcp):
     ) -> dict[str, Any]:
         """Get project options: output path, hierarchy mode, compiler settings.
 
-        Returns configuration details including output directory, hierarchy mode,
-        document counts, variant count, channel settings, and net naming options.
+        A read, and the whole of it: ``proj_project_setup`` is what WRITES
+        these, and it reads them back too. This is the smaller call for a
+        caller that only wants to look, and it reports every option that
+        one can write, so a project can be compared against a stored
+        policy without going through the writer.
+
+        The two channel settings are the exception: readable here, and
+        Altium's engine registers no setter for either under any spelling.
 
         Args:
             project_path: Optional project path. If None, uses active project.
@@ -4316,7 +4877,9 @@ def register_project_tools(mcp):
         Returns:
             Dictionary with project_name, output_path, hierarchy_mode,
             logical_document_count, physical_document_count, variant_count,
-            channel settings, and net naming options
+            channel settings, net naming options, pin_swap_by_pin,
+            pin_swap_by_netlabel, default_pcb_type and
+            default_configuration_name.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {}
@@ -4326,3 +4889,26 @@ def register_project_tools(mcp):
             "project.get_project_options", params
         )
         return result
+
+
+    @mcp.tool()
+    async def proj_get_hierarchy(project_path: str = "") -> dict[str, Any]:
+        """The compiled sheet hierarchy: each sheet's ``parents``,
+        ``ports`` and ``sheet_symbols`` with their ``entries``, and the
+        ``problems``: a missing child, an entry without a port or a port
+        without an entry, opposite directions, an orphan sheet.
+
+        Args:
+            project_path: The .PrjPcb. Default: the focused project.
+        """
+        params = {"project_path": project_path} if project_path else {}
+        out = await get_bridge().send_command_async(
+            "project.get_hierarchy", params, timeout=180.0)
+        sheets = _rows(out, "sheets")
+        if sheets:
+            for s in sheets:
+                if isinstance(s, dict) and isinstance(s.get("parents"), list):
+                    s["parents"] = list(dict.fromkeys(s["parents"]))
+            body = out.get("result", out) if isinstance(out.get("result"), dict) else out
+            out["problems"] = hierarchy_problems(sheets, str(body.get("top") or ""))
+        return out

@@ -180,22 +180,22 @@ Begin
         End;
     End;
 
-    // DM_FocusedDocument is UI-focus-dependent and returns Nil when no
-    // editor window holds focus (e.g. right after a programmatic
-    // create/place). The editor's current view names the document on
-    // screen, a free library included; the SCH and PCB servers' current
-    // documents come last, as they can name a sheet shown earlier.
+    // A newly shown free document may own the current editor view before
+    // the workspace focused-document pointer catches up. Read its owner
+    // first; SCH/PCB module fallbacks can refer to older documents.
     If Data = '' Then
     Begin
         ServerDoc := Nil;
         Try
-            View := Client.CurrentView;
-            If View <> Nil Then ServerDoc := View.OwnerDocument;
+            If Client <> Nil Then
+            Begin
+                View := Client.GetCurrentView;
+                If View <> Nil Then ServerDoc := View.GetOwnerDocument;
+            End;
         Except ServerDoc := Nil; End;
         If ServerDoc <> Nil Then
         Begin
-            FileName := '';
-            Try FileName := ServerDoc.FileName; Except End;
+            FileName := ServerDoc.FileName;
             If FileName <> '' Then
             Begin
                 Data := '{"file_name":"' + EscapeJsonString(ExtractFileName(FileName)) + '"';
@@ -205,6 +205,9 @@ Begin
             End;
         End;
     End;
+
+    // Only when neither UI focus nor current view identifies a document,
+    // fall back to the SCH and PCB server modules' last current document.
     If Data = '' Then
     Begin
         SchDoc := Nil;
@@ -353,15 +356,14 @@ End;
 { object itself, as the reference scripts do (Client.CloseDocument), refuses }
 { one that reads modified (a floor only: that read can miss editor edits),  }
 { and looks it up again afterwards to say whether it is really gone.        }
-{ With discard, the modified flag is cleared first, unread, which is what   }
-{ keeps the save prompt away. For a schematic that belongs to an open      }
-{ project, discarded stays false: the project can keep the change until it }
-{ is itself closed without saving.                                          }
+{ With discard, the modified flag is cleared first to avoid a save prompt. }
+{ An open project's DM cache can still retain unsaved sheet state after the }
+{ editor tab closes; report that the discard is unverified in that case.   }
 Function App_CloseDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath : String;
+    FilePath, DiscardNote : String;
     ServerDoc, Again : IServerDocument;
-    WasModified, Discard, KeptByProject, Closed : Boolean;
+    WasModified, WasEdited, Discard, Closed, ProjectRetainsSheet : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     Discard := LowerCase(ExtractJsonValue(Params, 'discard')) = 'true';
@@ -376,23 +378,19 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NOT_LOADED', 'Document not loaded: ' + FilePath);
         Exit;
     End;
-    { Asked for a copy opened under a forward-slash path, Altium hands back }
-    { the original document, and closing it closed the wrong one (AD 25.8). }
-    { Only the document named is closed.                                    }
+    { GetDocumentByPath can resolve a phantom path to a differently named
+      open document. Never close that other document on the caller's behalf. }
     If PathKey(ServerDoc.FileName) <> PathKey(FilePath) Then
     Begin
         Result := BuildErrorResponse(RequestId, 'OTHER_DOCUMENT',
-            FilePath + ' led to ' + ServerDoc.FileName + ' instead; nothing was '
-            + 'closed. A copy opened under a forward-slash path does this: close '
-            + 'it from its tab.');
+            'Altium resolved ' + FilePath + ' to a different open document: '
+            + ServerDoc.FileName + '. Nothing was closed.');
         Exit;
     End;
     WasModified := False;
     Try WasModified := ServerDoc.Modified; Except WasModified := False; End;
-    { Changes a tool made through the API do not set Modified; the bridge }
-    { keeps its own list of them.                                         }
-    If DocWasEdited(FilePath) Then WasModified := True;
-    If WasModified And Not Discard Then
+    WasEdited := DocWasEdited(FilePath);
+    If (WasModified Or WasEdited) And Not Discard Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MODIFIED',
             'The document has unsaved changes, so it was not closed: ' + FilePath);
@@ -407,14 +405,185 @@ Begin
     Again := Nil;
     Try Again := Client.GetDocumentByPath(FilePath); Except Again := Nil; End;
     Closed := Again = Nil;
+    ProjectRetainsSheet := False;
+    If Closed And Discard And (WasModified Or WasEdited)
+        And (LowerCase(ExtractFileExt(FilePath)) = '.schdoc') Then
+        ProjectRetainsSheet := DocBelongsToOpenProject(FilePath);
     If Closed Then ForgetDocEdited(FilePath);
-    KeptByProject := False;
-    If Discard And WasModified And (UpperCase(ExtractFileExt(FilePath)) = '.SCHDOC') Then
-        KeptByProject := DocBelongsToOpenProject(FilePath);
-    Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('closed', Closed)
-        + ',' + JsonBool('discarded', Discard And WasModified And Not KeptByProject)
-        + ',' + JsonBool('project_may_hold_edit', KeptByProject)
-        + ',' + JsonStr('file_path', FilePath)));
+    DiscardNote := '';
+    If ProjectRetainsSheet Then
+        DiscardNote := 'The open project may still hold this sheet in memory. '
+            + 'Close the project with save=false to discard it completely.';
+    Result := BuildSuccessResponse(RequestId, '{"closed":' + BoolToJsonStr(Closed)
+        + ',"discard_requested":' + BoolToJsonStr(Discard)
+        + ',"discarded":' + BoolToJsonStr(Discard And (WasModified Or WasEdited)
+            And Not ProjectRetainsSheet)
+        + ',"project_retains_sheet":' + BoolToJsonStr(ProjectRetainsSheet)
+        + ',"project_may_hold_edit":' + BoolToJsonStr(ProjectRetainsSheet)
+        + ',"discard_note":"' + EscapeJsonString(DiscardNote) + '"'
+        + ',"file_path":"' + EscapeJsonString(FilePath) + '"}');
+End;
+
+{ A harness wiring diagram (.WirDoc) opens only through the workspace      }
+{ manager. Client.OpenDocument returned Nil for 'HarnessWiringDiagram', the  }
+{ kind the document is CREATED under, and 'HARNESS' returned a document the  }
+{ schematic server could not see, while reporting success (AD 26.11.1.5,     }
+{ 2026-11-08). WorkspaceManager:OpenObject is what sch_place_harness_wires   }
+{ and app_set_active_document already used, and both left a diagram that     }
+{ sch_get_harness reads.                                                     }
+Function OpenThroughWorkspace(FilePath : String) : IServerDocument;
+Begin
+    Result := Nil;
+    ResetParameters;
+    AddStringParameter('ObjectKind', 'Document');
+    AddStringParameter('FileName', FilePath);
+    Try RunProcess('WorkspaceManager:OpenObject'); Except End;
+    Try Application.ProcessMessages; Except End;
+    Try Result := Client.GetDocumentByPath(FilePath); Except Result := Nil; End;
+End;
+
+Function App_OpenDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, DocKind, Ext, AskedKind, ActualKind, Route : String;
+    ServerDoc : IServerDocument;
+    AlreadyLoaded, ViaWorkspace : Boolean;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    DocKind := UpperCase(ExtractJsonValue(Params, 'kind'));
+    AskedKind := DocKind;
+    ViaWorkspace := LowerCase(ExtractFileExt(FilePath)) = '.wirdoc';
+
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'file_path is required');
+        Exit;
+    End;
+    If Not FileExists(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FILE_NOT_FOUND',
+            'Document not found: ' + FilePath);
+        Exit;
+    End;
+
+    If DocKind = '' Then
+    Begin
+        Ext := LowerCase(ExtractFileExt(FilePath));
+        If Ext = '.schdoc' Then DocKind := 'SCH'
+        Else If Ext = '.pcbdoc' Then DocKind := 'PCB'
+        Else If Ext = '.schlib' Then DocKind := 'SCHLIB'
+        Else If Ext = '.pcblib' Then DocKind := 'PCBLIB'
+        Else If Ext = '.outjob' Then DocKind := 'OUTPUTJOB'
+        Else If Ext = '.bomdoc' Then DocKind := 'BOM'
+        Else If Ext = '.wirdoc' Then DocKind := 'HARNESSWIRINGDIAGRAM'
+        Else
+        Begin
+            Result := BuildErrorResponse(RequestId, 'KIND_REQUIRED',
+                'Could not infer document kind from: ' + FilePath);
+            Exit;
+        End;
+    End;
+
+    ServerDoc := Nil;
+    AlreadyLoaded := False;
+    Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
+    If ServerDoc <> Nil Then AlreadyLoaded := True;
+    If (ServerDoc = Nil) And ViaWorkspace Then
+        ServerDoc := OpenThroughWorkspace(FilePath)
+    Else If ServerDoc = Nil Then
+    Begin
+        Try ServerDoc := Client.OpenDocument(DocKind, FilePath); Except End;
+    End;
+    If ServerDoc = Nil Then
+    Begin
+        If ViaWorkspace Then
+            Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+                'The workspace manager did not open the wiring diagram ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'OPEN_FAILED',
+                'Client.OpenDocument returned Nil for kind=' + DocKind +
+                ', path=' + FilePath);
+        Exit;
+    End;
+
+    Try Client.ShowDocument(ServerDoc); Except End;
+    Try Application.ProcessMessages; Except End;
+    { The kind Altium gave the document, not the one asked for: a kind that }
+    { opens the file as something else must not read back as success.      }
+    ActualKind := '';
+    Try ActualKind := ServerDoc.Kind; Except ActualKind := ''; End;
+    If ActualKind = '' Then ActualKind := DocKind;
+    Route := 'client';
+    If ViaWorkspace Then Route := 'workspace';
+    Result := BuildSuccessResponse(RequestId,
+        '{"success":true,"file_path":"' + EscapeJsonString(FilePath) +
+        '","kind":"' + EscapeJsonString(ActualKind) +
+        '","opened_through":"' + Route +
+        '","kind_ignored":' + BoolToJsonStr(ViaWorkspace And (AskedKind <> '')) +
+        ',"already_loaded":' + BoolToJsonStr(AlreadyLoaded) + '}');
+End;
+
+Function App_ReloadDocument(Params : String; RequestId : String) : String;
+Var
+    FilePath, DocKind, CloseParams, OpenParams, CloseResp : String;
+    ServerDoc : IServerDocument;
+    SaveBeforeClose, DiscardChanges : Boolean;
+    AgeBefore, AgeAfter : Integer;
+Begin
+    FilePath := ExtractJsonValue(Params, 'file_path');
+    DocKind := ExtractJsonValue(Params, 'kind');
+    SaveBeforeClose := LowerCase(ExtractJsonValue(Params, 'save_before_close')) = 'true';
+    DiscardChanges := LowerCase(ExtractJsonValue(Params, 'discard_changes')) = 'true';
+    If FilePath = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM', 'file_path is required');
+        Exit;
+    End;
+    If SaveBeforeClose And DiscardChanges Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'CONFLICTING_OPTIONS',
+            'Choose save_before_close or discard_changes');
+        Exit;
+    End;
+    ServerDoc := Client.GetDocumentByPath(FilePath);
+    If ServerDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED', 'Document not loaded: ' + FilePath);
+        Exit;
+    End;
+    If SaveBeforeClose Then
+    Begin
+        AgeBefore := -1;
+        Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
+        Try ServerDoc.DoFileSave(''); Except
+            Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'Could not save ' + FilePath);
+            Exit;
+        End;
+        If ServerDoc.Modified Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SAVE_FAILED', 'Document remains modified: ' + FilePath);
+            Exit;
+        End;
+        { CloseDocument also checks the bridge's edit record. Clear it only
+          after a confirmed disk write, as App_SaveDocument does. }
+        AgeAfter := -1;
+        Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
+        If (AgeAfter >= 0) And (AgeAfter <> AgeBefore) Then
+            ForgetDocEdited(FilePath);
+    End;
+    CloseParams := '{"file_path":"' + EscapeJsonString(FilePath) + '"';
+    If DiscardChanges Then CloseParams := CloseParams + ',"discard":"true"';
+    CloseParams := CloseParams + '}';
+    CloseResp := App_CloseDocument(CloseParams, RequestId);
+    If Pos('"success":false', CloseResp) > 0 Then
+    Begin
+        Result := CloseResp;
+        Exit;
+    End;
+    OpenParams := '{"file_path":"' + EscapeJsonString(FilePath) + '"';
+    If DocKind <> '' Then OpenParams := OpenParams + ',"kind":"' + EscapeJsonString(DocKind) + '"';
+    OpenParams := OpenParams + '}';
+    Result := App_OpenDocument(OpenParams, RequestId);
 End;
 
 Function App_RunProcess(Params : String; RequestId : String) : String;
@@ -605,9 +774,8 @@ Begin
     End;
 
     ResetParameters;
-    { Sch:DeSelectAll left the selection standing (AD 26.11.1.5);  }
-    { Sch:DeSelect with Action=All clears it.                      }
-    If ProcessName = 'Sch:DeSelect' Then AddStringParameter('Action', 'All');
+    If MenuPath = 'Edit|Deselect All' Then
+        AddStringParameter('Action', 'All');
     RunProcess(ProcessName);
 
     { DISPATCHED, not "succeeded". RunProcess is fire and forget: it       }
@@ -742,15 +910,16 @@ Var
     ServerDoc : IServerDocument;
     Workspace : IWorkspace;
     Project : IProject;
-    AddToProject, Saved, Added, Focused, ProjSaved : Boolean;
+    AddToProject, Saved, Added, Focused : Boolean;
+    ProjSaved : Boolean;
     AgeBefore : Integer;
 Begin
     DocKind := ExtractJsonValue(Params, 'kind');
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocName := ExtractJsonValue(Params, 'name');
     AddStr := ExtractJsonValue(Params, 'add_to_project');
-    AddToProject := (AddStr = '') Or (AddStr = 'true');
     ProjectPath := ExtractJsonValue(Params, 'project_path');
+    AddToProject := (AddStr = '') Or (AddStr = 'true');
 
     { THE PROJECT IS NAMED OR IT IS THE FOCUSED ONE, decided before anything }
     { is created. A temporary sheet went into whichever project had focus,   }
@@ -772,6 +941,9 @@ Begin
                 'No open project at ' + ProjectPath + '. Nothing was created.');
             Exit;
         End;
+        { Pin even an implicit focused selection to its exact path before
+          document creation can change the editor focus. }
+        If Project <> Nil Then ProjectPath := Project.DM_ProjectFullPath;
     End;
 
     If DocKind = '' Then
@@ -807,6 +979,13 @@ Begin
             'A document is already open at ' + FilePath +
             '. Focus it with app_set_active_document instead of creating it again,' +
             ' or close it first.');
+        Exit;
+    End;
+    If FileExists(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'FILE_EXISTS',
+            'A file already exists at ' + FilePath
+            + '. Open it instead of creating over it.');
         Exit;
     End;
 
@@ -852,17 +1031,20 @@ Begin
         Except Saved := False; End;
     End;
 
-    { NOT SAVED IS NOT CREATED. Answering success with saved:false let the }
-    { next call carry on as if the file existed. This comes before the     }
-    { project add, so an unsaved document never joins a project.           }
+    { A failed file save must not leave an in-memory project member behind. }
     If Not Saved Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
-            'The new document could not be saved to ' + FilePath);
+        If DirectoryExists(ExtractFilePath(FilePath)) Then
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document could not be saved to ' + FilePath)
+        Else
+            Result := BuildErrorResponse(RequestId, 'NOT_SAVED',
+                'The new document was not saved: the folder does not exist: '
+                + ExtractFilePath(FilePath));
         Exit;
     End;
 
-    { Add to the focused project via IProject.DM_AddSourceDocument.            }
+    { Add to the pinned project via IProject.DM_AddSourceDocument.             }
     { The earlier RunProcess('WorkspaceManager:AddDocumentToProject') path     }
     { silently no-ops in some workspace states, DM_AddSourceDocument is the  }
     { documented project-side API and the approach that works reliably        }
@@ -871,12 +1053,19 @@ Begin
     ProjSaved := False;
     If AddToProject And (Project <> Nil) Then
     Begin
-        Try
-            Project.DM_AddSourceDocument(FilePath);
-            Added := True;
-        Except Added := False; End;
-        { Written now, or the add is gone after a reopen. }
-        If Added Then ProjSaved := SaveProjectFile(Project);
+        Workspace := GetWorkspace;
+        If Workspace <> Nil Then
+        Begin
+            Project := OpenProjectAt(Workspace, ProjectPath);
+            If Project <> Nil Then
+            Begin
+                Try
+                    Project.DM_AddSourceDocument(FilePath);
+                    Added := True;
+                Except Added := False; End;
+                If Added Then ProjSaved := SaveProjectFile(Project);
+            End;
+        End;
     End;
 
     { FOCUS THE NEW DOCUMENT. It stayed behind whatever was in front, and  }
@@ -907,63 +1096,62 @@ End;
 { reported but not trusted, as App_SaveAll records.                           }
 {..............................................................................}
 
+
+{..............................................................................}
+{ Command Handler - must be at end so all functions are declared               }
+{..............................................................................}
+
+{ Save exactly one loaded document. Never walks the project/workspace.        }
+{ The Python caller also checks the target file's timestamp and size.        }
 Function App_SaveDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath, Reason : String;
+    FilePath, ActualPath : String;
     ServerDoc : IServerDocument;
-    WasModified, Saved : Boolean;
     AgeBefore, AgeAfter : Integer;
+    ModifiedBefore, ModifiedAfter : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
-    If FilePath = '' Then FilePath := CurrentFocusedDocPath(0);
     If FilePath = '' Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT',
-            'No file_path given and no document is focused');
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'file_path is required');
         Exit;
     End;
     ServerDoc := Nil;
     Try ServerDoc := Client.GetDocumentByPath(FilePath); Except End;
     If ServerDoc = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NOT_OPEN',
-            FilePath + ' is not open in Altium, so it holds no unsaved edits');
+        Result := BuildErrorResponse(RequestId, 'NOT_LOADED',
+            'Document not loaded: ' + FilePath);
         Exit;
     End;
-
-    WasModified := False;
-    Try WasModified := ServerDoc.Modified; Except End;
-    { Edits made through the API leave Modified False; the bridge's own   }
-    { record of them counts too, as it does when a document is closed.    }
-    If DocWasEdited(FilePath) Then WasModified := True;
+    ActualPath := ServerDoc.FileName;
+    If UpperCase(ActualPath) <> UpperCase(FilePath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'Loaded document path differs from file_path');
+        Exit;
+    End;
+    ModifiedBefore := DocIsModified(FilePath);
     AgeBefore := -1;
     Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
-    Try ServerDoc.SetModified(True); Except { the file age below decides } End;
-    Try ServerDoc.DoFileSave(''); Except { the file age below decides } End;
+    Try ServerDoc.DoFileSave(''); Except
+        Result := BuildErrorResponse(RequestId, 'SAVE_FAILED',
+            'DoFileSave failed for ' + FilePath);
+        Exit;
+    End;
     AgeAfter := -1;
     Try If FileExists(FilePath) Then AgeAfter := FileAge(FilePath); Except End;
-    Saved := (AgeAfter >= 0) And (AgeAfter > AgeBefore);
-    { Written, so a later stop has nothing of this edit left to save. }
-    If Saved Then ForgetDocEdited(FilePath);
-
-    Reason := '';
-    If Not Saved Then
-        Reason := 'The file did not get newer. Altium declines a save while a '
-            + 'command is active in the editor, which an abandoned edit can '
-            + 'leave behind with nothing on screen, and a read-only folder '
-            + 'refuses it. File ages tick every two seconds, so a save right '
-            + 'after another can also read as not written: try again.';
-
+    If (AgeAfter <> -1) And (AgeAfter <> AgeBefore) Then
+        ForgetDocEdited(FilePath);
+    ModifiedAfter := DocIsModified(FilePath);
     Result := BuildSuccessResponse(RequestId,
-        '{"file_path":"' + EscapeJsonString(FilePath) + '"'
-        + ',"saved":' + BoolToJsonStr(Saved)
-        + ',"was_modified":' + BoolToJsonStr(WasModified)
-        + ',"reason":"' + EscapeJsonString(Reason) + '"}');
+        '{"file_path":"' + EscapeJsonString(ActualPath) + '",'
+        + '"file_exists":' + BoolToJsonStr(FileExists(FilePath)) + ','
+        + '"modified_before":' + BoolToJsonStr(ModifiedBefore) + ','
+        + '"modified_after":' + BoolToJsonStr(ModifiedAfter) + ','
+        + '"file_age_before":' + IntToStr(AgeBefore) + ','
+        + '"file_age_after":' + IntToStr(AgeAfter) + '}');
 End;
-
-{..............................................................................}
-{ Command Handler - must be at end so all functions are declared               }
-{..............................................................................}
 
 { Stop the polling loop. Documents a tool edited, or that the editor marks  }
 { modified, are saved first; a clean document is not touched, so detaching  }
@@ -973,10 +1161,12 @@ Begin
     SaveScope := 'edited';
     CleanLeftAlone := 0;
     SaveAttempts := 0;
+    SaveWritten := 0;
     Try SaveAllDirty(0); Except End;
     SaveScope := '';
     Running := False;
     Result := BuildSuccessResponse(RequestId, '{"stopped":true,"edited_saved":'
+        + IntToStr(SaveWritten) + ',"edited_attempted":'
         + IntToStr(SaveAttempts) + ',"clean_left_alone":'
         + IntToStr(CleanLeftAlone) + '}');
 End;
@@ -1003,6 +1193,7 @@ Begin
         AgesBefore := AgesForPaths(Paths);
 
         SaveAttempts := 0;
+        SaveWritten := 0;
         LibsSkippedClean := 0;
         SkippedLibNames := '';
         SaveAllDirty(0);
@@ -1516,6 +1707,8 @@ Begin
         'format_value':        Result := App_FormatValue(Params, RequestId);
         'document_owners':     Result := App_DocumentOwners(RequestId);
         'claim_document':      Result := App_ClaimDocument(Params, RequestId);
+        'open_document':       Result := App_OpenDocument(Params, RequestId);
+        'reload_document':     Result := App_ReloadDocument(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown application action: ' + Action);
     End;

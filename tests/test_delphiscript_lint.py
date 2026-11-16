@@ -17,11 +17,9 @@ landing on users and costing debugging sessions, so they are pinned here:
     undeclared. Try/Except can NOT guard compile-time undeclared identifiers
     in DelphiScript; the whole file fails to compile. Use UnitSystem instead.
 
-4.  ``Try ... .MemberCount ... Except``: IPCB_ObjectClass has no member
-    count; it is a compile-time error. ``MemberName[I]`` IS declared:
-    measured on AD 26.11 (2026-10-28), PCB_CreateXSignals read a new
-    xSignal's name back from its class with it. With no count, the names
-    are read until one is empty or raises.
+4.  General ``IPCB_ObjectClass.MemberCount/MemberName`` enumeration is
+    unavailable. The xSignal class's indexed ``MemberName`` read is a
+    narrowly measured exception in ``PCB_XSignalClassHasName``.
 
 The linter walks ``scripts/altium/*.pas`` excluding the legacy monolithic
 ``Altium_MCP.pas`` (not in the active PrjScr) and fails any test whose rule
@@ -173,9 +171,14 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "SchDoc.UseMetricUnit  →  SchDoc.UnitSystem = eMetric",
     ),
     (
-        re.compile(r"IPCB_ObjectClass.*\.MemberCount"),
-        "IPCB_ObjectClass has no MemberCount",
-        "ObjClass.MemberCount  →  read MemberName[I] until it is empty or raises",
+        re.compile(r"\beSheetCustom\b"),
+        "TSheetStyle has no custom member; set ISch_Document.UseCustomSheet",
+        "SchDoc.SheetStyle := eSheetCustom  →  SchDoc.UseCustomSheet := True",
+    ),
+    (
+        re.compile(r"IPCB_ObjectClass.*\.MemberCount|\.MemberName\s*\["),
+        "general IPCB_ObjectClass membership enumeration is unavailable",
+        "use IsMember probing; only PCB_XSignalClassHasName has a measured Signal-class MemberName read",
     ),
     (
         re.compile(r"\beElectricBiDir\b"),
@@ -266,7 +269,11 @@ def _scan_file_for_bad_patterns(path: Path) -> list[str]:
     src = path.read_text(encoding="utf-8", errors="replace")
     code_only = _strip_string_literals(src)
     violations: list[str] = []
+    current_function = ""
     for lineno, fragment in _iter_lines_outside_comments(code_only):
+        function = re.match(r"\s*(?:Function|Procedure)\s+(\w+)", fragment, re.I)
+        if function:
+            current_function = function.group(1)
         for entry in BAD_PATTERNS:
             pattern, desc, hint = entry[0], entry[1], entry[2]
             # Optional 4th element: set of filenames where the pattern
@@ -274,6 +281,10 @@ def _scan_file_for_bad_patterns(path: Path) -> list[str]:
             # calls the raw API it's wrapping).
             allowed = entry[3] if len(entry) > 3 else frozenset()
             if path.name in allowed:
+                continue
+            if (path.name == "PCB.pas"
+                    and current_function == "PCB_XSignalClassHasName"
+                    and re.search(r"\.MemberName\s*\[", fragment)):
                 continue
             if pattern.search(fragment):
                 violations.append(f"{path.name}:{lineno}  {desc}\n    hint: {hint}")
@@ -360,3 +371,12 @@ class TestDelphiScriptLint:
                 f"{required} missing from scripts/altium/, the lint would "
                 f"silently pass"
             )
+
+    def test_remove_document_changes_project_membership(self) -> None:
+        """Regression: closing an editor tab must not masquerade as removal."""
+        source = (SCRIPTS_DIR / "Project.pas").read_text(encoding="utf-8")
+        start = source.index("Function Proj_RemoveDocument")
+        end = source.index("Function Proj_GetParameters", start)
+        implementation = source[start:end]
+        assert "DM_RemoveSourceDocument(DocumentPath)" in implementation
+        assert "WorkspaceManager:CloseObject" not in implementation

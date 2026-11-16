@@ -4,6 +4,11 @@
 { Utils.pas - Utility functions for the Altium integration bridge                             }
 {..............................................................................}
 
+Var
+    _PropertyWrites : Integer;
+    _PropCallRefused : Boolean;
+    _SetsRejected : Integer;
+
 Function MilsToCoord(Mils : Integer) : TCoord;
 Begin
     Result := Mils * 10000; // 1 mil = 10000 internal units
@@ -456,7 +461,7 @@ Begin
     End;
 End;
 
-{ HexNibble / CodeUnitHex4 / EscapeJsonString MUST be defined before the JSON}
+{ HexNibble / CodeUnitToHex4 / EscapeJsonString MUST precede the JSON code.  }
 { prop builders below, which call EscapeJsonString. DelphiScript resolves     }
 { identifiers top-down within a unit and has no Forward declarations, so a    }
 { callee defined later in the file is "Undeclared identifier" at the caller.  }
@@ -466,15 +471,22 @@ Begin
     Else Result := Chr(Ord('A') + (N - 10));
 End;
 
-{ All four hex digits of one UTF-16 code unit. Strings are UTF-16 here, so  }
-{ Ord of a CJK character is above 255; writing '00' plus the low byte sent }
-{ U+4E2D back as U+002D. A character outside the BMP is two code units and }
-{ comes out as its surrogate pair, which JSON readers join.                }
+Function CodeUnitToHex4(B : Integer) : String;
+Begin
+    { Preserve all 16 bits of an Altium UTF-16 code unit. Truncating to a    }
+    { byte changed Cyrillic letters and the numero sign into control codes. }
+    Result := HexNibble((B Shr 12) And $F)
+              + HexNibble((B Shr 8) And $F)
+              + HexNibble((B Shr 4) And $F)
+              + HexNibble(B And $F);
+End;
+
 Function CodeUnitHex4(B : Integer) : String;
 Begin
     Result := HexNibble((B Shr 12) And $F) + HexNibble((B Shr 8) And $F)
         + HexNibble((B Shr 4) And $F) + HexNibble(B And $F);
 End;
+
 
 Function EscapeJsonString(S : String) : String;
 Var
@@ -495,7 +507,7 @@ Begin
         Exit;
     End;
 
-    // Fast path: scan once for any byte that needs the slow per-char loop.
+    // Fast path: scan once for any code unit needing the per-char loop.
     // The vast majority of escaped strings are pure ASCII (designators,
     // file paths, layer names) and stay on the fast path.
     NeedsCharLoop := False;
@@ -520,16 +532,16 @@ Begin
         Exit;
     End;
 
-    // Slow path: char-by-char with \uXXXX for any non-ASCII character, all
-    // four digits of its UTF-16 code unit. The escape produces valid JSON
-    // consumable as UTF-8 by any reader, so the response file is always
-    // pure ASCII whatever codepage SaveToFile writes in.
+    // Altium exposes Unicode text. Escape each non-ASCII UTF-16 code unit
+    // as \uXXXX, preserving all four hex digits. Surrogate pairs retain
+    // their two units so a JSON reader can reconstruct non-BMP characters.
+    // ASCII controls, quotes and backslashes keep their existing escaping.
     For I := 1 To Length(Tmp) Do
     Begin
         Ch := Copy(Tmp, I, 1);
         O := Ord(Ch[1]);
         If O >= 128 Then
-            Result := Result + '\u' + CodeUnitHex4(O)
+            Result := Result + '\u' + CodeUnitToHex4(O)
         Else If O = Ord('\') Then Result := Result + '\\'
         Else If O = Ord('"') Then Result := Result + '\"'
         Else If O = 13 Then Result := Result + '\r'
@@ -537,7 +549,7 @@ Begin
         Else If O = 9 Then Result := Result + '\t'
         Else If O = 8 Then Result := Result + '\b'
         Else If O = 12 Then Result := Result + '\f'
-        Else If O < 32 Then Result := Result + '\u' + CodeUnitHex4(O)
+        Else If O < 32 Then Result := Result + '\u' + CodeUnitToHex4(O)
         Else Result := Result + Ch;
     End;
 End;
@@ -683,6 +695,7 @@ Var
     Workspace : IWorkspace;
     Doc : IDocument;
     View : IServerDocumentView;
+    ServerDoc : IServerDocument;
 Begin
     Result := '';
     Try
@@ -692,6 +705,18 @@ Begin
             Doc := Workspace.DM_FocusedDocument;
             If Doc <> Nil Then Result := Doc.DM_FullPath;
         End;
+    Except End;
+    If Result <> '' Then Exit;
+
+    { A newly shown free document can own the editor view before the DM   }
+    { focused-document pointer catches up. The view still identifies the   }
+    { exact document, including a free PcbLib absent from any project.     }
+    Try
+        If Client = Nil Then Exit;
+        View := Client.GetCurrentView;
+        If View = Nil Then Exit;
+        ServerDoc := View.GetOwnerDocument;
+        If ServerDoc <> Nil Then Result := ServerDoc.FileName;
     Except End;
     If Result <> '' Then Exit;
     { No focused document: the editor's current view still names the one }
@@ -911,6 +936,7 @@ End;
   exponent. Deliberately does NOT accept ',' as a decimal separator:
   the caller forces '.' before parsing, so a comma is a bad value here
   whatever the machine's regional settings say. }
+
 Function IsFloatStr(S : String) : Boolean;
 Var
     I, StartPos : Integer;
@@ -1529,6 +1555,7 @@ End;
 { GetLayerString, plus Mechanical17 and up, which it calls Unknown. The     }
 { number is taken from the layer's distance to Mechanical17 and kept only    }
 { when LayerUtils.MechanicalLayer gives the same layer back for it.          }
+
 Function LayerDisplayName(Layer : TLayer) : String;
 Var
     Base, Back : TLayer;
@@ -1687,6 +1714,7 @@ End;
 { What the refusal should have said. Listed from the resolver above so the
   two cannot drift: a message naming types the resolver does not accept is
   worse than no message. }
+
 Function PCBObjectTypeNames(Dummy : Integer): String;
 Begin
     Result := 'eTrackObject, ePadObject, eViaObject, eComponentObject, '
@@ -2019,8 +2047,6 @@ Begin
             Try Obj := LayerStack.NextLayer(Obj); Except Obj := Nil; End;
         End;
 
-        { Every mechanical layer, not just the first 16: a user name on }
-        { Mechanical17 or up resolved to nothing.                      }
         For MechN := 1 To 1024 Do
         Begin
             Lyr := MechLayerFromNumber(MechN);
@@ -2107,17 +2133,18 @@ Begin
         Cache := Cache + Chr(1) + LayerName + Chr(2) + IntToStr(Result) + Chr(1);
 End;
 
-{ A VIA'S MASK WRITE LEAVES THE SPATIAL INDEX BEHIND (issue #208).         }
+{ A PROGRAMMATIC SELECTION IGNORES THE EDITOR'S SELECTION FILTER.           }
 {                                                                            }
-{ A via's bounding box includes its solder-mask expansion, and the mask is   }
-{ written through the pad cache. The getters see the new box at once, but   }
-{ the board's spatial index keeps the old one: neither the object's own     }
-{ BeginModify / EndModify nor the PCBM_BeginModify / PCBM_EndModify robot   }
-{ messages re-index it, so a spatial search by the new bounds finds nothing.}
-{ Taking the via off the board and putting it back does, measured on AD    }
-{ 26.11: the net stays, one Undo restores the old mask, and the via is      }
-{ found by its bounds before and after. Call it after the write, outside    }
-{ the object's modify bracket and inside the caller's PcbBeginEdit.         }
+{ The Selection Filter (the per-type toggles in the Properties panel) also   }
+{ applies to Prim.Selected := True: for a type switched off there the        }
+{ assignment is silently refused. Every caller that selects and then acts on }
+{ the selection (a process such as PCB:Clear, or a count of what is now     }
+{ selected) then did nothing for that type and still reported success.      }
+{ Measured: with Tracks off in the filter a track was not selected, with     }
+{ SelectedObjects_FilterDisabled True it was. A PcbLib passes its Board.     }
+{ Off returns the previous value; Restore puts it back, always from a        }
+{ Finally, so the user's filter is left as it was found.                     }
+
 Procedure ReindexBoardObject(Board : IPCB_Board; Obj : IPCB_Primitive);
 Begin
     If (Board = Nil) Or (Obj = Nil) Then Exit;
@@ -2131,6 +2158,7 @@ End;
 { area (obj_query by bounds, Altium's online DRC, pours, picking) go through }
 { that index; an object it does not hold there is invisible to them while    }
 { its own getters, and a board walk, still find it.                          }
+
 Function BoardIndexFinds(Board : IPCB_Board; Obj : IPCB_Primitive;
     X, Y : TCoord) : Boolean;
 Var
@@ -2164,6 +2192,7 @@ End;
 { via whose mask comes from the rules reads 1, its index box narrower than }
 { the box BoundingRectangle reports, and taking it off the board and back  }
 { leaves it so. Altium indexes it that way; 1 is not stale. 0 is.          }
+
 Function BoardIndexState(Board : IPCB_Board; Obj : IPCB_Primitive) : Integer;
 Var
     BR : TCoordRect;
@@ -2190,6 +2219,7 @@ End;
 { back, 2 when it was left alone (a component, polygon or dimension, or a    }
 { primitive one of them owns, is not taken off the board and put back), 3    }
 { when it is still worse after re-indexing.                                  }
+
 Function EnsureIndexed(Board : IPCB_Board; Obj : IPCB_Primitive;
     Before : Integer) : Integer;
 Var
@@ -2221,18 +2251,19 @@ End;
 { Off returns the previous value; Restore puts it back, always from a        }
 { Finally, so the user's filter is left as it was found.                     }
 
+
 Function PcbSelectFilterOff(Board : IPCB_Board) : Boolean;
 Begin
     Result := False;
     If Board = Nil Then Exit;
     Try Result := Board.SelectedObjects_FilterDisabled; Except Result := False; End;
-    Try Board.SelectedObjects_FilterDisabled := True; Except NoteWriteFailed('turn the selection filter off (a selection may miss objects)'); End;
+    Try Board.SelectedObjects_FilterDisabled := True; Except NoteWriteFailed('Board.SelectedObjects_FilterDisabled'); End;
 End;
 
 Procedure PcbSelectFilterRestore(Board : IPCB_Board; Was : Boolean);
 Begin
     If Board = Nil Then Exit;
-    Try Board.SelectedObjects_FilterDisabled := Was; Except NoteWriteFailed('restore the selection filter'); End;
+    Try Board.SelectedObjects_FilterDisabled := Was; Except NoteWriteFailed('Board.SelectedObjects_FilterDisabled'); End;
 End;
 
 { The names this board actually answers to, appended to an UNKNOWN_LAYER       }
@@ -2491,6 +2522,9 @@ Procedure NotePropertyDiag(Kind : String; PropName : String);
 Var
     Entry : String;
 Begin
+    { Before the dedup exit: the same refusal on a second object is still a }
+    { refusal of THAT write, though it is recorded once.                    }
+    If Kind <> 'unreadable' Then _PropCallRefused := True;
     Entry := Kind + ':' + PropName;
     { Bracket the buffer with '|' on both sides so a Pos check finds an      }
     { exact record (and not e.g. "unknown:Foo" matching inside "...Foobar"). }
@@ -2499,6 +2533,74 @@ Begin
         _PropertyDiagStr := Entry
     Else
         _PropertyDiagStr := _PropertyDiagStr + '|' + Entry;
+End;
+
+{ Bracket one property write: a write counts only when it reported success }
+{ and nothing in it was refused (a branch can note a refusal and still     }
+{ fall through to success).                                                 }
+Procedure BeginPropertyWrite(Dummy : Integer);
+Begin
+    _PropCallRefused := False;
+End;
+
+Procedure EndPropertyWrite(Outcome : Integer);
+Begin
+    If (Outcome = 1) And Not _PropCallRefused Then Inc(_PropertyWrites);
+End;
+
+{ True when a modify wrote nothing at all: no write landed and every       }
+{ property it asked for is recorded as unknown or failed. Conservative: a  }
+{ property neither counted nor refused keeps the reply at modified:true.   }
+Procedure NotePropertyWritten(Dummy : Integer);
+Begin
+    Inc(_PropertyWrites);
+End;
+
+{ A whole set refused before anything in it was written: one unsupported }
+{ name rejects the object's list, so the other names in it are neither    }
+{ written nor refused (a note's ShowBorder beside TextMargin, 2026-11-08).}
+
+Procedure NoteSetRejected(Dummy : Integer);
+Begin
+    Inc(_SetsRejected);
+End;
+
+{ True when a modify wrote nothing at all: no write landed, and either a   }
+{ whole set was rejected before any of it was written or every property    }
+{ it asked for is recorded as unknown or failed. Conservative: a property  }
+{ neither counted nor refused keeps the reply at modified:true.            }
+
+Function NothingWasWritten(SetStr : String) : Boolean;
+Var
+    Remaining, Pair, Nm, Diag : String;
+    P : Integer;
+Begin
+    Result := False;
+    If _PropertyWrites > 0 Then Exit;
+    If Trim(SetStr) = '' Then Exit;
+    Diag := '|' + _PropertyDiagStr + '|';
+    Remaining := SetStr;
+    While Length(Remaining) > 0 Do
+    Begin
+        P := Pos('|', Remaining);
+        If P = 0 Then
+        Begin
+            Pair := Remaining;
+            Remaining := '';
+        End
+        Else
+        Begin
+            Pair := Copy(Remaining, 1, P - 1);
+            Remaining := Copy(Remaining, P + 1, Length(Remaining));
+        End;
+        P := Pos('=', Pair);
+        If P = 0 Then Continue;
+        Nm := Trim(Copy(Pair, 1, P - 1));
+        If Nm = '' Then Continue;
+        If (Pos('|unknown:' + Nm + '|', Diag) = 0)
+            And (Pos('|failed:' + Nm + '|', Diag) = 0) Then Exit;
+    End;
+    Result := True;
 End;
 
 Function RenderPropertyDiagJson(Dummy : Integer): String;
@@ -2612,11 +2714,8 @@ Begin
     Result := (Owner = 0) Or (Owner = PartId);
 End;
 
-{ SchDocByPathLoading - the sheet at Path, loading it when it is a file   }
-{ Altium has not opened yet. GetSchDocumentByPath alone answers Nil for a  }
-{ project member that was never opened, which made a tool given a sheet's }
-{ path fail whenever another document was in front. Client.OpenDocument   }
-{ keeps the project membership (RunProcess Client:OpenDocument does not). }
+{ UnitStamp_Utils - which build of Utils.pas Altium compiled; 'dev' here. }
+{ install-scripts writes the hash of this file into the deployed copy. }
 Function SchDocByPathLoading(Path : String) : ISch_Document;
 Begin
     Result := Nil;
@@ -2657,6 +2756,7 @@ End;
 { runs under DelphiScript and Free Pascal.                                   }
 {..............................................................................}
 
+
 Function VfField(Rec : String; N : Integer) : String;
 Var
     S : String;
@@ -2690,6 +2790,7 @@ Begin
 End;
 
 { The kind named by K (aliases, case ignored); '' when unknown. }
+
 Function VfKind(K : String) : String;
 Var
     U : String;
@@ -2705,6 +2806,7 @@ Begin
     Else If U = 'PPM' Then Result := 'ppm'
     Else If (U = 'CELSIUS') Or (U = 'DEGC') Or (U = 'TEMP') Then Result := 'celsius';
 End;
+
 
 Function VfUnitOf(Kind : String) : String;
 Begin
@@ -2739,6 +2841,7 @@ Begin
 End;
 
 { Length of the unit token at S[I]: 3 for ppm, 1 for R F H V A C %, else 0. }
+
 Function VfUnitLen(S : String; I : Integer) : Integer;
 Var
     C : String;
@@ -2753,6 +2856,7 @@ Begin
     If (Length(C) = 1) And (Pos(C, 'RFHVAC%') > 0) Then Result := 1;
 End;
 
+
 Function VfUnitTok(S : String; I : Integer) : String;
 Begin
     If VfUnitLen(S, I) = 3 Then Result := 'ppm'
@@ -2760,6 +2864,7 @@ Begin
 End;
 
 { Power of ten of multiplier M for Kind; 99 when it is not one there. }
+
 Function VfMultPower(Kind, M : String) : Integer;
 Begin
     Result := 99;
@@ -2779,6 +2884,7 @@ Begin
     End;
 End;
 
+
 Function VfLetterPower(L : String) : Integer;
 Begin
     Result := 0;
@@ -2792,6 +2898,7 @@ Begin
 End;
 
 { The output letter for a value whose leading digit is at 10^Mag. }
+
 Function VfOutLetter(Kind : String; Mag : Integer) : String;
 Begin
     If Kind = 'ohm' Then
@@ -2819,6 +2926,7 @@ Begin
     Else Result := VfUnitOf(Kind);
 End;
 
+
 Function VfZeros(N : Integer) : String;
 Var
     I : Integer;
@@ -2829,6 +2937,7 @@ End;
 
 { D (digits) x 10^E as a plain decimal string, no exponent; D has no      }
 { leading or trailing zeros except '0' itself.                             }
+
 Function VfPlain(D : String; E : Integer) : String;
 Var
     P : Integer;
@@ -2849,6 +2958,7 @@ Begin
 End;
 
 { Digits and exponent in canonical form: 'OK' D E (no leading / trailing zeros). }
+
 Function VfCanon(D : String; E : Integer) : String;
 Begin
     While (Length(D) > 1) And (Copy(D, 1, 1) = '0') Do D := Copy(D, 2, Length(D));
@@ -2863,6 +2973,7 @@ Begin
 End;
 
 { VfToString - Kind and a plain decimal ('-0.0000022', '1e3') -> 'OK' text. }
+
 Function VfToString(Kind, ValueText : String) : String;
 Var
     K, S, C, Whole, Frac, ExpS, D, Letter, Plain, UnitO, Sign, Rec : String;
@@ -2966,6 +3077,7 @@ Begin
 End;
 
 { Text with the case-insensitive word W replaced by Rep everywhere. }
+
 Function VfReplaceWord(S, W, Rep : String) : String;
 Var
     Rest : String;
@@ -2984,6 +3096,7 @@ Begin
 End;
 
 { Grouping characters out, symbols and words to the letters the grammar knows. }
+
 Function VfNormalise(Text : String) : String;
 Var
     S, C : String;
@@ -3027,6 +3140,7 @@ End;
 { Whether the word after a space is nothing but value letters, so the     }
 { space joins it to the number ("10 uF", "4.7 kR", "2u2 H"); a word like   }
 { "Vishay" is not. UnitOnly: just a unit (after a letter point).          }
+
 Function VfLetterWord(W : String; UnitOnly : Boolean) : Boolean;
 Var
     I, N : Integer;
@@ -3052,6 +3166,7 @@ Begin
     Result := I > N;
 End;
 
+
 Function VfSkipSpace(S : String; K : Integer; UnitOnly : Boolean) : Integer;
 Var
     K2, P : Integer;
@@ -3071,6 +3186,7 @@ End;
 { multiplier, letter-point digits, unit; the rest. A value that runs on   }
 { into digits, separators or letters it cannot use is malformed.          }
 { 'OK' sign num exp mult digits unit rest                                 }
+
 Function VfScan(S, Text : String) : String;
 Var
     I, J, N, L : Integer;
@@ -3173,6 +3289,7 @@ Begin
               + Chr(9) + Digits + Chr(9) + UnitTok + Chr(9) + Rest;
 End;
 
+
 Function VfLastPos(C, S : String) : Integer;
 Var
     I : Integer;
@@ -3195,6 +3312,7 @@ End;
 { is the decimal point: both present, the last; one used twice or more,     }
 { grouping; once with exactly three digits after and one to three (not 0)  }
 { before, ambiguous: Sep (the source's decimal separator) decides.          }
+
 Function VfNumber(Num, Sep : String; LetterPoint : Boolean) : String;
 Var
     Dots, Commas, P, I : Integer;
@@ -3271,6 +3389,7 @@ Begin
     Result := 'OK' + Chr(9) + Whole + Chr(9) + Frac + Chr(9) + Note;
 End;
 
+
 Function VfAddNote(Notes, Note : String) : String;
 Begin
     If Note = '' Then Result := Notes
@@ -3282,6 +3401,7 @@ End;
 { Kind ('' = from the text) takes precedence; a unit in the text that     }
 { contradicts it is a note, the value is still read. Sep is the decimal   }
 { separator of the SOURCE ('.' or ','); '' = this machine's.              }
+
 Function VfParse(Text, Kind, Sep : String) : String;
 Var
     K, S, Rec, Sign, Num, Ex, Mult, Digits, UnitTok, Rest : String;
@@ -3388,6 +3508,7 @@ End;
 
 { VfCleanup - a malformed value string made proper: 'OK' text kind value  }
 { rest notes. The digits are carried over as they stand; nothing rounds.  }
+
 Function VfCleanup(Text, Kind, Sep : String) : String;
 Var
     Rec, TextRec : String;
@@ -3414,6 +3535,7 @@ Begin
 End;
 
 { install-scripts writes the hash of this file into the deployed copy. }
+
 Function UnitStamp_Utils(Dummy : Integer) : String;
 Begin
     Result := 'dev';

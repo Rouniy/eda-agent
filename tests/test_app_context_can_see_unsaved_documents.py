@@ -118,12 +118,22 @@ def test_the_handler_emits_the_key_the_filter_reads():
 
 def test_the_active_document_emits_what_its_docstring_promises():
     body = load(_APPLICATION, minimum=12)["App_GetActiveDocument"]
-    # Four exits: the focused document, the editor's current view, then
-    # the SCH and PCB server fallbacks. A caller reading the field should
-    # not have to know which one answered.
+    # Four exits: focused document, current editor view, then SCH and PCB
+    # server fallbacks. A caller should not have to know which answered.
     assert body.count('"modified":') == 4, (
         "app_get_active_document documents a 'modified' field; every "
         "branch that builds the reply has to write it")
+
+
+def test_new_free_document_is_read_from_current_editor_view_first():
+    active = load(_APPLICATION, minimum=12)["App_GetActiveDocument"]
+    focus = load(_ALTIUM / "Utils.pas", minimum=12)["CurrentFocusedDocPath"]
+    # SCH/PCB server modules remember an earlier document. A free PcbLib
+    # has no project DM entry, so its current editor view must win.
+    assert active.index("View.GetOwnerDocument") < active.index(
+        "SchServer.GetCurrentSchDocument")
+    assert "View.GetOwnerDocument" in focus
+    assert focus.index("Doc.DM_FullPath") < focus.index("View.GetOwnerDocument")
 
 
 def test_dirtiness_is_read_through_one_helper():
@@ -135,11 +145,21 @@ def test_dirtiness_is_read_through_one_helper():
     helper = main["DocIsModified"]
     assert "Client.GetDocumentByPath" in helper
     assert "Modified" in helper
+    assert "DocWasEdited(FilePath)" in helper, (
+        "Altium can report Modified=false after a library write; the "
+        "bridge's edit record must still reach app_context")
 
     body = load(_APPLICATION, minimum=12)["App_GetOpenDocuments"]
     assert "DocIsModified" in body, (
         "App_GetOpenDocuments is reading the modified flag its own way "
         "instead of through the shared helper")
+
+    save = load(_APPLICATION, minimum=12)["App_SaveDocument"]
+    assert "ModifiedBefore := DocIsModified(FilePath);" in save
+    assert save.index("ForgetDocEdited(FilePath)") < save.index(
+        "ModifiedAfter := DocIsModified(FilePath);"), (
+        "the save reply must clear the edit record only after a disk write "
+        "and then report the resulting unsaved state")
 
 
 def test_the_helper_is_defined_before_it_is_called():

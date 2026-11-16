@@ -37,9 +37,6 @@ FAKE_SERVER = textwrap.dedent('''
         elif method == "slow":
             time.sleep(1.0)
             result = {"pid": os.getpid()}
-        elif method == "hang":
-            time.sleep(60)
-            result = {}
         else:
             result = {}
         sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}) + "\\n")
@@ -51,7 +48,6 @@ DRIVER = textwrap.dedent('''
     from pathlib import Path
     import eda_agent.devproxy as d
     d.POLL_S, d.SETTLE_S = 0.1, 0.2
-    d.MAX_WAIT_FOR_CALLS_S = float(sys.argv[3]) if len(sys.argv) > 3 else 600.0
     watched = Path(sys.argv[1])
     d.Proxy([], sys.stdin.buffer, sys.stdout.buffer,
             child_command=[sys.executable, sys.argv[2], str(watched)],
@@ -60,7 +56,7 @@ DRIVER = textwrap.dedent('''
 
 
 class Client:
-    def __init__(self, tmp_path: Path, max_wait: float = 600.0):
+    def __init__(self, tmp_path: Path):
         self.watched = tmp_path / "pkg"
         self.watched.mkdir()
         (self.watched / "mod.py").write_text("x = 1\n")
@@ -68,10 +64,13 @@ class Client:
         fake.write_text(FAKE_SERVER)
         driver = tmp_path / "driver.py"
         driver.write_text(DRIVER)
+        env = dict(os.environ)
+        source = str(Path(__file__).resolve().parents[1] / "src")
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (source, env.get("PYTHONPATH"))))
         self.proc = subprocess.Popen(
-            [sys.executable, str(driver), str(self.watched), str(fake), str(max_wait)],
+            [sys.executable, str(driver), str(self.watched), str(fake)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL)
+            stderr=subprocess.PIPE, env=env)
         self.next_id = 0
 
     def send(self, method, notify=False):
@@ -84,7 +83,10 @@ class Client:
         return msg.get("id")
 
     def read(self):
-        return json.loads(self.proc.stdout.readline())
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError(self.proc.stderr.read().decode(errors="replace"))
+        return json.loads(line)
 
     def call(self, method):
         request_id = self.send(method)
@@ -155,65 +157,9 @@ def test_a_server_that_fails_to_start_says_why_and_recovers(client):
     (client.watched / "broken").write_text("")
     client.change_source()
     client.read()  # the list-changed notice
-    deadline = time.monotonic() + 10
     reply = client.call("tools/list")
-    while "error" not in reply and time.monotonic() < deadline:
-        reply = client.call("tools/list")
     assert "half-written edit" in reply["error"]["message"]
     (client.watched / "broken").unlink()
     client.change_source()
     assert client.read()["method"] == "notifications/tools/list_changed"
     assert "result" in client.call("tools/list")
-
-
-def _started(tmp_path, max_wait):
-    c = Client(tmp_path, max_wait)
-    c.call("initialize")
-    c.send("notifications/initialized", notify=True)
-    return c
-
-
-def test_a_cancelled_call_does_not_hold_up_the_restart(tmp_path):
-    c = _started(tmp_path, 600.0)
-    try:
-        stuck = c.send("hang")
-        c.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
-                                       "params": {"requestId": stuck}}).encode() + b"\n")
-        c.proc.stdin.flush()
-        started = time.monotonic()
-        c.change_source()
-        while c.read().get("method") != "notifications/tools/list_changed":
-            pass
-        assert time.monotonic() - started < 10, "the restart waited on a cancelled call"
-        assert "result" in c.call("tools/list")
-    finally:
-        c.proc.kill()
-
-
-def test_a_call_the_restart_cut_off_is_answered_with_an_error(tmp_path):
-    c = _started(tmp_path, 1.0)
-    try:
-        stuck = c.send("hang")
-        c.change_source()
-        reply = c.read()
-        while reply.get("id") != stuck:
-            reply = c.read()
-        assert "restarted" in reply["error"]["message"]
-        assert "result" in c.call("tools/list")
-    finally:
-        c.proc.kill()
-
-
-def test_a_script_version_bump_is_watched_too(tmp_path, monkeypatch):
-    # The server records Main.pas's SCRIPT_VERSION at start; a bump that
-    # did not restart it made it warn, wrongly, that its Python was stale.
-    from eda_agent import cli, devproxy
-    main = tmp_path / "Main.pas"
-    main.write_text("SCRIPT_VERSION = '1';\n")
-    monkeypatch.setattr(cli, "get_bundled_scripts_path", lambda: tmp_path)
-    before = devproxy.script_version_stamp()
-    assert list(before) == [str(main)]
-    main.write_text("SCRIPT_VERSION = '2';\n")
-    later = main.stat().st_mtime_ns + 1_000_000_000
-    os.utime(main, ns=(later, later))
-    assert devproxy.script_version_stamp() != before

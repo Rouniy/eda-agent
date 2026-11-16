@@ -104,4 +104,3 @@ Two things it refuses to do, both because the failure would be invisible:
 `easyeda_run_plan` executes an emitted sequence. It takes the `calls` list rather than a plan, so what runs is exactly what was reviewed, and it **stops at the first failure**: carrying on would place the remaining parts around the hole where the failed one belongs, and the result would read as a finished schematic with a mistake in it rather than as a run that stopped. A step naming a tool it cannot call is refused before anything runs, since finding that halfway leaves the design half-changed.
 
 So: **use EasyEDA here to inspect, check and get data out.** Altium remains the backend that builds.
-

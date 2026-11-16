@@ -31,8 +31,13 @@ class _Bridge:
 
     async def send_command_async(self, command, params, **kwargs):
         self.sent.append((command, params))
-        return {"success": True, "options": {"DoOnlineDRC": False},
-                "not_applied": [], "refused": []}
+        options = {name: (False if name == "DoOnlineDRC" else 0)
+                   for name in params["names"].split(",")}
+        if "set" in params:
+            options["DoOnlineDRC"] = False
+        return {"success": True, "board_path": params["board_path"],
+                "options": options, "not_applied": [], "refused": [],
+                "unknown": []}
 
 
 def _edit_options(monkeypatch):
@@ -72,17 +77,18 @@ def test_script_knows_online_drc_as_a_switch_it_reads_and_writes():
 
 def test_switching_online_drc_off_sends_its_altium_name(monkeypatch):
     tool, bridge = _edit_options(monkeypatch)
-    result = asyncio.run(tool(online_drc=False))
+    result = asyncio.run(tool(board_path="C:/test/board.PcbDoc", online_drc=False,
+                             dry_run=False))
     command, params = bridge.sent[0]
     assert command == "pcb.editor_options"
-    assert params["set"] == "DoOnlineDRC=false"
+    assert bridge.sent[1][1]["set"] == "DoOnlineDRC=false"
     assert "DoOnlineDRC" in params["names"].split(",")
-    assert result["options"] == {"online_drc": False}
+    assert result["options"]["online_drc"] is False
 
 
 def test_reading_asks_for_online_drc_and_sets_nothing(monkeypatch):
     tool, bridge = _edit_options(monkeypatch)
-    asyncio.run(tool())
+    asyncio.run(tool(board_path="C:/test/board.PcbDoc"))
     _command, params = bridge.sent[0]
     assert "set" not in params
     assert "DoOnlineDRC" in params["names"].split(",")

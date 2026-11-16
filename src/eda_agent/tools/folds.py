@@ -46,11 +46,8 @@ class Fold:
 
 FOLDS: dict[str, Fold] = {
     "pcb_calc": Fold(
-        summary=("Engineering calculators: impedance, widths for current or "
-                 "impedance, terminations, length matching, thermal vias, "
-                 "reactance, resonance, wavelength, PDN target, wire gauge, "
-                 "fusing current, via and spiral inductance, padstacks. "
-                 "Offline, except polygon_area, which reads the open board."),
+        summary=("Engineering calculators. Offline except polygon_area "
+                 "and toolkit_board, which read the open board."),
         prefixes=("pcb_calc_",),
     ),
     "audit": Fold(
@@ -214,7 +211,7 @@ def _signature_line(kind: str, fn: Callable) -> str:
 def _first_line(fn: Callable) -> str:
     doc = (inspect.getdoc(fn) or "").strip()
     line = doc.split("\n\n", 1)[0].replace("\n", " ")
-    return line if len(line) <= 140 else line[:137].rstrip() + "..."
+    return line if len(line) <= 70 else line[:67].rstrip() + "..."
 
 
 def _describe(fold_name: str, fold: Fold, members: dict[str, ToolSpec]) -> str:
@@ -271,8 +268,6 @@ def _make_dispatcher(fold_name: str, fold: Fold,
         except TypeError as e:
             return {"ok": False, "reason": f"{kind}: {e}",
                     "takes": _signature_line(kind, spec.fn)}
-        from ..bridge.altium_bridge import name_tool_call
-        name_tool_call(spec.name)
         return await _call_validated(spec.fn, args)
 
     # The advertised signature: the key, then the args dict.
@@ -340,8 +335,6 @@ class FoldingServer:
                 _make_dispatcher(fold_name, fold, members), fold_name))
 
     async def call_tool(self, name: str, arguments: Optional[dict] = None):
-        from ..bridge.altium_bridge import name_tool_call
-        name_tool_call(name)
         spec = self.hidden.get(name)
         if spec is None:
             return await self._server.call_tool(name, arguments or {})

@@ -8,11 +8,8 @@ library already open with backslashes.
 """
 from __future__ import annotations
 
-import asyncio
-
 from eda_agent.bridge import altium_bridge
 from eda_agent.bridge.path_spelling import backslashed, one_spelling, same_file
-from eda_agent.tools import sch_template
 
 
 def test_an_absolute_path_is_backslashed_and_nothing_else_is():
@@ -64,26 +61,3 @@ def test_same_file_falls_back_to_the_text(tmp_path):
     assert same_file(str(f), str(f).replace("\\", "/"))
     assert same_file("Z:/none/A.SchDoc", "z:\\none\\a.schdoc")
     assert not same_file("Z:/none/A.SchDoc", "Z:/none/B.SchDoc")
-
-
-def test_focus_uses_a_copy_open_under_another_spelling(monkeypatch, tmp_path):
-    lib = tmp_path / "P.SchLib"
-    lib.write_text("x")
-    other = str(lib)
-    asked = str(lib).replace("\\", "/")
-    sent = []
-
-    class _Bridge:
-        async def send_command_async(self, command, params=None, **kw):
-            sent.append((command, dict(params or {})))
-            if command == "application.set_active_document":
-                if params["file_path"] == other:
-                    return {"success": True}
-                return {"success": False, "error": "document not loaded"}
-            if command == "application.get_open_documents":
-                return [{"file_path": other}]
-            return {"success": True}
-
-    reply = asyncio.run(sch_template._focus(_Bridge(), asked))
-    assert reply == {"success": True}
-    assert not any(c == "application.run_process" for c, _ in sent)

@@ -123,6 +123,7 @@ NO_LENGTHS = frozenset({
     "pcb_render_3d", "pcb_render_png", "pcb_render_svg", "sch_render_svg",
     "lib_render_footprint", "footprint_render_package", "design_live_view",
     "design_live_snapshot", "easyeda_render_image", "kicad_get_board_view",
+    "pcb_3d_capture", "pcb_render_2d",
 })
 
 #: Plain names in LENGTH_KEYS that are not lengths in one tool, with what
@@ -161,6 +162,16 @@ ADDED: dict[str, frozenset[str]] = {
     "easyeda_emit_template_connections": frozenset({"pin_positions"}),
     "pcb_calc_length_match": frozenset({"lengths"}),
     "kicad_set_design_rules": frozenset({"constraints"}),
+    # This fork's tools: a board box {x1, y1, x2, y2}; a polyline of points.
+    "pcb_audit_placement_plan": frozenset({"board"}),
+    "pcb_route_diff_pair": frozenset({"centerline"}),
+    "design_execute_plan": frozenset({"placement_hints"}),
+    "design_layout_schematic": frozenset({"placement_hints"}),
+    "design_preview_plan": frozenset({"placement_hints"}),
+    "easyeda_emit_connections": frozenset({"pin_positions"}),
+    "lib_create_ic_symbol": frozenset({"pin_spacing", "char_width", "body_padding"}),
+    "lib_create_multipart_symbol": frozenset({"pin_spacing", "char_width", "body_padding"}),
+    "pcb_grow_pour": frozenset({"expected_bounds"}),
 }
 
 #: Tools whose ``value`` arguments are a length for some kinds only.

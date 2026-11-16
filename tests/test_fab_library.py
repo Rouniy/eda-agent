@@ -47,7 +47,7 @@ def test_every_figure_is_quoted_or_says_why_it_is_missing():
                     where = (data["vendor"], tier, key)
                     if "unpublished" in f:
                         assert f["unpublished"].strip(), where
-                        assert "mm" not in f and "mil" not in f, where
+                        assert not {"mm", "mil", "um"} & set(f), where
                     else:
                         assert f.get("quote", "").strip(), where
 
@@ -59,12 +59,14 @@ def test_each_published_number_is_inside_its_own_quote():
         for tier, figs in data["tiers"].items():
             for key, options in figs.items():
                 for f in options:
-                    unit = "mm" if "mm" in f else "mil" if "mil" in f else None
+                    unit = next((u for u in ("mm", "mil", "um") if u in f), None)
                     if unit is None:
                         continue
                     if "derived" in f:
                         continue
-                    numbers = {float(n) for n in re.findall(r"\d+(?:\.\d+)?", f["quote"])}
+                    # Polish and German pages write decimal commas: 0,25 mm.
+                    quote = re.sub(r"(\d),(\d)", r"\1.\2", f["quote"])
+                    numbers = {float(n) for n in re.findall(r"\d+(?:\.\d+)?", quote)}
                     assert f[unit] in numbers, (data["vendor"], tier, key, f[unit])
 
 
@@ -324,11 +326,20 @@ def test_apply_is_a_dry_run_unless_asked(monkeypatch):
 def test_a_partial_apply_says_which_layers_changed(monkeypatch):
     bridge = _Bridge(_board_from("JLC04161H-7628"), reject_layer="L3")
     out = asyncio.run(_tools(monkeypatch, bridge)["pcb_apply_stackup_template"](
-        template="JLC04161H-3313", dry_run=False))
+        template="JLC04161H-3313", dry_run=False,
+        legacy_stack_write=True))
     assert out["ok"] is False
     assert out["changed"] == ["L1", "L2", "L4"] and out["not_changed"] == ["L3"]
     sent = [p for c, p in bridge.sent if c == "pcb.modify_layer"]
     assert all(isinstance(v, str) for p in sent for v in p.values())
+
+
+def test_template_apply_requires_legacy_stack_opt_in(monkeypatch):
+    bridge = _Bridge(_board_from("JLC04161H-7628"))
+    out = asyncio.run(_tools(monkeypatch, bridge)["pcb_apply_stackup_template"](
+        template="JLC04161H-3313", dry_run=False))
+    assert out["error"] == "LEGACY_STACK_WRITE"
+    assert [command for command, _ in bridge.sent] == ["pcb.get_layer_stackup"]
 
 
 def test_check_reads_the_board_and_compares(monkeypatch):

@@ -109,11 +109,9 @@ def test_a_board_path_resolves_only_to_that_board():
     document), and a path that did not resolve fell back to whatever
     board was reachable."""
     body = _routine("Main.pas", "ResolvePCBBoard")
-    by_path = body.index("Client.GetDocumentByPath(Path)")
-    opened = body.index("Client.OpenDocument('PCB', Path)")
-    assert by_path < opened
-    # Outside every project only a file that exists is opened.
-    assert body.index("If Not FileExists(Path) Then Exit;") < opened
+    assert "Client.GetDocumentByPath(Path)" in body
+    assert "Client.OpenDocument('PCB', Path)" not in body
+    assert "If ServerDoc = Nil Then Exit;" in body
     # Past the empty-path branch nothing falls back to another board.
     assert body.count("GetPCBBoardAnywhere(0)") == 1
     assert "UpperCase(Result.FileName) <> UpperCase(Path) Then Result := Nil" in body
@@ -128,7 +126,7 @@ def test_focus_board_says_focused_only_when_the_board_is_in_front():
 
 
 def test_polygon_rows_carry_the_poured_copper_beside_the_outline():
-    body = _routine("PCB.pas", "PCB_GetPolygons")
+    body = _routine("PCB.pas", "PCB_GetPolygonsForBoard")
     assert "PolygonCopper(Polygon, CopperSqMils, CopperExact)" in body
     assert '"copper_area_mm2":' in body and '"copper_pieces":' in body
     assert '"copper_area_exact":' in body, "an area whose holes could not be read says so"

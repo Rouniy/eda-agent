@@ -23,3 +23,10 @@ call the `design_autonomy_guide` tool, or invoke the `autonomous_design` MCP
 prompt. Both need the design harness, which the Altium and EasyEDA backends
 register and the KiCad backend does not.
 See [../docs/AUTONOMOUS_DESIGN.md](../docs/AUTONOMOUS_DESIGN.md).
+
+## boardquality
+
+Adds board intent, fabrication limits, placement, routing, assembly and
+visual review criteria alongside the design harness. See
+[boardquality/SKILL.md](boardquality/SKILL.md) and the
+[PCB quality rules](../docs/pcb-quality/README.md).

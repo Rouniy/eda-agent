@@ -90,8 +90,9 @@ _ORIENTATION_TYPES = {
 def test_orientation_is_allowed_only_on_types_whose_interface_has_it():
     """A list of the types WITHOUT it let a sheet symbol through, and
     obj_modify Orientation=1 on one halted the bridge (2026-10-30). The
-    list now names the types WITH it; test_orientation_matches_the_sdk
-    checks each against the SDK."""
+    list now names the types WITH it, each checked against the SDK."""
+    import json
+
     code = _decommented(_source())
     start = code.index("Function SchObjectHasOrientation")
     body = code[start:code.index("\nEnd;", start)]
@@ -100,6 +101,53 @@ def test_orientation_is_allowed_only_on_types_whose_interface_has_it():
     assert re.search(r"Result := False;\s*If Obj = Nil Then Exit;", body)
     for absent in ("eSheetSymbol", "ePort", "eSheetEntry", "eWire"):
         assert absent not in body
+
+    index = Path(__file__).parent.parent / "reference" / "altium_sdk" / "altium_sdk_index.json"
+    if not index.exists():
+        pytest.skip("the SDK index is not in this checkout (reference/ is untracked)")
+    interfaces = json.loads(index.read_text(encoding="utf-8-sig"))["interfaces"]
+
+    def lineage(name):
+        out = [name]
+        for base in interfaces.get(name, {}).get("bases") or []:
+            out += lineage(base)
+        return out
+
+    def has_orientation(name):
+        return any("Orientation" in str(member) for n in lineage(name)
+                   for member in interfaces.get(n, {}).get("props", [])
+                   + interfaces.get(n, {}).get("methods", []))
+
+    for constant, interface in _ORIENTATION_TYPES.items():
+        assert has_orientation(interface), f"{constant}: {interface} has no Orientation"
+    assert not has_orientation("ISch_SheetSymbol")
+
+
+def test_sheet_entry_font_uses_its_typed_interface():
+    """AD25 stops the polling loop if FontId is read on a sheet entry."""
+    code = _decommented(_source())
+    start = code.index("Function SchObjectHasFontId(")
+    body = code[start:code.index("\nEnd;", start)]
+    assert "eSheetEntry" not in body and "eHarnessEntry" not in body
+    assert "SchObjectHasTextFontId(Obj)" in code
+    assert "EntryObj.TextFontID" in code
+    assert "HarnessEntryObj.TextFontID" in code
+    for routine in ("GetSchProperty", "SetSchProperty"):
+        start = code.index(f"Function {routine}(")
+        body = code[start:code.index("\nEnd;", start)]
+        at = body.index("PropName = 'FontId'")
+        access = body.index("Obj.FontId", at)
+        assert "SchObjectHasFontId(Obj)" in body[at:access]
+
+
+def test_generic_name_property_rejects_unnamed_objects():
+    code = _decommented(_source())
+    for routine in ("GetSchProperty", "SetSchProperty"):
+        start = code.index(f"Function {routine}(")
+        end = code.index("\nEnd;", start)
+        body = code[start:end]
+        at = body.index("PropName = 'Name'")
+        assert "SchObjectHasName(Obj)" in body[at:at + 180]
 
 
 def test_the_connection_point_is_pin_only():
@@ -275,6 +323,19 @@ def test_create_preflights_before_writing_or_registering(name):
         assert "Inc(Created)" in body[apply:]
 
 
+def test_single_create_refuses_failed_property_before_registration():
+    body = _routine(_source(), "Gen_CreateObject")
+    assert "ResetPropertyDiag;" not in body
+    assert "DiagJson := RenderPropertyDiagJson;" not in body
+    assert body.count("ApplySetProperties(NewObj, PropsStr)") == 2
+    for registration in ("Component.AddSchObject(NewObj)",
+                         "SchDoc.RegisterSchObjectInContainer(NewObj)"):
+        preceding = body[:body.index(registration)]
+        assert "If _PropertyDiagStr <> '' Then" in preceding
+        assert "SchServer.DestroySchObject(NewObj)" in preceding
+        assert "PROPERTY_WRITE_FAILED" in preceding
+
+
 def test_extracted_pascal_capabilities_and_creation_preflight(tmp_path):
     """Execute production guards/parser with FPC; this is not an Altium test."""
     import shutil
@@ -437,6 +498,15 @@ procedure ApplyNoErcDefaults(Obj: TSchObject);
 begin end;
 procedure MarkDocDirtyByPath(Path: String);
 begin end;
+// The library branch and the PCB-type refusal the creators gained
+// upstream. Neither is exercised here (no run opens a SchLib or names a
+// PCB type), but the program has to compile around them.
+procedure SetOwnerPart(Obj: TSchObject; Component: TSchObject);
+begin end;
+procedure MarkLibDirty(SchLib: TSchObject);
+begin end;
+function ObjectTypeFromStringPCB(S: String): Integer;
+begin Result := -1; end;
 function ObjectTypeFromString(S: String): Integer;
 begin
   Result := -1;

@@ -9,7 +9,7 @@ MCP server on stdio -- this is what MCP-compatible clients call.
 Other subcommands:
   - scripts-path      : print the path to the bundled DelphiScript sources
   - install-scripts   : copy bundled scripts to a user-chosen directory
-                        (default: %USERPROFILE%\EDA Agent\scripts\)
+                        (default: Altium's registered project folder)
 """
 from __future__ import annotations
 
@@ -24,10 +24,22 @@ from typing import Optional
 # Package-resource helpers
 # --------------------------------------------------------------------------
 
+
+_GLOBAL_PROJECTS = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+
 def get_package_root() -> Path:
     """Return the filesystem path to the installed `eda_agent` package."""
     import eda_agent
     return Path(eda_agent.__file__).resolve().parent
+
+
+def _prjscr_is_ad25_safe(prjscr: Path) -> bool:
+    """Avoid legacy PCB-project headers that AD25 rejects in a script project."""
+    try:
+        source = prjscr.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "eFMSDropDownList" not in source and "UserID=" not in source
 
 
 def get_bundled_scripts_path() -> Path:
@@ -39,17 +51,21 @@ def get_bundled_scripts_path() -> Path:
 
     In an editable install (`pip install -e .`), the `force-include`
     mapping is not honoured; the loader falls back to `<repo>/scripts/altium/`
-    by walking up from the package's source location.
+    by walking up from the package's source location. A stale bundled copy
+    with AD25-incompatible project headers is skipped when a safe source
+    project exists in that checkout.
     """
     bundled = get_package_root() / "scripts"
-    if bundled.exists() and (bundled / "Altium_API.PrjScr").exists():
+    bundled_prj = bundled / "Altium_API.PrjScr"
+    if bundled_prj.is_file() and _prjscr_is_ad25_safe(bundled_prj):
         return bundled
 
     # Editable-install fallback.
     pkg_parent = get_package_root().parent
     repo_root = pkg_parent.parent
     dev_scripts = repo_root / "scripts" / "altium"
-    if dev_scripts.exists() and (dev_scripts / "Altium_API.PrjScr").exists():
+    dev_prj = dev_scripts / "Altium_API.PrjScr"
+    if dev_prj.is_file() and _prjscr_is_ad25_safe(dev_prj):
         return dev_scripts
 
     return bundled
@@ -59,10 +75,42 @@ def get_bundled_scripts_path() -> Path:
 # User-profile paths
 # --------------------------------------------------------------------------
 
-#: Where an Altium install keeps its Global Projects list (the Scripting
-#: System preference page), under HKCU\Software\Altium\<install>; one
-#: value per project. Read on AD 26.11.
-_GLOBAL_PROJECTS = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+_GLOBAL_PROJECTS_KEY = r"DesignExplorer\Preferences\ScriptingSystem\Global Projects"
+
+
+def _read_global_projects() -> list[str]:
+    """Read registered Altium script projects from the current user's registry."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Altium")
+    except (ImportError, OSError):
+        return []
+    found: list[str] = []
+    with root:
+        index = 0
+        while True:
+            try:
+                install = winreg.EnumKey(root, index)
+            except OSError:
+                break
+            index += 1
+            try:
+                key = winreg.OpenKey(root, install + "\\" + _GLOBAL_PROJECTS_KEY)
+            except OSError:
+                continue
+            with key:
+                item = 0
+                while True:
+                    try:
+                        _, value, _ = winreg.EnumValue(key, item)
+                    except OSError:
+                        break
+                    item += 1
+                    if isinstance(value, str) and value.strip():
+                        found.append(value.strip())
+    return found
 
 
 def registered_script_projects() -> list[dict]:
@@ -93,7 +141,7 @@ def registered_script_projects() -> list[dict]:
                 break
             index += 1
             try:
-                key = winreg.OpenKey(root, install + "\\" + _GLOBAL_PROJECTS)
+                key = winreg.OpenKey(root, install + "\\" + _GLOBAL_PROJECTS_KEY)
             except OSError:
                 continue
             with key:
@@ -114,20 +162,22 @@ def registered_script_projects() -> list[dict]:
 
 
 def get_registered_scripts_dirs() -> list[Path]:
-    """The distinct folders Altium loads the script project from."""
+    """Return distinct folders containing the registered Altium_API.PrjScr."""
     folders: list[Path] = []
     seen: set[str] = set()
-    for entry in registered_script_projects():
-        folder = Path(entry["path"]).parent
-        key = os.path.normcase(str(folder))
+    for value in _read_global_projects():
+        path = Path(value)
+        if path.name.lower() != "altium_api.prjscr":
+            continue
+        key = os.path.normcase(str(path.parent))
         if key not in seen:
             seen.add(key)
-            folders.append(folder)
+            folders.append(path.parent)
     return folders
 
 
 def get_fallback_scripts_dest() -> Path:
-    """%USERPROFILE%\\EDA Agent\\scripts\\, when Altium names no folder."""
+    """Conventional script folder when Altium has no unique registration."""
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         return Path(userprofile) / "EDA Agent" / "scripts"
@@ -135,19 +185,145 @@ def get_fallback_scripts_dest() -> Path:
 
 
 def get_default_scripts_dest() -> Path:
-    """Where the scripts belong: the folder Altium loads them from when one
-    is registered, else %USERPROFILE%\\EDA Agent\\scripts\\.
-
-    With several installs registering different folders the first is
-    returned; `install-scripts` itself deploys to all of them.
-    """
+    """Use Altium's registered folder when it identifies exactly one."""
     registered = get_registered_scripts_dirs()
-    return registered[0] if registered else get_fallback_scripts_dest()
+    return registered[0] if len(registered) == 1 else get_fallback_scripts_dest()
 
 
 # --------------------------------------------------------------------------
 # scripts-path
 # --------------------------------------------------------------------------
+
+def _feature_mark(state: str) -> str:
+    return {"ready": "[x]", "partial": "[~]", "missing": "[ ]", "off": "[-]",
+            "unavailable": "[/]"}.get(state, "[?]")
+
+
+def cmd_features(deep: bool = False, as_json: bool = False,
+                 on: str = "", off: str = "", set_path: str = "",
+                 clear_path: str = "") -> int:
+    """What eda-agent can do here: every feature, its state, and every
+    dependency with its version. --on/--off switch an engine;
+    --set-path/--clear-path save or forget where a program is."""
+    import json
+    from .features import report, state
+    if set_path or clear_path:
+        name, _, value = (set_path or clear_path).partition("=")
+        if set_path and not value.strip():
+            print("error: --set-path takes VARIABLE=PATH", file=sys.stderr)
+            return 2
+        try:
+            saved = state.set_path(name, value if set_path else "")
+        except (KeyError, ValueError) as exc:
+            print(f"error: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+            return 2
+        print(f"{name.strip()} " + (f"saved: {saved[name.strip()]}" if set_path else "forgotten")
+              + f" ({state.state_file()})")
+        return 0
+    if on or off:
+        try:
+            now_off = state.set_switch(on or off, bool(on))
+        except (KeyError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"{on or off} is now {'on' if on else 'off'}"
+              f" (off: {', '.join(sorted(now_off)) or 'none'})")
+        return 0
+    rep = report(deep=deep)
+    if as_json:
+        print(json.dumps(rep, indent=1, default=str))
+        return 0
+    deps = {d["id"]: d for d in rep["dependencies"]}
+    for group in rep["groups"]:
+        print(f"\n{group}")
+        for f in (x for x in rep["features"] if x["group"] == group):
+            print(f"  {_feature_mark(f['state'])} {f['id']:<17} {f['title']}"
+                  + ("  (built in)" if f["core"] and f["state"] == "ready" else "")
+                  + (f"  (missing: {', '.join(f['missing'])})" if f["missing"]
+                     and f["state"] != "ready" else ""))
+            if f.get("note"):
+                print(f"        {f['note']}")
+            if f["core"] and f["state"] == "ready":
+                continue    # built-in packages: `--json` lists them
+            for d_id in f["needs"] + [x for g in f["any_of"] for x in g] + f["adds"]:
+                d = deps[d_id]
+                if d.get("applies") is False:
+                    continue
+                ver = d.get("version") or ""
+                where = d.get("state")
+                print(f"        {d['title']:<26} {where:<11} {ver:<10} {d['license']}")
+                if d.get("detail") and d.get("state") != "present":
+                    print(f"          {d['detail']}")
+    print("\n[x] ready  [~] partly  [ ] missing  [-] switched off  [/] not on this machine")
+    missing = [f["id"] for f in rep["features"] if f["state"] == "missing" and not f["dev"]]
+    if missing:
+        print(f"Install them all: eda-agent install-deps --all   "
+              f"(or name some: eda-agent install-deps {missing[0]})")
+    for e in rep["plugin_errors"]:
+        print(f"plugin {e['plugin']}: {e['error']}", file=sys.stderr)
+    return 0
+
+
+def cmd_install_deps(names: list, everything: bool = False, dev: bool = False,
+                     dry_run: bool = False, assume_yes: bool = False,
+                     as_json: bool = False) -> int:
+    """Install what the named features (or all of them) need."""
+    import json
+    from .features import install
+    if not names and not everything:
+        print("name features to install, or --all (see `eda-agent features`)",
+              file=sys.stderr)
+        return 2
+    try:
+        chosen = install.select(names, everything=everything, include_dev=dev)
+    except KeyError as exc:
+        print(f"error: {exc.args[0]}", file=sys.stderr)
+        return 2
+    plan = install.plan(chosen)
+    data = plan.to_dict()
+    if as_json and (dry_run or not plan.automatic):
+        print(json.dumps(data, indent=1))
+        return 0
+    if not as_json:
+        if data["already_present"]:
+            core = {d for f in chosen if f.core for d in f.needs}
+            extra = [d for d in data["already_present"] if d not in core]
+            n_core = len(data["already_present"]) - len(extra)
+            print("Already installed: " + ", ".join(
+                extra + ([f"the {n_core} core packages"] if n_core else [])))
+        for st in plan.steps:
+            tag = {"pip": "install", "local": "build", "venv": "install apart",
+                   "cargo": "build", "manual": "by hand", "skip": "skipped"}[st.kind]
+            print(f"- [{tag}] {st.title}")
+            for cmd in st.to_dict().get("commands", []):
+                print(f"      {cmd}")
+            if st.text:
+                print(f"      {st.text}")
+        if not plan.steps:
+            print("Nothing to install.")
+    if dry_run or not plan.automatic:
+        return 0
+    if not assume_yes:
+        size = data["download_mb"]
+        try:
+            answer = input(f"Run {data['automatic_steps']} install step(s)"
+                           + (f", about {size} MB" if size else "") + "? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing installed.")
+            return 1
+    result = install.execute(plan, on_line=None if as_json else print)
+    if as_json:
+        print(json.dumps(result, indent=1))
+    else:
+        for r in result["steps"]:
+            print(f"{'ok ' if r['ok'] else 'FAILED'} {r['title']} ({r['seconds']} s)")
+        print(f"Log: {result['log']}")
+        if result["manual"]:
+            print("Still to do by hand: " + ", ".join(m["title"] for m in result["manual"]))
+    return 0 if result["ok"] else 1
+
 
 def cmd_scripts_path() -> int:
     """Print the path to the bundled DelphiScript sources."""
@@ -164,7 +340,8 @@ def cmd_scripts_path() -> int:
 # easyeda-extension
 # --------------------------------------------------------------------------
 
-def cmd_easyeda_extension(action: str, out: Optional[str] = None) -> int:
+def cmd_easyeda_extension(action: str, out: Optional[str] = None,
+                          force: bool = False) -> int:
     """Print the EasyEDA extension source folder, or build its .eext."""
     from . import easyeda_extension
 
@@ -176,7 +353,7 @@ def cmd_easyeda_extension(action: str, out: Optional[str] = None) -> int:
             return 1
         print(str(folder))
         return 0
-    code, message = easyeda_extension.build(out)
+    code, message = easyeda_extension.build(out, force=force)
     print(message, file=sys.stdout if code == 0 else sys.stderr)
     return code
 
@@ -426,9 +603,66 @@ def _restart(command: list, frames_pid: int) -> int:
             pass
 
 
+def _apply_scripts_only(*, check_only: bool, assume_yes: bool,
+                        relaunch: bool) -> int:
+    """Deploy the Altium scripts when only THEY are behind.
+
+    A current clone does not mean a current install. What Altium loads
+    is a separate copy, and the clone arrives at new code by routes
+    other than a pull -- a merge, a branch switch, a local commit --
+    each of which leaves nothing to pull and the deployed copy stale.
+    Gating the whole apply on "is the clone behind" meant `update
+    --yes` printed "eda-agent is up to date" and copied nothing, while
+    the report half of the same verb said the deploy was stale. Worst
+    of all in the obvious order: pull, then --yes, and the scripts were
+    never copied at all, because the pull had just made the clone
+    current.
+    """
+    from .diag.update import gather_state
+
+    differing = gather_state().get("scripts_differ") or []
+    if not differing:
+        print("eda-agent is up to date.")
+        return 0
+    shown = ", ".join(differing[:4])
+    if len(differing) > 4:
+        shown += f" and {len(differing) - 4} more"
+    print(f"eda-agent is up to date, but Altium's copy of the scripts is "
+          f"not: {shown}.")
+    if check_only:
+        return 0
+    if not assume_yes:
+        if not sys.stdin.isatty():
+            print("Re-run with --yes to deploy them.", file=sys.stderr)
+            return 1
+        try:
+            reply = input("Deploy them now? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Not deployed.")
+            return 1
+    if cmd_install_scripts(dest=None, force=True) != 0:
+        print("Deploying the scripts failed.", file=sys.stderr)
+        return 1
+    print(f"Deployed the scripts to {get_default_scripts_dest()}.")
+    # Altium compiles the script project when the loop starts, so a copy
+    # it never reloads changes nothing a caller can see.
+    if relaunch and sys.platform == "win32":
+        cmd_relaunch(restart=True)
+    return 0
+
+
 def cmd_update(check_only: bool = False, assume_yes: bool = False,
-               relaunch: bool = True) -> int:
-    """Show what a newer eda-agent brings, and install it once agreed."""
+                     relaunch: bool = True) -> int:
+    """Show what a newer eda-agent brings, and install it once agreed.
+
+    The APPLY half of updating: fast-forwards the clone, reinstalls when
+    the dependencies changed, copies the scripts and restarts the loop.
+    ``cmd_update`` is the REPORT half, which says what is stale across the
+    remote, the package, the deployed scripts and the compiled copy. The
+    `update` verb runs the report; `--yes` runs this.
+    """
     from . import updates
 
     info = updates.check(force=True)
@@ -436,8 +670,11 @@ def cmd_update(check_only: bool = False, assume_yes: bool = False,
         print(info.get("how") or info.get("error") or "Could not check for an update.")
         return 1
     if not info.get("update_available"):
-        print("eda-agent is up to date.")
-        return 0
+        # Not "nothing to do": the scripts are their own copy, and this
+        # is the branch the obvious order lands in.
+        return _apply_scripts_only(check_only=check_only,
+                                   assume_yes=assume_yes,
+                                   relaunch=relaunch)
     print(f"{info['behind']} new commit(s) on {updates.REMOTE}/{updates.BRANCH}:")
     for title in info.get("new_commits", []):
         print(f"  - {title}")
@@ -464,8 +701,78 @@ def cmd_update(check_only: bool = False, assume_yes: bool = False,
         print(f"  {step['step']}: {'ok' if step['ok'] else 'FAILED'}")
         if not step["ok"] and step.get("output"):
             print("    " + step["output"].replace("\n", "\n    "))
+        if step.get("note"):
+            print("    " + step["note"])
     print(out["next_step"])
     return 1 if out.get("failed_steps") else 0
+
+
+def cmd_update_apply(check_only: bool = False, assume_yes: bool = False,
+                     relaunch: bool = True) -> int:
+    """Compatibility entry point for callers of the apply half."""
+    return cmd_update(check_only=check_only, assume_yes=assume_yes,
+                      relaunch=relaunch)
+
+
+def cmd_update_status(*, fetch: bool = False, source: str = "",
+                      as_json: bool = False) -> int:
+    """Read the checkout, package, script files and compiled Altium version.
+
+    Adapted from MOREmbedded's four-layer update report. This entry point is
+    read-only: the existing ``update --yes`` remains the apply path.
+    """
+    import json
+    from dataclasses import asdict
+
+    from .diag.update import Step, altium_runtime, format_report, gather_state, plan
+
+    source = source.strip()
+    source_dir = source if source and Path(source).expanduser().is_dir() else ""
+    compare_remote = "" if source_dir else source
+    state = gather_state(fetch=fetch, compare_remote=compare_remote,
+                         source_dir=source_dir)
+    runtime = altium_runtime()
+    if runtime:
+        state["loaded_script_projects"] = runtime.get("script_projects") or []
+    steps = plan(state, compiled_version=(runtime or {}).get("script_version"),
+                 source_dir=source_dir)
+    if compare_remote and state.get("upstream_missing"):
+        steps.append(Step("original project", "action",
+                          f"remote {compare_remote} is not configured",
+                          action="Choose a configured remote with --from.",
+                          details={"available": state["upstream_missing"]}))
+    code = 1 if any(s.needs_human for s in steps) else 0
+    if as_json:
+        print(json.dumps({"state": state, "steps": [asdict(s) for s in steps],
+                          "exit_code": code}, indent=2))
+    else:
+        print(format_report(steps))
+    return code
+
+
+def cmd_update_reconcile(*, pull: bool = False, fetch: bool = False,
+                         check_only: bool = False,
+                         force_scripts: bool = False,
+                         source: str = "", as_json: bool = False) -> int:
+    """Apply the four-layer update plan when --reconcile is explicit."""
+    import json
+    from dataclasses import asdict
+
+    from .diag.update import format_report, run_update
+
+    source = source.strip()
+    source_dir = source if source and Path(source).expanduser().is_dir() else ""
+    compare_remote = "" if source_dir else source
+    steps, code = run_update(pull=pull, fetch=fetch, check_only=check_only,
+                             force_scripts=force_scripts,
+                             compare_remote=compare_remote,
+                             source_dir=source_dir)
+    if as_json:
+        print(json.dumps({"ok": code != 2, "exit_code": code,
+                          "steps": [asdict(step) for step in steps]}, indent=2))
+    else:
+        print(format_report(steps))
+    return code
 
 
 def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
@@ -485,10 +792,10 @@ def cmd_relaunch(prjscr: Optional[str] = None, dry_run: bool = False,
         print("ERROR: relaunch runs on Windows, where Altium is", file=sys.stderr)
         return 1
     project = (Path(prjscr).expanduser() if prjscr
-               else get_default_scripts_dest() / "Altium_API.PrjScr")
+               else get_bundled_scripts_path() / "Altium_API.PrjScr")
     if not project.is_file():
-        print(f"ERROR: no script project at {project}. Run "
-              f"`eda-agent install-scripts` first, or pass --prjscr.",
+        print(f"ERROR: no script project at {project}. Check "
+              f"`eda-agent scripts-path` or pass --prjscr.",
               file=sys.stderr)
         return 1
 
@@ -579,59 +886,153 @@ def _reshow_hidden_frames(launcher, frames: list) -> list:
 # install-scripts
 # --------------------------------------------------------------------------
 
+def cmd_eco_execute(*, confirm: bool, validate_only: bool,
+                    allow_confirm_dialogs: bool, wait_first: float,
+                    budget: float) -> int:
+    """Watch for and auto-press Altium's Engineering Change Order dialog.
+
+    EXPERIMENTAL, UNVERIFIED: no live Altium session was available while
+    building this. A thin wrapper around ui.dialog_driver.drive(), the
+    existing, already-exercised reactive dialog driver
+    (app_drive_dialogs/app_update_from_libraries already use it against
+    a live ECO dialog) -- no new UI-automation code, no second bridge,
+    no second polling loop.
+
+    Ported at the owner's explicit request, to mirror Altium Booster
+    3.2's EcoDialogDriver. eda-agent's own guidance (tools/guidance.py) and
+    proj_sync_pcb's docstring say completing an ECO needs a human; this
+    command is the explicit, opt-in way to do it anyway -- run
+    deliberately from a terminal, separate from the casual MCP tool
+    surface. Verify against a real Altium session (Booster's E-01/E-02
+    procedures in its manual are the closest existing check) before
+    trusting it on a real design.
+
+    This does not trigger an ECO itself. Start it, THEN trigger one
+    separately (proj_sync_pcb through your MCP client, or Design >
+    Update PCB Document in Altium) while it runs.
+    """
+    if not confirm:
+        print(
+            "Refusing: pass --confirm to acknowledge this presses "
+            "Execute Changes on the Engineering Change Order dialog "
+            "without a human reviewing it first. eda-agent's own "
+            "guidance says that step needs a human; this command is the "
+            "explicit opt-in override. See docs/ENGINEERING_TOOLS.md.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from .bridge.process_manager import AltiumProcessManager
+    pid = AltiumProcessManager().get_altium_pid()
+    if not pid:
+        print("Altium Designer process not found; start Altium first.",
+              file=sys.stderr)
+        return 1
+
+    from .ui import dialog_driver
+    result = dialog_driver.drive(
+        pid, intent="proceed", allow_commit=not validate_only,
+        allow_confirm=allow_confirm_dialogs, dry_run=False,
+        wait_first=wait_first, budget=budget,
+    )
+
+    import json
+    print(json.dumps(result, indent=2, default=str))
+    if result.get("stopped_for_a_human"):
+        print("Stopped for a human: a dialog needed attention this "
+              "driver will not answer on its own.", file=sys.stderr)
+        return 2
+    return 0
+
+
 _UTF8_BOM = bytes((0xEF, 0xBB, 0xBF))
 
 
 def _stamp_deployed_unit(path: Path) -> None:
-    """Write the unit's content hash into its UnitStamp function, and drop
-    any byte-order mark.
-
-    Only the deployed copy is stamped; the repository keeps 'dev'. See
-    eda_agent/script_stamps.py for why one version constant is not enough.
-    Altium Designer 21 reads a mark as source text and stops on line 1 with
-    "Invalid constant", so no deployed unit carries one.
-    """
+    """Stamp the copied unit while keeping repository sources at ``dev``."""
     from .script_stamps import has_stamp, stamp_source
 
     raw = path.read_bytes()
-    bom = raw.startswith(_UTF8_BOM)
     text = raw.decode("utf-8-sig")
     if has_stamp(text):
+        # AD25 reads script sources in the local ANSI codepage. Preserve the
+        # ASCII source but never deploy the UTF-8 mark from a donor file.
         path.write_bytes(stamp_source(text).encode("utf-8"))
-    elif bom:
-        path.write_bytes(raw[len(_UTF8_BOM):])
+    elif raw.startswith(_UTF8_BOM):
+        path.write_bytes(text.encode("utf-8"))
 
 
-def cmd_install_scripts(dest: Optional[str] = None, force: bool = False) -> int:
-    """Copy the bundled script project where Altium loads it from.
+def cmd_install_scripts(dest: Optional[str] = None, force: bool = False,
+                        source: Optional[str] = None) -> int:
+    """Copy this checkout's, or a named checkout's, script project.
 
-    Default destination: every folder an Altium install registers the
-    script project in (Global Projects), so each version on the machine
-    compiles the same build; with none registered,
-    %USERPROFILE%\\EDA Agent\\scripts\\. Override with --dest PATH.
+    Default destination: Altium's registered script project folder when
+    unique, otherwise %USERPROFILE%\\EDA Agent\\scripts\\. Override with
+    --dest PATH. With --from CHECKOUT, read that checkout's scripts instead
+    of the package's bundled scripts.
 
     After the copy, the user opens `Altium_API.PrjScr` in Altium
     (File > Open, or via the Scripts panel) and runs `StartMCPServer`
     from `Dispatcher.pas`.
     """
+    source_scripts = None
+    if source:
+        from .diag.update import _source_dir_state
+
+        state = _source_dir_state(source)
+        if not state["source_ok"] or not state["source_scripts"]:
+            print("ERROR: source has no usable eda-agent script project: "
+                  + (state["source_problem"] or source), file=sys.stderr)
+            return 1
+        source_scripts = Path(state["source_scripts"])
+        if not (source_scripts / "Altium_API.PrjScr").is_file():
+            print(f"ERROR: source script project is missing: {source_scripts}",
+                  file=sys.stderr)
+            return 1
     if dest:
         targets = [Path(dest).expanduser().resolve()]
     else:
         targets = get_registered_scripts_dirs() or [get_fallback_scripts_dest()]
     status = 0
     for target in targets:
-        status = max(status, _install_scripts_into(target, force))
+        if source_scripts is None:
+            status = max(status, _install_scripts_into(target, force))
+        else:
+            status = max(status, _install_scripts_into(target, force,
+                                                       source_scripts))
     if len(targets) > 1:
         print(f"Installed into {len(targets)} folders that Altium installs "
               f"register: {', '.join(map(str, targets))}")
     return status
 
 
-def _install_scripts_into(dst: Path, force: bool) -> int:
-    src = get_bundled_scripts_path()
+def _install_scripts_into(dst: Path, force: bool,
+                          source_scripts: Optional[Path] = None) -> int:
+    src = source_scripts or get_bundled_scripts_path()
 
     if not src.exists():
         print(f"ERROR: bundled scripts directory not found: {src}", file=sys.stderr)
+        return 1
+
+    if src.resolve() == dst.resolve():
+        print(f"Altium already loads scripts from {src}; nothing to copy.")
+        return 0
+
+    project = src / "Altium_API.PrjScr"
+    try:
+        project_text = project.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        print(f"ERROR: cannot read source script project {project}: {exc}",
+              file=sys.stderr)
+        return 1
+    referenced = [line.partition("=")[2].strip()
+                  for line in project_text.splitlines()
+                  if line.startswith("DocumentPath=")]
+    if not referenced or any(
+            not name or Path(name).name != name or "\\" in name
+            or not (src / name).is_file() for name in referenced):
+        print(f"ERROR: source script project has missing or nonlocal files: "
+              f"{project}", file=sys.stderr)
         return 1
 
     # An auto-accept harness (e.g. Gemini CLI) may allocate a pty -- so
@@ -687,14 +1088,10 @@ def _install_scripts_into(dst: Path, force: bool) -> int:
             _stamp_deployed_unit(dst / child.name)
         copied += 1
 
-    # Publish the workspace path for DelphiScript to pick up, even before
-    # the MCP server has ever run. It is the SERVER's workspace, wherever
-    # the scripts went: the script reads the pointer once at startup, and
-    # deriving it from the destination (<dest>\..\workspace) pointed
-    # Altium at a folder no request is written to whenever --dest or a
-    # registered folder was not the default.
-    from .config import get_config, write_workspace_pointer
-    workspace_dir = Path(get_config().workspace_dir)
+    # The worker and server must use the same workspace even when Altium's
+    # registered script folder is outside the conventional install path.
+    from .config import _default_workspace_dir, write_workspace_pointer
+    workspace_dir = _default_workspace_dir()
     workspace_dir.mkdir(parents=True, exist_ok=True)
     write_workspace_pointer(workspace_dir)
 
@@ -719,7 +1116,1511 @@ def _install_scripts_into(dst: Path, force: bool) -> int:
     return 0
 
 
-def cmd_calc(name: Optional[str], inputs: list[str], as_json: bool = False) -> int:
+# --------------------------------------------------------------------------
+# profile-* -- per-workspace owner profile (see profile.py, docs/PROFILES.md)
+# --------------------------------------------------------------------------
+
+_PROFILE_EXAMPLE_FOOTPRINT_DEFAULTS = """{
+  "_comment": "Overrides the hardcoded default for lib_add_footprint_pad / lib_create_standard_footprint.",
+  "pad_corner_radius_pct": 25
+}
+"""
+
+_PROFILE_EXAMPLE_DOCUMENT_SETTINGS = """{
+  "_comment": "Applied to the current schematic by profile_apply_document_settings. PCB-side is documentation only for now -- no bridge command exists yet to set a board's units/grid.",
+  "schematic_units": "mil",
+  "pcb_units": "mm",
+  "schematic_snap_grid_mil": 100,
+  "schematic_visible_grid_mil": 100
+}
+"""
+
+_PROFILE_EXAMPLE_PHASE_GATES = """{
+  "_comment": "Which NPI stages this owner runs, in docs/NPI_PHASE_GATES.md. An empty list is the default and leaves the three design_phase_* tools unadvertised. Scaffolded empty on purpose: turning a gate on is a decision, not a default.",
+  "stages": []
+}
+"""
+
+_PROFILE_EXAMPLE_FOOTPRINT_POLICY = """{
+  "_comment": "Matches design.footprint_policy.py's explicit-policy keys. Omit a key to infer it from the library's own majority convention instead.",
+  "courtyard": true,
+  "three_d_model": true,
+  "pin1_marker": true
+}
+"""
+
+
+def _profile_scaffold(directory, name: str) -> None:
+    from pathlib import Path as _Path
+    directory = _Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "profile.json").write_text(
+        '{\n  "name": "' + name + '",\n  "description": ""\n}\n',
+        encoding="utf-8")
+    (directory / "footprint_defaults.json").write_text(_PROFILE_EXAMPLE_FOOTPRINT_DEFAULTS, encoding="utf-8")
+    (directory / "footprint_policy.json").write_text(_PROFILE_EXAMPLE_FOOTPRINT_POLICY, encoding="utf-8")
+    (directory / "document_settings.json").write_text(_PROFILE_EXAMPLE_DOCUMENT_SETTINGS, encoding="utf-8")
+    (directory / "phase_gates.json").write_text(_PROFILE_EXAMPLE_PHASE_GATES, encoding="utf-8")
+    (directory / "rules").mkdir(exist_ok=True)
+    (directory / "fab_profiles").mkdir(exist_ok=True)
+    # The directory but not a file: an ERC set is a policy about which
+    # violations this owner cares about, and a scaffolded example would
+    # name types a given Altium version may not have, so a brand-new
+    # profile would start out reporting half its policy as unknown.
+    (directory / "erc_levels").mkdir(exist_ok=True)
+    (directory / "templates").mkdir(exist_ok=True)
+    # Project templates are a directory each, under templates/; single
+    # documents live in templates/documents/ so neither listing has to
+    # filter the other out.
+    (directory / "templates" / "documents").mkdir(exist_ok=True)
+
+
+def cmd_profile_init(name: str, *, here: bool) -> int:
+    """Scaffold a new profile named `name`: `--here` creates a project-local
+    .eda-agent/profile/ in the current directory (meant to be committed
+    to that project's repo); without it, creates a centrally-switchable
+    ~/.eda-agent/profiles/<name>/. See docs/PROFILES.md."""
+    from . import profile as profile_mod
+
+    if here:
+        directory = Path.cwd() / profile_mod.PROJECT_PROFILE_DIRNAME / profile_mod.PROJECT_PROFILE_SUBDIR
+    else:
+        directory = profile_mod.central_profiles_root() / name
+    if directory.exists() and any(directory.iterdir()):
+        print(f"ERROR: {directory} already exists and is not empty.", file=sys.stderr)
+        return 1
+    _profile_scaffold(directory, name)
+    print(f"Scaffolded profile at: {directory}")
+    if not here:
+        print(f"Activate it with: eda-agent profile-use {name}")
+    return 0
+
+
+def cmd_profile_use(name: str) -> int:
+    """Set the centrally active profile (~/.eda-agent/active_profile)."""
+    from . import profile as profile_mod
+
+    try:
+        target = profile_mod.use_central_profile(name)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"Active profile: {name} ({target})")
+    return 0
+
+
+def cmd_profile_list() -> int:
+    """List centrally-registered profiles and which one is active."""
+    from . import profile as profile_mod
+
+    root = profile_mod.central_profiles_root()
+    names = profile_mod.central_profile_names()
+    active = profile_mod.central_active_name()
+    if not names:
+        print(f"No central profiles under {root}.")
+    for n in names:
+        marker = " (active)" if n == active else ""
+        print(f"{n}{marker}")
+    project = profile_mod.find_project_profile(Path.cwd())
+    if project:
+        print(f"\nA project-local profile overrides this here: {project}")
+    return 0
+
+
+def cmd_profile_show(*, as_json: bool) -> int:
+    """Print the profile actually in effect for the current directory."""
+    import json as _json
+    from . import profile as profile_mod
+
+    p = profile_mod.get_active_profile()
+    if p is None:
+        if as_json:
+            print(_json.dumps({"active": False}))
+        else:
+            print("No profile active here.")
+            # An override that points nowhere wins and then resolves to
+            # nothing, which otherwise reads as "I have no profile" when
+            # the real answer is "the path you gave me is wrong".
+            override = os.environ.get("EDA_AGENT_PROFILE_DIR")
+            if override and not Path(override).is_dir():
+                print(f"  (EDA_AGENT_PROFILE_DIR is set to {override}, "
+                      f"which is not a directory)", file=sys.stderr)
+        return 0
+    if as_json:
+        print(_json.dumps(p.summary(), indent=2))
+        return 0
+    print(f"Profile: {p.meta.get('name', '(unnamed)')} -- {p.directory}")
+    if p.meta.get("description"):
+        print(f"  {p.meta['description']}")
+    print(f"  footprint_defaults: {p.footprint_defaults or '(none)'}")
+    print(f"  footprint_policy:   {p.footprint_policy or '(none)'}")
+    print(f"  document_settings:  {p.document_settings or '(none)'}")
+    print(f"  design_rules:       {p.design_rules or '(none)'}")
+    # The default ERC set and the named ones are two lines because they
+    # are reached differently: the first by naming no set at all, the
+    # second by name, and one line would read as a list the default is
+    # missing from.
+    managed = len(p.erc_levels.get("levels") or {}) if p.erc_levels else 0
+    print(f"  erc_levels:         "
+          f"{str(managed) + ' type(s)' if p.erc_levels else '(none)'}")
+    print(f"  erc sets:           {p.erc_sets() or '(none)'}")
+    print(f"  phase_gates:        {p.phase_gates or '(none)'}")
+    print(f"  rulesets:           {p.rulesets() or '(none)'}")
+    print(f"  fab_profiles:       {p.fab_profile_names() or '(none)'}")
+    print(f"  templates:          {p.template_names() or '(none)'}")
+    # Listed separately from the project templates above: these seed one
+    # sheet or board (profile_new_document) rather than a whole folder,
+    # and folding them into one line would read as a project template
+    # that profile-new-project then refuses.
+    documents = [t["file"] for t in p.document_templates()]
+    print(f"  document templates: {documents or '(none)'}")
+    for problem in p.errors:
+        print(f"  UNREADABLE: {problem}", file=sys.stderr)
+    return 0
+
+
+def cmd_profile_validate(*, name: Optional[str], here: bool) -> int:
+    """Load every file in a profile and report errors. The owner writes
+    these files; this command is how they check their own work before
+    relying on it (same discipline engineering/rules.py documents for
+    rulesets)."""
+    from . import profile as profile_mod
+
+    if here:
+        directory = Path.cwd() / profile_mod.PROJECT_PROFILE_DIRNAME / profile_mod.PROJECT_PROFILE_SUBDIR
+    elif name:
+        directory = profile_mod.central_profiles_root() / name
+    else:
+        directory = profile_mod.resolve_profile_dir()
+        if directory is None:
+            print("No profile active here and no name/--here given.", file=sys.stderr)
+            return 1
+
+    if not directory.is_dir():
+        print(f"ERROR: {directory} does not exist.", file=sys.stderr)
+        return 1
+
+    errors = profile_mod.validate_profile(directory)
+
+    if errors:
+        print(f"{len(errors)} problem(s) in {directory}:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 1
+    print(f"Profile at {directory} is valid.")
+    return 0
+
+
+def cmd_mode_list() -> int:
+    """List the design modes and which one is selected."""
+    from .design.modes import load_modes, selected_mode_name
+
+    modes, problems = load_modes()
+    selected, source = selected_mode_name()
+    print(f"Selected: {selected} (from {source})")
+    for m in modes.values():
+        marker = " (selected)" if m.name == selected else ""
+        where = "" if m.source == "built-in" else f"  [{m.source}]"
+        print(f"{m.name}{marker} -- {m.title}: {len(m.stages)} stage(s){where}")
+    if selected not in modes:
+        print(f"\nERROR: the selected mode {selected!r} ({source}) does not "
+              f"exist; runs that name no mode will be refused.", file=sys.stderr)
+    for problem in problems:
+        print(f"  problem: {problem}", file=sys.stderr)
+    return 1 if problems or selected not in modes else 0
+
+
+def cmd_mode_show(name: Optional[str], *, as_json: bool) -> int:
+    """Print one mode in full: the selected one when no name is given."""
+    import json as _json
+    from .design.modes import get_mode
+
+    try:
+        mode = get_mode(name or "")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    d = mode.as_dict()
+    if as_json:
+        print(_json.dumps(d, indent=2))
+        return 0
+    print(f"Mode: {d['name']} -- {d['title']}  ({d['source']})")
+    print(f"  {d['description']}")
+    print(f"  stages:  {', '.join(d['stages'])}")
+    if d["skipped_stages"]:
+        print(f"  skipped: {', '.join(d['skipped_stages'])}")
+    for i in d["inputs"]:
+        need = "required" if i["required"] else "optional"
+        default = f", default {i['default']!r}" if i["default"] else ""
+        print(f"  input {i['name']} ({need}{default}): {i['description']}")
+    for r in d["rules"]:
+        print(f"  rule: {r}")
+    for stage, note in d["stage_notes"].items():
+        print(f"  {stage}: {note}")
+    if d["profile_hints"]:
+        print(f"  profile hints: {d['profile_hints']}")
+    return 0
+
+
+def cmd_mode_use(name: Optional[str], *, clear: bool) -> int:
+    """Select the mode runs use when they name none (~/.eda-agent/active_mode)."""
+    from .design.modes import MODE_ENV, active_mode_pointer, load_modes
+
+    pointer = active_mode_pointer()
+    if clear:
+        if pointer.exists():
+            pointer.unlink()
+        print("Mode selection cleared: runs that name no mode use full_design.")
+        return 0
+    if not name:
+        print("ERROR: name a mode, or pass --clear.", file=sys.stderr)
+        return 2
+    modes, _problems = load_modes()
+    if name not in modes:
+        print(f"ERROR: no mode named {name!r}. The modes are {sorted(modes)}.",
+              file=sys.stderr)
+        return 1
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(name, encoding="utf-8")
+    print(f"Selected mode: {name}")
+    from .design.modes import profile_default_mode
+    from_profile = profile_default_mode()
+    if from_profile and from_profile != name:
+        print(f"  (the active profile's preferences.json sets default_mode "
+              f"{from_profile!r}, which overrules this while that profile is "
+              f"in effect.)")
+    if os.environ.get(MODE_ENV):
+        print(f"  ({MODE_ENV} is set to {os.environ[MODE_ENV]!r} in this "
+              f"shell and overrules this.)")
+    return 0
+
+
+def cmd_mode_init(name: str, *, extends: Optional[str], force: bool) -> int:
+    """Scaffold modes/<name>.json in the profile in effect here."""
+    import json as _json
+    from . import profile as profile_mod
+    from .design.modes import MODES_SUBDIR, _NAME, load_modes
+
+    if not _NAME.match(name):
+        print("ERROR: a mode name is lowercase letters, digits and "
+              "underscores, starting with a letter.", file=sys.stderr)
+        return 2
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("ERROR: no profile is active here; modes live in a profile's "
+              "modes/ folder. Run `eda-agent profile-init` first.", file=sys.stderr)
+        return 1
+    modes, _problems = load_modes(directory)
+    if extends and extends not in modes:
+        print(f"ERROR: cannot extend {extends!r}; the modes are {sorted(modes)}.",
+              file=sys.stderr)
+        return 1
+    target = directory / MODES_SUBDIR / f"{name}.json"
+    if target.exists() and not force:
+        print(f"ERROR: {target} exists; pass --force to replace it.", file=sys.stderr)
+        return 1
+    body: dict = {"_comment": "A design mode; see docs/DESIGN_MODES.md. Every "
+                              "key is optional. With extends, rules are added "
+                              "to the base's and stage_notes merged."}
+    if extends:
+        body["extends"] = extends
+    body.update({"title": name.replace("_", " ").capitalize(),
+                 "description": "",
+                 "rules": [],
+                 "stage_notes": {}})
+    if not extends:
+        from .design.session import STAGES
+        body["stages"] = list(STAGES)
+        body["inputs"] = []
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_json.dumps(body, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {target}")
+    return 0
+
+
+def cmd_profile_new_project(template: str, dest: str, *, force: bool) -> int:
+    """Copy a profile's templates/<template>/ tree verbatim to dest. Plain
+    file copy -- Altium project files are just files on disk, so no
+    DelphiScript is involved."""
+    from . import profile as profile_mod
+
+    p = profile_mod.get_active_profile()
+    if not p or not p.templates_dir:
+        print("No active profile defines templates/.", file=sys.stderr)
+        return 1
+    src = p.templates_dir / template
+    if not src.is_dir():
+        available = p.template_names()
+        print(f"ERROR: template {template!r} not found. Available: {available or '(none)'}",
+              file=sys.stderr)
+        return 1
+    dst = Path(dest)
+    if dst.exists() and any(dst.iterdir()) and not force:
+        print(f"ERROR: {dst} already exists and is not empty. Pass --force to overwrite.",
+              file=sys.stderr)
+        return 1
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    print(f"Created project from template {template!r} at: {dst}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# phases -- which NPI stages this owner runs. Off by default; the setting
+# lives in the profile because which gates a programme runs is a house
+# rule, not a property of the board in front of you.
+# --------------------------------------------------------------------------
+
+def _phases_profile_dir() -> "Optional[Path]":
+    """The profile these commands write to, or None with the reason printed.
+
+    There is deliberately no "create one for you": a profile is a whole
+    directory with its own resolution order, and scaffolding one silently
+    from a settings command would leave an owner with two.
+    """
+    from . import profile as profile_mod
+
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("No profile active here, so there is nowhere to record this.",
+              file=sys.stderr)
+        print("  Make one:  eda-agent profile-init <name>        (central)",
+              file=sys.stderr)
+        print("             eda-agent profile-init <name> --here (this project)",
+              file=sys.stderr)
+        print("  Or for one run, no profile needed:", file=sys.stderr)
+        print("             eda-agent --phases evt,dvt,pvt ...", file=sys.stderr)
+        print("             (or the EDA_AGENT_PHASES environment variable)",
+              file=sys.stderr)
+        return None
+    return directory
+
+
+def _write_phase_stages(stages: tuple) -> int:
+    """Record ``stages`` in the active profile's phase_gates.json.
+
+    Other keys in the file are preserved: the scaffold writes a
+    ``_comment`` into it, and a settings command that silently dropped an
+    owner's note would be the kind of small betrayal nobody reports.
+    """
+    from . import profile as profile_mod
+
+    directory = _phases_profile_dir()
+    if directory is None:
+        return 1
+    result = profile_mod.write_phase_stages(directory, stages)
+    if not result["ok"]:
+        print(f"ERROR: {result['reason']}", file=sys.stderr)
+        return 1
+    print(f"Stages recorded in {result['path']}")
+    _print_phase_stages(label="Now running")
+    return 0
+
+
+def _print_phase_stages(*, label: str = "Stages") -> None:
+    from . import profile as profile_mod
+    from .design.phase_gates import TITLES
+
+    found = profile_mod.describe_phase_stages()
+    stages = found["stages"]
+    where = {"environment": f"the {profile_mod.PHASE_STAGES_ENV} environment "
+                            f"variable",
+             "profile": found["path"] or "the active profile",
+             "default": "the default (no profile or variable sets them)"}
+    print(f"{label}: {', '.join(stages) if stages else 'none'}  "
+          f"[from {where[found['source']]}]")
+    for stage in stages:
+        print(f"  {stage:<12} {TITLES[stage]}")
+    if not stages:
+        print("  The three design_phase_* tools are not advertised.")
+    if found["problem"]:
+        print(f"  IGNORED: {found['raw']!r} -- {found['problem']}",
+              file=sys.stderr)
+
+
+def cmd_phases_show(*, as_json: bool = False) -> int:
+    """Which NPI stages are in force, and which setting decided it."""
+    from . import profile as profile_mod
+
+    if as_json:
+        import json as _json
+        print(_json.dumps(profile_mod.describe_phase_stages(), indent=2))
+        return 0
+    _print_phase_stages()
+    found = profile_mod.describe_phase_stages()
+    if found["source"] == "environment" and found["stages"]:
+        print(f"  ({profile_mod.PHASE_STAGES_ENV} overrules the profile. "
+              f"Unset it to go back to what the profile says.)")
+    return 1 if found["problem"] else 0
+
+
+def cmd_phases_enable(stages: "list[str]") -> int:
+    """Turn on the named stages, or all of them when none are named."""
+    from .design.phase_gates import STAGES, parse_stages
+
+    try:
+        wanted = parse_stages(stages) if stages else STAGES
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if not wanted:
+        print("ERROR: that names no stage. Use phases-disable to turn the "
+              "gate off.", file=sys.stderr)
+        return 2
+    code = _write_phase_stages(wanted)
+    if code == 0:
+        print("  Restart the server for it to advertise them: the tool "
+              "surface is chosen at startup.")
+    return code
+
+
+def cmd_phases_disable() -> int:
+    """Turn the gate off, keeping every answer already recorded."""
+    code = _write_phase_stages(())
+    if code == 0:
+        print("  Answers already recorded are untouched, and come back "
+              "with the stages.")
+        print("  Restart the server to drop the tools.")
+    return code
+
+
+def cmd_router_show(*, as_json: bool = False) -> int:
+    """Which autorouter engine routing runs use, and what decided it."""
+    from .layout.route import engine
+
+    found = engine.describe()
+    if as_json:
+        import json as _json
+        print(_json.dumps(found, indent=2))
+        return 1 if found["problem"] else 0
+    where = {"environment": f"the {engine.ENV} environment variable",
+             "profile": found["path"] or "the active profile",
+             "default": "the default (no profile or variable sets it)",
+             "fallback": "the default, because the setting in force cannot be used"}
+    print(f"Router engine: {found['engine']}  (from {where[found['source']]})")
+    print(f"  Engines: {', '.join(engine.ENGINES)}. 'euan' is the alternative "
+          "router from Euan's fork; off by default.")
+    if found["problem"]:
+        print(f"  IGNORED: {found['problem']}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_router_use(name: str) -> int:
+    """Record the autorouter engine in the active profile's router.json."""
+    from . import profile as profile_mod
+    from .layout.route import engine
+
+    directory = profile_mod.resolve_profile_dir()
+    if directory is None:
+        print("No profile active here, so there is nowhere to record this.",
+              file=sys.stderr)
+        print(f"  For one run, no profile needed: set {engine.ENV}="
+              f"{name} in the environment.", file=sys.stderr)
+        return 1
+    result = engine.write(directory, name)
+    if not result["ok"]:
+        print(f"ERROR: {result['reason']}", file=sys.stderr)
+        return 2
+    print(f"Router engine '{result['engine']}' recorded in {result['path']}")
+    found = engine.describe(directory)
+    if found["source"] == "environment":
+        print(f"  Note: {engine.ENV}={os.environ.get(engine.ENV, '').strip()} is set here and "
+              "decides for runs started with it; the others take this profile's choice.")
+    elif found["source"] == "fallback":
+        print(f"  Note: {found['problem']}, so runs started with it use the default "
+              f"engine until {engine.ENV} is fixed or unset.")
+    print("  Routing runs that use this profile take it on their next run; no restart "
+          "needed. 'eda-agent router-show' in the design workspace says what is in force "
+          "there.")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# perf -- where the time went, from the logs already being written
+# --------------------------------------------------------------------------
+
+def cmd_sdk_coverage(*, as_json: bool = False, detail: int = 0,
+                     sdk_json: str | None = None) -> int:
+    """Measure the generic property layer against Altium's own SDK.
+
+    Altium.SDK.Interfaces.dll declares every interface and property the
+    scripting engine exposes. The four Pascal If-chains are written by
+    hand, so what they reach was a guess until there was something to
+    compare them against. This prints the comparison.
+
+    It needs the reflected dump, which only exists on a machine with
+    Altium installed; without one it says how to produce it and exits
+    non-zero rather than reporting a coverage figure it cannot stand
+    behind.
+    """
+    import json as _json
+
+    from .sdk.coverage import build_report, format_report, report_as_dict
+    from .sdk.reflect import SdkUnavailable, load_sdk
+
+    try:
+        model = load_sdk(sdk_json)
+    except SdkUnavailable as missing:
+        print(str(missing), file=sys.stderr)
+        return 1
+
+    report = build_report(model)
+    if as_json:
+        print(_json.dumps(report_as_dict(report), indent=2))
+        return 0
+
+    print(format_report(report, detail=detail))
+    return 0
+
+
+def cmd_sdk_symbols(*, refresh: bool = False, name: str = "",
+                    as_json: bool = False, sdk_json: str | None = None) -> int:
+    """Read the scripting engine's registered names from its local DLL."""
+    import json as _json
+
+    from .sdk.reflect import SdkUnavailable, load_sdk
+    from .sdk.symbols import (SymbolsUnavailable, load_symbols,
+                              refresh as refresh_symbols)
+
+    try:
+        if refresh:
+            target = refresh_symbols(load_sdk(sdk_json).source)
+            if not as_json:
+                print(f"extracted to {target}")
+        table = load_symbols()
+    except (SdkUnavailable, SymbolsUnavailable) as missing:
+        print(str(missing), file=sys.stderr)
+        return 1
+
+    if name:
+        payload = {"name": name, "reach": table.reach(name),
+                   "source": table.source}
+    else:
+        payload = {"source": table.source,
+                   "extracted_at": table.extracted_at,
+                   "names": len(table.names),
+                   "getters": len(table.getters),
+                   "setters": len(table.setters),
+                   "min_reliable": table.min_reliable}
+    if as_json:
+        print(_json.dumps(payload, indent=2))
+    elif name:
+        print(f"{name}: {payload['reach']}")
+    else:
+        print(f"{payload['names']} registered names from {table.source}")
+        print(f"GetState: {payload['getters']}; SetState: {payload['setters']}")
+        print(f"Names shorter than {table.min_reliable} characters are unknown.")
+    return 0
+
+
+def cmd_sdk_generate(*, object_type: str = "component", kind: str = "read",
+                     as_json: bool = False, sdk_json: str | None = None,
+                     allow_getter: bool = False) -> int:
+    """Print candidate Pascal accessors; never edit the deployed script."""
+    import json as _json
+
+    from .sdk.generate import (candidates_for, render_probe, render_write)
+    from .sdk.coverage import reachable_heads, supported_sch_types
+    from .sdk.reflect import SdkUnavailable, load_sdk
+    from .sdk.symbols import SymbolsUnavailable, load_symbols
+
+    try:
+        model = load_sdk(sdk_json)
+        table = load_symbols()
+        interface, take, skipped = candidates_for(
+            model, object_type, kind, table=table,
+            allow_getter=allow_getter)
+    except (SdkUnavailable, SymbolsUnavailable, KeyError) as missing:
+        print(str(missing), file=sys.stderr)
+        return 1
+    chain = "GetSchProperty" if kind == "read" else "SetSchProperty"
+    constant = supported_sch_types()[object_type.lower()]
+    kwargs = {"already": reachable_heads(chain, constant), "table": table}
+    if kind == "read":
+        generated = render_probe(
+            model, interface, interface, function_name="SdkCandidateRead",
+            allow_getter=allow_getter, **kwargs)
+    else:
+        generated = render_write(
+            model, interface, interface, function_name="SdkCandidateWrite",
+            **kwargs)
+    if as_json:
+        print(_json.dumps({"interface": interface, "kind": kind,
+                           "included": [name for name, _ in take],
+                           "skipped": [item.__dict__ for item in skipped],
+                           "pascal": generated.pascal}, indent=2))
+    else:
+        print(generated.summary(), file=sys.stderr)
+        print("Candidate code for review; not installed or compiled.",
+              file=sys.stderr)
+        print(generated.pascal)
+    return 0
+
+
+def cmd_sdk_probe(*, designator: str = "", object_type: str = "component",
+                  pin: str = "", properties: str = "",
+                  doc_path: str = "", as_json: bool = False,
+                  sdk_json: str | None = None, index: int = 0) -> int:
+    """Ask the running Altium which DECLARED properties it actually exposes.
+
+    `sdk-coverage` counts what the chains reach. This measures something
+    the assembly cannot answer: whether a property the SDK declares is
+    reachable from the scripting engine at all. DelphiScript binds late,
+    so the generated probe compiles either way, and a member the engine
+    does not expose faults where Try/Except cannot catch it.
+
+    THAT FAULT KILLS THE POLLING LOOP, and this is written around that.
+    Every attempt is logged inside Altium before it is made, so when the
+    call does not come back, the last 'attempt=' line in activity.log
+    names the property responsible. Re-run without it, after
+    `eda-agent relaunch`.
+    """
+    import asyncio
+    import json as _json
+
+    from .bridge import get_bridge
+    from .config import get_config
+    from .sdk.generate import candidates_for
+    from .sdk.reflect import SdkUnavailable, load_sdk
+    from .sdk.symbols import SymbolsUnavailable, load_symbols
+
+    from .sdk.coverage import supported_sch_types
+
+    # Checked before anything is loaded: the kinds come from the deployed
+    # Pascal, so a typo is refused by name even where the reflected SDK
+    # (local only, never committed) is absent.
+    types = supported_sch_types()
+    if object_type.lower() not in types:
+        print(f"unknown schematic object type {object_type!r}; "
+              f"known: {', '.join(sorted(types))}", file=sys.stderr)
+        return 1
+
+    names = [n.strip() for n in properties.split(",") if n.strip()]
+    if not names:
+        try:
+            model = load_sdk(sdk_json)
+        except SdkUnavailable as missing:
+            print(str(missing), file=sys.stderr)
+            return 1
+        try:
+            table = load_symbols()
+        except SymbolsUnavailable:
+            # Without the table this is the old behaviour: a list of
+            # candidates, one of which may halt the debugger.
+            table = None
+        _, take, _ = candidates_for(model, object_type, "read", table)
+        names = [name for name, _prop in take]
+    if not names:
+        print(f"nothing left to probe on {object_type}: every property the "
+              f"SDK declares for it is already read by the deployed block.",
+              file=sys.stderr)
+        return 0
+
+    # A probe list built from today's table against yesterday's script
+    # is how the debugger gets halted: the running block may still read
+    # a name with a spelling the engine does not resolve.
+    from .diag.doctor import _ping_altium, bundled_script_version
+    ping = _ping_altium()
+    if ping is None:
+        print("Altium did not answer a ping, so the polling loop is not "
+              "running. Start it with Dispatcher.pas > StartMCPServer.",
+              file=sys.stderr)
+        return 1
+    running, bundled = ping.get("script_version", ""), bundled_script_version()
+    if not running or not bundled or running != bundled:
+        print(f"the running script is {running} and this tree generated "
+              f"{bundled}. Probing across that gap can touch a property the "
+              f"running block reads with the old spelling, which halts the "
+              f"debugger. Reload the script project in Altium and run "
+              f"StartMCPServer again.", file=sys.stderr)
+        return 1
+
+    params = {"properties": ",".join(names), "object_type": object_type}
+    params["index"] = str(index)
+    if designator:
+        params["designator"] = designator
+    if pin:
+        params["pin"] = pin
+    if doc_path:
+        params["doc_path"] = doc_path
+
+    async def _run():
+        return await get_bridge().send_command_async(
+            "generic.probe_sdk_properties", params, timeout=120.0)
+
+    try:
+        reply = asyncio.run(_run())
+    except Exception as failed:  # noqa: BLE001 - the point is to explain it
+        print(f"probe did not return: {failed}", file=sys.stderr)
+        print(_last_attempt_hint(get_config().workspace_dir), file=sys.stderr)
+        return 1
+
+    if not isinstance(reply, dict) or "results" not in reply:
+        print(f"unexpected reply: {reply!r}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(_json.dumps(reply, indent=2))
+        return 0
+
+    rows = reply["results"]
+    exposed = [r for r in rows if r.get("exposed")]
+    target = reply.get("designator") or f"#{index}"
+    print(f"Probed {len(rows)} declared properties on "
+          f"{reply.get('interface', '?')} "
+          f"(component {reply.get('designator') or '?'}, "
+          f"pin {reply.get('pin') or '?'})")
+    print(f"  {len(exposed)} of {len(rows)} answered "
+          f"({100.0 * len(exposed) / len(rows):.0f}%)" if rows else "  nothing probed")
+    print()
+    for row in rows:
+        mark = "ok  " if row.get("exposed") else "MISS"
+        value = row.get("value", "")
+        shown = value if len(value) <= 48 else value[:45] + "..."
+        print(f"  [{mark}] {row['name']:<32} {shown}")
+    return 0
+
+
+def _last_attempt_hint(workspace) -> str:
+    """What the activity log says the probe was doing when it stopped."""
+    log = workspace / "activity.log"
+    if not log.is_file():
+        return "no activity.log to say which property it died on"
+    attempted = None
+    completed = None
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        if ",_sdk_probe,attempt=" in line:
+            attempted = line.split("attempt=", 1)[1].split(",", 1)[0]
+        elif ",_sdk_probe,done=" in line:
+            completed = line.split("done=", 1)[1].split(",", 1)[0]
+    if attempted and attempted != completed:
+        return (f"the loop stopped on {attempted!r}: it is declared but not "
+                f"exposed. Run `eda-agent relaunch`, then probe again with "
+                f"--properties listing the rest.")
+    return "the log shows no unfinished probe, so the loop stopped elsewhere"
+
+
+def cmd_perf(*, as_json: bool, limit: int = 15) -> int:
+    """Report caller, Altium handler, and queue/IPC time from existing logs."""
+    import json as _json
+
+    from .config import get_config
+    from .diag.perf import format_report, report_from_workspace
+
+    workspace = get_config().workspace_dir
+    report = report_from_workspace(workspace)
+    if as_json:
+        print(_json.dumps(report, indent=2))
+    else:
+        print(format_report(report, limit=limit))
+        if not report["calls"]:
+            print(f"No calls logged yet in {workspace}.", file=sys.stderr)
+    return 0
+
+
+def cmd_fab_inspect(directory: str, *, as_json: bool, board_name: str) -> int:
+    """Inspect exported Gerber and drill files without accessing Altium."""
+    import json as _json
+
+    from .fileio.gerber_check import summarise_package
+
+    result = summarise_package(directory, board_name=board_name)
+    if as_json:
+        print(_json.dumps(result, indent=2))
+    elif not result.get("ok"):
+        print(f"Cannot inspect fab package: {result.get('reason')}", file=sys.stderr)
+    else:
+        print(f"Fab package: {result['directory']}")
+        print(f"  Copper layers: {result['copper_layers']}")
+        print(f"  Drill hits:    {result['drills']['hits']}")
+        print(f"  Outline:       {result['outline_mm']}")
+        print(f"  Files:         {len(result['files'])}")
+    return 0 if result.get("ok") else 1
+
+# --------------------------------------------------------------------------
+# Calculators
+# --------------------------------------------------------------------------
+#
+# One table drives three things: the argparse subcommands, the CLI
+# dispatch, and the test that checks the two agree. Ten calculators
+# wired up by hand would be ten chances for a flag name in the parser
+# to drift from the parameter it fills, and argparse reports that as a
+# TypeError at the moment the user runs it.
+#
+# Flat hyphenated verbs (calc-spacing, not "calc spacing") because that
+# is this CLI's existing shape; nesting would make these the only
+# nested commands in it.
+
+#: verb -> (function name in engineering.pcb_calc, one-line help,
+#:          [(flag, type, default, help), ...])
+#: A default of None marks a REQUIRED positional-style option.
+CALC_COMMANDS: dict = {
+    "calc-spacing": (
+        "ipc2221_spacing",
+        "Minimum conductor spacing for a voltage (IPC-2221 Table 6-1)",
+        [("voltage", float, None, "DC or AC peak BETWEEN CONDUCTORS, volts"),
+         ("environment", str, "B2",
+          "B1 internal, B2 external uncoated, B3 above 3050 m, "
+          "B4 polymer coated, A5 conformal coated, A6 bare leads, "
+          "A7 coated leads")],
+    ),
+    "calc-fusing": (
+        "fusing_current",
+        "Current that MELTS a track in a given time (Onderdonk)",
+        [("width_mils", float, None, "Track width, mils"),
+         ("copper_oz", float, 1.0, "Copper weight, oz/ft^2"),
+         ("time_s", float, 1.0, "Duration, seconds (trust under ~1 s)"),
+         ("ambient_c", float, 25.0, "Ambient temperature, degC")],
+    ),
+    "calc-via": (
+        "via_parasitics",
+        "Via inductance, capacitance and barrel resistance",
+        [("drill_mils", float, None, "Finished hole diameter, mils"),
+         ("length_mils", float, None, "Barrel length (board thickness), mils"),
+         ("pad_mils", float, 0.0, "Pad diameter, mils (needed for C)"),
+         ("antipad_mils", float, 0.0,
+          "Antipad diameter, mils; must exceed the pad"),
+         ("dielectric_constant", float, 4.3, "Relative permittivity"),
+         ("plating_mils", float, 1.0, "Barrel plating thickness, mils")],
+    ),
+    "calc-spiral": (
+        "spiral_inductor",
+        "Planar spiral inductance (Mohan's modified Wheeler)",
+        [("turns", float, None, "Number of turns"),
+         ("outer_diameter_mils", float, None, "Outer diameter, mils"),
+         ("inner_diameter_mils", float, None, "Inner diameter, mils"),
+         ("shape", str, "square", "square, hexagonal or octagonal")],
+    ),
+    "calc-reactance": (
+        "reactance",
+        "Capacitive and inductive reactance at a frequency",
+        [("frequency_hz", float, None, "Frequency, Hz"),
+         ("capacitance_f", float, 0.0, "Capacitance, farads"),
+         ("inductance_h", float, 0.0, "Inductance, henries")],
+    ),
+    "calc-resonance": (
+        "resonant_frequency",
+        "LC resonant frequency and characteristic impedance",
+        [("inductance_h", float, None, "Inductance, henries"),
+         ("capacitance_f", float, None, "Capacitance, farads")],
+    ),
+    "calc-wavelength": (
+        "wavelength_in_dielectric",
+        "Wavelength in a dielectric, with quarter- and twentieth-wave",
+        [("frequency_hz", float, None, "Frequency, Hz"),
+         ("dielectric_constant", float, 4.3, "Relative permittivity")],
+    ),
+    "calc-pdn": (
+        "pdn_target_impedance",
+        "Target power-distribution-network impedance",
+        [("voltage_v", float, None, "Rail voltage, volts"),
+         ("ripple_percent", float, None, "Allowed ripple, percent of rail"),
+         ("transient_current_a", float, None, "Transient step, amps")],
+    ),
+    "calc-padstack": (
+        "padstack_geometry",
+        "Pad and antipad diameters, and the gap between neighbours",
+        [("drill_mils", float, None, "Finished hole diameter, mils"),
+         ("annular_ring_mils", float, None, "Annular ring, mils"),
+         ("pitch_mils", float, 0.0, "Neighbour pitch, mils"),
+         ("clearance_mils", float, 0.0, "Plane clearance, mils")],
+    ),
+    "calc-wire": (
+        "awg_properties",
+        "AWG wire diameter, area and resistance",
+        [("awg", float, None, "Gauge; -1 is 00, -2 is 000, -3 is 0000"),
+         ("length_m", float, 1.0, "Length, metres"),
+         ("temperature_c", float, 20.0, "Conductor temperature, degC")],
+    ),
+}
+
+
+def cmd_calc(verb: str, values: dict, *, as_json: bool = False) -> int:
+    """Run one calculator and print it.
+
+    Exit code 1 on a refusal, so a shell script can tell "this geometry
+    is impossible" from "here is your answer" without parsing the text.
+    """
+    if isinstance(values, list):
+        return _cmd_design_calc(verb, values, as_json=as_json)
+    import json as _json
+
+    from . import engineering as _eng  # noqa: F401  (package import)
+    from .engineering import pcb_calc
+
+    entry = CALC_COMMANDS.get(verb)
+    if entry is None:
+        print(f"unknown calculator {verb!r}", file=sys.stderr)
+        return 2
+    fn_name, _help, params = entry
+    kwargs = {name: values.get(name) for name, _t, _d, _h in params}
+    result = getattr(pcb_calc, fn_name)(**kwargs)
+
+    if as_json:
+        print(_json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
+
+    if not result.get("ok"):
+        print(f"Cannot compute: {result.get('reason', 'no reason given')}",
+              file=sys.stderr)
+        return 1
+
+    # Ordered so the answer comes first and the caveats last, which is
+    # the order they matter in and the opposite of dict insertion for
+    # several of these.
+    skip = {"ok", "status", "source", "note", "warning", "out_of_range",
+            "disputed"}
+    print(f"{verb}  [{result['status']}]")
+    for key, value in result.items():
+        if key in skip:
+            continue
+        print(f"  {key:28} {value}")
+    if result.get("source"):
+        print(f"  source: {result['source']}")
+    # The caveats go to stderr so a shell can keep the figures alone on
+    # stdout, which means they are UNBUFFERED while the numbers above
+    # are not: without this flush they arrive first and read as a
+    # warning about the previous command.
+    sys.stdout.flush()
+    for key in ("note", "warning", "out_of_range"):
+        if result.get(key):
+            print(f"  {key.upper().replace('_', ' ')}: {result[key]}",
+                  file=sys.stderr)
+    if result.get("disputed"):
+        d = result["disputed"]
+        print(f"  DISPUTED: sources disagree; took {d['taken']} mm, the "
+              f"other reproduction says {d['other_source_says']} mm",
+              file=sys.stderr)
+    return 0
+
+
+def calc_aliases() -> dict:
+    """Every spelling of a calculator name that resolves to its verb.
+
+    The verb (`calc-fusing`), the verb without the prefix (`fusing`),
+    and the function it calls in either separator (`fusing_current`,
+    `fusing-current`). `eda-agent calc` advertised the last of those in
+    its own help text and did not accept it, so this accepts all four
+    rather than picking one and leaving the help wrong again.
+    """
+    out = {}
+    for verb, (fn_name, _help, _params) in CALC_COMMANDS.items():
+        for spelling in (verb, verb[len("calc-"):], fn_name,
+                         fn_name.replace("_", "-")):
+            out.setdefault(spelling, verb)
+    return out
+
+
+def list_calculators() -> int:
+    """Print the calculators and what each one needs. Always exit 0."""
+    print("Calculators (run one as `eda-agent calc NAME KEY=VALUE ...`):")
+    print()
+    for verb, (_fn, help_text, params) in CALC_COMMANDS.items():
+        print(f"  {verb[len('calc-'):]:<12} {help_text}")
+        required = [name for name, _t, default, _h in params
+                    if default is None]
+        optional = [f"{name}={default}" for name, _t, default, _h in params
+                    if default is not None]
+        if required:
+            print(f"               needs: {' '.join(required)}")
+        if optional:
+            print(f"               optional: {' '.join(optional)}")
+    print()
+    print("Each one is also a verb of its own: `eda-agent calc-fusing "
+          "--width-mils 10`.")
+    return 0
+
+
+def cmd_calc_by_name(name: str, inputs: list, *,
+                     as_json: bool = False) -> int:
+    """`eda-agent calc NAME KEY=VALUE ...`, the flagless form.
+
+    The generated `calc-*` verbs get their values from argparse, which
+    has already applied the types and the defaults. This form has a bare
+    list of KEY=VALUE strings instead, so it has to do both itself --
+    and until now it did neither: it handed the list straight to
+    cmd_calc, which expects a dict, and every invocation of the
+    documented example ended in an AttributeError.
+    """
+    if not name:
+        return list_calculators()
+
+    verb = calc_aliases().get(name)
+    if verb is None:
+        print(f"unknown calculator {name!r}", file=sys.stderr)
+        print("Run `eda-agent calc` for the list.", file=sys.stderr)
+        return 2
+
+    _fn, _help, params = CALC_COMMANDS[verb]
+    types = {pname: ptype for pname, ptype, _d, _h in params}
+    values = {pname: default for pname, _t, default, _h in params}
+
+    for item in inputs or []:
+        if "=" not in item:
+            print(f"expected KEY=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        key, _, raw = item.partition("=")
+        key = key.strip().replace("-", "_")
+        if key not in types:
+            print(f"{verb} has no input {key!r}. It takes: "
+                  f"{', '.join(types)}", file=sys.stderr)
+            return 2
+        try:
+            values[key] = types[key](raw.strip())
+        except (TypeError, ValueError):
+            print(f"{key}={raw!r} is not a "
+                  f"{types[key].__name__}", file=sys.stderr)
+            return 2
+
+    missing = [pname for pname, _t, default, _h in params
+               if default is None and values.get(pname) is None]
+    if missing:
+        print(f"{verb} needs {', '.join(missing)}", file=sys.stderr)
+        return 2
+
+    return cmd_calc(verb, values, as_json=as_json)
+
+
+# --------------------------------------------------------------------------
+# Fab capabilities, stackups and laminates
+# --------------------------------------------------------------------------
+
+def cmd_stackup_vendors(*, as_json: bool = False) -> int:
+    """List the bundled fab vendors with their provenance."""
+    import json as _json
+
+    from .design.stackup_library import STALE_AFTER_DAYS, list_vendors
+
+    vendors = list_vendors()
+    if as_json:
+        print(_json.dumps(vendors, indent=2))
+        return 0
+    if not vendors:
+        print("No vendor data is bundled.", file=sys.stderr)
+        return 1
+    for vendor in vendors:
+        age = ("unknown age" if vendor["age_days"] is None
+               else f"{vendor['age_days']}d old")
+        flag = "  STALE" if vendor["stale"] else ""
+        print(f"{vendor['vendor']:10} {vendor['display_name']}{flag}")
+        print(f"  {vendor['process']}")
+        print(f"  source     {vendor['source']}")
+        print(f"  read       {vendor['retrieved']} ({age}, stale after "
+              f"{STALE_AFTER_DAYS}d)")
+        print(f"  stackups   {vendor['stackups'] or '(none bundled)'}")
+        if vendor["missing"]:
+            print(f"  not published: {', '.join(vendor['missing'])}")
+    # stderr is unbuffered and stdout is not, so without this the
+    # caveat lands above the list it is a caveat about.
+    sys.stdout.flush()
+    print("\nA starting point, not an authority: a fab changes its "
+          "capabilities\nwithout changing this data. Confirm before "
+          "ordering.", file=sys.stderr)
+    return 0
+
+
+def cmd_stackup_show(vendor: str, *, as_json: bool = False) -> int:
+    """Print one vendor's capabilities and stackup templates."""
+    import json as _json
+
+    from .design.stackup_library import load_vendor
+
+    loaded = load_vendor(vendor)
+    if as_json:
+        print(_json.dumps(loaded, indent=2))
+        return 0 if loaded.get("ok") else 1
+    if not loaded.get("ok"):
+        print(loaded["reason"], file=sys.stderr)
+        return 1
+
+    print(f"{loaded['display_name']} -- {loaded['process']}")
+    print(f"  source {loaded['source']}")
+    print(f"  read   {loaded['retrieved']}")
+    print(f"  copper layer counts: {loaded['copper_layer_counts']}")
+    print(f"  board thickness mm:  {loaded['board_thickness_mm']}")
+    print("\n  minimums (mm / mils):")
+    for field, value_mm in loaded["capabilities_mm"].items():
+        mils = loaded["capabilities_mils"].get(
+            field.replace("_mm", "_mils"))
+        if value_mm is None:
+            print(f"    {field[4:-3]:22} NOT PUBLISHED")
+        else:
+            print(f"    {field[4:-3]:22} {value_mm:<8} {mils}")
+    for stackup in loaded["stackups"]:
+        print(f"\n  stackup {stackup['name']} "
+              f"({stackup.get('layer_count', '?')} layer, "
+              f"{stackup.get('finished_thickness_mm', '?')} mm)")
+        for ply in stackup["layers"]:
+            extra = ""
+            if ply.get("er") is not None:
+                extra = f"  er {ply['er']}"
+            if ply.get("copper_oz") is not None:
+                extra = f"  {ply['copper_oz']} oz"
+            print(f"    {ply['kind']:8} {ply['thickness_mm']:<9} mm  "
+                  f"{ply['name']}{extra}")
+    for field, why in (loaded["not_published"] or {}).items():
+        print(f"\n  {field} is NOT PUBLISHED: {why}", file=sys.stderr)
+    sys.stdout.flush()
+    for warning in loaded["warnings"]:
+        print(f"  ! {warning}", file=sys.stderr)
+    return 0
+
+
+def cmd_stackup_profile(vendor: str, *, fill: Optional[list] = None,
+                        as_json: bool = True) -> int:
+    """Emit a FabProfile JSON for a bundled vendor, or say what is missing."""
+    import json as _json
+
+    from .design.stackup_library import vendor_fab_profile
+
+    values = {}
+    for item in fill or []:
+        if "=" not in item:
+            print(f"--fill wants name=value, got {item!r}", file=sys.stderr)
+            return 2
+        name, _, raw = item.partition("=")
+        try:
+            values[name.strip()] = float(raw)
+        except ValueError:
+            print(f"--fill value for {name.strip()} is not a number: {raw!r}",
+                  file=sys.stderr)
+            return 2
+
+    result = vendor_fab_profile(vendor, fill=values or None)
+    if not result.get("ok"):
+        print(result["reason"], file=sys.stderr)
+        for field, why in (result.get("why") or {}).items():
+            print(f"  {field}: {why}", file=sys.stderr)
+        if result.get("missing"):
+            example = " ".join(f"--fill {f}=<mils>"
+                               for f in result["missing"])
+            print(f"\nOnce the fab tells you:\n  eda-agent stackup-profile "
+                  f"{vendor} {example}", file=sys.stderr)
+        return 1
+    print(_json.dumps(result["profile"], indent=2))
+    sys.stdout.flush()
+    for warning in result.get("warnings", []):
+        print(f"  ! {warning}", file=sys.stderr)
+    return 0
+
+
+def cmd_laminates(*, as_json: bool = False) -> int:
+    """Print the bundled laminate electrical properties."""
+    import json as _json
+
+    from .design.stackup_library import list_laminates
+
+    data = list_laminates()
+    if as_json:
+        print(_json.dumps(data, indent=2))
+        return 0 if data.get("ok") else 1
+    if not data.get("ok"):
+        print(data["reason"], file=sys.stderr)
+        return 1
+    # Every column may be absent: a maker that tabulates typical values by
+    # frequency publishes no process and no design value, and only Rogers
+    # of the four publishes a Tg here.
+    def cell(value) -> str:
+        return "-" if value is None else str(value)
+
+    print(f"{'laminate':30} {'er(proc)':>9} {'er(design)':>11} "
+          f"{'er(use)':>8} {'tan d':>8} {'Tg':>6}")
+    for lam in data["laminates"]:
+        print(f"{lam['name'][:30]:30} {cell(lam.get('er_process')):>9} "
+              f"{cell(lam.get('er_design')):>11} "
+              f"{cell(lam.get('er_for_design')):>8} "
+              f"{cell(lam.get('loss_tangent')):>8} "
+              f"{cell(lam.get('tg_c')):>6}")
+    for conv in data["conventions"]:
+        print(f"{conv['name'][:30]:30} {conv['er_low']:>9} to {conv['er_high']}")
+    for fig in data.get("fab_figures") or []:
+        print(f"{fig['name'][:30]:30} {cell(fig.get('er_process')):>9} "
+              f"{'(fab figure, no conditions published)'}")
+    sys.stdout.flush()
+    print("\nTwo dielectric constants per laminate on purpose: the PROCESS "
+          "value is\nmeasured one way and the DESIGN value another, they "
+          "differ by about 5%,\nand the design value is the one to size an "
+          "impedance with. er(use) is that\nchoice made for you: the design "
+          "value where there is one, else the typical\nvalue at the highest "
+          "frequency listed, never the process value.",
+          file=sys.stderr)
+    print(data["note"], file=sys.stderr)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Fab design-rule database and connectors
+# --------------------------------------------------------------------------
+
+def cmd_fab_list(*, as_json: bool = False) -> int:
+    """Every fab connector: status, tiers and how old its reading is."""
+    import json as _json
+
+    from .design.fab_connectors import list_connectors
+
+    rows = list_connectors()
+    if as_json:
+        print(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    for r in rows:
+        age = (f"read {r['retrieved']}" + ("  STALE" if r.get("stale") else "")
+               if "retrieved" in r else "no data yet")
+        print(f"{r['key']:18} {r['vendor']:22} {r['country']:6} "
+              f"{r['status']:8} {age}")
+        if r.get("tiers"):
+            print(f"{'':18} tiers: {', '.join(r['tiers'])}")
+        if r.get("note"):
+            print(f"{'':18} {r['note']}")
+    return 0
+
+
+def _fmt_rule(rule: dict) -> str:
+    from .units import MM_PER_MIL
+
+    if "mils" in rule:
+        return f"{rule['mils']:g} mil ({rule['mils'] * MM_PER_MIL:.3f} mm)"
+    if "counts" in rule:
+        return ", ".join(str(c) for c in rule["counts"])
+    return str(rule.get("value", ""))
+
+
+def cmd_fab_rules(vendor: str, *, layers: int, oz: float = 1.0,
+                  tier: str = "standard", ipc_class: Optional[int] = None,
+                  as_json: bool = False) -> int:
+    """All published design rules of one fab build, each with its quote."""
+    import json as _json
+
+    from .design.fab_rules import fab_rules
+
+    got = fab_rules(vendor, copper_layers=layers, outer_oz=oz, tier=tier,
+                    ipc_class=ipc_class)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False, default=str))
+        return 0 if got["ok"] else 1
+    if not got["ok"]:
+        print(got["reason"], file=sys.stderr)
+        for k in ("tiers", "vendors", "copper_layer_counts"):
+            if k in got:
+                print(f"  {k}: {got[k]}", file=sys.stderr)
+        return 1
+    print(f"{got['vendor']} {got['tier']}, {layers} layers, {oz:g} oz outer "
+          f"(read {got['source']['retrieved']}, {got['source']['url']})")
+    for key, rule in got["rules"].items():
+        print(f"  {rule['label'][:38]:38} {_fmt_rule(rule)}")
+        print(f"  {'':38} \"{rule['quote'][:100]}\"")
+    if got["missing"]:
+        print("\nNot published (refused, not guessed):")
+        for m in got["missing"]:
+            print(f"  {m['key']:22} {m['reason']}")
+    if got["age"].get("stale"):
+        print(f"\n{got['age']['stale_note']}", file=sys.stderr)
+    return 0
+
+
+def _std_profile_values():
+    from .design.standards import load_values
+    from .profile import resolve_profile_dir
+
+    prof = resolve_profile_dir()
+    return prof, load_values(prof)
+
+
+def cmd_std_list(*, domain: Optional[str] = None, priority: Optional[int] = None,
+                 as_json: bool = False) -> int:
+    """The IPC standards catalogue: number, current revision, scope."""
+    import json as _json
+
+    from .design.standards import load_catalogue
+
+    cat = load_catalogue()
+    rows = [s for s in cat.standards
+            if (domain is None or s.domain == domain)
+            and (priority is None or s.priority == priority)]
+    if as_json:
+        print(_json.dumps({"checked_on": cat.checked_on,
+                           "standards": [s.model_dump() for s in rows]},
+                          indent=2, ensure_ascii=False))
+        return 0
+    for s in rows:
+        mark = "" if s.revision_confirmed else " (revision unconfirmed)"
+        print(f"P{s.priority} {s.domain:12} {s.label:22} {s.title[:60]}{mark}")
+    print(f"\n{len(rows)} standard(s); revisions checked {cat.checked_on}.",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_std_rules(*, category: Optional[str] = None, as_json: bool = False) -> int:
+    """IPC rule definitions, with how many values the active profile holds."""
+    import json as _json
+
+    from .design.standards import coverage
+
+    prof, loaded = _std_profile_values()
+    if not loaded["ok"]:
+        print(loaded["reason"], file=sys.stderr)
+        for e in loaded.get("errors", []):
+            print(f"  {e}", file=sys.stderr)
+        return 1
+    rows = [r for r in coverage(loaded["values"])
+            if category is None or r["category"] == category]
+    if as_json:
+        print(_json.dumps({"profile": str(prof) if prof else None,
+                           "values_file": loaded["path"],
+                           "warnings": loaded["warnings"], "rules": rows},
+                          indent=2, ensure_ascii=False))
+        return 0
+    for r in rows:
+        state = f"{r['values']} value(s)" if r["values"] else "not configured"
+        print(f"{r['rule_id']:42} {state:16} {', '.join(r['standards'])}")
+    where = loaded["path"] or (f"{prof}/standards/values.json (absent)" if prof
+                               else "no active profile")
+    print(f"\nValues: {where}", file=sys.stderr)
+    for w in loaded["warnings"]:
+        print(f"warning: {w}", file=sys.stderr)
+    return 0
+
+
+def cmd_std_floors(*, as_json: bool = False) -> int:
+    """Write the fab rules' IPC class floor file from the profile's values."""
+    import json as _json
+
+    from .design.standards import write_class_floors
+
+    prof, _ = _std_profile_values()
+    if prof is None:
+        got = {"ok": False, "reason": "no active profile; class floors live in "
+               "<profile dir>/standards/ (see docs/PROFILES.md)"}
+    else:
+        got = write_class_floors(prof)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+    elif got["ok"]:
+        print(f"wrote {got['path']} (classes {', '.join(got['classes'])})")
+    else:
+        print(got["reason"], file=sys.stderr)
+        for e in got.get("errors", []):
+            print(f"  {e}", file=sys.stderr)
+    return 0 if got["ok"] else 1
+
+
+def cmd_fab_compare(*, layers: int, oz: float = 1.0,
+                    keys: Optional[list] = None, as_json: bool = False) -> int:
+    """Every fab and tier side by side for one build."""
+    import json as _json
+
+    from .design.fab_rules import compare
+
+    got = compare(keys or None, copper_layers=layers, outer_oz=oz)
+    if as_json or not got["ok"]:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+        return 0 if got["ok"] else 1
+    short = [k.replace("min_", "")[:10] for k in got["keys"]]
+    print(f"{'fab / tier':34}" + "".join(f"{s:>11}" for s in short) + "   (mil)")
+    for row in got["rows"]:
+        cells = "".join(f"{row['cells'][k].get('mils', '-'):>11}"
+                        if not isinstance(row['cells'][k].get('mils'), float)
+                        else f"{row['cells'][k]['mils']:>11.2f}"
+                        for k in got["keys"])
+        print(f"{(row['vendor'] + ' / ' + row['tier'])[:34]:34}{cells}")
+    print("\n'-' = the fab does not publish it for this build (or it was not "
+          "readable);\nrun fab-rules <fab> for the reason and the quote.",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_fab_refresh(vendor: str, *, files: Optional[list] = None,
+                    write: bool = False, as_json: bool = False) -> int:
+    """Re-read a fab's pages and check every stored quote is still there."""
+    import json as _json
+
+    from .design.fab_connectors import refresh, write_retrieved
+
+    got = refresh(vendor, files=files)
+    if write and got.get("check"):
+        got["write"] = write_retrieved(vendor, got)
+    if as_json:
+        print(_json.dumps(got, indent=2, ensure_ascii=False))
+        return 0 if got["ok"] else 1
+    if "reason" in got and not got.get("read"):
+        print(got["reason"], file=sys.stderr)
+    for r in got.get("read", []):
+        print(f"read     {r}")
+    for f in got.get("failed", []):
+        print(f"FAILED   {f['url']}: {f['reason']}")
+        if f.get("hint"):
+            print(f"         {f['hint']}")
+    if got.get("snapshot"):
+        print(f"snapshot {got['snapshot']}")
+    if got.get("note"):
+        print(got["note"])
+    chk = got.get("check")
+    if chk:
+        print(f"\n{chk['confirmed']} quote(s) still on the pages, "
+              f"{len(chk['not_found'])} not found.")
+        for row in chk["not_found"]:
+            print(f"  {row['tier']}/{row['key']}: \"{row['quote'][:90]}\"")
+        if chk["not_found"]:
+            print("\nA quote that is gone means the fab changed or moved it: "
+                  "read the page and update the data by hand.", file=sys.stderr)
+    if got.get("write"):
+        w = got["write"]
+        print("reading date moved " + (f"{w['from']} -> {w['to']}" if w["ok"]
+                                       else f"refused: {w['reason']}"))
+    return 0 if got["ok"] else 1
+
+
+def cmd_calc_cross_check(calculator: str, values: list,
+                         *, as_json: bool = False) -> int:
+    """Compare one calculator against a locally built pcb-toolkit."""
+    import json as _json
+
+    from .engineering.pcb_toolkit import cross_check
+
+    kwargs: dict = {}
+    for item in values or []:
+        if "=" not in item:
+            print(f"--arg wants name=value, got {item!r}", file=sys.stderr)
+            return 2
+        name, _, raw = item.partition("=")
+        name = name.strip()
+        try:
+            kwargs[name] = float(raw)
+        except ValueError:
+            kwargs[name] = raw
+
+    result = cross_check(calculator, kwargs)
+    if as_json:
+        print(_json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
+    if not result.get("ok"):
+        print(result["reason"], file=sys.stderr)
+        return 1
+
+    print(f"{calculator}  via {result['binary']}")
+    print(f"  {' '.join(result['command'][1:])}")
+    if result["agreements"]:
+        print()
+        print(f"  agree ({len(result['agreements'])}):")
+        for row in result["agreements"]:
+            print(f"    {row['field']:28} {row['ours']}")
+    if result["disagreements"]:
+        print()
+        print(f"  DISAGREE ({len(result['disagreements'])}):")
+        for row in result["disagreements"]:
+            print(f"    {row['field']:28} ours {row['ours']}  "
+                  f"theirs {row['theirs']}  delta {row['delta']}")
+    if result["unpaired_ours"] or result["unpaired_theirs"]:
+        print()
+        print(f"  not compared: ours {result['unpaired_ours']}, "
+              f"theirs {result['unpaired_theirs']}")
+    sys.stdout.flush()
+    if result.get("caveat"):
+        print(f"  CAVEAT: {result['caveat']}", file=sys.stderr)
+    print(f"  {result['note']}", file=sys.stderr)
+    return 1 if result["disagreements"] else 0
+
+
+def _cmd_design_calc(name: Optional[str], inputs: list[str], as_json: bool = False) -> int:
     """Run one calculator from design/calculators.py.
 
     The inputs are read against the function's own signature, so a flag
@@ -778,4 +2679,3 @@ def cmd_calc(name: Optional[str], inputs: list[str], as_json: bool = False) -> i
                 value = f"{value:.6g}"
             print(f"{key}: {value}")
     return 0 if result.get("ok") else 1
-

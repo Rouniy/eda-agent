@@ -123,6 +123,114 @@ object StatusForm: TStatusForm
       OnMouseEnter = btn_HelpEnter
       OnMouseLeave = btn_HelpLeave
     end
+    object cmb_Project: TComboBox
+      Left = 14
+      Top = 30
+      Width = 352
+      Height = 24
+      Anchors = [akLeft, akTop, akRight]
+      Style = csDropDownList
+      Color = clWindow
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = clWindowText
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 0
+      Visible = False
+      OnDropDown = RefreshProjectChoices
+    end
+    object btn_UseProject: TButton
+      Left = 14
+      Top = 59
+      Width = 130
+      Height = 25
+      Caption = 'Use this project'
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = clBtnText
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      TabOrder = 1
+      Visible = False
+      OnClick = UseProjectClick
+    end
+    object lbl_SelectedProject: TLabel
+      Left = 14
+      Top = 90
+      Width = 352
+      Height = 50
+      Anchors = [akLeft, akTop, akRight]
+      AutoSize = False
+      WordWrap = True
+      ShowHint = True
+      Caption = 'READ ONLY - no project selected'
+      Visible = False
+    end
+    object lbl_Permissions: TLabel
+      Left = 14
+      Top = 146
+      Width = 352
+      Height = 36
+      Anchors = [akLeft, akTop, akRight]
+      AutoSize = False
+      WordWrap = True
+      ShowHint = True
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00E1E2E6
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+      Caption = 'Read-only permissions'
+      Visible = False
+    end
+    object chk_AllowParams: TPanel
+      Left = 14
+      Top = 186
+      Width = 352
+      Height = 20
+      Anchors = [akLeft, akTop, akRight]
+      BevelOuter = bvNone
+      Alignment = taLeftJustify
+      Caption = '  o  Allow parameter edits'
+      Color = $00202126
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00589EE0
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = [fsBold]
+      ParentFont = False
+      ShowHint = True
+      TabOrder = 2
+      Visible = False
+      OnClick = chk_AllowParamsClick
+    end
+    object chk_AllowPlace: TPanel
+      Left = 14
+      Top = 210
+      Width = 352
+      Height = 20
+      Anchors = [akLeft, akTop, akRight]
+      BevelOuter = bvNone
+      Alignment = taLeftJustify
+      Caption = '  o  Allow placement edits'
+      Color = $00202126
+      Cursor = crHandPoint
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = $00589EE0
+      Font.Height = -11
+      Font.Name = 'Segoe UI'
+      Font.Style = [fsBold]
+      ParentFont = False
+      ShowHint = True
+      TabOrder = 3
+      Visible = False
+      OnClick = chk_AllowPlaceClick
+    end
   end
   object pnl_KPIs: TPanel
     Left = 0

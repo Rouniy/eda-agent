@@ -124,14 +124,15 @@ Begin
 End;
 
 { An explicit owner_part_id puts a primitive on that part of a multi-part }
-{ symbol, the way Lib_AddPins already does; empty keeps SetOwnerPart.      }
+{ symbol, the way Lib_AddPins already does; 0 shares it across all parts.  }
+{ An empty value keeps SetOwnerPart.                                        }
 { Without it every body primitive landed on whichever part was current,  }
 { so part 2 of a dual op-amp could not get its own triangle.              }
 Procedure SetOwnerPartFrom(Obj : ISch_GraphicalObject; Component : ISch_Component;
     OwnerStr : String);
 Begin
     If Obj = Nil Then Exit;
-    If (OwnerStr <> '') And IsIntStr(OwnerStr) And (StrToIntDef(OwnerStr, 0) > 0) Then
+    If (OwnerStr <> '') And IsIntStr(OwnerStr) And (StrToIntDef(OwnerStr, -1) >= 0) Then
     Begin
         Try Obj.OwnerPartId := StrToIntDef(OwnerStr, 1); Except NoteWriteFailed('OwnerPartId'); End;
         Try Obj.OwnerPartDisplayMode := 0; Except NoteWriteFailed('OwnerPartDisplayMode'); End;
@@ -284,6 +285,21 @@ Begin
         If SchLib.CurrentSchComponent <> Nil Then
             SchLib.CurrentSchComponent.GraphicallyInvalidate;
     Except End;
+    Try Application.ProcessMessages; Except End;
+End;
+
+{ Mark the focused PcbLib document dirty. RegisterComponent persists a new }
+{ footprint container, but AddPCBObject does not reliably dirty the editor  }
+{ document, so newly-added pads/tracks vanished after close/reopen.          }
+Procedure MarkPcbLibDirty(PcbLib : IPCB_Library);
+Var
+    FullPath : String;
+Begin
+    If PcbLib = Nil Then Exit;
+    FullPath := '';
+    Try FullPath := PcbLib.Board.FileName; Except End;
+    If FullPath <> '' Then MarkDocDirtyByPath(FullPath);
+    Try PcbLib.Board.ViewManager_FullUpdate; Except End;
     Try Application.ProcessMessages; Except End;
 End;
 
@@ -1129,6 +1145,44 @@ Begin
         '{"success":true,"name":"' + EscapeJsonString(Name) + '"}');
 End;
 
+{ Switch the visible part of the selected multipart SchLib component. }
+Function Lib_SetActivePart(Params : String; RequestId : String) : String;
+Var
+    PartId, MaxParts : Integer;
+    SchLib : ISch_Lib;
+    Component : ISch_Component;
+Begin
+    PartId := StrToIntDef(ExtractJsonValue(Params, 'part_id'), 0);
+    SchLib := SchServer.GetCurrentSchDocument;
+    If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+            'No schematic library is active');
+        Exit;
+    End;
+    Component := GetTargetLibComponent(SchLib);
+    If Component = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_COMPONENT',
+            'No component is selected in the SchLib');
+        Exit;
+    End;
+    MaxParts := Component.PartCount;
+    If (PartId < 1) Or (PartId > MaxParts) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'PART_OUT_OF_RANGE',
+            'part_id ' + IntToStr(PartId) + ' is outside [1, '
+            + IntToStr(MaxParts) + ']');
+        Exit;
+    End;
+    Try Component.CurrentPartID := PartId; Except NoteWriteFailed('SchComponent.CurrentPartID'); End;
+    Try SchLib.GraphicallyInvalidate; Except End;
+    Result := BuildSuccessResponse(RequestId,
+        '{"part_id":' + IntToStr(PartId)
+        + ',"part_count":' + IntToStr(MaxParts)
+        + ',"component":"' + EscapeJsonString(Component.LibReference) + '"}');
+End;
+
 Function Lib_AddPin(Params : String; RequestId : String) : String;
 Var
     Designator, Name, ElecType : String;
@@ -1511,6 +1565,349 @@ Begin
         Result := BuildErrorResponse(RequestId, 'CREATE_FAILED', 'Failed to create footprint');
 End;
 
+{ Custom pad-list footprint, adapted from rabihnd/integration. All pads and
+  outlines are built while the same IPCB_LibComponent reference is held. }
+
+Function Lib_CustomTrack(Footprint : IPCB_LibComponent; Layer : TLayer;
+    X1, Y1, X2, Y2, OrgX, OrgY : Double) : Boolean;
+Var
+    Track : IPCB_Track;
+Begin
+    Result := False;
+    Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
+    If Track = Nil Then Exit;
+    Track.Layer := Layer;
+    Track.X1 := MMToCoord(OrgX + X1);
+    Track.Y1 := MMToCoord(OrgY + Y1);
+    Track.X2 := MMToCoord(OrgX + X2);
+    Track.Y2 := MMToCoord(OrgY + Y2);
+    Track.Width := MMToCoord(0.1);
+    Footprint.AddPCBObject(Track);
+    PCBServer.SendMessageToRobots(Track.I_ObjectAddress, c_Broadcast,
+        PCBM_BoardRegisteration, c_NoEventData);
+    Result := True;
+End;
+
+Function Lib_CreatePCBFootprint(Params : String; RequestId : String) : String;
+Var
+    PcbLib : IPCB_Library;
+    Footprint, Existing : IPCB_LibComponent;
+    Iter : IPCB_LibraryIterator;
+    Pad : IPCB_Pad;
+    Pin1Arc : IPCB_Arc;
+    DesigText : IPCB_Text;
+    Fields, PadNames : TStringList;
+    Name, LibPath, PadsText, Rest, Item, Field, ShapeText : String;
+    Description, ApplyText, CountText : String;
+    I, J, StartAt, Sep, Count, ExpectedCount, PadCount : Integer;
+    XMM, YMM, WMM, HMM, MinX, MaxX, MinY, MaxY : Double;
+    BodyX, BodyY, Excess, BX1, BX2, BY1, BY2, Chamfer : Double;
+    OrgX, OrgY : Double;
+    Created, RolledBack, AllAdded : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    Name := Trim(ExtractJsonValue(Params, 'name'));
+    Description := ExtractJsonValue(Params, 'description');
+    PadsText := ExtractJsonValue(Params, 'pads');
+    ApplyText := LowerCase(ExtractJsonValue(Params, 'apply'));
+    CountText := ExtractJsonValue(Params, 'expected_count');
+    If (LibPath = '') Or (Name = '') Or (PadsText = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'library_path, name and pads are required');
+        Exit;
+    End;
+    If (ApplyText <> '') And (ApplyText <> 'true') And (ApplyText <> 'false') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'apply must be true or false');
+        Exit;
+    End;
+    If (ApplyText = 'true') And (Not IsIntStr(CountText)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PRECONDITION',
+            'expected_count from the dry run is required');
+        Exit;
+    End;
+    If (Not IsFloatStr(ExtractJsonValue(Params, 'body_x_mm'))) Or
+       (Not IsFloatStr(ExtractJsonValue(Params, 'body_y_mm'))) Or
+       (Not IsFloatStr(ExtractJsonValue(Params, 'courtyard_excess_mm'))) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM', 'body and courtyard dimensions must be numbers');
+        Exit;
+    End;
+    BodyX := StrToFloatDef(ExtractJsonValue(Params, 'body_x_mm'), -1);
+    BodyY := StrToFloatDef(ExtractJsonValue(Params, 'body_y_mm'), -1);
+    Excess := StrToFloatDef(ExtractJsonValue(Params, 'courtyard_excess_mm'), -1);
+    If (BodyX < 0) Or (BodyY < 0) Or ((BodyX = 0) <> (BodyY = 0)) Or (Excess < 0) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_PARAM',
+            'body dimensions must both be positive or zero; courtyard excess must be nonnegative');
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library is active');
+        Exit;
+    End;
+    If UpperCase(PcbLib.Board.FileName) <> UpperCase(LibPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_LIBRARY',
+            'Focused PCB library differs from library_path');
+        Exit;
+    End;
+    Count := 0;
+    Iter := PcbLib.LibraryIterator_Create;
+    Try
+        Existing := Iter.FirstPCBObject;
+        While Existing <> Nil Do
+        Begin
+            Inc(Count);
+            If UpperCase(Existing.Name) = UpperCase(Name) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NAME_EXISTS',
+                    'Footprint already exists: ' + Name);
+                Exit;
+            End;
+            Existing := Iter.NextPCBObject;
+        End;
+    Finally
+        PcbLib.LibraryIterator_Destroy(Iter);
+    End;
+    If ApplyText = 'true' Then
+    Begin
+        ExpectedCount := StrToIntDef(CountText, -1);
+        If ExpectedCount <> Count Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'STALE_STATE',
+                'Footprint count changed since dry run');
+            Exit;
+        End;
+    End;
+    Fields := TStringList.Create;
+    PadNames := TStringList.Create;
+    PadCount := 0;
+    MinX := 1.0E9; MinY := 1.0E9; MaxX := -1.0E9; MaxY := -1.0E9;
+    Try
+        Rest := PadsText;
+        While Rest <> '' Do
+        Begin
+            Sep := Pos('~~', Rest);
+            If Sep = 0 Then Begin Item := Rest; Rest := ''; End
+            Else Begin Item := Copy(Rest, 1, Sep - 1);
+                Rest := Copy(Rest, Sep + 2, Length(Rest)); End;
+            Fields.Free;
+            Fields := TStringList.Create;
+            StartAt := 1;
+            For I := 1 To Length(Item) + 1 Do
+                If (I > Length(Item)) Or (Item[I] = '|') Then
+                Begin
+                    Field := Copy(Item, StartAt, I - StartAt);
+                    Fields.Add(Field);
+                    StartAt := I + 1;
+                End;
+            If Fields.Count <> 6 Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PAD', 'Each pad requires six fields');
+                Exit;
+            End;
+            If (Trim(Fields[0]) = '') Or (PadNames.IndexOf(UpperCase(Fields[0])) >= 0) Or
+               (Not IsFloatStr(Fields[1])) Or (Not IsFloatStr(Fields[2])) Or
+               (Not IsFloatStr(Fields[3])) Or (Not IsFloatStr(Fields[4])) Or
+               ((Fields[5] <> 'Round') And (Fields[5] <> 'Rect') And (Fields[5] <> 'Oval')) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PAD',
+                    'Pad name, dimensions, shape or uniqueness is invalid');
+                Exit;
+            End;
+            PadNames.Add(UpperCase(Fields[0]));
+            XMM := StrToFloatDef(Fields[1], 0); YMM := StrToFloatDef(Fields[2], 0);
+            WMM := StrToFloatDef(Fields[3], 0); HMM := StrToFloatDef(Fields[4], 0);
+            If (WMM <= 0) Or (HMM <= 0) Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'BAD_PAD', 'Pad sizes must be positive');
+                Exit;
+            End;
+            If XMM - WMM/2 < MinX Then MinX := XMM - WMM/2;
+            If XMM + WMM/2 > MaxX Then MaxX := XMM + WMM/2;
+            If YMM - HMM/2 < MinY Then MinY := YMM - HMM/2;
+            If YMM + HMM/2 > MaxY Then MaxY := YMM + HMM/2;
+            Inc(PadCount);
+        End;
+        If PadCount = 0 Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PAD', 'At least one pad is required');
+            Exit;
+        End;
+        If BodyX > 0 Then
+        Begin
+            BX1 := -BodyX/2; BX2 := BodyX/2;
+            BY1 := -BodyY/2; BY2 := BodyY/2;
+        End
+        Else
+        Begin
+            BX1 := MinX - 0.25; BX2 := MaxX + 0.25;
+            BY1 := MinY - 0.25; BY2 := MaxY + 0.25;
+        End;
+        Chamfer := 0.5;
+        If Chamfer > (BX2 - BX1)/4 Then Chamfer := (BX2 - BX1)/4;
+        If Chamfer > (BY2 - BY1)/4 Then Chamfer := (BY2 - BY1)/4;
+        If ApplyText <> 'true' Then
+        Begin
+            Result := BuildSuccessResponse(RequestId, JsonObj(
+                JsonStr('library_path', PcbLib.Board.FileName) + ','
+                + JsonStr('name', Name) + ','
+                + JsonInt('footprint_count', Count) + ','
+                + JsonInt('pad_count', PadCount) + ','
+                + JsonBool('wrote', False) + ','
+                + JsonRaw('body_mm', '[' + FloatToJsonStr(BX1) + ',' + FloatToJsonStr(BY1)
+                    + ',' + FloatToJsonStr(BX2) + ',' + FloatToJsonStr(BY2) + ']')));
+            Exit;
+        End;
+        Created := False;
+        RolledBack := False;
+        Footprint := Nil;
+        Try
+            Footprint := PCBServer.CreatePCBLibComp;
+            If Footprint = Nil Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+                    'Footprint factory returned no component');
+                Exit;
+            End;
+            Footprint.Name := Name;
+            Footprint.Description := Description;
+            PcbLib.RegisterComponent(Footprint);
+            Created := True;
+            OrgX := CoordToMM(Footprint.X);
+            OrgY := CoordToMM(Footprint.Y);
+            AllAdded := True;
+            Rest := PadsText;
+            While Rest <> '' Do
+            Begin
+                Sep := Pos('~~', Rest);
+                If Sep = 0 Then Begin Item := Rest; Rest := ''; End
+                Else Begin Item := Copy(Rest, 1, Sep - 1);
+                    Rest := Copy(Rest, Sep + 2, Length(Rest)); End;
+                Fields.Free; Fields := TStringList.Create; StartAt := 1;
+                For I := 1 To Length(Item) + 1 Do
+                    If (I > Length(Item)) Or (Item[I] = '|') Then
+                    Begin
+                        Fields.Add(Copy(Item, StartAt, I - StartAt));
+                        StartAt := I + 1;
+                    End;
+                Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+                If Pad = Nil Then Begin AllAdded := False; Break; End;
+                Pad.Name := Fields[0];
+                Pad.Mode := ePadMode_Simple;
+                Pad.HoleSize := 0;
+                Pad.X := MMToCoord(OrgX + StrToFloatDef(Fields[1], 0));
+                Pad.Y := MMToCoord(OrgY + StrToFloatDef(Fields[2], 0));
+                Pad.Layer := eTopLayer;
+                Pad.TopXSize := MMToCoord(StrToFloatDef(Fields[3], 0));
+                Pad.TopYSize := MMToCoord(StrToFloatDef(Fields[4], 0));
+                ShapeText := Fields[5];
+                If ShapeText = 'Round' Then Pad.TopShape := eRounded
+                Else If ShapeText = 'Oval' Then Pad.TopShape := eRounded
+                Else Pad.TopShape := eRectangular;
+                Footprint.AddPCBObject(Pad);
+                PCBServer.SendMessageToRobots(Pad.I_ObjectAddress, c_Broadcast,
+                    PCBM_BoardRegisteration, c_NoEventData);
+            End;
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX1, BY1, BX2, BY1, OrgX, OrgY);
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX2, BY1, BX2, BY2, OrgX, OrgY);
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX2, BY2, BX1+Chamfer, BY2, OrgX, OrgY);
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX1+Chamfer, BY2, BX1, BY2-Chamfer, OrgX, OrgY);
+            If AllAdded Then AllAdded := Lib_CustomTrack(Footprint, eTopOverlay, BX1, BY2-Chamfer, BX1, BY1, OrgX, OrgY);
+            For J := 0 To 3 Do If AllAdded Then
+            Begin
+                If J = 0 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(13), BX1, BY1, BX2, BY1, OrgX, OrgY);
+                If J = 1 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(13), BX2, BY1, BX2, BY2, OrgX, OrgY);
+                If J = 2 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(13), BX2, BY2, BX1, BY2, OrgX, OrgY);
+                If J = 3 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(13), BX1, BY2, BX1, BY1, OrgX, OrgY);
+                If J = 0 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(15), BX1-Excess, BY1-Excess, BX2+Excess, BY1-Excess, OrgX, OrgY);
+                If J = 1 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(15), BX2+Excess, BY1-Excess, BX2+Excess, BY2+Excess, OrgX, OrgY);
+                If J = 2 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(15), BX2+Excess, BY2+Excess, BX1-Excess, BY2+Excess, OrgX, OrgY);
+                If J = 3 Then AllAdded := Lib_CustomTrack(Footprint, ILayer.MechanicalLayer(15), BX1-Excess, BY2+Excess, BX1-Excess, BY1-Excess, OrgX, OrgY);
+            End;
+            If AllAdded Then
+            Begin
+                Pin1Arc := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
+                If Pin1Arc = Nil Then AllAdded := False
+                Else
+                Begin
+                    Pin1Arc.Layer := eTopOverlay;
+                    Pin1Arc.XCenter := MMToCoord(OrgX + BX1 - 0.3);
+                    Pin1Arc.YCenter := MMToCoord(OrgY + BY2 + 0.3);
+                    Pin1Arc.Radius := MMToCoord(0.15);
+                    Pin1Arc.LineWidth := MMToCoord(0.30);
+                    Pin1Arc.StartAngle := 0;
+                    Pin1Arc.EndAngle := 360;
+                    Footprint.AddPCBObject(Pin1Arc);
+                    PCBServer.SendMessageToRobots(Pin1Arc.I_ObjectAddress,
+                        c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
+                End;
+            End;
+            If AllAdded Then
+            Begin
+                DesigText := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
+                If DesigText = Nil Then AllAdded := False
+                Else
+                Begin
+                    DesigText.Text := '.Designator';
+                    DesigText.Layer := ILayer.MechanicalLayer(13);
+                    DesigText.XLocation := MMToCoord(OrgX + BX1);
+                    DesigText.YLocation := MMToCoord(OrgY);
+                    DesigText.Size := MMToCoord(1.0);
+                    DesigText.Width := MMToCoord(0.15);
+                    Footprint.AddPCBObject(DesigText);
+                    PCBServer.SendMessageToRobots(DesigText.I_ObjectAddress,
+                        c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
+                End;
+            End;
+            If Not AllAdded Then
+            Begin
+                PcbLib.RemoveComponent(Footprint);
+                Created := False;
+                Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+                    'A pad or outline primitive could not be created; footprint removed');
+                Exit;
+            End;
+            PcbLib.CurrentComponent := Footprint;
+            PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress, c_Broadcast,
+                PCBM_BoardRegisteration, Footprint.I_ObjectAddress);
+            PcbLib.Board.ViewManager_FullUpdate;
+            MarkDocDirtyByPath(PcbLib.Board.FileName);
+        Except
+            If Created Then
+            Begin
+                Try
+                    PcbLib.RemoveComponent(Footprint);
+                    RolledBack := True;
+                Except End;
+            End;
+            If RolledBack Then
+                Result := BuildErrorResponse(RequestId, 'CREATE_FAILED',
+                    'Footprint construction failed and was rolled back')
+            Else
+                Result := BuildErrorResponse(RequestId, 'PARTIAL_CREATE',
+                    'Footprint construction failed; check the library before retrying');
+            Exit;
+        End;
+        Result := BuildSuccessResponse(RequestId, JsonObj(
+            JsonStr('library_path', PcbLib.Board.FileName) + ','
+            + JsonStr('name', Name) + ','
+            + JsonInt('footprint_count_before', Count) + ','
+            + JsonInt('pad_count', PadCount) + ','
+            + JsonBool('wrote', True) + ','
+            + JsonRaw('body_mm', '[' + FloatToJsonStr(BX1) + ',' + FloatToJsonStr(BY1)
+                + ',' + FloatToJsonStr(BX2) + ',' + FloatToJsonStr(BY2) + ']')));
+    Finally
+        Fields.Free;
+        PadNames.Free;
+    End;
+End;
+
 { FootprintOriginX / Y - the footprint's own origin, in board coordinates.    }
 {                                                                             }
 { EVERY AUTHORING CALL HERE MUST OFFSET BY THIS. A PcbLib footprint does not  }
@@ -1591,6 +1988,7 @@ End;
   per-layer setters ignore: it came out round with corner_pct 0. Its shape
   and percentage go on the top, middle and bottom layers instead. Altium
   stores the radius only as a percentage of half the shortest side. }
+
 Procedure SetPadRoundRect(Pad : IPCB_Pad; Pct : Integer);
 Begin
     If Pad.Layer = eMultiLayer Then
@@ -1617,6 +2015,7 @@ End;
   into a round pad. Returns the shape
   word, empty when none was given (each writer keeps its own default), or
   "?" and the word as given when it is not a pad shape. }
+
 Function CanonicalPadShape(Raw : String) : String;
 Var
     S : String;
@@ -4575,9 +4974,10 @@ Begin
 End;
 
 { Lib_GetFootprintPads - Read the pad geometry of one footprint in the active }
-{ (or named) PcbLib, for export (e.g. KiCad .kicad_mod). Coordinates are in   }
-{ mils relative to the library origin (the footprint reference point), which  }
-{ is the same frame Lib_AddFootprintPad writes in.                            }
+{ (or named) PcbLib, for export (e.g. KiCad .kicad_mod) and for library       }
+{ validation (eng_validate_library_live). Coordinates are in mils relative to }
+{ the library origin (the footprint reference point), which is the same      }
+{ frame Lib_AddFootprintPad writes in.                                        }
 {                                                                              }
 { Params:                                                                      }
 {   footprint_name - optional; defaults to the library's current component.   }
@@ -4585,14 +4985,18 @@ End;
 {                                                                              }
 { Response: name, pad_count, and a pads array; each pad carries name, x, y,   }
 {   size_x, size_y, shape, layer, hole, rotation -- dimensions in mils, angles }
-{   in degrees.                                                                }
+{   in degrees. Also a primitives array (kind: track/arc/region/fill, layer,  }
+{   and -- tracks only -- x1/y1/x2/y2 in the same mils/footprint-origin frame }
+{   as pads, so a caller can isolate silkscreen/courtyard outline tracks by   }
+{   layer name without a second round-trip); bodies (3D body count) and       }
+{   has_3d (bodies > 0) for an audit that needs only presence, not the count. }
 Function Lib_GetFootprintPads(Params : String; RequestId : String) : String;
 Var
     SeenPads : TStringList;
     PadAddr : String;
     LibPath, FocusedPath, FpWanted, FpName : String;
     ShapeStr, LayerStr, PadsJson, RespJson : String;
-    PrimsJson, KindStr : String;
+    PrimsJson, KindStr, CoordsJson : String;
     Workspace : IWorkspace;
     Doc : IDocument;
     PcbLib : IPCB_Library;
@@ -4601,6 +5005,7 @@ Var
     GrpIter : IPCB_GroupIterator;
     Pad : IPCB_Pad;
     Prim : IPCB_Primitive;
+    Track : IPCB_Track;
     XOrg, YOrg : TCoord;
     Count, PCount, BodyCount : Integer;
 Begin
@@ -4751,7 +5156,19 @@ Begin
       component bodies. Layer names come from GetLayerString, so the policy
       auditor sees 'TopOverlay', 'Mechanical13', etc. Only ObjectId / Layer
       are touched here -- both live on IPCB_Primitive -- so no interface
-      narrowing is needed. }
+      narrowing is needed for arc/region/fill.
+
+      TRACKS also carry x1/y1/x2/y2, in mils relative to the footprint's
+      own origin (same frame as the pads above), so a caller can tell
+      silkscreen/courtyard outline tracks from pad positions without a
+      second round-trip. Cast to IPCB_Track only for eTrackObject, the one
+      kind this caller (libvalidate.py's courtyard bbox and axis-aligned
+      silkscreen-clearance check) needs coordinates for; arcs/regions/fills
+      stay kind+layer only, same as before. Which layer means "courtyard"
+      or "silkscreen" is not this library's to decide -- Altium has no
+      per-footprint API for that (board-level LayerObject_V7.Kind is the
+      closest, but it is unset in most vendor libraries) -- so the caller
+      matches layer names itself, same as it already does for PCB reads. }
     PrimsJson := '[';
     PCount := 0;
     BodyCount := 0;
@@ -4772,10 +5189,25 @@ Begin
                 Else If Prim.ObjectId = eFillObject Then KindStr := 'fill';
                 LayerStr := '';
                 Try LayerStr := LayerDisplayName(Prim.Layer); Except End;
+                CoordsJson := '';
+                If KindStr = 'track' Then
+                Begin
+                    Try
+                        Track := Prim;
+                        CoordsJson :=
+                            ',"x1":' + FloatToJsonStr(CoordToMilsF(Track.X1 - XOrg)) +
+                            ',"y1":' + FloatToJsonStr(CoordToMilsF(Track.Y1 - YOrg)) +
+                            ',"x2":' + FloatToJsonStr(CoordToMilsF(Track.X2 - XOrg)) +
+                            ',"y2":' + FloatToJsonStr(CoordToMilsF(Track.Y2 - YOrg));
+                    Except
+                        CoordsJson := '';
+                    End;
+                End;
                 If PCount > 0 Then PrimsJson := PrimsJson + ',';
                 PrimsJson := PrimsJson +
                     '{"kind":"' + KindStr + '"' +
-                    ',"layer":"' + EscapeJsonString(LayerStr) + '"}';
+                    ',"layer":"' + EscapeJsonString(LayerStr) + '"' +
+                    CoordsJson + '}';
                 Inc(PCount);
             End;
             Prim := GrpIter.NextPCBObject;
@@ -4790,7 +5222,8 @@ Begin
         ',"pad_count":' + IntToStr(Count) +
         ',"pads":' + PadsJson +
         ',"primitives":' + PrimsJson +
-        ',"bodies":' + IntToStr(BodyCount) + '}';
+        ',"bodies":' + IntToStr(BodyCount) +
+        ',"has_3d":' + BoolToJsonStr(BodyCount > 0) + '}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 
@@ -6576,9 +7009,8 @@ Var
     LiveLib : ISch_Lib;
     LiveIter : ISch_Iterator;
     LiveComp : ISch_Component;
-    CompNum, I, Tab, PartNo : Integer;
+    CompNum, I, Tab, PartCount : Integer;
     First, WithParams, WithDesignator, ExactParts : Boolean;
-    OpenPath : String;
 Begin
     // Get library path from parameter or active document
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -6599,8 +7031,7 @@ Begin
     // payload stays small -- intended for library-wide designator audits.
     WithDesigStr := ExtractJsonValue(Params, 'with_designator');
     WithDesignator := (WithDesigStr = 'true') Or (WithDesigStr = 'True') Or (WithDesigStr = '1');
-    { The file reader's PartCount can read one high; the open symbol's is right. }
-    ExactParts := LowerCase(ExtractJsonValue(Params, 'exact_part_counts')) = 'true';
+    ExactParts := ExtractJsonValue(Params, 'accurate_part_counts') = 'true';
 
     If LibPath = '' Then
     Begin
@@ -6662,15 +7093,22 @@ Begin
     LibReader.ReadAllComponentInfo;
     CompNum := LibReader.NumComponentInfos;
 
-    { The live symbols come from THE LIBRARY ASKED FOR, opened if need be.  }
-    { They came from whichever library was in front, so a call naming one   }
-    { library returned another's parameters.                               }
-    SchLib := Nil;
+    { The live component is required for exact PartCount and for optional
+      parameters/designator. Resolve by the requested path: using the
+      current document here mixed file metadata with ANOTHER active SchLib. }
+    LiveLib := Nil;
+    Try LiveLib := SchServer.GetSchDocumentByPath(LibPath); Except LiveLib := Nil; End;
     If WithParams Or WithDesignator Or ExactParts Then
     Begin
-        OpenPath := LibPath;
-        SchLib := FocusSchLib(OpenPath);
+        If (LiveLib = Nil) Or (LiveLib.ObjectId <> eSchLib) Then
+        Begin
+            SchServer.DestroyCompInfoReader(LibReader);
+            Result := BuildErrorResponse(RequestId, 'LIVE_LIBRARY_REQUIRED',
+                'Open the requested .SchLib for parameters, designators or exact part counts');
+            Exit;
+        End;
     End;
+    SchLib := LiveLib;
 
     Data := '[';
     First := True;
@@ -6689,20 +7127,17 @@ Begin
         Data := Data + '{"index":' + IntToStr(I) +
             ',"name":"' + EscapeJsonString(CompName) + '"';
         Try Data := Data + ',"alias_name":"' + EscapeJsonString(CompInfo.AliasName) + '"'; Except End;
-        PartNo := 0;
-        Try PartNo := CompInfo.PartCount; Except End;
-        If ExactParts And (SchLib <> Nil) Then
+        PartCount := 0;
+        Try PartCount := CompInfo.PartCount; Except End;
+        Component := Nil;
+        If (WithParams Or WithDesignator Or ExactParts) And (LiveLib <> Nil) Then
+            Component := LookupLibComponent(LiveLib, CompName);
+        If Component <> Nil Then
         Begin
-            Component := LookupLibComponent(SchLib, CompName);
-            If Component <> Nil Then
-            Begin
-                Try PartNo := Component.PartCount; Except End;
-                Data := Data + ',"part_count_checked":true';
-            End
-            Else
-                Data := Data + ',"part_count_checked":false';
+            Try PartCount := Component.PartCount; Except End;
         End;
-        Data := Data + ',"part_count":' + IntToStr(PartNo);
+        Data := Data + ',"part_count":' + IntToStr(PartCount)
+            + ',"part_count_exact":' + BoolToJsonStr(Component <> Nil);
         Data := Data + ',"description":"' + EscapeJsonString(CompInfo.Description) + '"';
 
         // Slow path, opt-in via with_parameters=true.
@@ -6720,7 +7155,6 @@ Begin
             DefDesig := '';
             If (SchLib <> Nil) And (SchLib.ObjectId = eSchLib) Then
             Begin
-                Component := LookupLibComponent(SchLib, CompName);
                 If (Component <> Nil) And WithDesignator Then
                     Try DefDesig := Component.Designator.Text; Except End;
                 If (Component <> Nil) And WithParams Then
@@ -7405,6 +7839,9 @@ Begin
     { Component already resolved above (by name or index). }
     If Description = '' Then
         Try Description := Component.ComponentDescription; Except End;
+    { The on-disk reader can report PartCount+1 on multipart symbols in AD26. }
+    { Prefer the already-resolved live component, whose PartCount is exact.   }
+    Try PartCount := Component.PartCount; Except End;
 
     { Designator + Comment full-style records. The sub-objects ARE        }
     { ISch_Label-derived so they expose Text + FontId + Color + IsHidden  }
@@ -7757,7 +8194,7 @@ Var
     Doc : IDocument;
     ServerDoc : IServerDocument;
     F : TextFile;
-    Line, OldName, NewName, FailReasons : String;
+    Line, OldName, NewName, Errors, FailReasons : String;
     PipePos : Integer;
     Renamed, Failed, LineNum : Integer;
 Begin
@@ -7816,6 +8253,7 @@ Begin
     Renamed := 0;
     Failed := 0;
     LineNum := 0;
+    Errors := '';
 
     // Begin modification block
     SchBeginEdit(SchLib, '');
@@ -7835,6 +8273,9 @@ Begin
                 If PipePos = 0 Then
                 Begin
                     Inc(Failed);
+                    If Errors <> '' Then Errors := Errors + ';';
+                    Errors := Errors + 'line ' + IntToStr(LineNum)
+                        + ': malformed (no | separator)';
                     AddFailReason(FailReasons, Line, 'no | separator on the line');
                     Continue;
                 End;
@@ -7857,16 +8298,39 @@ Begin
                 If Component = Nil Then
                 Begin
                     Inc(Failed);
+                    If Errors <> '' Then Errors := Errors + ';';
+                    Errors := Errors + OldName + '->' + NewName
+                        + ': component not found';
                     AddFailReason(FailReasons, OldName,
                         'no component with that library reference');
                     Continue;
                 End;
 
-                // Must remove and re-add to update the library's internal index
-                SchLib.RemoveSchComponent(Component);
-                Component.LibReference := NewName;
-                SchLib.AddSchComponent(Component);
-                Inc(Renamed);
+                If ScanLibForComponent(SchLib, NewName) <> Nil Then
+                Begin
+                    Inc(Failed);
+                    If Errors <> '' Then Errors := Errors + ';';
+                    Errors := Errors + OldName + '->' + NewName
+                        + ': target name already exists';
+                    AddFailReason(FailReasons, OldName,
+                        'target name already exists: ' + NewName);
+                    Continue;
+                End;
+
+                Try
+                    // Must remove and re-add to update the internal index.
+                    SchLib.RemoveSchComponent(Component);
+                    Component.LibReference := NewName;
+                    SchLib.AddSchComponent(Component);
+                    Inc(Renamed);
+                Except
+                    Inc(Failed);
+                    If Errors <> '' Then Errors := Errors + ';';
+                    Errors := Errors + OldName + '->' + NewName
+                        + ': write raised';
+                    AddFailReason(FailReasons, OldName,
+                        'write raised while renaming to ' + NewName);
+                End;
             End;
         Finally
             CloseFile(F);
@@ -7883,6 +8347,7 @@ Begin
         '{"renamed":' + IntToStr(Renamed) +
         ',"failed":' + IntToStr(Failed) +
         ',"total_lines":' + IntToStr(LineNum) +
+        ',"errors":"' + EscapeJsonString(Errors) + '"' +
         ',"failures":[' + FailReasons + ']}');
 End;
 
@@ -8157,8 +8622,6 @@ Begin
                 Else
                     Polygon.IsSolid := False;
             End;
-            { Border colour, line width and an explicit solid flag: the   }
-            { rest of a house style (issue #114).                         }
             If ColorStr <> '' Then
             Begin
                 Try Polygon.Color := StrToIntDef(ColorStr, 0); Except NoteWriteFailed('Polygon.Color'); End;
@@ -9217,7 +9680,7 @@ Begin
             Line.LineWidth := Width;
 
             SetOwnerPartFrom(Line, Component, GetBatchField(Op, 'owner_part_id'));
-            ViaLib := AddLibSymbolPrim(SchLib, Component, Line);
+            If AddLibSymbolPrim(SchLib, Component, Line) Then ViaLib := True;
             Inc(Added);
         End;
     Finally
@@ -11280,6 +11743,202 @@ End;
 {..............................................................................}
 { Lib_GetVaultName - the Workspace name the managed tools would use.          }
 {..............................................................................}
+Function Lib_ResolveWorkspaceComponent(Params : String; RequestId : String) : String;
+Var
+    ComponentName, CandidateComment, WorkspaceGuid, ItemGuid, RevisionGuid : String;
+    ItemRevisionId, ContentTypeGuid : String;
+    ServerManagerProvider, ServerManager, Vault : Variant;
+    SearchResult, Revisions, FoundRevision, CandidateRevision : Variant;
+    LatestRevision : Variant;
+    RevisionCount, I, ExactCount : Integer;
+Begin
+    ComponentName := Trim(ExtractJsonValue(Params, 'component_name'));
+    If ComponentName = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_COMPONENT_NAME',
+            'component_name must be a non-empty exact name');
+        Exit;
+    End;
+
+    ServerManagerProvider := Nil;
+    ServerManager := Nil;
+    Vault := Nil;
+    SearchResult := Nil;
+    Revisions := Nil;
+    FoundRevision := Nil;
+    CandidateRevision := Nil;
+    LatestRevision := Nil;
+
+    Try Client.StartServer('EDMSInterface'); Except End;
+
+    Try
+        ServerManagerProvider :=
+            Client.GetDotNetObjectInterface('EDMS_GetDXPServerManager');
+    Except
+        ServerManagerProvider := Nil;
+    End;
+    If ServerManagerProvider <> Nil Then
+    Begin
+        Try
+            ServerManager :=
+                ServerManagerProvider.GetDXPServerManagerInterface;
+        Except
+            ServerManager := Nil;
+        End;
+    End;
+
+    { Some Altium builds publish the manager itself instead of its provider. }
+    If ServerManager = Nil Then
+    Begin
+        Try
+            ServerManager :=
+                Client.GetDotNetObjectInterface('EDMS_DXPServerManager');
+        Except
+            ServerManager := Nil;
+        End;
+    End;
+
+    If ServerManager = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE_MANAGER',
+            'The Altium Workspace server manager is unavailable');
+        Exit;
+    End;
+    If Not ServerManager.IsConnected Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_DISCONNECTED',
+            'Altium is not connected to a Workspace');
+        Exit;
+    End;
+
+    Try Vault := ServerManager.GetEnterpriseVault; Except Vault := Nil; End;
+    If Vault = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE_VAULT',
+            'The connected Workspace could not be opened');
+        Exit;
+    End;
+
+    Try
+        SearchResult := Vault.SearchItemRevisions(
+            '', '', ComponentName, '', '',
+            'CB3C11C4-E317-11DF-B822-12313F0024A2',
+            '', '', 100, 0, Nil, Nil);
+    Except
+        SearchResult := Nil;
+    End;
+    If SearchResult = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_SEARCH_FAILED',
+            'The Workspace component search could not be started');
+        Exit;
+    End;
+
+    If Not SearchResult.WaitUntilDone(30000) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_SEARCH_TIMEOUT',
+            'The Workspace component search timed out');
+        Exit;
+    End;
+
+    { SearchItemRevisions is fuzzy. The first hit need not be the exact name. }
+    Try Revisions := SearchResult.GetItemRevisions; Except Revisions := Nil; End;
+    If Revisions = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_RESULTS_UNREADABLE',
+            'The Workspace search result list could not be read');
+        Exit;
+    End;
+    Try RevisionCount := Revisions.GetCount; Except RevisionCount := -1; End;
+    If RevisionCount < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_RESULTS_UNREADABLE',
+            'The Workspace search result count could not be read');
+        Exit;
+    End;
+    If RevisionCount = 100 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_SEARCH_TRUNCATED',
+            'The search returned 100 results; an exact and unique match cannot be verified');
+        Exit;
+    End;
+    If RevisionCount = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WORKSPACE_COMPONENT_NOT_FOUND',
+            'No Component Item matching "' + ComponentName + '" was found');
+        Exit;
+    End;
+
+    ExactCount := 0;
+    For I := 0 To RevisionCount - 1 Do
+    Begin
+        Try FoundRevision := Revisions.Get(I); Except FoundRevision := Nil; End;
+        If FoundRevision = Nil Then Continue;
+        Try CandidateComment := FoundRevision.GetComment;
+        Except CandidateComment := ''; End;
+        If UpperCase(Trim(CandidateComment)) <> UpperCase(ComponentName) Then
+            Continue;
+        Try CandidateRevision := Vault.GetLastItemRevision(FoundRevision.GetItemGUID);
+        Except CandidateRevision := Nil; End;
+        If CandidateRevision = Nil Then Continue;
+        If UpperCase(Trim(CandidateRevision.GetComment)) <> UpperCase(ComponentName) Then
+            Continue;
+        If UpperCase(CandidateRevision.GetContentTypeGUID) <>
+           'CB3C11C4-E317-11DF-B822-12313F0024A2' Then Continue;
+        If ExactCount = 0 Then
+        Begin
+            LatestRevision := CandidateRevision;
+            ExactCount := 1;
+        End
+        Else If UpperCase(CandidateRevision.GetItemGUID) <>
+                UpperCase(LatestRevision.GetItemGUID) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'AMBIGUOUS_WORKSPACE_COMPONENT',
+                'More than one Component Item has the exact name "' +
+                ComponentName + '"');
+            Exit;
+        End;
+    End;
+    If ExactCount = 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_EXACT_WORKSPACE_MATCH',
+            'No exact Component Item named "' + ComponentName +
+            '" was present among the Workspace search results');
+        Exit;
+    End;
+
+    ContentTypeGuid := LatestRevision.GetContentTypeGUID;
+    If UpperCase(ContentTypeGuid) <>
+       'CB3C11C4-E317-11DF-B822-12313F0024A2' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_COMPONENT_ITEM',
+            'The exact Workspace match is not a Component Item');
+        Exit;
+    End;
+
+    WorkspaceGuid := Vault.GetVaultGUID;
+    ItemGuid := LatestRevision.GetItemGUID;
+    RevisionGuid := LatestRevision.GetGUID;
+    ItemRevisionId := LatestRevision.GetHRID;
+    If (WorkspaceGuid = '') Or (ItemGuid = '') Or (RevisionGuid = '') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INCOMPLETE_WORKSPACE_IDENTITY',
+            'The Workspace returned incomplete component identifiers');
+        Exit;
+    End;
+
+    Result := BuildSuccessResponse(RequestId,
+        JsonObj(
+            JsonStr('component_name', LatestRevision.GetComment) + ',' +
+            JsonStr('workspace_guid', WorkspaceGuid) + ',' +
+            JsonStr('item_guid', ItemGuid) + ',' +
+            JsonStr('revision_guid', RevisionGuid) + ',' +
+            JsonStr('item_revision_id', ItemRevisionId) + ',' +
+            JsonStr('content_type_guid', ContentTypeGuid)
+        ));
+End;
+
+
 Function Lib_GetVaultName(Params : String; RequestId : String) : String;
 Var
     Name, Seen : String;
@@ -11291,6 +11950,62 @@ Begin
         + ',"vault":"' + EscapeJsonString(Name) + '"'
         + ',"other_kind":' + BoolToJsonStr(FromOtherKind)
         + ',"seen":"' + EscapeJsonString(Seen) + '"}');
+End;
+
+{ List all libraries Altium knows, including those not installed. The
+  available-library type is TLibraryType, not a reliable Workspace source
+  indicator; obtain a Workspace name separately from a placed managed part. }
+
+Function Lib_ListAvailableLibraries(Params : String; RequestId : String) : String;
+Var
+    I, Total, Installed, Kind : Integer;
+    Path, ItemsJson, WorkspaceName, Seen, Diag : String;
+    FromOtherKind : Boolean;
+Begin
+    If IntegratedLibraryManager = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MANAGER',
+            'IntegratedLibraryManager unavailable');
+        Exit;
+    End;
+    Total := -1;
+    Installed := -1;
+    Try Total := IntegratedLibraryManager.AvailableLibraryCount; Except End;
+    Try Installed := IntegratedLibraryManager.InstalledLibraryCount; Except End;
+    If Total < 0 Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'ENUM_FAILED',
+            'AvailableLibraryCount is unavailable');
+        Exit;
+    End;
+    ItemsJson := '';
+    Diag := '';
+    For I := 0 To Total - 1 Do
+    Begin
+        Path := '';
+        Kind := -1;
+        Try Path := IntegratedLibraryManager.AvailableLibraryPath(I);
+        Except Diag := Diag + 'path ' + IntToStr(I) + ' unreadable;'; End;
+        Try Kind := IntegratedLibraryManager.AvailableLibraryType(I);
+        Except Diag := Diag + 'type ' + IntToStr(I) + ' unreadable;'; End;
+        If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+        ItemsJson := ItemsJson + '{"index":' + IntToStr(I)
+            + ',"library_path":"' + EscapeJsonString(Path) + '"'
+            + ',"library_type":"' + LibTypeName(Kind) + '"'
+            + ',"library_type_ordinal":' + IntToStr(Kind) + '}';
+    End;
+    WorkspaceName := '';
+    Seen := '';
+    FromOtherKind := False;
+    VaultNameFromDesign(WorkspaceName, Seen, FromOtherKind);
+    Result := BuildSuccessResponse(RequestId,
+        '{"libraries":[' + ItemsJson + ']'
+        + ',"available_count":' + IntToStr(Total)
+        + ',"installed_count":' + IntToStr(Installed)
+        + ',"workspace_from_design":"' + EscapeJsonString(WorkspaceName) + '"'
+        + ',"workspace_identifiers_seen":"' + EscapeJsonString(Seen) + '"'
+        + ',"workspace_other_kind":' + BoolToJsonStr(FromOtherKind)
+        + ',"diag":"' + EscapeJsonString(Diag) + '"}');
 End;
 
 {..............................................................................}
@@ -11431,6 +12146,411 @@ Begin
         + ',"placement_parameters":"' + EscapeJsonString(PlaceParams) + '"'
         + ',"note":"' + EscapeJsonString(Note) + '"'
         + ',"diag":"' + EscapeJsonString(Diag) + '"}');
+End;
+
+{..............................................................................}
+{ Symbol preview: one library symbol's drawing, read without placing it.      }
+{                                                                              }
+{ The shape matches a component in Gen_GetSchGeometry (primitives in mils,    }
+{ Altium colours, pins as body-side root plus length and rotation), so the    }
+{ Python side draws it with the schematic renderer. Coordinates are the       }
+{ symbol's own, around its library origin.                                    }
+{..............................................................................}
+
+{ One graphic of a symbol as JSON, or '' for a kind not drawn. FLAT Ifs on    }
+{ the ObjectId with typed locals: a member asked of the wrong interface       }
+{ raises a modal Try/Except cannot catch (see Gen_MirrorSchComponent), and    }
+{ DelphiScript mis-binds long Else If chains.                                 }
+Function SymbolPrimJson(Prim : ISch_GraphicalObject) : String;
+Var
+    Kind, VtxN, V : Integer;
+    Rect : ISch_Rectangle;
+    RoundRect : ISch_RoundRectangle;
+    Line : ISch_Line;
+    Arc : ISch_Arc;
+    EllipArc : ISch_EllipticalArc;
+    Poly : ISch_Polyline;
+    Ellipse : ISch_Ellipse;
+    Bezier : ISch_Bezier;
+    Lbl : ISch_Label;
+    Vert : TLocation;
+    Pts : String;
+Begin
+    Result := '';
+    Kind := Prim.ObjectId;
+    If Kind = eRectangle Then
+    Begin
+        Rect := Prim;
+        Result := '{"kind":"rect"'
+            + ',"x1":' + FloatToJsonStr(CoordToMilsF(Rect.Location.X))
+            + ',"y1":' + FloatToJsonStr(CoordToMilsF(Rect.Location.Y))
+            + ',"x2":' + FloatToJsonStr(CoordToMilsF(Rect.Corner.X))
+            + ',"y2":' + FloatToJsonStr(CoordToMilsF(Rect.Corner.Y))
+            + ',"color":' + IntToStr(Rect.Color)
+            + ',"line_width":' + IntToStr(Rect.LineWidth)
+            + ',"area_color":' + IntToStr(Rect.AreaColor)
+            + ',"is_solid":' + BoolToJsonStr(Rect.IsSolid) + '}';
+    End;
+    If Kind = eRoundRectangle Then
+    Begin
+        RoundRect := Prim;
+        Result := '{"kind":"roundrect"'
+            + ',"x1":' + FloatToJsonStr(CoordToMilsF(RoundRect.Location.X))
+            + ',"y1":' + FloatToJsonStr(CoordToMilsF(RoundRect.Location.Y))
+            + ',"x2":' + FloatToJsonStr(CoordToMilsF(RoundRect.Corner.X))
+            + ',"y2":' + FloatToJsonStr(CoordToMilsF(RoundRect.Corner.Y))
+            + ',"rx":' + FloatToJsonStr(CoordToMilsF(RoundRect.CornerXRadius))
+            + ',"ry":' + FloatToJsonStr(CoordToMilsF(RoundRect.CornerYRadius))
+            + ',"color":' + IntToStr(RoundRect.Color)
+            + ',"line_width":' + IntToStr(RoundRect.LineWidth)
+            + ',"area_color":' + IntToStr(RoundRect.AreaColor)
+            + ',"is_solid":' + BoolToJsonStr(RoundRect.IsSolid) + '}';
+    End;
+    If Kind = eLine Then
+    Begin
+        Line := Prim;
+        Result := '{"kind":"line"'
+            + ',"x1":' + FloatToJsonStr(CoordToMilsF(Line.Location.X))
+            + ',"y1":' + FloatToJsonStr(CoordToMilsF(Line.Location.Y))
+            + ',"x2":' + FloatToJsonStr(CoordToMilsF(Line.Corner.X))
+            + ',"y2":' + FloatToJsonStr(CoordToMilsF(Line.Corner.Y))
+            + ',"color":' + IntToStr(Line.Color)
+            + ',"line_width":' + IntToStr(Line.LineWidth) + '}';
+    End;
+    If Kind = eArc Then
+    Begin
+        Arc := Prim;
+        Result := '{"kind":"arc"'
+            + ',"cx":' + FloatToJsonStr(CoordToMilsF(Arc.Location.X))
+            + ',"cy":' + FloatToJsonStr(CoordToMilsF(Arc.Location.Y))
+            + ',"r":' + FloatToJsonStr(CoordToMilsF(Arc.Radius))
+            + ',"start":' + FloatToJsonStr(Arc.StartAngle)
+            + ',"end":' + FloatToJsonStr(Arc.EndAngle)
+            + ',"color":' + IntToStr(Arc.Color)
+            + ',"line_width":' + IntToStr(Arc.LineWidth) + '}';
+    End;
+    If Kind = eEllipticalArc Then
+    Begin
+        EllipArc := Prim;
+        Result := '{"kind":"arc"'
+            + ',"cx":' + FloatToJsonStr(CoordToMilsF(EllipArc.Location.X))
+            + ',"cy":' + FloatToJsonStr(CoordToMilsF(EllipArc.Location.Y))
+            + ',"r":' + FloatToJsonStr(CoordToMilsF(EllipArc.Radius))
+            + ',"r2":' + FloatToJsonStr(CoordToMilsF(EllipArc.SecondaryRadius))
+            + ',"start":' + FloatToJsonStr(EllipArc.StartAngle)
+            + ',"end":' + FloatToJsonStr(EllipArc.EndAngle)
+            + ',"color":' + IntToStr(EllipArc.Color)
+            + ',"line_width":' + IntToStr(EllipArc.LineWidth) + '}';
+    End;
+    If (Kind = ePolyline) Or (Kind = ePolygon) Then
+    Begin
+        Poly := Prim;
+        VtxN := 0;
+        Try VtxN := Poly.GetState_VerticesCount; Except End;
+        If VtxN >= 2 Then
+        Begin
+            Pts := '';
+            For V := 1 To VtxN Do
+            Begin
+                Vert := Poly.GetState_Vertex(V);
+                If V > 1 Then Pts := Pts + ',';
+                Pts := Pts + '[' + FloatToJsonStr(CoordToMilsF(Vert.X)) + ','
+                    + FloatToJsonStr(CoordToMilsF(Vert.Y)) + ']';
+            End;
+            If Kind = ePolyline Then Result := '{"kind":"polyline"'
+            Else Result := '{"kind":"polygon"';
+            Result := Result + ',"pts":[' + Pts + ']'
+                + ',"color":' + IntToStr(Poly.Color)
+                + ',"line_width":' + IntToStr(Poly.LineWidth)
+                + ',"area_color":' + IntToStr(Poly.AreaColor)
+                + ',"is_solid":' + BoolToJsonStr(Poly.IsSolid) + '}';
+        End;
+    End;
+    If Kind = eEllipse Then
+    Begin
+        Ellipse := Prim;
+        Result := '{"kind":"ellipse"'
+            + ',"cx":' + FloatToJsonStr(CoordToMilsF(Ellipse.Location.X))
+            + ',"cy":' + FloatToJsonStr(CoordToMilsF(Ellipse.Location.Y))
+            + ',"rx":' + FloatToJsonStr(CoordToMilsF(Ellipse.Radius))
+            + ',"ry":' + FloatToJsonStr(CoordToMilsF(Ellipse.SecondaryRadius))
+            + ',"color":' + IntToStr(Ellipse.Color)
+            + ',"line_width":' + IntToStr(Ellipse.LineWidth)
+            + ',"area_color":' + IntToStr(Ellipse.AreaColor)
+            + ',"is_solid":' + BoolToJsonStr(Ellipse.IsSolid) + '}';
+    End;
+    If Kind = eBezier Then
+    Begin
+        Bezier := Prim;
+        VtxN := 0;
+        Try VtxN := Bezier.GetState_VerticesCount; Except End;
+        If VtxN >= 4 Then
+        Begin
+            Pts := '';
+            For V := 1 To VtxN Do
+            Begin
+                Vert := Bezier.GetState_Vertex(V);
+                If V > 1 Then Pts := Pts + ',';
+                Pts := Pts + '[' + FloatToJsonStr(CoordToMilsF(Vert.X)) + ','
+                    + FloatToJsonStr(CoordToMilsF(Vert.Y)) + ']';
+            End;
+            Result := '{"kind":"bezier","pts":[' + Pts + ']'
+                + ',"color":' + IntToStr(Bezier.Color)
+                + ',"line_width":' + IntToStr(Bezier.LineWidth) + '}';
+        End;
+    End;
+    If Kind = eLabel Then
+    Begin
+        Lbl := Prim;
+        Result := '{"kind":"text"'
+            + ',"text":"' + EscapeJsonString(Lbl.Text) + '"'
+            + ',"x":' + FloatToJsonStr(CoordToMilsF(Lbl.Location.X))
+            + ',"y":' + FloatToJsonStr(CoordToMilsF(Lbl.Location.Y))
+            + ',"rot":' + IntToStr(Lbl.Orientation * 90)
+            + ',"color":' + IntToStr(Lbl.Color) + '}';
+    End;
+End;
+
+{ True when a symbol's object belongs to the part shown: shared (part 0) or   }
+{ the part asked for, and the normal display mode. Alternate display modes    }
+{ repeat a part's graphics at other places and would draw on top.             }
+Function OnSymbolPart(Obj : ISch_GraphicalObject; Part : Integer) : Boolean;
+Var
+    Owner, Mode : Integer;
+Begin
+    Owner := 0;
+    Mode := 0;
+    Try Owner := Obj.OwnerPartId; Except End;
+    Try Mode := Obj.OwnerPartDisplayMode; Except End;
+    Result := ((Owner = 0) Or (Owner = Part)) And (Mode = 0);
+End;
+
+{..............................................................................}
+{ Lib_GetSymbolGeometry - one symbol's drawing, pins and models, to preview a  }
+{ part before it is placed. Reads only; a part loaded from a Workspace or an   }
+{ IntLib belongs to no document and is destroyed again.                        }
+{                                                                              }
+{ Params: either design_item_id (+ vault, lib_identifier_kind) for a managed   }
+{ part, loaded with SchServer.LoadComponent the way placement loads it; or     }
+{ component_name + library_path for a library file, looked up in the open    }
+{ .SchLib (opened when it is not; an .IntLib is read from its extracted     }
+{ .SchLib, never handed to Altium).                                          }
+{ part: which part of a multi-part symbol (default 1).                         }
+{..............................................................................}
+Function Lib_GetSymbolGeometry(Params : String; RequestId : String) : String;
+Var
+    DesignItemId, VaultName, Note, CompName, LibPath, Source, Probe : String;
+    PrimJson, PinsJson, One, ElecStr, ParamName, PartsSeen, Desig, Descr : String;
+    LibRef, Comment, Resolved, Reason : String;
+    Asked, Kind, Slot, Part, PartCount, NumPrim, NumPins, Owner, Skipped : Integer;
+    Owned, Raised : Boolean;
+    Comp : ISch_Component;
+    SchLib : ISch_Lib;
+    Iter : ISch_Iterator;
+    Obj : ISch_GraphicalObject;
+    Pin : ISch_Pin;
+    ParamObj : ISch_Parameter;
+Begin
+    DesignItemId := Trim(ExtractJsonValue(Params, 'design_item_id'));
+    CompName := Trim(ExtractJsonValue(Params, 'component_name'));
+    LibPath := Trim(ExtractJsonValue(Params, 'library_path'));
+    Part := StrToIntDef(ExtractJsonValue(Params, 'part'), 1);
+    If Part < 1 Then Part := 1;
+    Comp := Nil;
+    Owned := False;
+    Note := '';
+    Probe := '';
+
+    If DesignItemId <> '' Then
+    Begin
+        If Not ResolveVaultName(ExtractJsonValue(Params, 'vault'), VaultName, Note) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'VAULT_NOT_RESOLVED',
+                VaultNotResolvedMessage(0));
+            Exit;
+        End;
+        Asked := StrToIntDef(ExtractJsonValue(Params, 'lib_identifier_kind'),
+            LIB_IDENT_KIND_VAULT_NAME);
+        { The kind asked for first, then the others, as Lib_GetVaultComponent. }
+        For Slot := 0 To LIB_IDENT_KIND_VAULT_NAME + 1 Do
+        Begin
+            If Comp <> Nil Then Break;
+            If Slot = 0 Then Kind := Asked
+            Else
+            Begin
+                Kind := Slot - 1;
+                If Kind = Asked Then Continue;
+            End;
+            If (Kind < 0) Or (Kind > LIB_IDENT_KIND_VAULT_NAME) Then Continue;
+            Raised := True;
+            Try
+                Comp := SchServer.LoadComponent(Kind, VaultName, DesignItemId);
+                Raised := False;
+            Except End;
+            If Probe <> '' Then Probe := Probe + ',';
+            If Raised Then Probe := Probe + IntToStr(Kind) + ':raised'
+            Else If Comp = Nil Then Probe := Probe + IntToStr(Kind) + ':nil'
+            Else Probe := Probe + IntToStr(Kind) + ':loaded';
+        End;
+        Owned := True;
+        Source := 'workspace ' + VaultName;
+        If Comp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NOT_FOUND_IN_VAULT',
+                'Nothing loaded for ' + DesignItemId + ' from Workspace "'
+                + VaultName + '" (tried kinds ' + Probe + ').');
+            Exit;
+        End;
+    End
+    Else
+    Begin
+        If CompName = '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+                'design_item_id, or component_name with library_path, is required');
+            Exit;
+        End;
+        If LibPath <> '' Then LibPath := CanonicalPathValue('path', LibPath);
+        { NEVER an .IntLib to Altium: LoadComponentFromLibrary and an open of  }
+        { one raise the "Open Integrated Library" modal, which no Try/Except   }
+        { catches. ResolveSchLibForLoad finds its extracted .SchLib on disk.   }
+        If LibPath <> '' Then
+        Begin
+            Resolved := ResolveSchLibForLoad(LibPath, Reason);
+            If Resolved = '' Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+                    'No .SchLib to read for ' + LibPath + ': ' + Reason);
+                Exit;
+            End;
+            LibPath := Resolved;
+        End;
+        SchLib := Nil;
+        If LibPath <> '' Then
+            Try SchLib := SchServer.GetSchDocumentByPath(LibPath); Except SchLib := Nil; End;
+        If (SchLib = Nil) Or (SchLib.ObjectId <> eSchLib) Then
+            SchLib := FocusSchLib(LibPath);
+        If SchLib = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHLIB',
+                'No schematic library at ' + LibPath);
+            Exit;
+        End;
+        Comp := LookupLibComponent(SchLib, CompName);
+        If Comp = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND',
+                'Component not found in library: ' + CompName);
+            Exit;
+        End;
+        Source := LibPath;
+    End;
+
+    PrimJson := '';
+    PinsJson := '';
+    PartsSeen := ',';
+    NumPrim := 0;
+    NumPins := 0;
+    Skipped := 0;
+    LibRef := '';
+    Desig := '';
+    Descr := '';
+    Comment := '';
+    PartCount := 1;
+    Try
+        Try LibRef := Comp.LibReference; Except End;
+        Try Desig := Comp.Designator.Text; Except End;
+        Try Comment := Comp.Comment.Text; Except End;
+        Try Descr := Comp.ComponentDescription; Except End;
+        Try PartCount := Comp.PartCount; Except End;
+
+        Iter := Comp.SchIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eRectangle, eRoundRectangle, eLine,
+                eArc, eEllipticalArc, ePolyline, ePolygon, eEllipse, eBezier,
+                eLabel, ePin, eParameter));
+            Obj := Iter.FirstSchObject;
+            While Obj <> Nil Do
+            Begin
+                Owner := 0;
+                Try Owner := Obj.OwnerPartId; Except End;
+                If (Owner > 0) And (Pos(',' + IntToStr(Owner) + ',', PartsSeen) = 0) Then
+                    PartsSeen := PartsSeen + IntToStr(Owner) + ',';
+                If Not OnSymbolPart(Obj, Part) Then
+                    Inc(Skipped)
+                Else If Obj.ObjectId = ePin Then
+                Begin
+                    Pin := Obj;
+                    ElecStr := 'passive';
+                    Try ElecStr := PinElectricalToStr(Pin.Electrical); Except End;
+                    If NumPins > 0 Then PinsJson := PinsJson + ',';
+                    PinsJson := PinsJson
+                        + '{"des":"' + EscapeJsonString(Pin.Designator) + '"'
+                        + ',"name":"' + EscapeJsonString(Pin.Name) + '"'
+                        + ',"x":' + FloatToJsonStr(CoordToMilsF(Pin.Location.X))
+                        + ',"y":' + FloatToJsonStr(CoordToMilsF(Pin.Location.Y))
+                        + ',"rot":' + IntToStr(Pin.Orientation * 90)
+                        + ',"len":' + FloatToJsonStr(CoordToMilsF(Pin.PinLength))
+                        + ',"electrical":"' + EscapeJsonString(ElecStr) + '"'
+                        + ',"hidden":' + BoolToJsonStr(Pin.IsHidden)
+                        + ',"part":' + IntToStr(Owner) + '}';
+                    Inc(NumPins);
+                End
+                Else If Obj.ObjectId = eParameter Then
+                Begin
+                    ParamObj := Obj;
+                    ParamName := '';
+                    Try ParamName := ParamObj.Name; Except End;
+                    If (Not ParamObj.IsHidden) And (ParamName <> 'Designator')
+                        And (ParamName <> 'Comment') And (ParamObj.Text <> '') Then
+                    Begin
+                        If NumPrim > 0 Then PrimJson := PrimJson + ',';
+                        PrimJson := PrimJson + '{"kind":"text"'
+                            + ',"name":"' + EscapeJsonString(ParamName) + '"'
+                            + ',"text":"' + EscapeJsonString(ParamObj.Text) + '"'
+                            + ',"x":' + FloatToJsonStr(CoordToMilsF(ParamObj.Location.X))
+                            + ',"y":' + FloatToJsonStr(CoordToMilsF(ParamObj.Location.Y))
+                            + ',"rot":' + IntToStr(ParamObj.Orientation * 90)
+                            + ',"color":' + IntToStr(ParamObj.Color) + '}';
+                        Inc(NumPrim);
+                    End;
+                End
+                Else
+                Begin
+                    One := SymbolPrimJson(Obj);
+                    If One <> '' Then
+                    Begin
+                        If NumPrim > 0 Then PrimJson := PrimJson + ',';
+                        PrimJson := PrimJson + One;
+                        Inc(NumPrim);
+                    End;
+                End;
+                Obj := Iter.NextSchObject;
+            End;
+        Finally
+            Comp.SchIterator_Destroy(Iter);
+        End;
+
+        Result := BuildSuccessResponse(RequestId,
+            '{"lib_ref":"' + EscapeJsonString(LibRef) + '"'
+            + ',"designator":"' + EscapeJsonString(Desig) + '"'
+            + ',"comment":"' + EscapeJsonString(Comment) + '"'
+            + ',"description":"' + EscapeJsonString(Descr) + '"'
+            + ',"source":"' + EscapeJsonString(Source) + '"'
+            + ',"design_item_id":"' + EscapeJsonString(DesignItemId) + '"'
+            + ',"load_probe":"' + EscapeJsonString(Probe) + '"'
+            + ',"note":"' + EscapeJsonString(Note) + '"'
+            + ',"part":' + IntToStr(Part)
+            + ',"part_count":' + IntToStr(PartCount)
+            + ',"parts_seen":"' + EscapeJsonString(PartsSeen) + '"'
+            + ',"other_parts_skipped":' + IntToStr(Skipped)
+            + ',"primitives":[' + PrimJson + ']'
+            + ',"pins":[' + PinsJson + ']'
+            + ',"models":' + BuildImplementationsJson(Comp) + '}');
+    Finally
+        If Owned Then
+            Try SchServer.DestroySchObject(Comp); Except End;
+    End;
 End;
 
 {..............................................................................}
@@ -12012,7 +13132,7 @@ Begin
     End;
 
     PcbBeginEdit(0);
-    Try Target.Name := NewName; Except NoteWriteFailed('footprint Name'); End;
+    Try Target.Name := NewName; Except NoteWriteFailed('Target.Name'); End;
     PcbEndEdit(0);
     Try PcbLib.Board.ViewManager_FullUpdate; Except End;
     Try PcbLib.RefreshView; Except End;
@@ -12155,9 +13275,14 @@ Function Lib_SetModelName(Params : String; RequestId : String) : String;
 Var
     LibPath, CompName, NewName, OldName, CurName, RespJson : String;
     SchLib : ISch_Lib;
+    SchDoc : ISch_Document;
     Component : ISch_Component;
-    ImplIter : ISch_Iterator;
-    Impl, Target, FirstImpl : ISch_Implementation;
+    CompIter, ImplIter : ISch_Iterator;
+    Impl, Target, FirstImpl, Found : ISch_Implementation;
+    Link : ISch_ModelDatafileLink;
+    J, LinkCount, Guard : Integer;
+    MT : String;
+    ServerDoc : IServerDocument;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
     CompName := ExtractJsonValue(Params, 'component_name');
@@ -12166,6 +13291,117 @@ Begin
     If (CompName = '') Or (NewName = '') Then
     Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'component_name and new_model_name are required');
+        Exit;
+    End;
+    If UpperCase(ExtractFileExt(LibPath)) = '.SCHDOC' Then
+    Begin
+        SchDoc := Nil;
+        Try SchDoc := SchServer.GetSchDocumentByPath(LibPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'No loaded schematic document at ' + LibPath);
+            Exit;
+        End;
+        Component := Nil;
+        CompIter := SchDoc.SchIterator_Create;
+        Try
+            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Component := CompIter.FirstSchObject;
+            While Component <> Nil Do
+            Begin
+                If Component.Designator.Text = CompName Then Break;
+                Component := CompIter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(CompIter);
+        End;
+        If Component = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND', 'Placed component not found in ' + LibPath + ': ' + CompName);
+            Exit;
+        End;
+        If OldName = '*' Then
+        Begin
+            SchBeginEdit(SchDoc, 'Replace footprint model');
+            Guard := 1000;
+            While Guard > 0 Do
+            Begin
+                Found := Nil;
+                ImplIter := Component.SchIterator_Create;
+                Try
+                    ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+                    Impl := ImplIter.FirstSchObject;
+                    While Impl <> Nil Do
+                    Begin
+                        MT := '';
+                        Try MT := Impl.ModelType; Except End;
+                        If UpperCase(MT) = 'PCBLIB' Then Begin Found := Impl; Break; End;
+                        Impl := ImplIter.NextSchObject;
+                    End;
+                Finally
+                    Component.SchIterator_Destroy(ImplIter);
+                End;
+                If Found = Nil Then Break;
+                Try Component.RemoveSchImplementation(Found); Except End;
+                Dec(Guard);
+            End;
+            Target := Component.AddSchImplementation;
+            If Target <> Nil Then
+            Begin
+                Try Target.ClearAllDatafileLinks; Except End;
+                Try Target.ModelName := NewName; Except NoteWriteFailed('SchImplementation.ModelName'); End;
+                Try Target.ModelType := cDocKind_PcbLib; Except NoteWriteFailed('SchImplementation.ModelType'); End;
+                Try Target.IsCurrent := True; Except NoteWriteFailed('SchImplementation.IsCurrent'); End;
+                Try Target.AddDataFileLink(NewName, '', 'PCBLib'); Except End;
+            End;
+            SchEndEdit(SchDoc, 'Replace footprint model');
+            Try SchDoc.GraphicallyInvalidate; Except End;
+            MarkDocDirtyByPath(LibPath);
+            Result := BuildSuccessResponse(RequestId, '{"success":true,"component":"'
+                + EscapeJsonString(CompName) + '","new_model_name":"'
+                + EscapeJsonString(NewName) + '","replaced_all":true,"scope":"SchDoc"}');
+            Exit;
+        End;
+        Target := Nil;
+        ImplIter := Component.SchIterator_Create;
+        Try
+            ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+            Impl := ImplIter.FirstSchObject;
+            While Impl <> Nil Do
+            Begin
+                CurName := '';
+                Try CurName := Impl.ModelName; Except End;
+                If (OldName = '') Or (CurName = OldName) Then
+                Begin Target := Impl; Break; End;
+                Impl := ImplIter.NextSchObject;
+            End;
+        Finally
+            Component.SchIterator_Destroy(ImplIter);
+        End;
+        If Target = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MODEL_NOT_FOUND', 'No matching model on placed component ' + CompName);
+            Exit;
+        End;
+        SchBeginEdit(SchDoc, 'Set model name');
+        SchBeginModify(Target);
+        Try Target.ModelName := NewName; Except NoteWriteFailed('SchImplementation.ModelName'); End;
+        LinkCount := 0;
+        Try LinkCount := Target.DatafileLinkCount; Except End;
+        For J := 0 To LinkCount - 1 Do
+        Begin
+            Link := Nil;
+            Try Link := Target.DatafileLink[J]; Except End;
+            If Link <> Nil Then Try Link.EntityName := NewName; Except NoteWriteFailed('DatafileLink.EntityName'); End;
+        End;
+        SchEndModify(Target);
+        SchEndEdit(SchDoc, 'Set model name');
+        Try SchDoc.GraphicallyInvalidate; Except End;
+        MarkDocDirtyByPath(LibPath);
+        RespJson := '{"success":true,"library_path":"' + EscapeJsonString(LibPath) + '"'
+            + ',"component":"' + EscapeJsonString(CompName) + '"'
+            + ',"new_model_name":"' + EscapeJsonString(NewName) + '","scope":"SchDoc"}';
+        Result := BuildSuccessResponse(RequestId, RespJson);
         Exit;
     End;
     SchLib := FocusSchLib(LibPath);
@@ -12215,7 +13451,7 @@ Begin
     End;
 
     SchBeginEdit(SchLib, '');
-    Try Target.ModelName := NewName; Except NoteWriteFailed('model ModelName'); End;
+    Try Target.ModelName := NewName; Except NoteWriteFailed('Target.ModelName'); End;
     SchEndEdit(SchLib, 'Set model name');
     MarkLibDirty(SchLib);
 
@@ -12489,9 +13725,11 @@ Function Lib_SetModelSource(Params : String; RequestId : String) : String;
 Var
     LibPath, CompName, SourceLib, ModelName, UseLibStr, RespJson, CurName, MT : String;
     SchLib : ISch_Lib;
+    SchDoc : ISch_Document;
     Component : ISch_Component;
-    ImplIter : ISch_Iterator;
+    CompIter, ImplIter : ISch_Iterator;
     Impl : ISch_Implementation;
+    ServerDoc : IServerDocument;
     Updated, J, LinkCount : Integer;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -12504,6 +13742,79 @@ Begin
         Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'component_name is required');
         Exit;
     End;
+    { A .SchDoc path switches the same operation to a placed component.     }
+    { component_name is then the placed designator (for example C1001).     }
+    If UpperCase(ExtractFileExt(LibPath)) = '.SCHDOC' Then
+    Begin
+        SchDoc := Nil;
+        Try SchDoc := SchServer.GetSchDocumentByPath(LibPath); Except End;
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHDOC', 'No loaded schematic document at ' + LibPath);
+            Exit;
+        End;
+        Component := Nil;
+        CompIter := SchDoc.SchIterator_Create;
+        Try
+            CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+            Component := CompIter.FirstSchObject;
+            While Component <> Nil Do
+            Begin
+                If Component.Designator.Text = CompName Then Break;
+                Component := CompIter.NextSchObject;
+            End;
+        Finally
+            SchDoc.SchIterator_Destroy(CompIter);
+        End;
+        If Component = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'COMPONENT_NOT_FOUND', 'Placed component not found in ' + LibPath + ': ' + CompName);
+            Exit;
+        End;
+
+        Updated := 0;
+        SchBeginEdit(SchDoc, 'Set model source');
+        ImplIter := Component.SchIterator_Create;
+        Try
+            ImplIter.AddFilter_ObjectSet(MkSet(eImplementation));
+            Impl := ImplIter.FirstSchObject;
+            While Impl <> Nil Do
+            Begin
+                MT := ''; CurName := '';
+                Try MT := Impl.ModelType; Except End;
+                Try CurName := Impl.ModelName; Except End;
+                If (UpperCase(MT) = 'PCBLIB') And ((ModelName = '') Or (CurName = ModelName)) Then
+                Begin
+                    SchBeginModify(Impl);
+                    LinkCount := 0;
+                    Try LinkCount := Impl.DatafileLinkCount; Except End;
+                    If LinkCount = 0 Then
+                    Begin
+                        Try Impl.AddDataFileLink(CurName, '', 'PCBLib'); Except End;
+                        Try LinkCount := Impl.DatafileLinkCount; Except End;
+                    End;
+                    For J := 0 To LinkCount - 1 Do
+                        Try Impl.DatafileLink[J].Location := SourceLib; Except NoteWriteFailed('DatafileLink.Location'); End;
+                    If UseLibStr = 'true' Then Try Impl.UseComponentLibrary := True; Except NoteWriteFailed('SchImplementation.UseComponentLibrary'); End;
+                    If UseLibStr = 'false' Then Try Impl.UseComponentLibrary := False; Except NoteWriteFailed('SchImplementation.UseComponentLibrary'); End;
+                    SchEndModify(Impl);
+                    Inc(Updated);
+                End;
+                Impl := ImplIter.NextSchObject;
+            End;
+        Finally
+            Component.SchIterator_Destroy(ImplIter);
+        End;
+        SchEndEdit(SchDoc, 'Set model source');
+        Try SchDoc.GraphicallyInvalidate; Except End;
+        MarkDocDirtyByPath(LibPath);
+        RespJson := '{"success":true,"component":"' + EscapeJsonString(CompName) + '"'
+            + ',"source_library":"' + EscapeJsonString(SourceLib) + '"'
+            + ',"models_updated":' + IntToStr(Updated) + ',"scope":"SchDoc"}';
+        Result := BuildSuccessResponse(RequestId, RespJson);
+        Exit;
+    End;
+
     SchLib := FocusSchLib(LibPath);
     If SchLib = Nil Then
     Begin
@@ -14391,10 +15702,6 @@ Begin
         Or (Pos('|' + Kind + '|', '|' + LowerCase(StringReplace(Kinds, ' ', '', -1)) + '|') > 0);
 End;
 
-{ A footprint via's mask, tenting, testpoint flags and stack, as JSON fields }
-{ with a leading comma (issue #109). The mask is read through the pad cache, }
-{ as every via mask in this project is: assigning on the via faults.         }
-{ The testpoint flags are the designer's statement and are only read here.   }
 Function LibViaDetailJson(Via : IPCB_Via) : String;
 Var
     Cache : TPadCache;
@@ -14765,6 +16072,7 @@ Var
     TracksJson, ArcsJson, RegionsJson, FillsJson, TextsJson, ViasJson, BodyLayersJson : String;
     Workspace : IWorkspace;
     Doc : IDocument;
+    ServerDoc : IServerDocument;
     PcbLib : IPCB_Library;
     Iter : IPCB_LibraryIterator;
     Footprint, Target : IPCB_LibComponent;
@@ -14788,7 +16096,7 @@ Var
     ModelRot, BodyTop, BodyStandoff : Double;
     Kinds, SelStr, BodyBoxJson : String;
     OriginX, OriginY : Double;
-    IsCurrent : Boolean;
+    DocumentStateKnown, DocumentModified, IsCurrent : Boolean;
     OriginJson : String;
 Begin
     BodyModelsJson := '';
@@ -14823,6 +16131,17 @@ Begin
         AddStringParameter('ObjectKind', 'Document');
         AddStringParameter('FileName', LibPath);
         RunProcess('WorkspaceManager:OpenObject');
+    End;
+    { GetCurrentPCBLibrary follows the focused document. Refuse to return
+      a different library if opening the requested one did not focus it. }
+    Doc := Workspace.DM_FocusedDocument;
+    FocusedPath := '';
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'LIBRARY_NOT_FOCUSED',
+            'Requested PCB library did not become focused: ' + LibPath);
+        Exit;
     End;
     PcbLib := PCBServer.GetCurrentPCBLibrary;
     If PcbLib = Nil Then
@@ -15282,9 +16601,25 @@ Begin
         Try SeenPrims.Free; Except End;
     End;
 
+    { This is the exact PcbLib opened above. Report its own unsaved state;
+      a later active-document query may name a different editor tab. }
+    DocumentStateKnown := False;
+    DocumentModified := True;
+    ServerDoc := Nil;
+    Try
+        ServerDoc := Client.GetDocumentByPath(FocusedPath);
+        If ServerDoc <> Nil Then
+        Begin
+            DocumentModified := ServerDoc.Modified;
+            DocumentStateKnown := True;
+        End;
+    Except End;
+
     RespJson :=
         '{"name":"' + EscapeJsonString(FpName) + '"' +
         ',"library_path":"' + EscapeJsonString(LibPath) + '"' +
+        ',"document_state_known":' + BoolToJsonStr(DocumentStateKnown) +
+        ',"document_modified":' + BoolToJsonStr(DocumentModified) +
         ',"height_mm":' + FloatToJsonStr(HeightMM) +
         OriginJson +
         ',"current":' + BoolToJsonStr(IsCurrent) +
@@ -17895,6 +19230,406 @@ Begin
         + JsonRaw('after', '[' + After + ']')));
 End;
 
+{ Move one 3D body by its bounding-box centre, adapting the rabihnd fork's  }
+{ position_3d_body to an exact library and footprint with an old-state     }
+{ precondition. MoveByXY applies a delta, avoiding MoveToXY's anchor rule.  }
+Function Lib_Add3DBody(Params : String; RequestId : String) : String;
+Var
+    LibPath, ModelPath, FpName, FocusedPath, Seen, Addr : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    Iter : IPCB_GroupIterator;
+    Existing, Body : IPCB_ComponentBody;
+    Model : IPCB_Model;
+    BRect : TCoordRect;
+    ExpectedCount, Count, LayerNum, Dx, Dy : Integer;
+    TargetX, TargetY, RotZ, Standoff, Overall, CentreX, CentreY : Double;
+    BodyLayer : TLayer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpName := ExtractJsonValue(Params, 'footprint_name');
+    ModelPath := ExtractJsonValue(Params, 'model_path');
+    ExpectedCount := StrToIntDef(ExtractJsonValue(Params, 'expected_count'), -1);
+    LayerNum := StrToIntDef(ExtractJsonValue(Params, 'mech_layer'), -1);
+    If (LibPath = '') Or (FpName = '') Or (ModelPath = '') Or
+        (ExpectedCount < 0) Or (LayerNum < 1) Or (LayerNum > 32) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'offset_x_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'offset_y_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'rot_z_deg')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'standoff_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'overall_height_mm')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'Exact library, footprint, STEP file, old body count, mechanical layer, numeric placement and height are required');
+        Exit;
+    End;
+    TargetX := StrToFloatDef(ExtractJsonValue(Params, 'offset_x_mm'), 0);
+    TargetY := StrToFloatDef(ExtractJsonValue(Params, 'offset_y_mm'), 0);
+    RotZ := StrToFloatDef(ExtractJsonValue(Params, 'rot_z_deg'), 0);
+    Standoff := StrToFloatDef(ExtractJsonValue(Params, 'standoff_mm'), 0);
+    Overall := StrToFloatDef(ExtractJsonValue(Params, 'overall_height_mm'), 0);
+    If (Abs(TargetX) > 1000) Or (Abs(TargetY) > 1000) Or
+        (Abs(Standoff) > 1000) Or (Overall < 0) Or (Overall > 1000) Or
+        (Abs(RotZ) > 360) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PLACEMENT',
+            'Offset and standoff must be within 1000 mm, overall height 0..1000 mm; Z rotation within 360 degrees');
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LIBRARY_FILE', LibPath);
+        Exit;
+    End;
+    If Not FileExists(ModelPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_MODEL_FILE', ModelPath);
+        Exit;
+    End;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If UpperCase(FocusedPath) <> UpperCase(LibPath) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED', LibPath);
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', LibPath);
+        Exit;
+    End;
+    Footprint := FootprintByName(PcbLib, FpName);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', FpName);
+        Exit;
+    End;
+    { The board's library origin belongs to the current component. Adding a }
+    { body to an inactive component appears correctly positioned in memory, }
+    { then shifts by -50000 mil on save. Select it before the factory call. }
+    Try PcbLib.SetState_CurrentComponent(Footprint); Except NoteWriteFailed('.SetState_CurrentComponent('); End;
+    Footprint := PcbLib.CurrentComponent;
+    If (Footprint = Nil) Or (Footprint.Name <> FpName) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_FOOTPRINT_ACTIVE', FpName);
+        Exit;
+    End;
+    Count := 0;
+    Seen := #9;
+    Iter := Footprint.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+        Existing := Iter.FirstPCBObject;
+        While Existing <> Nil Do
+        Begin
+            Addr := IntToStr(Existing.I_ObjectAddress);
+            If Pos(#9 + Addr + #9, Seen) = 0 Then
+            Begin
+                Seen := Seen + Addr + #9;
+                Inc(Count);
+            End;
+            Existing := Iter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(Iter);
+    End;
+    If Count <> ExpectedCount Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BODY_SET_CHANGED',
+            '3D body count changed before addition');
+        Exit;
+    End;
+    BodyLayer := ILayer.MechanicalLayer(LayerNum);
+    Body := Nil;
+    Model := Nil;
+    Try
+        Body := PCBServer.PCBObjectFactory(eComponentBodyObject, eNoDimension, eCreate_Default);
+        If Body <> Nil Then Model := Body.ModelFactory_FromFilename(ModelPath, True);
+        If Model = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'MODEL_LOAD_FAILED', ModelPath);
+            Exit;
+        End;
+        Body.SetState_FromModel;
+        Model.SetState(0, 0, RotZ, MMToCoord(Standoff));
+        Body.Model := Model;
+        If Overall > 0 Then Body.OverallHeight := MMToCoord(Overall);
+    Except
+        Result := BuildErrorResponse(RequestId, 'MODEL_LOAD_FAILED',
+            'Could not create an embedded STEP body from ' + ModelPath);
+        Exit;
+    End;
+    PcbBeginEdit(0);
+    Try
+        Try
+            Footprint.AddPCBObject(Body);
+            PcbLib.Board.AddPCBObject(Body);
+            PCBServer.SendMessageToRobots(Footprint.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Body.I_ObjectAddress);
+            PCBServer.SendMessageToRobots(PcbLib.Board.I_ObjectAddress,
+                c_Broadcast, PCBM_BoardRegisteration, Body.I_ObjectAddress);
+            Body.BodyProjection := eBoardSide_Top;
+            Body.Layer := BodyLayer;
+            Body.BodyOpacity3D := 1.0;
+            BRect := Body.BoundingRectangle;
+            CentreX := (CoordToMM(BRect.Left - Footprint.X)
+                + CoordToMM(BRect.Right - Footprint.X)) / 2;
+            CentreY := (CoordToMM(BRect.Bottom - Footprint.Y)
+                + CoordToMM(BRect.Top - Footprint.Y)) / 2;
+            Dx := MMToCoord(TargetX - CentreX);
+            Dy := MMToCoord(TargetY - CentreY);
+            If (Dx <> 0) Or (Dy <> 0) Then
+            Begin
+                PCBServer.SendMessageToRobots(Body.I_ObjectAddress,
+                    c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                Body.MoveByXY(Dx, Dy);
+                PCBServer.SendMessageToRobots(Body.I_ObjectAddress,
+                    c_Broadcast, PCBM_EndModify, c_NoEventData);
+            End;
+        Except
+            Result := BuildErrorResponse(RequestId, 'ADD_BODY_FAILED',
+                'Body creation or placement failed; inspect the footprint before retrying');
+            Exit;
+        End;
+    Finally
+        PcbEndEdit(0);
+    End;
+    BRect := Body.BoundingRectangle;
+    CentreX := (CoordToMM(BRect.Left - Footprint.X)
+        + CoordToMM(BRect.Right - Footprint.X)) / 2;
+    CentreY := (CoordToMM(BRect.Bottom - Footprint.Y)
+        + CoordToMM(BRect.Top - Footprint.Y)) / 2;
+    If (Abs(CentreX - TargetX) > 0.02) Or (Abs(CentreY - TargetY) > 0.02) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'POSITION_NOT_VERIFIED',
+            'STEP body was added but its centre did not read back at the target');
+        Exit;
+    End;
+    If (Overall > 0) And
+        (Abs(CoordToMM(Body.OverallHeight) - Overall) > 0.02) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'HEIGHT_NOT_VERIFIED',
+            'STEP body was added but its overall height did not read back');
+        Exit;
+    End;
+    Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+    MarkDocDirtyByPath(LibPath);
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('success', True) + ','
+        + JsonStr('library_path', LibPath) + ','
+        + JsonStr('footprint_name', FpName) + ','
+        + JsonStr('model_file', ExtractFileName(ModelPath)) + ','
+        + JsonInt('body_count_before', Count) + ','
+        + JsonInt('body_count_after', Count + 1) + ','
+        + JsonInt('mech_layer', LayerNum) + ','
+        + JsonFloat('after_x_mm', CentreX) + ','
+        + JsonFloat('after_y_mm', CentreY) + ','
+        + JsonFloat('rotation_z_deg', RotZ) + ','
+        + JsonFloat('standoff_mm', Standoff) + ','
+        + JsonFloat('overall_height_mm', CoordToMM(Body.OverallHeight))));
+End;
+
+Function Lib_Position3DBody(Params : String; RequestId : String) : String;
+Var
+    LibPath, FocusedPath, FpName, Addr, Seen : String;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+    Iter : IPCB_GroupIterator;
+    Body, TargetBody : IPCB_ComponentBody;
+    BRect : TCoordRect;
+    BodyIndex, ExpectedCount, Count, Dx, Dy, Changed : Integer;
+    TargetX, TargetY, ExpectedX, ExpectedY, OldX, OldY, NewX, NewY : Double;
+    Failed : Boolean;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    FpName := ExtractJsonValue(Params, 'footprint_name');
+    BodyIndex := StrToIntDef(ExtractJsonValue(Params, 'body_index'), 0);
+    ExpectedCount := StrToIntDef(ExtractJsonValue(Params, 'expected_count'), -1);
+    If (LibPath = '') Or (FpName = '') Or (BodyIndex < 1) Or
+        (ExpectedCount < 1) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'expected_x_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'expected_y_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'target_x_mm')) Or
+        Not IsFloatStr(ExtractJsonValue(Params, 'target_y_mm')) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS',
+            'Exact library_path, footprint_name, body_index, expected_count, '
+            + 'expected centre and target centre are required');
+        Exit;
+    End;
+    ExpectedX := StrToFloatDef(ExtractJsonValue(Params, 'expected_x_mm'), 0);
+    ExpectedY := StrToFloatDef(ExtractJsonValue(Params, 'expected_y_mm'), 0);
+    TargetX := StrToFloatDef(ExtractJsonValue(Params, 'target_x_mm'), 0);
+    TargetY := StrToFloatDef(ExtractJsonValue(Params, 'target_y_mm'), 0);
+    If (Abs(TargetX) > 1000) Or (Abs(TargetY) > 1000) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_TARGET',
+            'Target centre must be within 1000 mm of the footprint origin');
+        Exit;
+    End;
+    If Not FileExists(LibPath) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_LIBRARY_FILE',
+            'The requested PcbLib does not exist: ' + LibPath);
+        Exit;
+    End;
+
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_WORKSPACE', 'No workspace');
+        Exit;
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If UpperCase(FocusedPath) <> UpperCase(LibPath) Then
+    Begin
+        ResetParameters;
+        AddStringParameter('ObjectKind', 'Document');
+        AddStringParameter('FileName', LibPath);
+        RunProcess('WorkspaceManager:OpenObject');
+    End;
+    FocusedPath := '';
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc <> Nil Then Try FocusedPath := CanonicalPathValue('path', Doc.DM_FullPath); Except End;
+    If (FocusedPath = '') Or (UpperCase(FocusedPath) <> UpperCase(LibPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Requested PCB library did not become focused: ' + LibPath);
+        Exit;
+    End;
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', LibPath + ' is not a PcbLib');
+        Exit;
+    End;
+    Footprint := FootprintByName(PcbLib, FpName);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', FpName + ' not found');
+        Exit;
+    End;
+
+    Count := 0;
+    Seen := #9;
+    TargetBody := Nil;
+    Iter := Footprint.GroupIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+        Body := Iter.FirstPCBObject;
+        While Body <> Nil Do
+        Begin
+            Addr := IntToStr(Body.I_ObjectAddress);
+            If Pos(#9 + Addr + #9, Seen) = 0 Then
+            Begin
+                Seen := Seen + Addr + #9;
+                Inc(Count);
+                If Count = BodyIndex Then TargetBody := Body;
+            End;
+            Body := Iter.NextPCBObject;
+        End;
+    Finally
+        Footprint.GroupIterator_Destroy(Iter);
+    End;
+    If (Count <> ExpectedCount) Or (TargetBody = Nil) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BODY_SET_CHANGED',
+            '3D body count or selected index changed before the write');
+        Exit;
+    End;
+    BRect := TargetBody.BoundingRectangle;
+    OldX := (CoordToMM(BRect.Left - Footprint.X)
+        + CoordToMM(BRect.Right - Footprint.X)) / 2;
+    OldY := (CoordToMM(BRect.Bottom - Footprint.Y)
+        + CoordToMM(BRect.Top - Footprint.Y)) / 2;
+    If (Abs(OldX - ExpectedX) > 0.02) Or
+        (Abs(OldY - ExpectedY) > 0.02) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BODY_POSITION_CHANGED',
+            '3D body centre changed before the write');
+        Exit;
+    End;
+    Dx := MMToCoord(TargetX - OldX);
+    Dy := MMToCoord(TargetY - OldY);
+    Changed := 0;
+    If (Dx <> 0) Or (Dy <> 0) Then Changed := 1;
+    Failed := False;
+    If Changed = 1 Then
+    Begin
+        PcbBeginEdit(0);
+        Try
+            Try
+                PCBServer.SendMessageToRobots(TargetBody.I_ObjectAddress,
+                    c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                TargetBody.MoveByXY(Dx, Dy);
+                PCBServer.SendMessageToRobots(TargetBody.I_ObjectAddress,
+                    c_Broadcast, PCBM_EndModify, c_NoEventData);
+            Except
+                Failed := True;
+            End;
+        Finally
+            PcbEndEdit(0);
+        End;
+    End;
+    If Failed Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MOVE_FAILED',
+            '3D body movement raised; inspect the footprint before retrying');
+        Exit;
+    End;
+    BRect := TargetBody.BoundingRectangle;
+    NewX := (CoordToMM(BRect.Left - Footprint.X)
+        + CoordToMM(BRect.Right - Footprint.X)) / 2;
+    NewY := (CoordToMM(BRect.Bottom - Footprint.Y)
+        + CoordToMM(BRect.Top - Footprint.Y)) / 2;
+    If (Abs(NewX - TargetX) > 0.02) Or (Abs(NewY - TargetY) > 0.02) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'POSITION_NOT_VERIFIED',
+            '3D body moved but its centre did not read back at the target');
+        Exit;
+    End;
+    If Changed = 1 Then
+    Begin
+        Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+        MarkDocDirtyByPath(LibPath);
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('success', True) + ','
+        + JsonStr('library_path', LibPath) + ','
+        + JsonStr('footprint_name', FpName) + ','
+        + JsonInt('body_index', BodyIndex) + ','
+        + JsonInt('body_count', Count) + ','
+        + JsonInt('changed', Changed) + ','
+        + JsonFloat('before_x_mm', OldX) + ','
+        + JsonFloat('before_y_mm', OldY) + ','
+        + JsonFloat('after_x_mm', NewX) + ','
+        + JsonFloat('after_y_mm', NewY)));
+End;
+
 { Pins of a symbol, every part and display mode, for Lib_SetSymbolParts.     }
 Function SymbolPinCount(Comp : ISch_Component) : Integer;
 Var
@@ -18052,6 +19787,48 @@ Begin
     Result := '[' + Result + ']';
 End;
 
+{ Return the primary symbol that already owns a library name or alias. }
+{ Walk the open SchLib so unsaved aliases are included in the preflight. }
+Function SymbolNameOwner(SchLib : ISch_Lib; Wanted : String) : String;
+Var
+    Iter : ISch_Iterator;
+    LibComp : ISch_Component;
+    I, N : Integer;
+    Candidate : String;
+Begin
+    Result := '';
+    If (SchLib = Nil) Or (Trim(Wanted) = '') Then Exit;
+    Candidate := UpperCase(Trim(Wanted));
+    Iter := SchLib.SchLibIterator_Create;
+    If Iter = Nil Then Exit;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eSchComponent));
+        LibComp := Iter.FirstSchObject;
+        While LibComp <> Nil Do
+        Begin
+            If UpperCase(LibComp.LibReference) = Candidate Then
+            Begin
+                Result := LibComp.LibReference;
+                Break;
+            End;
+            N := 0;
+            Try N := LibComp.AliasCount; Except N := 0; End;
+            For I := 0 To N - 1 Do
+            Begin
+                If UpperCase(LibComp.GetState_AliasAt(I)) = Candidate Then
+                Begin
+                    Result := LibComp.LibReference;
+                    Break;
+                End;
+            End;
+            If Result <> '' Then Break;
+            LibComp := Iter.NextSchObject;
+        End;
+    Finally
+        SchLib.SchIterator_Destroy(Iter);
+    End;
+End;
+
 { Lib_SetSymbolAliases - read, add and remove a SchLib symbol's aliases:      }
 { ISch_Component.Alias_Add / Alias_Remove, AliasCount and GetState_AliasAt    }
 { An alias lets one symbol be placed under several part                       }
@@ -18091,7 +19868,7 @@ End;
 
 Function Lib_SetSymbolAliases(Params : String; RequestId : String) : String;
 Var
-    LibPath, Name, AddStr, RemoveStr, Item, Before, Rest, Owner, Asked : String;
+    LibPath, Name, AddStr, RemoveStr, Item, Before, CheckStr, SeenAdd, Owner : String;
     SchLib : ISch_Lib;
     Comp : ISch_Component;
     TabPos : Integer;
@@ -18120,32 +19897,29 @@ Begin
         Exit;
     End;
     Before := SymbolAliasesJson(Comp);
-    { Every new alias is checked before anything changes. A name some     }
-    { symbol already answers to (this one included) would leave two parts }
-    { under one name, and placing it takes whichever Altium meets first.  }
-    Rest := AddStr;
-    Asked := #9;
-    Owner := '';
-    While (Rest <> '') And (Owner = '') Do
+    CheckStr := AddStr;
+    SeenAdd := #9;
+    While CheckStr <> '' Do
     Begin
-        Item := Trim(SplitNextTab(Rest));
-        If Item <> '' Then
+        TabPos := Pos(#9, CheckStr);
+        If TabPos = 0 Then Begin Item := CheckStr; CheckStr := ''; End
+        Else Begin Item := Copy(CheckStr, 1, TabPos - 1); CheckStr := Copy(CheckStr, TabPos + 1, Length(CheckStr)); End;
+        Item := Trim(Item);
+        If Item = '' Then Continue;
+        If Pos(#9 + UpperCase(Item) + #9, SeenAdd) > 0 Then
         Begin
-            If Pos(#9 + UpperCase(Item) + #9, Asked) > 0 Then
-                Owner := 'asked for twice in this request'
-            Else
-            Begin
-                Owner := SymbolAnsweringTo(SchLib, Item);
-                If Owner <> '' Then Owner := 'already a name of ' + Owner;
-            End;
-            Asked := Asked + UpperCase(Item) + #9;
+            Result := BuildErrorResponse(RequestId, 'ALIAS_TAKEN',
+                'Alias appears twice in add: ' + Item);
+            Exit;
         End;
-    End;
-    If Owner <> '' Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'ALIAS_TAKEN',
-            Item + ' is ' + Owner + '; no alias was changed');
-        Exit;
+        SeenAdd := SeenAdd + UpperCase(Item) + #9;
+        Owner := SymbolNameOwner(SchLib, Item);
+        If Owner <> '' Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'ALIAS_TAKEN',
+                'Alias ' + Item + ' already belongs to ' + Owner);
+            Exit;
+        End;
     End;
     Changed := (AddStr <> '') Or (RemoveStr <> '');
     If Changed Then
@@ -22408,6 +24182,7 @@ Begin
            Or (Action = 'get_component_details')
            Or (Action = 'get_pad_geometry')
            Or (Action = 'get_footprint_primitives')
+           Or (Action = 'get_symbol_geometry')
            Or (Action = 'probe_footprint')
            Or (Action = 'probe_designator')
            Or (Action = 'audit_styles')
@@ -22417,18 +24192,92 @@ Begin
            Or (Action = 'get_dblib_record');
 End;
 
-{ The writes that attach a new primitive to the footprint on screen. Each     }
-{ adds it to the footprint and to the library board, the pattern that        }
-{ survives a save. Measured on AD 26.10: until the next footprint switch the }
-{ footprint's iterator then lists the new primitive twice (12 entries, 11    }
-{ objects), once through each container; a switch writes the board back and  }
-{ the duplicate is gone.                                                     }
+
+
+
+{ Angles compared modulo 360, to a hundredth of a degree. }
+
+{ Whether an object address is new to the Seen list, adding it if so. A     }
+{ footprint on screen can list an object twice; turning it twice is a 180   }
+{ for a 90.                                                                  }
+
+{..............................................................................}
+{ Lib_RotateFootprint - turn a footprint in a PcbLib about its own origin by   }
+{ 90, 180 or 270 degrees (counter-clockwise), every primitive: pads (position  }
+{ and pad rotation, custom shapes with them), tracks, arcs, fills, regions,   }
+{ vias, texts and 3D bodies (outline and model).                              }
+{                                                                              }
+{ Asked for to turn house footprints to an assembler's default orientation;  }
+{ nothing could do it except the editor's own select-all-and-rotate, which   }
+{ needs the screen and moves the user's selection.                            }
+{                                                                              }
+{ The library is opened by path, so it need not be focused. The origin is    }
+{ Footprint.X / Footprint.Y, the frame the footprint's primitives are in      }
+{ whether or not it is on screen (see FootprintOriginX). One walk per kind,  }
+{ each into a local of that kind's type: DelphiScript narrows an interface   }
+{ only when the local is assigned straight from an iterator, and a pad held }
+{ in a list has no x or Rotation. Each object is turned once, by address    }
+{ (FirstSighting). Polygons and dimensions are counted and reported as not  }
+{ turned.                                                                    }
+{                                                                              }
+{ Tracks are turned by their end points, exactly; IPCB_Track declares no      }
+{ RotateAroundXY in the SDK. The other kinds use RotateAroundXY, which        }
+{ IPCB_Pad, IPCB_Arc, IPCB_Region (so IPCB_ComponentBody), IPCB_Via and the  }
+{ rectangular primitives (fills, texts) declare.                             }
+{                                                                              }
+{ A body turns with RotateAroundXY like the rest, and its 3D model with it;  }
+{ the model itself is never written (see the body walk below).               }
+{                                                                              }
+{ Every pad is READ BACK: its centre must be where the turn puts it and its  }
+{ rotation must have moved by the angle. Anything else is a mismatch.       }
+{ dry_run counts what would be                                               }
+{ turned and changes nothing. Does not save.                                 }
+{..............................................................................}
+
+
+{ Field N (0-based) of a '|' separated list; '' past the end. A model file   }
+{ name cannot hold '|', so it separates the saved_models fields safely.      }
+
+{ One body's properties as a JSON object, in mils, for Lib_Set3DBody.        }
+{ For a STEP body standoff_height_mils is the body's own StandoffHeight,     }
+{ which Altium does not use: the panel's Standoff Height is the model's Z    }
+{ offset, which no getter reaches. Python reports that from the saved file.  }
+
+{ Lib_Set3DBody - read or change the 3D bodies already in one footprint.     }
+{                                                                            }
+{ lib_link_3d_model writes these only when it creates a body, so a standoff  }
+{ that came out wrong meant deleting the body and linking it again. This    }
+{ edits the body in place, like lib_move_bodies_to_layer: nothing is added  }
+{ or removed, so the footprint on screen and the library board stay in      }
+{ step.                                                                      }
+{                                                                            }
+{ OverallHeight, BodyOpacity3D (PCBGeneric's board writer) and Layer        }
+{ (Lib_MoveBodiesToLayer) are written on the body.                           }
+{                                                                            }
+{ A STEP BODY IGNORES ITS OWN StandoffHeight. Measured on AD 26.11.1.5: the  }
+{ body field was written and saved, and the Properties panel still read 0;  }
+{ the panel's Standoff Height is the model's MODEL.3D.DZ. So on a STEP body  }
+{ standoff_height goes to IPCB_Model.SetState(RotX, RotY, RotZ, Dz), then   }
+{ Body.Model := Model, which saves. Order and units were measured by        }
+{ writing (10, 20, 30, 12 mil) and reading the saved record back.           }
+{ SetState writes all four and no getter for the 3D rotations is known     }
+{ (Model.Rotation is the 2D one), so Python reads each body's rotations    }
+{ from the saved file and passes them in saved_models; a body whose saved  }
+{ record is missing or names another model file is skipped, not guessed.   }
+{                                                                            }
+{ Params: library_path, footprint_name (required), body_index (1-based,      }
+{ empty = every body), standoff_height, overall_height (mils), opacity       }
+{ (0..1), layer (mechanical), saved_models (five fields per body in file    }
+{ order: file, type, rotx, roty, rotz) and saved_count. With none of the    }
+{ four values, it only reads.                                                }
+
 Function LibActionAddsToFootprint(Action : String) : Boolean;
 Begin
     Result := (Action = 'add_footprint_pad')
            Or (Action = 'add_footprint_via')
            Or (Action = 'add_footprint_vias')
            Or (Action = 'add_footprint_bodies')
+           Or (Action = 'add_3d_body')
            Or (Action = 'add_footprint_pads')
            Or (Action = 'add_footprint_track')
            Or (Action = 'add_footprint_tracks')
@@ -22446,6 +24295,7 @@ End;
 { a primitive just added is listed once. Without it, a later call walking    }
 { that footprint met each new primitive twice, and anything that moves what  }
 { it meets would move it twice.                                              }
+
 Procedure SettleCurrentFootprint(Dummy : Integer);
 Var
     PcbLib : IPCB_Library;
@@ -22459,6 +24309,68 @@ Begin
     If Cur = Nil Then Exit;
     Try PcbLib.SetState_CurrentComponent(Cur); Except NoteWriteFailed('settle current footprint (a later walk may meet a primitive twice)'); End;
 End;
+
+
+
+{..............................................................................}
+{ Lib_SetPadProperties - change pads that already exist in a PcbLib footprint. }
+{                                                                              }
+{ Every pad named pad_name in footprint_name is changed; only the fields      }
+{ given are written, so setting plating cannot reset a shape. Each pad is     }
+{ read back afterwards and the reply reports what it holds, not what was      }
+{ asked. Lengths are in units (mil, the default, or mm). Every write is one   }
+{ the pad creators already make: sizes, shape, rotation, hole, slot, plating  }
+{ and the mask and paste expansions through the pad cache with the manual    }
+{ flag set, without which Altium ignores the value. hole_rotation is read in  }
+{ shipped code and written nowhere else, so its read-back is what proves it.  }
+{ A pad with a per-layer stack has only its top size written, and the reply  }
+{ says so rather than resetting the stack.                                    }
+{ selected=true changes the pads SELECTED in the editor instead of those     }
+{ named pad_name: pad names need not be unique (an SMD pad "1" and a        }
+{ thru-hole "1" in one footprint), and the selection is what the user means. }
+{ hole_type (round, square or slot) is written before the hole sizes, so a   }
+{ slot can be made round again; hole_width still makes a slot, so it is      }
+{ refused beside hole_type round or square.                                   }
+{ Issue #110 adds the rest of an everyday pad clean-up: shape roundrect with  }
+{ corner_radius_pct (Altium stores the radius only as a percentage),         }
+{ stack_mode (simple, top-middle-bottom) before the sizes, and the bottom    }
+{ size; mask_from_hole_edge; mask_manual and paste_manual, both ways, false  }
+{ handing the value back to the design rule (eCacheInvalid, as              }
+{ PCB_ApplyDnpPasteExclusion restores paste). Each is read back per pad.    }
+{ Params: footprint_name, pad_name or selected=true (required); library_path, }
+{ units, x_size, y_size, bottom_x_size, bottom_y_size, shape,                 }
+{ corner_radius_pct, stack_mode, rotation, hole_type, hole_size, hole_width,  }
+{ hole_rotation, plated, paste_expansion, paste_manual, mask_expansion,       }
+{ mask_manual, mask_from_hole_edge (all optional).                            }
+{..............................................................................}
+
+
+
+{ Whether a footprint read was asked for this kind: kinds is a '|' list such }
+{ as 'via|body'; empty asks for every kind. Each kind is its own FILTERED    }
+{ pass, so leaving one out skips its walk entirely.                          }
+
+{ Lib_GetFootprintPrimitives - READ-ONLY list of one PcbLib footprint's       }
+{ tracks, arcs, regions, fills and texts, each with its layer, in mm from    }
+{ the footprint origin, plus the footprint height and its 3D body count.    }
+{ The package audit reads silkscreen, courtyard, assembly and paste windows }
+{ from it. Nothing is written.                                               }
+{                                                                            }
+{ Every property read here is already read in shipped code: Track X1, Y1,   }
+{ X2, Y2, Width and Arc XCenter, YCenter, Radius, StartAngle, EndAngle,     }
+{ LineWidth (GetPCBProperty, PCBGeneric.pas); Region.Area                   }
+{ (RegionCopperSqMils, PCB.pas); BoundingRectangle on a region and on a     }
+{ primitive (Audit.pas, PCB.pas); Text UnderlyingString, Text, Size,        }
+{ XLocation, YLocation and BoundingRectangle (Lib_GetLibraryGeometry) and   }
+{ Rotation (Lib_ProbeDesignator); the footprint's X, Y and Height           }
+{ (Lib_GetPadGeometry, Lib_ProbeFootprint). A region is given by its        }
+{ bounding box and area, and by its SHAPE (#119): shape_mm, [x, y, sweep]   }
+{ per vertex in mm from the footprint origin, true arcs included -- the     }
+{ points form lib_add_footprint_regions takes. Read from ShapeSegments      }
+{ (0-based), not the contour, whose numbering on read-back is not settled   }
+{ (see RegionCopperSqMils).                                                 }
+{ Deduplicated by object address, as Lib_GetPadGeometry is.                 }
+{ Params: footprint_name (required), library_path (optional, focused).     }
 
 Function HandleLibraryCommand(Action : String; Params : String; RequestId : String) : String;
 Var
@@ -22701,6 +24613,13 @@ Begin
         'get_dblib_record':     Result := Lib_GetDbLibRecord(Params, RequestId);
         'place_dblib_component': Result := Lib_PlaceDbLibComponent(Params, RequestId);
         'place_dblib_rows':       Result := Lib_PlaceDbLibRows(Params, RequestId);
+        'create_pcb_footprint': Result := Lib_CreatePCBFootprint(Params, RequestId);
+        'add_3d_body':          Result := Lib_Add3DBody(Params, RequestId);
+        'position_3d_body':     Result := Lib_Position3DBody(Params, RequestId);
+        'set_active_part':     Result := Lib_SetActivePart(Params, RequestId);
+        'list_available_libraries': Result := Lib_ListAvailableLibraries(Params, RequestId);
+        'get_symbol_geometry':  Result := Lib_GetSymbolGeometry(Params, RequestId);
+        'resolve_workspace_component': Result := Lib_ResolveWorkspaceComponent(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown library action: ' + Action);
     End;

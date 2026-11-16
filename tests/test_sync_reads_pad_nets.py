@@ -33,7 +33,8 @@ class _Bridge:
 
 def test_an_unbound_pad_is_reported_with_a_warning():
     out = asyncio.run(_after_sync(_Bridge(pad_net=""), set()))
-    assert out["pad_nets"]["unbound"] == [{"designator": "R1", "pin": "2", "net": "GND"}]
+    assert out["pad_nets"]["pads_unbound"] == [
+        {"designator": "R1", "pin": "2", "expected_net": "GND"}]
     assert "1 pad(s) have no net" in out["warning"]
 
 

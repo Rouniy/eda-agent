@@ -73,6 +73,52 @@ def test_a_part_with_no_footprint_model_gets_one():
     assert "Comp.AddSchImplementation" in load(_GENERIC)["AddPlacedFootprintModel"]
 
 
+def test_footprint_library_can_be_unpinned_or_linked_when_missing():
+    source = load(_GENERIC)
+    body = source["SetPlacedFootprintLibrary"]
+    assert "SameText(LibName, 'Any')" in body
+    assert "LibName = '*'" in body
+    assert "ClearSchFootprintLibraryOnComp(Comp, Cleared)" in body
+    helper = source["ClearSchFootprintLibraryOnComp"]
+    assert "If UpperCase(ModelType) = 'PCBLIB' Then" in helper
+    assert "Link.Location := '';" in helper
+    assert "Impl.AddDataFileLink(Impl.ModelName, LibName, 'PCBLib')" in body
+
+
+def test_relink_forwards_explicit_any_to_native(monkeypatch):
+    bridge = _Bridge()
+    out = _call(monkeypatch, bridge, designators=["U1"],
+                footprint_library="Any")
+    assert out["success"]
+    assert dict(bridge.sent)["generic.relink_components"]["footprint_library"] == "Any"
+
+
+def test_clear_source_library_can_clear_every_pinned_footprint(monkeypatch):
+    bridge = _Bridge()
+    monkeypatch.setattr(generic_tools, "get_bridge", lambda: bridge)
+    mcp = _Mcp()
+    generic_tools.register_generic_tools(mcp)
+    asyncio.run(mcp.tools["sch_clear_source_library"](
+        sheet_path=r"C:\\checks\\copy\\Main.SchDoc", designators=["U1"],
+        clear_footprint_library=True))
+    [(command, params)] = bridge.sent
+    assert command == "generic.clear_sch_source_library"
+    assert params["clear_footprint_library"] == "true"
+    assert params["sheet_path"] == r"C:\\checks\\copy\\Main.SchDoc"
+    source = load(_GENERIC)
+    body = source["Gen_ClearSchSourceLibrary"]
+    assert "ClearSchFootprintLibraryOnComp(Comp, FpCount)" in body
+    assert "'SHEET_NOT_OPEN'" in body
+    assert body.index("'SHEET_NOT_OPEN'") < body.index(
+        "SchDoc := SchServer.GetCurrentSchDocument")
+    helper = source["ClearSchFootprintLibraryOnComp"]
+    assert "If UpperCase(ModelType) = 'PCBLIB' Then" in helper
+    assert "Link.Location := '';" in helper
+    assert "If After = '' Then Inc(Cleared)" in helper
+    assert "Result := ClearSchFootprintLibraryOnComp(Comp, Cleared)" in source[
+        "SetPlacedFootprintLibrary"]
+
+
 def test_the_command_is_routed():
     assert "'relink_components': Result := Gen_RelinkComponents(Params, " \
         "RequestId);" in _GENERIC.read_text(encoding="utf-8")
@@ -111,9 +157,8 @@ def _call(monkeypatch, bridge, **kw):
 
 
 def test_a_database_row_fills_the_symbol_and_footprint(monkeypatch):
-    # As the handler answers: one row, the whole table read.
-    bridge = _Bridge(row={"found": True, "match_count": 1, "scan_capped": False,
-                          "symbol_ref": "RES",
+    bridge = _Bridge(row={"found": True, "match_count": 1,
+                          "scan_capped": False, "symbol_ref": "RES",
                           "symbol_library": "Passives.SchLib",
                           "footprints": [{"ref": "0603",
                                           "library": "Passives.PcbLib"}]})
@@ -135,6 +180,18 @@ def test_a_missing_database_row_changes_nothing(monkeypatch):
                 dblib_key="NOPE")
     assert out["error"] == "DBLIB_ROW_NOT_FOUND"
     assert [c for c, _ in bridge.sent] == ["library.get_dblib_record"]
+
+
+def test_ambiguous_or_capped_database_row_changes_nothing(monkeypatch):
+    for match_count, scan_capped in [(2, False), (1, True)]:
+        bridge = _Bridge(row={"found": True, "match_count": match_count,
+                              "scan_capped": scan_capped,
+                              "symbol_ref": "RES"})
+        out = _call(monkeypatch, bridge, designators=["R1"],
+                    library_path=r"C:\libs\Parts.DbLib",
+                    dblib_table="Resistors", dblib_key="RC0603-10K")
+        assert out["error"] == "DBLIB_ROW_AMBIGUOUS"
+        assert [c for c, _ in bridge.sent] == ["library.get_dblib_record"]
 
 
 def test_bad_arguments_are_refused_before_sending(monkeypatch):

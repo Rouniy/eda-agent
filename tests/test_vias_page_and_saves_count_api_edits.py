@@ -42,12 +42,12 @@ def app() -> dict[str, str]:
 
 
 def test_a_via_is_counted_after_the_net_filter_and_before_paging(pcb):
-    body = pcb["PCB_GetVias"]
-    net = body.index("If (WantNet <> '') And (NetName <> WantNet) Then")
+    body = pcb["PCB_GetViasForBoard"]
+    net = body.index("If (FilterNet = '') Or (NetName = FilterNet) Then")
     count = body.index("Inc(Count);")
-    page = body.index("If (Count <= Offset) Or ((Limit > 0) And (Returned >= Limit)) Then")
-    assert net < count < page
-    assert "',\"more\":' + BoolToJsonStr(Offset + Returned < Count)" in body
+    page = body.index("If (Count >= Offset) And (Returned < Limit) Then")
+    assert net < page < count
+    assert "',\"truncated\":' + BoolToJsonStr(Count > Offset + Returned)" in body
 
 
 def test_the_tool_sends_only_what_was_asked(monkeypatch):
@@ -71,18 +71,19 @@ def test_the_tool_sends_only_what_was_asked(monkeypatch):
 
 def test_a_save_counts_the_bridges_own_edits(app):
     body = app["App_SaveDocument"]
-    read = body.index("Try WasModified := ServerDoc.Modified; Except End;")
-    record = body.index("If DocWasEdited(FilePath) Then WasModified := True;")
+    read = body.index("ModifiedBefore := DocIsModified(FilePath);")
     save = body.index("ServerDoc.DoFileSave('')")
-    assert read < record < save
+    assert read < save
+    main = load(_ALTIUM / "Main.pas", minimum=20)["DocIsModified"]
+    assert "DocWasEdited(FilePath)" in main and "ServerDoc.Modified" in main
 
 
 def test_the_view_on_screen_comes_before_the_servers_last_sheet(app):
     body = app["App_GetActiveDocument"]
-    view = body.index("View := Client.CurrentView;")
+    view = body.index("View := Client.GetCurrentView;")
     assert view < body.index("SchServer.GetCurrentSchDocument")
     assert view < body.index("GetPCBBoardAnywhere(0)")
-    assert "ServerDoc := View.OwnerDocument;" in body
+    assert "ServerDoc := View.GetOwnerDocument;" in body
 
 
 def test_the_focused_path_falls_back_to_the_view():

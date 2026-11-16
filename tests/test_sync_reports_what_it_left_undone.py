@@ -19,7 +19,7 @@ class _Bridge:
     def __init__(self):
         self.pairs = [{"name": "USB_MCU"}, {"name": "USB_CONN"}]
 
-    async def send_command_async(self, command, params=None, timeout=None):
+    async def send_command_async(self, command, params=None, timeout=None, **kwargs):
         if command == "pcb.get_differential_pairs":
             return {"count": len(self.pairs), "pairs": list(self.pairs)}
         if command == "project.update_pcb":
@@ -54,9 +54,12 @@ class _Bridge:
 
 
 def _tools(bridge, monkeypatch, driver=None):
-    monkeypatch.setattr(project, "get_bridge", lambda: bridge)
     from eda_agent.tools import answering
-    monkeypatch.setattr(answering, "driver", lambda title, steps, on_the_way=None: driver)
+    monkeypatch.setattr(project, "get_bridge", lambda: bridge)
+    # These tests exercise the post-ECO comparison. A dialog left open in
+    # the user's live Altium session must not replace the mocked ECO reply.
+    monkeypatch.setattr(project, "_list_open_dialogs", lambda: [])
+    monkeypatch.setattr(answering, "driver", lambda *a, **k: driver)
     tools = {}
 
     class _Mcp:
@@ -128,12 +131,12 @@ def test_a_clean_sync_says_nothing(monkeypatch):
     bridge = _Bridge()
     bridge.pairs = []
 
-    async def send(command, params=None, timeout=None):
+    async def send(command, params=None, timeout=None, **kwargs):
         if command == "project.get_bom":
             return {"components": [{"designator": "R1", "footprint": "R0402"}]}
         if command == "pcb.get_components":
             return {"components": [{"designator": "R1", "footprint": "R0402"}]}
-        return await _Bridge.send_command_async(bridge, command, params, timeout)
+        return await _Bridge.send_command_async(bridge, command, params, timeout, **kwargs)
 
     bridge.send_command_async = send
     out = asyncio.run(_tools(bridge, monkeypatch)["proj_sync_pcb"]())

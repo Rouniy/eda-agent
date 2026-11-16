@@ -389,15 +389,37 @@ def register_uiauto_tools(mcp):
         ran, this either runs the command or says why not. A last resort:
         try ``tool_guide`` first.
 
-        Path by name, e.g. "Design|Rules" (accelerators and "..."
-        ignored). Give the English names on any language: a translated
-        Altium's own captions are matched from its install, and the
-        reply's ``ui_language`` says which it was. It needs the
-        foreground: it brings Altium forward and
-        briefly moves the pointer, so ``may_steal_focus`` must be True.
-        The menu bar depends on the focused editor, so focus the right
-        document first. Read any dialog it opens with
-        ``app_list_open_dialogs``.
+        Use this when ``app_run_menu`` will not do, which is more often
+        than it looks: that tool reports success for commands it never
+        invokes, because the process ids it dispatches cannot report
+        failure and some of them are not real (task #83). This one
+        clicks the actual menu, so a command either runs or the reply
+        says why not.
+
+        PATH BY NAME. ``"Design|Rules..."``, ``"Tools|Update From
+        Libraries..."``. Accelerator markers and a trailing ellipsis are
+        ignored, so ``"Design|Rules"`` works too. Nested submenus work
+        by adding levels. English captions are matched against installed
+        Altium translations when the interface uses another language.
+        Names are used rather than positions because entries move with
+        context and separators are invisible.
+
+        IT NEEDS THE FOREGROUND. Altium has no Win32 menu and its
+        DevExpress bars expose no working accessible action, so the only
+        thing that opens them is real input: this brings Altium to the
+        front and briefly moves the pointer, putting it back afterwards.
+        Every other press in this package is addressed to a window
+        handle and depends on none of that, which is why this one is
+        gated behind ``may_steal_focus`` and never happens by default.
+
+        THE MENU BAR IS PER EDITOR. With a board focused you get the PCB
+        menus, with a schematic the schematic ones. Focus the matching
+        document first, or the reply will tell you the item was not
+        there and list what was.
+
+        WHAT HAPPENS NEXT IS NOT THIS TOOL'S JOB. Many commands open a
+        dialog. Read it with ``app_list_open_dialogs``; the dialog
+        drivers handle the rest.
 
         Args:
             menu_path: Pipe-separated path, top level first.
@@ -803,11 +825,8 @@ def register_uiauto_tools(mcp):
                 by default.
 
         Returns:
-            ``{"ok": true, "panels": [{name, rect, button_hwnd,
-            content_count}], "count": N}``, plus ``offered`` when asked
-            for. A panel is found by the tab it carries, so an empty list
-            comes with a ``note``: it has been reported empty on AD 25
-            while Properties was open.
+            ``{"ok": true, "panels": [{name, rect, button_hwnd, content}],
+            "count": N}``, plus ``offered`` when asked for.
         """
         from ..ui import panels
 
@@ -818,16 +837,20 @@ def register_uiauto_tools(mcp):
         if not panels.available():
             return {"ok": False, "reason": "UI automation is unavailable here"}
 
-        open_now = panels.list_open(pid)
+        open_now = await asyncio.to_thread(
+            panels.on_com_thread, lambda: panels.list_open(pid))
         out: dict[str, Any] = {
             "ok": True,
             "count": len(open_now),
-            "panels": [panels.describe(p) for p in open_now],
+            "panels": [{"name": p["name"], "rect": p["rect"],
+                        "button_hwnd": p["button_hwnd"],
+                        "content_count": len(p["content"])} for p in open_now],
         }
         if not open_now:
             out["note"] = panels.EMPTY_SCAN_NOTE
         if offered_too:
-            out["offered"] = panels.offered(pid)
+            out["offered"] = await asyncio.to_thread(
+                panels.on_com_thread, lambda: panels.offered(pid))
         return out
 
     @mcp.tool()
@@ -861,7 +884,8 @@ def register_uiauto_tools(mcp):
         pid, problem = _altium_pid()
         if problem is not None:
             return problem
-        return panels.open_panel(pid, name, settle=settle)
+        return await asyncio.to_thread(
+            panels.on_com_thread, lambda: panels.open_panel(pid, name, settle=settle))
 
     @mcp.tool()
     async def app_read_panel(name: str) -> dict[str, Any]:
@@ -887,7 +911,8 @@ def register_uiauto_tools(mcp):
         pid, problem = _altium_pid(reads_only=True)
         if problem is not None:
             return problem
-        return panels.read_panel(pid, name)
+        return await asyncio.to_thread(
+            panels.on_com_thread, lambda: panels.read_panel(pid, name))
 
     @mcp.tool()
     async def app_set_dropdown(
@@ -1023,11 +1048,11 @@ def register_uiauto_tools(mcp):
             "ctrl+s"              a chord
             "tab tab enter"       three in order
 
-        Modifiers: ctrl, alt, shift. Keys: letters a to z, digits 0 to
-        9, enter, escape, tab, space, backspace, delete, insert, the
-        arrows, home, end, pageup, pagedown and F1 to F12. An unknown
-        name is refused and the known ones listed, rather than sent as
-        nothing. For literal text use app_type_text.
+        Modifiers: ctrl, alt, shift. Keys: enter, escape, tab, space,
+        backspace, delete, the arrows, home, end, pageup, pagedown and
+        F1 to F12, letters A-Z, digits 0-9 and numpad keys num0-num9.
+        An unknown name is refused and the known ones listed,
+        rather than sent as nothing.
 
         THIS GOES WHEREVER FOCUS IS. Establish focus first, with
         app_click_menu or app_open_panel, and check the result
@@ -1312,9 +1337,7 @@ def register_uiauto_tools(mcp):
 
         Args:
             force: restart even when Altium's title does not name the
-                script project and the loop answers a ping. Without it a
-                loop that does not answer, while no session's call is
-                running, is restarted.
+                script project, the usual sign of a halt.
 
         Returns:
             ``halted`` (whether a restart ran), ``screenshots``,
@@ -1329,9 +1352,6 @@ def register_uiauto_tools(mcp):
 
         bridge = get_bridge()
         workspace = bridge.config.workspace_dir
-        # A loop that does not answer a ping while no session's call is
-        # running is dead whatever the title says; one serving another
-        # session's long call is not, and a restart would kill that call.
         dead = False
         if not force:
             dead = (await asyncio.to_thread(bridge.ping_with_version) is None
@@ -1466,7 +1486,8 @@ def register_uiauto_tools(mcp):
         out["dialog_count"] = len(open_dialogs)
 
         try:
-            out["panels"] = [p["name"] for p in panels.list_open(pid)]
+            out["panels"] = [p["name"] for p in panels.on_com_thread(
+                lambda: panels.list_open(pid))]
         except Exception as exc:                 # noqa: BLE001
             out["panels"] = []
             out["panel_error"] = str(exc)

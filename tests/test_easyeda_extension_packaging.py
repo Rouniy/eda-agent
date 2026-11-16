@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 from eda_agent import easyeda_extension
 
@@ -73,3 +74,29 @@ def test_readers_use_the_build_folder_for_a_wheel(tmp_path, monkeypatch):
 
     assert easyeda_verified.verified_path() == (
         tmp_path / "ws" / "easyeda-extension" / "verified.json")
+
+
+def test_build_refuses_nonempty_destination_without_force(tmp_path, monkeypatch):
+    _packaged_only(tmp_path, monkeypatch)
+    dest = tmp_path / "build"
+    dest.mkdir()
+    existing = dest / "main.js"
+    existing.write_text("user edits", encoding="utf-8")
+    code, message = easyeda_extension.build(str(dest))
+    assert code == 1 and "--force" in message
+    assert existing.read_text(encoding="utf-8") == "user edits"
+
+    monkeypatch.setattr(easyeda_extension.shutil, "which", lambda _: None)
+    code, message = easyeda_extension.build(str(dest), force=True)
+    assert code == 1 and "Node.js" in message
+    assert existing.read_text(encoding="utf-8") == "main.js"
+
+
+def test_build_requires_a_nonempty_extension_package(tmp_path, monkeypatch):
+    _packaged_only(tmp_path, monkeypatch)
+    monkeypatch.setattr(easyeda_extension.shutil, "which", lambda _: "node")
+    monkeypatch.setattr(easyeda_extension.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(
+                            returncode=0, stdout="", stderr=""))
+    code, message = easyeda_extension.build(str(tmp_path / "build"))
+    assert code == 1 and "did not create a usable" in message

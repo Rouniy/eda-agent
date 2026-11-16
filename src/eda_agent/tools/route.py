@@ -38,6 +38,7 @@ from ..route import (
     route_problem,
 )
 from ..route.repair import plan_drc_repairs
+from ..route import GridTooFineError
 
 
 async def _resolve_geometry(geometry: Any,
@@ -145,6 +146,123 @@ def _unbriefed(needed: list[dict[str, Any]], level: str) -> dict[str, Any]:
     if not needed or level == "off":
         return {}
     return {"brief_needed" if level == "enforced" else "routed_without_brief": needed}
+
+
+# Geometry lists that carry a matching entry in the payload's ``counts``
+# block. Pascal increments each counter in lockstep with the JSON it
+# emits, so a shorter list than the declared count means the payload lost
+# entries somewhere between the handler and here.
+_COUNTED_LISTS = ("pads", "tracks", "vias", "arcs", "regions", "components")
+
+
+def _geometry_summary(geom: dict[str, Any],
+                      problem: Any) -> dict[str, Any]:
+    """Describe the routing input and flag a short payload.
+
+    ``truncated`` is True only on hard evidence: the payload declared N
+    of something and delivered fewer than N. It is deliberately not a
+    guess about size.
+    """
+    counts = geom.get("counts")
+    mismatches: dict[str, dict[str, int]] = {}
+    if isinstance(counts, dict):
+        for key in _COUNTED_LISTS:
+            declared = counts.get(key)
+            if not isinstance(declared, int):
+                continue
+            got = len(geom.get(key) or [])
+            if got < declared:
+                mismatches[key] = {"declared": declared, "received": got}
+    summary = {
+        "truncated": bool(mismatches),
+        "count_mismatches": mismatches,
+        "declared_counts": counts if isinstance(counts, dict) else {},
+        "pads_seen": problem.pads_seen,
+        "pads_used_as_terminals": problem.pads_used,
+        "pads_dropped_off_routing_layers": sum(
+            problem.pads_off_routing_layer.values()),
+        "routing_layers": list(problem.layers),
+        "nets_with_pads": len(problem.pad_nets_seen),
+        "nets_with_terminals": len(problem.terminals),
+    }
+    # The grid scale sits next to the pad tally on purpose: pitch is the
+    # one knob that changes every downstream cost without touching the
+    # netlist, so anyone reading "unknown net" can see at a glance
+    # whether the netlist or the resolution moved.
+    summary.update(problem.grid_info())
+    return summary
+
+
+# Unknown-net reasons that mean the ROUTER lost the net, not that the
+# board lacks it. Only "absent_from_geometry" on an otherwise healthy
+# payload is a genuine "no such net"; every other code is a mechanism
+# failure and must not be reported as a clean result.
+_MECHANISM_REASONS = frozenset({
+    "geometry_has_no_pads",
+    "pads_off_routing_layers",
+    "pads_present_but_no_terminal",
+})
+
+
+def _unknown_reason(net: str, problem: Any) -> dict[str, Any]:
+    """Why ``net`` produced no terminals, plus whether that is our fault."""
+    out = _classify_unknown(net, problem)
+    out["mechanism_failure"] = out["reason"] in _MECHANISM_REASONS
+    return out
+
+
+def _classify_unknown(net: str, problem: Any) -> dict[str, Any]:
+    """Explain why ``net`` produced no terminals.
+
+    Four genuinely different situations that all used to surface as the
+    single word "unknown": the payload carried no pads at all, the net is
+    absent from an otherwise healthy payload, its pads exist but sit off
+    the routing layers, or it has pads that were dropped for another
+    reason. Every branch is stamped with ``mechanism_failure`` from
+    :data:`_MECHANISM_REASONS` so the caller never has to re-derive which
+    of them is the board's fault.
+    """
+    if problem.pads_seen == 0:
+        # Zero pads with nets requested is never a netlist verdict. Saying
+        # "no such net" here is the exact confidently-wrong answer this
+        # field exists to prevent -- the pad list never arrived.
+        return {
+            "reason": "geometry_has_no_pads",
+            "detail": (
+                f"The geometry payload contained no pads at all, so no net "
+                f"could resolve -- including '{net}'. This is a fetch or "
+                f"payload failure, not a missing net. Re-fetch the "
+                f"geometry and check geometry_summary.declared_counts."
+            ),
+        }
+    dropped = problem.pads_off_routing_layer.get(net, 0)
+    if dropped:
+        return {
+            "reason": "pads_off_routing_layers",
+            "pads_dropped": dropped,
+            "routing_layers": list(problem.layers),
+            "detail": (
+                f"{net} has {dropped} pad(s) in the geometry, but none on "
+                f"{list(problem.layers)}. Add the layer to rules.layers, "
+                f"or route it on a layer that is in the stack."
+            ),
+        }
+    if net in problem.pad_nets_seen:
+        return {
+            "reason": "pads_present_but_no_terminal",
+            "detail": (
+                f"{net} appears on a pad in the geometry but produced no "
+                f"terminal; the pad record is likely malformed."
+            ),
+        }
+    return {
+        "reason": "absent_from_geometry",
+        "detail": (
+            f"No pad in the geometry payload carries net '{net}'. Either "
+            f"the name is wrong, or the payload did not include those "
+            f"pads -- check geometry_summary.truncated."
+        ),
+    }
 
 
 def register_route_tools(mcp):
@@ -941,6 +1059,7 @@ def register_route_tools(mcp):
         bend_penalty: float = 1.0,
         via_cost: float = 10.0,
         max_expansions: int = 200_000,
+        routing_style: str = "manhattan",
         fetch_geometry: bool = False,
     ) -> dict[str, Any]:
         """Route the board offline (grid A*) and return placeable ops.
@@ -951,26 +1070,47 @@ def register_route_tools(mcp):
         raised. Loop: plan, place, DRC, route_plan_repairs, repeat.
 
         Args:
-            geometry: Board geometry payload (bbox, outline, pads, tracks,
-                vias, mils). Unrouted nets' copper stays an obstacle.
-            rules: clearance_mils, track_width_mils (int or per-class dict
-                with "default"), via_size_mils, via_drill_mils, layers
-                (default top and bottom).
-            nets: Route only these (unknown ones in ``unknown_nets``).
-            net_classes: net -> class (power, ground, differential...),
-                setting order and width; others are "signal".
-            grid_pitch_mils: Grid pitch (default 25).
-            bend_penalty: Corner cost, in grid pitches.
-            via_cost: Layer-change cost, in grid pitches.
-            max_expansions: Search budget per connection.
-            fetch_geometry: Read the live board when geometry is None.
+            geometry: ``Gen_GetPcbGeometry`` payload (bbox / outline /
+                pads / tracks / vias, all mils). Pads and copper of
+                nets NOT being routed stay in the obstacle map.
+            rules: All mils: ``clearance_mils``, ``track_width_mils``
+                (int, or per-class dict with ``"default"``),
+                ``via_size_mils``, ``via_drill_mils``, ``layers``
+                (default Top + Bottom). ``None`` uses defaults.
+            nets: Route only these; the rest stay obstacles. Unknown
+                names go to ``unknown_nets``. ``None`` routes all.
+            net_classes: Net name -> class (``power`` / ``ground`` /
+                ``differential`` / ...). Sets routing order and the
+                per-class track width. Unlisted nets are ``signal``.
+            grid_pitch_mils: Grid pitch (default 25). Too fine for the
+                node budget fails with ``reason_code "grid_too_fine"``.
+            bend_penalty: A* corner cost in grid-pitch units.
+            via_cost: A* layer-change cost in grid-pitch units.
+            max_expansions: Per-connection A* budget. Hint
+                ``expansion_budget_exhausted`` means it ran out, not that
+                the route is impossible; halving the pitch quadruples
+                the cells.
+            routing_style: ``manhattan`` or ``45deg``. The latter permits
+                diagonal moves but conservatively prevents corner cutting.
+            fetch_geometry: When True and ``geometry`` is None, pull
+                the live board over the bridge.
 
         Returns:
-            {"ok", "summary" (routed, failed, completion, counts,
-            length), "order", "nets" {net: {status, class, width, ...}},
-            "tracks", "vias", "validation", "geometry" (source "live" or
-            "caller", bbox, counts)}. A caller-supplied geometry is only
-            as fresh as its snapshot: re-read after placing anything.
+            ``{"ok": True, "summary": {nets_total, routed, failed,
+            skipped, attempted, completion, track_count, via_count,
+            total_length_mils}, "order": [...], "nets": {net:
+            {status, class, width, tracks, vias, ...}}, "tracks":
+            [...], "vias": [...], "validation": {...},
+            "geometry_summary": {...}}``; with a ``nets`` filter also
+            ``requested_nets``, ``unknown_nets``,
+            ``unknown_net_reasons``, and ``summary.requested_count`` /
+            ``summary.unknown_count``.
+            ``{"ok": False, "reason": ...}`` on malformed input.
+
+            ``geometry.source`` is ``live`` (read now) or ``caller``
+            (your dict), with its ``bbox`` and ``counts``. A ``caller``
+            plan cannot be dated: after placing anything, re-read before
+            re-planning, or the plan routes through copper it cannot see.
         """
         geom, geom_source = await _resolve_geometry(geometry, fetch_geometry)
         if geom is None:
@@ -983,13 +1123,30 @@ def register_route_tools(mcp):
                 return {"ok": False,
                         "reason": "nets must be a list of net names"}
         try:
+            style = routing_style.strip().lower()
+            if style not in {"manhattan", "45deg", "octilinear"}:
+                raise ValueError("routing_style must be manhattan or 45deg")
             problem = RoutingProblem.from_geometry(
                 geom, rules, net_classes=net_classes,
                 grid_pitch_mils=grid_pitch_mils)
             options = RouterOptions(
                 bend_penalty=float(bend_penalty),
                 via_cost=float(via_cost),
-                max_expansions=int(max_expansions))
+                max_expansions=int(max_expansions),
+                allow_diagonal=style in {"45deg", "octilinear"})
+        except GridTooFineError as exc:
+            # A resource bound must fail loudly and by name, carrying the
+            # node count and the limit. Degrading to a coarser grid here
+            # would reclassify nets as a side effect of a memory cap --
+            # exactly the silent behaviour this reports instead.
+            out = {"ok": False, "reason": str(exc)}
+            out.update(exc.as_dict())
+            if nets is not None:
+                # The nets were never looked at. Saying nothing about them
+                # is honest; calling them unknown would not be.
+                out["requested_nets"] = sorted(set(nets))
+                out["unknown_nets"] = []
+            return out
         except (ValueError, TypeError) as exc:
             return {"ok": False, "reason": str(exc)}
 
@@ -1002,6 +1159,15 @@ def register_route_tools(mcp):
             }
         result = route_problem(problem, options)
         result["geometry"] = _planned_against(geom, geom_source)
+        result["geometry_summary"] = _geometry_summary(geom, problem)
+        if result["geometry_summary"]["truncated"]:
+            result["ok"] = False
+            result["reason"] = (
+                "geometry payload is short of its own declared counts "
+                f"({result['geometry_summary']['count_mismatches']}); the "
+                "routing input is incomplete, so unknown_nets and "
+                "completion cannot be trusted. Re-fetch the geometry."
+            )
         if problem.off_grid_terminals:
             result["off_grid_terminals"] = problem.off_grid_terminals
             result["grid_hint"] = (
@@ -1009,8 +1175,53 @@ def register_route_tools(mcp):
                 f"{grid_pitch_mils} mil grid point on their copper; a "
                 "grid_pitch_mils under half the pad width can reach them")
         if nets is not None:
-            result["requested_nets"] = sorted(set(nets))
+            requested = sorted(set(nets))
+            result["requested_nets"] = requested
             result["unknown_nets"] = unknown
+            # WHY each unknown net is unknown. Without this an unknown net
+            # reads as "no such net", and that is exactly the conclusion
+            # that was wrong: pads existed but sat on layers outside the
+            # routing stack, so they never became terminals.
+            result["unknown_net_reasons"] = {
+                n: _unknown_reason(n, problem) for n in unknown
+            }
+            summary = result.get("summary")
+            if isinstance(summary, dict):
+                # Completion against what the CALLER asked for. The
+                # router's own figure divides by the nets it attempted,
+                # so filtering every requested net away left it dividing
+                # by zero and reporting 1.0 while routing nothing.
+                summary["requested_count"] = len(requested)
+                summary["unknown_count"] = len(unknown)
+                summary["completion"] = (
+                    summary.get("routed", 0) / len(requested)
+                    if requested else 0.0
+                )
+            # An unknown net is only benign when the payload was healthy
+            # and the name simply is not in it. Every other reason means
+            # the router lost a net that exists, and a caller that trusts
+            # ``ok`` must not have to read the reasons to find that out.
+            # Previously ok flipped only when ALL requested nets vanished,
+            # so 6 of 7 dropped for a mechanism failure still reported a
+            # clean run.
+            mechanism = sorted(
+                n for n, r in result["unknown_net_reasons"].items()
+                if r.get("mechanism_failure"))
+            if mechanism:
+                result["unknown_nets_mechanism_failures"] = mechanism
+                result["ok"] = False
+                result.setdefault("reason", (
+                    f"{len(mechanism)} requested net(s) exist in the "
+                    f"geometry but were dropped by the routing model "
+                    f"({', '.join(mechanism[:5])}"
+                    f"{'...' if len(mechanism) > 5 else ''}); see "
+                    f"unknown_net_reasons. This is a mechanism failure, "
+                    f"not a missing net."))
+            elif requested and len(unknown) == len(requested):
+                result["ok"] = False
+                result.setdefault("reason", (
+                    "none of the requested nets had routable pads in the "
+                    "geometry; see unknown_net_reasons"))
         return result
 
     @mcp.tool()
@@ -1042,3 +1253,47 @@ def register_route_tools(mcp):
             ``{"ok": False, "reason": ...}`` on malformed input.
         """
         return plan_drc_repairs(violations, max_rounds=max_rounds)
+
+    @mcp.tool()
+    async def route_build_offline_package(
+        geometry: dict[str, Any],
+        output_dir: str,
+        rules: Optional[dict[str, Any]] = None,
+        nets: Optional[list[str]] = None,
+        net_classes: Optional[dict[str, str]] = None,
+        grid_pitch_mils: int = DEFAULT_GRID_PITCH_MILS,
+        routing_style: str = "45deg",
+        bend_penalty: float = 1.0,
+        via_cost: float = 10.0,
+        max_expansions: int = 200_000,
+    ) -> dict[str, Any]:
+        """Build a route + validation + SVG + JSON package entirely offline."""
+        from pathlib import Path
+        from ..route.pipeline import build_route_package
+        try:
+            return build_route_package(
+                geometry, Path(output_dir).expanduser().resolve(), rules, nets,
+                net_classes, grid_pitch_mils, routing_style, bend_penalty,
+                via_cost, max_expansions,
+            )
+        except (ValueError, TypeError) as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    @mcp.tool()
+    async def route_audit_plan(
+        plan: dict[str, Any],
+        reference_vias: Optional[list[dict[str, Any]]] = None,
+        high_speed_nets: Optional[list[str]] = None,
+        return_via_max_mils: float = 100,
+        max_vias_per_net: int = 8,
+        diff_pairs: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Offline length/via/return-path/differential-skew route audit."""
+        from ..route.audit import audit_route_plan
+        try:
+            return audit_route_plan(
+                plan, reference_vias, high_speed_nets,
+                return_via_max_mils, max_vias_per_net, diff_pairs,
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"ok": False, "reason": str(exc), "findings": []}

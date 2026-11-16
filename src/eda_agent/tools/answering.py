@@ -37,20 +37,24 @@ def driver(title: str, steps: list[Step],
 async def send_answering(bridge, command: str, params: dict, title: str,
                          steps: list[Step], timeout: float = 360.0,
                          on_the_way: Optional[dict[str, Any]] = None,
+                         max_extensions: Optional[int] = None,
                          ) -> tuple[Any, Optional[dict]]:
     """The command's reply, and what was done to its dialog (None when the
     dialog was left to the user). ``on_the_way``: dialogs that can come up
     before it, by title, with the button that carries on."""
     found = driver(title, steps, on_the_way)
+    send_options = {"timeout": timeout}
+    if max_extensions is not None:
+        send_options["max_extensions"] = max_extensions
     if found is None:
-        return await bridge.send_command_async(command, params), None
+        return await bridge.send_command_async(command, params, **send_options), None
     run, stop = found
     pressing = asyncio.get_running_loop().run_in_executor(None, run)
     try:
         with contextlib.ExitStack() as expected:
             for name in [title, *(on_the_way or {})]:
                 expected.enter_context(bridge.expecting(name))
-            result = await bridge.send_command_async(command, params, timeout=timeout)
+            result = await bridge.send_command_async(command, params, **send_options)
     finally:
         stop.set()
     return result, await pressing

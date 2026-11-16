@@ -58,9 +58,17 @@ _NO_HINT_NEEDED = {
     "WRONG_DOC_KIND": "already says to pass sheet_path",
     "WRONG_FOCUS": "already names the document to focus and the tool "
                    "that focuses it",
+    "WRONG_BOARD": "the handler requires the exact board_path supplied by the caller; "
+                   "it is not a library-versus-board mismatch",
     "NOT_A_MEMBER": "the project resolved fine and the document simply is "
                     "not in it, so there is no other document to point at. "
                     "The message names the path that was asked for.",
+    "NOT_A_COMPONENT_ITEM": "the exact Workspace match has the wrong item type; "
+                            "there is no alternate document namespace",
+    "NO_LIBRARY_FILE": "the requested PcbLib path does not exist on disk; "
+                       "the message names that path",
+    "WRONG_FOOTPRINT_ACTIVE": "the correct PcbLib is open, but Altium did not "
+                              "activate the requested footprint",
 }
 
 

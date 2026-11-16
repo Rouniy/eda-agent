@@ -54,6 +54,29 @@ def test_a_visible_frame_is_left_alone(monkeypatch, needs_win32):
     assert windows.reshow_hidden_frames_of(_OWNER) == []
 
 
+def test_menu_lookup_restores_a_hidden_main_frame(monkeypatch, needs_win32):
+    from eda_agent.ui import menu
+
+    frame = Window(2, "TDocumentForm", "a - Altium Designer", 100)
+    visible: set[int] = set()
+    shown: list[int] = []
+    monkeypatch.setattr(
+        menu.win, "enumerate_windows",
+        lambda pid=None, visible_only=True:
+            [w for w in [frame] if not visible_only or w.hwnd in visible])
+    monkeypatch.setattr(menu.win32gui, "IsWindowVisible", lambda h: h in visible)
+
+    def show(hwnd):
+        shown.append(hwnd)
+        visible.add(hwnd)
+
+    monkeypatch.setattr(menu.win, "show_without_focus", show)
+    assert menu.frame(100) == frame
+    assert shown == [2]
+    assert menu.frame(100) == frame
+    assert shown == [2]
+
+
 def test_nothing_is_shown_without_a_visible_status_window(monkeypatch,
                                                           needs_win32):
     wins = [Window(1, "TScriptForm", _OWNER, 100),
@@ -80,7 +103,7 @@ def bridge(tmp_path, monkeypatch):
 def _reply(bridge, monkeypatch, command, hidden):
     monkeypatch.setattr(
         bridge, "_poll_response",
-        lambda request_id, timeout: CommandResponse(
+        lambda request_id, timeout, max_extensions=None: CommandResponse(
             id=request_id, success=True, data={"ok": True}))
     monkeypatch.setattr(windows, "reshow_hidden_frames_of",
                         lambda title: [0x2b0780] if hidden else [])
@@ -110,7 +133,7 @@ def test_a_failing_check_never_fails_the_call(bridge, monkeypatch):
         raise OSError("no desktop")
     monkeypatch.setattr(
         bridge, "_poll_response",
-        lambda request_id, timeout: CommandResponse(
+        lambda request_id, timeout, max_extensions=None: CommandResponse(
             id=request_id, success=True, data={"ok": True}))
     monkeypatch.setattr(windows, "reshow_hidden_frames_of", broken)
     assert bridge._execute_command("pcb.focus_board", {}, 1.0) == {"ok": True}
@@ -134,35 +157,8 @@ def test_ui_tools_name_themselves_in_the_trace(monkeypatch, tmp_path):
     monkeypatch.setattr("eda_agent.bridge.get_bridge", lambda: _Bridge())
 
     def app_click_menu():
-        return uiauto._altium_pid(reads_only=True)
+        return uiauto._altium_pid()
 
     assert app_click_menu() == (4242, None)
     trace = (tmp_path / "bridge_trace.log").read_text(encoding="utf-8")
     assert "UI tool=app_click_menu" in trace
-
-
-def test_a_menu_walk_finds_a_hidden_frame_and_shows_it(monkeypatch, needs_win32):
-    """The menu walk does not go through the bridge, so its own frame
-    lookup has to show a hidden frame: app_update_from_libraries said "no
-    Altium main window" on a running Altium."""
-    from eda_agent.ui import menu
-
-    frame = Window(2, "TDocumentForm", "a - Altium Designer", 100)
-    visible: set = set()
-    shown = []
-    monkeypatch.setattr(
-        menu.win, "enumerate_windows",
-        lambda pid=None, visible_only=True:
-            [w for w in [frame] if not visible_only or w.hwnd in visible])
-    monkeypatch.setattr(menu.win32gui, "IsWindowVisible", lambda h: h in visible)
-
-    def show(hwnd):
-        shown.append(hwnd)
-        visible.add(hwnd)
-
-    monkeypatch.setattr(menu.win, "show_without_focus", show)
-    assert menu.frame(100) == frame
-    assert shown == [2]
-    # Shown once: a visible frame is returned as it is.
-    assert menu.frame(100) == frame
-    assert shown == [2]

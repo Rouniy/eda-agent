@@ -62,6 +62,9 @@ INTERACTIONS = (READONLY, SILENT, MODAL, PARTIAL)
 # --- category derivation ----------------------------------------------------
 # Ordered longest-prefix-first so ``application`` wins over ``app_`` etc.
 _CATEGORY_BY_PREFIX = (
+    ("altium365_", "altium365"),
+    ("footprint_", "library"),
+    ("physics_calc_", "engineering"),
     ("app_", "application"),
     ("proj_", "project"),
     ("lib_", "library"),
@@ -71,6 +74,7 @@ _CATEGORY_BY_PREFIX = (
     ("audit_", "audit"),
     ("design_", "design"),
     ("sim_", "simulation"),
+    ("si_", "simulation"),
     ("route_", "routing"),
     ("tool_", "meta"),
     ("part_", "parts"),
@@ -79,14 +83,8 @@ _CATEGORY_BY_PREFIX = (
     # matters here: the first match wins, so a new prefix that is a
     # prefix of an existing one has to go above it.
     ("easyeda_", "easyeda"),
-    # Package checks and renders work on a footprint before it exists in any
-    # library; filed with the library tools that draw it.
-    ("footprint_", "library"),
-    # A datasheet is a part's document, fetched like part_fetch fetches a
-    # part, and with no editor involved.
-    ("datasheet_", "parts"),
-    # Altium 365 through its own API or Nexar; no editor involved.
-    ("altium365_", "altium365"),
+    ("eng_", "engineering"),
+    ("profile_", "profile"),
 )
 
 # Tools every one of whose bridge commands the in-repo Altium simulator
@@ -106,26 +104,46 @@ _CATEGORY_BY_PREFIX = (
 # handler, and a tool is only covered when EVERY command it sends is,
 # because one unanswered call ends the run just as surely.
 _SIMULATOR_TOOLS = frozenset({
-    "app_checkpoint", "app_context", "app_detach", "app_get_active_document",
-    "app_get_version",
-    "app_list_documents", "app_set_active_document",
+    "app_checkpoint", "app_context", "app_detach",
+    "app_get_active_document", "app_get_version",
+    "app_list_documents", "app_restart_altium_bridge",
+    "app_set_active_document", "app_visual_context",
     "audit_find_missing_decoupling",
     "audit_find_pin_net_name_mismatches",
     "audit_find_unconnected_ic_pins", "design_lint_report",
+    "eng_compare_live_ipc_footprint", "eng_eco_preview_live",
+    "lib_add_footprint_arc",
+    "lib_add_footprint_pad", "lib_add_footprint_pads",
+    "lib_add_footprint_track", "lib_add_footprint_tracks",
+    "lib_add_pins", "lib_add_symbol_polygon",
+    "lib_audit_footprint_vs_datasheet", "lib_get_pad_geometry",
+    "lib_set_current_component", "proj_update_from_libraries",
+    "sch_place_comment",
+    "lib_add_symbol_rectangle", "lib_add_symbol_text",
+    "lib_batch_rename", "lib_batch_set_params",
+    "lib_create_3d_model", "lib_create_footprint",
+    "lib_create_ic_symbol",
+    "lib_create_symbol", "lib_create_symbol_in_parts",
+    "lib_delete_footprint_primitives", "lib_diff_libraries",
+    "lib_get_component_details", "lib_get_components",
+    "lib_link_3d_model", "lib_link_footprint", "obj_batch_delete",
+    "obj_batch_modify", "obj_create", "obj_delete",
+    "obj_deselect_all", "obj_get_font_id", "obj_get_font_spec",
+    "obj_modify", "obj_query", "obj_run_process", "obj_select", "obj_zoom",
+    "obj_zoom_to_xy", "pcb_bind_pad_nets",
     "lib_add_footprint_arc", "lib_add_footprint_pad",
     "lib_add_footprint_pads", "lib_add_footprint_track",
-    "lib_add_footprint_tracks", "lib_add_pins",
-    "lib_add_symbol_polygon", "lib_add_symbol_rectangle", "lib_add_symbol_text",
-    "lib_audit_footprint_vs_datasheet", "lib_batch_rename", "lib_batch_set_params", "lib_create_3d_model",
-    "lib_create_footprint",
+    "lib_add_footprint_tracks", "lib_add_pins", "lib_add_symbol_polygon",
+    "lib_audit_footprint_vs_datasheet", "lib_batch_rename",
+    "lib_batch_set_params", "lib_create_3d_model", "lib_create_footprint",
     "lib_create_ic_symbol",
-    "lib_create_symbol", "lib_delete_footprint_primitives", "lib_diff_libraries",
-    "lib_get_component_details", "lib_get_components", "lib_get_pad_geometry",
-    "lib_get_pin_list",
-    "lib_link_3d_model", "lib_link_footprint",
-    "obj_create", "obj_delete", "obj_deselect_all", "obj_get_font_id",
-    "obj_get_font_spec", "obj_modify", "obj_query", "obj_run_process",
-    "obj_select", "obj_zoom", "pcb_bind_pad_nets",
+    "lib_export_kicad_symbol",
+    "lib_get_pad_geometry", "lib_get_pin_list", "lib_link_3d_model",
+    "lib_link_footprint", "lib_set_current_component", "obj_batch_delete",
+    "obj_batch_modify", "obj_create", "obj_delete", "obj_deselect_all",
+    "obj_get_font_id", "obj_get_font_spec", "obj_modify", "obj_query",
+    "obj_run_process", "obj_select", "obj_zoom", "obj_zoom_to_xy",
+    "pcb_bind_pad_nets",
     "pcb_build_from_project", "pcb_create_nets_from_list",
     "pcb_get_board_outline", "pcb_get_board_statistics",
     "pcb_get_components", "pcb_get_nets", "pcb_get_unrouted_nets",
@@ -144,7 +162,45 @@ _SIMULATOR_TOOLS = frozenset({
 # "parts" queries part providers (registries, local KiCad libraries)
 # and never touches the Altium bridge, so it works with no Altium
 # running, which is what "offline" means here.
-_OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts"})
+_OFFLINE_CATEGORIES = frozenset({"routing", "meta", "parts", "engineering"})
+
+# Offline tools inside an otherwise bridge-backed category. Listed one by
+# one rather than by making the whole category offline: `profile` is
+# mixed, and an allowlist mislabels a NEW tool as live_only (annoying)
+# where a category rule would mislabel it as offline (a broken promise
+# to anyone filtering for "works with Altium closed"). The `design`
+# category took the other option and drifted three times; see
+# test_maturity_matches_reality.
+_OFFLINE_TOOLS = frozenset({
+    # Read a profile directory off local disk; Altium is not involved.
+    "profile_show", "profile_list",
+    # The plan half of the two profile managers: both read the profile and
+    # run the synthesis with nothing open. Their diff and apply halves do
+    # reach the bridge and keep the live_only their prefix gives them.
+    "pcb_rules_plan", "proj_erc_plan",
+    # Read or write library FILES directly (OLE streams, LibPkg text,
+    # byte copies); the bridge is never called.
+    "lib_read_pcblib_headers", "lib_write_libpkg",
+    "lib_backup_library", "lib_list_library_backups",
+    "lib_restore_library_backup",
+    # The SPICE model library: index files on disk, search the index,
+    # save a pin map. None of them reaches Altium.
+    "sim_scan_models", "sim_find_models", "sim_set_pin_map",
+})
+
+_ENGINEERING_EXTERNAL = frozenset({
+    "eng_eco_preview_live",
+    "eng_compare_live_ipc_footprint", "eng_a365_workspaces",
+    "eng_a365_projects", "eng_a365_project", "eng_a365_library_folders",
+    "eng_a365_library_components", "eng_a365_component", "eng_a365_query",
+    "eng_a365_doctor", "eng_ltspice_run", "eng_ltspice_trace",
+    # Reads the live schematic (readiness + connectivity) before it can
+    # emit anything, unlike the rest of the eng_ltspice_* family, which
+    # parses text it was handed.
+    "eng_ltspice_deck_from_schematic",
+    # Reads the live schematic to compare it with an LTspice circuit.
+    "eng_ltspice_compare_schematic",
+})
 # pcb / audit / simulation -> live_only; design is mixed (mostly offline,
 # handled by the offline classifier below).
 
@@ -156,13 +212,14 @@ _OFFLINE_SUBSTRINGS = ("_calc_", "calc_", "_compute_", "compute_")
 # the package checks compute over a package description and never reach an
 # editor, so they work with nothing running.
 _OFFLINE_BY_NAME = frozenset({"footprint_check_package",
-                              "footprint_render_package"})
+                              "footprint_render_package",
+                              "pcb_stack_from_file"})
 
 # ...except calculators that read their input FROM THE BOARD. The
 # substring rule above assumes a calc tool is pure maths; these query
 # Altium first, so reporting them as offline sends anyone filtering for
 # "works without Altium" straight into a bridge error.
-_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area"})
+_CALC_NEEDS_BRIDGE = frozenset({"pcb_calc_polygon_area", "lib_extract_step_models", "pcb_calc_toolkit_board"})
 
 # design_* tools that are pure Python (per the design-agent surface: plan
 # authoring, analysis, and derivation all run offline). The bridge-backed
@@ -174,6 +231,8 @@ _DESIGN_BRIDGE = frozenset(
         "design_review_snapshot",
         "design_snapshot_inventory",
         "design_datasheet_checklist",
+        "design_learn_from_layout",
+        "design_capture_snapshot",
         # Both fetch board state over the bridge before reporting.
         "design_lint_report",
         "design_visual_review",
@@ -182,12 +241,27 @@ _DESIGN_BRIDGE = frozenset(
         # degraded result rather than an error, and calling it offline
         # is what sends somebody to rely on that result.
         "design_plan_from_sheet",
+        "design_execute_plan",
+        "design_hints_from_sheet",
+        "design_preview_plan",
     }
 )
 
 # --- explicit interaction overrides (from the DelphiScript bridge audit) ----
 # Only tools that are NOT plain readonly/silent under the default rules.
 INTERACTION_OVERRIDES = {
+    "lib_resolve_workspace_component": READONLY,
+    # The via write is refused locally because it crashes the script engine.
+    "pcb_set_via_soldermask_relief": SILENT,
+    # Pure geometry computed in DelphiScript; no document state is read or
+    # changed. Its verb does not match the generic readonly name rules.
+    "obj_measure_distance": READONLY,
+    # Offline, but it overwrites a library file Altium may have open, so
+    # "readonly with respect to the session" would undersell it.
+    "lib_restore_library_backup": SILENT,
+    # Two library reads and a file in the workspace; the library is untouched.
+    "lib_render_footprint": READONLY,
+    "lib_preview_part": READONLY,
     # Who edits which document: reading it, or handing one over, writes
     # nothing to a design.
     "app_document_owners": READONLY,
@@ -217,13 +291,12 @@ INTERACTION_OVERRIDES = {
     # published as silent, so anything filtering for "keeps the session
     # responsive" was handed a tool that blocks the bridge until a human
     # answers a dialog. The dialog seen is named beside each one.
-    # pcb_run_drc was here: PCB:DesignRuleCheck opens the Design Rule
-    # Checker (TDesignRuleCheckForm), measured behind it a 30-minute dead
-    # loop. It now runs IPCB_Board.RunBatchDesignRuleCheck by default,
-    # MEASURED 2026-10-23 on AD 26.11: 0.45 s, no dialog, report written,
-    # so it is silent; allow_modal=True still takes the dialog route.
+    # Batch DRC runs without a dialog by default. allow_modal=True still
+    # opens the Design Rule Checker and can block the bridge.
     "pcb_run_drc": SILENT,
-    "proj_export_pdf": MODAL,         # Preview PCB / print preview
+    "proj_export_pdf": MODAL,        # direct print requires an explicit opt-in
+    "proj_export_image": MODAL,      # its PDF opt-in opens Preview SCH
+    "proj_export_schematic_pdf": SILENT,  # disposable project and PDF under _screens
     "proj_run_output": MODAL,         # Altium's exporter dialogs
     # These three raise "Unsaved Changes" whenever the target is dirty, and
     # that one is a WPF dialog whose buttons expose no window handles, so
@@ -239,6 +312,8 @@ INTERACTION_OVERRIDES = {
     # board, and reporting it readonly tells anyone filtering for safe
     # operations the opposite of the truth.
     "pcb_create_diff_pair": SILENT,
+    "pcb_route_diff_pair": SILENT,
+    "pcb_place_diff_pair_vias": SILENT,
     # Launches Altium's INTERACTIVE polygon mode: the user draws the
     # boundary by clicking. "silent" claimed it had completed a mutation,
     # so an agent would believe a polygon exists when none does.
@@ -275,7 +350,7 @@ INTERACTION_OVERRIDES = {
     # "parts" category is offline, and offline falls back to READONLY,
     # which would advertise a tool that touches the filesystem as
     # read-only. Every other file-writing tool here (lib_easyeda_import,
-    # lib_extract_cse_zip, proj_export_pdf, pcb_render_svg) is SILENT,
+    # lib_extract_cse_zip, pcb_render_svg) is SILENT,
     # so match them. part_search never writes and stays readonly.
     "part_fetch": SILENT,
     # Writes the downloaded PDF and its sidecar into the workspace cache.
@@ -303,6 +378,14 @@ INTERACTION_OVERRIDES = {
     "lib_read_pin_table": READONLY, "design_check_company_rules": READONLY,
     "design_read_rules_export": READONLY, "design_phase_gate": READONLY,
     "design_phase_standing": READONLY,
+    # The plan and diff halves of the two profile managers. Plan reads a
+    # profile off local disk and diff reads the board or the project; only
+    # apply writes. The pcb_ and proj_ prefixes both default to silent,
+    # which would advertise "show me what would change" as a tool that
+    # changes something, and the "_diff" marker is only recognised with a
+    # trailing underscore so neither diff matched it either.
+    "pcb_rules_plan": READONLY, "pcb_rules_diff": READONLY,
+    "proj_erc_plan": READONLY, "proj_erc_diff": READONLY,
     # Appends to the product's ledger of stage answers in the workspace.
     "design_phase_answer": SILENT,
     # Writes the deck and its results into a run folder in the workspace.
@@ -338,6 +421,11 @@ _READONLY_SUBSTRINGS = (
 # entry points invisible to a client discovering by category, which bites
 # hardest under the minimal toolset where the catalog IS the interface.
 _CATEGORY_BY_NAME = {
+    "datasheet_find_pages": "parts",
+    "datasheet_view_page": "parts",
+    "datasheet_fetch": "parts",
+    "footprint_check_package": "design",
+    "footprint_render_package": "design",
     "review_design": "core",
     "get_board_info": "core",
     "list_components": "core",
@@ -459,6 +547,8 @@ _EASYEDA_CATEGORY_OVERRIDE = {
     # Pure computation over a plan; they send nothing.
     "easyeda_emit_template": "design",
     "easyeda_emit_template_connections": "design",
+    "easyeda_emit_plan": "design",
+    "easyeda_emit_connections": "design",
     # Sends nothing directly either: it dispatches to whichever tools an
     # emitted plan names, so there is no command namespace to read.
     "easyeda_run_plan": "design",
@@ -530,7 +620,9 @@ def category_of(name: str) -> str:
 
 
 def _is_offline(name: str, category: str) -> bool:
-    if category in _OFFLINE_CATEGORIES:
+    if name in _ENGINEERING_EXTERNAL:
+        return False
+    if category in _OFFLINE_CATEGORIES or name in _OFFLINE_TOOLS:
         return True
     if name in _OFFLINE_BY_NAME:
         return True
@@ -558,6 +650,8 @@ def interaction_of(name: str, category: str | None = None) -> str:
     if name in INTERACTION_OVERRIDES:
         return INTERACTION_OVERRIDES[name]
     category = category or category_of(name)
+    if category == "engineering":
+        return READONLY
     if category == "audit":
         return READONLY
     if name.startswith(_READONLY_PREFIXES):

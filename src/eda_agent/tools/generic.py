@@ -24,6 +24,12 @@ from .bulk_hints import BulkHintTracker
 from .editor_options import run_options
 from .bulk import bulk_items_by
 from ..prjpcb import removals_together
+import hashlib
+import json
+import math
+import secrets
+from pathlib import Path
+from ..bridge.payload import unsendable_chars
 
 
 #: Every key ``sch_place_components`` reads from a placement dict.
@@ -116,11 +122,16 @@ async def _focus_sheet(bridge: Any,
     Placement lands on the active schematic, and a sheet just created is
     not focused, so without this the parts can land on another open one.
     """
+    import ntpath
+
     if not document_path:
         return None
+    if not ntpath.isabs(document_path):
+        return {"error": "BAD_SHEET_PATH", "reason": "absolute sheet_path is required",
+                "placed": 0}
     focus = await bridge.send_command_async(
         "application.set_active_document", {"file_path": document_path})
-    if isinstance(focus, dict) and not focus.get("success", True):
+    if not isinstance(focus, dict) or focus.get("success") is False:
         return {
             "error": "FOCUS_FAILED",
             "reason": f"could not focus {document_path} before placement; "
@@ -128,6 +139,13 @@ async def _focus_sheet(bridge: Any,
             "focus_result": focus,
             "placed": 0,
         }
+    active = await bridge.send_command_async("application.get_active_document", {})
+    actual = active.get("file_path", "") if isinstance(active, dict) else ""
+    if ntpath.normcase(ntpath.normpath(actual)) != ntpath.normcase(
+            ntpath.normpath(document_path)):
+        return {"error": "SHEET_MISMATCH", "reason":
+                f"active sheet is {actual or '(none)'}, expected {document_path}",
+                "placed": 0}
     return None
 
 
@@ -456,6 +474,71 @@ def _cursor_to_view_centre() -> bool:
     for dx in (0, 1):  # a move, as Altium sees one
         user32.PostMessageW(view, 0x0200, 0, ((y & 0xFFFF) << 16) | ((x + dx) & 0xFFFF))
     return True
+
+
+DBLIB_PLACEMENT_KEYS = frozenset({
+    "dblib_path", "table", "part_number", "key_field", "keys",
+    "x", "y", "rotation", "designator", "part_id",
+})
+
+
+_ERC_PROJECT_PATH_SCRIPT_VERSION = "2026.10.19.1"
+
+
+def _pcb_write_notes(object_type: str, assignments: str) -> list[str]:
+    """Surface native properties whose live state can mislead callers."""
+    keys = {part.split("=", 1)[0].strip() for part in assignments.split("|")
+            if "=" in part}
+    notes: list[str] = []
+    if object_type in ("eTrackObject", "eArcObject", "eViaObject") and "IsPreRoute" in keys:
+        notes.append("IsPreRoute read back in memory but reverted after save/reopen "
+                     "on AD 26.11, even for a netted track. To protect a "
+                     "routed net persistently, use pcb_lock_net_routing and "
+                     "enable Protect Locked Objects in pcb_edit_options "
+                     "before autorouting.")
+    if object_type == "ePadObject" and keys.intersection(
+            {"PasteMaskUsePercent", "PasteMaskPercent"}):
+        notes.append("A pad's percentage paste opening requires "
+                     "PasteMaskExpansionMode=2 (Manual Expansion) and "
+                     "PasteMaskEnabled=true. With mode 1 the percent can read "
+                     "back as zero even after a reported write; query the "
+                     "pad and save/reopen to verify it.")
+    if object_type == "ePort" and keys.intersection(
+            {"OverrideDisplayString", "HarnessColor"}):
+        notes.append("On an ordinary schematic port in AD 26.11, "
+                     "OverrideDisplayString and HarnessColor read back in "
+                     "memory but reverted after save/reopen. AutoSize did "
+                     "persist. Check the saved sheet before relying on "
+                     "these port fields.")
+    return notes
+
+
+async def _erc_script_ready(bridge) -> dict[str, Any] | None:
+    """Avoid silently running a project_path request on an older script."""
+    ping = await bridge.send_command_async("application.ping")
+    loaded = ping.get("script_version") if isinstance(ping, dict) else None
+    if (isinstance(loaded, str)
+            and re.fullmatch(r"\d{4}\.\d{1,2}\.\d{1,2}\.\d+", loaded)
+            and tuple(map(int, loaded.split("."))) >= (2026, 10, 19, 1)):
+        return None
+    return {
+        "ok": False,
+        "error": "ERC project targeting requires the updated Altium script",
+        "required_script_version": _ERC_PROJECT_PATH_SCRIPT_VERSION,
+        "loaded_script_version": loaded,
+    }
+
+
+WORKSPACE_PLACEMENT_KEYS = frozenset({
+    "workspace_guid", "item_guid", "revision_guid", "item_revision_id",
+    "x", "y", "rotation",
+})
+
+
+_WORKSPACE_GUID_RE = re.compile(
+    r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$"
+)
 
 
 def register_generic_tools(mcp):
@@ -884,14 +967,15 @@ def register_generic_tools(mcp):
         if not object_type:
             return {"ok": False, "reason":
                     "obj_create needs object_type, or items"}
-        wire = {
-            "object_type": object_type,
-            "properties": properties,
-            "container": container,
-        }
-        result = await _send_rule_aware(
-            "obj_create", [object_type], wire,
-            lambda: get_bridge().send_command_async("generic.create_object", wire))
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.create_object",
+            {
+                "object_type": object_type,
+                "properties": properties,
+                "container": container,
+            },
+        )
         hint = BulkHintTracker.record_and_hint("obj_create")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
@@ -1528,14 +1612,17 @@ def register_generic_tools(mcp):
     async def obj_batch_modify(
         operations: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Apply many filter+set operations in ONE call (obj_modify items).
-
-        What ``obj_modify(items=[...])`` runs, kept under this name for
-        callers that use it.
+        """Apply many filter+set operations in ONE call. PREFER THIS over
+        looping obj_modify whenever each object gets its own value (pins,
+        per-sheet titles): one call, one Altium transaction.
 
         No rollback: ops that ran before a failure stay applied. After a
-        designator batch, check the netlist: duplicate designators merge
-        nets silently. proj_annotate renumbers without duplicates.
+        designator batch, duplicate designators can merge nets silently.
+        Use ``sch_batch_rename_designators`` for planned explicit names or
+        ``proj_annotate`` for automatic numbering. Schematic component
+        designator assignments are refused before any command is sent to
+        Altium. A PCB pad's ``Designator`` is its pad name and may be changed
+        on the active board.
 
         Args:
             operations: List of operation dicts, each with:
@@ -1550,6 +1637,9 @@ def register_generic_tools(mcp):
                 - set: Pipe-separated assignments, e.g.
                   "Location.X=300|Location.Y=-100|Orientation=2". A value
                   may contain ';' but not '|'.
+
+            Values must not contain ';' -- that character separates the
+            fields of one operation on the wire.
 
         Returns:
             operations_processed, operations_skipped, total_matched, and
@@ -1591,10 +1681,28 @@ def register_generic_tools(mcp):
                             "there; nothing was sent",
                             "operations_processed": 0}
             if not obj_type or not set_str:
-                # Skipped, it vanished from the batch without a trace.
-                return {"ok": False, "reason":
-                        f"operations[{i}] needs object_type and set; "
-                        "nothing was sent", "operations_processed": 0}
+                continue
+            writes_designator = any(
+                assignment.partition("=")[0].strip().casefold()
+                in ("designator", "designator.text")
+                for assignment in str(set_str).split("|")
+                if "=" in assignment
+            )
+            pad_designator_only = (
+                str(obj_type).strip().casefold() == "epadobject"
+                and all(
+                    assignment.partition("=")[0].strip().casefold()
+                    != "designator.text"
+                    for assignment in str(set_str).split("|")
+                    if "=" in assignment
+                )
+            )
+            if writes_designator and not pad_designator_only:
+                return {"ok": False, "error": "DESIGNATOR_BATCH_REFUSED",
+                        "reason": ("operations[%d] changes a designator; use "
+                                   "sch_batch_rename_designators or proj_annotate. "
+                                   "Nothing was sent to Altium." % i),
+                        "operations_processed": 0}
             bad = filter_problem(filt)
             if bad:
                 return bad_filter(bad, operations_processed=0)
@@ -1606,10 +1714,18 @@ def register_generic_tools(mcp):
         if not op_strings:
             return {"error": "No valid operations provided", "operations_processed": 0}
 
-        wire = {"operations": "~~".join(op_strings)}
-        return await _send_rule_aware(
-            "obj_batch_modify", [str(op.get("object_type", "")) for op in operations], wire,
-            lambda: get_bridge().send_command_async("generic.batch_modify", wire))
+        bridge = get_bridge()
+        result = await bridge.send_command_async(
+            "generic.batch_modify",
+            {"operations": "~~".join(op_strings)},
+        )
+        notes = []
+        for op in operations:
+            notes.extend(_pcb_write_notes(op.get("object_type", ""),
+                                          op.get("set", "")))
+        if notes and isinstance(result, dict):
+            result["_native_write_notes"] = list(dict.fromkeys(notes))
+        return result
 
     @mcp.tool()
     async def obj_run_process(
@@ -1659,8 +1775,9 @@ def register_generic_tools(mcp):
 
     @mcp.tool()
     async def proj_run_erc(limit: int = 100,
-                           include_suppressed: bool = False) -> dict[str, Any]:
-        """Run Electrical Rules Check on the focused project.
+                           include_suppressed: bool = False,
+                           project_path: str = "") -> dict[str, Any]:
+        """Run Electrical Rules Check on an exact open project.
 
         Compiles the project first (required), runs ERC, and returns
         what it found, the same list ``proj_get_erc_violations`` reads:
@@ -1668,10 +1785,17 @@ def register_generic_tools(mcp):
         type set to No Report, is left out and counted in
         ``suppressed_count`` / ``not_reported_count``.
 
+        Altium can retain an old compiled No ERC suppression after a marker
+        is deleted, even after saving and recompiling. To verify that edit,
+        save the exact sheet, reload it with ``app_reload_document``, then
+        run this tool again. A dirty sheet must never be reloaded implicitly.
+
         Args:
             limit: How many violations to return; 0 returns all of them.
             include_suppressed: list those too, each with ``suppressed``
                 and ``level``.
+            project_path: Absolute path of the open PrjPcb. When omitted,
+                use Altium's focused project.
 
         Returns:
             ``violation_count`` and ``violations``: each with its kind,
@@ -1683,39 +1807,63 @@ def register_generic_tools(mcp):
         bridge = get_bridge()
         params = {"limit": str(max(0, int(limit))),
                   "include_suppressed": "true" if include_suppressed else "false"}
-        result = await bridge.send_command_async("generic.run_erc", params)
-        # A script from before 2026.10.21 answers the run with a message
-        # only; read the list it left behind instead of returning nothing.
-        if isinstance(result, dict) and "violation_count" not in result:
-            result = await bridge.send_command_async(
-                "generic.get_erc_violations", params)
-        return _mark_erc_page(result)
+        if project_path:
+            params["project_path"] = project_path
+        run_params = {"project_path": project_path} if project_path else {}
+        run = await bridge.send_command_async("generic.run_erc", run_params)
+        if isinstance(run, dict) and run.get("success") is False:
+            return run
+        # The native run reply reports the raw count and compile action;
+        # the reader applies No ERC / No Report filtering and pages the rows.
+        page = await bridge.send_command_async(
+            "generic.get_erc_violations", params)
+        if isinstance(page, dict) and page.get("success") is False:
+            return page
+        if isinstance(run, dict) and isinstance(page, dict):
+            return _mark_erc_page({**run, **page})
+        return _mark_erc_page(page)
 
     @mcp.tool()
     async def sch_set_components_parameters(
         stamps: list[dict[str, str]],
         sheet_path: str = "",
     ) -> dict[str, Any]:
-        """Bulk-update parameters on placed schematic components, in one
-        call and one undo group. The follow-up to the parameter audits.
+        """Bulk-update parameters on PLACED schematic components.
+
+        Single IPC call wraps N component updates inside one
+        PreProcess/PostProcess undo group. Avoids the 10-100x slowdown
+        of looping the singular variant. The canonical follow-up tool
+        after audits that flag parameter-level bugs --
+        ``audit_find_visible_supplier_pn``,
+        ``audit_find_placeholder_values``,
+        ``audit_find_mpn_inconsistencies`` -- recommend it.
+
+        Each stamp targets one component by designator and sets one
+        or more parameters. Special keys allowed:
+          - ``Value``, ``Comment``, ``Manufacturer``, ``MPN``,
+            ``Footprint``, ``Description``, ``HelpURL``, etc.
+            ``Footprint`` selects an existing PCB model on the component;
+            only a component without that named model has its current one
+            renamed. Failed selections appear in ``footprints_not_applied``.
+            ``Description`` and ``ComponentDescription`` set the native
+            component description, which survives save and reload.
+          - Custom parameters: any key name. Unknown parameters are
+            CREATED if they don't already exist on the component.
 
         Args:
-            stamps: One dict per component: ``designator`` plus any
-                parameter key/values, e.g. ``{"designator": "R1",
-                "Value": "10k", "MPN": "..."}``. A parameter the part
-                lacks is created, hidden, at the part. ``Value`` writes
-                the part's Comment and also a Value parameter the part
-                already has; ``Description`` writes the part's own
-                description (as a parameter Altium dropped it on reload).
-            sheet_path: Optional SchDoc path; default the focused one.
+            stamps: List of dicts. Each dict must include ``designator``
+                and one or more parameter key/value pairs. Example:
+                ``[{"designator": "R1", "Value": "10k",
+                "Manufacturer": "Yageo", "MPN": "RC0603FR-0710KL"},
+                {"designator": "C5", "Value": "100nF"}]``
+            sheet_path: Optional explicit open SchDoc path. Empty uses the
+                currently-focused schematic; an unloaded explicit path is
+                refused.
 
         Returns:
-            ``{updated, failed, total}``; ``failed`` counts stamps that
-            could not be applied (designator not found and the like).
-            A ``Footprint`` key repoints the part's footprint model;
-            ``footprints_applied`` counts the ones that read back the
-            new name and ``footprints_not_applied`` lists designators
-            whose part has no footprint model or did not take it.
+            Dict with ``{updated, failed, total, footprints_applied,
+            footprints_not_applied}``. ``updated`` counts matched components;
+            a Footprint failure is reported separately.
         """
         # Encode the list-of-dicts into the Pascal handler's expected
         # wire format: stamps separated by `~~`, fields within a stamp
@@ -1752,6 +1900,7 @@ def register_generic_tools(mcp):
         limit: int = 100,
         offset: int = 0,
         include_suppressed: bool = False,
+        project_path: str = "",
     ) -> dict[str, Any]:
         """Return the ERC violation list produced by the last
         ``proj_run_erc()`` invocation.
@@ -1764,6 +1913,12 @@ def register_generic_tools(mcp):
         tells a violation with no objects from one whose objects could
         not be read.
 
+        ``violation_count`` includes suppressed and No Report rows.
+        ``active_count``, severity counts, ``suppressed_count`` and
+        ``no_report_count`` cover the complete result, independent of
+        ``limit`` and ``offset``. Unknown suppression or severity metadata
+        prevents a verified clean result. Compile after editing a sheet.
+
         Args:
             limit: How many violations to return; 0 returns all of them.
             offset: Index of the first violation, to page through a long
@@ -1771,6 +1926,8 @@ def register_generic_tools(mcp):
             include_suppressed: also list violations a No ERC marker
                 covers or whose type is set to No Report; left out and
                 only counted by default, as Altium's Messages panel does.
+            project_path: Absolute path of the open PrjPcb. When omitted,
+                use Altium's focused project.
 
         Returns:
             ``{"violation_count", "offset", "returned", "truncated",
@@ -1782,6 +1939,8 @@ def register_generic_tools(mcp):
         params = {"limit": str(max(0, int(limit))),
                   "offset": str(max(0, int(offset))),
                   "include_suppressed": "true" if include_suppressed else "false"}
+        if project_path:
+            params["project_path"] = project_path
         result = await bridge.send_command_async(
             "generic.get_erc_violations", params)
         return _mark_erc_page(result)
@@ -2185,8 +2344,11 @@ def register_generic_tools(mcp):
         repeat_first: int = 0,
         repeat_last: int = 0,
     ) -> dict[str, Any]:
-        """Place a sheet symbol for a child .SchDoc of the project (exact
-        file name). Add entries with sch_place_sheet_entry.
+        """Place a sheet symbol linking to a child schematic document.
+
+        sheet_file_name must match a .SchDoc in the project exactly, or
+        the symbol is dangling. Then add its entries with
+        `sch_place_sheet_entry`.
 
         Args:
             x1, y1, x2, y2: Corners in mils.
@@ -2256,7 +2418,7 @@ def register_generic_tools(mcp):
         entry_name: str,
         io_type: str = "unspecified",
         side: str = "left",
-        distance_from_top: float = 100,
+        distance_from_top: int = 100,
         font_id: int = 0,
         repeat: bool = False,
     ) -> dict[str, Any]:
@@ -2269,8 +2431,8 @@ def register_generic_tools(mcp):
             repeat: One signal per channel, named Repeat(entry_name).
             io_type: "input" | "output" | "bidirectional" | "unspecified"
             side: "left" | "right" | "top" | "bottom"
-            distance_from_top: Along the side, in mils.
-            font_id: 0 takes the sheet's entry font, else its net labels'.
+            distance_from_top: Position along the chosen side in mils
+            font_id: Optional label font. Zero infers the sheet's font.
 
         Returns:
             Where it was placed and ``font_id``.
@@ -2285,7 +2447,7 @@ def register_generic_tools(mcp):
                 "entry_name": entry_name,
                 "io_type": io_type,
                 "side": side,
-                "distance_from_top": _mils(distance_from_top),
+                "distance_from_top": str(distance_from_top),
                 "font_id": str(int(font_id)),
             },
         )
@@ -2325,27 +2487,34 @@ def register_generic_tools(mcp):
         custom_height: int = 0,
         orientation: str = "",
     ) -> dict[str, Any]:
-        """Set the sheet size / template style of the active schematic.
+        """Set the sheet size / template style / orientation of the active schematic.
 
         Changes SheetStyle on the current SchDoc. Use a named style
         (A-E, A0-A4, Letter, Legal, Tabloid) or "Custom" with explicit
-        width and height in mils. Give ``style``, ``orientation`` or both.
+        width and height in mils. ``orientation`` ("landscape" or
+        "portrait") sets WorkspaceOrientation and may be given on its own,
+        with an empty ``style``, to rotate the sheet without touching its
+        size. The Pascal handler has accepted ``orientation`` for a while;
+        this wrapper simply did not pass it, so the only way to turn a
+        sheet was the Properties panel. At least one of ``style`` /
+        ``orientation`` is required.
 
         Args:
             style: Sheet size name, e.g. "A", "A3", "A4", "Letter", "Custom"
+                (empty to leave the size alone)
             custom_width: Custom sheet width in mils (only if style="Custom")
             custom_height: Custom sheet height in mils (only if style="Custom")
-            orientation: "landscape" or "portrait"; empty leaves it as is
+            orientation: "landscape" | "portrait" | "" (leave unchanged)
 
         Returns:
-            Dictionary confirming the style change
+            Dictionary confirming the style / orientation change
         """
+        if not style and not orientation:
+            return {"success": False, "error": "style or orientation required"}
         orientation = orientation.strip().lower()
-        if orientation not in ("", "landscape", "portrait"):
-            return {"success": False, "error": (
-                f"orientation must be landscape or portrait, not {orientation!r}")}
-        if not style.strip() and not orientation:
-            return {"success": False, "error": "give style, orientation or both"}
+        if orientation and orientation not in ("landscape", "portrait"):
+            return {"success": False, "error": "orientation must be landscape or portrait"}
+        bridge = get_bridge()
         params = {
             "style": style,
             "custom_width": str(custom_width),
@@ -2353,8 +2522,10 @@ def register_generic_tools(mcp):
         }
         if orientation:
             params["orientation"] = orientation
-        bridge = get_bridge()
-        result = await bridge.send_command_async("generic.set_sheet_size", params)
+        result = await bridge.send_command_async(
+            "generic.set_sheet_size",
+            params,
+        )
         if isinstance(result, dict) and result.get("success") is not False:
             result["reopened"] = await _reopen_sheet(bridge)
         return result
@@ -2555,8 +2726,7 @@ def register_generic_tools(mcp):
                 "generic.set_sheet_size", {"style": to, "custom_width": "0",
                                            "custom_height": "0"})
             actions.append({"action": "set_sheet_size", "to": to,
-                            "reply": reply,
-                            "reopened": await _reopen_sheet(bridge)})
+                            "reply": reply})
             report = await audit()
         if report.get("ok") and report.get("verdict") == "shift":
             dx, dy = int(report["dx"]), int(report["dy"])
@@ -2603,6 +2773,7 @@ def register_generic_tools(mcp):
         x: float,
         y: float,
         orientation: int = 0,
+        sheet_path: str | None = None,
     ) -> dict[str, Any]:
         """Place a net label at coordinates on the active schematic.
 
@@ -2614,6 +2785,7 @@ def register_generic_tools(mcp):
             x: X coordinate in mils
             y: Y coordinate in mils
             orientation: Label rotation (0=0deg, 1=90deg, 2=180deg, 3=270deg)
+            sheet_path: Optional absolute target .SchDoc path.
 
         Returns:
             Dictionary confirming placement
@@ -2626,6 +2798,7 @@ def register_generic_tools(mcp):
                 "x": str(x),
                 "y": str(y),
                 "orientation": str(orientation),
+                "sheet_path": sheet_path or "",
             },
         )
         return result
@@ -2637,6 +2810,7 @@ def register_generic_tools(mcp):
         y: float,
         style: str = "right",
         io_type: str = "bidirectional",
+        sheet_path: str | None = None,
         width: float = 0,
         font_id: int = 0,
     ) -> dict[str, Any]:
@@ -2651,10 +2825,10 @@ def register_generic_tools(mcp):
                 "bottom"). Altium keeps only the axis; the arrows follow
                 io_type and the end that is wired.
             io_type: I/O direction, "unspecified", "output", "input", "bidirectional"
-            width: Port length in mils. Auto-size is turned off so it
-                holds; 0 leaves the port sizing itself to its name.
-            font_id: The port's font. 0 takes the font the sheet's ports
-                already use, else its net labels' font.
+            sheet_path: Optional absolute target .SchDoc path. If omitted,
+                the active schematic is used.
+            width: Fixed width in mils; positive values disable AutoSize.
+            font_id: Optional font. Zero infers the sheet's port or label font.
 
         Returns:
             ``font_id``, ``width`` and ``auto_size`` read back.
@@ -2668,6 +2842,7 @@ def register_generic_tools(mcp):
                 "y": _mils(y),
                 "style": style,
                 "io_type": io_type,
+                "sheet_path": sheet_path or "",
                 "width": _mils(width),
                 "font_id": str(int(font_id)),
             },
@@ -2762,8 +2937,7 @@ def register_generic_tools(mcp):
                 point: 0=right, 1=up, 2=left, 3=down. Leave at -1 to let
                 the bridge decide by style: the three ground glyphs point
                 down, the supply glyphs (circle, arrow, bar, wave) point up.
-            font_id: The net name's font. 0 takes the font the sheet's
-                power ports already use, else its net labels' font.
+            font_id: Optional font. Zero infers the sheet's font.
 
         Returns:
             The placement, with the ``font_id`` the power port got.
@@ -2884,6 +3058,8 @@ def register_generic_tools(mcp):
     async def sch_place_no_erc(
         x: float,
         y: float,
+        template_unique_id: str = "",
+        template_document: str = "",
         symbol: int | None = None,
         orientation: int | None = None,
         suppress_all: bool | None = None,
@@ -2891,11 +3067,18 @@ def register_generic_tools(mcp):
         error_kinds: str = "",
         connection_pairs: str = "",
     ) -> dict[str, Any]:
-        """Place a No ERC marker on a pin's connection end. By default it
-        is active and suppresses every violation, as Altium's own does.
+        """Place a No-ERC marker on the active schematic.
+
+        Without a template this creates a GENERIC marker suppressing all
+        violations at that node. Prefer a native, reviewed specific template
+        when only one violation type should be allowed. A supplied template
+        must have SuppressAll=false; it is replicated with a fresh UniqueId.
+        Verify the saved marker and recompile to check the actual suppression.
 
         Args:
             x, y: Location in mils.
+            template_unique_id: UniqueId of a reviewed specific NoERC to copy.
+            template_document: Loaded source sheet path; empty uses active sheet.
             symbol: Altium's Symbol integer.
             orientation: Quarter turns, 0 to 3.
             suppress_all: False suppresses only ``error_kinds`` and
@@ -2912,6 +3095,10 @@ def register_generic_tools(mcp):
             return {"ok": False, "reason": "orientation is 0, 1, 2 or 3"}
         args = {"x": str(x), "y": str(y), "error_kinds": error_kinds,
                 "connection_pairs": connection_pairs}
+        for key, text in (("template_unique_id", template_unique_id),
+                          ("template_document", template_document)):
+            if text:
+                args[key] = text
         for key, value in (("symbol", symbol), ("orientation", orientation)):
             if value is not None:
                 args[key] = str(int(value))
@@ -3245,9 +3432,10 @@ def register_generic_tools(mcp):
         style: int | None = None,
         orientation: int | None = None,
     ) -> dict[str, Any]:
-        """Place a directive ON a wire of the active schematic; its
-        parameters (e.g. NetClass=PWR) go to that net. For an area, use
-        sch_place_blanket.
+        """Place a parameter-set directive at (x, y) on the active schematic.
+
+        Attaches one ``name=value`` parameter to the wire or net under it,
+        e.g. ``DifferentialPair=USB`` or ``NetClass=HighSpeed``.
 
         Args:
             x, y: Location in mils.
@@ -3281,9 +3469,7 @@ def register_generic_tools(mcp):
     async def sch_get_directives() -> dict[str, Any]:
         """Enumerate parameter-set directives on the active schematic sheet.
 
-        Each with its location and the parameters it carries, including
-        the directives held inside blankets (sch_get_blankets lists the
-        blankets themselves and the nets they cover).
+        Each with its location and the parameters it carries.
 
         Returns:
             Dictionary with ``directives`` array, each entry has
@@ -3367,7 +3553,9 @@ def register_generic_tools(mcp):
     async def sch_place_compile_mask(x1: float, y1: float, x2: float, y2: float,
                                      collapsed: bool | None = None) -> dict[str, Any]:
         """Place a compile mask on the active schematic: what it encloses
-        is left out of the compile, netlist and ERC.
+        is left out of the compile, netlist and ERC. It can hide real
+        connectivity or rule problems, so use it only for an intentionally
+        inactive block, and run ERC again afterwards.
 
         Args:
             x1, y1, x2, y2: Corners in mils.
@@ -3655,11 +3843,10 @@ def register_generic_tools(mcp):
         ``proj_replace_component`` swaps the symbol itself.
 
         Checked FIRST, so nothing changes on a bad target: a SchLib/IntLib
-        given by full path must contain ``lib_ref``; the DbLib key must
-        pick out one row, with the whole table read (else
-        ``DBLIB_KEY_NOT_UNIQUE``), and that row's symbol and footprint
-        fill ``lib_ref`` and
-        ``footprint`` when they are not given. Every part is read back:
+        given by full path must contain ``lib_ref``; a DbLib row must
+        have a unique key in a complete lookup. Its own symbol and
+        footprint fill ``lib_ref`` and ``footprint`` when they are not
+        given. Every part is read back:
         ``parts`` has each one's link ``before`` and ``after``, and a
         field that did not take is named in ``not_applied``.
 
@@ -3671,7 +3858,9 @@ def register_generic_tools(mcp):
             dblib_table: DbLib table.
             dblib_key: the row's key, which becomes the Design Item ID.
             footprint: footprint name for the current footprint model.
-            footprint_library: .PcbLib the footprint model points at.
+            footprint_library: .PcbLib the footprint model points at;
+                ``Any`` or ``*`` clears pinned PcbLib locations from every
+                footprint model on the placed component.
             sheet_path: open .SchDoc; empty = the focused sheet.
             all_sheets: every open schematic of the focused project.
             dry_run: report what would change, write nothing.
@@ -3709,16 +3898,15 @@ def register_generic_tools(mcp):
                                    f"{dblib_table!r} in {library_path}; "
                                    f"nothing was changed"),
                         "lookup": row}
-            # The part would link to whichever row Altium found first: with
-            # the key on several rows, or the table not read to its end,
-            # that row is not known.
-            rows_found, read_all = row.get("match_count"), row.get("scan_capped") is not True
-            if rows_found != 1 or not read_all:
-                why = (f"{rows_found} rows have it" if read_all
+            if (type(row.get("match_count")) is not int
+                    or row["match_count"] != 1
+                    or row.get("scan_capped") is not False):
+                count = row.get("match_count")
+                why = (f"{count} rows have it" if row.get("scan_capped") is False
                        else "the lookup stopped before the end of the table")
-                return {"success": False, "error": "DBLIB_KEY_NOT_UNIQUE",
-                        "reason": f"{dblib_key!r} in {dblib_table!r}: {why}; nothing "
-                                  "was changed", "lookup": row}
+                return {"success": False, "error": "DBLIB_ROW_AMBIGUOUS",
+                        "reason": f"{dblib_key!r} in {dblib_table!r}: {why}; nothing was changed",
+                        "lookup": row}
             lib_ref = lib_ref or str(row.get("symbol_ref") or "")
             prints = row.get("footprints") or []
             if not footprint and prints:
@@ -3784,14 +3972,24 @@ def register_generic_tools(mcp):
         designators: Optional[list[str]] = None,
         clear_source_library: bool = True,
         sync_design_item_id: bool = True,
+        clear_footprint_library: bool = False,
     ) -> dict[str, Any]:
         """Unpin placed schematic components from a stale source library.
 
-        After a library is renamed or moved, placed parts still point at it
-        (``SourceLibraryName``, ``DesignItemId``) and show ``<Not Found>``.
-        This clears the first and sets the second to LibReference, so
-        Altium re-matches from the Available Libraries. DesignItemId is a
-        property, not a parameter (for one part: ``obj_modify``).
+        Schematic mirror of ``pcb_clear_source_footprint_library``.
+        After a library is renamed or moved, placed parts still point at
+        it through two component properties: ``SourceLibraryName`` (the
+        file) and ``DesignItemId`` (the item; a re-link that changes only
+        LibReference leaves it on the old item, the panel's
+        ``<Not Found>``). This clears the first and sets the second to
+        LibReference, so Altium re-matches from the Available Libraries.
+
+        DesignItemId is a property, not a parameter: writing it as a
+        parameter only adds a stray one. For one part use ``obj_modify``
+        with property ``DesignItemId``. An optional third action clears
+        the pinned PcbLib Location from every footprint model on each
+        matched part, so a stale footprint library does not survive the
+        source-library repair.
 
         Args:
             sheet_path: absolute .SchDoc path; empty = the focused
@@ -3803,16 +4001,21 @@ def register_generic_tools(mcp):
             clear_source_library: clear ``SourceLibraryName``.
             sync_design_item_id: set ``DesignItemId`` = LibReference
                 where they differ.
+            clear_footprint_library: clear every PCBLIB model's pinned
+                datafile Location. Defaults to False for existing callers.
 
         Returns:
             {"total": inspected, "cleared_source_library": n,
-             "synced_design_item_id": n}.
+             "synced_design_item_id": n,
+             "cleared_footprint_library": n,
+             "failed_footprint_library": n}.
         """
         bridge = get_bridge()
         params: dict[str, Any] = {
             "sheet_path": sheet_path,
             "clear_source_library": "true" if clear_source_library else "false",
             "sync_design_item_id": "true" if sync_design_item_id else "false",
+            "clear_footprint_library": "true" if clear_footprint_library else "false",
         }
         if designators:
             # The list rides a comma-separated field; a designator
@@ -4543,9 +4746,19 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Place MANY wire segments on the active schematic in ONE call.
 
-        NOT THE WAY TO WIRE A SHEET: sch_draw_template draws a whole
-        block from a template, with the pin ends worked out and the
-        wiring checked. Use this for a few segments on an existing sheet.
+        NOT THE WAY TO WIRE A DESIGN. Routing a netlist segment by segment
+        means choosing every corner yourself, and the result reads like
+        nothing a person would draw. design_execute_plan routes the whole
+        sheet from a DesignPlan through the layout engine, deciding
+        wire-versus-label per net and keeping wires off other nets' pins.
+        A planned block can also use sch_preview_template and
+        sch_draw_template. Use THIS tool for a few segments on a sheet
+        that already exists.
+
+        PREFER THIS over placing wires one segment at a time (there is no
+        singular variant). Wiring up a netlist is inherently N pairs of
+        endpoints; the bulk version is 10-100x faster in wall time because
+        the whole batch shares one PreProcess/PostProcess and one redraw.
 
         Args:
             wires: List of wire dicts, each with x1, y1, x2, y2 in mils.
@@ -4579,33 +4792,48 @@ def register_generic_tools(mcp):
     ) -> dict[str, Any]:
         """Place MANY schematic components from libraries in ONE call.
 
-        NOT THE WAY TO DRAW A SCHEMATIC: four or more parts onto a sheet
-        with two or fewer is refused. sch_draw_template draws a whole
-        block from a template. Use this to add parts to an existing sheet.
-        Parts land on the ACTIVE sheet unless ``document_path`` is given;
-        a sheet just created is not focused, so always pass it.
+For complete schematic blocks, use design_execute_plan or sch_draw_template. This tool handles small manual placements and requires allow_manual_layout=True.
+
+        This is the only path for library placement (there is no singular
+        variant). Laying out a 50-part BOM is inherently a bulk operation;
+        done one-by-one it would cost 50 LLM turns.
+
+        TARGET DOCUMENT: placement lands on the ACTIVE schematic. Right
+        after `app_create_document` the new sheet is NOT auto-focused, so
+        without `document_path` parts can silently land on a *different*
+        open sheet. Pass `document_path` (absolute .SchDoc path) and this
+        tool focuses that sheet first (`app_set_active_document`) before
+        placing, always set it when you have just created the target
+        sheet.
 
         Args:
-            placements: [{lib_reference (required), x, y (mils),
-                library_path (empty: an open library), designator,
-                rotation (0/90/180/270), footprint, part_id}]. With
-                ``footprint`` naming one of the symbol's PCB models (any
-                case), that model becomes current; ``part_id`` picks which
-                part of a multi-part symbol goes down.
-            document_path: .SchDoc to focus and place onto.
-            allow_manual_layout: True places your own coordinates onto an
-                empty sheet anyway; say why.
-            tidy: Make each placed part match the sheet: its library
-                link (a loaded part says "*", and Altium then will not
-                change its Design Item ID), the parameters its models
-                bring hidden, and the sheet's designator font. Listed
-                per part in ``tidied``.
+            allow_manual_layout: Set True to bypass the refusal described
+                above and place your own coordinates onto an empty sheet.
+                The default exists because this is almost never what the
+                caller actually wants; say why in the surrounding turn.
+            document_path: Absolute path of the .SchDoc to place onto.
+                When given, it is focused before placement so parts can't
+                land on the wrong sheet. When omitted, the current active
+                document is used.
+            placements: List of placement dicts, each with:
+                - library_path (str, optional, empty uses an
+                  already-open library)
+                - lib_reference (str, required), component name
+                - x, y (int, mils), placement location
+                - designator (str, optional), override designator
+                - rotation (int, optional), 0 / 90 / 180 / 270
+                - footprint (str, optional), choose a PCB model already on
+                  the library symbol by name; an absent name leaves the
+                  symbol's default model and appears in footprint_issues
+                - part_id (int, optional), 1-based symbol part, default 1;
+                  part_issues reports a rejected switch
+            tidy: Link each new part to its source library, hide inherited
+                model parameters and match the sheet's designator font.
+                Defaults to True; set False to retain the library defaults.
 
         Returns:
-            Dict with placed, failed, total counts and footprints_chosen;
-            footprint_issues lists a part whose symbol has no model of
-            that name (with the models it has) or whose choice did not
-            take. Such a part is placed on its library's model.
+            Dict with placed, failed, total, footprints_chosen counts,
+            footprint_issues, part_issues and per-part tidied details.
         """
         refusal = _unknown_keys_refusal(
             placements, PLACEMENT_KEYS,
@@ -4626,12 +4854,17 @@ def register_generic_tools(mcp):
                 f"rotation={int(p.get('rotation', 0))}",
             ]
             if p.get("designator"):
-                fields.append(f"designator={p['designator']}")
+                fields.append(f"designator={payload_safe(p['designator'])}")
             if p.get("footprint"):
                 fields.append(f"footprint={payload_safe(p['footprint'])}")
-            part_no = p.get("part_id")
-            if part_no is not None:
-                fields.append("part_id=" + str(int(part_no)))
+            if p.get("part_id") is not None:
+                try:
+                    part_id = int(p["part_id"])
+                except (TypeError, ValueError):
+                    return {"error": "BAD_PART_ID", "placed": 0}
+                if part_id < 1:
+                    return {"error": "BAD_PART_ID", "placed": 0}
+                fields.append(f"part_id={part_id}")
             op_strs.append(";".join(fields))
 
         if not op_strs:
@@ -4646,7 +4879,9 @@ def register_generic_tools(mcp):
             return refusal
         batch = {"placements": "~~".join(op_strs), "tidy": str(bool(tidy)).lower()}
         return await bridge.send_command_async(
-            "generic.place_sch_components_from_library", batch)
+            "generic.place_sch_components_from_library",
+            {"placements": "~~".join(op_strs), "tidy": str(tidy).lower()},
+        )
 
     @mcp.tool()
     async def sch_place_vault_components(
@@ -4771,6 +5006,723 @@ def register_generic_tools(mcp):
             "generic.attach_spice_primitives",
             {"attachments": "~~".join(op_strs)},
         )
+
+    @mcp.tool()
+    async def sch_query_region(
+        object_type: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        properties: str = "Location.X,Location.Y,Designator,Name,Text",
+        filter: str = "",
+        sheet_path: str = "",
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Query schematic objects intersecting a rectangular area.
+
+        Uses the documented ``ISch_Iterator.AddFilter_Area`` rather than
+        filtering a whole-sheet result in Python. Object types, properties and
+        pipe-separated filters use the same vocabulary as ``obj_query``.
+        Coordinates are in mils and may be supplied in either corner order.
+
+        Args:
+            object_type: Schematic object constant such as ``eSchComponent``,
+                ``eWire``, ``ePin`` or ``eNetLabel``.
+            x1, y1, x2, y2: Opposite rectangle corners in mils.
+            properties: Comma-separated properties to return.
+            filter: Optional property=value filters joined with ``|``.
+            sheet_path: Optional absolute path of a loaded ``.SchDoc``.
+            limit: Maximum returned objects (1..10000).
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {
+            "object_type": object_type,
+            "x1": str(x1), "y1": str(y1),
+            "x2": str(x2), "y2": str(y2),
+            "properties": properties,
+            "filter": filter,
+            "limit": str(limit),
+        }
+        if sheet_path:
+            params["sheet_path"] = sheet_path
+        return await bridge.send_command_async("generic.query_region", params)
+
+    @mcp.tool()
+    async def pcb_select(designator: str = "", designators: Optional[list[str]] = None,
+                         net_name: str = "") -> dict[str, Any]:
+        """Show the focused PcbDoc in 3-D and select PCB targets.
+
+        Requires native script 2026.10.16.3 or newer. The response is checked
+        with a separate object query; a match count alone is not proof that
+        selection took effect. A designator list and net name also return a
+        read-only target bounding box when native selection fails. Does not
+        save the board.
+        """
+        if designators is not None or net_name:
+            if designator or (designators is not None and net_name):
+                return {"success": False, "error": "provide one selector only"}
+            bridge = get_bridge()
+            active = await bridge.send_command_async("application.get_active_document")
+            if str(active.get("document_kind", "")).lower() not in {"pcb", "pcbdoc"}:
+                return {"success": False, "error": "Focus a PcbDoc before PCB selection"}
+            await bridge.send_command_async("generic.switch_view", {"mode": "3d"})
+            if designators is not None:
+                if (not isinstance(designators, list) or not designators or
+                        any(not isinstance(name, str) or
+                            not re.fullmatch(r"[A-Za-z0-9_.-]+", name)
+                            for name in designators)):
+                    return {"success": False, "error": "Invalid designators list"}
+                components = await bridge.send_command_async("pcb.get_components")
+                by_name = {item.get("designator", "").casefold(): item
+                           for item in components.get("components", [])}
+                found = [by_name[name.casefold()] for name in designators
+                         if name.casefold() in by_name]
+                if len(found) != len(designators):
+                    return {"success": False, "error": "Some designators were not found",
+                            "found": [item.get("designator") for item in found]}
+                boxes = [item["bbox"] for item in found]
+                bbox = {"x1": min(box["x1"] for box in boxes),
+                        "y1": min(box["y1"] for box in boxes),
+                        "x2": max(box["x2"] for box in boxes),
+                        "y2": max(box["y2"] for box in boxes)}
+                return {"success": False, "selected": False,
+                        "error": "Multi-component native selection is not qualified on this Altium build",
+                        "designators": designators, "target_bbox_mils": bbox}
+            if not isinstance(net_name, str) or not net_name.strip():
+                return {"success": False, "error": "Invalid net_name"}
+            geometry = await bridge.send_command_async(
+                "generic.get_pcb_geometry", {}, timeout=120.0)
+            points = []
+            for kind in ("tracks", "pads", "vias", "regions", "arcs"):
+                for item in geometry.get(kind, []):
+                    if str(item.get("net", "")).casefold() != net_name.casefold():
+                        continue
+                    if all(key in item for key in ("x1", "y1", "x2", "y2")):
+                        points.extend(((item["x1"], item["y1"]),
+                                       (item["x2"], item["y2"])))
+                    elif all(key in item for key in ("x", "y")):
+                        points.append((item["x"], item["y"]))
+            if not points:
+                return {"success": False, "error": "Net not found in rendered geometry",
+                        "net_name": net_name}
+            return {"success": False, "selected": False,
+                    "error": "Native PCB net selection is not qualified on this Altium build",
+                    "net_name": net_name,
+                    "target_bbox_mils": {"x1": min(x for x, _ in points),
+                                         "y1": min(y for _, y in points),
+                                         "x2": max(x for x, _ in points),
+                                         "y2": max(y for _, y in points)}}
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", designator):
+            return {"success": False, "error": "Invalid PCB designator"}
+        bridge = get_bridge()
+        ping = await bridge.send_command_async("application.ping")
+        version = str(ping.get("script_version", ""))
+        parts = version.split(".")
+        if (len(parts) != 4 or parts[:3] != ["2026", "10", "16"] or
+                not parts[3].isdigit() or int(parts[3]) < 3):
+            return {"success": False, "error":
+                    "PCB selection requires native script 2026.10.16.3 or newer; "
+                    f"loaded version is {ping.get('script_version', 'unknown')}"}
+        active = await bridge.send_command_async("application.get_active_document")
+        if str(active.get("document_kind", "")).lower() not in {"pcb", "pcbdoc"}:
+            return {"success": False, "error": "Focus a PcbDoc before PCB selection"}
+        board_path = str(active.get("file_path", ""))
+        if not board_path:
+            return {"success": False, "error": "Focused PCB path is unavailable"}
+        await bridge.send_command_async("generic.switch_view", {"mode": "3d"})
+        result = await bridge.send_command_async("pcb.select_component", {
+            "designator": designator, "board_path": board_path,
+        })
+        if result.get("selected") is not True:
+            return {"success": False, "error": "Native selection did not confirm read-back",
+                    "native_result": result}
+        readback = await bridge.send_command_async("generic.query_objects", {
+            "scope": "active_doc", "object_type": "eComponentObject",
+            "filter": f"Designator={designator}",
+            "properties": "Designator,Selected", "limit": "2",
+        })
+        after = await bridge.send_command_async("application.get_active_document")
+        objects = readback.get("objects", [])
+        verified = (str(after.get("file_path", "")).casefold() == board_path.casefold()
+                    and len(objects) == 1
+                    and str(objects[0].get("Selected", "")).lower() == "true")
+        return {"success": verified, "selected": verified,
+                "designator": designator, "board_path": board_path,
+                "readback": objects,
+                **({} if verified else {"error": "Selection did not persist to a second read"})}
+
+    @mcp.tool()
+    async def obj_zoom_to_xy(
+        x: float, y: float, radius: float = 200,
+    ) -> dict[str, Any]:
+        """Center the active schematic or PCB view at X,Y in mils.
+
+        On a PCB, fit a square around the point with the given radius
+        (default 200 mils). Fractional-mil coordinates are supported.
+        On a schematic, use its native zoom command.
+        """
+        try:
+            x_mils, y_mils, radius_mils = _mils(x), _mils(y), _mils(radius)
+        except (TypeError, ValueError) as exc:
+            return {"success": False, "error": str(exc)}
+        if float(radius_mils) <= 0:
+            return {"success": False, "error": "radius must be positive"}
+        return await get_bridge().send_command_async(
+            "generic.zoom_to_xy", {"x": x_mils, "y": y_mils,
+                                   "radius": radius_mils})
+
+    @mcp.tool()
+    async def obj_measure_distance(
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> dict[str, Any]:
+        """Calculate Cartesian distance between two EDA points in mils."""
+        bridge = get_bridge()
+        return await bridge.send_command_async(
+            "generic.measure_distance",
+            {"x1": _mils(x1), "y1": _mils(y1),
+             "x2": _mils(x2), "y2": _mils(y2)},
+        )
+
+    @mcp.tool()
+    async def sch_batch_rename_designators(
+        project_path: str,
+        renames: list[dict[str, str]],
+        dry_run: bool = True,
+        expected_snapshot: str = "",
+    ) -> dict[str, Any]:
+        """Plan or apply collision-checked project-wide designator changes.
+
+        Each rename identifies a physical component by ``unique_id`` and
+        supplies ``to``. Query ``obj_query`` for ``UniqueId`` on the project
+        first. The dry run returns ``snapshot``; pass it unchanged with
+        ``dry_run=False``. Every project sheet is loaded and every component
+        is checked before a write. On apply, components first get distinct
+        temporary designators, then their requested final names, with a
+        project-wide readback after each phase. A failure may leave unique
+        temporary names; the reply reads the actual project state even if
+        the bridge response was lost after a partial write. Run a fresh dry
+        run for any remaining names. No document is saved by this tool.
+        The existing ``obj_batch_modify`` remains available for other edits.
+        """
+        path = Path(project_path)
+        if not path.is_absolute() or path.suffix.casefold() not in (".prjpcb", ".prjpcbm"):
+            return {"ok": False, "reason": "project_path must be an absolute PrjPcb path"}
+        if any(x in project_path for x in (";", "~~")):
+            return {"ok": False, "reason": "project_path contains a batch delimiter"}
+        if not renames:
+            return {"ok": False, "reason": "renames is empty"}
+        wanted: dict[str, str] = {}
+        for i, item in enumerate(renames):
+            if not isinstance(item, dict):
+                return {"ok": False, "reason": f"renames[{i}] must be an object"}
+            uid = str(item.get("unique_id", "")).strip()
+            target = str(item.get("to", "")).strip()
+            if (not uid or not target or any(x in uid + target for x in ("|", ";", "~~", "\r", "\n"))):
+                return {"ok": False, "reason": f"renames[{i}] has an empty or unsendable value"}
+            if uid.casefold() in wanted:
+                return {"ok": False, "reason": f"renames[{i}] repeats UniqueId {uid}"}
+            wanted[uid.casefold()] = target
+        bridge = get_bridge()
+        loaded = await bridge.send_command_async(
+            "project.load_project_sheets", {"project_path": project_path})
+        if (not isinstance(loaded, dict) or loaded.get("failed")
+                or not isinstance(loaded.get("total_sheets"), int)
+                or loaded["total_sheets"] < 1):
+            return {"ok": False, "reason": "could not load every project sheet",
+                    "load": loaded}
+
+        async def read() -> dict[str, Any]:
+            return await bridge.send_command_async("generic.query_objects", {
+                "scope": f"project:{project_path}",
+                "object_type": "eSchComponent", "filter": "",
+                "properties": "UniqueId,Designator.Text",
+            })
+
+        async def state() -> tuple[dict[str, Any], dict[str, list[dict[str, str]]]]:
+            reply = await read()
+            if (not isinstance(reply, dict)
+                    or reply.get("sheets_processed") != loaded["total_sheets"]
+                    or not isinstance(reply.get("objects"), list)
+                    or reply.get("count") != len(reply["objects"])):
+                raise ValueError("project component query did not cover every loaded sheet")
+            groups: dict[str, list[dict[str, str]]] = {}
+            for row in reply["objects"]:
+                uid = str(row.get("UniqueId", "")).strip()
+                name = str(row.get("Designator.Text", "")).strip()
+                doc = str(row.get("_doc", "")).strip()
+                if not uid or not name or not doc:
+                    raise ValueError("component has no UniqueId, designator or sheet path")
+                groups.setdefault(uid.casefold(), []).append({"uid": uid, "name": name, "doc": doc})
+            return reply, groups
+
+        try:
+            inventory, groups = await state()
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc), "load": loaded}
+        missing = sorted(set(wanted) - set(groups))
+        if missing:
+            return {"ok": False, "reason": "requested UniqueIds not found", "missing": missing}
+        current: dict[str, str] = {}
+        current_names: dict[str, str] = {}
+        for uid, rows in groups.items():
+            names = {r["name"].casefold() for r in rows}
+            if len(names) != 1:
+                return {"ok": False, "reason": "multipart component has inconsistent designators",
+                        "unique_id": uid, "names": sorted(names)}
+            current[uid] = rows[0]["name"]
+            key = current[uid].casefold()
+            if key in current_names and current_names[key] != uid:
+                return {"ok": False, "reason": "project already has duplicate designators",
+                        "designator": current[uid],
+                        "unique_ids": [current_names[key], uid]}
+            current_names[key] = uid
+        final = {uid: wanted.get(uid, name) for uid, name in current.items()}
+        by_name: dict[str, str] = {}
+        for uid, name in final.items():
+            key = name.casefold()
+            if key in by_name and by_name[key] != uid:
+                return {"ok": False, "reason": "final designator collision",
+                        "designator": name, "unique_ids": [by_name[key], uid]}
+            by_name[key] = uid
+        snapshot_rows = sorted((uid, r["name"], r["doc"])
+                               for uid, rows in groups.items() for r in rows)
+        payload = {"project_path": str(path).casefold(), "rows": snapshot_rows,
+                   "renames": sorted(wanted.items())}
+        snapshot = hashlib.sha256(json.dumps(payload, ensure_ascii=False,
+                                              separators=(",", ":")).encode()).hexdigest()
+        plan = {"ok": True, "dry_run": dry_run, "snapshot": snapshot,
+                "sheets": loaded["total_sheets"], "components": len(groups),
+                "changes": [{"unique_id": uid, "from": current[uid], "to": target,
+                             "parts": len(groups[uid])}
+                            for uid, target in wanted.items() if current[uid] != target]}
+        if dry_run:
+            return plan
+        if expected_snapshot != snapshot:
+            return {**plan, "ok": False, "reason": "snapshot changed or was not supplied"}
+        changed = [uid for uid in wanted if current[uid] != wanted[uid]]
+        if not changed:
+            return {**plan, "applied": True, "verified": True}
+
+        used = {name.casefold() for name in current.values()}
+        used.update(name.casefold() for name in final.values())
+        temporary: dict[str, str] = {}
+        for uid in changed:
+            while True:
+                candidate = "ZZZ" + secrets.token_hex(7).upper()
+                if candidate.casefold() not in used:
+                    used.add(candidate.casefold())
+                    temporary[uid] = candidate
+                    break
+
+        async def phase(names: dict[str, str]) -> dict[str, Any]:
+            operations = [
+                f"scope=project:{project_path};object_type=eSchComponent;"
+                f"filter=UniqueId={groups[uid][0]['uid']};"
+                f"set=Designator.Text={names[uid]}"
+                for uid in changed]
+            reply: Any = None
+            native_error = ""
+            try:
+                reply = await bridge.send_command_async(
+                    "generic.batch_modify", {"operations": "~~".join(operations),
+                                             "planned_designator_rename": "true"})
+            except Exception as exc:
+                # A transport error may arrive after Altium applied some edits.
+                # Query the project before deciding what actually happened.
+                native_error = str(exc)
+            try:
+                _, after = await state()
+            except Exception as exc:
+                return {"native_reply": reply, "native_error": native_error,
+                        "readback_error": str(exc), "verified": False}
+            actual = {uid: sorted({r["name"] for r in after.get(uid, [])})
+                      for uid in changed}
+            verified = all(
+                len(after.get(uid, [])) == len(groups[uid])
+                and {r["name"].casefold() for r in after[uid]} == {names[uid].casefold()}
+                for uid in changed)
+            verified = verified and set(after) == set(groups) and all(
+                len(after[uid]) == len(groups[uid])
+                and {r["name"].casefold() for r in after[uid]}
+                    == {current[uid].casefold()}
+                for uid in groups if uid not in changed)
+            return {"native_reply": reply, "native_error": native_error,
+                    "actual": actual, "verified": verified}
+
+        first = await phase(temporary)
+        if not first["verified"]:
+            return {**plan, "ok": False, "phase": "temporary",
+                    "temporary": temporary, "readback": first,
+                    "save_required": True}
+        second = await phase(wanted)
+        if not second["verified"]:
+            return {**plan, "ok": False, "phase": "final",
+                    "temporary": temporary, "temporary_phase": first,
+                    "final_phase": second, "save_required": True,
+                    "recovery": "Read the current project state and run a fresh dry run for the remaining UniqueIds."}
+        return {**plan, "ok": second["verified"], "applied": True,
+                "verified": second["verified"], "temporary_phase": first,
+                "final_phase": second, "save_required": True}
+
+    @mcp.tool()
+    async def sch_get_component_models(
+        designator: str = "",
+        sheet_path: str = "",
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Read linked models from placed schematic components.
+
+        Enumerates each component's ``ISch_Implementation`` children and their
+        external data-file links. It covers PCB footprints, simulation, signal
+        integrity, IBIS and other model types exposed by Altium. This reads the
+        placed sheet, not only the source SchLib, so it shows the bindings the
+        design will actually compile with.
+
+        Args:
+            designator: Optional exact designator, e.g. ``U1``. Empty returns
+                all components on the target sheet.
+            sheet_path: Optional absolute path of a loaded ``.SchDoc``. Empty
+                uses the active schematic sheet.
+            limit: Maximum components returned (1..5000).
+
+        Returns:
+            Dict with ``components`` (designator, lib_ref, model_count and
+            models), ``total_models``, ``without_models``, ``count``, ``limit``,
+            ``truncated`` and ``sheet_path``. Each model includes its name,
+            type, description, current flag, library flag and datafile links.
+        """
+        bridge = get_bridge()
+        params: dict[str, Any] = {"limit": str(limit)}
+        if designator:
+            params["designator"] = designator
+        if sheet_path:
+            params["sheet_path"] = sheet_path
+        return await bridge.send_command_async(
+            "generic.get_component_models", params,
+        )
+
+    @mcp.tool()
+    async def sch_add_text(
+        text: str, x: float, y: float, rotation: int = 0,
+        sheet_path: str = "", font_id: int = 0,
+    ) -> dict[str, Any]:
+        """Place a single-line, non-electrical eLabel on an exact SchDoc.
+
+        This is free text, unlike a net label or a bordered text frame.
+        Rotation is in degrees (0, 90, 180 or 270). Save separately.
+        """
+        if (not sheet_path or not Path(sheet_path).is_absolute()
+                or Path(sheet_path).suffix.casefold() != ".schdoc"):
+            return {"ok": False, "reason": "sheet_path must be an absolute SchDoc path"}
+        if not isinstance(text, str) or not text or "\n" in text or "\r" in text:
+            return {"ok": False, "reason": "text must be a nonempty single line"}
+        unsupported = unsendable_chars(text)
+        if unsupported:
+            return {"ok": False, "reason": f"text contains characters the bridge cannot carry: {unsupported!r}"}
+        if type(rotation) is not int or rotation not in (0, 90, 180, 270):
+            return {"ok": False, "reason": "rotation must be 0, 90, 180 or 270"}
+        if type(font_id) is not int or font_id < 0:
+            return {"ok": False, "reason": "font_id must be a nonnegative integer"}
+        if (type(x) not in (int, float) or type(y) not in (int, float)
+                or not math.isfinite(x) or not math.isfinite(y)):
+            return {"ok": False, "reason": "x and y must be finite mil coordinates"}
+        try:
+            x_mils, y_mils = _mils(x), _mils(y)
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "reason": "x and y must be finite mil coordinates"}
+        reply = await get_bridge().send_command_async(
+            "generic.place_free_text",
+            {"sheet_path": sheet_path, "text": text, "x": x_mils,
+             "y": y_mils, "rotation": rotation // 90, "font_id": font_id},
+        )
+        if not isinstance(reply, dict) or reply.get("error"):
+            return reply
+        if (reply.get("placed") is not True
+                or str(reply.get("sheet_path", "")).casefold() != sheet_path.casefold()
+                or reply.get("text") != text
+                or reply.get("x") != float(x_mils)
+                or reply.get("y") != float(y_mils)
+                or reply.get("rotation") != rotation
+                or (font_id > 0 and reply.get("font_id") != font_id)):
+            return {"ok": False, "reason": "free text readback did not match",
+                    "native_reply": reply}
+        reply["save_required"] = True
+        return reply
+
+    @mcp.tool()
+    async def sch_fix_port_crossrefs(
+        sheet_path: str,
+        dry_run: bool = True,
+        confirm: bool = False,
+        expected_plan_sha256: str = "",
+    ) -> dict[str, Any]:
+        """Put each port's cross-reference at the end that is not wired.
+
+        With Port Cross References on, Altium draws a port's "Sheet[1B]"
+        text beside the end it treats as unwired. A port moved while it
+        had no wire keeps its old end, so after a block move the reference
+        can sit on the wire or run off the sheet, and a compile does not
+        put it back. This reads the sheet's ports, wires, live pins and
+        CrossRef parameters, takes each horizontal port's wired end from
+        Altium's ConnectedEnd (the wire geometry when that reads none or
+        both), and moves the reference to the other end (20 mil out, text
+        running away from the port).
+
+        Args:
+            sheet_path: The .SchDoc, as app_list_documents reports it.
+            dry_run: True (default) only reports what it would move.
+            confirm: Required for applying a reviewed plan.
+            expected_plan_sha256: Digest returned by the dry run. If the
+                sheet's queried state changes, the apply call refuses.
+
+        Returns:
+            ``moves`` (port, wired_end, from/to x and justification),
+            ``ok``, ``unresolved`` (neither or both ends wired, vertical,
+            or no reference), ``off_sheet`` (text estimated to run past
+            the zone border at Arial 7 widths) and, when applied,
+            ``applied`` / ``failed``. Nothing is saved.
+        """
+        import hashlib
+        import json
+
+        from .port_crossrefs import border_for, plan_crossref_fixes
+
+        bridge = get_bridge()
+        refusal = await _focus_sheet(bridge, sheet_path)
+        if refusal is not None:
+            return refusal
+        scope = f"doc:{sheet_path}"
+
+        async def query(object_type: str, properties: str, flt: str = ""):
+            res = await bridge.send_command_async("generic.query_objects", {
+                "scope": scope, "object_type": object_type,
+                "filter": flt, "properties": properties})
+            if not isinstance(res, dict) or not isinstance(res.get("objects"), list):
+                raise ValueError(f"incomplete {object_type} read: {res}")
+            if res.get("count") is not None and res["count"] != len(res["objects"]):
+                raise ValueError(f"partial {object_type} read")
+            return res["objects"]
+
+        try:
+            ports = await query("ePort",
+                                "Name,Location.X,Location.Y,Width,Style,ConnectedEnd")
+            wires = await query("eWire", "Vertices")
+            refs = await query("eParameter", "Name,Text,Location.X,Location.Y,Justification",
+                               "Name=CrossRef")
+            pins = await query("ePin", "Designator,ConnectionX,ConnectionY")
+        except ValueError as exc:
+            return {"error": "INCOMPLETE_READ", "reason": str(exc)}
+        info = await bridge.send_command_async("generic.get_document_info", {})
+        x_range = None
+        if isinstance(info, dict):
+            x_range = border_for(info.get("sheet_size", ""),
+                                 float(info.get("custom_width") or 0))
+
+        plan = plan_crossref_fixes(ports, wires, refs, pins, x_range)
+        digest_input = {"sheet_path": sheet_path, "ports": ports,
+                        "wires": wires, "crossrefs": refs, "pins": pins,
+                        "moves": plan["moves"]}
+        plan_sha256 = hashlib.sha256(json.dumps(
+            digest_input, sort_keys=True, ensure_ascii=False,
+            default=str).encode("utf-8")).hexdigest()
+        plan.update({"sheet_path": sheet_path, "dry_run": dry_run,
+                     "ports": len(ports), "crossrefs": len(refs),
+                     "border_x": list(x_range) if x_range else None,
+                     "plan_sha256": plan_sha256, "live_pins": len(pins)})
+        if not refs:
+            plan["note"] = ("No CrossRef parameters found: Port Cross References "
+                            "may be off. Open the linked project sheets and "
+                            "compile the project; Altium may not generate "
+                            "these parameters while a referenced sheet is "
+                            "unloaded.")
+        if dry_run:
+            return plan
+
+        if not confirm or expected_plan_sha256 != plan_sha256:
+            return {**plan, "error": "PLAN_NOT_APPROVED",
+                    "reason": "review the dry run and pass its plan_sha256 with confirm=true"}
+
+        # The filter uses the reference's old position. If two references
+        # share it, one write could move both; refuse the entire batch.
+        locations = [(str(ref.get("Location.X")), str(ref.get("Location.Y")))
+                     for ref in refs]
+        if len(locations) != len(set(locations)):
+            return {**plan, "error": "AMBIGUOUS_CROSSREF_LOCATION"}
+
+        applied, failed = [], []
+        for m in plan["moves"]:
+            res = await bridge.send_command_async("generic.modify_objects", {
+                "scope": scope_to_wire(scope), "object_type": "eParameter",
+                "filter": (f"Name=CrossRef|Location.X={m['from_x']}"
+                           f"|Location.Y={m['from_y']}"),
+                "set": (f"Location.X={m['to_x']}"
+                        f"|Justification={m['to_justification']}")})
+            n = res.get("matched", 0) if isinstance(res, dict) else 0
+            if n != 1 or res.get("success") is False:
+                failed.append({"port": m["port"], "result": res})
+                break
+            try:
+                reread = await query("eParameter",
+                                     "Name,Location.X,Location.Y,Justification",
+                                     "Name=CrossRef")
+            except ValueError as exc:
+                failed.append({"port": m["port"], "result": res,
+                               "reason": f"readback failed: {exc}"})
+                break
+            verify = []
+            for ref in reread:
+                try:
+                    same_location = (
+                        abs(float(ref["Location.X"]) - float(m["to_x"])) <= 0.01
+                        and abs(float(ref["Location.Y"]) - float(m["from_y"])) <= 0.01
+                    )
+                except (KeyError, TypeError, ValueError):
+                    same_location = False
+                if same_location:
+                    verify.append(ref)
+            landed = (len(verify) == 1 and
+                      str(verify[0].get("Justification")) ==
+                      str(m["to_justification"]))
+            (applied if landed else failed).append(
+                {"port": m["port"], "result": res, "readback": verify})
+            if not landed:
+                break
+        plan.update({"applied": applied, "failed": failed, "saved": False,
+                     "next_step": "Save the sheet, close and reload it "
+                                  "(app_close_document + proj_load_sheets), "
+                                  "then run this again with dry_run to confirm."})
+        return plan
+
+    @mcp.tool()
+    async def sch_place_dblib_components(
+        placements: list[dict[str, Any]],
+        dblib_path: Optional[str] = None,
+        document_path: Optional[str] = None,
+        allow_manual_layout: bool = False,
+    ) -> dict[str, Any]:
+        """Place linked parts from a database library (.DbLib) in one batch.
+
+        Each placement needs ``table`` and ``part_number`` (or raw ``keys``).
+        Give ``dblib_path`` once or per placement. Optional ``key_field``
+        defaults to ``Part Number``; ``part_id`` selects a multipart symbol.
+        Coordinates are mils. Pass an absolute ``document_path`` to target a
+        specific .SchDoc; the active document is used when it is omitted.
+        """
+        unknown = sorted({k for p in placements if isinstance(p, dict)
+                          for k in p} - DBLIB_PLACEMENT_KEYS)
+        if unknown:
+            return {"error": "UNKNOWN_PLACEMENT_KEYS", "reason":
+                    ", ".join(map(str, unknown)), "valid_keys":
+                    sorted(DBLIB_PLACEMENT_KEYS), "placed": 0}
+        ops: list[str] = []
+        for p in placements:
+            if not isinstance(p, dict):
+                return {"error": "BAD_PLACEMENT", "placed": 0}
+            lib = str(p.get("dblib_path") or dblib_path or "").strip()
+            table = str(p.get("table") or "").strip()
+            part = str(p.get("part_number") or "").strip()
+            keys = str(p.get("keys") or "").strip()
+            if not lib or not table or not (part or keys):
+                return {"error": "MISSING_FIELD", "reason":
+                        "dblib_path, table and part_number or keys are required",
+                        "placement": p, "placed": 0}
+            try:
+                part_id = int(p.get("part_id", 1))
+                x, y = _mils(p.get("x", 0)), _mils(p.get("y", 0))
+                rotation = int(p.get("rotation", 0))
+            except (TypeError, ValueError, OverflowError):
+                return {"error": "BAD_COORDINATE_OR_PART_ID", "placed": 0}
+            if part_id < 1 or rotation not in (0, 90, 180, 270):
+                return {"error": "BAD_ROTATION_OR_PART_ID", "placed": 0}
+            fields = [
+                f"dblib_path={payload_safe(lib)}",
+                f"table={payload_safe(table)}",
+                f"key_field={payload_safe(p.get('key_field') or 'Part Number')}",
+                f"key_value={payload_safe(part)}",
+                f"x={x}", f"y={y}", f"rotation={rotation}",
+                f"part_id={part_id}",
+            ]
+            if keys:
+                fields.append(f"keys={payload_safe(keys)}")
+            if p.get("designator"):
+                fields.append(f"designator={payload_safe(p['designator'])}")
+            ops.append(";".join(fields))
+        if not ops:
+            return {"error": "No valid placements", "placed": 0}
+        bridge = get_bridge()
+        refusal = await _refuse_manual_sheet_layout(
+            bridge, len(ops), document_path, allow_manual_layout)
+        if refusal is None:
+            refusal = await _focus_sheet(bridge, document_path)
+        if refusal is not None:
+            return refusal
+        return await bridge.send_command_async(
+            "generic.place_dblib_components",
+            {"placements": "~~".join(ops),
+             "sheet_path": document_path or ""},
+        )
+
+    @mcp.tool()
+    async def sch_place_workspace_components(
+        placements: list[dict[str, Any]],
+        document_path: Optional[str] = None,
+        allow_manual_layout: bool = False,
+    ) -> dict[str, Any]:
+        """Place exact managed revisions returned by lib_resolve_workspace_component.
+
+        GUIDs identify the Workspace, Item, and Revision. x and y are mils;
+        rotation is 0, 90, 180, or 270 degrees. Pass the absolute SchDoc path
+        when targeting a specific open sheet.
+        """
+        if not placements:
+            return {"error": "No placements provided", "placed": 0}
+        ops: list[str] = []
+        for index, placement in enumerate(placements):
+            if not isinstance(placement, dict):
+                return {"error": "INVALID_WORKSPACE_PLACEMENT",
+                        "reason": f"placement {index} is not an object", "placed": 0}
+            unknown = sorted(set(placement) - WORKSPACE_PLACEMENT_KEYS)
+            if unknown:
+                return {"error": "UNKNOWN_WORKSPACE_PLACEMENT_KEYS",
+                        "reason": f"placement {index}: {', '.join(unknown)}",
+                        "valid_keys": sorted(WORKSPACE_PLACEMENT_KEYS), "placed": 0}
+            guids = {}
+            for key in ("workspace_guid", "item_guid", "revision_guid"):
+                value = str(placement.get(key, "")).strip()
+                if not _WORKSPACE_GUID_RE.fullmatch(value) or (value.startswith("{") != value.endswith("}")):
+                    return {"error": "INVALID_WORKSPACE_GUID",
+                            "reason": f"placement {index} has invalid {key}", "placed": 0}
+                guids[key] = value.strip("{}")
+            try:
+                x, y = _mils(placement.get("x", 0)), _mils(placement.get("y", 0))
+                rotation = int(placement.get("rotation", 0))
+            except (TypeError, ValueError, OverflowError):
+                return {"error": "INVALID_WORKSPACE_PLACEMENT",
+                        "reason": f"placement {index} has invalid coordinates", "placed": 0}
+            if rotation not in (0, 90, 180, 270):
+                return {"error": "INVALID_ROTATION", "placed": 0}
+            fields = [f"{key}={guids[key]}" for key in
+                      ("workspace_guid", "item_guid", "revision_guid")]
+            fields.extend((f"x={x}", f"y={y}", f"rotation={rotation}"))
+            revision_id = str(placement.get("item_revision_id", "")).strip()
+            if revision_id:
+                fields.append("item_revision_id=" + payload_safe(revision_id))
+            ops.append(";".join(fields))
+        bridge = get_bridge()
+        refusal = await _refuse_manual_sheet_layout(
+            bridge, len(ops), document_path, allow_manual_layout)
+        if refusal is None:
+            refusal = await _focus_sheet(bridge, document_path)
+        if refusal is not None:
+            return refusal
+        return await bridge.send_command_async(
+            "generic.place_workspace_components",
+            {"placements": "~~".join(ops), "sheet_path": document_path or ""},
+            timeout=60.0)
 
     # Schematic power ports, net labels, and free text are placed via the
     # dedicated handlers place_power_port / place_net_label / place_note.

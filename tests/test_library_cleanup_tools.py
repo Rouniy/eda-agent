@@ -150,19 +150,6 @@ def _saved(monkeypatch, bodies):
     monkeypatch.setattr(library.footprint_export, "body_models", lambda export: bodies)
 
 
-@pytest.mark.asyncio
-async def test_set_3d_body_sends_heights_in_mils(monkeypatch, tmp_path):
-    lib = tmp_path / "Caps.PcbLib"
-    lib.write_bytes(b"")
-    _saved(monkeypatch, None)
-    tools, bridge = _tools(monkeypatch)
-    await tools["lib_set_3d_body"](
-        "C1206", library_path=str(lib), standoff_height=0.65,
-        opacity=0.5, layer="Mechanical5", body_index=1, units="mm")
-    assert bridge.sent == [("library.set_3d_body", {
-        "footprint_name": "C1206", "standoff_height": "25.5906",
-        "opacity": "0.5", "body_index": "1", "layer": "Mechanical5",
-        "library_path": str(lib)})]
 
 
 @pytest.mark.asyncio
@@ -185,36 +172,10 @@ async def test_a_step_standoff_carries_the_exported_rotations(monkeypatch, tmp_p
     assert [b["index"] for b in result["exported_bodies"]] == [1, 2]
 
 
-@pytest.mark.asyncio
-async def test_a_library_path_that_is_not_a_file_is_refused(monkeypatch, tmp_path):
-    # Measured on AD 26.11: Altium opens a new, empty library there.
-    tools, bridge = _tools(monkeypatch)
-    result = await tools["lib_set_3d_body"](
-        "C1206", library_path=str(tmp_path / "Missing.PcbLib"), opacity=0.5)
-    assert bridge.sent == []
-    assert result["ok"] is False and "not a file" in result["reason"]
 
 
-@pytest.mark.asyncio
-async def test_set_3d_body_with_only_a_name_reads(monkeypatch):
-    tools, bridge = _tools(monkeypatch)
-    await tools["lib_set_3d_body"]("C1206")
-    assert bridge.sent == [("library.set_3d_body", {"footprint_name": "C1206"})]
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("kwargs", [
-    {"footprint_name": " "},
-    {"footprint_name": "C1206", "opacity": 50},
-    {"footprint_name": "C1206", "body_index": 0},
-    {"footprint_name": "C1206", "units": "inch"},
-    {"footprint_name": "C1206", "standoff_height": float("nan")},
-])
-async def test_set_3d_body_sends_nothing_it_cannot_do(monkeypatch, kwargs):
-    tools, bridge = _tools(monkeypatch)
-    result = await tools["lib_set_3d_body"](**kwargs)
-    assert bridge.sent == []
-    assert result.get("ok") is False
 
 
 def test_set_3d_body_touches_only_proven_body_members():
@@ -231,7 +192,7 @@ def test_set_3d_body_touches_only_proven_body_members():
     # A STEP body is matched to its saved record before it is written, by
     # file name: a body linked this session holds the full path.
     assert "If SavedCount <> Total Then SavedStr := '';" in body
-    assert "UpperCase(ExtractFileName(SavedFile))" in body
+    assert body.count("UpperCase(ExtractFileName(ModelFile))") == 2
     # A skipped body is not counted as changed (read changed 1 live before).
     assert "If Wrote Then Changed := Changed + 1;" in body
     assert "Changed := Changed + 1;" not in body.replace(

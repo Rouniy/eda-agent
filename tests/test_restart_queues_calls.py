@@ -37,10 +37,11 @@ def test_a_fresh_marker_is_a_restart_and_an_old_one_is_not(tmp_path):
 
 
 @pytest.fixture
-def bridge(tmp_path):
+def bridge(tmp_path, monkeypatch):
     from eda_agent.config import configure
     configure(workspace_dir=tmp_path)
     b = ab.AltiumBridge()
+    monkeypatch.setattr(b, "_dialog_probe", lambda: None)
     yield b
     b.detach()
 
@@ -186,13 +187,13 @@ def test_a_loop_that_is_not_running_does_not_leave_a_stop_file(tmp_path, monkeyp
     assert not (tmp_path / "stop").exists()
 
 
-def test_every_call_is_traced_before_it_waits_for_the_worker():
+def test_every_call_is_traced_before_async_dispatch():
     import inspect
     # send_command_async hands a lone call to send_command_direct, which
     # holds the wait; a bulk call gathers first (bridge/bulk.py).
     src = inspect.getsource(ab.AltiumBridge.send_command_direct)
     call = src.index('f"CALL cmd={command}')
-    assert call < src.index("run_in_executor")
+    assert call < src.index("await self._execute_command_async")
 
 
 @pytestmark_win

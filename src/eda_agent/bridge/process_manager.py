@@ -171,6 +171,46 @@ def _scan_process_names_native(wanted_upper: set) -> Optional[bool]:
         return None
 
 
+def _pids_with_visible_window() -> set[int]:
+    """PIDs that own at least one visible, titled top-level window.
+
+    Used to tell a live Altium editor apart from the windowless husks a
+    crash leaves behind. Returns an empty set off Windows or on any
+    ctypes failure, which degrades the caller to its size-based
+    tie-break rather than breaking it.
+    """
+    if sys.platform != "win32":
+        return set()
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return set()
+
+    pids: set[int] = set()
+    try:
+        user32 = ctypes.windll.user32
+        enum_proc = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+
+        def _collect(hwnd, _lparam):
+            try:
+                if user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0:
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    if pid.value:
+                        pids.add(int(pid.value))
+            except Exception:  # one unreadable window, not the scan
+                pass
+            return True
+
+        user32.EnumWindows(enum_proc(_collect), 0)
+    except Exception as e:
+        logger.debug("visible-window scan failed: %s", e)
+        return set()
+    return pids
+
 def _native_process_pids(wanted_upper: set) -> Optional[list[tuple[int, str]]]:
     """``(pid, name)`` of every running process with a wanted name, via the
     Toolhelp snapshot (milliseconds). None if the native path is unavailable.
@@ -302,9 +342,9 @@ class AltiumProcessManager:
         """Pids owning a top-level window, or None if windows cannot be read.
 
         With ``title_prefix``: windows whose caption starts with it,
-        hidden ones included. Without: VISIBLE windows only, which is
-        what separates a live instance from the windowless orphan a
-        crashed session leaves behind.
+        hidden ones included. Without: visible, titled windows only.
+        A crashed X2 can retain a visible but untitled TApplication
+        window after its editor has disappeared.
         """
         try:
             from ..ui import windows
@@ -318,7 +358,7 @@ class AltiumProcessManager:
         except Exception:                        # noqa: BLE001
             return None
         if title_prefix is None:
-            return {w.pid for w in found}
+            return {w.pid for w in found if (w.title or "").strip()}
         return {w.pid for w in found
                 if (w.title or "").startswith(title_prefix)}
 
@@ -394,7 +434,7 @@ class AltiumProcessManager:
 
     def _scan_running(self) -> bool:
         """Is any Altium process running? Native Toolhelp scan first
-        (~tens of ms); psutil name-only scan as the fallback.
+        (~tens of ms); tasklist.exe for WSL; psutil as last resort.
         """
         wanted = {n.upper() for n in self.PROCESS_NAMES}
         native = _scan_process_names_native(wanted)

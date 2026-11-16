@@ -127,6 +127,11 @@ class MockBoard:
         # Placed track segments: list of
         # {"x1","y1","x2","y2","width","layer","net"}.
         self.tracks: list[dict] = []
+        # Pad records in the shape PCB_GetPadProperties emits.
+        self.pads: list[dict] = []
+        # Bumped by every handler that rebuilds connectivity, so a test can
+        # assert the rebuild actually ran instead of trusting the flag.
+        self.connectivity_rebuilds = 0
         # outline as a list of (x, y) mils vertices; default a rectangle.
         self.outline = outline or [(0, 0), (2000, 0), (2000, 1500), (0, 1500)]
         self.track_count = track_count
@@ -1480,6 +1485,23 @@ class AltiumSimulator:
                 '"layers":[],"pads_included":false,"was_current":false}'
             )
 
+        elif action == "set_current_component":
+            # Mirrors Lib_SetCurrentComponent: a blank name is refused, and
+            # a name the active SchLib does not hold (or no SchLib at all,
+            # where SelectLibComponent returns Nil) is NOT_FOUND.
+            name = params.get("name", "")
+            if not name:
+                return _build_error_response(rid, "MISSING_NAME",
+                                             "name is required")
+            if not self.lib_has_schlib or not any(
+                    c.name == name for c in self.lib_components):
+                return _build_error_response(
+                    rid, "NOT_FOUND",
+                    "Component not found in active library: " + name)
+            return _build_success_response(
+                rid, '{"success":true,"name":"' + _escape_json_string(name) + '"}'
+            )
+
         elif action == "get_components":
             items = []
             for comp in self.lib_components:
@@ -1638,32 +1660,47 @@ class AltiumSimulator:
     # Generic commands (mirrors Generic.pas)
     # ------------------------------------------------------------------
 
+    # The two type tables are kept apart on purpose: Altium really does have a
+    # schematic ObjectTypeFromString (Generic.pas) and a separate
+    # ObjectTypeFromStringPCB (PCBGeneric.pas), and a handler that consults
+    # only the first silently loses every PCB op. Mirroring the split is what
+    # lets the tests catch that class of bug.
+    _SCH_TYPE_IDS = {
+        "eNetLabel": 25, "ePort": 28,
+        "ePowerObject": 23, "eSchComponent": 1,
+        "eWire": 27, "eBus": 26, "eBusEntry": 24,
+        "eParameter": 41, "ePin": 2, "eLabel": 4,
+        "eLine": 13, "eRectangle": 14,
+        "eSheetSymbol": 47, "eSheetEntry": 48,
+        "eNoERC": 29, "eJunction": 30, "eImage": 31,
+    }
+    _PCB_TYPE_IDS = {
+        "eTrackObject": 100, "ePadObject": 101,
+        "eViaObject": 102, "eComponentObject": 103,
+        "eArcObject": 104, "eFillObject": 105,
+        "eTextObject": 106, "ePolyObject": 107,
+        "eRegionObject": 108, "eRuleObject": 109,
+        "eDimensionObject": 110,
+    }
+
+    def _resolve_sch_object_type(self, type_str: str) -> int:
+        """Mirror: Generic.pas:101 ObjectTypeFromString (schematic only)."""
+        return self._SCH_TYPE_IDS.get(type_str, -1)
+
+    def _resolve_pcb_object_type(self, type_str: str) -> int:
+        """Mirror: PCBGeneric.pas:8 ObjectTypeFromStringPCB (PCB only)."""
+        return self._PCB_TYPE_IDS.get(type_str, -1)
+
     def _resolve_object_type(self, type_str: str) -> int:
-        """Resolve object type string to integer ID."""
-        # Schematic types
-        sch_map = {
-            "eNetLabel": 25, "ePort": 28,
-            "ePowerObject": 23, "eSchComponent": 1,
-            "eWire": 27, "eBus": 26, "eBusEntry": 24,
-            "eParameter": 41, "ePin": 2, "eLabel": 4,
-            "eLine": 13, "eRectangle": 14,
-            "eSheetSymbol": 47, "eSheetEntry": 48,
-            "eNoERC": 29, "eJunction": 30, "eImage": 31,
-        }
-        if type_str in sch_map:
-            return sch_map[type_str]
-        # PCB types
-        pcb_map = {
-            "eTrackObject": 100, "ePadObject": 101,
-            "eViaObject": 102, "eComponentObject": 103,
-            "eArcObject": 104, "eFillObject": 105,
-            "eTextObject": 106, "ePolyObject": 107,
-            "eRegionObject": 108, "eRuleObject": 109,
-            "eDimensionObject": 110,
-        }
-        if type_str in pcb_map:
-            return pcb_map[type_str]
-        return -1
+        """Resolve object type string to integer ID, schematic table first.
+
+        Mirrors the two-step resolution the singular query / modify /
+        delete handlers perform.
+        """
+        obj_type = self._resolve_sch_object_type(type_str)
+        if obj_type != -1:
+            return obj_type
+        return self._resolve_pcb_object_type(type_str)
 
     def _matches_filter(self, obj: MockSchObject, filter_str: str) -> bool:
         """Check if object matches pipe-separated filter."""
@@ -1706,6 +1743,10 @@ class AltiumSimulator:
             return self._gen_create_object(params, rid)
         elif action == "delete_objects":
             return self._gen_delete_objects(params, rid)
+        elif action == "batch_modify":
+            return self._gen_batch_modify(params, rid)
+        elif action == "batch_delete":
+            return self._gen_batch_delete(params, rid)
         elif action == "run_process":
             process_name = params.get("process", "")
             if not process_name:
@@ -1859,6 +1900,225 @@ class AltiumSimulator:
             data = '{"matched":' + str(count) + '}'
         return _build_success_response(rid, data)
 
+    def _gen_batch_modify(self, params: dict, rid: str) -> str:
+        """Mirrors Generic.pas Gen_BatchModify.
+
+        Operations arrive '~~'-separated, each a ';'-separated list of keyed
+        fields parsed exactly like Main.pas NextBatchOp / GetBatchField. The
+        keyed encoding matters: a filter or set may itself contain '|', which
+        the old positional 'scope;type;filter;set|...' encoding chopped in
+        half, silently dropping every multi-condition operation.
+        """
+        operations = params.get("operations", "")
+        if not operations:
+            return _build_error_response(rid, "MISSING_PARAMS",
+                                         "operations parameter is required")
+
+        keyed = operations.startswith("scope=") or "~~" in operations
+        if keyed:
+            raw_ops = [op for op in operations.split("~~") if op]
+        else:
+            raw_ops = [op for op in operations.split("|") if op]
+
+        processed = 0
+        failed = 0
+        total_matched = 0
+        failures: list[str] = []
+
+        for index, raw in enumerate(raw_ops):
+            if keyed:
+                fields = {}
+                for field in raw.split(";"):
+                    eq = field.find("=")
+                    if eq <= 0:
+                        continue
+                    key = field[:eq]
+                    if key not in fields:
+                        fields[key] = field[eq + 1:]
+                scope = fields.get("scope", "") or "active_doc"
+                obj_type_str = fields.get("object_type", "")
+                filter_str = fields.get("filter", "")
+                set_str = fields.get("set", "")
+                parsed = True
+            else:
+                parts = raw.split(";")
+                parsed = len(parts) >= 4
+                scope = parts[0] if parsed else "active_doc"
+                obj_type_str = parts[1] if parsed else ""
+                filter_str = parts[2] if parsed else ""
+                set_str = ";".join(parts[3:]) if parsed else ""
+
+            reason = ""
+            if not parsed:
+                reason = "MALFORMED_OP"
+            elif not obj_type_str:
+                reason = "MISSING_OBJECT_TYPE"
+            elif not set_str:
+                reason = "MISSING_SET"
+            elif self._resolve_object_type(obj_type_str) == -1:
+                reason = "INVALID_TYPE"
+
+            if reason:
+                failed += 1
+                failures.append(
+                    '{"index":' + str(index) +
+                    ',"object_type":"' + _escape_json_string(obj_type_str) +
+                    '","reason":"' + reason + '"}'
+                )
+                continue
+
+            obj_type_int = self._resolve_object_type(obj_type_str)
+            for obj in self.sch_objects:
+                if obj.object_id != obj_type_int:
+                    continue
+                if not self._matches_filter(obj, filter_str):
+                    continue
+                for assignment in set_str.split("|"):
+                    eq_pos = assignment.find("=")
+                    if eq_pos <= 0:
+                        continue
+                    obj.set_property(assignment[:eq_pos], assignment[eq_pos + 1:])
+                total_matched += 1
+            processed += 1
+
+        data = (
+            '{"operations_processed":' + str(processed) +
+            ',"operations_total":' + str(len(raw_ops)) +
+            ',"operations_failed":' + str(failed) +
+            ',"matched":' + str(total_matched) +
+            ',"failures":[' + ",".join(failures) + ']' +
+            ',"properties":{"unknown_count":0,"unknown":[],'
+            '"failed_count":0,"failed":[]}}'
+        )
+        return _build_success_response(rid, data)
+
+    def _gen_batch_delete(self, params: dict, rid: str) -> str:
+        """Mirrors Generic.pas Gen_BatchDelete.
+
+        The regression this pins down: type resolution consulted the
+        SCHEMATIC table only and did a bare ``Continue`` on a miss, so every
+        PCB op (eTrackObject, eViaObject, ...) was dropped without running,
+        without incrementing operations_processed and without any entry in
+        the response. The caller saw ``{"operations_processed":0}`` and could
+        not tell "nothing matched" from "never ran", while the singular
+        obj_delete with the same type and filter worked.
+        """
+        operations = params.get("operations", "")
+        if not operations:
+            return _build_error_response(rid, "MISSING_PARAM",
+                                         "operations is required")
+
+        raw_ops = [op for op in operations.split("~~") if op]
+
+        processed = 0
+        failed = 0
+        total_matched = 0
+        failures: list[str] = []
+        unresolved: list[str] = []
+
+        for index, raw in enumerate(raw_ops):
+            fields: dict[str, str] = {}
+            for field in raw.split(";"):
+                eq = field.find("=")
+                if eq <= 0:
+                    continue
+                key = field[:eq]
+                if key not in fields:
+                    fields[key] = field[eq + 1:]
+            scope = fields.get("scope", "") or "active_doc"
+            obj_type_str = fields.get("object_type", "")
+            filter_str = fields.get("filter", "")
+
+            reason = ""
+            is_pcb = False
+            obj_type_int = -1
+            if not obj_type_str:
+                reason = "MISSING_OBJECT_TYPE"
+            else:
+                obj_type_int = self._resolve_sch_object_type(obj_type_str)
+                if obj_type_int == -1:
+                    obj_type_int = self._resolve_pcb_object_type(obj_type_str)
+                    is_pcb = obj_type_int != -1
+                if obj_type_int == -1:
+                    reason = "INVALID_TYPE"
+
+            if not reason:
+                if is_pcb:
+                    if self.board is None:
+                        reason = "NO_PCB"
+                    else:
+                        total_matched += self._pcb_delete_primitives(
+                            obj_type_str, filter_str)
+                        processed += 1
+                else:
+                    removed = [
+                        obj for obj in self.sch_objects
+                        if obj.object_id == obj_type_int
+                        and self._matches_filter(obj, filter_str)
+                    ]
+                    for obj in removed:
+                        self.sch_objects.remove(obj)
+                    total_matched += len(removed)
+                    processed += 1
+
+            if reason:
+                failed += 1
+                if reason == "INVALID_TYPE":
+                    unresolved.append(
+                        '"' + _escape_json_string(obj_type_str) + '"')
+                failures.append(
+                    '{"index":' + str(index) +
+                    ',"object_type":"' + _escape_json_string(obj_type_str) +
+                    '","reason":"' + reason + '"}'
+                )
+
+        data = (
+            '{"operations_processed":' + str(processed) +
+            ',"total":' + str(len(raw_ops)) +
+            ',"operations_failed":' + str(failed) +
+            ',"matched":' + str(total_matched) +
+            ',"unresolved":[' + ",".join(unresolved) + ']' +
+            ',"failures":[' + ",".join(failures) + ']}'
+        )
+        return _build_success_response(rid, data)
+
+    def _pcb_delete_primitives(self, obj_type_str: str, filter_str: str) -> int:
+        """Delete board primitives matching a filter, returning the count.
+
+        Stands in for ProcessActivePCBDoc(mode='delete'). Only the primitive
+        kinds the mock board actually stores are removable; anything else
+        matches nothing, exactly as an empty board would.
+        """
+        board = self.board
+        if board is None:
+            return 0
+
+        def matches(item: dict) -> bool:
+            if not filter_str:
+                return True
+            for cond in filter_str.split("|"):
+                eq_pos = cond.find("=")
+                if eq_pos <= 0:
+                    continue
+                if str(item.get(cond[:eq_pos], "")) != cond[eq_pos + 1:]:
+                    return False
+            return True
+
+        if obj_type_str == "eTrackObject":
+            keep = [t for t in board.tracks
+                    if not matches({"Net": t.get("net", ""),
+                                    "Layer": t.get("layer", "")})]
+            removed = len(board.tracks) - len(keep)
+            board.tracks = keep
+            return removed
+        if obj_type_str == "eViaObject":
+            keep = [v for v in board.vias
+                    if not matches({"Net": v.net})]
+            removed = len(board.vias) - len(keep)
+            board.vias = keep
+            return removed
+        return 0
+
     def _gen_create_object(self, params: dict, rid: str) -> str:
         obj_type_str = params.get("object_type", "")
         props_str = params.get("properties", "")
@@ -1979,6 +2239,12 @@ class AltiumSimulator:
                     # The simulated board carries no 3D bodies.
                     '"model_height_mils":null,"height_mismatch":false,'
                     '"body_count":0,' + ('"bodies":[],' if mode == "all" else '') +
+                    # The simulated board carries no 3D bodies, so the
+                    # height is the component's own parameter.
+                    '"height_source":"component","max_body_height_mils":null,'
+                    '"height_mismatch":false,'
+                    '"component_height_mils":' + str(c.height_mils) + ','
+                    '"body_count":0,' + ('"bodies":[],' if mode == "all" else '') +
                     '"bbox":{"x1":' + str(x1) + ',"y1":' + str(y1) +
                     ',"x2":' + str(x2) + ',"y2":' + str(y2) +
                     ',"width":' + str(c.width) + ',"height":' + str(c.height) + '}}'
@@ -2052,7 +2318,7 @@ class AltiumSimulator:
             if not tracks:
                 return _build_error_response(rid, "MISSING_PARAM",
                                              "tracks parameter required")
-            placed, failed = 0, 0
+            placed, failed, net_missing = 0, 0, 0
             for t in tracks.split("|"):
                 if not t:
                     continue
@@ -2071,10 +2337,22 @@ class AltiumSimulator:
                 except ValueError:
                     failed += 1
                     continue
+                if seg["net"] and seg["net"] not in board.nets:
+                    net_missing += 1
                 board.tracks.append(seg)
                 board.track_count += 1
                 placed += 1
-            data = '{"placed":' + str(placed) + ',"failed":' + str(failed) + '}'
+            # Mirrors PCB_PlaceTracks: connectivity is recomputed after a
+            # batch that actually placed something, so a follow-up
+            # unrouted-nets query is not reading a stale model.
+            rebuilt = placed > 0
+            if rebuilt:
+                board.connectivity_rebuilds += 1
+            data = ('{"placed":' + str(placed) + ',"failed":' + str(failed) +
+                    ',"skipped_existing":0'
+                    ',"nets_not_found":' + str(net_missing) +
+                    ',"connectivity_rebuilt":' +
+                    ("true" if rebuilt else "false") + '}')
             return _build_success_response(rid, data)
 
         elif action == "place_components":
@@ -2174,6 +2452,12 @@ class AltiumSimulator:
             return _build_success_response(rid, data)
 
         elif action == "get_unrouted_nets":
+            # Mirrors PCB_GetUnroutedNets: the ratsnest is regenerated from
+            # the connectivity model, so this rebuilds first unless asked
+            # not to.
+            did_rebuild = params.get("rebuild", "true") != "false"
+            if did_rebuild:
+                board.connectivity_rebuilds += 1
             items = []
             total = 0
             for u in board.unrouted:
@@ -2183,7 +2467,57 @@ class AltiumSimulator:
                              '","unrouted_connections":' + str(n) + '}')
             data = ('{"unrouted_nets":[' + ",".join(items) + '],'
                     '"net_count":' + str(len(board.unrouted)) + ','
-                    '"total_unrouted":' + str(total) + '}')
+                    '"total_unrouted":' + str(total) + ','
+                    '"connectivity_rebuilt":' +
+                    ("true" if did_rebuild else "false") + '}')
+            return _build_success_response(rid, data)
+
+        elif action == "rebuild_connectivity":
+            board.connectivity_rebuilds += 1
+            return _build_success_response(
+                rid, '{"rebuilt":true,"note":"simulated"}')
+
+        elif action == "get_pad_properties":
+            # Mirrors PCB_GetPadProperties: filters are comma-separated
+            # lists, EVERY match is counted, and only the
+            # [offset, offset+limit) window is serialised. The point of
+            # the fix is that total_matching stays honest when the window
+            # cuts the list short.
+            net_filter = [s.strip() for s in
+                          (params.get("net") or "").split(",") if s.strip()]
+            des_filter = [s.strip() for s in
+                          (params.get("designator") or "").split(",")
+                          if s.strip()]
+            try:
+                offset = max(0, int(params.get("offset") or 0))
+            except ValueError:
+                offset = 0
+            try:
+                limit = int(params.get("limit") or 500)
+            except ValueError:
+                limit = 500
+            if limit <= 0 or limit > 5000:
+                limit = 5000
+
+            matched, window = 0, []
+            for pad in board.pads:
+                if net_filter and pad.get("net", "") not in net_filter:
+                    continue
+                if des_filter and pad.get("component", "") not in des_filter:
+                    continue
+                matched += 1
+                if matched > offset and len(window) < limit:
+                    window.append(pad)
+            data = ('{"pads":' + json.dumps(window) +
+                    ',"count":' + str(len(window)) +
+                    ',"returned":' + str(len(window)) +
+                    ',"total_matching":' + str(matched) +
+                    ',"total_pads_on_board":' + str(len(board.pads)) +
+                    ',"offset":' + str(offset) +
+                    ',"limit":' + str(limit) +
+                    ',"truncated":' +
+                    ("true" if matched > offset + len(window) else "false") +
+                    ',"next_offset":' + str(offset + len(window)) + '}')
             return _build_success_response(rid, data)
 
         elif action == "run_drc":

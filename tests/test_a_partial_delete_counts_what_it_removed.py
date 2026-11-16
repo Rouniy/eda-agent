@@ -19,7 +19,9 @@ _ALT = Path(__file__).resolve().parents[1] / "scripts" / "altium"
 
 
 def _delete_branch(body: str) -> str:
-    start = body.index("If Mode = 'delete' Then")
+    # The first delete guard is now nested in the query path; the final
+    # branch performs the removal loop whose accounting matters here.
+    start = body.rindex("If Mode = 'delete' Then")
     return body[start:body.index("If Mode = 'modify' Then", start)]
 
 
@@ -64,8 +66,8 @@ def test_the_fault_is_cleared_per_request():
 
 def test_the_batch_counts_a_failed_operation_too():
     body = load(_ALT / "Generic.pas")["Gen_BatchDelete"]
-    read = body.index("OpMatched := StrToIntDef(JsonValueAnywhere(OpResult, 'matched'), 0);")
-    assert read < body.index("Pos('\"success\":false', OpResult)"), (
+    read = body.index("OpMatched := StrToIntDef(ExtractJsonValue(OpResp, 'matched'), 0);")
+    assert read < body.index("If Pos('\"partial\":true', OpResp) > 0 Then"), (
         "matched is read only on success, so a partial delete counts 0")
     assert "'partial: '" in body
     assert '"operations_partial":' in body

@@ -196,7 +196,7 @@ class _StackBridge(_Bridge):
 
     async def send_command_async(self, command, params=None, timeout=None):
         self.sent.append((command, dict(params or {})))
-        return dict(_manager()) if command == "pcb.layer_stack_manager" else self.physical
+        return dict(_manager(), board_path="C:/test/board.PcbDoc") if command == "pcb.layer_stack_manager" else self.physical
 
 
 def test_the_tool_compares_with_the_board_by_default(monkeypatch):
@@ -206,6 +206,7 @@ def test_the_tool_compares_with_the_board_by_default(monkeypatch):
     pcb_tools.register_pcb_tools(mcp)
     out = asyncio.run(mcp.tools["pcb_layer_stack_manager"]())
     assert [c for c, _ in bridge.sent] == ["pcb.layer_stack_manager", "pcb.physical_stack"]
+    assert bridge.sent[1][1] == {"board_path": "C:/test/board.PcbDoc"}
     assert out["in_step"] is False and out["out_of_step"][0]["field"] == "dielectric_constant"
     bridge.sent.clear()
     out = asyncio.run(mcp.tools["pcb_layer_stack_manager"](compare=False))

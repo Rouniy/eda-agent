@@ -40,6 +40,11 @@ class _PermissiveBridge:
         # as a contract breach.
         return {"running": False, "attached": False}
 
+    def ping(self):
+        # Keep app_attach on its normal success path; the fallback would
+        # launch a real local script, which this isolated test must not do.
+        return True
+
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(name)
@@ -87,11 +92,17 @@ _SET_ASIDE = {
     # Spawns kicad-cli / external processes with the given arguments.
     "lib_kicad_import": "invokes converters on the given path",
     "lib_easyeda_import": "reaches the network or reads the given file",
+    "lib_easyeda_search": "reaches the EasyEDA network service",
     "lib_extract_cse_zip": "reads and extracts the given archive",
     "lib_inspect_cse_zip": "reads the given archive",
     "lib_extract_intlib": "runs an external extractor",
     "part_search": "reaches distributor networks",
     "part_fetch": "reaches distributor networks",
+    # These intentionally spawn background threads that restart or replace
+    # the current process. Even with a fake bridge, invoking either would
+    # terminate this pytest process shortly after the assertion returns.
+    "app_restart_mcp_server": "replaces the current server process",
+    "app_restart_altium_bridge": "spawns a bridge restart worker",
 }
 _NAMES = sorted(n for n in _TOOLS if n not in _SET_ASIDE)
 

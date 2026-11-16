@@ -931,15 +931,11 @@ Begin
     Else If PropName = 'Poured' Then Result := BoolToJsonStr(Poly.Poured);
 End;
 
-{ True when written. A negative number, a non-number, a fractional or       }
-{ out-of-range ordinal, anything but true / false for UseOctagons and an    }
-{ empty Name are refused and nothing is written. The caller has checked it is a polygon.   }
-{ Nothing here repours: the settings decide what the NEXT pour does, as     }
-{ with RemoveDead and pcb_modify_polygon.                                   }
+{ Validate each value before writing any polygon property. }
 Function PCBSetPoly(Obj : IPCB_Primitive; PropName : String; Value : String) : Boolean;
 Var
     Poly : IPCB_Polygon;
-    F    : Double;
+    F : Double;
 Begin
     Result := False;
     Poly := Obj;
@@ -950,7 +946,7 @@ Begin
         { index again and the assigned one is lost, while the write answered }
         { success (issue #150). Typing a name in the Polygon Pour dialog     }
         { unticks Auto Naming; do the same, then report what the pour holds. }
-        Try Poly.AutoGenerateName := False; Except NoteWriteFailed('polygon AutoGenerateName (Altium may rename it)'); End;
+        Try Poly.AutoGenerateName := False; Except NoteWriteFailed('Poly.AutoGenerateName'); End;
         Poly.Name := Value;
         Result := Poly.Name = Value;
         Exit;
@@ -1105,6 +1101,115 @@ End;
 { extruded alike (cylinders and spheres too). Either can be the wrong one   }
 { for a part, so both are reported.                                         }
 
+Function GetPCBPrimitiveGenerated(Obj : IPCB_Primitive; PropName : String;
+    Var Found : Boolean) : String;
+Begin
+    Result := '';
+    Found := False;
+    If PropName = 'AllowGlobalEdit'                 Then Result := BoolToJsonStr(Obj.AllowGlobalEdit)
+    Else If PropName = 'DescriptorString'           Then Result := Obj.GetState_DescriptorString
+    Else If PropName = 'DrawAsPreview'              Then Result := BoolToJsonStr(Obj.DrawAsPreview)
+    Else If PropName = 'EnableDraw'                 Then Result := BoolToJsonStr(Obj.EnableDraw)
+    Else If PropName = 'Enabled'                    Then Result := BoolToJsonStr(Obj.Enabled)
+    Else If PropName = 'Enabled_Direct'             Then Result := BoolToJsonStr(Obj.Enabled_Direct)
+    Else If PropName = 'Enabled_vComponent'         Then Result := BoolToJsonStr(Obj.Enabled_vComponent)
+    Else If PropName = 'Enabled_vCoordinate'        Then Result := BoolToJsonStr(Obj.Enabled_vCoordinate)
+    Else If PropName = 'Enabled_vDimension'         Then Result := BoolToJsonStr(Obj.Enabled_vDimension)
+    Else If PropName = 'Enabled_vNet'               Then Result := BoolToJsonStr(Obj.Enabled_vNet)
+    Else If PropName = 'Enabled_vPolygon'           Then Result := BoolToJsonStr(Obj.Enabled_vPolygon)
+    Else If PropName = 'Handle'                     Then Result := Obj.Handle
+    Else If PropName = 'InBoard'                    Then Result := BoolToJsonStr(Obj.InBoard)
+    Else If PropName = 'InCoordinate'               Then Result := BoolToJsonStr(Obj.InCoordinate)
+    Else If PropName = 'InDimension'                Then Result := BoolToJsonStr(Obj.InDimension)
+    Else If PropName = 'InNet'                      Then Result := BoolToJsonStr(Obj.InNet)
+    Else If PropName = 'IsPreRoute'                 Then Result := BoolToJsonStr(Obj.IsPreRoute)
+    Else If PropName = 'IsTenting'                  Then Result := BoolToJsonStr(Obj.IsTenting)
+    Else If PropName = 'MiscFlag1'                  Then Result := BoolToJsonStr(Obj.MiscFlag1)
+    Else If PropName = 'MiscFlag2'                  Then Result := BoolToJsonStr(Obj.MiscFlag2)
+    Else If PropName = 'MiscFlag3'                  Then Result := BoolToJsonStr(Obj.MiscFlag3)
+    Else If PropName = 'Moveable'                   Then Result := BoolToJsonStr(Obj.Moveable)
+    Else If PropName = 'ObjectIDString'             Then Result := Obj.ObjectIDString
+    Else If PropName = 'PadCacheRobotFlag'          Then Result := BoolToJsonStr(Obj.PadCacheRobotFlag)
+    Else If PropName = 'PasteMaskExpansion'         Then Result := IntToStr(Obj.PasteMaskExpansion)
+    Else If PropName = 'PolygonOutline'             Then Result := BoolToJsonStr(Obj.PolygonOutline)
+    Else If PropName = 'PowerPlaneClearance'        Then Result := IntToStr(Obj.PowerPlaneClearance)
+    Else If PropName = 'PowerPlaneReliefExpansion'  Then Result := IntToStr(Obj.PowerPlaneReliefExpansion)
+    Else If PropName = 'ReliefAirGap'               Then Result := IntToStr(Obj.ReliefAirGap)
+    Else If PropName = 'ReliefConductorWidth'       Then Result := IntToStr(Obj.ReliefConductorWidth)
+    Else If PropName = 'ReliefEntries'              Then Result := IntToStr(Obj.ReliefEntries)
+    Else If PropName = 'Used'                       Then Result := BoolToJsonStr(Obj.Used)
+    Else If PropName = 'UserRouted'                 Then Result := BoolToJsonStr(Obj.UserRouted)
+    Else Exit;
+    { Reached only when a branch read without faulting. That is the }
+    { whole measurement: the line proves the member resolved.       }
+    Found := True;
+End;
+
+Function IsGeneratedPCBProperty(PropName : String) : Boolean;
+Begin
+    Result :=
+        (PropName = 'AllowGlobalEdit') Or
+        (PropName = 'DescriptorString') Or
+        (PropName = 'DrawAsPreview') Or
+        (PropName = 'EnableDraw') Or
+        (PropName = 'Enabled') Or
+        (PropName = 'Enabled_Direct') Or
+        (PropName = 'Enabled_vComponent') Or
+        (PropName = 'Enabled_vCoordinate') Or
+        (PropName = 'Enabled_vDimension') Or
+        (PropName = 'Enabled_vNet') Or
+        (PropName = 'Enabled_vPolygon') Or
+        (PropName = 'Handle') Or
+        (PropName = 'InBoard') Or
+        (PropName = 'InCoordinate') Or
+        (PropName = 'InDimension') Or
+        (PropName = 'InNet') Or
+        (PropName = 'IsPreRoute') Or
+        (PropName = 'IsTenting') Or
+        (PropName = 'MiscFlag1') Or
+        (PropName = 'MiscFlag2') Or
+        (PropName = 'MiscFlag3') Or
+        (PropName = 'Moveable') Or
+        (PropName = 'ObjectIDString') Or
+        (PropName = 'PadCacheRobotFlag') Or
+        (PropName = 'PasteMaskExpansion') Or
+        (PropName = 'PolygonOutline') Or
+        (PropName = 'PowerPlaneClearance') Or
+        (PropName = 'PowerPlaneReliefExpansion') Or
+        (PropName = 'ReliefAirGap') Or
+        (PropName = 'ReliefConductorWidth') Or
+        (PropName = 'ReliefEntries') Or
+        (PropName = 'Used') Or
+        (PropName = 'UserRouted');
+End;
+
+{ The same names as text, for the refusal message. HIDDEN FROM THE
+  RUN SCRIPT DIALOG BY ITS ARGUMENT, like its hand-written
+  neighbour: Altium lists parameterless routines there and this
+  is not one of the four a user wants. Dummy is never read. }
+
+Function GeneratedPCBPropertyList(Dummy : Integer) : String;
+Begin
+    Result := 'AllowGlobalEdit, DescriptorString, DrawAsPreview, '
+        + 'EnableDraw, Enabled, Enabled_Direct, Enabled_vComponent, '
+        + 'Enabled_vCoordinate, Enabled_vDimension, Enabled_vNet, '
+        + 'Enabled_vPolygon, Handle, InBoard, InCoordinate, '
+        + 'InDimension, InNet, IsPreRoute, IsTenting, MiscFlag1, '
+        + 'MiscFlag2, MiscFlag3, Moveable, ObjectIDString, '
+        + 'PadCacheRobotFlag, PasteMaskExpansion, PolygonOutline, '
+        + 'PowerPlaneClearance, PowerPlaneReliefExpansion, '
+        + 'ReliefAirGap, ReliefConductorWidth, ReliefEntries, Used, '
+        + 'UserRouted';
+End;
+{ END GENERATED - SDK property probe. }
+
+{ A PLACED COMPONENT'S HEIGHT IS ITS TALLEST 3D BODY. The component's own  }
+{ Height is the footprint's Height field, a parameter typed by hand that    }
+{ is often 0 or out of step with the model; a 0 silently passes the height }
+{ DRC. So a reader of a component's height takes the tallest body when the }
+{ part has one, STEP and extruded alike (cylinders and spheres too), and   }
+{ the parameter only when it has none (issue #323).                       }
+
 { T3DModelType of a body's model: 0 extruded, 1 STEP (measured), 2         }
 { cylinder, 3 sphere. Anything else is named by its number.                }
 Function ComponentBodyKind(Body : IPCB_ComponentBody) : String;
@@ -1172,6 +1277,21 @@ Begin
         End;
     Finally
         Comp.GroupIterator_Destroy(GIter);
+    End;
+End;
+
+{ The component's height as a reader should see it: its tallest body, or }
+{ the Height parameter when it has no body.                               }
+Function ComponentGuardedHeight(Comp : IPCB_Component) : Integer;
+Var
+    MaxOverall, Count : Integer;
+Begin
+    ComponentBodyScan(Comp, False, MaxOverall, Count);
+    If Count > 0 Then Result := MaxOverall
+    Else
+    Begin
+        Result := 0;
+        Try Result := Comp.Height; Except Result := 0; End;
     End;
 End;
 
@@ -1793,7 +1913,7 @@ End;
 Function SetPCBProperty(Obj : IPCB_Primitive; PropName : String; Value : String) : Integer;
 Var
     Track : IPCB_Track;
-    Arc   : IPCB_Arc;
+    Arc : IPCB_Arc;
     Pad   : IPCB_Pad;
     Via   : IPCB_Via;
     Comp  : IPCB_Component;
@@ -1859,6 +1979,11 @@ Begin
         { Locked is read as Not Moveable, so it is written the same way;   }
         { PCB_LockNetRouting writes Moveable on any primitive already.      }
         Else If PropName = 'Locked' Then Obj.Moveable := Not StrToBool(Value)
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Comp.ComponentKind := StrToInt(Value); End
+            Else Matched := False;
+        End
         { Subtype members: narrow to a typed local via ObjectId first. }
         Else If PropName = 'X1' Then
         Begin
@@ -2188,6 +2313,13 @@ Begin
                 Body.BodyOpacity3D := StrToFloatDef(Value, 1);
             End;
         End
+        { Route the properties exposed by PCBGetExtra through their writer. }
+        Else If ExtraPCBPropertyOwner(PropName) > 0 Then
+        Begin
+            PosVal := PCBSetExtra(Obj, PropName, Value);
+            If PosVal = 0 Then Matched := False
+            Else If PosVal < 0 Then Refused := True;
+        End
         { Turning a region INTO a board cutout, the other half of the
           read above. The five identifiers are attested: four independent
           scripts in reference/ compare against them, so they exist in
@@ -2248,23 +2380,14 @@ Begin
             Begin Poly := Obj; Poly.RemoveIslandsByArea := StrToBool(Value); End
             Else Matched := False;
         End
-        { The rest of the Polygon Pour dialog (issue #125), see PCBSetPoly. }
-        { PourIndex and Poured are read only and deliberately absent.       }
         Else If (PropName = 'Grid') Or (PropName = 'TrackSize') Or
                 (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
-                (PropName = 'NeckWidthThreshold') Or
-                (PropName = 'IslandAreaThreshold') Or
+                (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
                 (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
                 (PropName = 'UseOctagons') Then
         Begin
             If Oid <> ePolyObject Then Matched := False
             Else If Not PCBSetPoly(Obj, PropName, Value) Then Refused := True;
-        End
-        Else If ExtraPCBPropertyOwner(PropName) > 0 Then
-        Begin
-            PosVal := PCBSetExtra(Obj, PropName, Value);
-            If PosVal = 0 Then Matched := False
-            Else If PosVal < 0 Then Refused := True;
         End
         Else Matched := False;
 
@@ -2590,6 +2713,7 @@ End;
 
   Dummy is never read. It exists to change the arity and nothing else.
   Reported by a user as too many functions listed to find the right one. }
+
 Function KnownPCBPropertyList(Dummy : Integer) : String;
 Begin
     Result := 'ObjectId, X, Y, Layer, Descriptor, DetailString, DRCError, '
@@ -3482,7 +3606,45 @@ Begin
             + ModifyOutcomeJson(0) + '}');
 End;
 
-{ UnitStamp_PCBGeneric - which build of PCBGeneric.pas Altium compiled; 'dev' here. }
+{..............................................................................}
+{ RebuildPCBConnectivity - force Altium to recompute the net topology and the  }
+{ ratsnest after primitives were added or removed programmatically.            }
+{                                                                              }
+{ WHY this is needed at all: adding a track with Board.AddPCBObject makes it   }
+{ exist on the board, but the connectivity engine only learns about it from    }
+{ the PCBM_BoardRegisteration broadcast, and even then the eConnectionObject   }
+{ ratsnest primitives that PCB_GetUnroutedNets counts are only regenerated on  }
+{ a connectivity pass. Without one, tracks whose endpoints sit exactly on pad  }
+{ centres still read as unrouted -- which is how a fully routed net was        }
+{ reported with 2 unrouted connections. A Zoom Redraw (obj_refresh_document)   }
+{ repaints, it does not recompute, so it cannot clear this.                    }
+{                                                                              }
+{ HONESTY NOTE: RunProcess silently ignores process ids it does not know, so   }
+{ if 'PCB:UpdateConnectivity' is not a real id on this Altium build this call  }
+{ is a no-op and reports nothing. It is used elsewhere in this codebase        }
+{ (PCB_TuneLength, where net RoutedLength does change across it), which is the }
+{ best evidence available offline. ViewManager_FullUpdate is issued as well    }
+{ because it IS a documented IPCB_Board method and is what repaints the newly  }
+{ generated ratsnest. Result reports only that the calls were ISSUED without   }
+{ raising -- it is not proof the engine actually reran.                        }
+{..............................................................................}
+
+Function RebuildPCBConnectivity(Board : IPCB_Board) : Boolean;
+Begin
+    Result := False;
+    If Board = Nil Then Exit;
+    Try
+        ResetParameters;
+        RunProcess('PCB:UpdateConnectivity');
+        Result := True;
+    Except
+    End;
+    { Repaint separately: a failed repaint must not mask a successful         }
+    { recompute, and vice versa.                                              }
+    Try Board.ViewManager_FullUpdate; Except End;
+End;
+
+{ UnitStamp_PCBGeneric - which build of PCBGeneric.pas Altium compiled. }
 { install-scripts writes the hash of this file into the deployed copy. }
 Function UnitStamp_PCBGeneric(Dummy : Integer) : String;
 Begin

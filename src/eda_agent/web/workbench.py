@@ -18,6 +18,29 @@ from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, request
 
+
+def rules_report(board: str, got: Any) -> dict:
+    """Summarize board rules against the approved baseline for the dashboard."""
+    from ..export import drc_rules
+
+    rules = (got or {}).get("rules") if isinstance(got, dict) else None
+    if not isinstance(rules, list):
+        return {"ok": False, "reason": "the rules could not be read"}
+    baseline = drc_rules.read_baseline(board)
+    out = {"ok": True, "board": board, "count": len(rules),
+           "fingerprint": drc_rules.fingerprint(rules),
+           "sheet": drc_rules.sheet(rules),
+           "not_checked": drc_rules.not_checked(rules, None),
+           "approved": baseline is not None}
+    if baseline:
+        out.update(approved_at=baseline.get("approved_at"),
+                   approved_note=baseline.get("note", ""),
+                   changes=drc_rules.diff(baseline["rules"], rules),
+                   logged=drc_rules.read_log(board, since=str(baseline.get("approved_at") or "")))
+    else:
+        out.update(changes=[], logged=drc_rules.read_log(board))
+    return out
+
 # -- the model, from the cockpit's snapshot ---------------------------------
 
 
@@ -267,48 +290,6 @@ def _call(tool: str, args: dict) -> Any:  # pragma: no cover - needs the server
                     pass
 
 
-def _board_rules(board: str) -> dict:  # pragma: no cover - needs Altium
-    """The rules of BOARD, read in one turn that gives the front back."""
-    from ..bridge.altium_bridge import following_front, get_bridge, tool_call
-    with following_front(background=False), tool_call():
-        bridge = get_bridge()
-        front = bridge.send_command("application.get_active_document", {"front": "true"},
-                                    timeout=15.0)
-        prev = front.get("file_path", "") if isinstance(front, dict) else ""
-        bridge.send_command("pcb.focus_board", {"board_path": board}, timeout=30.0)
-        try:
-            return bridge.send_command("pcb.get_design_rules", {}, timeout=30.0)
-        finally:
-            if prev and not _same_file(prev, board):
-                try:
-                    bridge.send_command("application.set_active_document",
-                                        {"file_path": prev}, timeout=30.0)
-                except Exception:                         # noqa: BLE001
-                    pass
-
-
-def rules_report(board: str, got: Any) -> dict:
-    """What the page shows of a board's rules."""
-    from ..export import drc_rules
-    rules = (got or {}).get("rules") if isinstance(got, dict) else None
-    if not isinstance(rules, list):
-        return {"ok": False, "reason": "the rules could not be read"}
-    baseline = drc_rules.read_baseline(board)
-    out = {"ok": True, "board": board, "count": len(rules),
-           "fingerprint": drc_rules.fingerprint(rules),
-           "sheet": drc_rules.sheet(rules),
-           "not_checked": drc_rules.not_checked(rules, None),
-           "approved": baseline is not None}
-    if baseline:
-        out.update(approved_at=baseline.get("approved_at"),
-                   approved_note=baseline.get("note", ""),
-                   changes=drc_rules.diff(baseline["rules"], rules),
-                   logged=drc_rules.read_log(board, since=str(baseline.get("approved_at") or "")))
-    else:
-        out.update(changes=[], logged=drc_rules.read_log(board))
-    return out
-
-
 def _same_file(a: str, b: str) -> bool:
     return bool(a) and str(a).replace("/", "\\").lower() == str(b).replace("/", "\\").lower()
 
@@ -544,6 +525,31 @@ def register(app: Flask) -> None:
         c = cockpit()
         return jsonify(get_library_view().read(c.memo.file if c.memo else ""))
 
+    @app.route("/api/wb/parts/find")
+    def wb_parts_find() -> Response:
+        """``q``: parts in the profile's scanned Altium 365 library, read
+        offline, to pick one to preview."""
+        from ..library_preview import find_parts
+        try:
+            return jsonify(find_parts(request.args.get("q", ""), limit=40))
+        except Exception as e:                            # noqa: BLE001
+            return jsonify({"ok": False, "reason": f"{type(e).__name__}: {e}", "results": []})
+
+    @app.route("/api/wb/parts/preview")
+    def wb_parts_preview() -> Response:
+        """The part preview being read, or the last one read."""
+        from ..library_preview import get_preview_view
+        return jsonify({"ok": True, **get_preview_view().snapshot()})
+
+    @app.route("/api/wb/parts/preview", methods=["POST"])
+    def wb_parts_preview_ask() -> Response:
+        """Read one part's symbol and footprint in Altium: ``design_item_id``
+        (+ ``vault``) for a Workspace part, or ``library_path`` +
+        ``component_name`` for a library file; ``part`` for a multi-part
+        symbol; ``again`` to read past the kept copy."""
+        from ..library_preview import get_preview_view
+        return jsonify(get_preview_view().ask(request.get_json(silent=True) or {}))
+
     @app.route("/api/wb/library/update", methods=["POST"])
     def wb_library_update() -> Response:
         """``designators``: refresh those placed parts from their PcbLib on
@@ -573,40 +579,6 @@ def register(app: Flask) -> None:
         return jsonify(runner.start(name, calls,
                                     lambda _n: c.load(board) if board else c.ask_refresh(),
                                     board=board))
-
-    @app.route("/api/wb/rules")
-    def wb_rules() -> Response:
-        """The design rules of the board shown and how they stand against
-        the approved set."""
-        board = _shown(cockpit()) or ""
-        if not board:
-            return jsonify({"ok": False, "reason": "choose a board first"})
-        try:
-            got = _board_rules(board)
-        except Exception as exc:                          # noqa: BLE001
-            return jsonify({"ok": False, "reason": f"Altium did not answer: {exc}"})
-        return jsonify(rules_report(board, got))
-
-    @app.route("/api/wb/rules/approve", methods=["POST"])
-    def wb_rules_approve() -> Response:
-        """The person approves the rules the board holds now."""
-        from ..export import drc_rules
-        board = _shown(cockpit()) or ""
-        if not board:
-            return jsonify({"ok": False, "reason": "choose a board first"})
-        body = request.get_json(silent=True) or {}
-        try:
-            got = _board_rules(board)
-        except Exception as exc:                          # noqa: BLE001
-            return jsonify({"ok": False, "reason": f"Altium did not answer: {exc}"})
-        rules = (got or {}).get("rules")
-        if not isinstance(rules, list):
-            return jsonify({"ok": False, "reason": "the rules could not be read"})
-        if body.get("fingerprint") and body["fingerprint"] != drc_rules.fingerprint(rules):
-            return jsonify({"ok": False, "reason": "the rules changed since you read them; "
-                            "read them again before approving"})
-        done = drc_rules.write_baseline(board, rules, note=str(body.get("note") or "approved on the dashboard"))
-        return jsonify(dict(rules_report(board, got), approved_now=done))
 
     @app.route("/api/wb/engine/preview")
     def wb_engine_preview() -> Response:

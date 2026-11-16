@@ -107,7 +107,13 @@ def test_tool_invoke_bad_args_returns_error(mcp):
 
 def test_tool_invoke_catalog_through_invoke(mcp):
     res = _invoke(mcp, "tool_catalog", {"category": "routing"})
-    assert res["result"]["count"] == 2
+    names = {tool["name"] for tool in res["result"]["tools"]}
+    assert names == {
+        "route_audit_plan",
+        "route_build_offline_package",
+        "route_plan",
+        "route_plan_repairs",
+    }
 
 
 def test_tool_invoke_unknown_tool(mcp):

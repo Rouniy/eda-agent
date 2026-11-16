@@ -22,6 +22,7 @@ argparse error.
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -66,9 +67,11 @@ def test_the_cli_reports_the_version():
     """
     from eda_agent import __version__
 
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")
     result = subprocess.run(
         [sys.executable, "-m", "eda_agent.server", "--version"],
-        capture_output=True, text=True, encoding="utf-8", cwd=REPO,
+        capture_output=True, text=True, encoding="utf-8", cwd=REPO, env=env,
     )
     assert result.returncode == 0, (
         f"`--version` exited {result.returncode}. The bug-report template "
@@ -112,13 +115,10 @@ def test_the_release_procedure_names_the_current_script_version():
         f"should report, so a stale number there reads as a failed "
         f"deploy of a correct build.")
 
-    # And it must not still name an older one alongside it.
-    others = {v for v in re.findall(r"\b20\d\d\.\d\d\.\d\d\.\d+\b", text)
-              if v != version}
-    assert not others, (
-        f"the release procedure names other script versions {sorted(others)} "
-        f"as well as the current {version!r}; the reader cannot tell which "
-        f"app_ping should report.")
+    # Historical native checks may name prior builds. The expected value
+    # for this release is the one pinned beside altium_script_version.
+    pinned = re.search(r"Expect `altium_script_version` = `([^`]+)`", text)
+    assert pinned and pinned.group(1) == version
 
 
 def test_the_release_procedure_names_the_current_package_version():

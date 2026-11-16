@@ -2,7 +2,8 @@
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Altium 365 over GraphQL, through the workspace itself or through Nexar.
 
-Workspace: a token created in the workspace under Admin > Developer, sent
+Workspace: a token created in the workspace's admin pages (only some plans
+offer one; elsewhere Nexar is the way in), sent
 to the workspace's own GraphQL endpoint (EDA_AGENT_ALTIUM365_DOMAIN and
 EDA_AGENT_ALTIUM365_TOKEN). It reaches more than Nexar does. These tokens
 are not refreshed; an expired one is reported for the user to replace.
@@ -10,11 +11,18 @@ are not refreshed; an expired one is reported for the user to replace.
 Nexar: api.nexar.com with an app the user registered with Nexar
 (EDA_AGENT_NEXAR_APP_ID). ``eda-agent altium365-login`` signs in once in
 the browser (authorization code with PKCE); the token is kept encrypted
-for the current Windows user and refreshed when it expires.
+for the current Windows user and refreshed when it expires. An app made in
+the Nexar portal is a confidential client: its secret goes in
+EDA_AGENT_NEXAR_CLIENT_SECRET and is sent only to Nexar's token endpoint.
 
-A domain, when set, selects the workspace route. Nothing Altium 365 sends
-back is written to disk: replies stay in memory for ten minutes, well
-inside Nexar's 24-hour limit on keeping data. EDA_AGENT_ALTIUM365_WORKSPACES
+A domain, when set, selects the workspace route. Replies to the tools here
+are not written to disk: they stay in memory for ten minutes, well inside
+Nexar's 24-hour limit on keeping data. The one exception is the library
+inventory (eda_agent.altium365_library), which the user asks for by name
+and which is written into their own profile. Settings missing from the
+process are read from the user's saved environment, so a value set with
+``setx`` works without a restart. EDA_AGENT_ALTIUM365_TIMEOUT_S (default
+60) bounds each request. EDA_AGENT_ALTIUM365_WORKSPACES
 (comma-separated URLs) limits which workspaces the tools may touch.
 
 Any reading query may be run; one containing ``mutation`` or
@@ -58,6 +66,11 @@ def _workspace_key(url: str) -> str:
     return url.strip().rstrip("/") + "/"
 
 
+def default_login_path() -> Path:
+    """Where altium365-login keeps the encrypted Nexar login."""
+    return Path.home() / ".eda-agent" / "nexar_login.bin"
+
+
 @dataclass(frozen=True)
 class Altium365Config:
     domain: str = ""
@@ -66,10 +79,11 @@ class Altium365Config:
     #: A Nexar portal app is a confidential client: its token requests
     #: are refused (HTTP 400, invalid_client) without the secret.
     nexar_client_secret: str = field(default="", repr=False)
+    #: Kept out of repr so a printed config never shows it.
+    nexar_client_secret: str = field(default="", repr=False)
     redirect_uri: str = _DEFAULT_REDIRECT
     allowed_workspaces: tuple[str, ...] = ()
-    saved_login: Path = field(
-        default_factory=lambda: Path.home() / ".eda-agent" / "nexar_login.bin")
+    saved_login: Path = field(default_factory=lambda: default_login_path())
     timeout_s: float = 60.0
 
     @property
@@ -88,8 +102,54 @@ class Altium365Config:
         return f"https://{self.domain}/api/files" if self.domain else NEXAR_UPLOAD
 
 
+#: The settings read_environment looks up, also in the user's saved
+#: environment when the process does not have them.
+SETTINGS = ("EDA_AGENT_ALTIUM365_DOMAIN", "EDA_AGENT_ALTIUM365_TOKEN",
+            "EDA_AGENT_ALTIUM365_WORKSPACES", "EDA_AGENT_ALTIUM365_TIMEOUT_S",
+            "EDA_AGENT_NEXAR_APP_ID", "EDA_AGENT_NEXAR_CLIENT_SECRET",
+            "EDA_AGENT_NEXAR_REDIRECT")
+
+
+def saved_user_environment(names=SETTINGS) -> dict[str, str]:
+    """The user's own environment variables as Windows keeps them
+    (HKCU, Environment), for those of ``names`` that are set there.
+
+    ``setx`` writes there, but a process started before it, such as an MCP
+    server or the shell it came from, never sees the change. Reading the
+    registry lets a new setting work without a restart. Empty off Windows.
+    """
+    if sys.platform != "win32":
+        return {}
+    try:
+        import winreg
+        found: dict[str, str] = {}
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            for name in names:
+                try:
+                    value = winreg.QueryValueEx(key, name)[0]
+                except OSError:
+                    continue
+                if isinstance(value, str) and value.strip():
+                    found[name] = value
+        return found
+    except OSError:
+        return {}
+
+
+def _timeout(text: str) -> float:
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return 60.0
+    return min(max(value, 5.0), 900.0)
+
+
 def read_environment(env: Optional[dict] = None) -> Altium365Config:
-    env = os.environ if env is None else env
+    """The settings from ``env``, or from this process's environment with
+    the user's saved environment filling in what the process lacks."""
+    if env is None:
+        env = {**saved_user_environment(),
+               **{k: v for k, v in os.environ.items() if v.strip()}}
     domain = re.sub(r"^https?://", "", env.get("EDA_AGENT_ALTIUM365_DOMAIN", "").strip())
     allowed = [_workspace_key(u) for u in
                env.get("EDA_AGENT_ALTIUM365_WORKSPACES", "").split(",") if u.strip()]
@@ -99,7 +159,8 @@ def read_environment(env: Optional[dict] = None) -> Altium365Config:
         nexar_app_id=env.get("EDA_AGENT_NEXAR_APP_ID", "").strip(),
         nexar_client_secret=env.get("EDA_AGENT_NEXAR_CLIENT_SECRET", "").strip(),
         redirect_uri=env.get("EDA_AGENT_NEXAR_REDIRECT", _DEFAULT_REDIRECT),
-        allowed_workspaces=tuple(allowed))
+        allowed_workspaces=tuple(allowed),
+        timeout_s=_timeout(env.get("EDA_AGENT_ALTIUM365_TIMEOUT_S", "60")))
 
 
 # --- what is sent -----------------------------------------------------------
@@ -112,8 +173,12 @@ _READS = {
     "project": "query($id: ID!) { desProjectById(id: $id) { id name description } }",
     "folders": ("query($ws: String!) { desLibrary(workspaceUrl: $ws) "
                 "{ folders { id name path } } }"),
-    "components": ("query($ws: String!) { desLibrary(workspaceUrl: $ws) "
-                   "{ components { nodes { id name%s } } } }"),
+    # Paged: without first/after the server answers its first page only
+    # (10 rows, measured 2026-11-12 on a library of thousands).
+    "components": ("query($ws: String!, $after: String, $first: Int) { "
+                   "desLibrary(workspaceUrl: $ws) { components(first: $first, "
+                   "after: $after) { pageInfo { hasNextPage endCursor } "
+                   "nodes { id name%s } } } }"),
     "component": ("query($id: ID!) { desComponentById(id: $id) { id name details "
                   "{ parameters { type name value } } } }"),
     "type": ("query($n: String!) { __type(name: $n) { name kind description fields "
@@ -159,14 +224,22 @@ def gql_value(value: Any) -> str:
     raise Altium365Error(f"a {type(value).__name__} cannot be sent")
 
 
+#: The payload field naming what a publish created. Not the same for both:
+#: measured live 2026-11-12, DesCreateSymbolPayload has ``id`` and
+#: DesCreateFootprintPayload has ``footprintId``, and asking a footprint
+#: publish for ``id`` is refused whole (HTTP 400) before anything is made.
+PUBLISHED_ID = {"desCreateSymbol": "id", "desCreateFootprint": "footprintId"}
+
+
 def publish_operation(kind: str) -> tuple[str, str]:
-    """(schema field, operation) creating a symbol or footprint from a file."""
+    """(schema field, operation) creating a symbol or footprint from a file;
+    the created item's id is under PUBLISHED_ID[schema field]."""
     name = {"symbol": "desCreateSymbol", "footprint": "desCreateFootprint"}[kind]
     return name, (
         "mutation($fileId: String!, $relativePath: String!, $folderId: ID!, "
         "$ws: String!, $name: String!) { " + name + "(input: { files: { fileId: "
         "$fileId, relativePath: $relativePath }, folderId: $folderId, name: $name, "
-        "workspaceUrl: $ws }) { errors { message } id } }")
+        "workspaceUrl: $ws }) { errors { message } " + PUBLISHED_ID[name] + " } }")
 
 
 def release_operation(spec: dict) -> str:
@@ -342,12 +415,39 @@ def browser_login(config: Altium365Config, open_url: Callable[[str], Any],
     return {"signed_in": True, "expires_in_s": token.get("expires_in")}
 
 
+def login_workspaces(session: "Altium365Session") -> list[str]:
+    """Lines saying which workspaces a fresh login reaches and which the tools use."""
+    try:
+        found = session.read(_READS["workspaces"]).get("desWorkspaceInfos") or []
+    except Altium365Error as exc:
+        return [f"Signed in, but the workspaces could not be listed: {exc}"]
+    if not found:
+        return ["Signed in, but this account reaches no Altium 365 workspace."]
+    allowed = session.config.allowed_workspaces
+    lines = [f"Workspaces this login reaches ({len(found)}):"]
+    for w in found:
+        url = _workspace_key(w.get("url") or "")
+        mark = ("" if not allowed or url in allowed
+                else "  (left out by EDA_AGENT_ALTIUM365_WORKSPACES)")
+        lines.append(f"  {w.get('name') or '(no name)'}  {url}{mark}")
+    if not allowed and len(found) > 1:
+        lines.append("Each altium365_ tool takes the workspace URL it acts on. To keep "
+                     "the tools to some of them, set EDA_AGENT_ALTIUM365_WORKSPACES to "
+                     "those URLs, comma-separated.")
+    elif allowed and not any(_workspace_key(w.get("url") or "") in allowed for w in found):
+        lines.append("None of them is in EDA_AGENT_ALTIUM365_WORKSPACES, so the tools "
+                     "will refuse every workspace until it lists one of these URLs.")
+    return lines
+
+
 # --- the session --------------------------------------------------------------
 
 class Altium365Session:
     """Reads and changes against one configured route, replies kept briefly."""
 
     _BACKOFF_S = (1.0, 2.0, 4.0)
+    #: One refresh at a time: parallel readers share the saved login.
+    _token_guard = threading.Lock()
 
     def __init__(self, config: Optional[Altium365Config] = None,
                  urlopen: Callable = urllib.request.urlopen,
@@ -360,12 +460,17 @@ class Altium365Session:
     # credentials and transport
 
     def _access_token(self) -> str:
+        with self._token_guard:
+            return self._current_token()
+
+    def _current_token(self) -> str:
         cfg = self.config
         if cfg.mode == "workspace":
             if cfg.workspace_token:
                 return cfg.workspace_token
             raise Altium365Error(f"no token for {cfg.domain}: create one in the workspace "
-                                 "(Admin > Developer) and set EDA_AGENT_ALTIUM365_TOKEN")
+                                 "(its admin pages, where the plan offers API tokens) and set "
+                                 "EDA_AGENT_ALTIUM365_TOKEN, or use Nexar instead")
         if cfg.mode != "nexar":
             raise Altium365Error("Altium 365 is not set up: set EDA_AGENT_ALTIUM365_DOMAIN "
                                  "and EDA_AGENT_ALTIUM365_TOKEN, or EDA_AGENT_NEXAR_APP_ID "
@@ -413,10 +518,14 @@ class Altium365Session:
                 str(p.get("message", p)) for p in problems[:5]))
         return answer.get("data") or {}
 
-    def read(self, query: str, variables: Optional[dict] = None) -> dict:
+    def read(self, query: str, variables: Optional[dict] = None,
+             remember: bool = True) -> dict:
         """Run a reading query; the same query within ten minutes is answered
-        from memory."""
+        from memory. ``remember=False`` always asks, and keeps nothing: a
+        library scan reads tens of thousands of rows once each."""
         refuse_changes(query)
+        if not remember:
+            return self._send(query, variables)
         key = (query, json.dumps(variables or {}, sort_keys=True))
         moment = self._now()
         with self._guard:
@@ -474,13 +583,40 @@ class Altium365Session:
         library = self.read(_READS["folders"], {"ws": self.permitted(workspace_url)})
         return (library.get("desLibrary") or {}).get("folders") or []
 
+    #: Rows asked for per page of components: 100 measured to answer
+    #: promptly for names; parameters make each row heavier.
+    COMPONENT_PAGE = 100
+    COMPONENT_PAGE_WITH_PARAMETERS = 50
+    #: A cursor that never ends must not loop forever.
+    MOST_COMPONENT_PAGES = 2000
+
     def list_components(self, workspace_url: str, name_contains: str = "",
-                        with_parameters: bool = False) -> list[dict]:
+                        with_parameters: bool = False, limit: int = 0) -> dict:
+        """Components page by page until ``limit`` matches (0: no limit)
+        or the library ends. ``cut_short`` says more matches were left."""
         query = _READS["components"] % (_PARAMETERS if with_parameters else "")
-        library = self.read(query, {"ws": self.permitted(workspace_url)}).get("desLibrary")
-        nodes = ((library or {}).get("components") or {}).get("nodes") or []
+        first = (self.COMPONENT_PAGE_WITH_PARAMETERS if with_parameters
+                 else self.COMPONENT_PAGE)
+        ws = self.permitted(workspace_url)
         needle = name_contains.lower()
-        return [n for n in nodes if needle in (n.get("name") or "").lower()]
+        kept: list[dict] = []
+        cursor, pages, more = None, 0, False
+        while pages < self.MOST_COMPONENT_PAGES:
+            library = self.read(query, {"ws": ws, "after": cursor,
+                                        "first": first}).get("desLibrary")
+            page = (library or {}).get("components") or {}
+            pages += 1
+            kept.extend(n for n in page.get("nodes") or []
+                        if needle in (n.get("name") or "").lower())
+            info = page.get("pageInfo") or {}
+            more = bool(info.get("hasNextPage")) and bool(info.get("endCursor"))
+            if not more or (limit and len(kept) >= limit):
+                break
+            cursor = info["endCursor"]
+        cut_short = bool(limit) and (len(kept) > limit or (len(kept) >= limit and more))
+        return {"components": kept[:limit] if limit else kept,
+                "pages_read": pages, "cut_short": cut_short or (
+                    more and pages >= self.MOST_COMPONENT_PAGES)}
 
     def get_component(self, component_id: str) -> dict:
         part = self.read(_READS["component"], {"id": component_id}).get("desComponentById")
@@ -536,7 +672,11 @@ class Altium365Session:
             except Altium365Error:
                 listed[type_name] = set()
         absent = [f"{t}.{f}" for t, f in READ_FIELDS if f not in listed[t]]
+        saved = sorted(n for n in saved_user_environment()
+                       if not os.environ.get(n, "").strip())
         return {"ok": not absent, "route": self.config.mode,
+                "timeout_s": self.config.timeout_s,
+                "read_from_saved_environment": saved,
                 "endpoint": self.config.graphql_url, "missing_fields": absent,
                 "changes_offered": {name: f in listed[t] for name, (t, f) in CHANGES.items()}}
 
