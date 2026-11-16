@@ -188,7 +188,7 @@ def test_a_restarted_server_carries_on_with_the_sessions_document(wired, monkeyp
     ab.AltiumBridge.__init__(again)
     monkeypatch.setattr(again.config, "workspace_dir", bridge.config.workspace_dir, raising=False)
     monkeypatch.setattr(again, "_publish_request", lambda r: box.sent.append(r.to_dict()))
-    monkeypatch.setattr(again, "_poll_response", lambda i, t: box.replies.pop(0))
+    monkeypatch.setattr(again, "_poll_response", lambda i, t, *more: box.replies.pop(0))
     monkeypatch.setattr(again, "_reshow_hidden_frame", lambda c, i: [])
     box.replies = [_reply(data={}), _reply(data={}, session_document={"missing": r"C:\A\a.PcbDoc"}),
                    _reply(data={})]
