@@ -32,6 +32,7 @@ PAS_FILES = [
     "PCB.pas",
     "Generic.pas",
     "Audit.pas",
+    "SelectedProject.pas",
     "StatusForm.pas",
     "Dispatcher.pas",
 ]
@@ -1059,6 +1060,8 @@ def lint_file(path: str) -> list[Finding]:
     findings.extend(_scan_local_shadows_enum(rel, raw_lines))
     # Comment-brace check uses raw text (it tracks comment depth itself).
     findings.extend(_scan_comment_brace(rel, text))
+    findings.extend(_scan_duplicate_routines(rel, raw_lines))
+    findings.extend(_scan_bracket_balance(rel, text))
 
     return findings
 
@@ -1182,7 +1185,8 @@ def run_lint(files: Optional[Iterable[str]] = None, verbose: bool = True) -> int
 
     for f in (_scan_call_order_across_files(targets)
               + _scan_duplicate_definitions(targets)
-              + _scan_undeclared_read(targets)):
+              + _scan_undeclared_read(targets)
+              + _scan_undeclared_assignment(targets)):
         by_file.setdefault(f.file, []).append(f)
         errors += 1
 
@@ -1696,6 +1700,144 @@ def _scan_undeclared_read(targets: list,
                         + f"   [{routine} reads {m.group(0)}, declared nowhere]",
                         memory="altium_wrong_api_identifier_family.md",
                     ))
+    return findings
+
+
+# ---- Checks this fork adds to upstream's lint --------------------------------
+
+def _scan_duplicate_routines(path: str, lines: list[str]) -> list[Finding]:
+    """A merged unit cannot declare the same top-level routine twice."""
+    seen: set[str] = set()
+    findings: list[Finding] = []
+    pattern = re.compile(r"^(?:Function|Procedure)\s+([A-Za-z_]\w*)\s*\(", re.I)
+    for line_no, raw in enumerate(_blank_block_comments(lines), 1):
+        match = pattern.match(strip_comments_and_strings(raw))
+        if match is None:
+            continue
+        name = match.group(1).lower()
+        if name in seen:
+            findings.append(Finding(
+                file=path, line=line_no, col=1, rule="duplicate-routine",
+                severity="error", snippet=lines[line_no - 1],
+                memory="upstream-merge-native-compile-2026-10-27",
+            ))
+        seen.add(name)
+    return findings
+
+
+#: Brackets that do not balance inside one routine.
+#:
+#: Altium reports this as a bare "; expected" pointing at the line where
+#: the extra ')' sits, with no hint that a missing opener is the cause.
+#:
+#: MEASURED: a refactor moving seven JSON arrays from string concatenation
+#: onto TStringList.Add() was applied to two of them and half-applied to
+#: five. Each of those five kept `XxxJson := XxxJson +` and gained the
+#: Add call's trailing `)`, so the unit would not compile. The five are
+#: indistinguishable from one another, so Altium surfaces one per reload.
+def _scan_bracket_balance(path: str, text: str) -> list[Finding]:
+    """Parentheses and brackets that do not close within one routine."""
+    findings: list[Finding] = []
+    clean = _blank_comments_and_strings(text)
+    raw_lines = text.split("\n")
+    lines = clean.split("\n")
+
+    head = re.compile(r"^(?:Function|Procedure)\s+(\w+)", re.IGNORECASE)
+    heads = {k: head.match(l).group(1)
+             for k, l in enumerate(lines) if head.match(l)}
+
+    depth, routine, opened_at = 0, "?", 0
+    for k, line in enumerate(lines):
+        if k in heads:
+            if depth > 0:
+                # An opener with no closer: report where it was opened,
+                # since that is the line to look at, not the next header.
+                findings.append(Finding(
+                    file=path, line=opened_at + 1, col=1,
+                    rule="unbalanced-bracket", severity="error",
+                    snippet=raw_lines[opened_at].rstrip()
+                    + "   [%s ends %d bracket(s) open]" % (routine, depth),
+                    memory="altium_delphiscript_parse_traps.md",
+                ))
+            depth, routine = 0, heads[k]
+        for col, ch in enumerate(line):
+            if ch in "([":
+                if depth == 0:
+                    opened_at = k
+                depth += 1
+            elif ch in ")]":
+                depth -= 1
+                if depth < 0:
+                    findings.append(Finding(
+                        file=path, line=k + 1, col=col + 1,
+                        rule="unbalanced-bracket", severity="error",
+                        snippet=raw_lines[k].rstrip()
+                        + "   [closes a bracket that was never opened]",
+                        memory="altium_delphiscript_parse_traps.md",
+                    ))
+                    depth = 0
+                    break
+    return findings
+
+
+#: An identifier ASSIGNED by a routine that no enclosing scope declares.
+#:
+#: Altium refuses to compile the unit -- "Variable <X> not defined" --
+#: one name per reload, each costing a close / reopen / run cycle.
+#:
+#: This is sharper than the undeclared-local rule above, which only
+#: considers a name the same file declares in two OTHER routines and so
+#: stays silent on a name used in just one place. An ASSIGNMENT TARGET
+#: needs no such hedge: `X := ...` and `Inc(X)` require a real variable,
+#: so a target that no scope declares is a bug with no second reading.
+#: Reading an undeclared name is the other rule's job.
+#:
+#: MEASURED: a merge brought in the uses of ten locals without their
+#: declarations, across two units. The existing rule matched none of them.
+def _scan_undeclared_assignment(targets: list) -> list:
+    """Assignment targets that no enclosing scope declares."""
+    findings: list[Finding] = []
+    loaded = []
+    shared = set()
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            lines = _blank_block_comments(f.read().split("\n"))
+        try:
+            rel = os.path.relpath(path, SCRIPT_DIR)
+        except ValueError:
+            rel = os.path.abspath(path)
+        loaded.append((rel, lines))
+        shared |= _file_level_names(lines)
+
+    assign = re.compile(r"^\s*([A-Za-z_]\w*)\s*:=")
+    incdec = re.compile(r"\b(?:Inc|Dec)\s*\(\s*([A-Za-z_]\w*)", re.IGNORECASE)
+
+    for rel, lines in loaded:
+        for routine, start, begin, stop in _routine_spans(lines):
+            known = (shared | _BUILTIN_NAMES
+                     | _declared_names(lines, start, begin))
+            seen = set()
+            for k in range(begin, stop):
+                line = strip_comments_and_strings(lines[k])
+                for pattern in (assign, incdec):
+                    for m in pattern.finditer(line):
+                        name = m.group(1)
+                        low = name.lower()
+                        if low in known or low in seen:
+                            continue
+                        # `A.B := x` writes a property, not a local.
+                        if m.start(1) > 0 and line[m.start(1) - 1] == ".":
+                            continue
+                        seen.add(low)
+                        findings.append(Finding(
+                            file=rel, line=k + 1, col=m.start(1) + 1,
+                            rule="undeclared-assignment", severity="error",
+                            snippet=lines[k].rstrip()
+                            + "   [%s never declares %s]" % (routine, name),
+                            memory="altium_wrong_api_identifier_family.md",
+                        ))
     return findings
 
 

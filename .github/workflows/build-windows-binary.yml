@@ -1,0 +1,66 @@
+name: Build Windows binary
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-binary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Build and install the release wheel
+        shell: pwsh
+        run: |
+          python -m pip install build pyinstaller
+          python -m build --wheel
+          $wheels = @(Get-ChildItem dist\eda_agent-*.whl)
+          if ($wheels.Count -ne 1) { throw 'expected exactly one wheel' }
+          python -m pip install $wheels[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Bundle data from the installed wheel, including the DelphiScript
+      # project, rather than copying only a few files from the checkout.
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm --clean --onefile --name eda-agent --collect-data eda_agent --collect-submodules eda_agent scripts/eda_agent_exe.py
+
+      - name: Check executable and bundled scripts
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path dist\eda-agent.exe
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Onefile removes its extraction directory on exit, so verify the
+          # package data through install-scripts while the process is alive.
+          $copy = Join-Path $env:RUNNER_TEMP 'eda-agent-scripts-smoke'
+          & $exe install-scripts --dest $copy --force
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($name in @('Altium_API.PrjScr', 'Main.pas', 'StatusForm.dfm')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $copy $name))) {
+              throw "install-scripts did not copy $name"
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eda-agent-windows-binary
+          path: dist/eda-agent.exe
+          if-no-files-found: error
