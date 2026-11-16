@@ -80,6 +80,18 @@ def _registered(monkeypatch, bridge):
     from eda_agent import checkpoint
     from eda_agent.tools import application
     monkeypatch.setattr(checkpoint, "CheckpointStore", _Store)
+
+    # Upstream's checkpoints are written and put back by Altium itself
+    # (take / put_back); the transaction only has to call them.
+    async def take(_bridge, store, _project_dir, **_kwargs):
+        return store.create()
+
+    async def put_back(_bridge, store, checkpoint_id, project_dir, *,
+                       project_path="", prune_added=False):
+        return store.restore(checkpoint_id, project_dir, prune_added=prune_added)
+
+    monkeypatch.setattr(checkpoint, "take", take)
+    monkeypatch.setattr(checkpoint, "put_back", put_back)
     monkeypatch.setattr(application, "get_bridge", lambda: bridge)
     mcp = _Mcp()
     application.register_application_tools(mcp)

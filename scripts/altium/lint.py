@@ -555,7 +555,17 @@ RULE_LAYERSET_OBJECT_FILTER = LineRule(
 )
 
 
+RULE_PASCAL_IN_OPERATOR = LineRule(
+    name="unsupported-pascal-in-operator",
+    pattern=re.compile(r"\b(?:if|while|until)\b[^;\r\n]*\bin\b", re.IGNORECASE),
+    severity="error",
+    memory="https://www.altium.com/documentation/altium-designer/scripting/delphiscript/functions",
+    description="DelphiScript rejects A in B with 'Then expected'; use InSet(A, B).",
+)
+
+
 LINE_RULES = [
+    RULE_PASCAL_IN_OPERATOR,
     RULE_EMPTY_LITERAL_ARG,
     RULE_LAYERSET_OBJECT_FILTER,
     RULE_INSERT_INDEX,
@@ -1028,7 +1038,10 @@ def strip_comments_and_strings(line: str) -> str:
 # ---------------------------------------------------------------------------
 
 def lint_file(path: str) -> list[Finding]:
-    rel = os.path.relpath(path, SCRIPT_DIR)
+    try:
+        rel = os.path.relpath(path, SCRIPT_DIR)
+    except ValueError:      # a file on another drive has no relative path
+        rel = path
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
     raw_lines = text.split("\n")

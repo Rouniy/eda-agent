@@ -623,6 +623,9 @@ async def read_live_stackup(bridge) -> Any:
     """The focused board's stackup, with the dielectric taken from its
     physical stack where the stackup reply carries none."""
     from ..emc.stack import fill_dielectrics, stack_from_stackup
+    # Read bare on purpose: the fill here sums every dielectric between two
+    # copper layers (core plus prepreg), which the line models need; the
+    # shared reader in bridge.stackup takes the first one only.
     st = await bridge.send_command_async("pcb.get_layer_stackup", {})
     if not isinstance(st, dict) or not st.get("layers"):
         return st

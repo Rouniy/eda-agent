@@ -69,7 +69,10 @@ with open(OUTPUT, 'w', encoding='utf-8') as out:
     out.write(header)
     for fname in FILES:
         path = os.path.join(SCRIPT_DIR, fname)
-        with open(path, 'r', encoding='utf-8') as f:
+        # utf-8-sig: a source saved with a byte-order mark must not leave
+        # the mark in the middle of the bundle, where Altium reads it as
+        # a character of the code.
+        with open(path, 'r', encoding='utf-8-sig') as f:
             content = f.read()
         out.write(f'{{=== {fname} ===}}\n')
         out.write(content)

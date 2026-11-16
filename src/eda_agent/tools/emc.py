@@ -44,7 +44,8 @@ async def _load_board(expect_file: str, board_json_path: str, stackup_json_path:
         source = "live"
         if not stackup_json_path:
             try:
-                reply = await get_bridge().send_command_async("pcb.get_layer_stackup", {})
+                from ..bridge.stackup import layer_stackup
+                reply = await layer_stackup(get_bridge())
                 if isinstance(reply, dict) and reply.get("layers"):
                     stackup = reply
             except Exception:  # noqa: BLE001 - fall back to the assumed stack

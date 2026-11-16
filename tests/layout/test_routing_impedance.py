@@ -157,4 +157,6 @@ def test_every_reader_of_the_stack_goes_through_the_fill():
                              f.read_text(encoding="utf-8")):
             direct.append(f.relative_to(root).as_posix())
     # The outjob reads only the layer ids, which the fill does not touch.
-    assert direct == ["tools/project.py"]
+    # The SI reader (this fork) fills the reply itself, summing every
+    # dielectric between two copper layers.
+    assert sorted(direct) == ["tools/project.py", "tools/si.py"]
