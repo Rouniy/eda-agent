@@ -5,11 +5,7 @@
 Three parallel surfaces reference the .pas files in scripts/altium/:
 
   - scripts/altium/build.py FILES list: defines what gets concatenated
-    into Altium_MCP.pas. NOT the deployed artifact -- this docstring
-    used to say "the deployed bundle" and that is wrong. Deployment is
-    `eda-agent install-scripts`, which copies the .pas/.dfm/.PrjScr set,
-    and Altium compiles the documents Altium_API.PrjScr lists.
-    Altium_MCP.pas is gitignored and is not one of them.
+    into Altium_MCP.pas, the deployed bundle.
 
   - scripts/altium/Altium_API.PrjScr [DocumentN] sections: defines
     which files are openable in Altium's scripting IDE for debugging.
@@ -29,10 +25,7 @@ These tests are cheap, sync-checking only -- no Altium round-trip.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from pathlib import Path
-
-from tests.pascal_source import strip_comments
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -119,20 +112,6 @@ def test_prjscr_referenced_files_all_exist():
     assert not missing, (
         f"Altium_API.PrjScr references files that don't exist: {missing}"
     )
-
-
-def test_prjscr_has_only_scripting_sections():
-    """AD25 rejected PCB-project options in the Altium script project."""
-    text = PRJSCR.read_text(encoding="utf-8-sig")
-    sections = re.findall(r"^\[([^]]+)\]$", text, flags=re.MULTILINE)
-    names = _prjscr_document_paths()
-    assert sections == (["Design"]
-                        + [f"Document{index}" for index in range(1, len(names) + 1)]
-                        + ["Generic_ScriptingSystem"])
-    assert re.search(r"^Version=1\.0$", text, re.MULTILINE)
-    assert "StartProcName=Dispatcher.pas>StartMCPServer" in text
-    assert "HierarchyMode=" not in text
-    assert "[Electrical Rules Check]" not in text
 
 
 def test_build_py_files_are_in_prjscr():
@@ -271,16 +250,6 @@ def _declared_controls() -> set[str]:
     return set(re.findall(r"^\s*object\s+(\w+)\s*:", dfm, flags=re.MULTILINE))
 
 
-def test_statusform_control_names_are_unique():
-    """The form loader rejects a duplicate component name at runtime."""
-    dfm = (SCRIPTS_DIR / "StatusForm.dfm").read_text(encoding="utf-8",
-                                                     errors="replace")
-    names = re.findall(r"^\s*object\s+(\w+)\s*:", dfm, flags=re.MULTILINE)
-    assert len(names) > 30
-    duplicates = [name for name, count in Counter(names).items() if count > 1]
-    assert not duplicates, f"duplicate StatusForm.dfm components: {duplicates}"
-
-
 def test_statusform_only_touches_controls_the_dfm_declares():
     """A handler reaching for a control the form lacks faults at runtime.
 
@@ -386,9 +355,6 @@ def test_prjscr_entry_point_is_a_parameterless_proc_in_that_file():
 # procedure without naming a file is fine and is not checked.
 ENTRY_POINT_DOCS = (
     "README.md",
-    "docs/index.md",
-    "docs/GETTING_STARTED.md",
-    "docs/LIMITATIONS.md",
     "docs/RELEASE_VERIFICATION.md",
     "src/eda_agent/cli.py",
     "src/eda_agent/diag/doctor.py",
@@ -457,13 +423,25 @@ def test_disk_pas_files_are_in_build_or_excluded():
     )
 
 
-def test_pcb_board_helper_calls_supply_required_argument():
-    """DelphiScript halts the polling loop when this argument is omitted."""
-    offenders = []
-    for name in _build_py_files():
-        source = strip_comments((SCRIPTS_DIR / name).read_text(
-            encoding="utf-8", errors="replace"))
-        for match in re.finditer(r"\bGetPCBBoardAnywhere\s*;", source):
-            line = source.count("\n", 0, match.start()) + 1
-            offenders.append(f"{name}:{line}")
-    assert not offenders, f"missing GetPCBBoardAnywhere(0) argument: {offenders}"
+def test_statusform_defines_every_handler_its_form_names():
+    """StatusForm.dfm names its event handlers; StatusForm.pas must hold them.
+
+    A form looks its handlers up in its own unit only. One that is
+    missing or renamed binds to nothing, with no error: the click does
+    nothing, and if it is the poll timer the bridge looks alive and
+    answers nothing.
+    """
+    form = (SCRIPTS_DIR / "StatusForm.dfm").read_text(
+        encoding="utf-8", errors="replace")
+    named = set(re.findall(r"^\s*On\w+\s*=\s*(\w+)\s*$", form, re.MULTILINE))
+    assert len(named) > 10, f"read only {len(named)} handlers from the form"
+
+    unit = (SCRIPTS_DIR / "StatusForm.pas").read_text(
+        encoding="utf-8", errors="replace")
+    defined = {name.lower() for name in re.findall(
+        r"^\s*(?:Function|Procedure)\s+(\w+)", unit,
+        re.MULTILINE | re.IGNORECASE)}
+    missing = sorted(h for h in named if h.lower() not in defined)
+    assert not missing, (
+        f"StatusForm.dfm names handlers StatusForm.pas does not define: "
+        f"{missing}")

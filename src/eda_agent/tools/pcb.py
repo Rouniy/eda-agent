@@ -158,7 +158,7 @@ _LSM_DIELECTRIC_TYPE = {"core": ("{136C62EF-1FA6-4897-AE71-7E797B632B92}", "1"),
                         "prepreg": ("{1A79611A-039D-4D40-A204-53C26C50F8B5}", "2")}
 
 
-async def sync_stack_manager(bridge: Any, board_path: str,
+async def sync_stack_manager(bridge: Any, board_path: str = "",
                              dry_run: bool = False) -> dict[str, Any]:
     """Write the board's stack values into the Layer Stack Manager's own copy.
 
@@ -170,8 +170,9 @@ async def sync_stack_manager(bridge: Any, board_path: str,
     """
     try:
         lsm = await bridge.send_command_async(
-            "pcb.layer_stack_manager", {"include_model": "records",
-                                        "board_path": board_path})
+            "pcb.layer_stack_manager",
+            {"include_model": "records", "board_path": board_path} if board_path
+            else {"include_model": "records"})
     except AltiumCommandError as exc:
         if getattr(exc, "code", "") != "UNSUPPORTED_VERSION":
             raise

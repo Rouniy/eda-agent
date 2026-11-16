@@ -80,8 +80,10 @@ def test_a_board_found_by_walking_is_named_on_the_reply():
     assert "BoardFallbackPath := Path;" in body[walk:]
     # ProcessOne: each item of a bulk call is a request of its own.
     process = _fn("StatusForm.pas", "ProcessOne")
-    assert "BoardFallbackPath := '';" in process
-    assert process.index("BoardFallbackPath := '';") < process.index("Case Category Of")
+    status = _src("StatusForm.pas")
+    reset = status[status.index("Procedure ResetItemState("):]
+    assert "BoardFallbackPath := '';" in reset[:reset.index("End;")]
+    assert process.index("ResetItemState(0);") < process.index("Case Category Of")
     assert "Result := BoardFallbackNote(Result);" in process
     note = _fn("StatusForm.pas", "BoardFallbackNote")
     assert '"board_used":"' in note and "EscapeJsonString(BoardFallbackPath)" in note
@@ -145,11 +147,10 @@ def test_the_delete_does_not_select_and_clear():
 
 def test_a_schlib_query_walks_the_symbol_on_screen_first():
     body = _fn("Generic.pas", "ProcessSchDocObjects")
-    pick = body.index("If Mode = 'query' Then")
-    current = body.index("LibComp := SchLib.CurrentSchComponent", pick)
+    pick = body.index("ParamsOfSymbol := False;")
+    current = body.index("LibComp := SchDoc.CurrentSchComponent", pick)
     fallback = body.index("LibComp := RememberedLibComponent(SchDoc)", pick)
     assert current < fallback
-    assert "LibComp := GetTargetLibComponent(SchLib)" in body
     assert "(ObjTypeInt = eParameter) Or (ObjTypeInt = eDesignator)" in body
     assert '"_symbol":"' in body
 

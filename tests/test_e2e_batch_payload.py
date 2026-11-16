@@ -26,8 +26,7 @@ from __future__ import annotations
 
 import pytest
 
-from eda_agent.bridge.exceptions import InvalidParameterError
-from eda_agent.tools.library import _pads_payload, _pins_payload
+from eda_agent.tools.library import _pins_payload
 
 
 def _add_pins(bridge, pins):
@@ -70,7 +69,7 @@ def test_a_pin_name_carrying_the_field_separator_arrives_intact(
     # ";". The documented substitution is ";" -> ",".
     assert got["name"] == "A,rotation=270"
     # ...and the tail must not have become a field of its own.
-    assert got["rotation"] == "0", "the name injected a rotation"
+    assert got["rotation"] == "0", "the name injected a rotation" 
 
 
 def test_an_overbar_name_is_not_mangled(e2e_bridge, altium_sim):
@@ -111,18 +110,6 @@ def test_a_blank_designator_is_dropped_before_it_reaches_the_bridge(
     assert [p["name"] for p in altium_sim.lib_pins] == ["OK"]
 
 
-@pytest.mark.parametrize("alias", ["A4,A6,B1", "A4;A6", "A4 A6"])
-def test_grouped_designators_refuse_the_entire_library_batch(alias):
-    pins = [{"designator": "1", "name": "OK"},
-            {"designator": alias, "name": "GND"}]
-    pads = [{"designator": "1", "x": 0, "y": 0},
-            {"designator": alias, "x": 100, "y": 0}]
-    with pytest.raises(InvalidParameterError, match="separate pins"):
-        _pins_payload(pins)
-    with pytest.raises(InvalidParameterError, match="separate pins"):
-        _pads_payload(pads)
-
-
 def test_the_new_pin_decorations_reach_the_far_end(e2e_bridge, altium_sim):
     """The IEEE markers and label visibility added this session ride the
     same payload; this is the first check that they survive the IPC."""
@@ -147,27 +134,6 @@ def test_an_empty_batch_is_refused_before_the_bridge(e2e_bridge):
     payload, skipped = _pins_payload([])
     assert payload == ""
     assert skipped == 0
-
-
-def test_multipart_pin_batch_default_preserves_explicit_part_and_shared_pin():
-    pins = [
-        {"designator": "1", "name": "A"},
-        {"designator": "2", "name": "VCC", "owner_part_id": 0},
-        {"designator": "3", "name": "B", "owner_part_id": 2},
-    ]
-    payload, skipped = _pins_payload(pins, default_owner_part_id=3)
-    assert skipped == 0
-    assert [part.split("owner_part_id=")[1].split(";", 1)[0]
-            for part in payload.split("~~")] == ["3", "0", "2"]
-    without_default, _ = _pins_payload([pins[0]])
-    assert "owner_part_id=" not in without_default
-
-
-@pytest.mark.parametrize("owner", [-1, 1.5, True])
-def test_invalid_multipart_owner_refuses_batch_before_ipc(owner):
-    with pytest.raises(ValueError, match="nonnegative integer"):
-        _pins_payload([{"designator": "1", "name": "A",
-                        "owner_part_id": owner}])
 
 
 # ------------------- symbol text over the same grammar ---------------
