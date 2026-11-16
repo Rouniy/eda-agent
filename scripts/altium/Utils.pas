@@ -2497,6 +2497,9 @@ Begin
     _PropertyDiagStr := '';
     _DeleteFaultStr := '';
     _SchWritesLanded := 0;
+    _PropertyWrites := 0;
+    _PropCallRefused := False;
+    _SetsRejected := 0;
 End;
 
 Procedure NoteSchWriteLanded(Dummy : Integer);

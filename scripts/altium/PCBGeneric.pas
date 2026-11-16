@@ -1311,6 +1311,7 @@ Var
     Arc   : IPCB_Arc;
     Pad   : IPCB_Pad;
     Via   : IPCB_Via;
+    Fill  : IPCB_Fill;
     Comp  : IPCB_Component;
     Txt   : IPCB_Text;
     Rgn   : IPCB_Region;
@@ -1320,6 +1321,7 @@ Var
     Oid   : Integer;
     PosVal : Integer;
     PosFound : Boolean;
+    Have : Boolean;
 Begin
     Result := '';
     Try
@@ -1421,7 +1423,7 @@ Begin
         Begin
             Result := BoolToJsonStr(Not Obj.Moveable);
         End
-        Else If PropName = 'Component' Then
+        Else If (PropName = 'Component') Or (PropName = 'ComponentDesignator') Then
         Begin
             { The owning footprint's designator; empty for a free primitive. }
             If Obj.InComponent Then
@@ -1600,6 +1602,10 @@ Begin
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Pattern; End;
         End
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := IntToStr(Comp.ComponentKind); End;
+        End
         Else If PropName = 'SourceDesignator' Then
         Begin
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.SourceDesignator; End;
@@ -1636,10 +1642,8 @@ Begin
             { so a Name=1 filter matched no pad at all.                        }
             If Oid = eComponentObject Then Begin Comp := Obj; Result := Comp.Name.Text; End;
             If Oid = ePadObject Then Begin Pad := Obj; Result := Pad.Name; End;
-            { A region's Name: a plain string (IterateRegions.pas reads it). }
-            If Oid = eRegionObject Then Begin Rgn := Obj; Result := Rgn.Name; End;
-            { A polygon's Name, as the Polygon Pour dialog shows it (#125). }
             If Oid = ePolyObject Then Begin Poly := Obj; Result := Poly.Name; End;
+            If Oid = eRegionObject Then Begin Rgn := Obj; Result := Rgn.Name; End;
         End
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text') Then
         Begin
@@ -1714,11 +1718,9 @@ Begin
             If Oid = ePolyObject Then
             Begin Poly := Obj; Result := BoolToJsonStr(Poly.RemoveIslandsByArea); End;
         End
-        { The rest of the Polygon Pour dialog (issue #125), see PCBGetPoly. }
         Else If (PropName = 'Grid') Or (PropName = 'TrackSize') Or
                 (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
-                (PropName = 'NeckWidthThreshold') Or
-                (PropName = 'IslandAreaThreshold') Or
+                (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
                 (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
                 (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
                 (PropName = 'Poured') Then
@@ -1767,6 +1769,18 @@ Begin
                 Else If Rgn.Kind = eRegionKind_Cavity Then Result := 'cavity'
                 Else Result := 'unknown';
             End;
+        End
+
+        { Nothing above carried the name. These 37 are declared on
+          IPCB_Primitive itself, which is what Obj already is, so no cast
+          and no ObjectId test stand between any board object and them.
+          Have stays False for a name neither side carries, which is the
+          old behaviour: empty string. }
+        Else
+        Begin
+            Have := False;
+            Result := GetPCBPrimitiveGenerated(Obj, PropName, Have);
+            If Not Have Then Result := '';
         End;
     Except
         Result := '';
@@ -2613,7 +2627,21 @@ Begin
     { Kind, RegionKind, the three pour options and the two body heights  }
     { were answered by the getter and refused here, so a query for them  }
     { was told they do not exist: the lag the list below warns about.    }
+    {                                                                    }
+    { The generated names are asked for first, from the routine the      }
+    { generator writes beside the reads themselves. 37 reads went into   }
+    { GetPCBProperty once without being added here, and every one was    }
+    { refused as "not a PCB property": the same lag, on a chain nobody   }
+    { had typed by hand. Generating the test from the same list the      }
+    { reads come from makes that impossible rather than merely noticed.  }
+    If IsGeneratedPCBProperty(PropName) Then
+    Begin
+        Result := True;
+        Exit;
+    End;
     Result :=
+        (PropName = 'SolderMaskBottomExpansion_mm') Or (PropName = 'UseSeparateMaskExpansions') Or (PropName = 'Address') Or (PropName = 'ComponentDesignator') Or (PropName = 'PadName') Or (PropName = 'X1_mm') Or (PropName = 'Y1_mm') Or (PropName = 'X2_mm') Or (PropName = 'Y2_mm') Or (PropName = 'Width_mm') Or (PropName = 'X_mm') Or (PropName = 'Y_mm') Or (PropName = 'TopXSize_mm') Or (PropName = 'TopYSize_mm') Or (PropName = 'HoleSize_mm') Or (PropName = 'SolderMaskExpansion_mm') Or (PropName = 'SolderMaskExpansionMode') Or
+        (PropName = 'XCenter_mm') Or (PropName = 'YCenter_mm') Or (PropName = 'Radius_mm') Or (PropName = 'BoundsLeft_mm') Or (PropName = 'BoundsBottom_mm') Or (PropName = 'BoundsRight_mm') Or (PropName = 'BoundsTop_mm') Or (PropName = 'IsHidden') Or
         (PropName = 'ObjectId') Or (PropName = 'X') Or (PropName = 'Y') Or
         (PropName = 'Layer') Or (PropName = 'Descriptor') Or
         (PropName = 'DetailString') Or (PropName = 'DRCError') Or
@@ -2630,13 +2658,21 @@ Begin
         (PropName = 'Text') Or (PropName = 'Pattern') Or
         (PropName = 'Designator') Or (PropName = 'Designator.Text') Or
         (PropName = 'Comment') Or (PropName = 'Comment.Text') Or
-        (PropName = 'SourceDesignator') Or
-        (PropName = 'SourceUniqueId') Or (PropName = 'SourceHierarchicalPath') Or
-        (PropName = 'SourceLibReference') Or (PropName = 'SourceFootprintLibrary') Or
+        (PropName = 'SourceDesignator') Or (PropName = 'ComponentKind') Or
+        (PropName = 'SourceUniqueId') Or
+        (PropName = 'SourceHierarchicalPath') Or
         (PropName = 'SourceComponentLibrary') Or
+        (PropName = 'SourceLibReference') Or
+        (PropName = 'SourceFootprintLibrary') Or
         (PropName = 'Kind') Or (PropName = 'RegionKind') Or
         (PropName = 'RemoveDead') Or (PropName = 'RemoveNarrowNecks') Or
         (PropName = 'RemoveIslandsByArea') Or
+        (PropName = 'Grid') Or (PropName = 'TrackSize') Or
+        (PropName = 'MinTrack') Or (PropName = 'ArcApproximation') Or
+        (PropName = 'NeckWidthThreshold') Or (PropName = 'IslandAreaThreshold') Or
+        (PropName = 'PolyHatchStyle') Or (PropName = 'PourOver') Or
+        (PropName = 'UseOctagons') Or (PropName = 'PourIndex') Or
+        (PropName = 'Poured') Or
         (PropName = 'StandoffHeight') Or (PropName = 'OverallHeight') Or
         (PropName = 'BodyOpacity3D') Or
         (PropName = 'InComponent') Or (PropName = 'Component') Or
@@ -2716,17 +2752,18 @@ End;
 
 Function KnownPCBPropertyList(Dummy : Integer) : String;
 Begin
-    Result := 'ObjectId, X, Y, Layer, Descriptor, DetailString, DRCError, '
-        + 'UniqueID, IsElectricalPrim, Selected, Net, X1, Y1, '
+    Result := 'XCenter_mm, YCenter_mm, Radius_mm, BoundsLeft_mm, BoundsBottom_mm, BoundsRight_mm, BoundsTop_mm, IsHidden, Address, ComponentDesignator, PadName, X1_mm, Y1_mm, X2_mm, Y2_mm, Width_mm, X_mm, Y_mm, TopXSize_mm, TopYSize_mm, HoleSize_mm, SolderMaskExpansion_mm, SolderMaskExpansionMode, ObjectId, X, Y, Layer, Descriptor, DetailString, DRCError, UniqueID, IsElectricalPrim, Selected, Net, X1, Y1, '
         + 'X2, Y2, Width, Radius, StartAngle, EndAngle, XCenter, YCenter, '
         + 'HoleSize, Size, TopShape, TopXSize, TopYSize, Rotation, Name, '
-        + 'Text, Pattern, Designator, Comment, SourceDesignator, '
-        + 'SourceUniqueId, SourceHierarchicalPath, SourceLibReference, '
-        + 'SourceFootprintLibrary, SourceComponentLibrary, '
+        + 'Text, Pattern, Designator, Comment, SourceDesignator, ComponentKind, '
+        + 'SourceUniqueId, SourceHierarchicalPath, SourceComponentLibrary, '
+        + 'SourceLibReference, SourceFootprintLibrary, '
         { Everything the reader above answers. A list that lags the reader
           tells a caller a property does not exist when it does, which is
           how the pour flags were reported as unreachable. }
         + 'Kind, RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea, '
+        + 'Grid, TrackSize, MinTrack, ArcApproximation, NeckWidthThreshold, '
+        + 'IslandAreaThreshold, PolyHatchStyle, PourOver, UseOctagons, PourIndex, Poured, '
         + 'StandoffHeight, OverallHeight, ModelHeight, BodyOpacity3D, InComponent, Component, '
         + 'InPolygon, IsKeepout, IsKeepoutForCopper, IsKeepoutForTrack, '
         + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
@@ -2764,7 +2801,9 @@ Begin
         + 'TextureRotation, IsPreRoute, UserRouted, PasteMaskExpansionMode, '
         + 'SolderMaskExpansionMode, PasteMaskUsePercent, PasteMaskPercent, '
         + 'PasteMaskEnabled, DrillType, IsVirtualPin, FlippedOnLayer, '
-        + 'BorderSpaceType';
+        + 'BorderSpaceType, '
+        { The generated reads, from the generator rather than retyped. }
+        + GeneratedPCBPropertyList(0);
 End;
 
 Function BuildObjectJsonPCB(Obj : IPCB_Primitive; PropsStr : String) : String;

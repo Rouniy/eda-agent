@@ -23948,8 +23948,8 @@ Begin
     End;
 
     SchBeginEdit(SchDoc, '');
-    Try SchDoc.AddSchObject(Comp); Except NoteWriteFailed('add component to sheet'); End;
-    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('component MoveToXY'); End;
+    Try SchDoc.AddSchObject(Comp); Except NoteWriteFailed('.AddSchObject('); End;
+    Try Comp.MoveToXY(MilsToCoordF(X), MilsToCoordF(Y)); Except NoteWriteFailed('.MoveToXY('); End;
     OrientationVal := 0;
     If Rotation = 90 Then OrientationVal := 1;
     If Rotation = 180 Then OrientationVal := 2;
