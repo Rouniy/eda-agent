@@ -376,11 +376,6 @@ Begin
         InFlightCommand := Command;
         InFlightStartMs := GetTickCount;
         InFlightActive := True;
-        If SELECTED_PROJECT_READ_ONLY Then
-        Begin
-            cmb_Project.Enabled := False;
-            btn_UseProject.Enabled := False;
-        End;
         SpinnerFrame := 0;
         Try tmr_Spinner.Enabled := True; Except End;
         Try
@@ -390,17 +385,18 @@ Begin
             lbl_Status.Font.Color := COLOR_TEXT_BODY;
         Except End;
     Except End;
+    { The project picker is locked while a request runs (this fork). }
+    If SELECTED_PROJECT_READ_ONLY Then
+    Begin
+        Try cmb_Project.Enabled := False; Except NoteWriteFailed('cmb_Project.Enabled'); End;
+        Try btn_UseProject.Enabled := False; Except NoteWriteFailed('btn_UseProject.Enabled'); End;
+    End;
 End;
 
 Procedure ResetInFlight(Dummy : Integer);
 Begin
     Try
         InFlightActive := False;
-        If SELECTED_PROJECT_READ_ONLY Then
-        Begin
-            cmb_Project.Enabled := True;
-            btn_UseProject.Enabled := True;
-        End;
         InFlightCommand := '';
         Try tmr_Spinner.Enabled := False; Except End;
         Try
@@ -419,6 +415,12 @@ Begin
             End;
         Except End;
     Except End;
+    { The project picker is locked while a request runs (this fork). }
+    If SELECTED_PROJECT_READ_ONLY Then
+    Begin
+        Try cmb_Project.Enabled := True; Except NoteWriteFailed('cmb_Project.Enabled'); End;
+        Try btn_UseProject.Enabled := True; Except NoteWriteFailed('btn_UseProject.Enabled'); End;
+    End;
 End;
 
 

@@ -72,7 +72,7 @@ def test_model_height_is_advertised_and_a_length():
 
 
 def test_get_components_reports_both_heights_and_picks_neither():
-    body = load(_PCB)["PCB_GetComponents"]
+    body = load(_PCB)["PCB_GetComponentsForBoard"]
     assert "ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount, StepCount)" in body
     assert "HeightMils := ParamMils;" in body
     assert "HeightMils := MaxMils" not in body
@@ -85,7 +85,7 @@ def test_get_components_reports_both_heights_and_picks_neither():
 
 
 def test_an_unknown_mode_is_refused():
-    body = load(_PCB)["PCB_GetComponents"]
+    body = load(_PCB)["PCB_GetComponentsForBoard"]
     assert "'BAD_BODY_HEIGHTS'" in body
     assert "If BodyMode = '' Then BodyMode := 'max';" in body
 

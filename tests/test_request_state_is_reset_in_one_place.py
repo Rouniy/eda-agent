@@ -57,16 +57,15 @@ SESSION = {
     "RenewRequested", "SpinnerFrame", "InFlightCommand", "InFlightStartMs",
     "InFlightActive", "FilterText", "PerfNames", "PerfCountStrs",
     "PerfTotalStrs", "PerfMaxStrs", "LastActivityTick", "LastPingMs",
-    "OpenWebEnabled", "StatsFileStamp", "SavedHintHidePause", "StatusStartTick",
-    "StatusRequestCount", "StatusLastCommand", "StatusTotalAltiumMs", "LogPos",
+    "OpenWebEnabled", "SavedHintHidePause", "StatusStartTick",
+    "StatusRequestCount", "StatusLastCommand", "StatusTotalAltiumMs",
     # Compile cache and the selected-project handoff persist between calls.
     "LastCompileAction", "SelectedCompileProject", "SelectedCompileReady",
     # UI grant indicators and probe counters live with the bridge window.
-    "ParamGrantShown", "PlaceGrantShown", "ProbeStartMs", "ProbeTickCount",
+    "ParamGrantShown", "PlaceGrantShown",
     # Save counters are cleared by each save operation.
     "SaveWritten",
     # The app icon, handed to the form once per show.
-    "AppIconDone",
 }
 
 

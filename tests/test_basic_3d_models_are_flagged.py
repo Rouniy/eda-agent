@@ -75,7 +75,7 @@ def test_the_library_read_counts_step_bodies():
 def test_the_board_read_counts_step_bodies():
     scan = load(_ALTIUM / "PCBGeneric.pas", minimum=20)["ComponentBodyScan"]
     assert "If Kind = 'step' Then Inc(StepCount);" in scan
-    body = load(_ALTIUM / "PCB.pas")["PCB_GetComponents"]
+    body = load(_ALTIUM / "PCB.pas")["PCB_GetComponentsForBoard"]
     assert "'\"step_body_count\":' + IntToStr(StepCount)" in body
 
 

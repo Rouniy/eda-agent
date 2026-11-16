@@ -553,6 +553,12 @@ Begin
     End;
     If SaveBeforeClose Then
     Begin
+        If SaveHeldBack(FilePath) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SAVING_OFF',
+                'Saving is switched off on the bridge dashboard');
+            Exit;
+        End;
         AgeBefore := -1;
         Try If FileExists(FilePath) Then AgeBefore := FileAge(FilePath); Except End;
         Try ServerDoc.DoFileSave(''); Except
