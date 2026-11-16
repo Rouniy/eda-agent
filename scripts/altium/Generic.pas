@@ -17877,7 +17877,17 @@ Begin
 
     SchDoc := Nil;
     If SheetPath <> '' Then
+    Begin
         Try SchDoc := SchServer.GetSchDocumentByPath(SheetPath); Except End;
+        { A named sheet that is not loaded is refused: falling back to the  }
+        { active sheet would stamp the wrong document's components.         }
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'SHEET_NOT_LOADED',
+                'No SchDoc loaded at ' + SheetPath + '. Open it first.');
+            Exit;
+        End;
+    End;
     If SchDoc = Nil Then
         SchDoc := SchServer.GetCurrentSchDocument;
     If SchDoc = Nil Then

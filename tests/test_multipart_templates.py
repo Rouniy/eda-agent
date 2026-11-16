@@ -215,7 +215,9 @@ def test_the_other_sheet_pin_readers_filter_the_same_way(func):
 
 
 def test_the_helper_is_the_same_rule():
-    body = load(_ALTIUM / "Generic.pas")["PinShownOn"]
+    # In Utils.pas here: units before Generic.pas call it too, and
+    # DelphiScript cannot call a routine declared further down.
+    body = load(_ALTIUM / "Utils.pas")["PinShownOn"]
     assert "Result := (Owner = 0) Or (Owner = PartId);" in body
 
 

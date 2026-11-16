@@ -35,7 +35,9 @@ def test_name_falls_back_to_the_harness_description():
     reader = _body("GetSchProperty")
     branch = reader[reader.index("Else If PropName = 'Name'"):]
     branch = branch[:branch.index("Else If PropName = 'LibReference'")]
-    assert "SchHarnessName(Obj.GetState_DescriptionString)" in branch
+    # upstream's name for the same parser, which calls SchHarnessName
+    assert "HarnessNameFromDescription(Obj.GetState_DescriptionString)" in branch
+    assert "Result := SchHarnessName(Desc);" in _body("HarnessNameFromDescription")
     # Unreadable only when the fallback found nothing either.
     assert "If Result = '' Then NotePropertyDiag('unreadable', PropName);" in branch
 

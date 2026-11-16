@@ -41,6 +41,8 @@
   /* The rail stays dark in both themes. */
   --bar:#1C2A35; --bar-ink:#F5F6F2; --bar-dim:#AEB8BF; --bar-soft:#C9D2D8;
   --bar-rule:#3B4D5B; --bar-rule2:#4B5F6E; --bar-hover:#7F93A3; --bar-mark:#9CC3FF;
+  --bar-bad:#E0452C; --src-none:#7C868D; --src-central:#8FC79A; --src-project:#D9B45A;
+  --src-env:#7FB3C9; --halo:rgba(36,89,184,.18);
   --f:"Bahnschrift", "DIN Alternate", "Roboto Condensed", "Arial Narrow", sans-serif;
   --mono:"Cascadia Mono", Consolas, monospace;
   --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;
@@ -55,21 +57,7 @@
   --field:#12181C; --sel:#22364F; --sel2:#203349; --pick:#3D3220; --go-hover:#C9D3D9;
   --glass:rgba(27,34,39,.92); --shade:rgba(0,0,0,.55); --scrim:rgba(0,0,0,.6);
   --bar:#0C1013; --bar-rule:#2E3A43; --bar-rule2:#3A4852;
-  color-scheme:dark;
-  /* Surfaces named for what they do, so the dark theme can recolour them. */
-  --rail:#1C2A35; --rail-fg:#F5F6F2; --field:#fff; --sel:#DCE6F5; --sel2:#E6EDF8; --hit:#FBF0DA;
-  --glass:rgba(245,246,242,.92); --go-hover:#2C3E4C; --shadow:rgba(28,42,53,.25); --veil:rgba(28,42,53,.35);
-  color-scheme:light;
-}
-/* Dark: the same drawing sheet under a dark lamp. Ink and paper swap, the
-   rail stays the darkest band, the board itself keeps its own colours.
-   Text contrast is WCAG AA (4.5:1 or better) on --paper and --film. */
-:root[data-theme="dark"] {
-  --film:#12171C; --paper:#1A2027; --paper2:#222A33; --ink:#E1E6EA; --ink2:#AEB8C0; --ink3:#8A959E;
-  --rule:#36424D; --rule2:#29323B;
-  --red:#FF7A63; --blue:#7EA6FF; --amber:#EBA845; --green:#62C08A;
-  --rail:#0B0F13; --rail-fg:#E8EBE5; --field:#12171C; --sel:#24364F; --sel2:#1F2E44; --hit:#3A311F;
-  --glass:rgba(26,32,39,.92); --go-hover:#FFFFFF; --shadow:rgba(0,0,0,.55); --veil:rgba(0,0,0,.55);
+  --halo:rgba(134,174,245,.22);
   color-scheme:dark;
 }
 * { box-sizing:border-box; }
@@ -320,13 +308,13 @@ table.grid a { color:var(--blue); }
   #nav { display:none; } #modes button { padding:0 7px; } #rail .mark { max-width:120px; }
 }
 /* Workspace: the profile in effect and where it comes from */
-#wsbtn { display:flex; align-items:center; gap:6px; align-self:center; background:none; border:1px solid #4B5F6E;
-  color:var(--rail-fg); font-size:12px; max-width:240px; padding:3px 9px; }
-#wsbtn:hover { border-color:#AEB8BF; }
-#wsbtn .dot { width:9px; height:9px; border-radius:50%; background:#7C868D; flex:0 0 auto; }
-#wsbtn[data-src="central"] .dot { background:#8FC79A; } #wsbtn[data-src="project"] .dot { background:#D9B45A; }
-#wsbtn[data-src="environment"] .dot { background:#7FB3C9; }
-#wsbtn.bad { border-color:#E0452C; }
+#wsbtn { display:flex; align-items:center; gap:6px; align-self:center; background:none; border:1px solid var(--bar-rule2);
+  color:var(--bar-ink); font-size:12px; max-width:240px; padding:3px 9px; }
+#wsbtn:hover { border-color:var(--bar-dim); }
+#wsbtn .dot { width:9px; height:9px; border-radius:50%; background:var(--src-none); flex:0 0 auto; }
+#wsbtn[data-src="central"] .dot { background:var(--src-central); } #wsbtn[data-src="project"] .dot { background:var(--src-project); }
+#wsbtn[data-src="environment"] .dot { background:var(--src-env); }
+#wsbtn.bad { border-color:var(--bar-bad); }
 #wsname { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ladder { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:var(--s2); margin-bottom:var(--s4); }
 .ladder .step { background:var(--paper); border:1px solid var(--rule); border-radius:4px; padding:8px 10px; min-width:0; }
@@ -481,7 +469,7 @@ ol.pipe .name { font-size:12px; font-weight:600; white-space:nowrap; overflow:hi
 ol.pipe .cnt { font-size:11px; color:var(--ink3); }
 ol.pipe li.cleared .dot { background:var(--green); border-color:var(--green); color:var(--paper); }
 ol.pipe li.cleared .name { color:var(--green); }
-ol.pipe li.current .dot { border-color:var(--blue); border-width:3px; color:var(--blue); background:var(--sel2); box-shadow:0 0 0 3px rgba(36,89,184,.18); }
+ol.pipe li.current .dot { border-color:var(--blue); border-width:3px; color:var(--blue); background:var(--sel2); box-shadow:0 0 0 3px var(--halo); }
 ol.pipe li.current .name { color:var(--blue); }
 ol.pipe li.off .dot { border-style:dashed; background:var(--paper2); }
 ol.pipe li.off .name { color:var(--ink3); font-weight:400; text-decoration:line-through; }

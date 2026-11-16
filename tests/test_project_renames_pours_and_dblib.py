@@ -279,11 +279,11 @@ def test_a_body_centre_needs_the_body_and_is_checked_after_the_move(monkeypatch,
                                                    center_x=10))
     assert no_body["ok"] is False and not bridge.sent
     moved = asyncio.run(tools["lib_set_3d_body"](footprint_name="F", library_path=str(lib),
-                                                 body_index=1, center_x=0.254, units="mm", dry_run=False))
+                                                 body_index=1, center_x=0.254, units="mm"))
     assert bridge.sent[-1][1]["center_x"] == "10.0" and "center_y" not in bridge.sent[-1][1]
     assert moved["moved_as_asked"] is True
     missed = asyncio.run(tools["lib_set_3d_body"](footprint_name="F", library_path=str(lib),
-                                                  body_index=1, center_x=11, dry_run=False))
+                                                  body_index=1, center_x=11))
     assert missed["moved_as_asked"] is False
     body = _routine("Library.pas", "Lib_Set3DBody")
     assert "Body.MoveByXY(" in body and "BodyCentre(Body, OrgX, OrgY, NowX, NowY)" in body

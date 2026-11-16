@@ -277,8 +277,8 @@ def test_modify_layer_brings_the_manager_in_step_after_the_write(monkeypatch):
 
 def test_a_rebuild_that_matches_brings_the_manager_in_step():
     text = Path(pcb_tools.__file__).read_text(encoding="utf-8")
-    body = text[text.index("async def pcb_build_stack("):
-                text.index("async def pcb_set_dielectric(")]
+    start = text.index("async def pcb_build_stack(")
+    body = text[start:text.index("    @mcp.tool()", start)]
     sync = body.index('result["stack_manager"] = await sync_stack_manager(bridge, board_path)')
     assert 'if ok:' in body[:sync]
 

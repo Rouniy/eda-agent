@@ -22,9 +22,8 @@ def test_the_handler_compiles_the_named_project():
 
 def test_the_runner_does_not_call_a_later_declared_reader():
     """DelphiScript cannot call a function declared further down."""
-    text = _GENERIC.read_text(encoding="utf-8")
-    assert text.index("Function Gen_RunERC(") < text.index(
-        "Function Gen_GetErcViolations(")
+    # The order of the two in the unit is free (the merged unit declares
+    # the reader first); what matters is that the runner does not call it.
     assert "Gen_GetErcViolations(" not in load(_GENERIC)["Gen_RunERC"]
 
 

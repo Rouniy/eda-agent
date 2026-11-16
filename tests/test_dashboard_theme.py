@@ -144,7 +144,11 @@ def test_the_dark_theme_recolours_every_colour_the_light_one_names():
     css = _page().split("<style>", 1)[1].split("</style>", 1)[0]
     light, dark = _block(css, ":root"), _block(css, ':root[data-theme="dark"]')
     colours = {k for k, v in light.items() if re.match(r"#|rgba?\(", v.strip())}
-    assert colours - {"--mask"} <= set(dark), sorted(colours - set(dark))
+    # The rail stays dark in both themes (upstream's palette), so its own
+    # colours and the dots drawn on it need no second value; nor the mask.
+    same_in_both = {c for c in colours
+                    if c.startswith(("--bar-", "--src-")) or c == "--mask"}
+    assert colours - same_in_both <= set(dark), sorted(colours - same_in_both - set(dark))
 
 
 def test_no_light_only_colour_is_written_into_a_rule():

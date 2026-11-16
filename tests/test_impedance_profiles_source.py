@@ -18,4 +18,4 @@ def test_impedance_profile_reader_uses_typed_sdk_interfaces():
     assert "GetImpedanceProfileCount" in body
     assert "read_errors" in body
     assert "ExtractFileName(Board.FileName)" in body
-    assert "'get_impedance_profiles':   Result := PCB_GetImpedanceProfiles" in functions["HandlePCBCommand"]
+    assert "'get_impedance_profiles':  Result := PCB_GetImpedanceProfiles" in functions["HandlePCBCommand"]

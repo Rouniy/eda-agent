@@ -52,7 +52,9 @@ def test_set_sch_property_brackets_each_write():
 
 
 def test_both_schematic_replies_use_it():
-    new = "And Not ((Mode = 'modify') And NothingWasWritten(SetStr)))"
+    # Upstream answers the same question from the count of writes that
+    # landed (SchCallModified); both schematic replies go through it.
+    new = "BoolToJsonStr(SchCallModified(IsMutating, TotalMatched, Mode))"
     assert GENERIC.count(new) == 2
     old = ("BoolToJsonStr(IsMutating And ((TotalMatched > 0) Or "
            "(Mode = 'create')))\n")
