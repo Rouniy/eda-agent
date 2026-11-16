@@ -4636,9 +4636,7 @@ Begin
             End;
         End;
 
-        { Deselect every board component, then select the matched ones.  }
-        { Components switched off in the Selection Filter would otherwise }
-        { stay unselected, silently (see PcbSelectFilterOff).             }
+        { Deselect every board component, then select the matched ones. }
         FilterWas := PcbSelectFilterOff(Board);
         PcbBeginEdit(0);
         Try
@@ -4682,7 +4680,6 @@ Begin
         Matches.Free;
     End;
 End;
-
 
 {..............................................................................}
 { CollectSelectedPCBPrims - Fill L with every board primitive of a kind in     }
@@ -19728,6 +19725,7 @@ Var
     Board : IPCB_Board;
     Comp : IPCB_Component;
     GrpIter : IPCB_GroupIterator;
+    Prim : IPCB_Primitive;
     Pad : IPCB_Pad;
     Net : IPCB_Net;
     PlacementsStr, BoardPathStr, OnePlace, Remaining, LoadStr : String;
@@ -19735,6 +19733,8 @@ Var
     UniqueIdStr, PadNetsStr, PadName, NetName, BadLayers : String;
     PlacedCount, FailedCount, SepPos, LabelsOff : Integer;
     X, Y : Double;
+    OldX, OldY, DX, DY, CenterX, CenterY : TCoord;
+    CenterCount : Integer;
     Rotation : Double;
     CompLayer : TLayer;
 Begin
@@ -19816,7 +19816,7 @@ Begin
             Comp.LoadFromLibrary(LoadStr);
             { Side, then turn, then origin: the origin is assigned last so it }
             { lands exactly, whatever the side and the turn did to it.      }
-            Comp.Layer := CompLayer;
+            Comp.Layer := eTopLayer;
             Comp.Rotation := Rotation;
             Comp.x := MilsToCoordF(X);
             Comp.y := MilsToCoordF(Y);
@@ -19831,6 +19831,51 @@ Begin
             Board.AddPCBObject(Comp);
             PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
                 PCBM_BoardRegisteration, Comp.I_ObjectAddress);
+
+            { Assign the registered component origin exactly once; setting
+              Comp.X/Y carries all grouped primitives with it. }
+            { A bottom-side component is flipped after this transaction has
+              committed, so Altium mirrors its grouped primitives. }
+            Comp.Layer := eTopLayer;
+            Comp.x := MilsToCoordF(X);
+            Comp.y := MilsToCoordF(Y);
+            Comp.Rotation := Rotation;
+            CenterX := 0; CenterY := 0; CenterCount := 0;
+            GrpIter := Comp.GroupIterator_Create;
+            GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Pad := GrpIter.FirstPCBObject;
+            While Pad <> Nil Do
+            Begin
+                CenterX := CenterX + Pad.X;
+                CenterY := CenterY + Pad.Y;
+                Inc(CenterCount);
+                Pad := GrpIter.NextPCBObject;
+            End;
+            Comp.GroupIterator_Destroy(GrpIter);
+            If CenterCount > 0 Then
+            Begin
+                DX := MilsToCoordF(X) - (CenterX Div CenterCount);
+                DY := MilsToCoordF(Y) - (CenterY Div CenterCount);
+                GrpIter := Comp.GroupIterator_Create;
+                GrpIter.AddFilter_ObjectSet(MkSet(ePadObject, eTrackObject,
+                    eArcObject, eFillObject, eRegionObject, eComponentBodyObject));
+                Prim := GrpIter.FirstPCBObject;
+                While Prim <> Nil Do
+                Begin
+                    Prim.BeginModify;
+                    Prim.MoveByXY(DX, DY);
+                    Prim.EndModify;
+                    Prim := GrpIter.NextPCBObject;
+                End;
+                Comp.GroupIterator_Destroy(GrpIter);
+            End;
+            { Board registration can clear source-link metadata populated on }
+            { a detached component. Stamp it again on the registered object. }
+            If UniqueIdStr <> '' Then
+            Begin
+                Try Comp.SourceUniqueId := UniqueIdStr; Except NoteWriteFailed('Component.SourceUniqueId'); End;
+                If Designator <> '' Then Try Comp.SourceDesignator := Designator; Except NoteWriteFailed('Component.SourceDesignator'); End;
+            End;
 
             If PadNetsStr <> '' Then
             Begin
@@ -19868,6 +19913,7 @@ Begin
     Result := BuildSuccessResponse(RequestId,
         '{"placed":' + IntToStr(PlacedCount)
         + ',"failed":' + IntToStr(FailedCount)
+        + ',"board_path":"' + EscapeJsonString(Board.FileName) + '"'
         + ',"unknown_layers":"' + EscapeJsonString(BadLayers) + '"'
         + ',"label_layers_unknown":' + IntToStr(LabelsOff)
         + ',"total":' + IntToStr(PlacedCount + FailedCount) + '}');
@@ -20427,7 +20473,16 @@ End;
 { PCB_FocusBoard - make a specific board the focused/current one, so the      }
 { GetPCBBoardAnywhere-based tools (get_components, delete, plan_placement,    }
 { render, ...) all operate on it. Essential when several PcbDocs are open.    }
-{ Params: board_path (the .PcbDoc to focus).                                  }
+{ Params: board_path (the .PcbDoc to focus; empty = whichever board is        }
+{ reachable).                                                                 }
+{                                                                              }
+{ ResolvePCBBoard only calls ShowDocument on its PATH branch. With an empty   }
+{ board_path, or a path that fails to load, it falls through to               }
+{ GetPCBBoardAnywhere -- a focus-INDEPENDENT lookup that restores the         }
+{ previous view. This tool used to report focused=true on those paths         }
+{ anyway, so a caller that focused a board by name and a caller that          }
+{ focused nothing got the same answer.                                        }
+{ Focus the resolved board here, on every path, and say whether it worked.    }
 {..............................................................................}
 
 Function PCB_FocusBoard(Params : String; RequestId : String) : String;
@@ -22406,6 +22461,8 @@ End;
 Function PCB_SetViaSoldermaskRelief(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
+    Workspace : IWorkspace;
+    FocusedDoc : IDocument;
     Iterator : IPCB_BoardIterator;
     Via : IPCB_Via;
     Prim : IPCB_Primitive;
@@ -22430,7 +22487,23 @@ Begin
       through the cache, and SolderMaskExpansion is never assigned on a
       via. Both sides are written, since the bottom value is stored even
       while the sides are linked and takes effect when they are unlinked. }
-    Board := GetPCBBoardAnywhere(0);
+    Workspace := GetWorkspace;
+    FocusedDoc := Nil;
+    If Workspace <> Nil Then
+        Try FocusedDoc := Workspace.DM_FocusedDocument; Except End;
+    If FocusedDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Focus the PcbDoc whose vias should be changed');
+        Exit;
+    End;
+    If UpperCase(FocusedDoc.DM_DocumentKind) <> 'PCB' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT_FOCUSED',
+            'Focus the PcbDoc whose vias should be changed');
+        Exit;
+    End;
+    Board := GetFocusedPCBBoard(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
@@ -22516,21 +22589,6 @@ Begin
             + 'Mask Expansion rule scoped IsVia covers every via at once '
             + 'instead, including vias placed later.')));
 End;
-
-{..............................................................................}
-{ PCB_SetViaTenting - set a board via's own Tenting Top / Bottom flags.        }
-{                                                                              }
-{ MEASURED on AD 26.11 (lib_set_via_properties): the tenting write is kept     }
-{ only while the via's mask expansion is manual; on a rule-driven via it is    }
-{ accepted and dropped. So a rule-driven mask is switched to manual first, at  }
-{ the values the cache already holds, through the pad cache (assigning        }
-{ SolderMaskExpansion on a via faults, see PCB_SetViaSoldermaskRelief), and    }
-{ every via reports mask_made_manual. The read-back decides ok.               }
-{                                                                              }
-{ Params: points ('x,y;x,y' in mils: the via whose pad covers each point,     }
-{ nearest centre wins) and/or net; top, bottom ('true'/'false'; empty leaves  }
-{ that side). Vias inside footprints are left to lib_set_via_properties.      }
-{..............................................................................}
 
 Function PCB_SetViaTenting(Params : String; RequestId : String) : String;
 Var
@@ -36079,6 +36137,7 @@ End;
 Function PCB_LayerStackManager(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
+    BoardRefusal : String;
     LSM, Doc, LSP, LSI, LI, DP : Variant;
     Su : ILsmSdkStackup;
     Sts : ILsmSdkLayerStackCollection;
@@ -36105,10 +36164,10 @@ Begin
             'include_model is empty, xml or records');
         Exit;
     End;
-    Board := GetPCBBoardAnywhere(0);
+    Board := StackBoard(Params, RequestId, BoardRefusal);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BoardRefusal;
         Exit;
     End;
 
@@ -36259,6 +36318,7 @@ Begin
         Else If Model = 'records' Then Extra := ',' + JsonStr('model', Doc.SerializeToString(0));
 
         Result := BuildSuccessResponse(RequestId, '{'
+            + JsonStr('board_path', Board.FileName) + ','
             + '"layers":[' + Layers + '],'
             + '"property_names":[' + Names + '],'
             + '"drill_pairs":[' + Pairs + '],'

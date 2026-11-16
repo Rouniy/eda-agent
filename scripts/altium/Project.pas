@@ -8959,6 +8959,7 @@ End;
 Function HandleProjectCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
+        'get_hierarchy':     Result := Proj_GetHierarchy(Params, RequestId);
         'create':            Result := Proj_Create(Params, RequestId);
         'open':              Result := Proj_Open(Params, RequestId);
         'save':              Result := Proj_Save(Params, RequestId);
@@ -9000,7 +9001,6 @@ Begin
         'get_net_items':     Result := Proj_GetNetItems(Params, RequestId);
         'step_options':      Result := Proj_StepOptions(Params, RequestId);
         'get_channels':      Result := Proj_GetChannels(Params, RequestId);
-        'get_hierarchy':     Result := Proj_GetHierarchy(Params, RequestId);
         'component_models':  Result := Proj_ComponentModels(Params, RequestId);
         'library_lookup':    Result := Proj_LibraryLookup(Params, RequestId);
         'output_panel':      Result := Proj_OutputPanel(Params, RequestId);

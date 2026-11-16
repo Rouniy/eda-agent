@@ -793,16 +793,30 @@ def _pads_payload(pads: list[dict[str, Any]],
     """
     op_strs: list[str] = []
     skipped_invalid = 0
+    # 25 is Altium's own typical roundrect corner %; a profile overrides it
+    # for every pad in this batch that doesn't specify its own (see
+    # profile.py / docs/PROFILES.md). Resolved lazily and once per batch:
+    # callers that set corner_radius on every pad (lib_create_standard_
+    # footprint does) then touch the filesystem not at all.
+    default_corner_radius: int | None = None
     for p in pads:
         # Free-text fields are neutralised for the same reason as pins: a
         # designator or layer carrying ";", "=" or "~~" reshapes the
         # payload and lands the pad somewhere else.
-        desig = _payload_safe(str(p.get("designator", "")).strip())
+        desig = _payload_safe(_single_pad_designator(
+            p.get("designator", ""), "footprint pad"))
         # A non-plated mounting hole carries no designator in a land pattern.
         if not desig and not p.get("unnumbered") and not (
                 p.get("hole_size") and _unplated(p.get("plated"))):
             skipped_invalid += 1
             continue
+        corner_radius = p.get("corner_radius")
+        if p.get("corner_radius_length") is not None:
+            corner_radius = _pad_corner_pct(p, units)
+        elif corner_radius is None:
+            if default_corner_radius is None:
+                default_corner_radius = _profile_module.get_pad_corner_radius_pct()
+            corner_radius = default_corner_radius
         fields = [
             f"designator={desig}",
             # Lengths unrounded, in ``units``: round() here quantised every
@@ -813,15 +827,18 @@ def _pads_payload(pads: list[dict[str, Any]],
             f"y_size={format_length(p.get('y_size', length_in(units, 60)))}",
             f"hole_size={format_length(p.get('hole_size', 0))}",
             f"shape={_payload_safe(p.get('shape', 'rectangular'))}",
-            f"corner_radius={_pad_corner_pct(p, units)}",
+            f"corner_radius={round(corner_radius)}",
             f"rotation={_payload_safe(p.get('rotation', 0))}",
             f"layer={_payload_safe(p.get('layer', 'TopLayer'))}",
         ]
-        # Optional, and only sent when the pad carries them, so every
-        # payload without them is byte-identical to what it always was.
         for key in _OPTIONAL_PAD_LENGTHS:
-            if p.get(key) is not None:
-                fields.append(f"{key}={format_length(p[key])}")
+            value = p.get(key)
+            if key == "paste_expansion" and value is None:
+                value = p.get("paste_mask_expansion")
+            if key == "mask_expansion" and value is None:
+                value = p.get("solder_mask_expansion")
+            if value is not None:
+                fields.append(f"{key}={format_length(value)}")
         turn = _slot_rotation(p, units)
         if turn is not None:
             fields.append(f"hole_rotation={format_length(turn)}")
@@ -2310,28 +2327,39 @@ def register_library_tools(mcp):
     @mcp.tool()
     async def lib_create_ic_symbol(
         name: str,
-        left_pins: list[Optional[dict[str, Any]]],
-        right_pins: list[Optional[dict[str, Any]]],
+        left_pins: Optional[list[Optional[dict[str, Any]]]] = None,
+        right_pins: Optional[list[Optional[dict[str, Any]]]] = None,
         designator_prefix: str = "U",
         description: str = "",
         body: str = "auto",
         invert_on_top: bool = False,
+        parts: Optional[list[dict[str, Any]]] = None,
+        pin_length: Optional[int] = None,
+        pin_spacing: Optional[int] = None,
+        char_width: Optional[int] = None,
+        body_padding: Optional[int] = None,
         datasheet: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Create a complete IC symbol (body plus every pin) in one call.
         It brings the open SchLib forward itself and fits the new symbol.
 
-        Amplifiers get the standard triangle: with ``body="auto"`` it is
-        chosen when the pin names form IN+/IN-/OUT units (+INA/-INA/OUTA
-        and IN1+/IN1-/OUT1 count), and a dual or quad becomes one
-        triangle per part plus a power part. Copying a standard part
-        from the user's library with lib_copy_component is an
-        alternative.
+        STANDARD SYMBOLS FIRST. An op-amp, comparator, current-sense or
+        instrumentation amplifier gets the TRIANGLE, not a rectangle:
+        inputs on the left with + and - beside them, the output at the
+        apex, supplies on the top and bottom edges. With ``body="auto"``
+        (the default) the triangle is chosen whenever the pin names form
+        IN+/IN-/OUT units (+INA/-INA/OUTA and IN1+/IN1-/OUT1 count), and a
+        dual or quad becomes one triangle per part plus a power part.
+        ``body="rectangle"`` or ``"amplifier"`` forces the choice. Before
+        drawing one, consider copying an existing standard-symbol part from
+        the user's own library with lib_copy_component and renaming pins.
 
-        Otherwise a rectangle: you group the pins (inputs, power and
-        control LEFT; outputs and status RIGHT, discipline rule 18) and
-        this lays them on grid with the top-left pin's wire end at the
-        origin (rule 14).
+        You decide the functional grouping (inputs/power/control on the
+        LEFT, outputs/status on the RIGHT -- discipline rule 18); this
+        lays them out cleanly and emits the whole symbol: the body
+        rectangle (Altium-yellow fill) plus every pin, grid-aligned with
+        the top-left pin's wire-end at the origin (rule 14), in one
+        create + one bulk add_pins + one rectangle.
 
         Args:
             name: Component name.
@@ -2347,6 +2375,12 @@ def register_library_tools(mcp):
             body: "auto" (triangle for amplifiers, else rectangle),
                 "amplifier" or "rectangle".
             invert_on_top: triangle only; put IN- above IN+.
+            parts: Optional multi-part rectangular chip. Each part has
+                left_pins/right_pins; a null row adds a visual group gap.
+                Supply this instead of the single-part left/right lists.
+            pin_length / pin_spacing / char_width / body_padding: Mils for
+                rectangular layouts. Multi-part defaults are 200/100/55/200;
+                single-part defaults preserve the existing layout.
             datasheet: ``{path, page}`` of the pin table. Every pin's
                 number and name must be printed together in it, or the
                 symbol is not built; pins named only by number skip it.
@@ -2366,13 +2400,30 @@ def register_library_tools(mcp):
         if wanted not in ("auto", "amplifier", "rectangle"):
             return {"ok": False, "reason":
                     "body must be 'auto', 'amplifier' or 'rectangle'"}
-        all_pins = [p for p in (*left_pins, *right_pins) if p is not None]
+        if parts is not None:
+            if left_pins or right_pins or wanted == "amplifier" or invert_on_top:
+                return {"ok": False, "reason":
+                        "parts requires a rectangular body and no single-part pins"}
+            return await lib_create_multipart_symbol(
+                name=name, parts=parts, designator_prefix=designator_prefix,
+                description=description,
+                pin_length=200 if pin_length is None else pin_length,
+                pin_spacing=100 if pin_spacing is None else pin_spacing,
+                char_width=55 if char_width is None else char_width,
+                body_padding=200 if body_padding is None else body_padding)
+        left_pins = left_pins or []
+        right_pins = right_pins or []
+        all_pins = [pin for pin in (*left_pins, *right_pins) if pin is not None]
         refusal, table = await _pin_table_gate(datasheet, all_pins)
         if refusal:
             return refusal
         if wanted == "amplifier" or (
                 wanted == "auto" and looks_like_amplifier(all_pins,
                                                           description)):
+            if any(value is not None for value in
+                   (pin_length, pin_spacing, char_width, body_padding)):
+                return {"ok": False, "reason":
+                        "rectangular layout dimensions do not apply to an amplifier"}
             try:
                 amp = generate_amplifier_symbol(all_pins,
                                                 invert_on_top=invert_on_top)
@@ -2388,7 +2439,12 @@ def register_library_tools(mcp):
         # The generator is a pure function and raises on bad geometry;
         # at the tool boundary that becomes a refusal, not a stack trace.
         try:
-            geom = generate_ic_symbol(left_pins, right_pins)
+            geom = generate_ic_symbol(
+                left_pins, right_pins,
+                pin_length=200 if pin_length is None else pin_length,
+                pin_spacing=100 if pin_spacing is None else pin_spacing,
+                char_width=70 if char_width is None else char_width,
+                body_padding=150 if body_padding is None else body_padding)
         except ValueError as e:
             return {"ok": False, "reason": str(e)}
 
@@ -3546,7 +3602,7 @@ def register_library_tools(mcp):
         shape: str = "rectangular",
         layer: str = "TopLayer",
         rotation: int = 0,
-        corner_radius: int = 25,
+        corner_radius: Optional[int] = None,
         footprint_name: str = "",
         units: str = "mil",
         corner_radius_length: Optional[float] = None,
@@ -3569,21 +3625,23 @@ def register_library_tools(mcp):
                 (e.g. "rectangle") is refused and no pad is added.
             layer: SMD pad layer ("TopLayer"/"BottomLayer").
             rotation: Pad rotation in degrees
-            corner_radius: roundrect corner radius, % (Altium's unit).
-            corner_radius_length: or the radius as a length, converted to
-                that % of half the shortest side (so resizing the pad
-                later changes it).
-            footprint_name: footprint to write into; empty uses the
-                current one. A name is made current first, refusing if
-                it cannot.
+            corner_radius: Corner radius percentage for shape="roundrect"
+                (Altium stores RR radius as a %). Default: the active
+                profile's footprint_defaults.json pad_corner_radius_pct if
+                one applies (see docs/PROFILES.md), else 25 (Altium's own
+                typical value).
+            footprint_name: footprint to write into. Empty uses the
+                editor's current footprint; a name makes that footprint
+                current first and refuses if it cannot, since otherwise
+                the primitives land in whichever footprint another call
+                left current.
             units: "mil" (default) or "mm", for every length and
                 coordinate here; mm values are kept exact.
 
         Returns:
             Dictionary confirming pad addition
         """
-        if _grouped_designators([{"designator": designator}]):
-            return {"ok": False, "reason": f"one pad per designator; split {designator!r}"}
+        designator = _single_pad_designator(designator, "footprint pad")
         unchecked = _unchecked_lands(footprint_name, 1, compared)
         if unchecked:
             return unchecked
@@ -3591,6 +3649,8 @@ def register_library_tools(mcp):
         refusal = _units_refusal(units)
         if refusal:
             return refusal
+        if corner_radius is None:
+            corner_radius = _profile_module.get_pad_corner_radius_pct()
         bridge = get_bridge()
         params_x = length_in(units, 60) if x_size is None else x_size
         params_y = length_in(units, 60) if y_size is None else y_size
@@ -4576,7 +4636,10 @@ def register_library_tools(mcp):
             library_path: Optional .PcbLib to focus first; defaults to the
                 focused library.
             policy: Optional explicit conventions to enforce; omitted
-                dimensions are inferred from the library.
+                dimensions are inferred from the library. When not passed
+                at all, the active profile's footprint_policy.json is used
+                if one applies (see docs/PROFILES.md); pass an explicit
+                {} to force pure inferred mode despite an active profile.
 
         Returns ``{library_path, footprint_count, conventions, findings,
         summary}``, and ``basic_3d_models`` when footprints have only
@@ -4588,6 +4651,10 @@ def register_library_tools(mcp):
             plan_footprint_fixes,
         )
         from ..preferences import basic_3d_models_report, is_basic_3d_model
+
+        if policy is None:
+            active = _profile_module.get_active_profile()
+            policy = active.footprint_policy if active else None
 
         bridge = get_bridge()
         footprints, resolved_path = await _read_library_geometry(
@@ -6374,11 +6441,16 @@ def register_library_tools(mcp):
                 stop the read. Empty reads the library in front.
 
         Returns:
-            "count", "component", and "pins", each with designator,
-            name, electrical_type, x, y, orientation, hidden,
-            ``owner_part_id`` and ``display_mode`` (0 normal, 1+ an
-            alternate mode, not a duplicate). Spilled: "pins_path" and
-            "summary" instead of "pins". Plus `_datasheet_guidance`.
+            Dictionary with "count", "component" name, and "pins" array.
+            Each pin has ``owner_part_id`` and ``display_mode``: 0 is the
+            normal display, 1 and up are alternate modes, which repeat a
+            part's pins elsewhere and otherwise look like duplicates.
+            Each pin has: designator, name, electrical_type, x, y,
+            orientation, hidden. Plus `_datasheet_guidance` +
+            `_datasheet_parts`.
+
+            When spilled: "pins_path" plus "summary" giving pins per
+            part and the electrical-type distribution, and no "pins".
         """
         bridge = get_bridge()
         if library_path:
@@ -9415,11 +9487,8 @@ def register_library_tools(mcp):
         mech: Optional[list[dict[str, Any]]] = None
         notes: list[str] = []
         try:
-            # Named, so the kinds come from the library being audited, not
-            # whichever one has focus.
             reply = await bridge.send_command_async(
-                "library.get_mech_layers",
-                {"library_path": lib_path} if lib_path else {})
+                "library.get_mech_layers", {"library_path": lib_path})
             mpath = str((reply or {}).get("library_path") or "")
             if mpath and lib_path and not same_file(mpath, lib_path):
                 notes.append(f"the mechanical layer kinds come from {mpath}, "

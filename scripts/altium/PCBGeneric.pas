@@ -324,12 +324,11 @@ Begin
     Oid := Obj.ObjectId;
     If Not ExtraPCBPropertyFits(Oid, PropName) Then Exit;
     Result := -1;
+    If PropName = 'UnderlyingString' Then Exit;
     If (PropName = 'IsCounterHole') Or (PropName = 'IsBGA') Or
        (PropName = 'PackageSpecificHash') Or (PropName = 'ConvertedString') Or
        (PropName = 'FlippedOnLayer') Or (PropName = 'IsVirtualPin') Or
        (PropName = 'InvRectWidth') Or (PropName = 'InvRectHeight') Then Exit;
-    { What the text was typed as; writing Text sets it. }
-    If PropName = 'UnderlyingString' Then Exit;
     Owner := ExtraPCBPropertyOwner(PropName);
     If ((PropName = 'HolePositiveTolerance') Or (PropName = 'HoleNegativeTolerance'))
         And (LowerCase(Value) = 'unset') Then
@@ -706,6 +705,7 @@ Begin
     Result := IntToStr(M);
 End;
 
+{ Polygon pour settings use decimal mils; area uses square mils. }
 { ---- VIAS AND PADS ON A BOARD: mask, tenting, testpoints, stack ----------- }
 { The library route (library.set_via_properties) reaches much of this on a  }
 { footprint, and the board route none of it: generic.* on a PcbDoc knew a    }

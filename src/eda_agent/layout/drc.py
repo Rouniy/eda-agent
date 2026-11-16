@@ -301,33 +301,28 @@ def pads_on_a_barrel(board: LayoutBoard) -> set[int]:
     return set(pad_barrels(board))
 
 
-def pad_barrels(board: LayoutBoard) -> dict[int, list[tuple[float, float, frozenset]]]:
+def pad_barrels(board: LayoutBoard) -> dict[int, list[tuple[float, float]]]:
     """For each surface pad that existing copper joins to a via or plated
-    hole of its net, where those barrels are, each with the copper layers
-    it passes. A blind via reaches only its own span: counted on every
-    layer, one that stopped short of its net's plane was taken for the
-    pad's way into it, and the pad was never joined."""
+    hole of its net, where those barrels are."""
     items = conductive_items(board)
     uf = _joined(board, items)
-    every = frozenset(board.copper_layers())
     at: dict[int, set] = {}
     for n, it in enumerate(items):
         if not it.net:
             continue
         if it.kind == "via":
             v = board.vias[it.idx]
-            span = frozenset(board.layers_between(v.low_layer, v.high_layer))
-            at.setdefault(uf.find(n), set()).add((v.x, v.y, span))
+            at.setdefault(uf.find(n), set()).add((v.x, v.y))
         elif it.kind == "pad" and not board.pads[it.idx].is_smd:
             p = board.pads[it.idx]
-            at.setdefault(uf.find(n), set()).add((p.x, p.y, every))
-    out: dict[int, list[tuple[float, float, frozenset]]] = {}
+            at.setdefault(uf.find(n), set()).add((p.x, p.y))
+    out: dict[int, list[tuple[float, float]]] = {}
     for n, it in enumerate(items):
         if it.kind == "pad" and it.net and board.pads[it.idx].is_smd:
             got = at.get(uf.find(n))
             if got:
-                out[it.idx] = sorted(set(out.get(it.idx, ())) | got,
-                                     key=lambda b: (b[0], b[1], sorted(b[2])))
+                out.setdefault(it.idx, [])
+                out[it.idx] = sorted(set(out[it.idx]) | got)
     return out
 
 
@@ -368,11 +363,7 @@ def _joined(board: LayoutBoard, items: list[Item], grid: "_Grid | None" = None,
                 if inside:
                     uf.union(n, m)
 
-    # Planes: every plated barrel of the plane's net that passes the
-    # plane's layer meets the plane. A blind or buried via that stops short
-    # of it meets nothing there: taken as joined, a pad wired to one was
-    # counted in the plane while no copper reached it.
-    spans: dict[int, list[str]] = {}
+    # Planes: every plated barrel of the plane's net meets the plane.
     for layer in board.layers:
         if layer.kind != "plane" or not layer.plane_net:
             continue
@@ -380,18 +371,11 @@ def _joined(board: LayoutBoard, items: list[Item], grid: "_Grid | None" = None,
         for n, it in enumerate(items):
             if it.net != layer.plane_net:
                 continue
-            if it.kind == "via":
-                if it.idx not in spans:
-                    v = board.vias[it.idx]
-                    spans[it.idx] = board.layers_between(v.low_layer, v.high_layer)
-                if layer.name not in spans[it.idx]:
-                    continue
-            elif not (it.kind == "pad" and not board.pads[it.idx].is_smd):
-                continue
-            if anchor is None:
-                anchor = n
-            else:
-                uf.union(anchor, n)
+            if it.kind == "via" or (it.kind == "pad" and not board.pads[it.idx].is_smd):
+                if anchor is None:
+                    anchor = n
+                else:
+                    uf.union(anchor, n)
 
     # A pad or via is ONE conductor across every layer it spans: the plated
     # barrel joins them. Items are one per layer, so join them here. Missed

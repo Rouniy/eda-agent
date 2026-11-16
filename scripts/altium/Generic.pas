@@ -2649,19 +2649,8 @@ End;
 { kind ("W1", "P1-1"), or empty when it gives only coordinates. A harness   }
 { wire, splice or cable has no Name property of its own; this is its name.  }
 Function HarnessNameFromDescription(Desc : String) : String;
-Var
-    P : Integer;
 Begin
-    Result := '';
-    If Copy(Desc, 1, 8) <> 'Harness ' Then Exit;
-    Desc := Copy(Desc, 9, Length(Desc));
-    P := Pos(' ', Desc);
-    If P = 0 Then Exit;
-    Desc := Trim(Copy(Desc, P + 1, Length(Desc)));
-    If (Desc = '') Or (Copy(Desc, 1, 1) = '(') Then Exit;
-    P := Pos(' ', Desc);
-    If P > 0 Then Desc := Copy(Desc, 1, P - 1);
-    Result := Desc;
+    Result := SchHarnessName(Desc);
 End;
 
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
@@ -18990,11 +18979,13 @@ Var
     Outline : IPCB_BoardOutline;
     OutlineJson, TracksJson, ArcsJson, PadsJson, ViasJson, TextsJson : String;
     RegionsJson, CompsJson : String;
+    TracksParts, ArcsParts, PadsParts, ViasParts, TextsParts : TStringList;
+    RegionsParts, CompsParts, RegionPoints : TStringList;
     NumTracks, NumArcs, NumPads, NumVias, NumTexts, NumOutline : Integer;
     NumRegions, NumComps : Integer;
     LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr, PlatedStr : String;
     BR : TCoordRect;
-    I, K, PtCount, EL, EB, ER, ET : Integer;
+    I, K, PtCount, EL, EB, ER, ET, Seen : Integer;
     Seg : TPolySegment;
     RespJson : String;
     NameOnFlag, CommentOnFlag, IsHiddenFlag : Boolean;
@@ -19011,6 +19002,7 @@ Begin
             'No PCB document is active');
         Exit;
     End;
+    AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,board,' + RequestId);
 
     { Board outline: walk Segments. Each carries a vertex (vx, vy) and -- }
     { for arc segments -- a center (cx, cy) + radius + angles. v1 keeps   }
@@ -19020,7 +19012,9 @@ Begin
     Outline := Board.BoardOutline;
     If Outline <> Nil Then
     Begin
+        AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,outline_rebuild,' + RequestId);
         Try Outline.Invalidate; Outline.Rebuild; Outline.Validate; Except End;
+        AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,outline_ready,' + RequestId);
         For I := 0 To Outline.PointCount - 1 Do
         Begin
             Seg := Outline.Segments[I];
@@ -19048,6 +19042,7 @@ Begin
         End;
     End;
     OutlineJson := OutlineJson + ']';
+    AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,outline_done,' + RequestId);
 
     { From the outline's segments: its cached rectangle went stale after a }
     { reshape and the renders built on this bbox clipped the board.         }
@@ -19063,15 +19058,30 @@ Begin
     RegionsJson := '['; NumRegions := 0;
     CompsJson := '[';   NumComps := 0;
 
+    { Appending to a megabyte-scale DelphiScript String for every object is }
+    { quadratic. Collect small fragments and join each array only once.   }
+    TracksParts := TStringList.Create;
+    ArcsParts := TStringList.Create;
+    PadsParts := TStringList.Create;
+    ViasParts := TStringList.Create;
+    TextsParts := TStringList.Create;
+    RegionsParts := TStringList.Create;
+    CompsParts := TStringList.Create;
+
     Iter := Board.BoardIterator_Create;
     Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, ePadObject,
         eViaObject, eTextObject, eRegionObject, eComponentObject));
     Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
     Iter.AddFilter_Method(eProcessAll);
     Try
+        Seen := 0;
         Obj := Iter.FirstPCBObject;
+        AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,iter_first,' + RequestId);
         While Obj <> Nil Do
         Begin
+            Inc(Seen);
+            If (Seen Mod 1000) = 0 Then
+                AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,objects=' + IntToStr(Seen) + ',' + RequestId);
             LayerName := '';
             Try LayerName := LayerDisplayName(Obj.Layer); Except End;
 
@@ -19080,15 +19090,15 @@ Begin
                 Track := Obj;
                 NetName := '';
                 Try If Track.Net <> Nil Then NetName := Track.Net.Name; Except End;
-                If NumTracks > 0 Then TracksJson := TracksJson + ',';
-                TracksJson := TracksJson +
+                If NumTracks > 0 Then TracksParts.Add(',');
+                TracksParts.Add(
                     '{"x1":' + FloatToJsonStr(CoordToMilsF(Track.X1)) +
                     ',"y1":' + FloatToJsonStr(CoordToMilsF(Track.Y1)) +
                     ',"x2":' + FloatToJsonStr(CoordToMilsF(Track.X2)) +
                     ',"y2":' + FloatToJsonStr(CoordToMilsF(Track.Y2)) +
                     ',"width":' + FloatToJsonStr(CoordToMilsF(Track.Width)) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumTracks);
             End
             Else If Obj.ObjectId = eArcObject Then
@@ -19096,8 +19106,8 @@ Begin
                 Arc := Obj;
                 NetName := '';
                 Try If Arc.Net <> Nil Then NetName := Arc.Net.Name; Except End;
-                If NumArcs > 0 Then ArcsJson := ArcsJson + ',';
-                ArcsJson := ArcsJson +
+                If NumArcs > 0 Then ArcsParts.Add(',');
+                ArcsParts.Add(
                     '{"cx":' + FloatToJsonStr(CoordToMilsF(Arc.XCenter)) +
                     ',"cy":' + FloatToJsonStr(CoordToMilsF(Arc.YCenter)) +
                     ',"r":' + FloatToJsonStr(CoordToMilsF(Arc.Radius)) +
@@ -19105,7 +19115,7 @@ Begin
                     ',"end":' + FloatToJsonStr(Arc.EndAngle) +
                     ',"width":' + FloatToJsonStr(CoordToMilsF(Arc.LineWidth)) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumArcs);
             End
             Else If Obj.ObjectId = ePadObject Then
@@ -19146,8 +19156,8 @@ Begin
                 Try
                     PlatedStr := BoolToJsonStr(Pad.Plated);
                 Except End;
-                If NumPads > 0 Then PadsJson := PadsJson + ',';
-                PadsJson := PadsJson +
+                If NumPads > 0 Then PadsParts.Add(',');
+                PadsParts.Add(
                     '{"x":' + FloatToJsonStr(CoordToMilsF(Pad.X)) +
                     ',"y":' + FloatToJsonStr(CoordToMilsF(Pad.Y)) +
                     ',"x_size":' + FloatToJsonStr(CoordToMilsF(Pad.TopXSize)) +
@@ -19162,7 +19172,7 @@ Begin
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name":"' + EscapeJsonString(PadName) + '"' +
                     ',"comp":"' + EscapeJsonString(TextStr) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumPads);
             End
             Else If Obj.ObjectId = eViaObject Then
@@ -19170,15 +19180,15 @@ Begin
                 Via := Obj;
                 NetName := '';
                 Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
-                If NumVias > 0 Then ViasJson := ViasJson + ',';
-                ViasJson := ViasJson +
+                If NumVias > 0 Then ViasParts.Add(',');
+                ViasParts.Add(
                     '{"x":' + FloatToJsonStr(CoordToMilsF(Via.X)) +
                     ',"y":' + FloatToJsonStr(CoordToMilsF(Via.Y)) +
                     ',"size":' + FloatToJsonStr(CoordToMilsF(Via.Size)) +
                     ',"hole_size":' + FloatToJsonStr(CoordToMilsF(Via.HoleSize)) +
                     ',"high_layer":"' + EscapeJsonString(LayerDisplayName(Via.HighLayer)) + '"' +
                     ',"low_layer":"' + EscapeJsonString(LayerDisplayName(Via.LowLayer)) + '"' +
-                    ',"net":"' + EscapeJsonString(NetName) + '"}';
+                    ',"net":"' + EscapeJsonString(NetName) + '"}');
                 Inc(NumVias);
             End
             Else If Obj.ObjectId = eTextObject Then
@@ -19206,8 +19216,8 @@ Begin
                     Obj := Iter.NextPCBObject;
                     Continue;
                 End;
-                If NumTexts > 0 Then TextsJson := TextsJson + ',';
-                TextsJson := TextsJson +
+                If NumTexts > 0 Then TextsParts.Add(',');
+                TextsParts.Add(
                     '{"x":' + FloatToJsonStr(CoordToMilsF(Text.XLocation)) +
                     ',"y":' + FloatToJsonStr(CoordToMilsF(Text.YLocation)) +
                     ',"text":"' + EscapeJsonString(TextStr) + '"' +
@@ -19215,7 +19225,7 @@ Begin
                     ',"width":' + FloatToJsonStr(CoordToMilsF(Text.Width)) +
                     ',"rotation":' + FloatToJsonStr(Text.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
-                    ',"hidden":false}';
+                    ',"hidden":false}');
                 Inc(NumTexts);
             End
             Else If Obj.ObjectId = eRegionObject Then
@@ -19235,19 +19245,20 @@ Begin
                 End;
                 If (Contour <> Nil) And (PtCount >= 3) Then
                 Begin
-                    If NumRegions > 0 Then RegionsJson := RegionsJson + ',';
-                    RegionsJson := RegionsJson +
-                        '{"layer":"' + EscapeJsonString(LayerName) + '"' +
-                        ',"net":"' + EscapeJsonString(NetName) + '"' +
-                        ',"pts":[';
+                    RegionPoints := TStringList.Create;
                     For K := 1 To PtCount Do
                     Begin
-                        If K > 1 Then RegionsJson := RegionsJson + ',';
-                        RegionsJson := RegionsJson + '['
+                        If K > 1 Then RegionPoints.Add(',');
+                        RegionPoints.Add('['
                             + FloatToJsonStr(CoordToMilsF(Contour.X[K])) + ','
-                            + FloatToJsonStr(CoordToMilsF(Contour.Y[K])) + ']';
+                            + FloatToJsonStr(CoordToMilsF(Contour.Y[K])) + ']');
                     End;
-                    RegionsJson := RegionsJson + ']}';
+                    If NumRegions > 0 Then RegionsParts.Add(',');
+                    RegionsParts.Add(
+                        '{"layer":"' + EscapeJsonString(LayerName) + '"' +
+                        ',"net":"' + EscapeJsonString(NetName) + '"' +
+                        ',"pts":[' + RegionPoints.Text + ']}');
+                    RegionPoints.Free;
                     Inc(NumRegions);
                 End;
             End
@@ -19270,15 +19281,15 @@ Begin
                 Try NameOnFlag := CompObj.NameOn; Except End;
                 CommentOnFlag := True;
                 Try CommentOnFlag := CompObj.CommentOn; Except End;
-                If NumComps > 0 Then CompsJson := CompsJson + ',';
-                CompsJson := CompsJson +
+                If NumComps > 0 Then CompsParts.Add(',');
+                CompsParts.Add(
                     '{"des":"' + EscapeJsonString(TextStr) + '"' +
                     ',"x":' + FloatToJsonStr(CoordToMilsF(CompObj.X)) +
                     ',"y":' + FloatToJsonStr(CoordToMilsF(CompObj.Y)) +
                     ',"rotation":' + FloatToJsonStr(CompObj.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name_on":' + BoolToJsonStr(NameOnFlag) +
-                    ',"comment_on":' + BoolToJsonStr(CommentOnFlag) + '}';
+                    ',"comment_on":' + BoolToJsonStr(CommentOnFlag) + '}');
                 Inc(NumComps);
             End;
             Obj := Iter.NextPCBObject;
@@ -19286,14 +19297,22 @@ Begin
     Finally
         Board.BoardIterator_Destroy(Iter);
     End;
+    AppendLog(FormatLogStamp(0) + ',0,_pcb_geometry,iter_done,' + RequestId);
 
-    TracksJson  := TracksJson  + ']';
-    ArcsJson    := ArcsJson    + ']';
-    PadsJson    := PadsJson    + ']';
-    ViasJson    := ViasJson    + ']';
-    TextsJson   := TextsJson   + ']';
-    RegionsJson := RegionsJson + ']';
-    CompsJson   := CompsJson   + ']';
+    TracksJson  := '[' + TracksParts.Text + ']';
+    ArcsJson    := '[' + ArcsParts.Text + ']';
+    PadsJson    := '[' + PadsParts.Text + ']';
+    ViasJson    := '[' + ViasParts.Text + ']';
+    TextsJson   := '[' + TextsParts.Text + ']';
+    RegionsJson := '[' + RegionsParts.Text + ']';
+    CompsJson   := '[' + CompsParts.Text + ']';
+    TracksParts.Free;
+    ArcsParts.Free;
+    PadsParts.Free;
+    ViasParts.Free;
+    TextsParts.Free;
+    RegionsParts.Free;
+    CompsParts.Free;
 
     { Layer colours + visibility, straight from Altium so the renderer can }
     { reproduce exactly what the user sees on the bench instead of guessing }

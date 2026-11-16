@@ -79,18 +79,6 @@ def report(deep: bool = False, include_dev: bool = True) -> dict[str, Any]:
 def _live_note(feature_id: str) -> str:
     """One line on how a built-in feature is set up right now."""
     try:
-        if feature_id == "layout":
-            from ..layout.route.engine import describe
-            d = describe()
-            where = {"environment": " (set by EDA_AGENT_ROUTER)",
-                     "profile": " (set in the profile's router.json)",
-                     "fallback": " (the setting could not be used)"}.get(d["source"], "")
-            other = "euan" if d["engine"] == "default" else "default"
-            text = (f"Routing engine: {d['engine']}{where}. "
-                    f"Switch with `eda-agent router-use {other}`.")
-            if d.get("problem"):
-                text += " " + d["problem"]
-            return text
         if feature_id == "compute":
             from .. import compute
             st = compute.status()

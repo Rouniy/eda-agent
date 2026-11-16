@@ -2038,7 +2038,7 @@ End;
 
 Function Lib_AddFootprintPad(Params : String; RequestId : String) : String;
 Var
-    Designator, Shape, LayerStr : String;
+    Designator, Shape, LayerStr, FootprintName : String;
     CornerRadius : Integer;
     X, Y, XSize, YSize, HoleSize : Double;
     UnitsStr : String;
@@ -2071,6 +2071,7 @@ Begin
     LayerStr := ExtractJsonValue(Params, 'layer');
     Rotation := StrToFloatDef(ExtractJsonValue(Params, 'rotation'), 0);
     CornerRadius := StrToIntDef(ExtractJsonValue(Params, 'corner_radius'), 25);
+    FootprintName := ExtractJsonValue(Params, 'footprint_name');
 
     PcbLib := PCBServer.GetCurrentPCBLibrary;
     If PcbLib = Nil Then
@@ -2100,7 +2101,6 @@ Begin
             'Unknown layer name: ' + LayerStr + '. ' + BoardLayerNamesHint(PcbLib.Board));
         Exit;
     End;
-
     PcbBeginEdit(0);
 
     Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
@@ -2126,6 +2126,8 @@ Begin
         End
         Else Pad.TopShape := eRounded;
 
+        { PcbLib serialization requires registration in both ownership     }
+        { containers, matching the proven text-primitive authoring path.   }
         Footprint.AddPCBObject(Pad);
         { The primitive must be registered with the library's backing Board as
           well as with the footprint, and the registration broadcast to both.
@@ -18938,9 +18940,8 @@ Function Lib_Set3DBody(Params : String; RequestId : String) : String;
 Var
     LibPath, FocusedPath, FpWanted, LayerStr, Addr, Seen : String;
     StandoffStr, OverallStr, OpacityStr, IndexStr, Before, After : String;
-    SavedStr, SavedFile, ModelFile, Skipped, ZWritten, CXStr, CYStr : String;
-    OrgX, OrgY : TCoord;
-    NowX, NowY : Double;
+    SavedStr, SavedFile, ModelFile, Skipped, ZWritten, ExpectedCountStr : String;
+    CXStr, CYStr : String;
     Model : IPCB_Model;
     Workspace : IWorkspace;
     Doc : IDocument;
@@ -18950,6 +18951,8 @@ Var
     Body : IPCB_ComponentBody;
     Want : TLayer;
     WantIndex, Nth, Changed, Total, SavedCount : Integer;
+    OrgX, OrgY : TCoord;
+    NowX, NowY : Double;
     Opacity : Double;
     Writing, Wrote : Boolean;
 Begin
@@ -18964,6 +18967,7 @@ Begin
     CYStr := ExtractJsonValue(Params, 'center_y');
     SavedStr := ExtractJsonValue(Params, 'saved_models');
     SavedCount := StrToIntDef(ExtractJsonValue(Params, 'saved_count'), -1);
+    ExpectedCountStr := ExtractJsonValue(Params, 'expected_count');
 
     If FpWanted = '' Then
     Begin
@@ -19094,9 +19098,61 @@ Begin
     Finally
         Footprint.GroupIterator_Destroy(GrpIter);
     End;
+    If (ExpectedCountStr <> '') And
+        (StrToIntDef(ExpectedCountStr, -1) <> Total) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BODY_COUNT_CHANGED',
+            'Footprint 3D body count changed since the preview');
+        Exit;
+    End;
     If SavedCount <> Total Then SavedStr := '';
     OrgX := FootprintOriginX(Footprint);
     OrgY := FootprintOriginY(Footprint);
+
+    { Verify every selected STEP identity before any layer/opacity/height }
+    { write. A mismatched saved record must not leave a partial edit.    }
+    If (StandoffStr <> '') And Writing Then
+    Begin
+        Nth := 0;
+        Seen := #9;
+        GrpIter := Footprint.GroupIterator_Create;
+        Try
+            GrpIter.AddFilter_ObjectSet(MkSet(eComponentBodyObject));
+            Body := GrpIter.FirstPCBObject;
+            While Body <> Nil Do
+            Begin
+                Addr := IntToStr(Body.I_ObjectAddress);
+                If Pos(#9 + Addr + #9, Seen) = 0 Then
+                Begin
+                    Seen := Seen + Addr + #9;
+                    Inc(Nth);
+                    If (WantIndex = 0) Or (WantIndex = Nth) Then
+                    Begin
+                        Model := StepModelOf(Body);
+                        If Model <> Nil Then
+                        Begin
+                            ModelFile := '';
+                            Try ModelFile := Model.FileName; Except End;
+                            SavedFile := PipeField(SavedStr, (Nth - 1) * 5);
+                            If (SavedStr = '') Or (SavedFile = '') Or
+                                (PipeField(SavedStr, (Nth - 1) * 5 + 1) <> '1') Or
+                                (UpperCase(ExtractFileName(SavedFile)) <>
+                                    UpperCase(ExtractFileName(ModelFile))) Then
+                            Begin
+                                Result := BuildErrorResponse(RequestId,
+                                    'SAVED_MODEL_MISMATCH',
+                                    'STEP body does not match the saved model record; no body was changed');
+                                Exit;
+                            End;
+                        End;
+                    End;
+                End;
+                Body := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Footprint.GroupIterator_Destroy(GrpIter);
+        End;
+    End;
 
     Before := '';
     After := '';
@@ -19161,8 +19217,8 @@ Begin
                                         + 'this body: save the library, then retry'));
                                 End
                                 Else If (PipeField(SavedStr, (Nth - 1) * 5 + 1) <> '1')
-                                    Or (UpperCase(ExtractFileName(SavedFile))
-                                        <> UpperCase(ExtractFileName(ModelFile))) Then
+                                    Or (UpperCase(ExtractFileName(SavedFile)) <>
+                                        UpperCase(ExtractFileName(ModelFile))) Then
                                 Begin
                                     If Skipped <> '' Then Skipped := Skipped + ',';
                                     Skipped := Skipped + JsonObj(JsonInt('index', Nth) + ','
@@ -24521,6 +24577,7 @@ Begin
         'add_symbol_line':      Result := Lib_AddSymbolLine(Params, RequestId);
         'add_symbol_lines':     Result := Lib_AddSymbolLines(Params, RequestId);
         'create_footprint':     Result := Lib_CreateFootprint(Params, RequestId);
+        'create_pcb_footprint': Result := Lib_CreatePCBFootprint(Params, RequestId);
         'add_footprint_pad':    Result := Lib_AddFootprintPad(Params, RequestId);
         'add_footprint_via':    Result := Lib_AddFootprintVia(Params, RequestId);
         'get_library_origin':   Result := Lib_GetLibraryOrigin(Params, RequestId);
@@ -24546,6 +24603,10 @@ Begin
         'convert_designators_to_stroke': Result := Lib_ConvertDesignatorsToStroke(Params, RequestId);
         'extract_intlib':       Result := Lib_ExtractIntLib(Params, RequestId);
         'link_footprint':       Result := Lib_LinkFootprint(Params, RequestId);
+        'rotate_footprint':     Result := Lib_RotateFootprint(Params, RequestId);
+        'set_3d_body':          Result := Lib_Set3DBody(Params, RequestId);
+        'add_3d_body':          Result := Lib_Add3DBody(Params, RequestId);
+        'position_3d_body':     Result := Lib_Position3DBody(Params, RequestId);
         'link_3d_model':        Result := Lib_Link3DModel(Params, RequestId);
         'set_mech_layers':      Result := Lib_SetMechLayers(Params, RequestId);
         'get_components':       Result := Lib_GetComponents(Params, RequestId);
@@ -24562,12 +24623,12 @@ Begin
         'copy_component':     Result := Lib_CopyComponent(Params, RequestId);
         'move_components':    Result := Lib_MoveComponents(Params, RequestId);
         'move_footprints':    Result := Lib_MoveFootprints(Params, RequestId);
-        'rotate_footprint':   Result := Lib_RotateFootprint(Params, RequestId);
         'copy_footprint':     Result := Lib_CopyFootprint(Params, RequestId);
         'audit_styles':       Result := Lib_AuditStyles(Params, RequestId);
         'set_label_format':   Result := Lib_SetLabelFormat(Params, RequestId);
         'set_label_formats':  Result := Lib_SetLabelFormats(Params, RequestId);
         'set_current_component': Result := Lib_SetCurrentComponent(Params, RequestId);
+        'set_active_part':     Result := Lib_SetActivePart(Params, RequestId);
         'update_footprint_heights_from_3d': Result := Lib_UpdateFootprintHeightsFrom3D(Params, RequestId);
         'set_footprint_height': Result := Lib_SetFootprintHeight(Params, RequestId);
         'split_pin_functions':  Result := Lib_SplitPinFunctions(Params, RequestId);
@@ -24575,9 +24636,12 @@ Begin
         'install_library':      Result := Lib_InstallLibrary(Params, RequestId);
         'uninstall_library':    Result := Lib_UninstallLibrary(Params, RequestId);
         'get_vault_name':       Result := Lib_GetVaultName(Params, RequestId);
+        'list_available_libraries': Result := Lib_ListAvailableLibraries(Params, RequestId);
         'set_pad_properties':   Result := Lib_SetPadProperties(Params, RequestId);
+        'get_symbol_geometry':  Result := Lib_GetSymbolGeometry(Params, RequestId);
         'set_pad_geometry':     Result := Lib_SetPadGeometry(Params, RequestId);
         'get_vault_component':  Result := Lib_GetVaultComponent(Params, RequestId);
+        'resolve_workspace_component': Result := Lib_ResolveWorkspaceComponent(Params, RequestId);
         'find_vault_components': Result := Lib_FindVaultComponents(Params, RequestId);
         'delete_component':     Result := Lib_DeleteComponent(Params, RequestId);
         'rename_component':     Result := Lib_RenameComponent(Params, RequestId);
@@ -24585,7 +24649,6 @@ Begin
         'delete_footprint_primitives':
                                 Result := Lib_DeleteFootprintPrimitives(Params, RequestId);
         'move_bodies_to_layer': Result := Lib_MoveBodiesToLayer(Params, RequestId);
-        'set_3d_body':          Result := Lib_Set3DBody(Params, RequestId);
         'set_symbol_parts':     Result := Lib_SetSymbolParts(Params, RequestId);
         'set_symbol_aliases':   Result := Lib_SetSymbolAliases(Params, RequestId);
         'check_schlib':         Result := Lib_CheckSchLib(Params, RequestId);
@@ -24603,8 +24666,9 @@ Begin
         'set_model_name':       Result := Lib_SetModelName(Params, RequestId);
         'set_model_source':     Result := Lib_SetModelSource(Params, RequestId);
         'probe_footprint':      Result := Lib_ProbeFootprint(Params, RequestId);
-        'get_pad_geometry':     Result := Lib_GetPadGeometry(Params, RequestId);
         'get_footprint_primitives': Result := Lib_GetFootprintPrimitives(Params, RequestId);
+
+        'get_pad_geometry':     Result := Lib_GetPadGeometry(Params, RequestId);
         'select_footprint_primitives': Result := Lib_SelectFootprintPrimitives(Params, RequestId);
         'normalize_implementations': Result := Lib_NormalizeImplementations(Params, RequestId);
         'clear_source_library': Result := Lib_ClearSourceLibrary(Params, RequestId);
@@ -24613,13 +24677,6 @@ Begin
         'get_dblib_record':     Result := Lib_GetDbLibRecord(Params, RequestId);
         'place_dblib_component': Result := Lib_PlaceDbLibComponent(Params, RequestId);
         'place_dblib_rows':       Result := Lib_PlaceDbLibRows(Params, RequestId);
-        'create_pcb_footprint': Result := Lib_CreatePCBFootprint(Params, RequestId);
-        'add_3d_body':          Result := Lib_Add3DBody(Params, RequestId);
-        'position_3d_body':     Result := Lib_Position3DBody(Params, RequestId);
-        'set_active_part':     Result := Lib_SetActivePart(Params, RequestId);
-        'list_available_libraries': Result := Lib_ListAvailableLibraries(Params, RequestId);
-        'get_symbol_geometry':  Result := Lib_GetSymbolGeometry(Params, RequestId);
-        'resolve_workspace_component': Result := Lib_ResolveWorkspaceComponent(Params, RequestId);
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_ACTION', 'Unknown library action: ' + Action);
     End;

@@ -806,11 +806,9 @@ def register_generic_tools(mcp):
                 OwnerPart_ID; on pads and vias PasteMaskExpansionMode and
                 SolderMaskExpansionMode (Altium's numbers: from the rule or
                 manual), PasteMaskUsePercent, PasteMaskPercent and
-                PasteMaskEnabled; on any board object DetailString,
-                DRCError, UniqueID and IsElectricalPrim (reads); on any
-                schematic object DescriptionString, IdentifierString and
-                ErrorString (reads); on tracks, arcs and vias IsPreRoute
-                and UserRouted; on a pour DrawRemovedNecks,
+                PasteMaskEnabled (percentage openings require expansion
+                mode 2); on tracks, arcs and vias IsPreRoute (observed to
+                revert after save/reopen on AD 26.11) and UserRouted; on a pour DrawRemovedNecks,
                 DrawRemovedIslands, DrawDeadCopper, ExpandOutline and
                 AutoGenerateName; on board text Inverted,
                 UseInvertedRectangle, InvertedTTTextBorder,
@@ -841,13 +839,9 @@ def register_generic_tools(mcp):
                 take ReadOnlyState, ParamType, AllowLibrarySynchronize
                 and AllowDatabaseSynchronize, and report NameIsReadOnly,
                 ValueIsReadOnly, IsRule, IsSystemParameter and
-                IsConfigurable, and with designators ShowName,
-                Autoposition and GraphicallyLocked (not saved); ports
-                take AutoSize,
-                OverrideDisplayString and HarnessColor (not saved).
-                Styles of notes, frames, shapes, ports, power
-                ports and off-sheet connectors: tool_guide.
-                Symbol pins
+                IsConfigurable; ports take AutoSize,
+                OverrideDisplayString and HarnessColor (the last two do
+                not survive save and reopen; the reply notes it). Symbol pins
                 take SwapIdPart (shared by every pin of the part),
                 SwapIdPin, SwapIdPair, SwapIdPartPin.
             scope: "active_doc" (default), "project" (all SCH sheets),
@@ -859,25 +853,36 @@ def register_generic_tools(mcp):
             items: Several filter+set operations at once (see above).
 
         Returns:
-            "matched", "sheets_processed", and on a schematic "modified"
-            (something was written) with "saved" false: the sheet is
-            marked modified, not saved; app_save_all writes it.
-            On a board "reindexed" and "stale_index": objects the write
-            dropped from the board's index, put back or not.
-            With items: operations_processed, operations_skipped,
-            total_matched and per-item ``results`` with ``matched`` and a
-            ``note`` ("no_objects_matched" when nothing matched).
+            Dictionary with "matched" count and "sheets_processed".
+            A single schematic sheet also reports "modified" for a matched
+            write and "saved" false; call app_save_all to persist the edit.
 
-        Example - rename a net on every sheet:
-            obj_modify(object_type="eNetLabel", scope="project",
-                       filter="Text=OLD_NET", set="Text=NEW_NET")
-        Example - edit a pin on any part of a multi-part SchLib symbol:
-            obj_modify(object_type="ePin", scope="lib_component:R_0402",
-                       filter="Designator=1", set="Name=A")
-        Example - put board copper on a net, or take it off (track, arc,
-        via, pad, fill, region, polygon; the net must exist, "" = no net):
-            obj_modify(object_type="eRegionObject",
-                       filter="Layer=TopLayer|Net=GND", set="Net=")
+        Example - rename a net across all sheets (one value fits all matches):
+            obj_modify(
+                object_type="eNetLabel",
+                scope="project",
+                filter="Text=OLD_NET",
+                set="Text=NEW_NET"
+            )
+        Example - modify a specific sheet without switching:
+            obj_modify(
+                object_type="eParameter",
+                scope="doc:C:\\path\\MODULE_A.SchDoc",
+                filter="Name=Title",
+                set="Text=Module A"
+            )
+        Example - edit a pin inside one SchLib symbol (no lib_set_current_component):
+            obj_modify(
+                object_type="ePin",
+                scope="lib_component:R_0402",
+                filter="Designator=1",
+                set="Name=A"
+            )
+        A placed component also accepts DisplayMode (0 through
+        DisplayModeCount - 1), "DisplayModeNames" (the alternate drawing names),
+        and FootprintPinMap, for example
+        "G->1;D->2;S->3". A pin map write merges Altium entries and is
+        read back; it cannot clear the whole map through this property.
         """
         if items is not None:
             shared = {k: v for k, v in (("scope", scope),
@@ -909,6 +914,9 @@ def register_generic_tools(mcp):
         hint = BulkHintTracker.record_and_hint("obj_modify")
         if hint and isinstance(result, dict):
             result["_hint_bulk"] = hint
+        notes = _pcb_write_notes(object_type, set)
+        if notes and isinstance(result, dict):
+            result["_native_write_notes"] = notes
         if (isinstance(result, dict) and object_type == "ePort"
                 and re.search(r"(^|\|)\s*(OverrideDisplayString|HarnessColor)\s*=", set)):
             result["note"] = _PORT_FIELDS_DO_NOT_SAVE

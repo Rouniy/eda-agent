@@ -1925,7 +1925,8 @@ def register_pcb_tools(mcp):
         return reply
 
     @mcp.tool()
-    async def pcb_measure_clearance(object1: str, object2: str) -> dict[str, Any]:
+    async def pcb_measure_clearance(object1: str, object2: str,
+                                    board_path: str = "") -> dict[str, Any]:
         """How far apart two board objects are, and whether that breaks a rule.
 
         The edge-to-edge distance Altium measures between the two
@@ -1944,6 +1945,10 @@ def register_pcb_tools(mcp):
                 object of the type (seconds on a busy board). A whole component ("U1") or a net ("net:GND") is
                 refused: a distance needs one primitive.
             object2: The second object, in the same forms.
+            board_path: The .PcbDoc the objects are on. Empty acts on the
+                focused board; a path is refused unless that board is the
+                focused one, so a part is never looked for on another
+                board that happens to be in front.
 
         Returns:
             ``distance_mils``, ``distance_mm``, ``touching`` (distance 0),
@@ -1960,6 +1965,8 @@ def register_pcb_tools(mcp):
             return {"ok": False, "reason": "object1 and object2 are required"}
         params: dict[str, Any] = {"object1": object1.strip(),
                                   "object2": object2.strip()}
+        if board_path.strip():
+            params["board_path"] = board_path.strip()
         return await get_bridge().send_command_async("pcb.measure_clearance", params)
 
     @mcp.tool()
@@ -8701,6 +8708,7 @@ def register_pcb_tools(mcp):
     @mcp.tool()
     async def pcb_apply_stackup_template(
         template: str, dry_run: bool = True,
+        legacy_stack_write: bool = False,
     ) -> dict[str, Any]:
         """Give the active board a fab stack-up's thicknesses and Dk.
 
@@ -8713,6 +8721,8 @@ def register_pcb_tools(mcp):
         Args:
             template: stack-up name, e.g. "JLC04161H-7628"
             dry_run: True to only plan (default)
+            legacy_stack_write: Explicit opt-in to the legacy V7 dielectric
+                write path; verify the saved result with pcb_stack_from_file.
 
         Returns:
             ``{"ok", "template", "calls", "dry_run"}``, plus per-layer
@@ -8727,6 +8737,11 @@ def register_pcb_tools(mcp):
         plan = fab_library.plan_apply(board, template)
         if not plan["ok"] or dry_run:
             return {**plan, "dry_run": dry_run}
+        if not legacy_stack_write:
+            return {"error": "LEGACY_STACK_WRITE", "reason":
+                    "Use pcb_build_stack on an exact PcbDoc, or opt in and "
+                    "verify the saved file with pcb_stack_from_file.",
+                    "calls": plan["calls"]}
         results, changed, not_changed = [], [], []
         for call in plan["calls"]:
             params = {k: (f"{v:g}" if isinstance(v, float) else str(v))
@@ -8741,7 +8756,8 @@ def register_pcb_tools(mcp):
             (changed if ok else not_changed).append(call["layer"])
         return {"ok": not not_changed, "template": plan["template"],
                 "dry_run": False, "calls": plan["calls"], "results": results,
-                "changed": changed, "not_changed": not_changed}
+                "changed": changed, "not_changed": not_changed,
+                "verify": "save and check with pcb_stack_from_file"}
 
     @mcp.tool()
     async def pcb_set_plane_net(layer: str, net: str) -> dict[str, Any]:
@@ -8822,6 +8838,7 @@ def register_pcb_tools(mcp):
         layer: str = "",
         visible: bool = True,
         layers: Optional[Any] = None,
+        board_path: str = "",
     ) -> dict[str, Any]:
         """Show or hide a PCB layer, or several.
 
@@ -8837,6 +8854,8 @@ def register_pcb_tools(mcp):
                        "KeepOutLayer", "Mechanical1" and up, or the
                        board's own name for a layer
             visible: True to show, False to hide
+            board_path: Exact open PcbDoc path, when supplied. Copper layers
+                absent from its physical stack are rejected.
 
         Returns:
             Dictionary with layer name and visibility state
@@ -8845,15 +8864,18 @@ def register_pcb_tools(mcp):
         names = _layer_names(layer, layers)
         if not names:
             return {"success": False, "error": "give a layer, or layers"}
+        base_params = {"visible": "true" if visible else "false"}
+        if board_path:
+            base_params["board_path"] = board_path
         if len(names) == 1:
             return await bridge.send_command_async(
                 "pcb.set_layer_visibility",
-                {"layer": names[0], "visible": "true" if visible else "false"})
+                {"layer": names[0], **base_params})
         results = []
         for name in names:
             results.append(await bridge.send_command_async(
                 "pcb.set_layer_visibility",
-                {"layer": name, "visible": "true" if visible else "false"}))
+                {"layer": name, **base_params}))
         failed = [n for n, r in zip(names, results)
                   if isinstance(r, dict) and r.get("success") is False]
         return {"success": not failed, "visible": visible, "layers": names,

@@ -541,9 +541,6 @@ class _CompactFastMCP(FastMCP):
         outermost = plan is not None
         given = arguments
         started = time.monotonic()
-        from .diag import usage
-        started = time.monotonic()
-        call: dict = {"tool": name}
         token = lengths.enter()
         try:
             with tool_call(name) as call:
@@ -551,11 +548,6 @@ class _CompactFastMCP(FastMCP):
         except BaseException:
             if outermost:
                 _count_usage(name, given, None, time.monotonic() - started, ok=False)
-            raise
-        except BaseException as exc:
-            usage.get_recorder().record(
-                _usage_name(name, arguments, call), arguments,
-                ms=int((time.monotonic() - started) * 1000), error=exc)
             raise
         finally:
             lengths.leave(token)
@@ -593,20 +585,6 @@ def _count_usage(name: str, arguments: Any, result: Any, seconds: float,
                      member=member, ok=ok)
     except Exception:  # noqa: BLE001 - a count never breaks a tool
         pass
-
-
-def _usage_name(name: str, arguments, call) -> str:
-    """The operation a call ran: the tool, or for a family tool or
-    tool_invoke the member it reached (name_tool_call), as
-    ``family/member``. A call over a list of items keeps the tool's
-    own name."""
-    inner = str((call or {}).get("tool") or "") if isinstance(call, dict) else ""
-    if inner and inner != name:
-        # pcb_calc reaching pcb_calc_impedance reads pcb_calc/impedance.
-        if inner.startswith(name + "_"):
-            inner = inner[len(name) + 1:]
-        return f"{name}/{inner}"
-    return name
 
 
 # Create global FastMCP instance, named for the backend so a client that
@@ -859,8 +837,16 @@ def serve_mcp(no_dashboard: bool = False) -> int:
     return 0
 
 
-def main() -> int:
-    """CLI entry point.
+
+
+
+
+
+
+
+
+def command_groups() -> list[tuple[str, tuple[str, ...]]]:
+    """Section headings for `eda-agent --help`, in the order shown.
 
     argparse has no notion of grouping subcommands: every add_parser
     lands in one flat list in call order, and at 43 commands that list
@@ -885,8 +871,7 @@ def main() -> int:
             "doctor", "health", "perf", "compute-status", "fork-status",
         )),
         ("Browser UIs", (
-            "dashboard", "stop-dashboard", "vote",
-        )),
+            "dashboard", "stop-dashboard", )),
         ("Altium SDK reach", (
             "sdk-coverage", "sdk-probe", "sdk-symbols", "sdk-generate",
         )),
@@ -894,14 +879,12 @@ def main() -> int:
             "profile-init", "profile-list", "profile-show", "profile-use",
             "profile-validate", "profile-new-project",
             "phases-show", "phases-enable", "phases-disable",
-            "router-show", "router-use",
         )),
         ("Design modes", (
             "mode-list", "mode-show", "mode-use", "mode-init",
         )),
         ("Offline analysis (no running Altium)", (
-            "review", "bom", "netlist",
-        )),
+            )),
         ("Engineering calculators", (
             "calc", *cli.CALC_COMMANDS, "calc-cross-check",
         )),
@@ -1428,22 +1411,33 @@ def build_parser() -> argparse.ArgumentParser:
              "has are overwritten; anything else already there is left "
              "alone (this merges, it does not replace the directory).")
 
-    # router-* -- which autorouter engine routing runs use (route/engine.py)
-    router_show_p = subparsers.add_parser(
-        "router-show",
-        help="Which autorouter engine routing runs use (default or euan), "
+    # The NPI gate. Off by default, and recorded in the profile beside the
+    # owner's other house rules, because which stages a programme runs is
+    # one of those rather than a property of the board in front of you.
+    phases_show_p = subparsers.add_parser(
+        "phases-show",
+        help="Which NPI stages are in force (EVT, DVT, PVT and the rest), "
              "and which setting decided it.",
     )
-    router_show_p.add_argument("--json", action="store_true", dest="json_out",
+    phases_show_p.add_argument("--json", action="store_true", dest="json_out",
                                help="Emit machine-readable JSON.")
-    router_use_p = subparsers.add_parser(
-        "router-use",
-        help="Choose the autorouter engine: 'default', or 'euan' for the "
-             "alternative router from Euan's fork (off by default). Writes "
-             "the active profile's router.json.",
+
+    phases_enable_p = subparsers.add_parser(
+        "phases-enable",
+        help="Run the named NPI stages, or all five when none are named. "
+             "Writes the active profile's phase_gates.json.",
     )
-    router_use_p.add_argument("engine", choices=("default", "euan"),  # = engine.ENGINES
-                              help="default (the usual router) or euan.")
+    phases_enable_p.add_argument(
+        "stages", nargs="*", metavar="STAGE",
+        help="feasibility, research, prototype, evt, dvt, pvt (also 'design "
+             "validation' and the other spellings). None means all six. "
+             "They always run in that order, whatever order you name them.")
+
+    subparsers.add_parser(
+        "phases-disable",
+        help="Stop running NPI stages. Answers already recorded are kept "
+             "and come back if the stages do.",
+    )
 
     # mode-* -- design modes: presets for the kind of run (design/modes.py)
     subparsers.add_parser("mode-list", help="List the design modes and which is selected.")
@@ -1705,6 +1699,22 @@ def build_parser() -> argparse.ArgumentParser:
                        help="List up to N properties not reached, per type.")
     sdk_p.add_argument("--json", action="store_true",
                        help="Every type with every name not reached, as JSON.")
+    for verb, what in (("altium365-scan-library",
+                        "Read a workspace's whole managed library into the active "
+                        "profile (library/<host>/), continuing an unfinished scan."),
+                       ("altium365-update-library",
+                        "Refresh a scanned library: reread all but its bulk block, and "
+                        "say whether a full scan is needed.")):
+        lib_p = subparsers.add_parser(verb, help=what)
+        lib_p.add_argument("--workspace", default="",
+                           help="Workspace URL (default: the profile's one).")
+        lib_p.add_argument("--database-dir", default="",
+                           help="Keep the database here instead of in the profile.")
+        if verb == "altium365-scan-library":
+            lib_p.add_argument("--workers", type=int, default=4,
+                               help="Readers on different row ranges at once (1-16).")
+            lib_p.add_argument("--restart", action="store_true",
+                               help="Drop an unfinished scan and start over.")
 
     # stop-dashboard -- terminate the dashboard process by PID file
     stop_dash_p = subparsers.add_parser(
@@ -1713,6 +1723,10 @@ def build_parser() -> argparse.ArgumentParser:
               "Use this when the dashboard was launched detached by the "
               "Altium script and you want to kill it without rebooting."),
     )
+
+
+
+
 
     # calc -- the offline engineering calculators, without an MCP client.
     calc_p = subparsers.add_parser(
@@ -2014,8 +2028,12 @@ def main() -> int:
         import json as _json
         print(_json.dumps(done, indent=1, ensure_ascii=False))
         return 0
-    if args.command == "calc":
-        return cli.cmd_calc(args.name, args.inputs, as_json=args.json)
+    if args.command == "perf":
+        return cli.cmd_perf(as_json=args.json_out, limit=args.limit)
+    if args.command == "fab-inspect":
+        return cli.cmd_fab_inspect(
+            args.directory, as_json=args.json_out, board_name=args.board_name,
+        )
     if args.command in ("health", "doctor"):
         from .diag.checks import format_report, overall_exit_code
         if args.command == "health":
@@ -2129,10 +2147,6 @@ def main() -> int:
         return cli.cmd_phases_enable(args.stages)
     if args.command == "phases-disable":
         return cli.cmd_phases_disable()
-    if args.command == "router-show":
-        return cli.cmd_router_show(as_json=args.json_out)
-    if args.command == "router-use":
-        return cli.cmd_router_use(args.engine)
 
     if args.command == "calc-cross-check":
         return cli.cmd_calc_cross_check(args.calculator, args.arg,

@@ -291,11 +291,9 @@ FEATURES: tuple[Feature, ...] = (
             core=True, docs="docs/FEATURES.md"),
     Feature("layout", "Placer and router", "Analysis",
             "Automatic placement and routing of the board, with the result "
-            "checked before it is written to Altium. Two routing engines: this "
-            "project's own, and Euan's alternative router, switched with "
-            "`eda-agent router-use`.",
+            "checked before it is written to Altium.",
             offers=("pcb_autoplace with incremental scoring",
-                    "pcb_autoroute, default or Euan's engine",
+                    "pcb_autoroute",
                     "Route plans and repair plans"),
             needs=("numpy", "scipy", "networkx"),
             tools=("pcb_autoplace", "pcb_autoroute", "route_plan"),
