@@ -1284,9 +1284,9 @@ End;
 { the Height parameter when it has no body.                               }
 Function ComponentGuardedHeight(Comp : IPCB_Component) : Integer;
 Var
-    MaxOverall, Count : Integer;
+    MaxOverall, Count, StepCount : Integer;
 Begin
-    ComponentBodyScan(Comp, False, MaxOverall, Count);
+    ComponentBodyScan(Comp, False, MaxOverall, Count, StepCount);
     If Count > 0 Then Result := MaxOverall
     Else
     Begin

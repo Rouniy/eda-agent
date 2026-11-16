@@ -3303,7 +3303,7 @@ Var
     NoNameX1, NoNameY1, NoNameX2, NoNameY2 : Double;
     BodyMode, BodyList, HeightJson : String;
     WantList : Boolean;
-    MaxOverall, BodyCount : Integer;
+    MaxOverall, BodyCount, StepCount : Integer;
     ParamMils, MaxMils : Double;
 Begin
     { body_heights: max (default) = the tallest 3D body per part; all = also }
@@ -3341,7 +3341,7 @@ Begin
         Try SrcUniqueId := Comp.SourceUniqueId; Except SrcUniqueId := ''; End;
         Try UniqueIdStr := Comp.UniqueId; Except UniqueIdStr := ''; End;
         Try ParamMils := CoordToMilsF(Comp.Height); Except ParamMils := 0; End;
-        BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount);
+        BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount, StepCount);
         MaxMils := CoordToMilsF(MaxOverall);
         If BodyCount > 0 Then
         Begin

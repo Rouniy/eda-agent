@@ -49,8 +49,13 @@ if '--skip-lint' not in sys.argv:
               'Fix them or re-run with --skip-lint to bypass.',
               file=sys.stderr)
         sys.exit(1)
+    import lint_arity
+    if lint_arity.main():
+        print('\nbuild aborted: a call does not match its routine. Altium '
+              'would stop on it with "Comma expected".', file=sys.stderr)
+        sys.exit(1)
 
-header = """{ SPDX-License-Identifier: Apache-2.0                                   }
+header ="""{ SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
 { Altium_MCP.pas - Monolithic build of all Altium integration bridge               }
