@@ -209,7 +209,7 @@ loaded runtime was not changed.
 
 The separate `backport-morembedded-phases` branch extends design modes with
 profile- and CLI-controlled `design_phase_*` tools, hidden by default. Rouniy's
-existing `design_npi_*` programme journal remains separate. 744 related tests
+earlier NPI programme journal has since been replaced by them. 744 related tests
 pass; direct `phases-show`, `--phases evt phases-show` and `mode-list` commands
 also run from this worktree. The Pascal runtime remains `.197`; no runtime was
 deployed. Full-suite and native acceptance remain pending.

@@ -444,9 +444,9 @@ another profile's units.
 }
 ```
 
-Which [NPI stages](NPI_PHASE_GATES.md) this owner runs. An empty list is
-the default, and it leaves the three `design_phase_*` tools unadvertised
-rather than advertised and refusing.
+Which [phase gates](PHASE_GATES.md) this owner runs. An empty list is
+the default and means every stage. The three `design_phase_*` tools are
+always advertised.
 
 It is a profile setting because which gates a programme runs follows the
 company rather than the board in front of you, and a project-local

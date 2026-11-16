@@ -1,657 +1,215 @@
+<div align="center">
+
 # eda-agent
 
-MCP server that lets an AI (or any MCP-compatible client) **interact with a live Altium Designer session**, with KiCad and EasyEDA Pro available as additional backends. It exposes around 600 tools on Altium, covering schematic, PCB, library, project, and design-agent operations, over a persistent DelphiScript bridge. The AI reads the design you currently have open, asks questions about it, and can modify it in place while you watch. The [backend](#eda-backends) is selected at startup, so each user sees only their own tool set.
+**Let an AI work inside your live Altium Designer session.**
 
-> **⚠️ Experimental.** Not all tools are extensively tested. Some can crash the Altium DelphiScript engine. See [Known limitations](#known-limitations) before using on any design you haven't backed up.
+An MCP server that gives Claude, or any MCP client, around 800 tools on the design you have open:
+schematic, PCB, library, project, review, signal and power integrity, and thermal analysis. You watch every change happen in Altium.
 
-## Demo
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](pyproject.toml)
+[![Docs](https://img.shields.io/badge/docs-website-0A7E8C.svg)](https://morembedded.github.io/eda-agent/)
+[![Tests](https://github.com/Rouniy/eda-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/Rouniy/eda-agent/actions/workflows/tests.yml)
 
-Claude Code with eda-agent designs a round 54 mm, 4-layer RGB LED display board in Altium Designer from a written spec to manufacturing files. It builds a project library from scratch, with a symbol, footprint, 3D model and part numbers for every part. It then draws the schematic, places 61 LEDs in rings, routes the USB pair at 90 ohms, pours stitched ground, gets DRC clean and writes the Gerbers, drill, BOM, pick-and-place and STEP files. A correction round follows: a review prompt lists issues from the first pass, and Claude reroutes the whole USB pair as a coupled differential pair, gives every part a realistic 3D model from its datasheet drawing and finishes the schematics with title blocks. The result would still get a manual tweaking pass before prototyping, but it is already at a very good stage.
+[**Website**](https://morembedded.github.io/eda-agent/) ·
+[Quick start](#quick-start) ·
+[Features](docs/FEATURES.md) ·
+[Documentation](#documentation) ·
+[Changelog](CHANGELOG.md)
 
-[![eda-agent demo: a round RGB LED board from spec to Gerbers in Altium Designer](https://raw.githubusercontent.com/salitronic/eda-agent/main/assets/demo_round_led.jpg)](https://youtu.be/JnQsJlrpzBM)
+[![eda-agent demo: a round RGB LED board from spec to Gerbers in Altium Designer](assets/demo_round_led.jpg)](https://youtu.be/JnQsJlrpzBM)
 
-Claude Code with eda-agent draws a 12 V to 3.3 V, 2 A step-down supply around the TI TPS62130 in Altium Designer from one sentence. It fetches the datasheet, sizes the inductor, capacitors and feedback divider from it, builds the symbols, draws the schematic and verifies the netlist.
+*From a written spec to Gerbers: a 4-layer round LED board designed live in Altium ([watch the video](https://youtu.be/JnQsJlrpzBM)).*
 
-[![eda-agent demo: a schematic from a one-line spec in Altium Designer](https://raw.githubusercontent.com/salitronic/eda-agent/main/assets/demo_schematic.jpg)](https://youtu.be/ZwF9c97ZS6Y)
+</div>
 
-## Support the project
+> [!WARNING]
+> **Experimental.** Not every tool is tested on every Altium version, and some can crash Altium's script engine.
+> Back up your project first and read [Known limitations](docs/LIMITATIONS.md).
 
-Developing eda-agent and testing it against Altium's scripting engine takes a significant amount of work. If you find eda-agent useful in your work, sponsorship keeps it free and maintained. Questions and bug reports get an answer whether you sponsor or not.
+### Rouniy integration
 
-[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/salitronic)
-<a href="https://buymeacoffee.com/george.saliba"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="28"></a>
+Source candidate: package `0.8.2`, script `2026.11.16.1`. Read
+[AGENTS.md](AGENTS.md), [current deployment and qualification](docs/CURRENT-STATE.md)
+and [the integration TODO](TODO.md) before connecting to Altium.
+Shared use requires the generated selected-project read-only runtime and its
+matching client. The raw source defaults `SELECTED_PROJECT_READ_ONLY=False`;
+the developer quick start below enables the broader tool surface. New native
+behavior remains unqualified. Source changes do not replace a loaded runtime.
+The [shared operating runbook](https://github.com/4pplet/PLT-hw/blob/main/tools/eda-agent/SHARED-PROJECTS.md)
+is currently unavailable; recover it before shared runtime deployment.
+The optional [battery research lab](research/battery-ai-comsol-lab/README.md) runs as a separate package.
 
-### Sponsors
+## Why eda-agent
 
-Professional and Company sponsors appear here with their logo, and Backer and Big thanks sponsors by name. Be the first: [github.com/sponsors/salitronic](https://github.com/sponsors/salitronic).
+- **Live, not batch.** Altium stays open and in charge. The AI reads the design you have open, answers questions about it, and edits it in place.
+- **Built for real review work.** One call gives a design snapshot. A 31-check lint sweep, schematic and PCB netlist cross-checks, and fab package verification come with it.
+- **Datasheet first.** The tools tell the AI to fetch the vendor datasheet, and never to make values up.
+- **Fast.** Nearly every tool takes a list, so 20 edits are one call and one undo step. The auto-placer scores only what each move changed (6 to 13 times faster), and an optional Rust core speeds up routing.
+- **Your house style.** Profiles hold pad rounding, design rules, ERC levels, fab stackups and templates, one per company or project.
+- **Analysis on the real copper.** Signal integrity from line models to eyes and a whole-board check, PDN IR drop and impedance, and 3D thermal analysis, all read from the board you have open.
+- **You stay in control.** A status window inside Altium shows every command as it runs and holds the switches for what the AI may change; a local web dashboard covers review, calculators, simulation and the optional features.
+- **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface: 920+ with both backends (Altium and KiCad) registered.
 
-## Dashboard
+## Quick start
 
-<img src="https://raw.githubusercontent.com/salitronic/eda-agent/main/assets/dashboard.png" alt="eda-agent status window inside Altium Designer, command log" width="320"> <img src="https://raw.githubusercontent.com/salitronic/eda-agent/main/assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="320">
+You need **Windows**, **Python 3.11+** and **Altium Designer** (AD20 or newer is best).
 
-Two dashboards ship with eda-agent:
-
-- **In-Altium status window** - a floating Altium-side window showing live status, request count, cumulative Altium-side time, auto-shutdown countdown, and a per-command log with durations. `Hide pings` filters the 30 s keep-alive traffic; `Slow only` isolates slow calls. The **Config** tab (right) sets what the AI may do: edit designs, delete, close documents, and drive menus and dialogs, plus view options. Changes apply live. The **Detach** button exits the polling loop cleanly; it saves nothing, so unsaved edits stay in the editor.
-- **Web dashboard** - a local browser dashboard at `http://127.0.0.1:8766`, focused on design review. A **Review** tab surfaces datasheet / MPN / manufacturer / footprint coverage gauges and an actionable issue queue (missing datasheet, missing MPN, orphan nets, ...); **Project**, **Components**, **Nets**, **Libraries** and **Plan** tabs give live structured views. Click any component or net to drill into a detail drawer; one click cross-probes it into Altium. Light / dark theme, server-sent-events live feed. It is auto-started by the MCP server - the **Open Dashboard** button on the in-Altium status window launches the browser.
-
-## How it works
-
-- Altium Designer stays open and in full control of your design
-- A DelphiScript polling loop runs inside Altium's scripting engine
-- `eda-agent` (Python, launched by your MCP client) sends commands via file-based IPC
-- Altium executes, writes a response, and returns to polling
-- You see the changes happen live in Altium
-
-This is **not** a batch tool that opens a project, runs a script, and exits. It's a live connection for as long as you want it (conversational design review, guided refactoring, ad-hoc BOM queries, "what nets does this resistor connect to?"), all on the project you currently have open.
-
-## Features
-
-- **~600 tools on the default Altium backend** (600+ with both registered) across application, project, library, schematic/general, PCB, and design-agent categories
-- **Generic primitives** (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `obj_run_process`) that work on almost any schematic or PCB object type via late-binding, avoiding per-type handler proliferation (`obj_create` makes schematic objects only). On a board, a filter on an exact `Net=`, `Component=`, `Layer=` or `BoundsLeft`/`BoundsBottom` goes straight to its objects; any other condition is checked on every object of the type
-- **Every tool takes a list**: give nearly any tool `items`, a list of its own arguments, and up to 200 items are one call, one request to Altium and one undo step (`pcb_place_arc(items=[...])` places twenty arcs that one Undo takes back; in a PcbLib each pad is its own undo step). The reply gives each item's result in order. Some tools take their list directly: `pcb_place_tracks`, `pcb_place_vias`, `pcb_place_arcs`, `pcb_place_pads`, `pcb_move_components`, `sch_place_wires`, `sch_place_components`, `sch_set_components_parameters`, `lib_add_pins`, `proj_get_connectivity_many`, `sim_attach_primitives`. `obj_modify` with `items` sends one request, but each item is its own search and edit. Typical wall-time savings: 10 to 100x on multi-item edits
-- **Design review snapshot**: `design_review_snapshot` bundles 8 to 12 review reads (project info, components, nets, rules, diff, messages, stats, unrouted, BOM) into a single call. One LLM turn instead of a dozen
-- **Design-lint sweep**: `design_lint_report` runs 31 audit checks in one IPC pass and returns a structured violation list - schematic-side (component-parameter visibility per class, power-port orientation, floating ports, multi-output / no-driver nets, duplicate designators, off-grid components) and PCB-side (DNP variant components, tented-via ratio, near-miss track endpoints, signal vias without nearby return via, via antennas, removed pad shapes, components outside outline, pads too close to board edge, invalid polygon regions, optional DRC). Each check is also reachable on its own as `audit(kind=...)`; the dashboard's Status → Health subtab has a one-click Lint panel that calls `/api/lint` and groups results by Schematic / PCB
-- **Canonical circuit blocks**: `design_add_circuit_block` folds a whole block into a `DesignPlan` in one call, allocating refdes, wiring every pin to the right net and tagging power / ground and roles. Twelve of them: `decoupling`, `pullup`, `pulldown`, `series_resistor`, `voltage_divider`, `rc_lowpass`, `rc_highpass`, `led_indicator`, `crystal`, `pi_filter`, `mosfet_low_side`, `mosfet_high_side`. Naming-agnostic: you supply the part identities, it owns only the wiring pattern. `design_list_circuit_blocks` returns each one's parameter contract, so the planner never guesses a parameter name
-- **Datasheet-first discipline**: every component-surfacing response (`pcb_get_components`, `proj_get_bom`, `proj_get_component_info_many`, `proj_find_component`, `lib_search`, `design_review_snapshot`, `sim_get_readiness`) carries a `_datasheet_guidance` block with per-part vendor search queries. `app_attach` / `app_ping` carry a `_system_reminder` on their first call and every 10th after it (`EDA_AGENT_REMINDER_EVERY` sets the interval), so every MCP client that connects sees the rule at session start and again later. LLM-fabricated datasheet values are forbidden; WebFetch/WebSearch are called out by name
-- **Sch <-> PCB netlist crossref**: `obj_crossref_net(net_name)` compares the schematic pin list against the PCB pad list for the same net. Catches ECO drift, stale post-fabrication routing, phantom nets from port/sheet-entry rename conflicts. `in_sync` flag + `sch_only` / `pcb_only` diff
-- **SPICE simulation workflow**: `sim_get_readiness` audits every component and partitions into ready / needs-primitive / needs-file. `sim_attach_primitives` sets SpicePrefix + Value on passives. `sim_attach_model` links a vendor `.mdl` / `.ckt`. `sim_run` dispatches the simulator. Built-in guardrail: never fabricate a SPICE model file, fetch the vendor one
-- **Focus-independent PCB access**: every PCB handler falls back to `GetPCBBoardByPath` when `GetCurrentPCBBoard` returns nil (user has a sch tab focused). No more misleading "No PCB document is active" when the PCB is right there
-- **Persistent and compile-cached**: one polling loop stays loaded, so a call does not start a script each time. `SmartCompile` caches `DM_Compile` with a 2 s TTL so a multi-read review pays for one compile instead of a dozen. Explicit `proj_force_recompile` + `proj_get_compile_freshness` probes for cases that need a guaranteed-fresh netlist (e.g. after user edits)
-- **Editor and project settings, read back**: board grids and the sheet's electrical grid, board and schematic editor preferences, auto-save, and project options (net identifier scope, output path, pin swapping). Every value written is read back, and one that did not take is reported in `not_applied`
-- **Rigid-flex and route clean-up**: split a board into layer stack regions, give each region its own stack (a flex stack with fewer copper layers), add and edit bend lines with radius, angle and fold order, and run Altium's Gloss or Retrace on chosen nets with the track count and length reported before and after
-- **Layer stack manager**: the whole physical stack with Z heights and finished thickness, dielectric and solder mask settings (Dk, Df, thickness, stiffener), layers inserted above or below a chosen layer, impedance profiles created and set per layer, and each via's protection structure and back drilling
-- **Board output and editor settings**: the Gerber and print setup saved in a board, Testpoint Style rules, the coarse visible grid factor and each grid's unit, what pasting keeps and the paste array, confirmations, auto-pan and netlist-load behaviour, display fonts and colours, more schematic preferences, a pad's drill type, and sheet reference zones for every part, label and port
-- **Net colour highlighting**: give board nets a colour and draw them in it, or copy each net's project (schematic) colour onto the board so both highlight alike
-- **Annotation runs silently**: `proj_annotate` designates components without popping the annotate dialog
-- **Drives the GUI where there is no API**: a great deal of Altium exists only as menus and dialogs. `app_menu` clicks through the real menu bar by name (and lists what a menu holds, so paths are discovered rather than guessed); `app_list_open_dialogs` reports what is on screen, what it says and whether Altium is stuck; `app_ui` sets checkboxes, fields, dropdowns and grid rows; `app_press_dialog_button` presses one button; `app_drive_dialogs` answers a whole sequence reactively. **None of it uses the bridge**, only Win32 and the accessible layer, so it keeps working while a modal has the scripting engine blocked, which is exactly when you need it. `app_menu` with `how="drive"` fires a menu command and answers its dialogs in the same call, because a command that opens a modal blocks the bridge and a second call would never arrive. The driver decides from what is on screen rather than from a script, stops on any dialog it cannot classify, and gates the press that changes the design behind `allow_commit`. Dialog text that Altium paints into handle-less controls is recovered by OCR and labelled as read from pixels, not text
-- **Deferred save for speed**: mutations mark documents as modified in memory; disk writes happen on explicit `app_save_all`, and `app_detach` saves the documents that were edited. A clean document is never rewritten, and edits are not slowed by a save each
-- **Two dashboards**: an in-Altium floating status window (status, request count, per-command performance, command log, Detach button) and a browser-based **web dashboard** (`127.0.0.1:8766`) for design review - datasheet / MPN / footprint coverage gauges, an actionable issue queue, component / net drill-in, one-click cross-probe into Altium, light / dark theme. The whole project view loads in one bundled IPC round-trip (`project.dashboard_snapshot`); the web dashboard auto-starts with the MCP server
-- **DelphiScript trap linter**: `scripts/altium/lint.py` (wired into `build.py`) scans the Pascal sources for known parser hazards - `Cardinal()` casts, malformed hex literals, empty `.Add('')` arguments, braces inside comments, fixed-size arrays as function locals, reserved-word identifiers - and fails the build before a bad deploy
-- **Activity logs**: every command is appended to `workspace/activity.log` (one CSV line per command: timestamp, duration, command name, status, response size and the full response). The bridge also writes `bridge_trace.log` for IPC-level diagnostics
-- **Bulk-tool nudge**: when a singular tool is hit 2 to 3 times in 10 s, the response carries a `_hint_bulk` field pointing at the batch variant. Clients that missed the bulk tool in the docstring learn about it at runtime
-- **Design agent surface**: MCP tools (`design_get_discipline`, `design_snapshot_inventory`, `design_validate_plan`, `design_audit_schematic`, `design_validate`) that let an MCP-client LLM produce a structured `DesignPlan` JSON, audit the drawn sheet for layout problems, and validate ERC + connectivity. Datasheet-first, NDA-isolated by construction
-- **Schematics drawn from a hand template**: the LLM plans the sheet the way an engineer draws it, every coordinate on the grid (rails as straight wires, capacitors hanging to ground, a divider whose midpoint runs straight to its pin), writing wires through pin anchors such as `U1.EN`. `sch_preview_template` checks the template and draws it to a PNG without touching the sheet; `sch_draw_template` places the parts, reads their pins back, checks the wiring against those pins and the plan's nets, refuses a short or a misplaced part before the first wire, then draws the wires, power ports and labels and stamps the part data. On EasyEDA, `easyeda_emit_template` and `easyeda_emit_template_connections` do the same in two passes
-- **Atomic-parts contract**: every existing-status Part must carry `mpn`, `footprint`, `datasheet_url`; the inventory snapshot exposes those fields per component; `design_validate` emits `atomic_parts` warnings when the contract is missed. Aligns with the KiCad Atomic / Digi-Key Library / atopile / JITX convention
-- **Schematic audit**: `design_audit_schematic` returns structured `{overlaps, wire_crossings, stacked_ports}` for the active schematic - pairs of components whose bboxes intersect, wire segments crossing a non-endpoint component body (real Pascal-side `Vertex.*` + `BoundingRectangle.*` accessors), and clusters of 3+ rail glyphs of the same net. Each violation carries enough geometry for the planner to compute a corrective move. Programmatic feedback loop without needing a visual snapshot
-- **Health and doctor preflight**: `eda-agent health` (offline checks: workspace dir, pointer file, bundled scripts) and `eda-agent doctor` (full preflight talking to Altium: process running, script polling responsive, version match, a read-only command canary, optional `--library` lib-path checks). `--json` for machine-readable output
-- **pip-installable**: no admin, no installer, no touching Altium's config
-
-## Requirements
-
-- Python 3.11+
-- An EDA tool, one of:
-  - **Altium Designer** (recent versions, AD20+ preferred) - Windows only
-  - **KiCad 10** with its API enabled (Preferences → Plugins → Enable KiCad API) and the board open in the PCB editor; nothing extra to install
-  - **EasyEDA Pro** with the bundled extension installed (see [`extensions/easyeda/README.md`](https://github.com/salitronic/eda-agent/blob/main/extensions/easyeda/README.md))
-
-The server picks a backend at startup (`EDA_AGENT_BACKEND`, default `altium`), so one install drives any of them. See [EDA backends](#eda-backends).
-
-## Installation
-
-From PyPI, into an environment of its own so its dependencies never clash with your other Python tools:
+**1. Install**
 
 ```bash
-pipx install eda-agent
+git clone https://github.com/Rouniy/eda-agent
+cd eda-agent
+python -m pip install -e .
+eda-agent install-deps --all     # optional: every extra feature in one go
 ```
 
-or `uv tool install eda-agent` with [uv](https://docs.astral.sh/uv/). Either puts the `eda-agent` command on your `PATH` (run `pipx ensurepath` once if pipx says it is not). Without pipx or uv, plain pip works too:
+`eda-agent features` shows what is installed and what each feature needs;
+the dashboard's **Features** page does the same, with a choice of what to
+install. See
+[Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md).
 
-```bash
-python -m pip install eda-agent
-```
-
-That installs tagged releases. To run the latest commits on `main` instead, install from GitHub (no clone needed):
-
-```bash
-pipx install "git+https://github.com/salitronic/eda-agent"
-```
-
-or `python -m pip install "git+https://github.com/salitronic/eda-agent"`.
-
-Each copy looks for updates where it came from and, when there are some, says the command that upgrades it: `pipx upgrade eda-agent`, `uv tool upgrade eda-agent`, or `python -m pip install --upgrade` with the same source. A clone you install yourself is for working on eda-agent; see [Development](#development).
-
-Two optional parts are compiled, and come as ready-built wheels (no Rust needed): `eda-agent[route]` makes the board router's path search several times faster, and `eda-agent[render3d]` adds the path tracer for `pcb_render_3d`. Without them the same tools run on numpy and scipy.
-
-With pip, use `python -m pip` rather than a bare `pip`. It works even when pip's `Scripts` folder is not on your `PATH`, which is common when Python was installed for you by IT, and it guarantees the package goes into the same Python you will run it with.
-
-Register the server with your MCP client. The binary is `eda-agent` and runs on stdio; consult your client's docs for how to add a local stdio-based server. For a pip install, everywhere this README says `eda-agent`, `python -m eda_agent` does exactly the same thing and does not depend on `PATH`. A pipx or uv install has its own Python, so use `eda-agent` there.
-
-### Claude Code
-
-```bash
-claude mcp add altium eda-agent
-```
-
-Adds `eda-agent` as an MCP server named `altium` to your Claude Code project config. Use `-s user` to register it at the user level (available across every project):
+**2. Register it with your MCP client**
 
 ```bash
 claude mcp add -s user altium eda-agent
 ```
 
-If `eda-agent` isn't on your `PATH` ("'eda-agent' is not recognized") after a pip install, register it through Python instead. This needs no path at all:
+<details>
+<summary>"eda-agent is not recognized", or a client other than Claude Code</summary>
+
+If `eda-agent` is not on your `PATH`, register it through Python. The `--` tells Claude Code that the rest is the command to run:
 
 ```bash
 claude mcp add -s user altium -- python -m eda_agent
 ```
 
-The `--` matters: it tells `claude mcp add` that everything after it is the command to run, rather than options for `claude` itself.
+Any other MCP client: add a local **stdio** server that runs `eda-agent` (or `python -m eda_agent`).
 
-To verify the connection: `/mcp` in a Claude Code session should list `altium` as connected.
+</details>
 
-### Other MCP clients
-
-The server speaks standard MCP over stdio; any client that accepts a local stdio command will work. Invoke `eda-agent` (or `eda-agent serve`) as the subprocess, or `python -m eda_agent` if it is not on your `PATH`.
-
-### Altium-side scripts
-
-Drop the Altium script project somewhere you can find it:
+**3. Load the scripts into Altium**
 
 ```bash
 eda-agent install-scripts
 ```
 
-or, if `eda-agent` is not recognised:
+In Altium, open **Preferences → Scripting System → Global Projects → Install from file** and pick `Altium_API.PrjScr`. You only do this once.
+Then use **File → Run Script → Altium_API → Dispatcher.pas → StartMCPServer** to start the link.
+
+**4. Check it works**
 
 ```bash
-python -m eda_agent install-scripts
+eda-agent doctor
 ```
 
-Default destination: wherever Altium already loads the script project from (its Global Projects list, for every Altium version installed), or `%USERPROFILE%\EDA Agent\scripts\` the first time. Use `--dest PATH` to put it elsewhere; Altium still talks to the same workspace either way. `eda-agent health` reports a registration that points at a missing file.
+Every line should pass. In Claude Code, `/mcp` lists `altium` as connected. Now ask something like *"List every part on the 3V3 rail and flag any whose datasheet limit is below 3.3 V."*
 
-Register the script as a Global Project in Altium (once):
+The full guide, with updates, workspaces and profiles, is in [Getting started](docs/GETTING_STARTED.md).
 
-1. **Preferences** (the gear icon at the top right; **DXP → Preferences** before AD18) **→ Scripting System → Global Projects** → **Install from file**
-2. Select the `Altium_API.PrjScr` you just installed
+## What it can do
 
-From then on, every Altium startup compiles the script project and the polling loop is one click away:
-
-1. **File → Run Script...**
-2. Expand `Altium_API` → `Dispatcher.pas`, select **StartMCPServer**, click **Run**
-
-The polling loop starts and your MCP client can drive Altium.
-
-### Updating
-
-For as long as it runs, the server looks once an hour, in the background, whether this repository has new commits; the look is a cheap check that the branch has moved, and a full check follows only when it has. When there are new commits, the next tool reply says so and lists them, `app_ping` and `app_context` repeat it, and the assistant asks you before installing anything. A check that fails is reported once too. A copy installed with pip from this repository compares the commit it was installed from with the latest one; any other pip install compares its version with the one here. Either says how to upgrade. If you agree, for a clone, `server_update(apply=True)` fast-forwards it, reinstalls when the dependencies changed, copies the Altium scripts again when they changed and restarts the polling loop. Then reconnect the server (`/mcp` in Claude Code) to run the new Python. From a terminal, the same thing is:
-
-```bash
-eda-agent update          # shows what is new, then asks
-eda-agent update --check  # only shows what is new
-```
-
-A clone with uncommitted changes, commits of its own or another branch checked out is never touched; the update says why and stops. Set `EDA_AGENT_UPDATE_CHECK=0` to stop the background check from reaching the network.
-
-## EDA backends
-
-One tool surface, chosen at startup by `EDA_AGENT_BACKEND` (or `--backend`).
-
-| Backend | Reached through | Status |
-|---|---|---|
-| `altium` | a persistent DelphiScript bridge | default, most complete |
-| `kicad` | KiCad's IPC API and `kicad-cli` | optional |
-| `easyeda` | a browser extension you import into EasyEDA Pro | optional |
-
-Altium Designer is the tool this project is built around, and it needs
-your own licensed install; the other two backends serve people who work in
-those editors. None is offered in place of another. A design can be
-exchanged with KiCad in both directions (`proj_import_from_kicad`,
-`proj_convert_to_kicad`), for handing it to someone who works in the other
-tool or for review.
-
-The EasyEDA connection runs the other way round: the editor dials out to
-this server, so nothing here can start it or make it connect.
-
-Full detail, including what differs between them and what each one
-cannot do, is in [`docs/BACKENDS.md`](https://github.com/salitronic/eda-agent/blob/main/docs/BACKENDS.md).
-
-## Finding the right tool
-
-Tools are grouped by the **document** they act on, and mixing them up is the
-most common mistake: `lib_` acts on a `.PcbLib` or `.SchLib`, `pcb_` on an open
-`.PcbDoc`, `sch_` on an open `.SchDoc`, and `obj_` on either, by the object
-type it is given (`eTrackObject` acts on the active board). A board tool aimed at a
-library does not reliably fail. With no board focused it can resolve some other
-open board and report success for work you never asked for.
-
-Two tools answer different questions about the surface:
-
-- `tool_catalog` - search by name, category, maturity or interaction. Use it
-  when you know roughly what the operation is called.
-- `tool_guide` - ask in plain words what you are trying to do. It answers the
-  tool and what it needs first, the tool you were probably reaching for and why
-  it acts on a different document, and the short list of things that are
-  genuinely impossible with the reason.
-
-That last answer is the one worth knowing about. Without it there is no way to
-tell "you missed it" from "it does not exist", so the same dead ends get
-investigated repeatedly. An empty result from `tool_guide` means the guide has
-nothing on the subject, not that the server cannot do it.
-
-The same split is stated in the server instructions your MCP client receives at
-startup, so a client that reads them starts out knowing it.
-
-## Tool count (clients that cap it)
-
-Some MCP clients limit how many tools a server may expose, or serialize every
-schema into the model context at startup and slow noticeably. This server
-registers several hundred. Set `EDA_AGENT_TOOLSET=minimal` (or pass
-`--toolset minimal`) to advertise just two:
-
-- `tool_catalog` - find an operation by category, maturity, interaction or name,
-  and get its parameters with `with_schema=True`.
-- `tool_invoke` - run any tool by name with an arguments dict.
-
-Every other tool stays registered and reachable through that pair; only the
-advertised list shrinks, from several hundred to two.
-
-```bash
-claude mcp add -s user altium -e EDA_AGENT_TOOLSET=minimal eda-agent
-```
-
-Only families of tools that differ by a mode are advertised as one tool each:
-the calculators (`pcb_calc`), the audits (`audit`), the dimension and 3D body
-kinds, the menu runners, the dialog drivers and the checkpoints. Each takes a
-`kind` and that kind's arguments. Every member keeps its own name,
-description and schema; `tool_catalog` returns its summary line and schema,
-and `tool_invoke` runs it.
-Everything else keeps a tool of its own; collapsing whole areas into
-`pcb(action=...)` style entry points would lose the per-tool descriptions a
-model finds the right operation by.
-
-The trade-off: in `minimal` the model no longer sees
-tool schemas up front, so it must discover before it can act, and an argument
-mistake surfaces as the target tool's own error rather than a schema
-validation message. Call `tool_catalog(query=..., with_schema=True)` to get a
-tool's parameters and required list before invoking it, rather than guessing
-argument names - some are not what they look like (`current_amps`, not
-`current_a`), and the same tool can differ between backends. Prefer `full`
-(the default) unless your client forces otherwise.
-
-## Part sourcing
-
-`part_search` queries every enabled provider and merges the results, each
-hit attributed to the source that found it; `part_fetch` then pulls one
-part's detail from a provider you name. **No provider is enabled by
-default**, and there is no fallback order, so a result always names its
-source.
-
-The providers, their credentials and their access policies are in
-[`docs/PART_SOURCING.md`](https://github.com/salitronic/eda-agent/blob/main/docs/PART_SOURCING.md).
-
-## Altium 365, company policies, simulators
-
-**Altium 365.** The `altium365_` tools read workspaces, projects and the
-managed library, and can publish, release and change parameters (only with
-`confirm=True`). Two routes: the workspace's own API, with
-`EDA_AGENT_ALTIUM365_DOMAIN` and a token made under Admin > Developer in
-`EDA_AGENT_ALTIUM365_TOKEN`; or Nexar, with your Nexar app's client id in
-`EDA_AGENT_NEXAR_APP_ID`, its secret in `EDA_AGENT_NEXAR_CLIENT_SECRET` (a
-Nexar portal app refuses a sign-in without it) and `eda-agent altium365-login`
-once (`eda-agent altium365-logout` forgets it).
-`EDA_AGENT_ALTIUM365_WORKSPACES` limits the tools to the workspaces it
-lists. Nothing Altium 365 returns is written to disk.
-`altium365_check_setup` says which route is set up.
-The Nexar route runs under your own Nexar app, so
-[Nexar's API terms](https://nexar.com/api/legal) are yours to keep: among
-them, what the API returns is not to be kept for more than 24 hours, which
-includes copies your AI client saves in a conversation, and the app's key
-is never to be published.
-
-**Company policies** are your files in `EDA_AGENT_POLICY_DIR`: a
-`naming.json` (a `template` and `pattern` per footprint, symbol and
-component) for `lib_check_naming` and `lib_make_name`, and rules files in
-`rules/*.json` for `design_check_company_rules`. With none set, nothing is
-imposed.
-
-**Simulators.** `design_simulate_deck` runs a deck in ngspice when it is
-installed, or in LTspice when you ask for it or it is the only one
-installed. `design_simulators` lists what is installed.
-
-## Example use cases
-
-### Full-project design review
-
-> *"Do a design review of the PoE front-end. Pull the snapshot, fetch the TPS2372 and TL072 datasheets, and flag anything that doesn't match."*
-
-One `design_review_snapshot` call gives the AI project info, design stats, components, nets, rules, diff, messages, board stats, and BOM, plus a datasheet-fetch checklist. The AI then grounds every recommendation in the vendor datasheets it actually pulled. 8 to 12 separate queries collapse into one tool call.
-
-### Schematic review
-
-The AI reads your schematic live. Ask it anything a reviewer would:
-
-> *"List every component connected to the 3V3 rail and flag anything whose datasheet limit is below that."*
->
-> *"Find all net labels that appear only once across the whole project. Those are probably typos."*
->
-> *"What's driving the /RESET net? Walk the connectivity and tell me where it resets and how."*
->
-> *"Do any two components share a designator prefix with gaps in numbering (e.g. R1, R2, R4)? Re-annotate or tell me what's missing."*
->
-> *"Compare the focused schematic to the version from 3 weeks ago. What parameter values changed?"*
-
-Behind that, the AI calls tools like `obj_query(object_type="eSchComponent", scope="project")`, `proj_get_connectivity_many(designators=[...])`, `proj_get_nets(...)`, `obj_modify(...)`, and so on. You watch Altium repaint as it works.
-
-### Sch ↔ PCB drift detection
-
-> *"Run `obj_crossref_net` on POE_PG. The PCB seems to have R7 on this net but I'm not sure the schematic still does."*
-
-The response shows sch pins, PCB pads, matched count, and the diff in each direction. A non-empty `pcb_only` list means the board was fabricated from an earlier schematic revision and a later edit broke the post-ECO merge; catch this before the next ECO push rips routed connections. `in_sync: false` plus the exact diff tells you which port or sheet-entry rename to undo.
-
-### SPICE simulation setup
-
-> *"Set this schematic up for an AC sweep. Attach SPICE primitives to every passive, fetch vendor SPICE models for the op-amps, and tell me if any part can't be simulated."*
-
-`sim_get_readiness` partitions the design into `ready` / `needs_primitive` / `needs_file`. The AI batches primitives onto every passive in one `sim_attach_primitives` call, searches vendor sites for the IC models, attaches them with `sim_attach_model`, and reports any holdouts. It will not fabricate a SPICE model file; the rule is baked into the tool response.
-
-### Library hygiene
-
-> *"Open `Resistors.SchLib` and report every component missing a Value, ManufacturerPart1, or Description parameter. Fill in the missing Description from the datasheet URL if present."*
->
-> *"Diff our `Caps.SchLib` against `Caps_vendor.SchLib` and tell me what's new or changed."*
->
-> *"Create a new 48-pin symbol for STM32F411 with this pinout table."*
-
-The last one uses `lib_add_pins`: one call places the whole pinout in a single transaction instead of 48 LLM turns.
-
-### PCB spot-checks
-
-> *"Any unrouted nets on the board?"*
->
-> *"What's the total trace length for the USB differential pair, split by layer?"*
->
-> *"Show me all vias on the 12V net and their drill sizes."*
->
-> *"Run DRC and summarize the violations by severity."*
->
-> *"What does the `Clearance_HV` rule actually enforce: clearance value, scope expressions, priority?"*
-
-That last one uses `pcb_get_rule_properties`, which returns the actual numeric gap / widths / impedance targets, not just rule metadata.
-
-### Bulk changes
-
-> *"Every 0402 resistor with value 10k, set its Tolerance parameter to 1% and Voltage to 50V."*
->
-> *"Rename the net OLD_CS to SPI_CS across every sheet in the project."*
->
-> *"Move C1-C20 into this 200-mil grid layout pattern."*
-
-A list given to `pcb_move_components` or `sch_place_components` (or as `items` to most other tools) finishes the whole operation in one call and one undo step. `obj_modify` with `items` is one call, but each item is its own search and its own edit.
-
-## Known limitations
-
-**This tool is experimental. Please read this section before using on a design you haven't backed up.**
-
-> Bridge changes are checked by Free Pascal and a linter before they ship, which cannot prove Altium's own DelphiScript engine accepts them: the two differ on which identifiers exist, and an undeclared one faults at runtime rather than at compile time. [`docs/RELEASE_VERIFICATION.md`](https://github.com/salitronic/eda-agent/blob/main/docs/RELEASE_VERIFICATION.md) is the procedure for closing that gap on a release, starting with a self-test that runs inside Altium and needs no document.
-
-### UI automation synthesises real keyboard and mouse input
-
-Most of this project talks to Altium through the scripting bridge, which addresses a window handle directly and cannot affect anything else. The `app_*` UI automation tools are different, and are used where Altium offers no other route: `application.execute_menu` reports success while invoking nothing, `GetMenu` returns 0 on Altium's DevExpress bars, and whole dialogs (Update From Libraries, Preferences, the wizards) have no scripting API at all.
-
-**Synthesised input is not addressed to a window.** `keybd_event` and `mouse_event` are delivered to whatever is active at the instant they fire, and a click lands on whatever is under the pointer. So these tools:
-
-- **take focus.** Menus and clicks need Altium in front, so running them while you are typing will interrupt you
-- **cannot be confirmed the way a property write can.** A keystroke has no read-back; anything that matters is verified afterwards with a bridge read
-- could, without containment, deliver an event to another application if focus or the pointer moved
-
-What contains that: a foreground check runs **immediately before every event**, including between a key press and its release, and refocuses Altium rather than failing; coordinates are refused unless the point is over a window belonging to Altium's own process; and no tool accepts a window handle from the caller, so an arbitrary window cannot be addressed. `tests/test_foreground_guard.py` enforces all three, checking the event guard per line of source rather than per function, because a function that checks once and then emits five events in a loop would pass a naive test while firing four unchecked events.
-
-**To switch it off entirely:**
-
-```
-EDA_AGENT_UI_AUTOMATION=0
-```
-
-Every synthesised event is then refused. Reading stays available on purpose, because dialog detection is how the rest of the system notices Altium is blocked on a modal.
-
-One case is not solvable: Altium's menu bar carries entries that are commands rather than menus (Place a Comment, Share, Open Home page, Preferences), and nothing distinguishes them. Measured across all 17 bar items: identical MSAA state including `HASPOPUP`, identical `accDefaultAction`, identical UIA control type. Listing such an entry clicks it, and clicking it runs it.
-
-Full detail in [`docs/ui-automation.md`](https://github.com/salitronic/eda-agent/blob/main/docs/ui-automation.md).
-
-### Altium DelphiScript engine can crash
-
-Some tool paths trigger DelphiScript compile or runtime errors ("Undeclared identifier…", "Could not convert variant of type (Dispatch) into type (OleStr)", etc.). When that happens, the script project halts mid-execution and the polling loop stops responding. You will see one of:
-
-- An Altium error dialog stating the problem
-- Your MCP client timing out waiting for a response
-
-**Recovery is automatic** when the crash happens during a call. The server takes a screenshot of the error box, presses OK, takes a screenshot of the halted line, stops the script and restarts the loop. Other sessions' calls wait while it does. The call that crashed fails with a message saying the script crashed and where the screenshots and a crash record are (`logs/crashes` in the workspace). The handler may have applied part of its change, so read the design back before repeating it. For a script found halted some other way, call `app_recover_script`, or run `eda-agent relaunch --restart`.
-
-**By hand:** in Altium Designer, open the script project tab and press the **red Stop** button in the Script IDE toolbar (equivalently **Run > Stop** from the menu, or **Ctrl+F3**; use **Ctrl+Pause/Break** if the script is stuck in an infinite loop). This stops the halted debugger. Then re-launch the polling loop via **File > Run Script... > StartMCPServer > Run**.
-
-This is an ongoing reliability effort. Every identified crash is either fixed or guarded. If you hit a new one, the Altium error dialog tells you the exact identifier or line. Opening an issue with that text helps us harden the relevant path.
-
-### UNC network paths need current scripts
-
-A UNC path (`\\server\team\board.PrjPcb`) opens like any other with the current scripts. Scripts deployed before the fix drop one leading backslash, so the file is not found and the error names a path that looks almost right. Run `eda-agent install-scripts --force` to update them, or use a mapped drive letter (`Z:\team\board.PrjPcb`) in the meantime.
-
-### A few Altium fields hold only Latin-1 text
-
-Requests reach Altium as UTF-8, so the ohm sign and CJK text arrive intact (`10Ω` stays `10Ω`). A few of Altium's own stores keep one byte per character whatever is sent: an embedded data record's description (`pcb_embedded_data`) refuses characters above U+00FF rather than storing `?`.
-
-### Altium tool buttons relying on internal scripting pause while the server is running
-
-Altium itself uses DelphiScript internally for many built-in commands (some ribbon buttons, panel actions, menu items). **While the `eda-agent` polling loop is active, those built-in commands may become temporarily unresponsive** because Altium's scripting engine is single-threaded and currently owned by our polling loop.
-
-**The polling loop owns the scripting engine for as long as it's running.** While it runs, Altium's own script-backed buttons sit waiting. The loop exits when either:
-
-- The MCP client calls `app_detach` (or the dashboard **Detach** button is clicked); `app_detach` saves the edited documents (the button saves nothing), the loop exits within ~500 ms, and Altium becomes fully responsive, OR
-- **10 minutes of total silence** from the MCP client (no commands AND no keep-alive pings) triggers the built-in auto-shutdown
-
-In practice, while an MCP client is attached and sending keep-alive pings every 30 s, the loop will never time out on its own; you need to either have the AI call `app_detach` or close the MCP client session entirely. After the client disconnects, expect up to ~10 minutes for the loop to auto-exit unless you use **Detach** to release it immediately.
-
-### ECO (sch → PCB update) opens a modal, and there is no silent API
-
-The Altium Schematic API exposes no scripted ECO executor: `IECO` only records proposed changes, no `DM_Execute` is documented, and no factory hands a script an `IECO`. `PCB:UpdatePCBFromProject` turned out not to be a real process id, so the handler that called it no-opped while reporting success. `proj_sync_pcb` now invokes `WorkspaceManager:Compare`, which does the real work and blocks on the change-order dialog.
-
-Two consequences worth knowing before you call it.
-
-It **blocks the polling loop** until the dialog is answered, so it is not an unattended call on its own. It also **refuses while a schematic is focused**: Altium answers that case with "Cannot compare a source document against its owner project" and changes nothing. Focus the board with `app_set_active_document` first.
-
-What it reports is narrower than it looks. `components_in_sync` counts component **presence** only, so footprint swaps, designator and parameter edits and net changes are all invisible to it, and `dialog_outcome_verified` is always false because the handler cannot see which button was pressed.
-
-**To drive it end to end**, use the GUI tools rather than answering by hand:
-
-```
-app_menu(how="drive", args={"menu_path": "Design|Update PCB Document <board>.PcbDoc", "allow_commit": True})
-```
-
-That clicks the menu and answers the dialogs in one call, which matters because a modal blocks the bridge and a second call would never arrive. It validates before executing, and without `allow_commit` it presents the change order instead of applying it.
-
-### Tools vary in maturity
-
-Not every one of these tools has been exercised on every Altium version or design size. The generic primitives (`obj_query`, `obj_modify`, `obj_create`, `obj_delete`, `obj_run_process`) and the core `application` / `project` tools are the best-tested. Some PCB modify operations (polygon repour, room creation, align-components) are less battle-tested. Queries are generally safer than mutations.
-
-## Timeout and server lifecycle
-
-The server has **three independent timeout mechanisms**:
-
-### 1. Per-command timeout (Python side)
-
-When the MCP client calls a tool, the Python bridge writes a request file and waits up to **10 seconds by default** for a response. Most queries answer well inside that, so a 10 s ceiling surfaces stalls quickly while leaving plenty of margin for real work. Long-running tools that are expected to take longer (`app_save_all`, `pcb_get_unrouted_nets`) set their own larger timeouts internally.
-
-Each request is published to its own `request_<id>.json` file; Altium replies in `response_<id>.json` with the matching ID. The bridge's keep-alive thread and MCP-client calls each use their own request IDs, so responses never race. The older single-`response.json` channel was retired in IPC v2.
-
-### 2. Server auto-shutdown (Altium side)
-
-The DelphiScript polling loop auto-stops after **10 minutes of inactivity** (`AutoShutdownMs = 600000`). If the MCP client disconnects and the keep-alive pings stop arriving, the server releases Altium's scripting engine after ten minutes and `StartMCPServer` returns. To resume, re-launch via **File → Run Script... → StartMCPServer → Run**.
-
-### 3. Python keep-alive pings
-
-While an MCP client is attached, the Python bridge pings Altium every 30 seconds so the 10-minute auto-shutdown never fires mid-session. The sequence:
-
-- **AI issues command A** → Altium busy, then idle
-- **30 s later, Python pings** → Altium responds "pong", idle timer resets
-- **10 min later, still no AI activity and no ping** → Altium auto-shuts down
-
-In practice: the server stays alive as long as an MCP client is connected, and exits cleanly ~10 minutes after the client fully disconnects. No manual stop needed in the common case. For a hard exit, the AI calls `app_detach`, which saves the documents that were edited, leaves clean ones untouched, and returns control to Altium within ~500 ms. The **Detach** button on the dashboard window stops the loop without saving.
-
-### Several Claude sessions on one Altium
-
-Every session runs its own eda-agent server, and all of them talk to the one script loop in Altium. Request ids carry a session tag and a sequence number. A session working alone is served straight through, in the order it sent its requests, with no time slots. When more than one session has requests waiting, the session being served keeps going for up to 30 seconds (`SESSION_SLOT_MS`), then the next waiting session gets one slot, and so on in turn, so no session gets a second slot before every waiting session has had one. A command already running is never interrupted: slots change between commands, so one long command (a large repour, say) still holds everyone else up until it finishes. While sessions contend, Altium refreshes `queue.json` in the workspace, and a waiting client keeps waiting instead of reporting the loop as dead.
-
-Each session also keeps its own document. Most tools act on the focused document, and any session can move the focus between two calls of another. So every server sends, with each command, the document its session last had in front, and Altium puts that document back in front before running the command, in the same step so nothing can come between. A command's reply carries `session_document` when that happened. This holds even when you click to another document yourself: the next command of a busy session brings its own back, because a write on a document the session never chose is worse than a view that moves. To point a session at the document you are looking at, tell it to; `app_get_active_document` reports what is really in front, and focusing a document makes it the session's.
-
-Things that affect every session at once: a deploy, a relaunch or a restart of Altium, and `app_detach`, which saves every document a tool edited, including another session's. To restart the loop for a deploy, run `eda-agent install-scripts --force` and then `eda-agent relaunch --restart`. It waits for the command in progress to finish, and other sessions' calls wait through the restart instead of failing, so nobody needs to pause. A session whose eda-agent server started before the deploy gets `server_outdated` on its replies until it reconnects (`/mcp` in Claude Code). To stop the loop without saving, put an empty file named `stop` in the workspace.
-
-### Why this matters for Altium UI responsiveness
-
-The polling loop goes into idle mode after a second or two of no MCP commands (150 empty polls). In idle mode it polls every 30 ms with a `ProcessMessages` yield in between, so Altium's UI stays responsive continuously. In active mode the loop polls every 10 ms (`ProcessMessages` every 5th tick), so back-to-back commands are picked up without a visible wait. For a full release, call `app_detach` or click **Detach** on the dashboard.
-
-## Tool reference
-
-[`docs/TOOL_REFERENCE.md`](https://github.com/salitronic/eda-agent/blob/main/docs/TOOL_REFERENCE.md) lists every tool with
-its arguments, its **maturity** (offline / simulator / live-verified) and
-its **interaction** badge, flagging the ones that open a blocking dialog
-or leave work incomplete. It is generated by
-`python scripts/gen_tool_reference.py`, so it cannot drift from the code.
-
-At runtime `tool_catalog` serves the same data, filtered by category,
-maturity, interaction or substring, and `tool_invoke` calls anything it
-lists. That pair is the whole advertised surface under
-`EDA_AGENT_TOOLSET=minimal`.
-
-## Architecture
-
-```
-    +-----------------------------+
-    |    MCP-compatible client    |
-    +-----------------------------+
-            |              ^
-            v              |
-       tool call       tool result
-       (JSON-RPC)      (JSON-RPC)
-            |              |
-            v              |
-    +-----------------------------+
-    |     eda-agent (Python)      |
-    | application / project / lib |
-    | / generic / pcb / design    |
-    |              |              |
-    |     Altium bridge (IPC)     |
-    +-----------------------------+
-            |              ^
-            v              |
-   request_<id>.json   response_<id>.json
-            |              |
-            v              |
-    +-----------------------------+
-    |      Altium Designer        |
-    |  DelphiScript polling loop  |
-    |     (Altium_API.PrjScr)     |
-    +-----------------------------+
-```
-
-All intelligence lives in Python. The DelphiScript side is a pass-through layer for object iteration, property access, and process execution.
-
-## CLI
-
-| Command | Purpose |
+| | |
 |---|---|
-| `eda-agent` | Start the MCP server on stdio (what the MCP client calls) |
-| `eda-agent serve` | Explicit form of the above |
-| `eda-agent --no-dashboard` / `eda-agent --headless` | MCP server only, no web dashboard. Required by strict-stdio MCP clients (Codex, etc) that can't tolerate the dashboard thread. Also via env var: `EDA_AGENT_DISABLE_DASHBOARD=1` or `EDA_AGENT_HEADLESS=1`. |
-| `eda-agent scripts-path` | Print path to bundled DelphiScript sources |
-| `eda-agent install-scripts [--dest PATH] [--force]` | Copy scripts to every folder Altium loads them from, or to PATH |
-| `eda-agent relaunch [--restart] [--force] [--dry-run]` | Have the running Altium start the polling loop from the installed script project; `--restart` stops the running loop after its current command and starts it again (after `install-scripts`), and other sessions' calls wait through it |
-| `eda-agent update [--check] [--yes] [--no-relaunch]` | Show the new commits on the repository and, once you agree, update this clone, the Altium scripts and the polling loop |
-| `eda-agent easyeda-extension path\|build [--out DIR]` | Print where the EasyEDA extension source is, or build the `.eext` to import into EasyEDA Pro (needs Node.js) |
-| `eda-agent dashboard [--port P]` | Start the local web dashboard on its own (`http://127.0.0.1:8766`); it listens on this computer only |
-| `eda-agent stop-dashboard` | Stop a dashboard that was launched detached |
-| `eda-agent calc [NAME] [KEY=VALUE...] [--json]` | Run an engineering calculator; with no name, list them |
-| `eda-agent altium365-login` | Sign in to Nexar in the browser for the `altium365_` tools (needs `EDA_AGENT_NEXAR_APP_ID`) |
-| `eda-agent altium365-logout` | Forget the saved Nexar login |
-| `eda-agent sdk-reach [--detail N] [--json]` | How many of the properties Altium's SDK declares on each object type `obj_query` and `obj_modify` reach (needs the SDK index in `reference/altium_sdk`) |
-| `eda-agent health` | Fast offline preconditions: workspace dir + writable, pointer file + matches config, bundled scripts findable, bridge constructable. Exit 0 = clean, 1 = critical fail |
-| `eda-agent doctor [--library PATH]... [--json]` | Full preflight talking to Altium: all `health` checks plus process running, script polling responsive, script-version matches bundled, a read-only command round-trip, optional `--library` lib reachability checks (no hardcoded paths; repeat the flag for each lib you want tested) |
+| 🔍 **Design review** | Snapshot, lint, ERC and DRC, schematic and PCB cross-checks, rotation suggestions for top and bottom parts. See [Features](docs/FEATURES.md) |
+| ✏️ **Edit schematics and boards** | Place, wire, route, move and set parameters, in bulk with one undo. See [Tool reference](docs/TOOL_REFERENCE.md) |
+| 📚 **Libraries and parts** | Symbols, footprints, 3D models, and part search across distributors. Preview a part's symbol and footprint before placing it (`lib_preview_part`, or the dashboard's Library pane). See [Part sourcing](docs/PART_SOURCING.md) |
+| 🏭 **Fab output** | Read the Gerbers back and check them against the board, plus JLCPCB and PCBWay stackups and a cited rules database for 13 fabs. See [Fab and calculators](docs/FAB_AND_CALCULATORS.md) |
+| 📏 **Fab and IPC rule floors** | On demand, check the board's design rules against a fab's minimums and your IPC class floors, and raise the ones below them (`pcb_rules_fab_floors`). See [IPC standards](docs/IPC_STANDARDS.md) |
+| 🧮 **Calculators** | A PCB toolkit of 44 calculators on the dashboard's Calculators tab and as `pcb_calc` tools: impedance and differential pairs from a 2D field solver, trace and via current from a thermal model of the board, planes, crosstalk, passives. See [PCB toolkit](docs/PCB_TOOLKIT.md) and [Fab and calculators](docs/FAB_AND_CALCULATORS.md#calculators) |
+| 📈 **Simulation** | SPICE model library and LTspice round trip: find models by MPN, check pin maps, export and compare decks. See [SPICE models](docs/SPICE_MODELS.md) |
+| 📡 **EMI/EMC and RF** | EMI pre-scan of a routed board (`sim_emc_prescan`), openEMS S-parameters and antennas, Touchstone files. See [EMI/EMC and RF](docs/EMC_RF.md) |
+| 🌡️ **Thermal analysis** | Board temperatures and hotspots from part powers (`sim_thermal_analysis`): 3D conduction in the real copper, vias and laminate, convection and radiation, heat maps per layer, a grid-convergence error estimate. See [Thermal analysis](docs/THERMAL.md) |
+| 🧪 **Simulation engines** | One job model for every simulator: this project's own solvers, scikit-rf and openEMS today, plugins tomorrow. Each engine's answer is kept beside the others and compared (`sim_job_run`, `sim_job_compare`, the dashboard's Simulation page). See [Simulation engines](docs/SIMULATION.md) |
+| 📶 **Signal integrity: lines** | Wideband models of traces and pairs from the real stackup: R and L from an eddy-current solve with the planes, causal dielectrics, copper roughness, coupled-line S-parameters and crosstalk (`si_line_model`). A stackup planner gives every layer's width and pair gap for target impedances and checks or writes Altium's impedance profiles (`si_stackup_plan`). See [Transmission lines](docs/SI_LINES.md) |
+| 🔀 **Signal integrity: routed nets** | A routed net or differential pair modelled from pin to pin: every trace section from its own cross-section, vias with their stubs and return path, stubs off the path; S-parameters, TDR, delay, loss, skew and mode conversion, and the width, gap, length and uncoupled-length rules written back to Altium (`si_board_snapshot`, `si_net_channel`). See [Routed nets and pairs](docs/SI_NETS.md) |
+| 👁️ **Signal integrity: eyes and SPICE** | The eye of a channel at a data rate, two ways: convolution with the worst-case eye (peak distortion analysis), and an ngspice or LTspice transient through a passive macromodel; IBIS drivers and receivers at the ends; the channel kept as a SPICE subcircuit with an LTspice symbol (`si_channel_eye`, `si_spice_model`, `si_ibis_models`). See [Eyes and SPICE models](docs/SI_TIME.md) |
+| 🧭 **Signal integrity: whole board** | Every high-speed net and pair (by name or Altium net class) checked against its own limits, each fault placed on the board where it is (the TDR's fault walked along the route), hot copper from the thermal analysis, a self-contained HTML report, failing nets highlighted in Altium, and a job graph that marks results stale once the board is saved (`si_board_check`). See [Board signal integrity](docs/SI_BOARD.md) |
+| 🧩 **Features and dependencies** | `eda-agent install-deps --all` installs every optional part in one command. `eda-agent features` and the dashboard's Features page show every feature, built in or optional, what it offers, each dependency with its version and license; tick the ones to install, switch engines and the Rust kernels on and off, and point eda-agent at programs installed somewhere unusual. See [Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md) |
+| 🔋 **Power integrity (PDN)** | DC IR drop and current density on the real copper (`sim_pdn_ir_drop`), AC impedance against a target with a field-solved plane pair and every capacitor's mounting (`sim_pdn_impedance`). See [PDN analysis](docs/PDN.md) |
+| 🤖 **Guided design runs** | Spec to board, reference redraw, dev-kit derivative. See [Design modes](docs/DESIGN_MODES.md) and [Autonomous design](docs/AUTONOMOUS_DESIGN.md) |
+| 🚦 **Project phase gates** | Feasibility to PVT checklists, answered by tools where possible. See [Project phase gates](docs/PHASE_GATES.md) |
+| ☁️ **Altium 365** | Workspaces, the managed library and releases, through Nexar or directly, plus an offline copy of the managed library. See [Engineering tools](docs/ENGINEERING_TOOLS.md) |
 
-## Configuration
+<p align="center"><img src="assets/dashboard.png" alt="eda-agent status window in Altium, Log tab with the commands of a board review" width="260"> <img src="assets/status_perf.png" alt="eda-agent status window, Perf tab with totals per command" width="260"> <img src="assets/dashboard_config.png" alt="eda-agent status window, Config tab with the AI permission switches" width="260"></p>
 
-Workspace (used for IPC files between Python and Altium):
+## Documentation
 
-- Default: `%USERPROFILE%\EDA Agent\workspace\`
-- Override: set `EDA_AGENT_WORKSPACE` environment variable
-- The DelphiScript side reads the resolved path from `C:\ProgramData\eda-agent\workspace-path.txt`, which Python writes at startup and on every `install-scripts` run
+The same documents, with search and navigation, are on the [website](https://morembedded.github.io/eda-agent/).
 
-UI automation (synthesised keyboard and mouse input, used for the parts of Altium with no scripting API):
+**Start here**
 
-- Default: **on**
-- Disable: set `EDA_AGENT_UI_AUTOMATION=0` (also `false`, `no`, `off`). Anything else leaves it on, so a typo cannot silently disable it
-- Read at call time, so it takes effect on the next event rather than the next restart
-- See [UI automation synthesises real keyboard and mouse input](#ui-automation-synthesises-real-keyboard-and-mouse-input) for what it is for and what it can do
+| Document | What it covers |
+|---|---|
+| [Getting started](docs/GETTING_STARTED.md) | Requirements, install, updates, checking the setup, workspace and profiles |
+| [Features](docs/FEATURES.md) | How it works, the dashboards, the full feature list, example prompts |
+| [Using the tools](docs/USING_THE_TOOLS.md) | Finding the right tool, clients that cap the tool count, backends, modes, phase gates, part sourcing, Altium 365, performance |
+| [Known limitations and troubleshooting](docs/LIMITATIONS.md) | What can go wrong, how to recover, timeouts, common errors |
 
-Coordinates throughout the API are in **mils** (1 mil = 0.0254 mm).
+<details>
+<summary><b>Guides</b></summary>
 
-## Development
+| Document | What it covers |
+|---|---|
+| [Profiles](docs/PROFILES.md) | Per-workspace house style: naming, rules, fab profiles, templates |
+| [Fab output, stackups and calculators](docs/FAB_AND_CALCULATORS.md) | Checking the fab package, bundled fab data, laminates, calculators |
+| [IPC standards and rule values](docs/IPC_STANDARDS.md) | Catalogue of IPC standards, rule definitions, your licensed values per profile |
+| [PCB toolkit calculators](docs/PCB_TOOLKIT.md) | The Calculators tab: field-solver impedance and pairs, trace thermal model, vias, planes, crosstalk, passives, with measured accuracy |
+| [EMI/EMC and RF field solving](docs/EMC_RF.md) | EMI pre-scan of a routed board, openEMS S-parameters and antennas, Touchstone files |
+| [Thermal analysis](docs/THERMAL.md) | Board temperatures, hotspots and junction margins from part powers, with the model and its validation |
+| [Simulation engines](docs/SIMULATION.md) | Engines, jobs, comparing answers, writing an engine plugin |
+| [Transmission lines](docs/SI_LINES.md) | Wideband line models (eddy-current R and L, causal dielectrics, roughness, coupled lines) and the stackup planner |
+| [Features and dependencies](docs/FEATURES_AND_DEPENDENCIES.md) | What each optional part offers and needs, the one-command installer, the Features page |
+| [PDN analysis](docs/PDN.md) | DC IR drop, current density, and AC impedance against a target impedance |
+| [Design modes](docs/DESIGN_MODES.md) | Reference-design redraw, dev-kit derivative, schematic only, layout only |
+| [Autonomous design](docs/AUTONOMOUS_DESIGN.md) | Driving a full spec-to-board run from any MCP client |
+| [Project phase gates](docs/PHASE_GATES.md) | The stage checks, and the three tools that track them |
+| [Part sourcing](docs/PART_SOURCING.md) | The part providers, what each one answers, and what none of them do |
+| [EDA backends](docs/BACKENDS.md) | The Altium, KiCad and EasyEDA Pro backends |
+| [Engineering tools](docs/ENGINEERING_TOOLS.md) | The `eng_*` family, Altium 365, and what is unverified live |
+| [SPICE models and LTspice](docs/SPICE_MODELS.md) | Vendor model index, pin maps, LTspice decks, export and compare |
+| [Token usage](docs/TOKEN_USAGE.md) | Tokens the AI spends on each EDA tool, where it is shown and kept |
+| [Hardware CI](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
+| [Rust compute](docs/RUST_COMPUTE.md) | The optional compiled router core: the idea, the options considered, settings, measured speed-ups |
+| [UI automation](docs/ui-automation.md) | What synthesised input can reach, and what contains it |
 
-To work on eda-agent, install a clone in editable mode, so the code you edit is the code that runs:
+</details>
 
-```bash
-git clone https://github.com/salitronic/eda-agent
-cd eda-agent
-python -m pip install -e ".[dev]"
-python -m pytest tests/ -q
-```
+<details>
+<summary><b>Reference</b></summary>
 
-An editable install reads the code from the clone, but pip records the version when it installs: after a `git pull`, run `python -m pip install -e ".[dev]"` again, or `pip list` keeps showing the old version and new dependencies are missing. `server_update` does both for you. Keep the clone where it is; moving or deleting the folder breaks the install.
+| Document | What it covers |
+|---|---|
+| [Tool reference](docs/TOOL_REFERENCE.md) | Every tool with its arguments, maturity and interaction badge (generated) |
+| [All options](docs/OPTIONS.md) | Every setting in one generated list: flags, environment variables, Config tab, `workspace.json`, profile keys |
+| [CLI](docs/CLI.md) | Every `eda-agent` command, grouped as `--help` groups them |
+| [Configuration](docs/CONFIGURATION.md) | Environment variables, paths and logs |
+| [The Config tab](docs/CONFIG.md) | Every setting on the Altium panel's Config tab, including the pre-build checks, and what to do when one refuses |
+| [Tool naming](docs/TOOL_NAMING.md) | The `ns_verb_object` convention every tool name follows |
+| [SDK coverage](docs/SDK_COVERAGE.md) | How much of Altium's object model the generic layer reaches |
+| [Altium scripting coverage](docs/ALTIUM_SCRIPTING_COVERAGE.md) | Official Altium scripting examples mapped to tools, with known gaps |
 
-The test suite includes a Python Altium simulator for end-to-end integration tests, Free Pascal cross-validation that runs the actual DelphiScript functions against Python mirrors, and a regression suite for previously encountered edge cases.
+</details>
 
-Rebuild the monolithic DelphiScript file after editing sources under `scripts/altium/`:
+<details>
+<summary><b>Development</b></summary>
 
-```bash
-cd scripts/altium
-python build.py
-```
+| Document | What it covers |
+|---|---|
+| [Development](docs/DEVELOPMENT.md) | Architecture, tests, project layout, the two version numbers |
+| [Release verification](docs/RELEASE_VERIFICATION.md) | How a release's Pascal is recorded as read live, or declared unverified |
+| [STEP placement verification](docs/step-placement-verification.md) | How placing a 3D body at an X/Y was checked on Altium 21 |
+| [AI field notes on Altium](docs/AI_ALTIUM_FIELD_NOTES.md) | Altium behaviours measured while driving it, written as operating rules |
+| [Altium autonomy runbook](docs/ALTIUM_AUTONOMY_RUNBOOK.md) | The by-hand runbook that drives a real Altium |
+| [Changelog](CHANGELOG.md) | What each change added or fixed |
+| [Contributing](CONTRIBUTING.md) | How to send a change |
 
-## Project layout
-
-```
-eda-agent/
-├── src/eda_agent/          Python package
-│   ├── bridge/             Communication with each editor (Altium IPC, EasyEDA WebSocket)
-│   ├── schemas/            Pydantic IPC envelope + per-command schemas
-│   ├── tools/              MCP tool implementations
-│   ├── core/               EDA-agnostic design snapshot and review
-│   ├── design/             Design agent: plan / inventory / discipline / executor / validator
-│   ├── layout/, placement/, route/   Board geometry, rules, placement and routing engines
-│   ├── libimport/          Part providers and vendor library import
-│   ├── render/, export/    Drawing designs to SVG/PNG; file-format exporters
-│   ├── sim/                Simulation results and settings
-│   ├── ui/                 Windows UI automation for dialogs and menus
-│   ├── web/                Local web dashboard
-│   ├── diag/               Health and doctor checks
-│   ├── cli.py              CLI subcommands
-│   └── server.py           MCP server entry point
-├── scripts/altium/         DelphiScript sources (dev source of truth)
-│   ├── Main.pas, Utils.pas, Dispatcher.pas, …
-│   └── Altium_API.PrjScr   Altium script project
-├── extensions/easyeda/     The EasyEDA Pro extension (the editor half of that backend)
-├── skills/                 Client skill files (autodesign)
-├── docs/                   Backends, tool reference, release verification and other guides
-└── tests/                  Python + Free Pascal test suite
-```
-
-At wheel build time `scripts/altium/` is copied into `src/eda_agent/scripts/` inside the wheel (via Hatchling `force-include`), so `eda-agent install-scripts` always finds the scripts.
-
-## Troubleshooting
-
-**"Altium Designer is not running"**: open Altium before invoking MCP tools.
-
-**"Script not responding" / MCP tools time out**: confirm the script project is loaded and `StartMCPServer` is running. Re-launch it via **File > Run Script... > StartMCPServer > Run**. Check `%USERPROFILE%\EDA Agent\workspace\` is writable.
-
-**Altium error dialog "Undeclared identifier: ..." or "Could not convert variant..."**: a DelphiScript crash in one of the bridge handlers. In Altium's Script IDE toolbar, press the red **Stop** button (or **Run > Stop** / **Ctrl+F3**; use **Ctrl+Pause/Break** if the script is stuck in an infinite loop) to halt the debugger. Then re-launch the polling loop via **File > Run Script... > StartMCPServer > Run**. If the identifier is one the scripts themselves define, Altium is running an older compile of a unit: run `app_ping`, which names it in `stale_units`, then close the script project in the Projects panel (right-click `Altium_API.PrjScr`, **Close Project**), reopen it and run StartMCPServer. Otherwise report the identifier or error text as an issue.
-
-**Some Altium buttons don't respond while the server is running**: expected while the AI is actively issuing commands. Built-in Altium functions that depend on DelphiScript wait for the polling loop to yield. The loop enters an idle/yield mode a second or two after the last AI command; if a button is still unresponsive after that, call `app_detach` from the MCP client to fully release the scripting engine.
-
-**Altium's main window disappears while the status window stays up**: the main window has been found hidden, not minimized, with no taskbar button. The bridge checks after every reply, keep-alive pings included, and shows it again without taking the focus, so it comes back within about 30 s. Each time, `bridge_trace.log` gets a `FRAME_SHOWN` line naming the last command, and UI tools log `UI tool=<name>` lines so they can be named too. If it keeps happening, report that line as an issue.
-
-**Command timeouts on very large boards**: default is 10 s so stalls surface fast. Tools known to take longer (`app_save_all`, `pcb_get_unrouted_nets`) set their own, longer timeouts. If you hit a timeout on a custom long-running operation, embed the bridge directly and pass a higher `timeout=` to `send_command_async`. The polling loop itself adapts (10 ms active, 30 ms idle) so it doesn't add latency.
+</details>
 
 ## License
 
-Apache License 2.0. See [LICENSE](https://github.com/salitronic/eda-agent/blob/main/LICENSE) and [NOTICE](https://github.com/salitronic/eda-agent/blob/main/NOTICE).
-
-<!-- mcp-name: io.github.salitronic/eda-agent -->
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Disclaimer
 
@@ -663,10 +221,28 @@ Apache License 2.0. See [LICENSE](https://github.com/salitronic/eda-agent/blob/m
 
 This software is provided "as is", without warranty of any kind, express or implied. The authors and contributors are not liable for any damage to your designs, projects, data, or installation.
 
-This project is not affiliated with, endorsed by, or sponsored by Altium, the KiCad project, or EasyEDA, and none of them develops, reviews or supports it. "Altium" and "Altium Designer" are trademarks of Altium or its affiliates; "KiCad" and "EasyEDA" are trademarks of their respective owners. `eda-agent` is an independent community tool that interoperates with each of these applications through its own published API: Altium Designer via its scripting API, KiCad via its IPC API and command line, and EasyEDA Pro via its extension API.
+This project is not affiliated with, endorsed by, or sponsored by Altium Limited, the KiCad project, or EasyEDA. "Altium" and "Altium Designer" are trademarks of Altium Limited; "KiCad" and "EasyEDA" are trademarks of their respective owners. `eda-agent` is an independent community tool that interoperates with each of these applications through its own published API: Altium Designer via its scripting API, KiCad via its IPC API and command line, and EasyEDA Pro via its extension API.
 
 ## About
 
-eda-agent was created and is maintained by [George Saliba](https://salitronic.com), an independent electronics design engineer. Thanks to everyone who has contributed, see the [contributors](https://github.com/salitronic/eda-agent/graphs/contributors).
+eda-agent is maintained in this fork by [MOREmbedded](https://github.com/MOREmbedded). It builds on, and tracks, the upstream [salitronic/eda-agent](https://github.com/salitronic/eda-agent) project. Thanks to everyone who has contributed to either, see the [contributors](https://github.com/MOREmbedded/eda-agent/graphs/contributors).
 
-If you need hardware designed, I take on design work, see [salitronic.com](https://salitronic.com).
+### Fork integration references
+
+- [ALTIUM_MCP_RU](docs/ALTIUM_MCP_RU.md)
+- [DELIVERY_ACCEPTANCE](docs/DELIVERY_ACCEPTANCE.md)
+- [DESIGN event driven dispatch](docs/DESIGN-event-driven-dispatch.md)
+- [FORK ARGUMENT AUDIT 2026 10 28](docs/FORK-ARGUMENT-AUDIT-2026-10-28.md)
+- [FORK BEHAVIOR CHECK 2026 10 28](docs/FORK-BEHAVIOR-CHECK-2026-10-28.md)
+- [FORK INTEGRATION AUDIT 2026 10 26](docs/FORK-INTEGRATION-AUDIT-2026-10-26.md)
+- [INTEGRATION BASELINE](docs/INTEGRATION-BASELINE.md)
+- [LEGACY_FORK_GUIDE](docs/LEGACY_FORK_GUIDE.md)
+- [LIBRARY READS DESIGN](docs/LIBRARY-READS-DESIGN.md)
+- [PARITY ROADMAP](docs/PARITY-ROADMAP.md)
+- [PROJECT SELECTION AND WRITES](docs/PROJECT-SELECTION-AND-WRITES.md)
+- [PROPOSAL 2026 09 28 metadata write increment](docs/PROPOSAL-2026-09-28-metadata-write-increment.md)
+- [PROPOSAL 2026 10 07 placement write increment](docs/PROPOSAL-2026-10-07-placement-write-increment.md)
+- [PROPOSAL 2026 10 09 copper write increment](docs/PROPOSAL-2026-10-09-copper-write-increment.md)
+- [PROPOSAL 2026 10 09 setup write increment](docs/PROPOSAL-2026-10-09-setup-write-increment.md)
+- [SHUTDOWN](docs/SHUTDOWN.md)
+- [UPSTREAM SYNC 2026 10 27](docs/UPSTREAM-SYNC-2026-10-27.md)

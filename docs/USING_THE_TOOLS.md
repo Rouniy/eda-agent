@@ -134,18 +134,13 @@ The gate reports; it does not run the checks. Each check names the tools
 that answer it, the client runs them and writes the outcome back, so the
 loop stays the client's and nothing happens that you did not ask for.
 
-**In the dashboard**, the Workspace view's Settings card switches the
-gates on, and a *Project stages* card draws every tracked `.PrjPcb` as
-a stepper from Feasibility to Production, with each gate's checklist a
-click away. See [NPI phase gates](NPI_PHASE_GATES.md).
-
 Three rules make it hard to pass by accident: an answer expires, an
 answer belongs to a board revision and stops counting against another
 one, and a waiver without a reason is refused. The current stage is the
 first one that does not pass: a board whose feasibility never closed is
 at feasibility however much layout has been done.
 
-See [NPI phase gates](NPI_PHASE_GATES.md).
+See [Project phase gates](PHASE_GATES.md).
 
 ## Part sourcing
 

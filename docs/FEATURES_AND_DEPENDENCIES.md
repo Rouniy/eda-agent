@@ -45,7 +45,7 @@ Built in, always on, nothing to install:
 | Feature | Offers | Guide |
 |---|---|---|
 | `core` | Altium reading and editing, reviews, ERC and DRC, libraries and parts: every tool not listed elsewhere | [Features](FEATURES.md) |
-| `layout` | `pcb_autoplace`, `pcb_autoroute` with the default engine or Euan's (`eda-agent router-use`) | [Router engines](ROUTER_ENGINES.md) |
+| `layout` | `pcb_autoplace`, `pcb_autoroute`, `pcb_route_brief`, `pcb_route_round` | [Features](FEATURES.md) |
 | `signal-integrity` | `si_line_model`, `si_stackup_plan`, `si_net_channel`, `si_channel_eye`, `si_board_check` and the rest of `si_*` | [Board SI](SI_BOARD.md) |
 | `power-integrity` | `sim_pdn_ir_drop`, `sim_pdn_impedance` | [PDN](PDN.md) |
 | `thermal` | `sim_thermal_analysis` | [Thermal](THERMAL.md) |

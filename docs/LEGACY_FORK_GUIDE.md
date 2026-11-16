@@ -54,9 +54,9 @@ dashboard descriptions below are not the exposed shared-mode feature set.
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Workspace and profiles](CONFIGURATION.md)
-- [PCBA programme journal](#pcba-programme-journal)
+- [PCBA programme journal](#project-phase-gates)
 - [Fabrication output check](#fabrication-output-check)
-- [NPI phase gates](#npi-phase-gates)
+- [Project phase gates](#npi-phase-gates)
 - [Design modes](#design-modes)
 - [EDA backends](#eda-backends)
 - [Finding the right tool](#finding-the-right-tool)
@@ -380,17 +380,14 @@ each other and you mostly set it once and forget it; a **profile** is
 what you want the output to look like, and is worth revisiting whenever
 you change who you are working for.
 
-## PCBA programme journal
+## Project phase gates
 
-`design_npi_gate`, `design_npi_record`, and `design_npi_status` track
-feasibility, prototype, EVT, DVT, and PVT evidence by programme and
-design revision. The gate lists checks to run and records the results;
-it does not run Altium tools automatically. See
-[NPI phase gates](NPI_PHASE_GATES.md).
-
-The optional `design_phase_*` tools use the stages selected with
-`eda-agent phases-enable`; they are hidden by default. The existing
-`design_npi_*` programme journal remains available separately.
+`design_phase_standing`, `design_phase_gate` and `design_phase_answer`
+track feasibility, research, prototype, EVT, DVT and PVT evidence by
+product and board revision. A gate lists the checks to run and records
+their results; it does not run Altium tools itself. This fork's earlier
+`design_npi_*` journal covered the same checks and is replaced by them.
+See [Project phase gates](PHASE_GATES.md).
 
 ## Fabrication output check
 
@@ -467,18 +464,13 @@ The gate reports; it does not run the checks. Each check names the tools
 that answer it, the client runs them and writes the outcome back, so the
 loop stays the client's and nothing happens that you did not ask for.
 
-**In the dashboard**, the Workspace view's Settings card switches the
-gates on, and a *Project stages* card draws every tracked `.PrjPcb` as
-a stepper from Feasibility to Production, with each gate's checklist a
-click away. See [docs/NPI_PHASE_GATES.md](NPI_PHASE_GATES.md).
-
 Three rules make it hard to pass by accident: an answer expires, an
 answer belongs to a board revision and stops counting against another
 one, and a waiver without a reason is refused. The current stage is the
 first one that does not pass: a board whose feasibility never closed is
 at feasibility however much layout has been done.
 
-See [docs/NPI_PHASE_GATES.md](NPI_PHASE_GATES.md).
+See [Project phase gates](PHASE_GATES.md).
 
 ## Design modes
 
@@ -1134,7 +1126,7 @@ listings can be read against each other.
 | `eda-agent profile-use <name>` | Set the centrally active profile |
 | `eda-agent profile-validate [name] [--here]` | Load every file in a profile and report errors |
 | `eda-agent profile-new-project <template> <dest> [--force]` | Copy a profile's `templates/<name>/` tree to a new project directory |
-| `eda-agent phases-show [--json]` | Which [NPI stages](#npi-phase-gates) are in force, and which setting decided it |
+| `eda-agent phases-show [--json]` | Which [phase gates](#npi-phase-gates) are in force, and which setting decided it |
 | `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all six when none are named. Off by default |
 | `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
 

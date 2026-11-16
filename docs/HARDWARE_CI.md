@@ -19,8 +19,7 @@ job: a CI runner or a bare file on disk where Altium can't be opened.
 The review is off unless you opt in, per invocation:
 
 - **CLI:** pass `--offline`.
-- **MCP tool (`design_review_file`):** set `EDA_AGENT_HEADLESS_REVIEW=1` in
-  the server environment.
+- **Environment:** set `EDA_AGENT_HEADLESS_REVIEW=1`.
 
 Without the opt-in the CLI exits `2` and the tool returns an `error`,
 pointing you at the live tools above.
