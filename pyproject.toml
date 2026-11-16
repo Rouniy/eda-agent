@@ -30,6 +30,9 @@ dependencies = [
     "mcp>=1.0.0,<2",
     "anyio>=4.0,<5",
     "pydantic>=2.0,<3",
+    # Pure-Python OLE/CFB reader for the Altium file parsers of this fork
+    # (fileio/): read .SchDoc/.PcbDoc/.PcbLib without a running Altium.
+    "olefile>=0.46,<1",
     "psutil>=5.9.0,<8",
     "pypdf>=5.0,<7",
     "pywin32>=306; sys_platform == 'win32'",

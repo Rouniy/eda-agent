@@ -198,6 +198,10 @@ DEPENDENCIES: tuple[Dependency, ...] = CORE_DEPENDENCIES + (
     Dependency("eda-agent-render", "eda-agent path tracer", LOCAL, "Apache-2.0",
                dist="eda-agent-render", source="render-core", size_mb=5,
                note="compiled from render-core/ with Rust"),
+    Dependency("eda-agent-route", "eda-agent route kernel", PYTHON, "Apache-2.0",
+               "https://github.com/salitronic/eda-agent/tree/main/route-core",
+               dist="eda-agent-route", source="route-core", size_mb=5,
+               note="compiled from route-core/ with Rust"),
     Dependency("gerbonara", "gerbonara", PYTHON, "Apache-2.0",
                "https://gitlab.com/gerbolyze/gerbonara", dist="gerbonara",
                python_min=(3, 12), size_mb=10),
@@ -206,6 +210,8 @@ DEPENDENCIES: tuple[Dependency, ...] = CORE_DEPENDENCIES + (
     Dependency("cadquery", "CadQuery", PYTHON, "Apache-2.0",
                "https://cadquery.readthedocs.io", dist="cadquery", size_mb=400,
                note="large: it brings the OpenCascade kernel"),
+    Dependency("vtk", "VTK", PYTHON, "BSD-3-Clause", "https://vtk.org", dist="vtk", size_mb=120,
+               note="the review picture of a built model; CadQuery depends on it"),
     Dependency("freecad", "FreeCAD", PROGRAM, "LGPL-2.1+",
                "https://www.freecad.org/downloads.php",
                env=("EDA_AGENT_FREECADCMD",),
@@ -297,7 +303,7 @@ FEATURES: tuple[Feature, ...] = (
                     "Route plans and repair plans"),
             needs=("numpy", "scipy", "networkx"),
             tools=("pcb_autoplace", "pcb_autoroute", "route_plan"),
-            related=("compute",), core=True, docs="docs/ROUTER_ENGINES.md"),
+            related=("compute",), core=True, docs="docs/FEATURES.md"),
     Feature("signal-integrity", "Signal integrity", "Analysis",
             "Lines, nets and channels from the stackup to the eye: RLGC with "
             "surface roughness, routed-net S-parameters and TDR, IBIS eyes, and "
@@ -374,7 +380,13 @@ FEATURES: tuple[Feature, ...] = (
             "Builds a STEP body from the package drawing. Without either "
             "kernel the body is a plain extrusion and the reply says so.",
             offers=("real STEP solids for generated footprints",),
-            any_of=(("cadquery", "freecad"),), extra="models3d"),
+            any_of=(("cadquery", "freecad"),), needs=("vtk",), extra="models3d"),
+    Feature("route-kernel", "Compiled router search", "Analysis",
+            "The board router's grid search, compiled (upstream's route-core). "
+            "Without it the router searches with scipy: more slowly, with paths "
+            "of the same cost.",
+            offers=("faster pcb_autoroute",), needs=("eda-agent-route",), extra="route",
+            tools=("pcb_autoroute",)),
     Feature("compute", "Rust compute", "Speed",
             "Compiled kernels: the routing search runs about 15 times faster. "
             "Python stays the default and the reference; switch it on here or "

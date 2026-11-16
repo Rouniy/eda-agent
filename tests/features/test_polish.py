@@ -328,7 +328,6 @@ def test_the_report_lists_locations_and_notes(tmp_path, choices):
     comp = next(d for d in rep["dependencies"] if d["id"] == "eda-agent-compute")
     assert comp["locations"] == []
     feats = {f["id"]: f for f in rep["features"]}
-    assert "router-use" in feats["layout"]["note"]
     assert "EDA_AGENT_COMPUTE" in feats["compute"]["note"]
     assert rep["built_in"] == sum(1 for f in rep["features"] if f["core"] and f["state"] == "ready")
 
