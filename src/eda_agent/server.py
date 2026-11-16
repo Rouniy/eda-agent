@@ -878,7 +878,6 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
         ("Owner profiles", (
             "profile-init", "profile-list", "profile-show", "profile-use",
             "profile-validate", "profile-new-project",
-            "phases-show", "phases-enable", "phases-disable",
         )),
         ("Design modes", (
             "mode-list", "mode-show", "mode-use", "mode-init",
@@ -1411,33 +1410,8 @@ def build_parser() -> argparse.ArgumentParser:
              "has are overwritten; anything else already there is left "
              "alone (this merges, it does not replace the directory).")
 
-    # The NPI gate. Off by default, and recorded in the profile beside the
-    # owner's other house rules, because which stages a programme runs is
-    # one of those rather than a property of the board in front of you.
-    phases_show_p = subparsers.add_parser(
-        "phases-show",
-        help="Which NPI stages are in force (EVT, DVT, PVT and the rest), "
-             "and which setting decided it.",
-    )
-    phases_show_p.add_argument("--json", action="store_true", dest="json_out",
-                               help="Emit machine-readable JSON.")
 
-    phases_enable_p = subparsers.add_parser(
-        "phases-enable",
-        help="Run the named NPI stages, or all five when none are named. "
-             "Writes the active profile's phase_gates.json.",
-    )
-    phases_enable_p.add_argument(
-        "stages", nargs="*", metavar="STAGE",
-        help="feasibility, research, prototype, evt, dvt, pvt (also 'design "
-             "validation' and the other spellings). None means all six. "
-             "They always run in that order, whatever order you name them.")
 
-    subparsers.add_parser(
-        "phases-disable",
-        help="Stop running NPI stages. Answers already recorded are kept "
-             "and come back if the stages do.",
-    )
 
     # mode-* -- design modes: presets for the kind of run (design/modes.py)
     subparsers.add_parser("mode-list", help="List the design modes and which is selected.")
@@ -1459,14 +1433,6 @@ def build_parser() -> argparse.ArgumentParser:
     mode_init_p.add_argument("--force", action="store_true",
                              help="Replace an existing file.")
 
-    phases_show_p = subparsers.add_parser(
-        "phases-show", help="Show enabled NPI stages and their source.")
-    phases_show_p.add_argument("--json", action="store_true", dest="json_out")
-    phases_enable_p = subparsers.add_parser(
-        "phases-enable", help="Enable NPI stages in the active profile.")
-    phases_enable_p.add_argument("stages", nargs="*", metavar="STAGE")
-    subparsers.add_parser(
-        "phases-disable", help="Disable NPI stages in the active profile.")
 
     # dashboard -- local web UI for the MCP bridge
     # --- calculators -------------------------------------------------
@@ -2141,12 +2107,6 @@ def main() -> int:
         return cli.cmd_mode_use(args.name, clear=args.clear)
     if args.command == "mode-init":
         return cli.cmd_mode_init(args.name, extends=args.extends, force=args.force)
-    if args.command == "phases-show":
-        return cli.cmd_phases_show(as_json=args.json_out)
-    if args.command == "phases-enable":
-        return cli.cmd_phases_enable(args.stages)
-    if args.command == "phases-disable":
-        return cli.cmd_phases_disable()
 
     if args.command == "calc-cross-check":
         return cli.cmd_calc_cross_check(args.calculator, args.arg,
