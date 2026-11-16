@@ -15,7 +15,7 @@ def test_new_objects_infer_font_before_creation_and_use_typed_writes():
     for handler, kind, write in (
         ("Gen_PlacePort", "ePort", "SchPort.FontId := FontToUse"),
         ("Gen_PlacePowerPort", "ePowerObject", "PowerObj.FontId := FontToUse"),
-        ("Gen_PlaceTextFrame", "eTextFrame", "TF.FontId := FontToUse"),
+        ("Gen_PlaceTextFrame", "eTextFrame", "TF.FontId := FontPick"),   # upstream's routine
         ("Gen_PlaceSheetEntry", "eSheetEntry", "Entry.TextFontID := FontToUse"),
     ):
         body = _routine(source, handler)
@@ -37,7 +37,9 @@ def test_width_and_text_line_breaks_are_applied_in_native_order():
     assert "Result := BoolToJsonStr(PortObj.AutoSize)" in getter
     assert "If Obj.ObjectId = ePort Then" in getter
     frame = _routine(_source(), "Gen_PlaceTextFrame")
-    assert frame.index("StringReplace(TextStr, '\\' + 'n', #10") < frame.index(
+    # a typed line break is converted by the tool (typed_breaks), so the
+    # routine only has to make every break Altium's own
+    assert frame.index("StringReplace(TextStr, #13, #10") < frame.index(
         "StringReplace(TextStr, #10, #13 + #10") < frame.index("TF.Text := TextStr")
 
 
@@ -67,6 +69,9 @@ async def test_port_and_text_frame_forward_requested_style(monkeypatch):
     assert bridge.calls[-1][1]["width"] == "420"
     assert bridge.calls[-1][1]["font_id"] == "7"
     await captured["sch_place_text_frame"](0, 0, 500, 200, "A\\nB", font_id=7)
+    assert bridge.calls[-1][1]["text"] == "A\nB"        # typed break, converted
+    await captured["sch_place_text_frame"](0, 0, 500, 200, "A\\nB", font_id=7,
+                                           typed_breaks=False)
     assert bridge.calls[-1][1]["text"] == "A\\nB"
     assert bridge.calls[-1][1]["font_id"] == "7"
     await captured["sch_place_text_frame"](

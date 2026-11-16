@@ -347,15 +347,22 @@ def _ask_for_token(form: dict, timeout_s: float,
             return json.loads(reply.read())
     except urllib.error.HTTPError as exc:
         said = ""
+        raw = b""
         try:
-            body = json.loads(exc.read() or b"{}")
+            raw = exc.read() or b""
+            body = json.loads(raw or b"{}")
             said = str(body.get("error") or "")
             detail = str(body.get("error_description") or "")
         except (ValueError, OSError, AttributeError):
-            detail = ""
-        secret = form.get("client_secret") or ""
-        if secret:
-            detail = detail.replace(secret, "***")
+            # Not JSON (a gateway page, say): show its start, so the status
+            # is not the only thing known. (this fork)
+            detail = " ".join(raw.decode("utf-8", "replace").split())[:200]
+        # Whatever the body echoes of what was sent stays out of the message:
+        # the secret, and the one-time code, verifier and saved login too.
+        for key in ("client_secret", "code", "code_verifier", "refresh_token"):
+            sent = str(form.get(key) or "")
+            if sent:
+                detail = detail.replace(sent, "***")
         why = _TOKEN_ERRORS.get(said, "")
         raise Altium365Error(
             f"Nexar turned the sign-in down (HTTP {exc.code}"

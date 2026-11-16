@@ -28,6 +28,10 @@ class _Bridge:
         self.calls = []
 
     async def send_command_async(self, command, params, timeout=None):
+        if command == "pcb.layer_stack_manager":
+            # upstream's read names each profile's stack from the Layer
+            # Stack Manager; with no model the rows keep their index only.
+            return {}
         self.calls.append((command, params))
         return next(self.replies)
 

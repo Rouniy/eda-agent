@@ -61,10 +61,11 @@ def test_the_environment_reads_the_secret_and_a_printed_config_hides_it():
 
 
 def test_the_client_form_carries_the_secret_only_when_set():
-    assert altium365._client_form(altium365.Altium365Config(nexar_app_id="app")) == {
+    # upstream's helper: the request's own fields, plus the client's
+    assert altium365._token_form(altium365.Altium365Config(nexar_app_id="app"), {}) == {
         "client_id": "app"}
-    assert altium365._client_form(altium365.Altium365Config(
-        nexar_app_id="app", nexar_client_secret=SECRET)) == {
+    assert altium365._token_form(altium365.Altium365Config(
+        nexar_app_id="app", nexar_client_secret=SECRET), {}) == {
         "client_id": "app", "client_secret": SECRET}
 
 
@@ -95,7 +96,7 @@ def test_invalid_grant_keeps_nexars_description():
                        "error_description": "Invalid redirect_uri"}).encode()
     urlopen, _ = _token_endpoint(lambda form: _refused(400, body))
     with pytest.raises(altium365.Altium365Error,
-                       match=r"HTTP 400, invalid_grant\): Invalid redirect_uri\. Likely:"):
+                       match=r"HTTP 400, invalid_grant\): Invalid redirect_uri\. Likely "):
         altium365._ask_for_token({"client_id": "app"}, 5, urlopen)
 
 
