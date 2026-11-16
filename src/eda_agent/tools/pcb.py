@@ -1547,6 +1547,37 @@ async def _pcb_export_component_step(board_path: str, designator: str,
             "sha256": digest}
 
 
+def _drc_report_totals(result: dict[str, Any]) -> None:
+    """Add what Altium's own batch report says to a confirmed batch run (this fork).
+
+    Upstream's enrichment stays as it is; these keys are added beside it and
+    never replace one it set: the report's header totals, whether the rule
+    rows sum to them, and whether Altium stopped at its violation limit (a
+    run that did is not a complete check, whatever the rows sum to).
+    """
+    if result.get("drc_confirmed") is not True:
+        return
+    path = result.get("report_path")
+    if result.get("mode") == "batch" and isinstance(path, str):
+        counts = _drc_report_counts(path)
+        if counts:
+            result.setdefault("report_counts", counts)
+            rules = _drc_report_rules(path)
+            if rules is not None:
+                result.setdefault("report_rules", rules)
+                result.setdefault("report_rule_count", len(rules))
+                result.setdefault("report_rules_total_matches_header",
+                                  sum(row["violations"] for row in rules) == counts["rule_violations"])
+            stopped = _drc_report_stop_limit(path)
+            result.setdefault("report_stopped_at_limit", stopped is not None)
+            if stopped is not None:
+                result.setdefault("report_violation_limit", stopped)
+    violations = result.get("violations")
+    if isinstance(violations, list) and type(result.get("violation_count")) is int:
+        result.setdefault("violations_returned", len(violations))
+        result.setdefault("violations_truncated", len(violations) < result["violation_count"])
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -4339,6 +4370,7 @@ def register_pcb_tools(mcp):
         result = await bridge.send_command_async("pcb.run_drc", {}, timeout=120.0)
         if isinstance(result, dict):
             await enrich_drc(bridge, result, detail=detail)
+            _drc_report_totals(result)
         return result
 
     @mcp.tool()

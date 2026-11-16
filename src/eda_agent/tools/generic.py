@@ -589,26 +589,18 @@ def register_generic_tools(mcp):
                 "LibraryIdentifier,DesignItemId,ItemGUID,RevisionGUID"
                 and the other Vault/Symbol GUIDs.
 
-                PCB properties use flat names: "Net", not "Net.Name":
-                "Net,Layer,Width" for tracks
-                "Net,Layer,HoleSize,Size" for vias
-                "Designator,Comment,Pattern,Rotation,X,Y" for components
-                "Text,Height,StrokeWidth,IsDesignator" for texts
-                Full set: ObjectId, X, Y, Layer, Descriptor, Selected,
-                Net, X1, Y1, X2, Y2, Width, Radius, StartAngle,
-                EndAngle, XCenter, YCenter, HoleSize, Size, TopShape,
-                TopXSize, TopYSize, Rotation, Name, Text, Pattern,
-                Designator, Comment, SourceDesignator, Kind,
-                RemoveDead, RemoveNarrowNecks, RemoveIslandsByArea,
-                Grid, TrackSize, MinTrack, ArcApproximation,
-                NeckWidthThreshold (decimal mils), IslandAreaThreshold
-                (square mils), PolyHatchStyle and PourOver (ordinals),
-                UseOctagons, PourIndex and Poured (read only). These
-                polygon settings affect the next pour; they do not repour.
-                StandoffHeight, OverallHeight, InComponent, Component,
-                InPolygon, IsKeepout, Locked, Layer1, Layer2,
-                IsRedundant, Mode, Height, StrokeWidth, IsDesignator,
-                IsComment, UseTTFonts, FontName (PCB text, read only).
+                PCB PRIMITIVES ARE FLAT, NOT DOTTED: a track's net is
+                "Net", never "Net.Name". "Net,Layer,Width" for tracks;
+                "Net,Layer,HoleSize,Size" for vias;
+                "Designator,Comment,Pattern,Rotation,X,Y" for
+                components; "Text,Height,StrokeWidth,IsDesignator" for
+                texts, and "MirrorFlag" (settable with obj_modify; the text
+                is kept where it is). Polygons ("polygon") read and, with
+                obj_modify, set their pour settings: "Name,Grid,TrackSize,
+                MinTrack,ArcApproximation,NeckWidthThreshold" (decimal
+                mils), "IslandAreaThreshold" (square mils),
+                "PolyHatchStyle,PourOver" (raw ordinals), "UseOctagons",
+                and the read-only "PourIndex,Poured"; nothing repours.
 
                 A board type returns EVERY primitive of that type
                 ("InComponent=false|InPolygon=false": free copper).

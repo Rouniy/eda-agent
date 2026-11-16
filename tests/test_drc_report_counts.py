@@ -61,8 +61,9 @@ async def test_run_drc_reports_truncation_and_fresh_totals(tmp_path, monkeypatch
 ''', encoding="utf-8")
 
     class Bridge:
-        async def send_command_async(self, command, params):
-            assert command == "pcb.run_drc"
+        async def send_command_async(self, command, params=None, **kwargs):
+            if command != "pcb.run_drc":      # upstream's enrichment reads
+                return {}
             return {"mode": "batch", "drc_confirmed": True,
                     "report_path": str(report), "violation_count": 125,
                     "violations": [{} for _ in range(100)]}
@@ -81,7 +82,7 @@ async def test_run_drc_reports_truncation_and_fresh_totals(tmp_path, monkeypatch
     result = await mcp.run_drc()
     assert result["report_counts"] == {"rule_violations": 125}
     assert result["report_rules"] == [
-        {"label": "Clearance Constraint (All),(All)", "violations": 125}]
+        {"rule": "Clearance Constraint (All),(All)", "violations": 125}]
     assert result["report_rule_count"] == 1
     assert result["report_rules_total_matches_header"] is True
     assert result["report_stopped_at_limit"] is False

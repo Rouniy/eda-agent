@@ -246,3 +246,5 @@ eda-agent is maintained in this fork by [MOREmbedded](https://github.com/MOREmbe
 - [PROPOSAL 2026 10 09 setup write increment](docs/PROPOSAL-2026-10-09-setup-write-increment.md)
 - [SHUTDOWN](docs/SHUTDOWN.md)
 - [UPSTREAM SYNC 2026 10 27](docs/UPSTREAM-SYNC-2026-10-27.md)
+
+<!-- mcp-name: io.github.salitronic/eda-agent -->

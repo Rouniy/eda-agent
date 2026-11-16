@@ -2356,10 +2356,8 @@ def register_library_tools(mcp):
 
         You decide the functional grouping (inputs/power/control on the
         LEFT, outputs/status on the RIGHT -- discipline rule 18); this
-        lays them out cleanly and emits the whole symbol: the body
-        rectangle (Altium-yellow fill) plus every pin, grid-aligned with
-        the top-left pin's wire-end at the origin (rule 14), in one
-        create + one bulk add_pins + one rectangle.
+        lays them out and emits the whole symbol, grid-aligned with
+        the top-left pin's wire-end at the origin (rule 14).
 
         Args:
             name: Component name.

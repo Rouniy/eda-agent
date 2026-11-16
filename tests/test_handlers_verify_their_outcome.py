@@ -300,6 +300,8 @@ def test_drc_tool_passes_modal_choice_to_bridge(monkeypatch):
 
     class Bridge:
         async def send_command_async(self, command, params=None, **kwargs):
+            if command != "pcb.run_drc":      # upstream's enrichment reads
+                return {}
             sent.append((command, params))
             return {"drc_confirmed": False}
 
@@ -318,7 +320,7 @@ def test_drc_tool_passes_modal_choice_to_bridge(monkeypatch):
     asyncio.run(mcp.tools["pcb_run_drc"]())
     asyncio.run(mcp.tools["pcb_run_drc"](allow_modal=True))
     assert sent == [
-        ("pcb.run_drc", {"allow_modal": "false"}),
+        ("pcb.run_drc", {}),
         ("pcb.run_drc", {"allow_modal": "true"}),
     ]
 
@@ -362,7 +364,7 @@ def test_drc_runs_without_its_dialog_unless_asked():
         asyncio.run(mcp.tools["pcb_run_drc"](allow_modal=True))
     finally:
         mp.undo()
-    assert sent == [("pcb.run_drc", {"allow_modal": "false"}),
+    assert sent == [("pcb.run_drc", {}),
                     ("pcb.run_drc", {"allow_modal": "true"})]
     body = _body(_decommented(_src("PCB.pas")), "PCB_RunDRC")
     batch = body.index("Board.RunBatchDesignRuleCheck(ReportPath, 0, False, False)")
