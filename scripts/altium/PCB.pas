@@ -3318,6 +3318,19 @@ Begin
     End;
     WantList := BodyMode = 'all';
 
+    { body_heights: max (default) = the tallest 3D body per part; all = also }
+    { every body. height_mils stays the footprint's Height field and         }
+    { model_height_mils is the tallest body: both reported, neither chosen.  }
+    BodyMode := LowerCase(Trim(ExtractJsonValue(Params, 'body_heights')));
+    If BodyMode = '' Then BodyMode := 'max';
+    If (BodyMode <> 'max') And (BodyMode <> 'all') Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'BAD_BODY_HEIGHTS',
+            'body_heights must be max or all, got "' + BodyMode + '"');
+        Exit;
+    End;
+    WantList := BodyMode = 'all';
+
     JsonItems := '';
     First := True;
     Count := 0;
@@ -3343,21 +3356,14 @@ Begin
         Try ParamMils := CoordToMilsF(Comp.Height); Except ParamMils := 0; End;
         BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount, StepCount);
         MaxMils := CoordToMilsF(MaxOverall);
+        HeightMils := ParamMils;
         If BodyCount > 0 Then
-        Begin
-            HeightMils := MaxMils;
-            HeightJson := '"height_source":"3d_bodies",'
-                + '"max_body_height_mils":' + FloatToJsonStr(MaxMils) + ','
-                + '"height_mismatch":' + BoolToJsonStr(Abs(ParamMils - MaxMils) > 0.01) + ',';
-        End
+            HeightJson := '"model_height_mils":' + FloatToJsonStr(MaxMils) + ','
+                + '"height_mismatch":' + BoolToJsonStr(Abs(ParamMils - MaxMils) > 0.01) + ','
         Else
-        Begin
-            HeightMils := ParamMils;
-            HeightJson := '"height_source":"component",'
-                + '"max_body_height_mils":null,"height_mismatch":false,';
-        End;
-        HeightJson := HeightJson + '"component_height_mils":' + FloatToJsonStr(ParamMils) + ','
-            + '"body_count":' + IntToStr(BodyCount) + ',';
+            HeightJson := '"model_height_mils":null,"height_mismatch":false,';
+        HeightJson := HeightJson + '"body_count":' + IntToStr(BodyCount) + ','
+            + '"step_body_count":' + IntToStr(StepCount) + ',';
         If WantList Then HeightJson := HeightJson + '"bodies":[' + BodyList + '],';
 
         { Do not walk footprint children here. Some imported footprints make
@@ -3425,18 +3431,6 @@ End;
 Function PCB_GetComponents(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Iterator : IPCB_BoardIterator;
-    Comp : IPCB_Component;
-    BBox, BodyBox : TCoordRect;
-    JsonItems, Designator, Footprint, LayerStr, CommentStr, SrcDesignator : String;
-    First : Boolean;
-    Count : Integer;
-    HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Double;
-    BodyJson : String;
-    BodyMode, BodyList, HeightJson : String;
-    WantList : Boolean;
-    MaxOverall, BodyCount, StepCount : Integer;
-    ParamMils, MaxMils : Double;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -3444,99 +3438,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
-
-    { body_heights: max (default) = the tallest 3D body per part; all = also }
-    { every body. height_mils stays the footprint's Height field and         }
-    { model_height_mils is the tallest body: both reported, neither chosen.  }
-    BodyMode := LowerCase(Trim(ExtractJsonValue(Params, 'body_heights')));
-    If BodyMode = '' Then BodyMode := 'max';
-    If (BodyMode <> 'max') And (BodyMode <> 'all') Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'BAD_BODY_HEIGHTS',
-            'body_heights must be max or all, got "' + BodyMode + '"');
-        Exit;
-    End;
-    WantList := BodyMode = 'all';
-
-    JsonItems := '';
-    First := True;
-    Count := 0;
-
-    Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(eComponentObject));
-    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-    Iterator.AddFilter_Method(eProcessAll);
-
-    Comp := Iterator.FirstPCBObject;
-    While Comp <> Nil Do
-    Begin
-        If Not First Then JsonItems := JsonItems + ',';
-        First := False;
-
-        Try Designator := Comp.Name.Text; Except Designator := ''; End;
-        Try CommentStr := Comp.Comment.Text; Except CommentStr := ''; End;
-        Try Footprint := Comp.Pattern; Except Footprint := ''; End;
-        Try LayerStr := LayerDisplayName(Comp.Layer); Except LayerStr := 'Unknown'; End;
-        Try SrcDesignator := Comp.SourceDesignator; Except SrcDesignator := ''; End;
-        Try ParamMils := CoordToMilsF(Comp.Height); Except ParamMils := 0; End;
-        BodyList := ComponentBodyScan(Comp, WantList, MaxOverall, BodyCount, StepCount);
-        MaxMils := CoordToMilsF(MaxOverall);
-        HeightMils := ParamMils;
-        If BodyCount > 0 Then
-            HeightJson := '"model_height_mils":' + FloatToJsonStr(MaxMils) + ','
-                + '"height_mismatch":' + BoolToJsonStr(Abs(ParamMils - MaxMils) > 0.01) + ','
-        Else
-            HeightJson := '"model_height_mils":null,"height_mismatch":false,';
-        HeightJson := HeightJson + '"body_count":' + IntToStr(BodyCount) + ','
-            + '"step_body_count":' + IntToStr(StepCount) + ',';
-        If WantList Then HeightJson := HeightJson + '"bodies":[' + BodyList + '],';
-
-        { Bounding rectangle for collision/placement planning. Returns the    }
-        { current axis-aligned bounding box in mils, accounting for the      }
-        { component's current rotation and side. Width / Height are derived. }
-        BBoxX1 := 0; BBoxY1 := 0; BBoxX2 := 0; BBoxY2 := 0;
-        BBoxW := 0; BBoxH := 0;
-        Try
-            BBox := Comp.BoundingRectangle;
-            BBoxX1 := CoordToMilsF(BBox.X1);
-            BBoxY1 := CoordToMilsF(BBox.Y1);
-            BBoxX2 := CoordToMilsF(BBox.X2);
-            BBoxY2 := CoordToMilsF(BBox.Y2);
-            BBoxW := BBoxX2 - BBoxX1;
-            BBoxH := BBoxY2 - BBoxY1;
-        Except End;
-        { The same box without the part's designator and comment, which can }
-        { sit far from it.                                                 }
-        BodyJson := '';
-        Try
-            BodyBox := Comp.BoundingRectangleNoNameComment;
-            BodyJson := ',"bbox_no_name_comment":{"x1":' + FloatToJsonStr(CoordToMilsF(BodyBox.X1))
-                + ',"y1":' + FloatToJsonStr(CoordToMilsF(BodyBox.Y1))
-                + ',"x2":' + FloatToJsonStr(CoordToMilsF(BodyBox.X2))
-                + ',"y2":' + FloatToJsonStr(CoordToMilsF(BodyBox.Y2)) + '}';
-        Except BodyJson := ''; End;
-
-        JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Designator) + '",'
-            + '"comment":"' + EscapeJsonString(CommentStr) + '",'
-            + '"x":' + FloatToJsonStr(CoordToMilsF(Comp.x)) + ','
-            + '"y":' + FloatToJsonStr(CoordToMilsF(Comp.y)) + ','
-            + '"rotation":' + FloatToJsonStr(Comp.Rotation) + ','
-            + '"layer":"' + EscapeJsonString(LayerStr) + '",'
-            + '"footprint":"' + EscapeJsonString(Footprint) + '",'
-            + '"source_designator":"' + EscapeJsonString(SrcDesignator) + '",'
-            + '"height_mils":' + FloatToJsonStr(HeightMils) + ','
-            + HeightJson
-            + '"bbox":{"x1":' + FloatToJsonStr(BBoxX1) + ',"y1":' + FloatToJsonStr(BBoxY1)
-            + ',"x2":' + FloatToJsonStr(BBoxX2) + ',"y2":' + FloatToJsonStr(BBoxY2)
-            + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '}'
-            + BodyJson + '}';
-        Inc(Count);
-        Comp := Iterator.NextPCBObject;
-    End;
-    Board.BoardIterator_Destroy(Iterator);
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"components":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+    Result := PCB_GetComponentsForBoard(Board, Params, RequestId);
 End;
 
 {..............................................................................}
@@ -3553,6 +3455,15 @@ End;
 { same reference-point-to-bbox-centre offset the component currently has, then }
 { AABB-overlap test against every other component on the board. Returns the    }
 { list of colliding designators and a count.                                    }
+{                                                                              }
+{ What the boxes contain: BOTH the target box and every collider box are the   }
+{ union of the footprint's pads, tracks, arcs, fills and regions on all        }
+{ layers -- so the silkscreen OUTLINE and any mechanical courtyard shapes      }
+{ count, but no text primitive does. IPCB_Component.BoundingRectangle would    }
+{ swallow the designator and comment strings, which is what made a 0201        }
+{ measure 81 x 281 mil and manufactured collisions out of silkscreen. Colliders}
+{ used to be measured that way while the target was not; they are symmetric    }
+{ now, and each entry carries its own bbox_basis.                              }
 {                                                                              }
 { Caveats: this is an axis-aligned approximation. Components with non-square    }
 { footprints rotated by non-quarter-turn angles will have an inflated bounding }
@@ -7067,7 +6978,7 @@ Var
     PCount, I, K, Misses, SubCount : Integer;
     Items, Traces, PName, LName : String;
     Target, Tol, Calc, Err, Etch, Speed : Double;
-    IsDiff, Enabled : Boolean;
+    IsDiff, IsCopl, Enabled : Boolean;
     Width, Gap : TCoord;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -7076,6 +6987,10 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+    If (ExtractJsonValue(Params, 'board_path') <> '') And
+       (UpperCase(Board.FileName) <> UpperCase(ExtractJsonValue(Params, 'board_path'))) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+        'Selected PCB path differs from board_path'); Exit; End;
     Stack := Nil;
     Try Stack := Board.MasterLayerStack; Except Stack := Nil; End;
     If Stack = Nil Then
@@ -7110,10 +7025,12 @@ Begin
         Target := 0;
         Tol := 0;
         IsDiff := False;
+        IsCopl := False;
         Try PName := Profile.Name; Except Inc(Misses); End;
         Try Target := Profile.Impedance; Except Inc(Misses); End;
         Try Tol := Profile.ImpedanceTolerance; Except Inc(Misses); End;
         Try IsDiff := Profile.IsDiffPair; Except Inc(Misses); End;
+        Try IsCopl := Profile.IsCoplanar; Except Inc(Misses); End;
 
         { A trace record's own layer is a V7 layer handle a script cannot name }
         { ("Undeclared identifier: Name", AD 26.11), so the profile is asked  }
@@ -7172,21 +7089,20 @@ Begin
             + JsonFloat('target_ohms', Target) + ','
             + JsonFloat('tolerance', Tol) + ','
             + JsonBool('differential', IsDiff) + ','
+            + JsonBool('coplanar', IsCopl) + ','
             + JsonRaw('layers', '[' + Traces + ']'));
     End;
 
     Result := BuildSuccessResponse(RequestId, JsonObj(
         JsonStr('board', ExtractFileName(Board.FileName)) + ','
+        + JsonStr('board_path', Board.FileName) + ','
         + JsonInt('profile_count', PCount) + ','
         + JsonInt('stack_count', SubCount) + ','
         + JsonInt('read_errors', Misses) + ','
         + JsonRaw('profiles', '[' + Items + ']')));
 End;
 
-{ LAYER STACK MANAGER: the whole physical stack (copper, dielectric, solder    }
-{ mask, overlay, paste) in order with Z heights; dielectric settings; the    }
-{ stack style; impedance profiles; via structures and back drilling. Lengths }
-{ are mils.                                                                   }
+{..............................................................................}
 
 { Core body shared with the selection-scoped profile (see PCB_GetComponents). }
 Function PCB_GetLayerStackupForBoard(Board : IPCB_Board; RequestId : String) : String;
@@ -8127,13 +8043,6 @@ End;
 { whole number: sets the stack style, Altium's number, read back).           }
 {..............................................................................}
 
-{..............................................................................}
-{ PCB_PhysicalStack - every physical layer of the board's stack in order, top }
-{ down: its kind, Z top and bottom and thickness, and for a dielectric or     }
-{ mask layer its type, material, constant, loss tangent and stiffener flag;   }
-{ the stack style and the finished thickness. Params: style (optional, a     }
-{ whole number: sets the stack style, Altium's number, read back).           }
-{..............................................................................}
 Function PCB_PhysicalStack(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -8141,44 +8050,32 @@ Var
     L : IPCB_LayerObject;
     DL : IPCB_DielectricLayer;
     EL : IPCB_ElectricalLayer;
-    StyleStr, Copper, Dielectric, Mask, Overlay, Paste, Kind, Key, Items, Extra : String;
-    ZTop, ZBot, MaxTop, MinBot, Order : Integer;
-    Changed : Boolean;
+    ExpectedPath, Copper, Dielectric, Mask, Overlay, Paste : String;
+    Kind, Key, Items, Extra : String;
+    ZTop, ZBot, MaxTop, MinBot, LayerOrder : Integer;
 Begin
-    StyleStr := ExtractJsonValue(Params, 'style');
-    If (StyleStr <> '') And (Not IsIntStr(StyleStr)) Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'INVALID_PARAM', 'style is a whole number');
-        Exit;
-    End;
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If ExpectedPath = '' Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'board_path is required'); Exit; End;
+    If ExtractJsonValue(Params, 'style') <> '' Then
+    Begin Result := BuildErrorResponse(RequestId, 'READ_ONLY', 'stack style writes require a separate verified operation'); Exit; End;
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
+    Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active'); Exit; End;
+    If UpperCase(Board.FileName) <> UpperCase(ExpectedPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED', 'Selected PCB path differs from board_path'); Exit; End;
     MLS := Board.MasterLayerStack;
-    Changed := False;
-    If StyleStr <> '' Then
-    Begin
-        PcbBeginEdit(0);
-        Try
-            MLS.LayerStackStyle := StrToInt(StyleStr);
-        Finally
-            PcbEndEdit(0);
-        End;
-        Changed := True;
-        MarkDocDirtyByPath(Board.FileName);
-    End;
-    Copper := StackClassNames(MLS, eLayerClass_Electrical);
-    Dielectric := StackClassNames(MLS, eLayerClass_Dielectric);
-    Mask := StackClassNames(MLS, eLayerClass_SolderMask);
-    Overlay := StackClassNames(MLS, eLayerClass_Overlay);
-    Paste := StackClassNames(MLS, eLayerClass_PasteMask);
+    If MLS = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'NO_STACK', 'No master layer stack'); Exit; End;
+    Copper := PCB_StackClassNames(MLS, eLayerClass_Electrical);
+    Dielectric := PCB_StackClassNames(MLS, eLayerClass_Dielectric);
+    Mask := PCB_StackClassNames(MLS, eLayerClass_SolderMask);
+    Overlay := PCB_StackClassNames(MLS, eLayerClass_Overlay);
+    Paste := PCB_StackClassNames(MLS, eLayerClass_PasteMask);
     Items := '';
     MaxTop := 0;
     MinBot := 0;
-    Order := 0;
+    LayerOrder := 0;
     L := MLS.First(eLayerClass_Physical);
     While L <> Nil Do
     Begin
@@ -8189,43 +8086,41 @@ Begin
         Else If Pos(Key, Dielectric) > 0 Then Kind := 'dielectric'
         Else If Pos(Key, Overlay) > 0 Then Kind := 'overlay'
         Else If Pos(Key, Paste) > 0 Then Kind := 'paste';
-        { Altium's Z runs down from the top copper: a layer's top is the    }
-        { smaller number (measured on AD 26.11).                           }
         ZTop := MLS.Get_ZTop(L);
         ZBot := MLS.Get_ZBottom(L);
-        If (Order = 0) Or (ZBot > MaxTop) Then MaxTop := ZBot;
-        If (Order = 0) Or (ZTop < MinBot) Then MinBot := ZTop;
+        If (LayerOrder = 0) Or (ZBot > MaxTop) Then MaxTop := ZBot;
+        If (LayerOrder = 0) Or (ZTop < MinBot) Then MinBot := ZTop;
         Extra := '';
         If (Kind = 'dielectric') Or (Kind = 'solder_mask') Then
         Begin
             DL := L;
-            Extra := ',' + StackDielectricJson(DL);
-        End;
-        { Copper that reads additive is a printed-electronics layer: Altium  }
-        { draws such a board paper-thin with no drilled holes (seen on      }
-        { AD 25.8, after copper was inserted through the V7 stack).         }
-        If Kind = 'copper' Then
+            Extra := ',' + JsonInt('dielectric_type', DL.DielectricType) + ','
+                + JsonStr('material', DL.DielectricMaterial) + ','
+                + JsonRaw('constant', FloatToJsonStr(DL.DielectricConstant)) + ','
+                + JsonRaw('loss_tangent', FloatToJsonStr(DL.DielectricLossTangent)) + ','
+                + JsonBool('stiffener', DL.IsStiffener);
+        End
+        Else If Kind = 'copper' Then
         Begin
             EL := L;
-            Extra := ',' + JsonInt('layer_id', L.LayerID)
-                + ',' + JsonRaw('resistivity', FloatToJsonStr(EL.ElectricalResistivity))
-                + ',' + JsonBool('additive', EL.IsAdditiveLayer);
+            Extra := ',' + JsonBool('additive', EL.IsAdditiveLayer) + ','
+                + JsonRaw('resistivity', FloatToJsonStr(EL.ElectricalResistivity));
         End;
         If Items <> '' Then Items := Items + ',';
-        Items := Items + JsonObj(JsonInt('order', Order) + ','
-            + JsonStr('name', L.Name) + ','
-            + JsonStr('kind', Kind) + ','
+        Items := Items + JsonObj(JsonInt('order', LayerOrder) + ','
+            + JsonStr('name', L.Name) + ',' + JsonStr('kind', Kind) + ','
             + JsonRaw('z_top_mils', FloatToJsonStr(CoordToMilsF(ZTop))) + ','
             + JsonRaw('z_bottom_mils', FloatToJsonStr(CoordToMilsF(ZBot))) + ','
             + JsonRaw('thickness_mils', FloatToJsonStr(CoordToMilsF(ZBot - ZTop))) + Extra);
-        Inc(Order);
+        Inc(LayerOrder);
         L := MLS.Next(eLayerClass_Physical, L);
     End;
     { the master stack only; a rigid-flex board has more }
     Result := BuildSuccessResponse(RequestId, JsonObj(
-        JsonInt('style', MLS.LayerStackStyle) + ','
+        JsonStr('board_path', Board.FileName) + ','
+        + JsonInt('style', MLS.LayerStackStyle) + ','
         + JsonInt('stacks_count', BoardLayerStackCount(Board)) + ','
-        + JsonBool('changed', Changed) + ','
+        + JsonInt('layer_count', LayerOrder) + ','
         + JsonRaw('total_thickness_mils', FloatToJsonStr(CoordToMilsF(MaxTop - MinBot))) + ','
         + JsonRaw('layers', '[' + Items + ']')));
 End;
@@ -17338,78 +17233,10 @@ Var
     Room : IPCB_ConfinementConstraint;
     JsonItems, KindStr : String;
     BR : TCoordRect;
-    First : Boolean;
-    Count : Integer;
-Begin
-    JsonItems := '';
-    First := True;
-    Count := 0;
-
-    Iterator := Board.BoardIterator_Create;
-    Iterator.AddFilter_ObjectSet(MkSet(eRuleObject));
-    Iterator.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-    Iterator.AddFilter_Method(eProcessAll);
-
-    Rule := Iterator.FirstPCBObject;
-    While Rule <> Nil Do
-    Begin
-        If Rule.RuleKind = eRule_ConfinementConstraint Then
-        Begin
-            If Not First Then JsonItems := JsonItems + ',';
-            First := False;
-
-            { BoundingRect / Kind / Comment etc. live on IPCB_ConfinementConstraint, }
-            { not on the base IPCB_Rule. Narrow the typed reference before reading. }
-            Room := Rule;
-            Try
-                BR := Room.BoundingRect;
-            Except
-                BR.Left := 0; BR.Bottom := 0; BR.Right := 0; BR.Top := 0;
-            End;
-
-            Try
-                If Room.Kind = eConfineIn Then KindStr := 'ConfineIn'
-                Else KindStr := 'ConfineOut';
-            Except KindStr := 'Unknown'; End;
-
-            JsonItems := JsonItems + '{"name":"' + EscapeJsonString(Rule.Name) + '",'
-                + '"enabled":' + BoolToJsonStr(Rule.Enabled) + ','
-                + '"kind":"' + EscapeJsonString(KindStr) + '",'
-                + '"scope_1":"' + EscapeJsonString(Rule.Scope1Expression) + '",'
-                + '"comment":"' + EscapeJsonString(Rule.Comment) + '",'
-                + '"x1":' + FloatToJsonStr(CoordToMilsF(BR.Left)) + ','
-                + '"y1":' + FloatToJsonStr(CoordToMilsF(BR.Bottom)) + ','
-                + '"x2":' + FloatToJsonStr(CoordToMilsF(BR.Right)) + ','
-                + '"y2":' + FloatToJsonStr(CoordToMilsF(BR.Top)) + '}';
-            Inc(Count);
-        End;
-        Rule := Iterator.NextPCBObject;
-    End;
-    Board.BoardIterator_Destroy(Iterator);
-
-    Result := BuildSuccessResponse(RequestId,
-        '{"room_rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
-End;
-
-Function PCB_GetRoomRules(Params : String; RequestId : String) : String;
-Var
-    Board : IPCB_Board;
-    Iterator : IPCB_BoardIterator;
-    Rule : IPCB_Rule;
-    Room : IPCB_ConfinementConstraint;
-    JsonItems, KindStr : String;
-    BR : TCoordRect;
     BL, BB, BRt, BT : TCoord;
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     Count := 0;
@@ -17461,6 +17288,19 @@ Begin
 
     Result := BuildSuccessResponse(RequestId,
         '{"room_rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+End;
+
+Function PCB_GetRoomRules(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := PCB_GetRoomRulesForBoard(Board, RequestId);
 End;
 
 {..............................................................................}

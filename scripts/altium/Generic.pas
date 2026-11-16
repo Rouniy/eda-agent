@@ -2655,14 +2655,18 @@ End;
 
 Function GetSchProperty(Obj : ISch_GraphicalObject; PropName : String) : String;
 Var
+    NoERC : ISch_NoERC;
     R : ISch_Rectangle;
     L : ISch_Line;
+    TF : ISch_TextFrame;
     Comp : ISch_Component;
+    Impl : ISch_Implementation;
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
     SwapPin : ISch_Pin;
+    PinGenerated : ISch_Pin;
     RR : ISch_RoundRectangle;
     ArcObj : ISch_Arc;
     SymObj : ISch_SheetSymbol;
@@ -2781,10 +2785,9 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'Name'        Then
+        Else If PropName = 'Name' Then
         Begin
-            If SchObjectHasName(Obj) Then
-                Result := Obj.Name
+            If SchObjectHasName(Obj) Then Result := Obj.Name
             Else
             Begin
                 { A harness wire, splice or cable: its name is in its    }
@@ -2794,13 +2797,16 @@ Begin
                 If Result = '' Then NotePropertyDiag('unreadable', PropName);
             End;
         End
-        Else If (PropName = 'LibReference') Or (PropName = 'SourceLibraryName')
-             Or (PropName = 'DesignItemId') Then
+        Else If PropName = 'LibReference'       Then Result := Obj.LibReference
+        Else If ((PropName = 'ComponentDescription') Or
+                 (PropName = 'Description')) And
+                (Obj.ObjectId = eSchComponent) Then
         Begin
-            If PropName = 'LibReference' Then Result := Obj.LibReference
-            Else If PropName = 'SourceLibraryName' Then Result := Obj.SourceLibraryName
-            Else If PropName = 'DesignItemId' Then Result := Obj.DesignItemId;
+            Comp := Obj;
+            Result := Comp.ComponentDescription;
         End
+        Else If PropName = 'SourceLibraryName'  Then Result := Obj.SourceLibraryName
+        Else If PropName = 'DesignItemId'       Then Result := Obj.DesignItemId
 
         { A managed (Workspace) part's identity, read only. It has no
           library path; LibIdentifierKind and LibraryIdentifier are what
@@ -2844,15 +2850,32 @@ Begin
         // ISch_Component only. Without these branches a query for them
         // answered an empty string as if the part had no link, which is how
         // a database-linked part read as unlinked during the DbLib live test.
-        Else If (PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName') Then
+        Else If (PropName = 'DatabaseTableName') Or (PropName = 'DatabaseLibraryName')
+             Or (PropName = 'UseDBTableName') Or (PropName = 'UseLibraryName')
+             Or (PropName = 'FootprintModel') Then
         Begin
             If Obj.ObjectId = eSchComponent Then
             Begin
                 Comp := Obj;
-                If PropName = 'DatabaseTableName' Then
-                    Result := Comp.DatabaseTableName
-                Else
-                    Result := Comp.DatabaseLibraryName;
+                Try
+                    If PropName = 'DatabaseTableName' Then
+                        Result := Comp.DatabaseTableName
+                    Else If PropName = 'DatabaseLibraryName' Then
+                        Result := Comp.DatabaseLibraryName
+                    Else If PropName = 'UseDBTableName' Then
+                        Result := BoolToJsonStr(Comp.UseDBTableName)
+                    Else If PropName = 'UseLibraryName' Then
+                        Result := BoolToJsonStr(Comp.UseLibraryName)
+                    Else
+                    Begin
+                        Impl := CurrentFootprintImpl(Comp);
+                        If (Impl <> Nil) And Impl.IsCurrent Then
+                            Result := Impl.ModelName;
+                    End;
+                Except
+                    NotePropertyDiag('failed', PropName);
+                    Result := '';
+                End;
             End
             Else
             Begin
@@ -2910,6 +2933,26 @@ Begin
         Begin
             Comp := Obj;
             Try Result := IntToStr(Comp.PartCount); Except Result := ''; End;
+        End
+        Else If (PropName = 'DisplayMode') Or (PropName = 'DisplayModeCount')
+            Or (PropName = 'DisplayModeNames')
+            Or (PropName = 'FootprintPinMap') Or (PropName = 'ComponentKind') Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                If PropName = 'DisplayMode' Then
+                    Result := IntToStr(Comp.DisplayMode)
+                Else If PropName = 'DisplayModeCount' Then
+                    Result := IntToStr(Comp.DisplayModeCount)
+                Else If PropName = 'DisplayModeNames' Then Result := ReadDisplayModeNames(Comp)
+                Else If PropName = 'ComponentKind' Then
+                    Result := ComponentKindName(Comp.ComponentKind)
+                Else
+                    Result := ReadFootprintPinMap(Comp);
+            End
+            Else
+                NotePropertyDiag('unreadable', PropName);
         End
 
         // Sub-object string properties (compound interfaces, typed cast required).
@@ -2979,10 +3022,28 @@ Begin
                 Result := '';
             End;
         End
-        Else If PropName = 'LineWidth' Then Result := IntToStr(Obj.LineWidth)
-        Else If PropName = 'Style' Then Result := IntToStr(Obj.Style)
-        Else If PropName = 'IOType' Then Result := IntToStr(Obj.IOType)
-        Else If PropName = 'Alignment' Then Result := IntToStr(Obj.Alignment)
+        { Altium derives this from the port's wiring. It is read only: a
+          scripted write appears to take but later returns to its value. }
+        Else If (PropName = 'AutoSize') Or (PropName = 'ConnectedEnd') Then
+        Begin
+            If Obj.ObjectId = ePort Then
+            Begin
+                PortObj := Obj;
+                If PropName = 'AutoSize' Then
+                    Result := BoolToJsonStr(PortObj.AutoSize)
+                Else
+                    Result := IntToStr(PortObj.ConnectedEnd);
+            End
+            Else
+            Begin
+                NotePropertyDiag('unreadable', PropName);
+                Result := '';
+            End;
+        End
+        Else If PropName = 'LineWidth'   Then Result := IntToStr(Obj.LineWidth)
+        Else If PropName = 'Style'       Then Result := IntToStr(Obj.Style)
+        Else If PropName = 'IOType'      Then Result := IntToStr(Obj.IOType)
+        Else If PropName = 'Alignment'   Then Result := IntToStr(Obj.Alignment)
         { NAME, NOT ORDINAL, so reading and writing use one spelling.
           This returned the raw enum while obj_modify takes a name and
           lib_get_pin_list reports one, so a caller that read a pin and
@@ -3118,9 +3179,15 @@ Begin
 
         // Coord properties (returned in mils)
         Else If PropName = 'Width' Then
-            Result := FloatToJsonStr(CoordToMilsF(Obj.Width))
-        Else If PropName = 'PinLength' Then
-            Result := FloatToJsonStr(CoordToMilsF(Obj.PinLength))
+        Begin
+            { Width is not part of ISch_GraphicalObject.  In particular an
+              eWire query used to stop DelphiScript here with "property does
+              not exist".  Narrow to interfaces that actually expose Width. }
+            If Obj.ObjectId = ePort Then
+            Begin PortObj := Obj; Result := FloatToJsonStr(CoordToMilsF(PortObj.Width)); End
+            Else Result := '';
+        End
+        Else If PropName = 'PinLength'   Then Result := FloatToJsonStr(CoordToMilsF(Obj.PinLength))
 
         // ConnectionX / ConnectionY: the pin's ELECTRICAL end, i.e. the
         // point a wire or net label must sit on to attach. Pin.Location is
@@ -3181,18 +3248,13 @@ Begin
         Else If PropName = 'BoundingRectangle.X2' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.X2))
         Else If PropName = 'BoundingRectangle.Y2' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.Y2))
 
-        // A line has two ends, not vertices (see SchLineEndProperty).
-        Else If (Obj.ObjectId = eLine) And (Pos('VERT', UpperCase(PropName)) = 1) Then
-            Result := SchLineEndProperty(Obj, PropName)
-        // Polyline vertex access. eWire / eBus / ePolyline are ISch_Polyline
-        // children with GetState_Vertex(i : Integer) : TLocation. Audit
+        // Polyline vertex access. eWire / eBus / ePolyline have a vertex
+        // array; eLine instead has Location and Corner. Audit
         // code reads the first two vertices to test wire-vs-component
         // segment intersection; higher indices are theoretically valid
         // but rarely needed (most wires are 2-vertex).
-        // Anything else without a vertex array (a rectangle, a text frame)
-        // has no vertex members at all, and asking halts the script.
-        Else If ((Pos('VERT', UpperCase(PropName)) = 1)) And Not SchHasVertexArray(Obj) Then
-            NotePropertyDiag('unreadable', PropName)
+        Else If (Obj.ObjectId = eLine) And (Pos('VERT', UpperCase(PropName)) = 1) Then
+            Result := SchLineEndProperty(Obj, PropName)
         Else If PropName = 'VerticesCount' Then Result := IntToStr(Obj.GetState_VerticesCount)
         Else If PropName = 'Vertex.1.X'   Then Result := FloatToJsonStr(CoordToMilsF(Obj.GetState_Vertex(1).X))
         Else If PropName = 'Vertex.1.Y'   Then Result := FloatToJsonStr(CoordToMilsF(Obj.GetState_Vertex(1).Y))
@@ -3210,14 +3272,16 @@ Begin
              Or (UpperCase(PropName) = 'VERTICES') Then
             Result := GetSchVertexProperty(Obj, PropName)
 
-        // Parameter / designator display settings
+        // Parameter and designator display settings.
         Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
             And SchHasParamDisplay(Obj) Then
             Result := ReadSchParamDisplayProp(Obj, PropName)
         Else If IsSchParamDisplayProp(PropName) Then
             NotePropertyDiag('unreadable', PropName)
 
-        // Pin text settings (issue #77)
+        // Pin text settings and description (issue #77)
+        Else If (PropName = 'Description') And (Obj.ObjectId = ePin) Then
+            Result := ReadSchPinProp(Obj, PropName)
         Else If IsSchPinProp(PropName) Then
         Begin
             If Obj.ObjectId = ePin Then
@@ -3269,12 +3333,45 @@ Begin
         { Readable so obj_select can confirm what it selected. The same
           member Gen_ClearHighlights reads on this interface. }
         Else If PropName = 'Selection'   Then Result := BoolToJsonStr(Obj.Selection)
-        { A name no branch above reads came back as a silent blank, the
-          same answer as an empty value: a misspelt or unsupported name
-          looked like a property that is there and empty. Say so
-          (issue #268). }
+        { Everything above is hand written and wins. What is left reaches }
+        { the generated chains, which carry the properties the SDK        }
+        { declares and the engine resolves, each one read live before it  }
+        { was folded in here.                                             }
+        {                                                                 }
+        { A component is offered its own chain first, since that one      }
+        { carries what only a component declares. Anything the type       }
+        { chain does not answer, and every other schematic object, falls  }
+        { to the base chain: those ten properties are declared on         }
+        { ISch_GraphicalObject itself, which is what Obj already is, so   }
+        { no cast and no type test is needed to read them.                }
+        {                                                                 }
+        { Have stays False for a name neither chain carries, which is now }
+        { reported as an unknown property, with an empty string.          }
         Else
-            NotePropertyDiag('unknown', PropName);
+        Begin
+            Have := False;
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                Result := GetSchComponentGenerated(Comp, PropName, Have);
+            End
+            Else If Obj.ObjectId = ePin Then
+            Begin
+                PinGenerated := Obj;
+                Result := GetSchPinGenerated(PinGenerated, PropName, Have);
+            End;
+            If (Not Have) And (Obj.ObjectId <> ePin) Then
+                Result := GetSchGraphicalGenerated(Obj, PropName, Have);
+            { A name no chain reads came back as a silent blank, the same
+              answer as an empty value: a misspelt or unsupported name
+              looked like a property that is there and empty. Say so
+              (upstream issue #268). }
+            If Not Have Then
+            Begin
+                Result := '';
+                NotePropertyDiag('unknown', PropName);
+            End;
+        End;
     Except
         Result := '';
     End;
@@ -3378,11 +3475,14 @@ Var
     Crn : TLocation;
     R : ISch_Rectangle;
     L : ISch_Line;
+    TF : ISch_TextFrame;
     Comp : ISch_Component;
+    Pin : ISch_Pin;
     PortObj : ISch_Port;
     EntryObj : ISch_SheetEntry;
     HarnessEntryObj : ISch_HarnessEntry;
     FrameObj : ISch_TextFrame;
+    ModeCount, NewMode : Integer;
     SwapPin : ISch_Pin;
     RR : ISch_RoundRectangle;
     SymObj : ISch_SheetSymbol;
@@ -3394,7 +3494,10 @@ Var
       property whose write did not stick as an unknown name, which points
       a reader at a spelling mistake that is not there. }
     WroteOK : Boolean;
+    FootprintBefore, FootprintAfter : String;
+    FootprintChoice : Integer;
 Begin
+    BeginPropertyWrite(0);
     { Measured on a live document: callers using modify_objects /             }
     { batch_modify                                                            }
     { with a pipe-combined set like `Location.X=200|Orientation=2` on an ePin }
@@ -3418,10 +3521,30 @@ Begin
         Begin
             WroteOK := SchSetExtra(Obj, PropName, Value);
         End
+        Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
+            And SchHasParamDisplay(Obj) Then
+            WroteOK := WriteSchParamDisplayProp(Obj, PropName, Value)
+        Else If IsSchParamDisplayProp(PropName) Then
+            Matched := False
+        Else If IsSchPinProp(PropName) Then
+        Begin
+            If Obj.ObjectId = ePin Then
+                WroteOK := WriteSchPinProp(Obj, PropName, Value)
+            Else
+                Matched := False;
+        End
         // Coordinates (expected in mils). `Obj.Location` returns a copy of
         // the TLocation record via the GetState_Location reader; writing
         // directly to `.X` / `.Y` on that copy is silently discarded. Read
         // the whole record, patch the target field, write it back.
+        { A component owns its pins as child primitives that carry their own
+          absolute coordinates. Assigning ISch_Component.Location moves only
+          the symbol body, leaving every pin behind: the part still reports
+          the new Location while its pins sit at the old spot, so wires drawn
+          to the "new" pin positions connect to nothing and the compiled
+          netlist silently disagrees with the drawing. MoveToXY relocates the
+          component together with all its children, which is what a caller
+          asking to move a part always means. }
         Else If PropName = 'Location.X' Then
         Begin
             Loc := Obj.Location;
@@ -3517,6 +3640,34 @@ Begin
                 Matched := False;
         End
 
+        Else If (PropName = 'Vertex.1.X') Or (PropName = 'Vertex.1.Y')
+             Or (PropName = 'Vertex.2.X') Or (PropName = 'Vertex.2.Y') Then
+        Begin
+            { Wires and buses keep their electrical geometry in polyline
+              vertices. Changing Location alone leaves these untouched. }
+            { GetState/SetState_Vertex are exposed by the base scripting
+              interface. Do not gate on ObjectId: recent Altium builds report
+              wire polylines with an internal id that differs from eWire. }
+            If Obj <> Nil Then
+            Begin
+                If (PropName = 'Vertex.1.X') Or (PropName = 'Vertex.1.Y') Then
+                Begin
+                    Loc := Obj.GetState_Vertex(1);
+                    If PropName = 'Vertex.1.X' Then Loc.X := MilsToCoordF(StrToFloatDef(Value, 0))
+                    Else Loc.Y := MilsToCoordF(StrToFloatDef(Value, 0));
+                    Obj.SetState_Vertex(1, Loc);
+                End
+                Else
+                Begin
+                    Loc := Obj.GetState_Vertex(2);
+                    If PropName = 'Vertex.2.X' Then Loc.X := MilsToCoordF(StrToFloatDef(Value, 0))
+                    Else Loc.Y := MilsToCoordF(StrToFloatDef(Value, 0));
+                    Obj.SetState_Vertex(2, Loc);
+                End;
+            End
+            Else Matched := False;
+        End
+
         // String properties (late-bound across all types, primitives only)
         Else If PropName = 'Text'        Then
         Begin
@@ -3530,7 +3681,7 @@ Begin
             Else
                 Matched := False;
         End
-        Else If PropName = 'Name'        Then
+        Else If PropName = 'Name' Then
         Begin
             If SchObjectHasName(Obj) Then
             Begin
@@ -3553,7 +3704,8 @@ Begin
         // canonical way to detach a part from a stale source-library binding.
         Else If PropName = 'SourceLibraryName' Then
         Begin
-            Obj.SourceLibraryName := Value;
+        If Obj.ObjectId = eSchComponent Then Begin Comp := Obj; Comp.SourceLibraryName := Value; End
+            Else Matched := False;
         End
         // DesignItemId is the library ITEM the placed part re-matches
         // against ("Design Item ID" in the UI). It is a component
@@ -3564,7 +3716,42 @@ Begin
         // produces the <Not Found> state in the Properties panel.
         Else If PropName = 'DesignItemId' Then
         Begin
-            Obj.DesignItemId := Value;
+        If Obj.ObjectId = eSchComponent Then Begin Comp := Obj; Comp.DesignItemId := Value; End
+            Else Matched := False;
+        End
+        { DbLib identity fields are component-only. LibraryIdentifier is
+          derived by Altium and is intentionally not assigned here. }
+        Else If PropName = 'DatabaseTableName' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin Comp := Obj; Comp.DatabaseTableName := Value; End
+            Else Matched := False;
+        End
+        Else If PropName = 'UseDBTableName' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin Comp := Obj; Comp.UseDBTableName := StrToBool(Value); End
+            Else Matched := False;
+        End
+        Else If PropName = 'UseLibraryName' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin Comp := Obj; Comp.UseLibraryName := StrToBool(Value); End
+            Else Matched := False;
+        End
+        { Choose an existing PCBLIB implementation and verify its current
+          flag. An arbitrary model rename would leave its datafile links
+          and the component's library identity inconsistent. }
+        Else If PropName = 'FootprintModel' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                FootprintChoice := ChooseFootprintModel(Comp, Value,
+                    FootprintBefore, FootprintAfter);
+                If FootprintChoice <> 1 Then WroteOK := False;
+            End
+            Else Matched := False;
         End
         // `Description` is the natural name (matches get_component_info /
         // BOM column / lib_set_component_description); `ComponentDescription`
@@ -3630,6 +3817,62 @@ Begin
             WroteOK := False;
             Try WroteOK := (Comp.PartCount = StrToIntDef(Value, 1)); Except End;
         End
+        Else If PropName = 'DisplayMode' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                ModeCount := Comp.DisplayModeCount;
+                If ModeCount < 1 Then ModeCount := 1;
+                NewMode := StrToIntDef(Trim(Value), -1);
+                If (NewMode < 0) Or (NewMode >= ModeCount) Then
+                    WroteOK := False
+                Else
+                Begin
+                    Comp.DisplayMode := NewMode;
+                    WroteOK := (Comp.DisplayMode = NewMode);
+                End;
+            End
+            Else
+                Matched := False;
+        End
+        Else If PropName = 'DisplayModeNames' Then
+        Begin
+            If Obj.ObjectId <> eSchComponent Then Matched := False
+            Else
+            Begin
+                Comp := Obj;
+                If Not WriteDisplayModeNames(Comp, Value) Then WroteOK := False;
+            End;
+        End
+        Else If PropName = 'ComponentKind' Then
+        Begin
+            If Obj.ObjectId <> eSchComponent Then Matched := False
+            Else
+            Begin
+                Comp := Obj;
+                If ComponentKindOf(Value) < 0 Then WroteOK := False
+                Else
+                Begin
+                    Comp.ComponentKind := ComponentKindOf(Value);
+                    If Comp.ComponentKind <> ComponentKindOf(Value) Then WroteOK := False;
+                End;
+            End;
+        End
+        Else If PropName = 'FootprintPinMap' Then
+        Begin
+            If Obj.ObjectId = eSchComponent Then
+            Begin
+                Comp := Obj;
+                WroteOK := WriteFootprintPinMap(Comp, Value);
+            End
+            Else
+                Matched := False;
+        End
+        Else If PropName = 'OwnerPartId' Then
+            Obj.OwnerPartId := StrToIntDef(Value, 0)
+        Else If PropName = 'OwnerPartDisplayMode' Then
+            Obj.OwnerPartDisplayMode := StrToIntDef(Value, 0)
 
         // Sub-object string properties (compound interfaces, typed cast required)
         // A sheet symbol carries its designator on SheetName rather than on the
@@ -3638,11 +3881,8 @@ Begin
         Else If (PropName = 'Designator') Or (PropName = 'Designator.Text')
              Or (PropName = 'SheetName') Or (PropName = 'SheetName.Text') Then
         Begin
-            { A pin's Designator IS its pin number, as GetSchProperty reads it.  }
-            { Routed through the component-text helper it was a no-op that      }
-            { still reported matched:1, so renumbering a pin silently failed.   }
             If Obj.ObjectId = ePin Then
-                Obj.Designator := Value
+            Begin Pin := Obj; Pin.Designator := Value; End
             Else If Obj.ObjectId = eSheetSymbol Then
                 WroteOK := SetSheetSymbolText(Obj, 'Designator', Value)
             Else
@@ -3671,49 +3911,6 @@ Begin
                 Obj.Orientation := StrToIntDef(Value, 0)
             Else
                 NotePropertyDiag('unknown', PropName);
-        End
-        { A placed part's display mode, refused outside 0 .. count - 1 and  }
-        { read back; its current footprint model's pin map, which Altium    }
-        { merges by schematic pin (WriteFootprintPinMap); its Component     }
-        { Type by name (ComponentKindOf), read back. Components only.       }
-        Else If (PropName = 'DisplayMode') Or (PropName = 'FootprintPinMap')
-             Or (PropName = 'ComponentKind') Or (PropName = 'DisplayModeNames') Then
-        Begin
-            If Obj.ObjectId <> eSchComponent Then
-                Matched := False
-            Else If PropName = 'DisplayModeNames' Then
-            Begin
-                Comp := Obj;
-                If Not WriteDisplayModeNames(Comp, Value) Then WroteOK := False;
-            End
-            Else If PropName = 'ComponentKind' Then
-            Begin
-                Comp := Obj;
-                If ComponentKindOf(Value) < 0 Then
-                    WroteOK := False
-                Else
-                Begin
-                    Comp.ComponentKind := ComponentKindOf(Value);
-                    If Comp.ComponentKind <> ComponentKindOf(Value) Then WroteOK := False;
-                End;
-            End
-            Else If PropName = 'DisplayMode' Then
-            Begin
-                Comp := Obj;
-                If (Not IsIntStr(Value)) Or (StrToIntDef(Value, -1) < 0)
-                   Or (StrToIntDef(Value, -1) >= Comp.DisplayModeCount) Then
-                    WroteOK := False
-                Else
-                Begin
-                    Comp.DisplayMode := StrToIntDef(Value, 0);
-                    If Comp.DisplayMode <> StrToIntDef(Value, 0) Then WroteOK := False;
-                End;
-            End
-            Else
-            Begin
-                Comp := Obj;
-                If Not WriteFootprintPinMap(Comp, Value) Then WroteOK := False;
-            End;
         End
         Else If PropName = 'FontId' Then
         Begin
@@ -3813,18 +4010,14 @@ Begin
             Else
                 Obj.Style := StrToIntDef(Value, 0);
         End
-        Else If PropName = 'IOType' Then
+        Else If PropName = 'AutoSize' Then
         Begin
-            Obj.IOType := StrToIntDef(Value, 0);
+            If Obj.ObjectId = ePort Then Begin PortObj := Obj; PortObj.AutoSize := StrToBool(Value); End
+            Else Matched := False;
         End
-        Else If PropName = 'Alignment' Then
-        Begin
-            Obj.Alignment := StrToIntDef(Value, 0);
-        End
-        Else If PropName = 'Electrical' Then
-        Begin
-            Obj.Electrical := ElectricalOrdinal(Value);
-        End
+        Else If PropName = 'IOType'      Then Obj.IOType := StrToIntDef(Value, 0)
+        Else If PropName = 'Alignment'   Then Obj.Alignment := StrToIntDef(Value, 0)
+        Else If PropName = 'Electrical'  Then Obj.Electrical := ElectricalOrdinal(Value)
         Else If (PropName = 'SwapIdPart') Or (PropName = 'SwapIdPin') Or
                 (PropName = 'SwapIdPair') Or (PropName = 'SwapIdPartPin') Then
         Begin
@@ -3869,12 +4062,10 @@ Begin
         // Coord properties (expected in mils)
         Else If PropName = 'Width' Then
         Begin
-            Obj.Width := MilsToCoordF(StrToFloatDef(Value, 0));
+            If Obj.ObjectId = ePort Then Begin PortObj := Obj; PortObj.Width := MilsToCoordF(StrToFloatDef(Value, 0)); End
+            Else Matched := False;
         End
-        Else If PropName = 'PinLength' Then
-        Begin
-            Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0));
-        End
+        Else If PropName = 'PinLength'   Then Obj.PinLength := MilsToCoordF(StrToFloatDef(Value, 0))
         Else If (PropName = 'XSize') Or (PropName = 'YSize') Then
         Begin
             If Not SchObjectHasSize(Obj) Then
@@ -3883,22 +4074,6 @@ Begin
                 Obj.XSize := MilsToCoordF(StrToFloatDef(Value, 0))
             Else
                 Obj.YSize := MilsToCoordF(StrToFloatDef(Value, 0));
-        End
-
-        // Parameter / designator display settings
-        Else If ((PropName = 'ShowName') Or IsSchParamDisplayProp(PropName))
-            And SchHasParamDisplay(Obj) Then
-            WroteOK := WriteSchParamDisplayProp(Obj, PropName, Value)
-        Else If IsSchParamDisplayProp(PropName) Then
-            Matched := False
-
-        // Pin text settings (issue #77)
-        Else If IsSchPinProp(PropName) Then
-        Begin
-            If Obj.ObjectId = ePin Then
-                WroteOK := WriteSchPinProp(Obj, PropName, Value)
-            Else
-                Matched := False;
         End
 
         // Boolean properties
@@ -4003,6 +4178,7 @@ Begin
 
     If Result = 0 Then NotePropertyDiag('unknown', PropName)
     Else If Result = -1 Then NotePropertyDiag('failed', PropName);
+    EndPropertyWrite(Result);
 End;
 
 {..............................................................................}
@@ -4245,6 +4421,7 @@ Begin
     If UnsupportedProp <> '' Then
     Begin
         NotePropertyDiag('unknown', UnsupportedProp);
+        NoteSetRejected(0);
         Exit;
     End;
 
@@ -4304,6 +4481,7 @@ Begin
             Else
                 Obj.Location := Loc;
             NoteSchWriteLanded(0);
+            NotePropertyWritten(0);
         Except
             NotePropertyDiag('failed', 'Location');
         End;
@@ -5224,7 +5402,7 @@ Begin
     { disk did not change (measured on AD 26.11). It now says what         }
     { happened: modified when something was written, saved false.          }
     Saved := False;
-    If IsMutating Then
+    If IsMutating And ((TotalMatched > 0) Or (Mode = 'create')) Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(DocPath);
@@ -5268,11 +5446,10 @@ Begin
         Exit;
     End;
 
-    // Do NOT RunProcess Client:OpenDocument, that loads the file but
-    // strips any project association, producing a "free document" in the
-    // UI with the full path as its tab title. SchDocByPathLoading opens it
-    // through the Client API, which keeps the membership.
-    SchDoc := SchDocByPathLoading(DocPath);
+    // Resolve only an already loaded sheet. An implicit open here can
+    // change project membership and focus while the caller expects a
+    // query on its exact document path.
+    SchDoc := LoadedSchDocByPath(DocPath);
     If SchDoc = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
@@ -5291,7 +5468,7 @@ Begin
     { disk did not change (measured on AD 26.11). It now says what         }
     { happened: modified when something was written, saved false.          }
     Saved := False;
-    If IsMutating Then
+    If IsMutating And ((TotalMatched > 0) Or (Mode = 'create')) Then
     Begin
         Try SchDoc.GraphicallyInvalidate; Except End;
         MarkDocDirtyByPath(DocPath);
@@ -6226,16 +6403,17 @@ Begin
 
     If ZoomProcess <> '' Then
     Begin
-        If Pos('|' + Action + '|', '|fit|selection|board|document|') = 0 Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'BAD_PARAMS', 'action is fit, board, '
-                + 'document or selection, not "' + Action + '"');
-            Exit;
-        End;
-        If (ZoomProcess <> 'Sch:Zoom') And (Action = 'document') Then
+        If (Action <> 'fit') And (Action <> 'selection') And (Action <> 'board')
+            And (Action <> 'document') Then
         Begin
             Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
-                'document zooms to a whole schematic sheet; on a board use board or fit');
+                'action must be "fit", "board", "document" or "selection", got "' + Action + '"');
+            Exit;
+        End;
+        If (Action = 'document') And (ZoomProcess <> 'Sch:Zoom') Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
+                'action "document" requires a schematic or schematic library');
             Exit;
         End;
         { "board" on a board fits the window to the board outline with a     }
@@ -6262,8 +6440,6 @@ Begin
             AddStringParameter('Action', 'Document');
             AddStringParameter('Target', 'Board');
         End
-        { document = View > Fit Document, the sheet with its frame; fit is }
-        { Fit All Objects, which may leave the frame out.                  }
         Else If Action = 'document' Then AddStringParameter('Action', 'Document')
         Else If (Action = 'fit') Or (Action = 'board') Then AddStringParameter('Action', 'All')
         Else AddStringParameter('Action', 'Selected');
@@ -6300,6 +6476,30 @@ Begin
         If SchDoc <> Nil Then RunProcess('Sch:Zoom')
         Else RunProcess('PCB:Zoom');
     End
+    Else If Action = 'document' Then
+    Begin
+        If SchDoc = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC',
+                'A schematic document is required to fit the full sheet');
+            Exit;
+        End;
+        ResetParameters;
+        AddStringParameter('Action', 'Document');
+        RunProcess('Sch:Zoom');
+    End
+    Else If Action = 'board' Then
+    Begin
+        If Board = Nil Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'NO_PCB',
+                'A PcbDoc is required to fit the board');
+            Exit;
+        End;
+        ResetParameters;
+        AddStringParameter('Action', 'Board');
+        RunProcess('PCB:Zoom');
+    End
     Else If Action = 'selection' Then
     Begin
         { 'Selected' is attested in third-party PCB scripts but not in the   }
@@ -6314,7 +6514,7 @@ Begin
     Else
     Begin
         Result := BuildErrorResponse(RequestId, 'BAD_PARAMS',
-            'action must be "fit" or "selection", got "' + Action + '"');
+            'action must be "fit", "board" or "selection", got "' + Action + '"');
         Exit;
     End;
 
@@ -6323,33 +6523,20 @@ Begin
 End;
 
 {..............................................................................}
-{ BATCH MODIFY: Multiple modify operations in a single IPC call.             }
-{                                                                            }
-{ Params: operations. Preferred wire format is the '~~' batch format shared  }
-{   with batch_delete / place_wires:                                         }
-{     scope=active_doc;object_type=eNetLabel;filter=Text=VBUS;set=Location.Y=6400~~... }
-{                                                                            }
-{ LEGACY format (still accepted when the payload contains no '~~'):          }
-{   pipe-separated operations, each semicolon-separated as                   }
-{   scope;object_type;filter;set                                             }
-{                                                                            }
-{ The legacy format was BROKEN for any op whose filter or set contained a    }
-{ '|', which is the documented separator INSIDE both of those fields.        }
-{ Measured on a live document: an op list of 4 eSchComponent moves followed  }
-{ by 8 eNetLabel moves reported operations_processed=4 and silently dropped  }
-{ the other 8, and a lone eNetLabel op with a two-condition filter reported  }
-{ operations_processed=0 while the identical filter matched through          }
-{ obj_query and obj_batch_delete. Cause: the top-level split on '|' tore     }
-{ each such op into fragments, and every fragment after the first had fewer  }
-{ than three ';' so it hit `Continue` and vanished without a trace. It was   }
-{ never an object-type allowlist -- eNetLabel was always accepted.           }
-{                                                                            }
-{ '~~' cannot appear in an Altium name, filter or property string (see the   }
-{ batch helper notes in Main.pas), so the new format is unambiguous.         }
-{                                                                            }
-{ Every op is now evaluated independently and reports its own matched count  }
-{ in "results", so an op that matches nothing is REPORTED rather than being  }
-{ silently counted as fine.                                                  }
+{ Legacy batch_modify operation parser.                                       }
+{                                                                             }
+{ The pre-2026.08.01 wire format packed operations as                         }
+{ 'scope;object_type;filter;set' joined by '|'. That collides head-on with    }
+{ the '|' that separates AND-conditions inside a filter and assignments       }
+{ inside a set: "...;eSchComponent;Location.X=7013|Location.Y=7634;           }
+{ Designator.Text=C1027" got chopped at the FIRST pipe, both halves then      }
+{ failed the "needs 3 semicolons" test and were silently dropped. Every       }
+{ multi-condition op vanished with no error, which is why the tool reported   }
+{ operations_processed:0 while the single-shot modify_objects (whose filter   }
+{ travels in its own JSON field) worked on the identical filter.              }
+{                                                                             }
+{ Kept only so an older Python client still gets the single-condition         }
+{ behaviour it used to get. Returns False when the op can't be parsed.        }
 {..............................................................................}
 
 Function ParseLegacyModifyOp(OpStr : String; Var Scope : String;
