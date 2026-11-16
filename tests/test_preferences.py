@@ -136,7 +136,7 @@ def test_python_reads_the_same_file(tmp_path):
         "deleting": "allowed", "closing": "allowed",
         "ui_automation": "on", "keep_in_view": "off", "dialogs": "auto",
         "length_units": "mil", "usage": "off", "routing": "enforced",
-        "basic_3d_models": "not_allowed"}
+        "basic_3d_models": "not_allowed", "theme": "system"}
     for stored, seen in (('{"value_format":"si","value_unit":"with"}', "with"),
                          ('{"value_format":"si","value_unit":"WITH"}', "with"),
                          ('{"value_format":"si","value_unit":"yes"}', "without"),
@@ -202,8 +202,9 @@ def test_the_config_tab_is_wired_and_painted_at_start():
 
 def test_one_tab_shows_at_a_time():
     show = functions(strip_comments(_code("StatusForm.pas")))["ShowTab"]
-    for line in ("pnl_Log.Visible := Which = 0;", "mmo_Perf.Visible := Which = 1;",
-                 "pnl_Config.Visible := Which = 2;", "mmo_Stats.Visible := Which = 3;"):
+    # upstream's window: the log is a memo, and there is no Stats tab
+    for line in ("mmo_Log.Visible := Which = 0;", "mmo_Perf.Visible := Which = 1;",
+                 "pnl_Config.Visible := Which = 2;"):
         assert line in show
 
 

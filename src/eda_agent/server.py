@@ -868,12 +868,12 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
             "features", "install-deps",
         )),
         ("Diagnostics", (
-            "doctor", "health", "perf", "compute-status", "fork-status",
+            "doctor", "health", "perf", "usage", "compute-status", "fork-status",
         )),
         ("Browser UIs", (
             "dashboard", "stop-dashboard", )),
         ("Altium SDK reach", (
-            "sdk-coverage", "sdk-probe", "sdk-symbols", "sdk-generate",
+            "sdk-coverage", "sdk-reach", "sdk-probe", "sdk-symbols", "sdk-generate",
         )),
         ("Owner profiles", (
             "profile-init", "profile-list", "profile-show", "profile-use",
@@ -882,8 +882,6 @@ def command_groups() -> list[tuple[str, tuple[str, ...]]]:
         ("Design modes", (
             "mode-list", "mode-show", "mode-use", "mode-init",
         )),
-        ("Offline analysis (no running Altium)", (
-            )),
         ("Engineering calculators", (
             "calc", *cli.CALC_COMMANDS, "calc-cross-check",
         )),

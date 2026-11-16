@@ -80,7 +80,6 @@ CHOICES: dict[str, tuple[str, ...]] = {
     "ui_automation": ("on", "off"),
     "keep_in_view": ("off", "on"),
     "dialogs": ("auto", "manual"),
-    "usage_stats": ("on", "off"),
     "theme": ("system", "light", "dark"),
     "length_units": ("mil", "mm"),
     "usage": ("off", "on"),
@@ -342,11 +341,6 @@ def basic_3d_models_report(names: list[str],
             "who wants to keep basic models sets \"Basic 3D models\" to "
             "Allowed on the Config tab."),
     }}
-
-
-def usage_stats_on(workspace: Optional[Path] = None) -> bool:
-    """True when the token cost of each tool call is counted."""
-    return preferences(workspace)["usage_stats"] == "on"
 
 
 def theme(workspace: Optional[Path] = None) -> str:

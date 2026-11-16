@@ -18,9 +18,9 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_BACKEND` | altium | Which EDA tool to drive: `altium`, `kicad`, `easyeda`, or `both` (Altium and KiCad together). Same as `--backend`. |
 | `EDA_AGENT_TOOLSET` | full | `minimal` advertises only `tool_catalog` and `tool_invoke`, for MCP clients that cap the tool count. Every tool stays reachable. Same as `--toolset`. |
 | `EDA_AGENT_COMPUTE` | python | `python`, `rust` or `auto`: which implementation runs the CPU-heavy loops. See [Rust compute](RUST_COMPUTE.md). Same as `--compute`. |
-| `EDA_AGENT_ROUTER` | the profile's `router.json`, else `default` | Which autorouter engine routing runs use: `default`, or `euan` for the alternative router from Euan's fork (off unless set). Overrules `eda-agent router-use`. |
 | `EDA_AGENT_REMINDER_EVERY` | 10 | How often `app_ping` / `app_attach` repeat the datasheet-first reminder: on the first call, then every Nth. `1` sends it every time. |
 | `EDA_AGENT_HEADLESS_REVIEW` | off | `1` enables the offline review, BOM and netlist commands and tools that read `.SchDoc`/`.PrjPcb` files with no Altium running. Same as `--offline` on those commands. |
+| `EDA_AGENT_ROUTE_KERNEL` | the compiled kernel when installed | `python` keeps the router's grid search on scipy even when the compiled `eda-agent-route` kernel is installed. |
 
 ### Workspace and Altium bridge
 
@@ -47,7 +47,6 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_NO_DASHBOARD` | off | `1` starts the MCP server without the web dashboard. Same as `--no-dashboard`. |
 | `EDA_AGENT_DISABLE_DASHBOARD` | off | Alias of `EDA_AGENT_NO_DASHBOARD`. |
 | `EDA_AGENT_HEADLESS` | off | Alias of `EDA_AGENT_NO_DASHBOARD`. Same as `--headless`. |
-| `EDA_AGENT_DASHBOARD_ALLOWED_HOSTS` | loopback only | Comma-separated host names (no ports) the dashboard accepts in `Host` and `Origin`, for a deliberate non-loopback `--host`. |
 
 ### Logs and token usage
 
@@ -60,8 +59,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_LOG_BACKUPS` | 5 | Rotated log files kept. |
 | `EDA_AGENT_LOG_TOTAL_MAX_MB` | 200 | Hard cap for the whole log folder. The oldest rotated files go first. |
 | `EDA_AGENT_LOG_MIN_FREE_MB` | 1024 | Below this much free disk, DEBUG and INFO logging stop and one CRITICAL line says why. |
-| `EDA_AGENT_USAGE_OFF` | off | `1` stops counting the tokens each tool call costs. Same as `usage_stats: off` in preferences. See [Token usage](TOKEN_USAGE.md). |
-| `EDA_AGENT_USAGE_DIR` | the design workspace | Where the token usage files are kept. |
+| `EDA_AGENT_USAGE_OFF` | off | `1` stops the per-tool token and time estimate, whatever the `usage` preference says. Read it back with `eda-agent usage`. |
 
 ### Profiles, policies and design modes
 
@@ -180,9 +178,11 @@ The Config tab on the Altium status window writes these to `preferences.json` in
 | `ui_automation` | `on`, `off` | yes | `off` refuses menus, dialogs and keystrokes. Safety switch. |
 | `keep_in_view` | `off`, `on` |  | `on` fits the board or sheet in view after each edit. |
 | `dialogs` | `auto`, `manual` |  | `manual` leaves dialogs such as the change order for you to answer, instead of the tool answering them. |
-| `usage_stats` | `on`, `off` |  | `off` stops counting the tokens each tool call costs. |
 | `theme` | `system`, `light`, `dark` |  | The web dashboard's look: `system`, `light` or `dark`. Set in the profile only; the Altium panel has no switch for it. |
 | `length_units` | `mil`, `mm` |  | The unit a new AI session gives and reads lengths in: `mil` (default) or `mm`. Each session may change its own with the `length_units` tool. |
+| `usage` | `off`, `on` |  | `on` records an estimate of the tokens and time each tool call costs (upstream's counter). Off by default; read it with `eda-agent usage`. |
+| `routing` | `enforced`, `advisory`, `off` |  | The routing discipline: `enforced` holds a route back until the brief for its critical nets is answered, `advisory` routes and names what is open, `off` asks for nothing. |
+| `basic_3d_models` | `not_allowed`, `allowed` |  | `allowed` stops the report of footprints that carry only extruded, cylinder or sphere bodies. |
 | `default_mode` | a design mode name | | Profile only: the design mode a run uses when it names none. |
 
 ## `workspace.json`
@@ -371,6 +371,16 @@ Report call timing from the workspace logs.
 | `--json` | switch |  |
 | `--limit` | `LIMIT` |  |
 
+#### `eda-agent usage`
+
+Estimated tokens and time per tool over the last days, heaviest first (EDA_AGENT_USAGE_OFF=1 stops the recording).
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--days` | `DAYS` |  |
+| `--top` | `TOP` |  |
+| `--json` | switch |  |
+
 #### `eda-agent compute-status`
 
 Show whether the Rust compute wheel is installed and in use
@@ -398,7 +408,7 @@ Launch the local web dashboard. Open http://127.0.0.1:8766 to see live MCP activ
 
 | Argument | Takes | What it does |
 |---|---|---|
-| `--host` | `HOST` |  |
+| `--host` | `127.0.0.1`, `localhost`, `::1` | A loopback address; the dashboard is never served to another machine. |
 | `--port` | `PORT` |  |
 | `--debug` | switch |  |
 
@@ -407,18 +417,6 @@ Launch the local web dashboard. Open http://127.0.0.1:8766 to see live MCP activ
 Stop the dashboard process (reads workspace/dashboard.pid). Use this when the dashboard was launched detached by the Altium script and you want to kill it without rebooting.
 
 No arguments.
-
-#### `eda-agent vote`
-
-Compare two layouts of a DesignPlan in a local browser
-
-| Argument | Takes | What it does |
-|---|---|---|
-| `--plan` | `PLAN` | DesignPlan JSON to compare |
-| `--symbols` | `SYMBOLS` | Offline symbol fixture JSON; omit for live Altium |
-| `--host` | `HOST` |  |
-| `--port` | `PORT` |  |
-| `--debug` | switch |  |
 
 ### Altium SDK reach
 
@@ -431,6 +429,15 @@ Report how much of Altium's SDK the property chains reach.
 | `--json` | switch | Emit machine-readable JSON instead of the table. |
 | `--detail` | `N` | List N missing property names per object type. |
 | `--sdk-json` | `PATH` | Read a reflected SDK from PATH instead of reference/altium_sdk.json. |
+
+#### `eda-agent sdk-reach`
+
+Count the properties Altium's SDK declares on each object type and the share obj_query/obj_modify reach. Reads the SDK index in reference/altium_sdk (or EDA_AGENT_SDK_INDEX).
+
+| Argument | Takes | What it does |
+|---|---|---|
+| `--detail` | `N` | List up to N properties not reached, per type. |
+| `--json` | switch | Every type with every name not reached, as JSON. |
 
 #### `eda-agent sdk-probe`
 
@@ -521,44 +528,6 @@ Copy a profile's templates/<name>/ tree to a new project directory.
 | `dest` | `DEST` |  |
 | `--force` | switch | Copy into a non-empty destination. Files the template also has are overwritten; anything else already there is left alone (this merges, it does not replace the directory). |
 
-#### `eda-agent phases-show`
-
-Show enabled NPI stages and their source.
-
-| Argument | Takes | What it does |
-|---|---|---|
-| `--json` | switch |  |
-
-#### `eda-agent phases-enable`
-
-Enable NPI stages in the active profile.
-
-| Argument | Takes | What it does |
-|---|---|---|
-| `STAGE` | `STAGE` |  |
-
-#### `eda-agent phases-disable`
-
-Disable NPI stages in the active profile.
-
-No arguments.
-
-#### `eda-agent router-show`
-
-Which autorouter engine routing runs use (default or euan), and which setting decided it.
-
-| Argument | Takes | What it does |
-|---|---|---|
-| `--json` | switch | Emit machine-readable JSON. |
-
-#### `eda-agent router-use`
-
-Choose the autorouter engine: 'default', or 'euan' for the alternative router from Euan's fork (off by default). Writes the active profile's router.json.
-
-| Argument | Takes | What it does |
-|---|---|---|
-| `engine` | `default`, `euan` | default (the usual router) or euan. |
-
 ### Design modes
 
 #### `eda-agent mode-list`
@@ -594,44 +563,6 @@ Scaffold a design mode in the active profile's modes/.
 | `name` | `NAME` |  |
 | `--extends` | `MODE` | Base it on this mode, e.g. reference_redraw. |
 | `--force` | switch | Replace an existing file. |
-
-### Offline analysis (no running Altium)
-
-#### `eda-agent review`
-
-Offline FALLBACK design review of a .SchDoc/.PrjPcb -- parses the file directly (no running Altium, no license) for the component-level subset only (missing MPN / datasheet, placeholder values, designator collisions). NOT the preferred path -- prefer the live tools when Altium is available. Opt-in: requires --offline (or EDA_AGENT_HEADLESS_REVIEW=1).
-
-| Argument | Takes | What it does |
-|---|---|---|
-| `file` | `FILE` | Path to a .SchDoc sheet or a .PrjPcb project (reviews all its sheets). |
-| `--offline` | switch | Opt in to the no-Altium file-reader review. Required (this review is off by default); the live-Altium tools are preferred when a session is available. |
-| `--json` | switch | Emit the full report as JSON. |
-| `--sarif` | switch | Emit SARIF 2.1.0 (for GitHub code scanning / PR annotations). |
-| `--fail-on` | `error`, `warning`, `info`, `never` | Exit non-zero when a finding at or above this severity exists (default: error). |
-
-#### `eda-agent bom`
-
-Offline consolidated BOM from a .SchDoc/.PrjPcb (no running Altium). Opt-in: requires --offline (or EDA_AGENT_HEADLESS_REVIEW=1). Prefer live proj_get_bom.
-
-| Argument | Takes | What it does |
-|---|---|---|
-| `file` | `FILE` | A .SchDoc or .PrjPcb. |
-| `--offline` | switch | Opt in to the no-Altium reader (required). |
-| `--csv` | switch | Emit CSV. |
-| `--json` | switch | Emit JSON. |
-| `--allow-empty` | switch | Permit an empty BOM (confirmed-empty design only); by default an empty result is an error, because it usually means failed extraction. |
-
-#### `eda-agent netlist`
-
-Offline netlist reconstruction + connectivity ERC (single_pin_net, net_short) from a .SchDoc (no running Altium). Opt-in: requires --offline. Prefer live proj_get_nets/proj_run_erc.
-
-| Argument | Takes | What it does |
-|---|---|---|
-| `file` | `FILE` | A .SchDoc sheet. |
-| `--offline` | switch | Opt in to the no-Altium solver (required). |
-| `--json` | switch | Emit JSON. |
-| `--sarif` | switch | Emit SARIF 2.1.0 (GitHub code scanning / PR annotations). |
-| `--fail-on` | `error`, `warning`, `info`, `never` | Exit non-zero on a finding at/above this severity (default: error). |
 
 ### Engineering calculators
 

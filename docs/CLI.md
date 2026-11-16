@@ -35,6 +35,7 @@ listings can be read against each other.
 | `eda-agent compute-status` | Whether the optional Rust compute wheel is installed, which API version it speaks, and which implementation (`python` or `rust`) the current `--compute` / `EDA_AGENT_COMPUTE` setting would run. Exit 1 when `rust` is requested and cannot be served. See [Rust compute](RUST_COMPUTE.md) |
 | `eda-agent health` | Fast offline preconditions: workspace dir + writable, pointer file + matches config, bundled scripts findable, bridge constructable. Exit 0 = clean, 1 = critical fail |
 | `eda-agent perf [--json] [--limit N]` | Where call time actually goes. Joins `bridge_trace.log` (the round trip the caller saw) with `activity.log` (the handler time inside Altium) on the request id, and reports both plus the difference, per command. See [Measuring performance](USING_THE_TOOLS.md#measuring-performance) |
+| `eda-agent usage [--days N] [--top N] [--json]` | Estimated tokens and time per tool over the last days, heaviest first (upstream's counter; `EDA_AGENT_USAGE_OFF=1` stops the recording) |
 
 ## Browser UIs
 
@@ -51,6 +52,7 @@ listings can be read against each other.
 | Command | Purpose |
 |---|---|
 | `eda-agent sdk-coverage [--json] [--detail N] [--sdk-json PATH]` | How much of Altium's own SDK the generic property layer reaches. Reflects `Altium.SDK.Interfaces.dll` from the local install into `reference/altium_sdk.json` (via `scripts/altium_sdk_reflect.ps1`), then measures the four Pascal property chains against it and names every property that is declared but unreachable. See [SDK coverage](SDK_COVERAGE.md) |
+| `eda-agent sdk-reach [--detail N] [--json]` | Count the properties Altium's SDK declares on each object type and the share `obj_query` / `obj_modify` reach, from the SDK index in `reference/altium_sdk` (or `EDA_AGENT_SDK_INDEX`) |
 | `eda-agent sdk-probe [--designator REF] [--properties A,B,C] [--json]` | Which declared properties the running Altium actually exposes. The assembly says a property exists; only the engine says it is reachable, and an unexposed one faults where `Try/Except` cannot catch it. Probes read-only, one name at a time, logging each attempt before it is made so a dead loop names the property that killed it. Recover with `eda-agent relaunch`. See [SDK coverage](SDK_COVERAGE.md) |
 | `eda-agent sdk-symbols [--refresh] [--name NAME] [--json]` | Which declared members DelphiScript can actually resolve, read offline from the scripting engine's own registered symbol table in `ScriptingSystem.dll`. A member registered only as `GetState_Name` does not resolve as a property: touching it raises `Undeclared identifier` and halts the script debugger, which no `Try/Except` catches. It is reachable through that getter instead, so the generator checks the table and picks the spelling that resolves. See [SDK coverage](SDK_COVERAGE.md) |
 
@@ -67,8 +69,6 @@ listings can be read against each other.
 | `eda-agent phases-show [--json]` | Which [NPI stages](USING_THE_TOOLS.md#npi-phase-gates) are in force, and which setting decided it |
 | `eda-agent phases-enable [STAGE...]` | Run the named stages (`evt dvt pvt`), or all six when none are named. Off by default |
 | `eda-agent phases-disable` | Stop running them. Answers already recorded are kept |
-| `eda-agent router-show [--json]` | Which autorouter engine routing runs use (`default` or `euan`), and which setting decided it. See [Autorouter engines](ROUTER_ENGINES.md) |
-| `eda-agent router-use default\|euan` | Choose the engine for the active profile. `euan` is the alternative router from Euan's fork (TechAUmNu); off by default. `EDA_AGENT_ROUTER` overrules it. See [Autorouter engines](ROUTER_ENGINES.md) |
 
 ## Design modes
 
@@ -79,14 +79,6 @@ listings can be read against each other.
 | `eda-agent mode-use <name>` / `--clear` | Select the mode a run uses when it names none |
 | `eda-agent mode-init <name> [--extends MODE]` | Scaffold `modes/<name>.json` in the active profile |
 | `eda-agent --mode <name> <command>` | Use a mode for one command (same as `EDA_AGENT_MODE`) |
-
-## Offline analysis (no running Altium)
-
-| Command | Purpose |
-|---|---|
-| `eda-agent review --offline <file> [--json/--sarif] [--fail-on ...]` | **Offline** component-level design review of a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in (`--offline` or `EDA_AGENT_HEADLESS_REVIEW=1`); exit 1 on findings at/above `--fail-on` - a hardware-CI gate |
-| `eda-agent bom --offline <file> [--csv/--json]` | **Offline** consolidated BOM from a `.SchDoc`/`.PrjPcb` (no Altium). Opt-in |
-| `eda-agent netlist --offline <file> [--json] [--fail-on ...]` | **Offline** geometric netlist reconstruction + connectivity ERC (`single_pin_net`, `net_short`) from a `.SchDoc` (no Altium). Opt-in; exit 1 on findings at/above `--fail-on` |
 
 ## Engineering calculators
 

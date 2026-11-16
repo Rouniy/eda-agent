@@ -125,9 +125,6 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "Alias of `EDA_AGENT_NO_DASHBOARD`."),
     EnvVar("EDA_AGENT_HEADLESS", "Web dashboard", "off",
            "Alias of `EDA_AGENT_NO_DASHBOARD`. Same as `--headless`."),
-    EnvVar("EDA_AGENT_DASHBOARD_ALLOWED_HOSTS", "Web dashboard", "loopback only",
-           "Comma-separated host names (no ports) the dashboard accepts in "
-           "`Host` and `Origin`, for a deliberate non-loopback `--host`."),
     # ---- Logs and token usage -------------------------------------------
     EnvVar("EDA_AGENT_LOG_DIR", "Logs and token usage",
            r"`%USERPROFILE%\EDA Agent\logs`",
@@ -143,12 +140,11 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "Below this much free disk, DEBUG and INFO logging stop and one "
            "CRITICAL line says why."),
     EnvVar("EDA_AGENT_USAGE_OFF", "Logs and token usage", "off",
-           "`1` stops counting the tokens each tool call costs. Same as "
-           "`usage_stats: off` in preferences. See "
-           "[Token usage](TOKEN_USAGE.md)."),
-    EnvVar("EDA_AGENT_USAGE_DIR", "Logs and token usage",
-           "the design workspace",
-           "Where the token usage files are kept."),
+           "`1` stops the per-tool token and time estimate, whatever the "
+           "`usage` preference says. Read it back with `eda-agent usage`."),
+    EnvVar("EDA_AGENT_ROUTE_KERNEL", "Server and tool surface", "the compiled kernel when installed",
+           "`python` keeps the router's grid search on scipy even when the "
+           "compiled `eda-agent-route` kernel is installed."),
     # ---- Profiles, policies, modes --------------------------------------
     EnvVar("EDA_AGENT_PROFILE_DIR", "Profiles, policies and design modes",
            "unset",
@@ -311,6 +307,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
 #: it is, so the list cannot quietly absorb a real setting.
 NOT_SETTINGS: dict[str, str] = {
     "EDA_AGENT_HOLD": "a placeholder footprint name in the Pascal library code",
+    "EDA_AGENT_HOLD_": "the same placeholder, as a name prefix",
     "EDA_AGENT_BACKEND_REEXEC": "internal: `_EDA_AGENT_BACKEND_REEXEC` marks "
                                 "the re-exec that applies `--backend`",
 }
@@ -345,7 +342,14 @@ PREFERENCES: dict[str, str] = {
     "keep_in_view": "`on` fits the board or sheet in view after each edit.",
     "dialogs": "`manual` leaves dialogs such as the change order for you to "
                "answer, instead of the tool answering them.",
-    "usage_stats": "`off` stops counting the tokens each tool call costs.",
+    "usage": "`on` records an estimate of the tokens and time each tool call "
+             "costs (upstream's counter). Off by default; read it with "
+             "`eda-agent usage`.",
+    "routing": "The routing discipline: `enforced` holds a route back until "
+               "the brief for its critical nets is answered, `advisory` "
+               "routes and names what is open, `off` asks for nothing.",
+    "basic_3d_models": "`allowed` stops the report of footprints that carry "
+                       "only extruded, cylinder or sphere bodies.",
     "length_units": "The unit a new AI session gives and reads lengths in: "
                     "`mil` (default) or `mm`. Each session may change its "
                     "own with the `length_units` tool.",
