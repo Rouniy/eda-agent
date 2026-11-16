@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "eda-agent"
 version = "0.8.2"
 description = "MCP server for Altium Designer, KiCad, and EasyEDA Pro automation, with around 800 tools on the Altium backend."
-readme = "README.md"
+readme = "README.pypi.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [

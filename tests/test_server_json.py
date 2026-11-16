@@ -51,3 +51,13 @@ def test_the_readme_on_pypi_has_no_links_into_the_repository():
     relative = [a or b for a, b in targets
                 if not re.match(r"(https?:|mailto:|#)", a or b)]
     assert relative == []
+
+
+def test_the_pypi_readme_is_the_front_page_with_absolute_links():
+    """This fork's front page keeps relative links; the package ships a
+    generated copy, which must not fall behind it."""
+    import subprocess
+    import sys
+    done = subprocess.run([sys.executable, str(ROOT / "scripts" / "gen_pypi_readme.py"), "--check"],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout
