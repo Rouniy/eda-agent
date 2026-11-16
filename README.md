@@ -30,7 +30,7 @@ schematic, PCB, library, project, review, signal and power integrity, and therma
 
 ### Rouniy integration
 
-Source candidate: package `0.8.2`, script `2026.11.15.4`. Read
+Source candidate: package `0.8.2`, script `2026.11.16.1`. Read
 [AGENTS.md](AGENTS.md), [current deployment and qualification](docs/CURRENT-STATE.md)
 and [the integration TODO](TODO.md) before connecting to Altium.
 Shared use requires the generated selected-project read-only runtime and its

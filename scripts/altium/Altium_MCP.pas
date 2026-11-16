@@ -23,7 +23,7 @@ Const
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
 
-    SCRIPT_VERSION = '2026.11.15.4';
+    SCRIPT_VERSION = '2026.11.16.1';
 
     { Explicit opt-in for the selection-scoped dispatcher. The raw project
       retains the legacy mode; generated shared runtimes set these flags. }
@@ -71028,6 +71028,46 @@ Begin
 End;
 
 {..............................................................................}
+{ ResolveScopeObject - the object a rule-scope question is about. A free      }
+{ primitive in the "<type>:<filter>" grammar ("track:Layer=BottomLayer|X1=..")}
+{ goes through ResolveClearanceObject, so a track or via can be asked about   }
+{ as it can be measured; a component ("U1"), a pad ("U1.3") and a net         }
+{ ("net:GND") go through ResolveRuleObject as before.                         }
+{..............................................................................}
+Function ResolveScopeObject(Board : IPCB_Board; Spec : String;
+    Var Problem : String) : IPCB_Primitive;
+Var
+    Colon, T : Integer;
+    TypeStr : String;
+Begin
+    Spec := Trim(Spec);
+    Colon := Pos(':', Spec);
+    If Colon > 0 Then
+    Begin
+        TypeStr := LowerCase(Trim(Copy(Spec, 1, Colon - 1)));
+        If TypeStr <> 'net' Then
+        Begin
+            T := ObjectTypeFromStringPCB(TypeStr);
+            If (T <> -1) And (T <> eComponentObject) Then
+            Begin
+                Result := ResolveClearanceObject(Board, Spec, Problem);
+                Exit;
+            End;
+        End;
+    End;
+    Result := ResolveRuleObject(Board, Spec, Problem);
+End;
+
+{ The board a refused object was looked for on. A call with another board     }
+{ focused answered "no component U12" for a part that exists (2026-11-16),    }
+{ and nothing in the answer said which board had been searched.               }
+Function OnBoardNote(Board : IPCB_Board) : String;
+Begin
+    Result := '';
+    Try Result := ' (searched ' + ExtractFileName(Board.FileName) + ')'; Except Result := ''; End;
+End;
+
+{..............................................................................}
 { ClearanceRuleByScope - the clearance rule whose two scopes take the pair,   }
 { for when FindDominantRuleForObjectPair finds none. Altium answers none when }
 { the rule's NET scope leaves the pair out (two objects with no net, for a    }
@@ -71094,7 +71134,7 @@ End;
 Function PCB_MeasureClearance(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
-    Spec1, Spec2, Problem, RuleJson, GapStr, RuleName : String;
+    Spec1, Spec2, Problem, RuleJson, GapStr, RuleName, ExpectedPath : String;
     P1, P2 : IPCB_Primitive;
     Rule : IPCB_Rule;
     Violation : IPCB_Violation;
@@ -71110,16 +71150,28 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
         Exit;
     End;
+    { board_path is optional. Given, it must be the board the call acts on:   }
+    { with another PcbDoc focused the objects were looked for on that one.    }
+    ExpectedPath := ExtractJsonValue(Params, 'board_path');
+    If (ExpectedPath <> '') And (UpperCase(Board.FileName) <> UpperCase(ExpectedPath)) Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'TARGET_CHANGED',
+            'The focused PCB is ' + Board.FileName + ', not board_path; focus '
+            + 'the board with pcb_focus_board first');
+        Exit;
+    End;
     P1 := ResolveClearanceObject(Board, Spec1, Problem);
     If P1 = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object1: ' + Problem);
+        Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object1: ' + Problem
+            + OnBoardNote(Board));
         Exit;
     End;
     P2 := ResolveClearanceObject(Board, Spec2, Problem);
     If P2 = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object2: ' + Problem);
+        Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object2: ' + Problem
+            + OnBoardNote(Board));
         Exit;
     End;
     D := Board.PrimPrimDistance(P1, P2);
@@ -71201,7 +71253,7 @@ Begin
         Result := BuildErrorResponse(RequestId, 'NO_RULE', 'No rule named ' + RuleName);
         Exit;
     End;
-    P1 := ResolveRuleObject(Board, Spec1, Problem);
+    P1 := ResolveScopeObject(Board, Spec1, Problem);
     If P1 = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object1: ' + Problem);
@@ -71210,7 +71262,7 @@ Begin
     P2 := Nil;
     If Spec2 <> '' Then
     Begin
-        P2 := ResolveRuleObject(Board, Spec2, Problem);
+        P2 := ResolveScopeObject(Board, Spec2, Problem);
         If P2 = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'NO_OBJECT', 'object2: ' + Problem);

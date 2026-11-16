@@ -13224,7 +13224,8 @@ Args: name selects an existing rule. Pass only fields to change. Lengths use mil
 
 
     @mcp.tool()
-    async def pcb_measure_clearance(object1: str, object2: str) -> dict[str, Any]:
+    async def pcb_measure_clearance(object1: str, object2: str,
+                                    board_path: str = "") -> dict[str, Any]:
         """How far apart two board objects are, and whether that breaks a rule.
 
         The edge-to-edge distance Altium measures between the two
@@ -13241,6 +13242,10 @@ Args: name selects an existing rule. Pass only fields to change. Lengths use mil
                 object. A whole component ("U1") or a net ("net:GND") is
                 refused: a distance needs one primitive.
             object2: The second object, in the same forms.
+            board_path: The .PcbDoc the objects are on. Empty acts on the
+                focused board; a path is refused unless that board is the
+                focused one, so a part is never looked for on another
+                board that happens to be in front.
 
         Returns:
             ``distance_mils``, ``distance_mm``, ``touching`` (distance 0),
@@ -13257,6 +13262,8 @@ Args: name selects an existing rule. Pass only fields to change. Lengths use mil
             return {"ok": False, "reason": "object1 and object2 are required"}
         params: dict[str, Any] = {"object1": object1.strip(),
                                   "object2": object2.strip()}
+        if board_path.strip():
+            params["board_path"] = board_path.strip()
         return await get_bridge().send_command_async("pcb.measure_clearance", params)
 
 

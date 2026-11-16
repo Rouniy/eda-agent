@@ -170,3 +170,48 @@ def test_tool_refuses_an_empty_object(monkeypatch):
         result = asyncio.run(tool(object1=a, object2=b))
         assert result["ok"] is False
     assert sent == []
+
+
+def test_tool_passes_the_board_when_given(monkeypatch):
+    tool, sent = _tool(monkeypatch)
+    asyncio.run(tool(object1="U12.A5", object2="U12.C5",
+                     board_path=r" Z:\work\Board.PcbDoc "))
+    assert sent == [("pcb.measure_clearance",
+                     {"object1": "U12.A5", "object2": "U12.C5",
+                      "board_path": r"Z:\work\Board.PcbDoc"})]
+
+
+def test_a_named_board_must_be_the_one_measured_on():
+    """MEASURED 2026-11-16 on AD 26.11.1.5: with a second PcbDoc focused,
+    "U12.A5" answered "no component U12" for a part that was on the board
+    the caller meant. The objects are looked for on the focused board, so a
+    board_path that is not that board is refused before anything is
+    resolved, and a refusal names the board that was searched."""
+    body = _pcb("PCB_MeasureClearance")
+    path = body.index("ExpectedPath := ExtractJsonValue(Params, 'board_path');")
+    first = body.index("P1 := ResolveClearanceObject(Board, Spec1, Problem);")
+    assert path < first, "the board is checked after the objects were looked for"
+    gate = body[path:first]
+    assert "(ExpectedPath <> '')" in gate, "an omitted board_path must stay allowed"
+    assert "UpperCase(Board.FileName) <> UpperCase(ExpectedPath)" in gate
+    assert "'TARGET_CHANGED'" in gate and "Exit;" in gate
+    assert body.count("+ OnBoardNote(Board)") == 2, (
+        "a refused object does not say which board was searched")
+
+
+def test_a_rule_scope_question_takes_a_free_primitive():
+    """pcb_check_rule_scope answered "no component track:Layer=..." for the
+    track spec pcb_measure_clearance accepts."""
+    resolver = _pcb("ResolveScopeObject")
+    assert "ResolveClearanceObject(Board, Spec, Problem)" in resolver
+    assert "ResolveRuleObject(Board, Spec, Problem)" in resolver
+    net = resolver.index("If TypeStr <> 'net' Then")
+    comp = resolver.index("(T <> eComponentObject)")
+    assert net < comp < resolver.index("ResolveClearanceObject(")
+    check = _pcb("PCB_RuleScopeCheck")
+    assert check.count("ResolveScopeObject(Board, Spec") == 2
+    assert "ResolveRuleObject(" not in check
+    text = (_ALTIUM / "PCB.pas").read_text(encoding="utf-8")
+    assert text.index("Function ResolveClearanceObject(") < text.index(
+        "Function ResolveScopeObject(") < text.index("Function PCB_RuleScopeCheck("), (
+        "no forward declarations in DelphiScript")
