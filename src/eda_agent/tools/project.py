@@ -481,17 +481,48 @@ def register_project_tools(mcp):
     async def proj_open(project_path: str) -> dict[str, Any]:
         """Open an existing Altium project.
 
+        Altium's open process reports nothing when the file is missing or
+        is not a project, so the open is confirmed by looking for the
+        project among the open ones afterwards.
+
         Args:
             project_path: Full path to the project file
 
         Returns:
-            Dictionary with opened project information
+            ``success``, ``project_path`` and ``focused``. When the project
+            is not open afterwards: ``success`` false, ``opened`` false
+            and ``reason``.
         """
         bridge = get_bridge()
         result = await bridge.send_command_async(
             "project.open", {"project_path": project_path}
         )
-        return result
+        if not isinstance(result, dict) or result.get("success") is False:
+            return result
+        listing = await bridge.send_command_async("project.get_open_projects", {})
+        projects = listing.get("projects") if isinstance(listing, dict) else None
+        if not isinstance(projects, list):
+            # No list to check against: say so instead of confirming.
+            result["opened"] = None
+            return result
+
+        def _key(path: Any) -> str:
+            return str(path or "").replace("/", "\\").rstrip("\\").lower()
+
+        wanted = _key(project_path)
+        if any(_key(p.get("project_path")) == wanted
+               for p in projects if isinstance(p, dict)):
+            result["opened"] = True
+            return result
+        return {
+            "success": False,
+            "opened": False,
+            "project_path": project_path,
+            "focused": False,
+            "reason": "Altium has no such project open after the open "
+                      "command: the file is missing, is not a project, or "
+                      "Altium could not read it. Check the path.",
+        }
 
     @mcp.tool()
     async def proj_save(project_path: Optional[str] = None) -> dict[str, Any]:
