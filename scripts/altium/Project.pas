@@ -1481,7 +1481,7 @@ Var
     Pin : IPin;
     I, J, K, M, PartCount, Pass, Count, Limit, DocCount, Skipped, Repeats : Integer;
     SkippedDocs, SkippedComps, SkippedPins : Integer;
-    UsePhysical, LimitHit : Boolean;
+    UsePhysical, LimitHit, Unlimited : Boolean;
     Data, CompDesig, NetName, Key : String;
     First : Boolean;
     Named, Listed : TStringList;
@@ -1493,6 +1493,9 @@ Begin
     FilterComp := ExtractJsonValue(Params, 'component');
     FilterNet := ExtractJsonValue(Params, 'net_name');
     Limit := StrToIntDef(ExtractJsonValue(Params, 'limit'), 500);
+    { 0 (or less) asks for every pin, as it does in the object queries: it   }
+    { used to stop at the first pin and return nothing.                      }
+    Unlimited := (Limit <= 0);
 
     Workspace := GetWorkspace;
     If Workspace = Nil Then
@@ -1607,7 +1610,7 @@ Begin
                                 Continue;
                             End;
                             If (FilterNet <> '') And (NetName <> FilterNet) Then Continue;
-                            If Count >= Limit Then
+                            If (Not Unlimited) And (Count >= Limit) Then
                             Begin
                                 LimitHit := True;
                                 Break;

@@ -1305,6 +1305,14 @@ Begin
     Else Result := '';
 End;
 
+{ A length read back in mils, as millimetres; '' when the text is not a   }
+{ number (a property the object does not have reads back empty).         }
+Function PCBMilsTextAsMm(S : String) : String;
+Begin
+    Result := '';
+    If IsFloatStr(S) Then Result := FloatToJsonStr(StrToFloatDef(S, 0) * 0.0254);
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -1324,6 +1332,13 @@ Var
     Have : Boolean;
 Begin
     Result := '';
+    { X_mm, Width_mm, BoundsLeft_mm and the like: the same read, in         }
+    { millimetres. The names were accepted and read back empty.              }
+    If (Length(PropName) > 3) And (Copy(PropName, Length(PropName) - 2, 3) = '_mm') Then
+    Begin
+        Result := PCBMilsTextAsMm(GetPCBProperty(Obj, Copy(PropName, 1, Length(PropName) - 3)));
+        Exit;
+    End;
     Try
         Oid := Obj.ObjectId;
         { Base IPCB_Primitive members, valid to read on ANY primitive. }

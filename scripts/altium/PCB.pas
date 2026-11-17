@@ -9457,6 +9457,26 @@ Begin
         End;
     End;
 
+    { A layer the stack already holds is refused. Inserting it changed       }
+    { nothing, yet the reply said success, and the save that follows then    }
+    { reported that it did not reach the file (measured 2026-11-17).         }
+    NewObj := Nil;
+    Try NewObj := LayerStack.LayerObject(TargetLayer); Except NewObj := Nil; End;
+    If NewObj <> Nil Then
+    Begin
+        Walk := LayerStack.FirstLayer;
+        While Walk <> Nil Do
+        Begin
+            If Walk.Name = NewObj.Name Then
+            Begin
+                Result := BuildErrorResponse(RequestId, 'ALREADY_IN_STACK',
+                    'Layer ' + LayerDisplayName(TargetLayer) + ' is already in the stack; nothing was changed');
+                Exit;
+            End;
+            Walk := LayerStack.NextLayer(Walk);
+        End;
+    End;
+
     PcbBeginEdit(0);
     Try
         If RefObj = Nil Then
