@@ -12717,6 +12717,190 @@ Begin
         '","template_unique_id":"' + EscapeJsonString(TemplateId) + '",' + Back + '}');
 End;
 
+{ The electrical end of one drawn pin of a placed part, in sheet coordinates. }
+{ A pin of a part or display mode the sheet does not show is not a target:    }
+{ PinShownOn is the same rule the pin readers use.                            }
+Function SheetPinEnd(SchDoc : ISch_Document; Desig, PinNum : String;
+    Var CX : Integer; Var CY : Integer) : Boolean;
+Var
+    CompIter, PinIter : ISch_Iterator;
+    Comp : ISch_Component;
+    Pin : ISch_Pin;
+    Loc : TLocation;
+    CompDesig : String;
+    PinLen, PinOri : Integer;
+Begin
+    Result := False;
+    CompIter := SchDoc.SchIterator_Create;
+    Try
+        CompIter.AddFilter_ObjectSet(MkSet(eSchComponent));
+        Comp := CompIter.FirstSchObject;
+        While (Comp <> Nil) And (Not Result) Do
+        Begin
+            CompDesig := '';
+            Try CompDesig := Comp.Designator.Text; Except End;
+            If CompDesig = Desig Then
+            Begin
+                PinIter := Comp.SchIterator_Create;
+                Try
+                    PinIter.AddFilter_ObjectSet(MkSet(ePin));
+                    Pin := PinIter.FirstSchObject;
+                    While (Pin <> Nil) And (Not Result) Do
+                    Begin
+                        If (Pin.Designator = PinNum) And PinShownOn(Comp, Pin) Then
+                        Begin
+                            PinLen := 0;
+                            PinOri := 0;
+                            Try PinLen := Pin.PinLength; Except End;
+                            Try PinOri := Pin.Orientation; Except End;
+                            Loc := Pin.GetState_Location;
+                            CX := PinEndX(Loc.X, PinOri, PinLen);
+                            CY := PinEndY(Loc.Y, PinOri, PinLen);
+                            Result := True;
+                        End;
+                        If Not Result Then Pin := PinIter.NextSchObject;
+                    End;
+                Finally
+                    Comp.SchIterator_Destroy(PinIter);
+                End;
+            End;
+            If Not Result Then Comp := CompIter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(CompIter);
+    End;
+End;
+
+{ Gen_PlaceNoERCs - many No-ERC markers in one call and one edit round, each   }
+{ on a named pin's electrical end or on a point. A point that already carries  }
+{ a marker is skipped, so a second run does not stack duplicates. Each marker  }
+{ gets the same defaults a single one gets (ApplyNoErcDefaults).               }
+{ From TechAUmNu's fork (carrier-local), on this unit's helpers.               }
+{ Params: targets (designator=<d>;pin=<n> or x=<mils>;y=<mils>, ops by ~~).    }
+Function Gen_PlaceNoERCs(Params : String; RequestId : String) : String;
+Var
+    Remaining, Op, Desig, PinNum, XStr, YStr, Existing, Key, Reason, ItemsJson : String;
+    SchDoc : ISch_Document;
+    Iter : ISch_Iterator;
+    Obj, NoERC : ISch_GraphicalObject;
+    Loc : TLocation;
+    PX, PY, OpCount, Placed, Skipped, Failed : Integer;
+    Snapped : Boolean;
+Begin
+    Remaining := ExtractJsonValue(Params, 'targets');
+    If Remaining = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS', 'targets is required');
+        Exit;
+    End;
+    SchDoc := SchServer.GetCurrentSchDocument;
+    If SchDoc = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_SCHEMATIC', 'No schematic document is active');
+        Exit;
+    End;
+    If SchDoc.ObjectId = eSchLib Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NOT_A_SHEET',
+            'No-ERC markers belong on a schematic sheet, and the active document is a library.');
+        Exit;
+    End;
+
+    Existing := '|';
+    Iter := SchDoc.SchIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eNoERC));
+        Obj := Iter.FirstSchObject;
+        While Obj <> Nil Do
+        Begin
+            Loc := Obj.Location;
+            Existing := Existing + IntToStr(Loc.X) + ',' + IntToStr(Loc.Y) + '|';
+            Obj := Iter.NextSchObject;
+        End;
+    Finally
+        SchDoc.SchIterator_Destroy(Iter);
+    End;
+
+    ItemsJson := '';
+    OpCount := 0;
+    Placed := 0;
+    Skipped := 0;
+    Failed := 0;
+    SchBeginEdit(SchDoc, '');
+    Try
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            Inc(OpCount);
+            Desig := GetBatchField(Op, 'designator');
+            PinNum := GetBatchField(Op, 'pin');
+            XStr := GetBatchField(Op, 'x');
+            YStr := GetBatchField(Op, 'y');
+            Reason := '';
+            Snapped := False;
+            PX := 0;
+            PY := 0;
+            If (Desig <> '') Or (PinNum <> '') Then
+            Begin
+                If (Desig = '') Or (PinNum = '') Then Reason := 'BAD_TARGET'
+                Else If SheetPinEnd(SchDoc, Desig, PinNum, PX, PY) Then Snapped := True
+                Else Reason := 'PIN_NOT_FOUND';
+            End
+            Else If IsFloatStr(XStr) And IsFloatStr(YStr) Then
+            Begin
+                PX := MilsToCoordF(StrToFloatDef(XStr, 0));
+                PY := MilsToCoordF(StrToFloatDef(YStr, 0));
+            End
+            Else
+                Reason := 'BAD_TARGET';
+
+            Key := '|' + IntToStr(PX) + ',' + IntToStr(PY) + '|';
+            If (Reason = '') And (Pos(Key, Existing) > 0) Then Reason := 'ALREADY_MARKED';
+            If Reason = '' Then
+            Begin
+                NoERC := SchServer.SchObjectFactory(eNoERC, eCreate_Default);
+                If NoERC = Nil Then
+                    Reason := 'CREATE_FAILED'
+                Else
+                Begin
+                    ApplyNoErcDefaults(NoERC);
+                    NoERC.Location := Point(PX, PY);
+                    SchDoc.RegisterSchObjectInContainer(NoERC);
+                    SchRegisterObject(SchDoc, NoERC);
+                    Existing := Existing + IntToStr(PX) + ',' + IntToStr(PY) + '|';
+                    Inc(Placed);
+                End;
+            End;
+            If Reason = 'ALREADY_MARKED' Then Inc(Skipped)
+            Else If Reason <> '' Then Inc(Failed);
+
+            If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+            ItemsJson := ItemsJson + JsonObj(
+                JsonInt('index', OpCount - 1) + ','
+                + JsonStr('designator', Desig) + ','
+                + JsonStr('pin', PinNum) + ','
+                + '"x":' + FloatToJsonStr(CoordToMilsF(PX)) + ','
+                + '"y":' + FloatToJsonStr(CoordToMilsF(PY)) + ','
+                + JsonBool('snapped_to_pin', Snapped) + ','
+                + JsonBool('placed', Reason = '') + ','
+                + JsonStr('reason', Reason));
+        End;
+    Finally
+        SchEndEdit(SchDoc, 'Edit');
+    End;
+    SchDoc.GraphicallyInvalidate;
+    If Placed > 0 Then MarkDocDirtyByPath(SchDoc.DocumentName);
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonInt('placed', Placed) + ','
+        + JsonInt('skipped', Skipped) + ','
+        + JsonInt('failed', Failed) + ','
+        + JsonInt('total', OpCount) + ','
+        + '"items":[' + ItemsJson + ']'));
+End;
+
+
 {..............................................................................}
 { Place a junction at coordinates on active schematic                         }
 { Params: x, y                                                                }
@@ -22033,6 +22217,7 @@ Begin
         'copy_objects':     Result := Gen_CopyObjects(Params, RequestId);
         'get_object_count': Result := Gen_GetObjectCount(Params, RequestId);
         'place_no_erc':     Result := Gen_PlaceNoERC(Params, RequestId);
+        'place_no_ercs':    Result := Gen_PlaceNoERCs(Params, RequestId);
         'place_junction':   Result := Gen_PlaceJunction(Params, RequestId);
         'place_junctions':  Result := Gen_PlaceJunctions(Params, RequestId);
         'get_document_info': Result := Gen_GetDocumentInfo(Params, RequestId);

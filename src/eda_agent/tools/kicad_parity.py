@@ -218,6 +218,7 @@ COVERED: dict[str, str] = {
     "sch_place_cross_sheet_connector": "kicad_sch_place_labels",
     "sch_place_junction": "kicad_sch_place_markers",
     "sch_place_no_erc": "kicad_sch_place_markers",
+    "sch_place_no_ercs": "kicad_sch_place_markers",
     "sch_place_bus_entry": "kicad_sch_place_markers",
     "sch_place_note": "kicad_sch_place_graphics",
     "sch_place_comment": "kicad_sch_place_graphics",

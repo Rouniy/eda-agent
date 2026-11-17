@@ -3092,6 +3092,60 @@ def register_generic_tools(mcp):
         return result
 
     @mcp.tool()
+    async def sch_place_no_ercs(
+        targets: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Place MANY No-ERC markers on the active sheet in ONE call.
+
+        Each target is ``{"designator": "U7", "pin": "23"}`` (preferred:
+        the marker lands on that pin's electrical end, and never on a pin
+        of a part or display mode the sheet does not show) or
+        ``{"x": ..., "y": ...}`` in mils. A point that already carries a
+        marker is skipped, so a second run does not stack duplicates. Each
+        marker gets the defaults ``sch_place_no_erc`` gives one.
+
+        ERC answers from the compiled model: compile the project again
+        before reading the violations.
+
+        Args:
+            targets: Pin or point targets, as above.
+
+        Returns:
+            ``placed``, ``skipped``, ``failed``, ``total`` and ``items``
+            (``index``, ``designator``, ``pin``, ``x``, ``y``,
+            ``snapped_to_pin``, ``placed``, ``reason``). ``reason`` is
+            PIN_NOT_FOUND, BAD_TARGET, ALREADY_MARKED or CREATE_FAILED when
+            a marker was not placed.
+        """
+        ops: list[str] = []
+        problems: list[str] = []
+        for i, item in enumerate(targets or []):
+            if not isinstance(item, dict):
+                problems.append(f"target {i} is not an object")
+                continue
+            des, pin = str(item.get("designator") or ""), str(item.get("pin") or "")
+            if des or pin:
+                if not des or not pin:
+                    problems.append(f"target {i} needs both designator and pin")
+                elif any(c in des + pin for c in ";=") or "~~" in des + pin:
+                    problems.append(f"target {i} holds a batch separator")
+                else:
+                    ops.append(f"designator={des};pin={pin}")
+            else:
+                x, y = item.get("x"), item.get("y")
+                if isinstance(x, bool) or isinstance(y, bool) or not all(
+                        isinstance(v, (int, float)) for v in (x, y)):
+                    problems.append(f"target {i} needs designator and pin, or numeric x and y")
+                else:
+                    ops.append(f"x={x};y={y}")
+        if problems or not ops:
+            return {"ok": False, "problems": problems,
+                    "reason": "refused, nothing was sent: "
+                              + ("; ".join(problems[:5]) or "targets is empty")}
+        return await get_bridge().send_command_async(
+            "generic.place_no_ercs", {"targets": "~~".join(ops)}, timeout=120.0)
+
+    @mcp.tool()
     async def sch_place_no_erc(
         x: float,
         y: float,
