@@ -20136,6 +20136,109 @@ Begin
         + '"origin_y_mils":' + FloatToJsonStr(CoordToMilsF(FootprintOriginY(Footprint)))));
 End;
 
+{ Lib_RenameFootprints - rename many footprints of one PcbLib in one call.     }
+{ The batch sibling of Lib_RenameFootprint: one edit round the whole batch     }
+{ and a status per rename instead of an error on the first bad one. A rename   }
+{ earlier in the batch changes what later ones see, so the library is walked   }
+{ afresh for each. Marks the library modified; does not save it.               }
+{ From TechAUmNu's fork (carrier-local), on this unit's helpers.               }
+{ Params: renames (old=<name>;new=<name> ops separated by ~~), library_path.   }
+Function Lib_RenameFootprints(Params : String; RequestId : String) : String;
+Var
+    LibPath, Remaining, Op, OldName, NewName, CurName, Status, ReadBack, ItemsJson : String;
+    PcbLib : IPCB_Library;
+    Iter : IPCB_LibraryIterator;
+    Footprint, Target : IPCB_LibComponent;
+    Clash : Boolean;
+    OpCount, Renamed, FailedCount : Integer;
+Begin
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    Remaining := ExtractJsonValue(Params, 'renames');
+    If Remaining = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAMS',
+            'renames is required: old=<name>;new=<name> ops separated by ~~');
+        Exit;
+    End;
+    PcbLib := FocusPcbLibAt(LibPath);
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB', 'No PCB library at ' + LibPath);
+        Exit;
+    End;
+
+    ItemsJson := '';
+    OpCount := 0;
+    Renamed := 0;
+    FailedCount := 0;
+    PcbBeginEdit(0);
+    Try
+        While True Do
+        Begin
+            Op := NextBatchOp(Remaining);
+            If Op = '' Then Break;
+            Inc(OpCount);
+            OldName := GetBatchField(Op, 'old');
+            NewName := GetBatchField(Op, 'new');
+            Status := '';
+            ReadBack := '';
+            If (OldName = '') Or (NewName = '') Then
+                Status := 'missing_field'
+            Else If OldName = NewName Then
+                Status := 'same_name'
+            Else
+            Begin
+                Target := Nil;
+                Clash := False;
+                Iter := PcbLib.LibraryIterator_Create;
+                Try
+                    Footprint := Iter.FirstPCBObject;
+                    While Footprint <> Nil Do
+                    Begin
+                        CurName := '';
+                        Try CurName := Footprint.Name; Except End;
+                        If CurName = OldName Then Target := Footprint;
+                        If CurName = NewName Then Clash := True;
+                        Footprint := Iter.NextPCBObject;
+                    End;
+                Finally
+                    PcbLib.LibraryIterator_Destroy(Iter);
+                End;
+                If Target = Nil Then
+                    Status := 'not_found'
+                Else If Clash Then
+                    Status := 'name_exists'
+                Else
+                Begin
+                    Try Target.Name := NewName; Except NoteWriteFailed('Target.Name'); End;
+                    Try ReadBack := Target.Name; Except ReadBack := ''; End;
+                    If ReadBack = NewName Then Status := 'renamed' Else Status := 'unchanged';
+                End;
+            End;
+            If Status = 'renamed' Then Inc(Renamed) Else Inc(FailedCount);
+            If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
+            ItemsJson := ItemsJson + JsonObj(
+                JsonStr('old', OldName) + ',' + JsonStr('new', NewName) + ','
+                + JsonStr('status', Status) + ',' + JsonStr('read_back', ReadBack));
+        End;
+    Finally
+        PcbEndEdit(0);
+    End;
+    Try PcbLib.Board.ViewManager_FullUpdate; Except End;
+    Try PcbLib.RefreshView; Except End;
+    If Renamed > 0 Then MarkDocDirtyByPath(PcbLib.Board.FileName);
+
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonStr('library_path', LibPath) + ','
+        + JsonInt('renamed', Renamed) + ','
+        + JsonInt('failed', FailedCount) + ','
+        + JsonInt('total', OpCount) + ','
+        + JsonBool('pending_save', Renamed > 0) + ','
+        + JsonBool('written_to_disk', False) + ','
+        + '"results":[' + ItemsJson + ']'));
+End;
+
+
 
 { A primitive's place and size as text: two primitives with the same key    }
 { are the same object drawn twice on the same layer.                         }
@@ -24727,6 +24830,7 @@ Begin
         'redraw_assembly':      Result := Lib_RedrawAssembly(Params, RequestId);
         'remove_model':         Result := Lib_RemoveModel(Params, RequestId);
         'rename_footprint':     Result := Lib_RenameFootprint(Params, RequestId);
+        'rename_footprints':    Result := Lib_RenameFootprints(Params, RequestId);
         'set_footprint_description': Result := Lib_SetFootprintDescription(Params, RequestId);
         'set_model_name':       Result := Lib_SetModelName(Params, RequestId);
         'set_model_source':     Result := Lib_SetModelSource(Params, RequestId);

@@ -258,6 +258,7 @@ COVERED: dict[str, str] = {
     "lib_delete_footprint": "kicad_lib_delete",
     "lib_rename_component": "kicad_lib_rename",
     "lib_rename_footprint": "kicad_lib_rename",
+    "lib_rename_footprints": "kicad_lib_rename",
     "lib_set_component_description": "kicad_lib_set_symbol_properties",
     "lib_link_footprint": "kicad_lib_set_symbol_properties",
     "lib_batch_set_params": "kicad_lib_set_symbol_properties",

@@ -2276,6 +2276,39 @@ def _search_workspace_libraries(result: dict[str, Any], query: str,
     result["workspace_libraries"] = found["databases"]
 
 
+def _footprint_rename_ops(renames) -> tuple[list[str], list[dict]]:
+    """Wire ops for ``library.rename_footprints``, and the renames refused.
+
+    A name is refused, never sanitised: replacing a character would rename
+    the footprint to something nobody asked for.
+    """
+    ops: list[str] = []
+    refused: list[dict] = []
+    for item in renames or []:
+        if not isinstance(item, dict):
+            refused.append({"item": repr(item)[:80],
+                            "reason": "each rename is {'from': <current name>, 'to': <new name>}"})
+            continue
+        old, new = str(item.get("from") or ""), str(item.get("to") or "")
+        problems = []
+        for key, value in (("from", old), ("to", new)):
+            if not value.strip():
+                problems.append(f"'{key}' is empty")
+            elif ";" in value or "~~" in value:
+                problems.append(f"'{key}' holds a batch separator (; or ~~)")
+            elif value.endswith("~"):
+                problems.append(f"'{key}' ends in ~, which runs into the separator")
+            elif any(ord(ch) > 0xFF for ch in value):
+                problems.append(f"'{key}' holds a character the bridge cannot carry")
+        if not problems and old == new:
+            problems.append("'from' and 'to' are the same name")
+        if problems:
+            refused.append({"from": old, "to": new, "reason": "; ".join(problems)})
+        else:
+            ops.append(f"old={old};new={new}")
+    return ops, refused
+
+
 def register_library_tools(mcp):
     """Register library tools with the MCP server."""
 
@@ -8428,6 +8461,51 @@ def register_library_tools(mcp):
                 "library_path": library_path,
             },
         )
+
+    @mcp.tool()
+    async def lib_rename_footprints(
+        renames: list[dict[str, str]],
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """Rename MANY footprints of one PcbLib in ONE call.
+
+        The batch sibling of ``lib_rename_footprint``: one edit round for
+        all of them, and a status per rename instead of an error on the
+        first bad one. Each result's ``status`` is ``renamed`` (written and
+        read back) or why not: ``not_found``, ``name_exists`` (the new name
+        is taken), ``same_name``, ``missing_field``, ``unchanged`` (the
+        write did not read back).
+
+        A name the wire cannot carry exactly is REFUSED, never altered: one
+        holding ``;`` or ``~~`` (the batch separators), ending in ``~``, or
+        holding a character above U+00FF. Those come back under
+        ``refused`` and are not sent.
+
+        Marks the library modified; it does not save it.
+
+        Args:
+            renames: ``[{"from": "SOT-23-6_P0,95", "to": "SOT-23-6_P0.95"}]``.
+            library_path: Full path of the .PcbLib; empty takes the focused
+                PCB library.
+
+        Returns:
+            ``renamed``, ``failed``, ``total``, ``results`` (``old``,
+            ``new``, ``status``, ``read_back`` per rename), ``refused``,
+            ``pending_save``, ``written_to_disk``.
+        """
+        ops, refused = _footprint_rename_ops(renames)
+        if not ops:
+            why = refused[0]["reason"] if refused else "renames is empty"
+            return {"ok": False, "reason": f"no rename could be sent: {why}",
+                    "renamed": 0, "refused": refused}
+        params: dict[str, Any] = {"renames": "~~".join(ops)}
+        if library_path:
+            params["library_path"] = library_path
+        result = await get_bridge().send_command_async(
+            "library.rename_footprints", params, timeout=300.0)
+        if isinstance(result, dict):
+            result = {**result, "refused": refused}
+        return result
 
     @mcp.tool()
     async def lib_rename_footprint(
