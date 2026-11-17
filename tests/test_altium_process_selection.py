@@ -31,6 +31,10 @@ _DFM = (Path(__file__).resolve().parents[1] / "scripts" / "altium"
 
 ORPHAN, SCRIPTED, OTHER = 1111, 2222, 3333
 
+#: conftest keeps the real lookup here: the ``world`` fixture below
+#: replaces every process the lookup can see.
+FAKES_THE_PROCESS_LIST = True
+
 
 class _Proc:
     def __init__(self, pid, name="X2.exe"):

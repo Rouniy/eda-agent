@@ -289,6 +289,51 @@ def _no_real_altium_global_projects(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_altium_process(monkeypatch, request):
+    """No test starts Altium, restarts its script or reads its windows.
+
+    That happened. On 2026-11-17 three bounded-wait tests left a stale
+    progress file and let the wait run out; the crash check found the
+    Altium running on the machine, saw the script project in its title,
+    took it for a halted script and restarted the loop: ``X2.EXE
+    -REditScript:Stop`` and ``-RScriptingSystem:RunScript`` against a live
+    session, a dozen times over one run, replacing the script that session
+    had loaded with the checkout's.
+
+    Two doors are closed. The bridge sees no Altium process, so nothing
+    here acts on a real one; and a launch of X2.EXE through subprocess is
+    refused outright. A test that needs either installs its own fake over
+    these, which wins for that test. A module that replaces the process
+    list itself says so with ``FAKES_THE_PROCESS_LIST = True`` and keeps
+    the real lookup. Integration runs are left alone.
+    """
+    if os.environ.get("EDA_AGENT_INTEGRATION") == "1":
+        return
+    import subprocess
+
+    from eda_agent.bridge import process_manager
+
+    if not getattr(request.module, "FAKES_THE_PROCESS_LIST", False):
+        for name in dir(process_manager):
+            cls = getattr(process_manager, name)
+            if isinstance(cls, type) and hasattr(cls, "get_altium_info"):
+                monkeypatch.setattr(cls, "get_altium_info", lambda self: None)
+
+    real_popen = subprocess.Popen
+
+    class _GuardedPopen(real_popen):
+        def __init__(self, args, *a, **kw):
+            first = args if isinstance(args, str) else (args[0] if args else "")
+            if os.path.basename(str(first)).lower() == "x2.exe":
+                raise RuntimeError(
+                    "a test tried to start Altium (X2.EXE); fake the launch "
+                    "or run it as an integration test")
+            super().__init__(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
+
+
+@pytest.fixture(autouse=True)
 def _restore_global_config():
     """Put the global config back after a test calls ``configure()``.
 
