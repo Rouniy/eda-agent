@@ -35,6 +35,8 @@ _MUST_HINT = ("NO_PCBLIB", "NO_SCHLIB", "NO_PCB", "NO_BOARD",
 #: Codes deliberately left without one, with the reason. Listing them
 #: is what makes the set above a decision rather than an oversight.
 _NO_HINT_NEEDED = {
+    "NOT_A_SHEET": "sch_place_no_ercs found the active document and it is a "
+                   "library; the message says markers belong on a sheet",
     "NOT_A_DIELECTRIC": "the layer was found on the right board; the message says "
                         "which tool lists the dielectric layers",
     "WRONG_RULE_KIND": "the rule was found on the right board; the message names "
