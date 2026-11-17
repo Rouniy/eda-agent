@@ -5144,7 +5144,7 @@ Var
     WantPart, ObjPart, ObjMode, CompMode : Integer;
     ObjRef : String;
     Pieces, PropNames, PropKeys, PropGates, PropExtras : TStringList;
-    ObjHead, ObjBody, Joined : String;
+    ObjHead, ObjBody, Joined, PartNote : String;
     GateId, FilterId : Integer;
     NoFilter, SplitFilter : Boolean;
     FltNames, FltOps, FltWanted, FltUnsup, FltGates, FltExtras : TStringList;
@@ -5450,8 +5450,17 @@ Begin
                 { ObjHead names the symbol that answered, and the document. }
                 ObjBody := QueryObjectBody(Obj, PropNames, PropKeys,
                     PropGates, PropExtras, GateId);
-                If ObjBody = '' Then Pieces.Add(ObjHead + '}')
-                Else Pieces.Add(ObjHead + ',' + ObjBody + '}');
+                { In a library symbol's own walk each object also says which }
+                { part it belongs to (0 is shared by every part).            }
+                PartNote := '';
+                If OwnWalk Then
+                Begin
+                    ObjPart := 0;
+                    Try ObjPart := Obj.OwnerPartId; Except End;
+                    PartNote := ',"_owner_part_id":' + IntToStr(ObjPart);
+                End;
+                If ObjBody = '' Then Pieces.Add(ObjHead + PartNote + '}')
+                Else Pieces.Add(ObjHead + PartNote + ',' + ObjBody + '}');
             End
             Else If Mode = 'modify' Then
             Begin
