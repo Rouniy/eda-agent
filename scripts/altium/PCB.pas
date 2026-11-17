@@ -1422,6 +1422,67 @@ Begin
     End;
 End;
 
+{ Matched Lengths (kind 4): the tolerance. Differential Pairs Routing     }
+{ (kind 51): the longest run a pair may go uncoupled. Both are lengths in }
+{ mils, written to the one rule named and read back.                      }
+Function RuleExtrasMatched(Board : IPCB_Board; RuleName, TolS : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_MatchedNetLengthsConstraint;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 4) And (R.Name = RuleName) Then
+            Begin
+                R.Tolerance := MilsToCoordF(StrToFloatDef(TolS, 0));
+                If Abs(CoordToMilsF(R.Tolerance) - StrToFloatDef(TolS, -1)) >= 0.0005 Then
+                    Missed := Missed + '"matched_length_tolerance_mils",';
+                Result := '"matched_length_tolerance_mils":' + FloatToJsonStr(CoordToMilsF(R.Tolerance));
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+Function RuleExtrasUncoupled(Board : IPCB_Board; RuleName, LenS : String; Var Missed : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_DifferentialPairsRoutingRule;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 51) And (R.Name = RuleName) Then
+            Begin
+                R.MaxUncoupledLength := MilsToCoordF(StrToFloatDef(LenS, 0));
+                If Abs(CoordToMilsF(R.MaxUncoupledLength) - StrToFloatDef(LenS, -1)) >= 0.0005 Then
+                    Missed := Missed + '"dp_max_uncoupled_length_mils",';
+                Result := '"dp_max_uncoupled_length_mils":' + FloatToJsonStr(CoordToMilsF(R.MaxUncoupledLength));
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 Function RuleExtrasFanout(Board : IPCB_Board; RuleName, StyleS, DirS, BgaDirS, BgaViaS, GridS : String; Var Missed : String) : String;
 Var
     Iter : IPCB_BoardIterator;
@@ -1828,7 +1889,7 @@ Var
     DGapMin, DGapMax, DGapPref, DGapMinMM, DGapMaxMM, DGapPrefMM, DiffReport : String;
     ImpDriven, ImpMin, ImpMax, ImpFav, ImpReport, ImpMissed : String;
     LimitsReport : String;
-    XHMin, XHMax, XHPref, XVGap, XShow, XMode, XCMin, XCMax, XAnt : String;
+    XHMin, XHMax, XHPref, XVGap, XShow, XMode, XCMin, XCMax, XAnt, XMTol, XDUnc : String;
     XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XReport, XMissed, XBad : String;
     XWDrv, XWMin, XWMax, XWFav, XWCopper : String;
     DiffAsked : Integer;
@@ -1964,6 +2025,8 @@ Begin
     XCMin := ExtractJsonValue(Params, 'corner_min_setback_mils');
     XCMax := ExtractJsonValue(Params, 'corner_max_setback_mils');
     XAnt := ExtractJsonValue(Params, 'antenna_tolerance_mils');
+    XMTol := ExtractJsonValue(Params, 'matched_length_tolerance_mils');
+    XDUnc := ExtractJsonValue(Params, 'dp_max_uncoupled_length_mils');
     XFStyle := ExtractJsonValue(Params, 'fanout_style');
     XFDir := ExtractJsonValue(Params, 'fanout_direction');
     XFBgaDir := ExtractJsonValue(Params, 'bga_fanout_direction');
@@ -2611,6 +2674,8 @@ Begin
     If ((XVGap <> '') Or (XShow <> '') Or (XMode <> '')) And (Kind <> 24) Then XBad := 'vertical_gap_mils, show_distances and collision_check_mode are for a Component Clearance rule';
     If ((XCMin <> '') Or (XCMax <> '')) And (Kind <> 10) Then XBad := 'corner_*_setback_mils is for a Routing Corners rule';
     If (XAnt <> '') And (Kind <> 56) Then XBad := 'antenna_tolerance_mils is for a Net Antennae rule';
+    If (XMTol <> '') And (Kind <> 4) Then XBad := 'matched_length_tolerance_mils is for a Matched Lengths rule';
+    If (XDUnc <> '') And (Kind <> 51) Then XBad := 'dp_max_uncoupled_length_mils is for a Differential Pairs Routing rule';
     If ((XWDrv <> '') Or (XWMin <> '') Or (XWMax <> '') Or (XWFav <> '') Or (XWCopper <> ''))
         And (Kind <> 2) Then XBad := 'width_*_impedance and check_connected_copper are for a Width rule';
     If ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> ''))
@@ -2632,6 +2697,10 @@ Begin
         XReport := RuleExtrasWidth(Board, RuleName, XWDrv, XWMin, XWMax, XWFav, XWCopper, XMissed);
     If (Kind = 56) And (XAnt <> '') Then
         XReport := RuleExtrasAntennae(Board, RuleName, XAnt, XMissed);
+    If (Kind = 4) And (XMTol <> '') Then
+        XReport := RuleExtrasMatched(Board, RuleName, XMTol, XMissed);
+    If (Kind = 51) And (XDUnc <> '') Then
+        XReport := RuleExtrasUncoupled(Board, RuleName, XDUnc, XMissed);
     If (Kind = 49) And ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> '')) Then
         XReport := RuleExtrasFanout(Board, RuleName, XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XMissed);
     If IsTestpointStyleKind(Kind) And TestpointAsked(Params) Then

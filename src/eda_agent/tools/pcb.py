@@ -12052,6 +12052,8 @@ def register_pcb_tools(mcp):
         corner_min_setback_mils: float | None = None,
         corner_max_setback_mils: float | None = None,
         antenna_tolerance_mils: float | None = None,
+        matched_length_tolerance_mils: float | None = None,
+        dp_max_uncoupled_length_mils: float | None = None,
         fanout_style: int | None = None,
         fanout_direction: int | None = None,
         bga_fanout_direction: int | None = None,
@@ -12095,6 +12097,10 @@ def register_pcb_tools(mcp):
         - HoleSize (kind 42): ``min_hole_size_mils`` / ``max_hole_size_mils``.
         - Length (kind 3): ``min_length_mils`` / ``max_length_mils``.
           The reply includes the limits read back from Altium.
+        - Matched Lengths (kind 4): ``matched_length_tolerance_mils``.
+          Differential Pairs Routing (kind 51):
+          ``dp_max_uncoupled_length_mils``. Both are read back under
+          ``settings``.
         - Signal Integrity Impedance (kind 33):
           ``min_signal_impedance_ohms`` / ``max_signal_impedance_ohms``.
         - Flight Time Rising/Falling Edge (kinds 36/37):
@@ -12191,6 +12197,8 @@ Args: name selects an existing rule. Pass only fields to change. Lengths use mil
             ("corner_min_setback_mils", corner_min_setback_mils),
             ("corner_max_setback_mils", corner_max_setback_mils),
             ("antenna_tolerance_mils", antenna_tolerance_mils),
+            ("matched_length_tolerance_mils", matched_length_tolerance_mils),
+            ("dp_max_uncoupled_length_mils", dp_max_uncoupled_length_mils),
             ("fanout_style", fanout_style),
             ("fanout_direction", fanout_direction),
             ("bga_fanout_direction", bga_fanout_direction),
@@ -12219,6 +12227,7 @@ Args: name selects an existing rule. Pass only fields to change. Lengths use mil
         for key in ("height_min_mils", "height_max_mils", "height_preferred_mils",
                     "vertical_gap_mils", "corner_min_setback_mils",
                     "corner_max_setback_mils", "antenna_tolerance_mils",
+                    "matched_length_tolerance_mils", "dp_max_uncoupled_length_mils",
                     "fanout_via_grid_mils", "collision_check_mode", "fanout_style",
                     "fanout_direction", "bga_fanout_direction", "bga_via_mode",
                     "min_length_mils", "max_length_mils"):
