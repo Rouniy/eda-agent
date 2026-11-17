@@ -589,6 +589,13 @@ Begin
         + 'are obeyed at every level, and your own routing is never blocked.';
     SetTip(lbl_CfgRouting, Tip);  SetTip(opt_RouteEnforced, Tip);
     SetTip(opt_RouteAdvisory, Tip);  SetTip(opt_RouteOff, Tip);
+    Tip := 'Whether the AI may start Altium''s own autorouter. Not allowed: '
+        + 'the AI routes with the EDA Agent router, which follows its routing '
+        + 'brief and stops for review after each round. Allowed: the AI may '
+        + 'start Altium''s autorouter when you ask for it; the AI cannot work '
+        + 'or stop it until it ends. Your own use of it is never blocked.';
+    SetTip(lbl_CfgAutorouter, Tip);  SetTip(opt_AutorouterNotAllowed, Tip);
+    SetTip(opt_AutorouterAllowed, Tip);
     Tip := 'Whether a footprint may keep a basic 3D model: extruded boxes, '
         + 'cylinders or spheres instead of a STEP model of the part. Not '
         + 'allowed: the AI reports each footprint that has one, asks you '
@@ -1111,6 +1118,8 @@ Begin
     OwnPanelColours(opt_RouteAdvisory);  OwnPanelColours(opt_RouteOff);
     OwnPanelColours(sep_Cfg10);     OwnPanelColours(opt_Basic3dNotAllowed);
     OwnPanelColours(opt_Basic3dAllowed);
+    OwnPanelColours(opt_AutorouterNotAllowed);
+    OwnPanelColours(opt_AutorouterAllowed);
 End;
 
 
@@ -1341,6 +1350,14 @@ Begin
         Else
             lbl_CfgRoutingHint.Caption := 'Critical nets need a sourced brief; '
                 + 'each finding is answered before a round is written.';
+        PaintOption(opt_AutorouterNotAllowed, AutorouterMode <> 'allowed');
+        PaintOption(opt_AutorouterAllowed, AutorouterMode = 'allowed');
+        If AutorouterMode = 'allowed' Then
+            lbl_CfgAutorouterHint.Caption := 'The AI may start Altium''s '
+                + 'autorouter when you ask for it.'
+        Else
+            lbl_CfgAutorouterHint.Caption := 'The AI routes with the EDA '
+                + 'Agent router and cannot start Altium''s autorouter.';
         PaintOption(opt_Basic3dNotAllowed, Basic3dMode <> 'allowed');
         PaintOption(opt_Basic3dAllowed, Basic3dMode = 'allowed');
         If Basic3dMode = 'allowed' Then
@@ -1951,7 +1968,8 @@ Begin
         Else If Setting = 'dialogs' Then DialogMode := Choice
         Else If Setting = 'usage' Then UsageMode := Choice
         Else If Setting = 'routing' Then RoutingMode := Choice
-        Else If Setting = 'basic_3d_models' Then Basic3dMode := Choice;
+        Else If Setting = 'basic_3d_models' Then Basic3dMode := Choice
+        Else If Setting = 'altium_autorouter' Then AutorouterMode := Choice;
         StorePreferences(0);
         PaintAgentSettings(0);
         mmo_Log.Lines.Insert(0, '      ' + Setting + ' set to ' + Choice);
@@ -2014,6 +2032,12 @@ Begin ChooseAgentSetting('routing', 'advisory'); End;
 
 Procedure opt_RouteOffClick(Sender : TObject);
 Begin ChooseAgentSetting('routing', 'off'); End;
+
+Procedure opt_AutorouterNotAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('altium_autorouter', 'not_allowed'); End;
+
+Procedure opt_AutorouterAllowedClick(Sender : TObject);
+Begin ChooseAgentSetting('altium_autorouter', 'allowed'); End;
 
 Procedure opt_Basic3dNotAllowedClick(Sender : TObject);
 Begin ChooseAgentSetting('basic_3d_models', 'not_allowed'); End;
@@ -2622,10 +2646,40 @@ Begin
         Or (Verb = 'clear_highlights')
         Or (Verb = 'layer_view')
         Or (Verb = 'document_owners')
-        Or (Verb = 'claim_document');
+        Or (Verb = 'claim_document')
+        Or (Verb = 'release_document')
+        Or (Verb = 'open');
 End;
 
 { END COMMAND RULES }
+
+{ The document a write acts on: the first path the command names, else the  }
+{ document in front (FOCUS). Every name a tool gives its document is read:  }
+{ a command that named its document as project_path or library_path used   }
+{ to be checked against the focused document instead, so a session was     }
+{ refused because of a document another session had left in front.         }
+{ A doc: scope names the document too. The project comes last: a sheet or  }
+{ board named beside it is the narrower target.                             }
+Function CommandTarget(Params : String; Focus : String) : String;
+Var
+    Scope : String;
+Begin
+    Result := ExtractJsonValue(Params, 'board_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'expect_file');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'file_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'library_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'sheet_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'document_path');
+    If Result = '' Then Result := ExtractJsonValue(Params, 'outjob_path');
+    If Result = '' Then
+    Begin
+        Scope := ExtractJsonValue(Params, 'scope');
+        If LowerCase(Copy(Scope, 1, 4)) = 'doc:' Then
+            Result := Copy(Scope, 5, Length(Scope));
+    End;
+    If Result = '' Then Result := ExtractJsonValue(Params, 'project_path');
+    If Result = '' Then Result := Focus;
+End;
 
 { The refusal for a write by REQUESTID's session to PATH, '' when allowed. }
 Function OwnerRefusal(Path : String; RequestId : String; Command : String) : String;
@@ -2646,7 +2700,8 @@ Begin
         + IntToStr(Age Div 1000) + ' s ago). Nothing was changed. Work on '
         + 'another document, or ask the user: application.claim_document '
         + '(app_claim_document) hands it over when they say so. It is free '
-        + 'again once that session has left it alone for '
+        + 'again when that session releases it (app_release_document) or '
+        + 'has left it alone for '
         + IntToStr(OWNER_IDLE_MS Div 60000) + ' minutes.');
 End;
 
@@ -2820,10 +2875,7 @@ Begin
       document in front once the session's own is back. }
     Actor := LowerCase(ExtractJsonValue(RequestContent, 'actor'));
     Writes := ExtractJsonValue(RequestContent, 'writes') = '1';
-    OwnTarget := ExtractJsonValue(Params, 'board_path');
-    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'expect_file');
-    If OwnTarget = '' Then OwnTarget := ExtractJsonValue(Params, 'file_path');
-    If OwnTarget = '' Then OwnTarget := FocusBefore;
+    OwnTarget := CommandTarget(Params, FocusBefore);
     ResetNextStep(0);
 
     ExceptionMsg := '';

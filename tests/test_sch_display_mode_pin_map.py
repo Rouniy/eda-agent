@@ -14,7 +14,7 @@ from tests.test_sch_properties_match_their_interface import _routine, _source
 def test_component_only_properties_and_readback():
     source = _source()
     preflight = _routine(source, "UnsupportedSchProperty")
-    getter = _routine(source, "GetSchProperty")
+    getter = _routine(source, "GetSchPropertyGated")
     setter = _routine(source, "SetSchProperty")
     assert "(Obj.ObjectId <> eSchComponent)" in preflight
     assert "(PropName = 'DisplayMode')" in preflight

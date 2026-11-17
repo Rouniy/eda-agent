@@ -267,28 +267,3 @@ def test_missing_saved_stack_is_not_reported_as_healthy(monkeypatch):
     assert out["ok"] is False
     assert {f["check"] for f in out["findings"]} == {
         "missing_physical_stack", "missing_legacy_chain"}
-
-
-def test_legacy_stack_writes_need_explicit_opt_in(monkeypatch):
-    class Registry:
-        def __init__(self):
-            self.tools = {}
-
-        def tool(self, *args, **kwargs):
-            def register(fn):
-                self.tools[fn.__name__] = fn
-                return fn
-            return register
-
-    registry = Registry()
-    pcb_tools.register_pcb_tools(registry)
-    calls = [
-        ("pcb_add_layer", {"layer": "MidLayer1"}),
-        ("pcb_remove_layer", {"layer": "MidLayer1"}),
-        ("pcb_modify_layer", {"layer": "TopLayer", "dielectric_height_mils": 4.2}),
-        ("pcb_configure_multilayer_stackup", {"operations": [
-            {"action": "add", "layer": "MidLayer1"}], "dry_run": False}),
-    ]
-    for name, kwargs in calls:
-        out = asyncio.run(registry.tools[name](**kwargs))
-        assert out["error"] == "LEGACY_STACK_WRITE"

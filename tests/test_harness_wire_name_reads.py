@@ -32,7 +32,7 @@ def test_the_parser_is_defined_before_the_reader_that_calls_it():
 
 
 def test_name_falls_back_to_the_harness_description():
-    reader = _body("GetSchProperty")
+    reader = _body("GetSchPropertyGated")
     branch = reader[reader.index("Else If PropName = 'Name'"):]
     branch = branch[:branch.index("Else If PropName = 'LibReference'")]
     # upstream's name for the same parser, which calls SchHarnessName

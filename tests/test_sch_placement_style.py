@@ -33,7 +33,7 @@ def test_width_and_text_line_breaks_are_applied_in_native_order():
         "SchPort.AutoSize := False") < port.index("SchPort.Width := MilsToCoordF(WantWidth)")
     assert "GotAuto := SchPort.AutoSize" in port
     assert "GotWidth := CoordToMilsF(SchPort.Width)" in port
-    getter = _routine(_source(), "GetSchProperty")
+    getter = _routine(_source(), "GetSchPropertyGated")
     assert "Result := BoolToJsonStr(PortObj.AutoSize)" in getter
     assert "If Obj.ObjectId = ePort Then" in getter
     frame = _routine(_source(), "Gen_PlaceTextFrame")

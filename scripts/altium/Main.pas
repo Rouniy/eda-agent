@@ -13,7 +13,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.15.1';
+    SCRIPT_VERSION = '2026.11.16.1';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -196,6 +196,9 @@ Var
     { sphere bodies as its 3D model; 'not_allowed' (the default) has the  }
     { Python side report them and ask before replacing them.              }
     Basic3dMode : String;
+    { AutorouterMode 'allowed' lets the AI start Altium's own autorouter; }
+    { 'not_allowed' (the default) has the Python side refuse it.          }
+    AutorouterMode : String;
     { ChecksOff lists the checks switched off on the Config tab, by name,  }
     { comma separated (footprint_drawing, symbol_pins, pins_pads,         }
     { model_body, spice_model, fab_export). Empty, the default, keeps    }
@@ -748,20 +751,25 @@ Begin
     Else Result := Copy(Rec, 1, P - 1);
 End;
 
-Procedure OwnerSet(Key : String; Tag : String; Command : String);
+{ Forget the owner record of KEY, if there is one. }
+Procedure OwnerDrop(Key : String);
 Var
     P, E : Integer;
     Rest : String;
 Begin
     If Key = '' Then Exit;
     P := Pos(Chr(1) + Key + Chr(2), DocOwners);
-    If P > 0 Then
-    Begin
-        Rest := Copy(DocOwners, P, Length(DocOwners));
-        E := Pos(Chr(3), Rest);
-        If E > 0 Then
-            DocOwners := Copy(DocOwners, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
-    End;
+    If P = 0 Then Exit;
+    Rest := Copy(DocOwners, P, Length(DocOwners));
+    E := Pos(Chr(3), Rest);
+    If E > 0 Then
+        DocOwners := Copy(DocOwners, 1, P - 1) + Copy(Rest, E + 1, Length(Rest));
+End;
+
+Procedure OwnerSet(Key : String; Tag : String; Command : String);
+Begin
+    If Key = '' Then Exit;
+    OwnerDrop(Key);
     DocOwners := DocOwners + Chr(1) + Key + Chr(2) + Tag + Chr(2)
         + IntToStr(GetTickCount) + Chr(2) + Command + Chr(3);
 End;
@@ -3047,6 +3055,7 @@ Begin
     UsageMode := 'off';
     RoutingMode := 'enforced';
     Basic3dMode := 'not_allowed';
+    AutorouterMode := 'not_allowed';
     ChecksOff := '';
     If Not FileExists(WorkspaceDir + PREFS_FILE) Then Exit;
     Content := ReadFileContent(WorkspaceDir + PREFS_FILE);
@@ -3066,6 +3075,7 @@ Begin
     If LowerCase(ExtractJsonValue(Content, 'routing')) = 'advisory' Then RoutingMode := 'advisory';
     If LowerCase(ExtractJsonValue(Content, 'routing')) = 'off' Then RoutingMode := 'off';
     If LowerCase(ExtractJsonValue(Content, 'basic_3d_models')) = 'allowed' Then Basic3dMode := 'allowed';
+    If LowerCase(ExtractJsonValue(Content, 'altium_autorouter')) = 'allowed' Then AutorouterMode := 'allowed';
     ChecksOff :=LowerCase(ExtractJsonValue(Content, 'checks_off'));
 End;
 
@@ -3081,6 +3091,7 @@ Begin
         + '","usage":"' + UsageMode
         + '","routing":"' + RoutingMode
         + '","basic_3d_models":"' + Basic3dMode
+        + '","altium_autorouter":"' + AutorouterMode
         + '","checks_off":"' + ChecksOff + '"}');
 End;
 

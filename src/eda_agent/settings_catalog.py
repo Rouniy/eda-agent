@@ -350,6 +350,9 @@ PREFERENCES: dict[str, str] = {
                "routes and names what is open, `off` asks for nothing.",
     "basic_3d_models": "`allowed` stops the report of footprints that carry "
                        "only extruded, cylinder or sphere bodies.",
+    "altium_autorouter": "`allowed` lets the AI start Altium's own "
+                         "autorouter. Off by default: routing then goes "
+                         "through eda-agent's router only.",
     "length_units": "The unit a new AI session gives and reads lengths in: "
                     "`mil` (default) or `mm`. Each session may change its "
                     "own with the `length_units` tool.",

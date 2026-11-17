@@ -43,14 +43,14 @@ def test_the_board_reads_are_never_written():
 
 
 def test_the_sheet_reads_come_off_the_base_object():
-    reader = _routine("Generic.pas", "GetSchProperty")
+    reader = _routine("Generic.pas", "GetSchPropertyGated")
     assert "Obj.GetState_DescriptionString" in reader
     assert "Obj.GetState_IdentifierString" in reader
     assert "Result := Obj.ErrorString" in reader
 
 
 def test_generated_pin_read_stays_inside_the_final_fallback():
-    reader = _routine("Generic.pas", "GetSchProperty")
+    reader = _routine("Generic.pas", "GetSchPropertyGated")
     pin = reader.index("Else If Obj.ObjectId = ePin Then")
     base = reader.index("If (Not Have) And (Obj.ObjectId <> ePin) Then")
     final = reader.index("If Not Have Then", base)

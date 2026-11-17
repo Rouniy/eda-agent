@@ -2844,8 +2844,8 @@ def register_library_tools(mcp):
                 going into a symbol lib_create_symbol has just made: they
                 are checked as lib_create_ic_symbol checks its pins
                 (``package_column`` too).
-            grid: mils the pins' x, y and length snap to (default 100);
-                1 keeps them exactly as given.
+            grid: the grid the pins' x, y and length snap to (default
+                100 mils); 0 keeps them exactly as given.
 
         Returns:
             Dict with added, failed, total counts.
@@ -2919,12 +2919,10 @@ def register_library_tools(mcp):
                 for Altium's default.
             is_solid: Fill (True) or outline only (False); omit and a
                 fill colour makes it solid.
-            owner_part_id: the part of a multi-part symbol it belongs to;
-                omit for the current part.
-            grid: mils the corners snap to (default 100); 1 keeps them
-                exactly as given.
             owner_part_id: 1..N selects a sub-part; 0 shares the rectangle
                 across all parts. Omit for the current part.
+            grid: the grid the corners snap to (default 100 mils); 0
+                keeps them exactly as given.
 
         Returns:
             Dictionary confirming rectangle addition, with the style it
@@ -2975,7 +2973,8 @@ def register_library_tools(mcp):
                 - bold, italic (bool, default False)
                 - owner_part_id (int, optional): as in ``lib_add_pins``,
                   1..part_count picks a sub-part, 0 shares it
-            grid: mils x and y snap to (default 100); 1 keeps them.
+            grid: the grid x and y snap to (default 100 mils); 0 keeps
+                them.
 
         Returns:
             Dict with ``added``, ``failed``, ``total`` counts.
@@ -3023,8 +3022,8 @@ def register_library_tools(mcp):
                 the line across all parts; omitted uses the current part).
             grid: snap grid (mils) for the line endpoints. Glyph lines do
                 NOT need the 100-mil pin grid (rule 15), so the default is
-                a finer 25 mils for clean glyph detail; pass 100 for the
-                coarse grid or 0/1 to disable snapping.
+                a finer 25 mils for clean glyph detail; pass 100 mils for
+                the coarse grid or 0 to disable snapping.
 
         Returns:
             Dict with ``added``, ``failed``, ``total`` counts.
@@ -6256,7 +6255,8 @@ def register_library_tools(mcp):
             width: Line width (0=zero, 1=small, 2=medium, 3=large)
             grid: snap grid (mils); arcs are glyph detail and don't need
                 the 100-mil pin grid (rule 15), so the default is a finer
-                25 (e.g. inductor coils). Pass 100 for coarse, 0/1 for none.
+                25 mils (e.g. inductor coils). Pass 100 mils for coarse,
+                0 for none.
             color: line colour (Altium colour integer); omit for the
                 default.
             owner_part_id: 1..N selects a sub-part; 0 shares the arc
@@ -6299,14 +6299,14 @@ def register_library_tools(mcp):
         """Add a polygon (filled shape) to the current library symbol.
 
         Args:
-            vertices: Comma-separated x,y coordinate pairs in mils.
+            vertices: Comma-separated x,y coordinate pairs.
                 Example: "0,0,100,0,100,100,0,100" creates a square with
                 vertices at (0,0), (100,0), (100,100), (0,100).
                 Minimum 3 vertices (6 values) required.
             grid: snap grid (mils) for the vertices. A filled polygon is
                 glyph detail (e.g. a diode triangle) and doesn't need the
-                100-mil pin grid (rule 15), so the default is a finer 25;
-                pass 100 for coarse or 0/1 to disable snapping.
+                100-mil pin grid (rule 15), so the default is a finer 25
+                mils; pass 100 mils for coarse or 0 to disable snapping.
             fill_color: omit for a solid glyph in the line colour (a diode
                 triangle); a colour such as 8454143, Altium's block yellow,
                 makes it a filled BODY (an amplifier triangle); -1 draws
@@ -6325,10 +6325,11 @@ def register_library_tools(mcp):
         # finer than the 100-mil pin grid per rule 15) so triangles/chevrons
         # keep their shape instead of collapsing.
         try:
-            coords = [int(v.strip()) for v in vertices.split(",") if v.strip()]
+            coords = [float(v.strip()) for v in vertices.split(",") if v.strip()]
             if len(coords) >= 6 and len(coords) % 2 == 0:
-                snapped = [_snap_grid(c, grid) for c in coords]
-                vertices = ",".join(str(c) for c in snapped)
+                vertices = ",".join(
+                    str(_snap_grid(round(c), grid)) if grid > 1 else format_length(c)
+                    for c in coords)
         except (ValueError, AttributeError):
             # Pass through; bridge will reject malformed vertices itself.
             pass
@@ -8780,7 +8781,8 @@ def register_library_tools(mcp):
         mask_bottom_expansion, mask_separate, mask_manual,
         mask_from_hole_edge, paste_top_enabled, x, y (a move, from the
         footprint origin), new_name and clear_name (True: no name). ``x_mm`` / ``y_mm`` as the read
-        gave them guard a row: a pad that has moved refuses the call.
+        gave them (``x_mils`` / ``y_mils`` in a mil session) guard a row: a
+        pad that has moved refuses the call.
         Every row is checked before anything is written. Pads are
         matched by id, never by name, so renumbering (3 -> 5, 5 -> 7)
         needs no temporary names. About 6 s for 200 pads. The same
@@ -8930,7 +8932,7 @@ def register_library_tools(mcp):
                 selected. Each set has any of ``object_type`` ("pad",
                 "region", "track", ...), ``layer`` ("TopLayer",
                 "MultiLayer", ...), ``name`` (a pad's designator or a
-                region's Name), ``box`` ([x1, y1, x2, y2] in mm from the
+                region's Name), ``box`` ([x1, y1, x2, y2] from the
                 footprint origin, the box lib_get_footprint_primitives
                 gives a region, fill or text; matched within 0.001 mm)
                 and ``identifier`` (3D bodies whose Identifier starts with
@@ -8957,7 +8959,7 @@ def register_library_tools(mcp):
                     x1, y1, x2, y2 = (float(v) for v in box)
                 except (TypeError, ValueError):
                     return {"ok": False,
-                            "reason": f"set {i}: box is [x1, y1, x2, y2] in mm"}
+                            "reason": f"set {i}: box is [x1, y1, x2, y2]"}
                 fields.append("box=" + ",".join(
                     format_length(v) for v in (x1, y1, x2, y2)))
             if not fields:

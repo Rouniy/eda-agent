@@ -120,7 +120,9 @@ COVERED: dict[str, str] = {
     "pcb_place_polygon_board": "kicad_place_zones",
     "pcb_start_polygon_placement": "kicad_place_zones",
     "pcb_keepout_board_outline": "kicad_place_zones",
-    "pcb_dimension": "kicad_place_dimensions",
+    "pcb_create_dimension": "kicad_place_dimensions",
+    "pcb_get_dimensions": "kicad_query_items",
+    "pcb_edit_dimension": "kicad_modify_items",
     "pcb_set_board_shape": "kicad_set_board_outline",
     "pcb_auto_size_board_outline": "kicad_set_board_outline",
     "pcb_copy_tracks_radial": "kicad_copy_items",
@@ -352,6 +354,8 @@ NOT_APPLICABLE: dict[str, str] = {
         "eng_compare_live_ipc_footprint", "eng_eco_preview_live",
         "eng_ltspice_deck_from_schematic", "eng_validate_library_live",
         "eng_ltspice_compare_schematic")},
+    # A KiCad dimension's ends are plain points: nothing binds them.
+    "pcb_dimension_bindings": "Altium binds a dimension's ends to pads and arcs; KiCad does not",
     # Altium 365
     **{name: _A365 for name in (
         "altium365_check_setup", "altium365_describe_type", "altium365_get_component",
@@ -459,6 +463,9 @@ NOT_APPLICABLE: dict[str, str] = {
     "pcb_get_xsignals": "Altium xSignals",
     "pcb_delete_xsignals": "Altium xSignals",
     "pcb_create_room": "Altium rooms; KiCad uses rule areas (kicad_place_zones)",
+    "app_document_owners": "sessions sharing one running Altium; KiCad boards are files each session opens itself",
+    "app_claim_document": "sessions sharing one running Altium; KiCad boards are files each session opens itself",
+    "app_release_document": "sessions sharing one running Altium; KiCad boards are files each session opens itself",
     "pcb_get_room_rules": "Altium rooms",
     "pcb_get_impedance_profiles": "Altium impedance profiles",
     "pcb_impedance_profile": "Altium impedance profiles",
@@ -526,6 +533,7 @@ NOT_APPLICABLE: dict[str, str] = {
     "sch_get_directives": "Altium schematic directives",
     "sch_place_blanket": "Altium blankets carry directives; KiCad has no blanket object",
     "sch_get_blankets": "Altium blankets carry directives; KiCad has no blanket object",
+    "sch_set_draw_order": "KiCad's schematic API has no draw-order call",
     "sch_place_compile_mask": "Altium compile masks; KiCad has no compile-mask object",
     "sch_set_net_tie": "net ties are a footprint property in KiCad",
     "sch_set_component_unique_id": "KiCad symbol uuids are fixed identities",

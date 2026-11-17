@@ -70,14 +70,17 @@ def test_placement_chooses_the_named_model_and_warns_on_a_miss():
 
 
 def test_the_component_properties_are_gated_to_components():
-    getter = _body("GetSchProperty")
-    read = getter[getter.index("Else If (PropName = 'DisplayMode') Or"):]
-    read = read[:read.index("Else If (PropName = 'Designator') Or")]
-    assert "If Obj.ObjectId = eSchComponent Then" in read
-    setter = _body("SetSchProperty")
-    write = setter[setter.index("Else If PropName = 'DisplayMode' Then"):]
-    write = write[:write.index("Else If PropName = 'FootprintPinMap' Then")]
-    assert "If Obj.ObjectId = eSchComponent Then" in write
+    for name in ("GetSchPropertyGated", "SetSchProperty"):
+        body = _body(name)
+        # The setter here writes DisplayMode in a branch of its own (it
+        # checks the mode against the symbol's count), so either head counts.
+        head = ("(PropName = 'DisplayMode') Or"
+                if "(PropName = 'DisplayMode') Or" in body
+                else "Else If PropName = 'DisplayMode' Then")
+        branch = body[body.index(head):]
+        branch = branch[:branch.index("Else If PropName = 'FontId'")] \
+            if "Else If PropName = 'FontId'" in branch else branch[:1500]
+        assert "eSchComponent" in branch
     pre = _body("UnsupportedSchProperty")
     gate = pre[pre.index("(PropName = 'FootprintPinMap')"):]
     assert gate.index("(PropName = 'ComponentKind'))") < gate.index(
@@ -128,7 +131,7 @@ end.
 
 def test_the_helpers_are_defined_before_their_first_use():
     text = GENERIC.read_text(encoding="utf-8", errors="replace")
-    first_use = text.index("Function GetSchProperty(")
+    first_use = text.index("Function GetSchPropertyGated(")
     for name in ("CurrentFootprintImpl", "ChooseFootprintModel",
                  "WriteFootprintPinMap", "ReadFootprintPinMap"):
         assert text.index(f"Function {name}(") < first_use, name

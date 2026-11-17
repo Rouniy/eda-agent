@@ -642,6 +642,30 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "centre."),
     },
     {
+        "task": "Create or delete hundreds of board objects at once",
+        "keywords": ("hundreds", "thousands", "batch", "geometry map"),
+        "when": (("batch", "track"), ("batch", "via"), ("batch", "arc"),
+                 ("batch", "region"), ("batch", "pour"), ("batch", "polygon"),
+                 ("track", "file"), ("via", "file"), ("hundreds",),
+                 ("thousands",)),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_apply_geometry_map"],
+        "avoid": [
+            ("pcb_place_tracks", "takes the list inside the call; past a few "
+                                 "hundred give it a file, or use the map"),
+            ("pcb_place_vias", "the same, for vias"),
+            ("obj_delete", "one call per filter, each walking every object "
+                           "of its type on the board"),
+        ],
+        "note": (
+            "Write a JSON map: \"create\" for new tracks, arcs, regions, "
+            "through vias and pours, \"delete\" for tracks, arcs, regions, "
+            "vias and pours found by their current geometry. One file, one "
+            "transaction, one undo step. Run it with dry_run first to see "
+            "what matches."),
+    },
+    {
         "task": "Make a PDF of the schematics or the board without a person there",
         "keywords": ("pdf", "print", "schematic pdf", "smart pdf", "publish",
                      "documentation", "drawing"),
@@ -674,10 +698,22 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                 "pcb_unroute"],
         "avoid": [
             ("pcb_autoroute", "one run for the whole board decides every net "
-                              "itself; rounds stop for your review after each "
-                              "group"),
+                              "itself and gives no advice on the nets it "
+                              "leaves unrouted; rounds stop for your review "
+                              "after each group. Its result is reviewed all "
+                              "the same: pcb_autoroute_apply waits on every "
+                              "finding"),
+            ("obj_run_process", "PCB:AutoRoute starts Altium's own "
+                                "autorouter, which takes no brief; the bridge "
+                                "does not answer until it ends, which can be "
+                                "hours, and no tool here can stop it; it is "
+                                "refused unless the user has set \"Altium "
+                                "autorouter\" to Allowed on the Config tab"),
         ],
         "note": (
+            "Route with these tools. Altium's own autorouter is used only "
+            "when the user specifically asks for it and has set \"Altium "
+            "autorouter\" to Allowed on the Config tab. "
             "You decide how the board is routed; the router does the "
             "mechanical work and obeys. pcb_route_brief with no changes "
             "lists the critical nets (pairs, clocks, switching nodes, "
@@ -921,6 +957,32 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "BarCodeInverted; or Multiline with MultilineTextWidth / Height."),
     },
     {
+        "task": "Draw, read or change a board dimension that measures",
+        "keywords": ("dimension", "dimensions", "measure", "linear", "angular",
+                     "leader", "datum", "baseline", "callout"),
+        "when": (("dimension", "measure"), ("dimension", "place"),
+                 ("dimension", "draw"), ("dimension", "read"),
+                 ("dimension", "edit"), ("dimension", "move")),
+        "document_kind": "board",
+        "backends": ("altium",),
+        "use": ["pcb_create_dimension", "pcb_get_dimensions",
+                "pcb_edit_dimension", "pcb_dimension_bindings"],
+        "avoid": [],
+        "note": (
+            "pcb_create_dimension draws linear, angular, leader, datum, "
+            "baseline, center and original dimensions from points. Its ends "
+            "are free points: they do not follow a pad that moves later. A "
+            "radial or diameter takes its value from an arc it is bound to, "
+            "which only Altium's own placement does; made by script it "
+            "draws 0. kind radial therefore draws a leader from the arc "
+            "labelled with the radius, which is right when placed and does "
+            "not follow the arc after. "
+            "pcb_get_dimensions gives each dimension's index "
+            "and x, y, which pcb_edit_dimension needs; it refuses to change "
+            "the geometry of a dimension bound to board objects unless "
+            "keep_bindings is false."),
+    },
+    {
         "task": "Format a board dimension's text and arrows",
         "keywords": ("dimension", "arrow", "precision", "units", "prefix",
                      "suffix", "extension"),
@@ -928,7 +990,8 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                  ("dimension", "precision")),
         "document_kind": "board",
         "backends": ("altium",),
-        "use": ["pcb_place_dimension", "obj_query", "obj_modify"],
+        "use": ["pcb_create_dimension", "pcb_edit_dimension", "obj_query",
+                "obj_modify"],
         "avoid": [],
         "note": (
             "obj_modify on eDimensionObject: TextHeight, TextWidth, "
@@ -2217,6 +2280,11 @@ def _tokens(text: str) -> set[str]:
 def _query_tokens(task: str) -> set[str]:
     """The caller's words, plus the words the tools use for the same thing."""
     words = _tokens(task)
+    # "many" is a stopword, so "place many tracks" would read as "place a
+    # track" and miss the bulk route. As a quantity it
+    # asks for the batch tools, the way "bulk" does.
+    if re.search(r"\b(many|lots)\b", (task or "").lower()):
+        words.add("batch")
     joined = re.sub(r"[^a-z0-9]+", "", (task or "").lower())
     for key, extra in _SYNONYMS.items():
         if key in words or (len(key) > 6 and key in joined):

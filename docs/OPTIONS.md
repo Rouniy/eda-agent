@@ -183,6 +183,7 @@ The Config tab on the Altium status window writes these to `preferences.json` in
 | `usage` | `off`, `on` |  | `on` records an estimate of the tokens and time each tool call costs (upstream's counter). Off by default; read it with `eda-agent usage`. |
 | `routing` | `enforced`, `advisory`, `off` |  | The routing discipline: `enforced` holds a route back until the brief for its critical nets is answered, `advisory` routes and names what is open, `off` asks for nothing. |
 | `basic_3d_models` | `not_allowed`, `allowed` |  | `allowed` stops the report of footprints that carry only extruded, cylinder or sphere bodies. |
+| `altium_autorouter` | `not_allowed`, `allowed` |  | `allowed` lets the AI start Altium's own autorouter. Off by default: routing then goes through eda-agent's router only. |
 | `default_mode` | a design mode name | | Profile only: the design mode a run uses when it names none. |
 
 ## `workspace.json`
