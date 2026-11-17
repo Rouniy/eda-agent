@@ -58,7 +58,6 @@ NOT_TOOLS: dict[str, str] = {
     "design_roots": "a parameter of altium365_library_report",
     "part_id": "a parameter of sch_place_dblib_component",
     "part_id_applied": "a reply field of sch_place_dblib_component",
-    "part_issues": "a reply field of sch_place_components_from_list",
     "pcb_only": "a reply field of the schematic/PCB comparison",
     "pcb_units": "a key of a profile's document_settings.json (docs/OPTIONS.md)",
     "sch_only": "a reply field of the schematic/PCB comparison",
@@ -67,13 +66,10 @@ NOT_TOOLS: dict[str, str] = {
     "sch_arc": "an object_type of obj_query",
     # Names from the PLT companion runtime (PLT-hw tools/eda-agent/shared_server.py),
     # which registers its own restricted tool set rather than this package's.
-    "proj_get_erc_messages": "a tool of the PLT shared selected-project server",
     "pcb_move_components_checked": "the PLT edit runtime's placement write tool "
         "(registered by PLT's shared_server.py, not by a backend)",
     "pcb_place_copper_checked": "the PLT edit runtime's copper write tool "
         "(PROPOSAL-2026-10-09; registered by PLT's shared_server.py, not by a backend)",
-    "pcb_setup_board_checked": "the PLT edit runtime's board-setup write tool (stackup, classes, "
-        "rooms, rules; PROPOSAL-2026-10-09-setup; registered by PLT's shared_server.py)",
     "proj_set_component_params_checked": "the PLT param-edit runtime's one write tool "
                                          "(PROPOSAL-2026-09-28), registered only there",
     # Fields of the proposed (unbuilt) library-read grant in LIBRARY-READS-DESIGN.md.
@@ -89,20 +85,6 @@ NOT_TOOLS: dict[str, str] = {
     "obj_": "the generic object namespace prefix, not a tool",
     # Historical donor spellings in FORK-BEHAVIOR-CHECK. That document
     # explicitly maps each one to an existing public route in this fork.
-    "lib_add_pin": "a donor spelling mapped to lib_add_pins",
-    "lib_add_symbol_line": "a donor spelling mapped to lib_add_symbol_lines",
-    "lib_set_label_format": "a donor spelling mapped to lib_set_label_formats",
-    "pcb_move_component": "a donor spelling mapped to pcb_move_components",
-    "pcb_place_component": "a donor spelling mapped to pcb_place_components",
-    "pcb_place_track": "a donor spelling mapped to pcb_place_tracks",
-    "sch_add_net_label": "a donor spelling mapped to sch_place_net_label",
-    "sch_attach_spice_model": "a donor spelling mapped to sim_attach_model",
-    "sch_attach_spice_primitive": "a donor spelling mapped to sim_attach_primitives",
-    "sch_attach_spice_primitives": "a donor spelling mapped to sim_attach_primitives",
-    "sch_get_simulation_readiness": "a donor spelling mapped to sim_get_readiness",
-    "lib_diag_footprint": "a donor spelling mapped to lib_get_footprint_primitives",
-    "lib_screenshot_footprint": "a donor spelling mapped to lib_render_footprint",
-    "lib_list_vault_libraries": "a donor spelling mapped to lib_list_available_libraries",
 }
 
 
