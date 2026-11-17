@@ -127,7 +127,12 @@ Begin
     Else If N = 'ellipse'         Then Result := eEllipse
     Else If N = 'ellipticalarc'   Then Result := eEllipticalArc
     Else If N = 'designator'      Then Result := eDesignator
-    Else If N = 'roundrectangle'  Then Result := eRoundRectangle;
+    Else If N = 'roundrectangle'  Then Result := eRoundRectangle
+    { A free IEEE symbol drawn on a sheet or in a library symbol (Place >
+      Drawing Tools > IEEE Symbols). Altium's constant is eSymbol; the
+      longer name says which symbol is meant, since a sheet symbol and a
+      library symbol are different things. }
+    Else If (N = 'ieeesymbol') Or (N = 'symbol') Then Result := eSymbol;
 End;
 
 { What the refusal should have said. }
@@ -141,7 +146,8 @@ Begin
             + 'eCrossSheetConnector, eCompileMask, eBlanket, sch_polygon, sch_arc, '
             + 'sch_elliptical_arc, sch_ellipse, sch_bezier, bezier, ellipse, elliptical_arc, '
             + 'eDesignator, eRoundRectangle, eHarnessComponent, eHarnessPin, '
-            + 'eHarnessWire, eHarnessSplice';
+            + 'eHarnessWire, eHarnessSplice, '
+            + 'eSymbol (a free IEEE symbol, also spelt ieee_symbol)';
 End;
 
 { True for the objects that carry a vertex array (GetState_VerticesCount,   }
@@ -373,6 +379,32 @@ Begin
         Try Result := N.StrConnectionPairsToSuppress; Except End
     Else If PropName = 'SuppressableErrors' Then
         Try Result := N.StrSuppressableErrors; Except End;
+End;
+
+{ What only a free IEEE symbol carries. Symbol is the ordinal of the     }
+{ picture (TIeeeSymbol; the free symbol has more kinds than a pin edge    }
+{ takes, so the number is given as it is), ScaleFactor its size in mils.  }
+{ Typed through ISch_Symbol: asked of any other object, either name is an }
+{ undeclared identifier, which stops the script.                          }
+Function ReadIeeeSymbolProp(Obj : ISch_GraphicalObject; PropName : String) : String;
+Var
+    S : ISch_Symbol;
+Begin
+    Result := '';
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId <> eSymbol Then Exit;
+    S := Obj;
+    If PropName = 'Symbol' Then
+        Try Result := IntToStr(S.Symbol); Except End
+    Else If PropName = 'ScaleFactor' Then
+        Try Result := FloatToJsonStr(CoordToMilsF(S.ScaleFactor)); Except End
+    Else If PropName = 'Orientation' Then
+        Try Result := IntToStr(S.Orientation); Except End
+    { IsMirrored is NOT answered. Measured on AD 26.11: a symbol the file  }
+    { stores mirrored, and Altium draws mirrored, read False here. A wrong }
+    { value is worse than none, so the name is reported unreadable.        }
+    Else If PropName = 'IsMirrored' Then
+        NotePropertyDiag('unreadable', PropName);
 End;
 
 Procedure WriteNoErcProp(Obj : ISch_GraphicalObject; PropName : String; Value : String);
@@ -761,7 +793,8 @@ Begin
         Or (Id = eWire) Or (Id = eBus) Or (Id = eBusEntry)
         Or (Id = eSignalHarness) Or (Id = eHarnessWire) Or (Id = eBlanket)
         Or (Id = eCompileMask) Or (Id = eImage) Or (Id = eSheetSymbol)
-        Or (Id = eHarnessConnector) Or (Id = eTextFrame) Or (Id = eNote) Then
+        Or (Id = eHarnessConnector) Or (Id = eTextFrame) Or (Id = eNote)
+        Or (Id = eSymbol) Then
             Result := 1;
     End;
 End;
@@ -2928,6 +2961,10 @@ Begin
             Or (PropName = 'ConnectionPairsToSuppress')
             Or (PropName = 'SuppressableErrors') Or (PropName = 'Symbol')) Then
             Result := ReadNoErcProp(Obj, PropName)
+        Else If (Obj.ObjectId = eSymbol) And ((PropName = 'Symbol')
+            Or (PropName = 'ScaleFactor') Or (PropName = 'Orientation')
+            Or (PropName = 'IsMirrored')) Then
+            Result := ReadIeeeSymbolProp(Obj, PropName)
         Else If PropName = 'CurrentPartID' Then
         Begin
             Comp := Obj;
@@ -13078,6 +13115,7 @@ Begin
     Else If Id = eBezier Then Result := 'sch_bezier'
     Else If Id = eDesignator Then Result := 'designator'
     Else If Id = eRoundRectangle Then Result := 'round_rectangle'
+    Else If Id = eSymbol Then Result := 'ieee_symbol'
     Else Result := 'type_' + IntToStr(Id);
 End;
 

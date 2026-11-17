@@ -313,6 +313,7 @@ eSmall
 eSplitPlaneObject
 eSquareHole
 eSurfaceMaterial
+eSymbol
 eTemplate
 eTextFrame
 eTextObject

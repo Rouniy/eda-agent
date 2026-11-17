@@ -623,7 +623,8 @@ def register_generic_tools(mcp):
             object_type: Altium object type constant.
                 Schematic: "eNetLabel", "ePort", "ePowerObject", "eSchComponent",
                 "eWire", "eBus", "eBusEntry", "eParameter", "ePin",
-                "eLabel", "eLine", "ePolyline", "eRectangle", "eSheetSymbol", "eSheetEntry", "eNoERC", "eJunction"
+                "eLabel", "eLine", "ePolyline", "eRectangle", "eSheetSymbol", "eSheetEntry", "eNoERC", "eJunction",
+                "eIEEESymbol" (a free IEEE symbol: Symbol is the picture's number, ScaleFactor in mils)
                 PCB: "eTrackObject", "ePadObject", "eViaObject", "eComponentObject",
                 "eArcObject", "eFillObject", "eTextObject", "eRuleObject", "eDimensionObject",
                 "eSplitPlaneObject" (a plane layer's regions, with Net
