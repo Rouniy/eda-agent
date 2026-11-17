@@ -21,6 +21,7 @@ def test_the_reader_answers_a_millimetre_name_from_the_mil_one():
     assert "PCBMilsTextAsMm(GetPCBProperty(Obj, Copy(PropName, 1, Length(PropName) - 3)))" in head
     helper = units["PCBMilsTextAsMm"]
     assert "* 0.0254" in helper and "IsFloatStr(S)" in helper
+    assert "Round(" in helper and "/ 100000" in helper      # 10 nm, so 1.9685 mil is 0.05 mm
 
 
 def test_the_helper_is_declared_before_the_reader():

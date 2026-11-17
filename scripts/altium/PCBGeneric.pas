@@ -1310,7 +1310,10 @@ End;
 Function PCBMilsTextAsMm(S : String) : String;
 Begin
     Result := '';
-    If IsFloatStr(S) Then Result := FloatToJsonStr(StrToFloatDef(S, 0) * 0.0254);
+    { Rounded to 10 nm: the mil text carries four decimals, and 1.9685 mil }
+    { would otherwise read back as 0.0499999 mm, not 0.05.                 }
+    If IsFloatStr(S) Then
+        Result := FloatToJsonStr(Round(StrToFloatDef(S, 0) * 0.0254 * 100000) / 100000);
 End;
 
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
@@ -1703,6 +1706,21 @@ Begin
         Else If PropName = 'IsComment' Then
         Begin
             If Oid = eTextObject Then Begin Txt := Obj; Result := BoolToJsonStr(Txt.IsComment); End;
+        End
+        { Whether a text is hidden: a designator or comment follows its      }
+        { component's Name On / Comment On switch. The name was accepted     }
+        { and read back empty (measured 2026-11-17).                         }
+        Else If PropName = 'IsHidden' Then
+        Begin
+            If Oid = eTextObject Then Begin Txt := Obj; Result := BoolToJsonStr(Txt.IsHidden); End;
+        End
+        Else If PropName = 'NameOn' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := BoolToJsonStr(Comp.NameOn); End;
+        End
+        Else If PropName = 'CommentOn' Then
+        Begin
+            If Oid = eComponentObject Then Begin Comp := Obj; Result := BoolToJsonStr(Comp.CommentOn); End;
         End
         Else If PropName = 'UseTTFonts' Then
         Begin
@@ -2702,6 +2720,7 @@ Begin
         (PropName = 'ModelHeight') Or
         (PropName = 'StrokeWidth') Or (PropName = 'IsDesignator') Or
         (PropName = 'IsComment') Or (PropName = 'UseTTFonts') Or
+        (PropName = 'NameOn') Or (PropName = 'CommentOn') Or
         (PropName = 'MirrorFlag') Or
         (PropName = 'BotXSize') Or (PropName = 'BotYSize') Or
         (PropName = 'TopShapeName') Or
@@ -2784,7 +2803,7 @@ Begin
         + 'IsKeepoutForVia, IsKeepoutForSMDPad, IsKeepoutForTHPad, '
         + 'TearDrop, Locked, Layer1, Layer2, IsRedundant, Mode, '
         + 'Height, StrokeWidth, IsDesignator, IsComment, UseTTFonts, MirrorFlag'
-        + ', TopShapeName, BotXSize, BotYSize, Plated, HoleType, HoleWidth, '
+        + ', NameOn, CommentOn, TopShapeName, BotXSize, BotYSize, Plated, HoleType, HoleWidth, '
         + 'HoleRotation, '
         + 'SizeTop, SizeMid, SizeBottom, SolderMaskExpansion, '
         + 'SolderMaskBottomExpansion, SolderMaskSeparate, SolderMaskManual, '

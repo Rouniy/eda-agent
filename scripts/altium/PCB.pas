@@ -9410,7 +9410,8 @@ Var
     LayerName, AboveName, BelowName, Order : String;
     TargetLayer, RefLayer : TLayer;
     RefObj, NewObj, Walk : IPCB_LayerObject_V7;
-    Refreshed, InParts : Integer;
+    Refreshed, InParts, Thick : Integer;
+    ThickSet : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -9489,6 +9490,26 @@ Begin
             If AboveName <> '' Then LayerStack.InsertInStackAbove(RefObj, NewObj)
             Else LayerStack.InsertInStackBelow(RefObj, NewObj);
         End;
+        { Altium inserts the layer with a copper thickness of 0, which a    }
+        { saved stack then carries (measured 2026-11-17: pcb_stack_from_file }
+        { flags it). It takes the first layer's thickness until the caller   }
+        { sets its own.                                                      }
+        Thick := 0;
+        Walk := LayerStack.FirstLayer;
+        If Walk <> Nil Then Try Thick := Walk.CopperThickness; Except Thick := 0; End;
+        NewObj := Nil;
+        Try NewObj := LayerStack.LayerObject(TargetLayer); Except NewObj := Nil; End;
+        ThickSet := False;
+        If (NewObj <> Nil) And (Thick > 0) Then
+        Begin
+            Try
+                If NewObj.CopperThickness = 0 Then
+                Begin
+                    NewObj.CopperThickness := Thick;
+                    ThickSet := True;
+                End;
+            Except NoteWriteFailed('new layer CopperThickness'); End;
+        End;
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
             PCBM_BoardRegisteration, c_NoEventData);
         { The vias already on the board do not see the new layer yet. }
@@ -9511,6 +9532,7 @@ Begin
         + ',"stack_order":[' + Order + ']'
         + ',"vias_refreshed":' + IntToStr(Refreshed)
         + ',"vias_in_components":' + IntToStr(InParts)
+        + ',"copper_thickness_taken_from_first_layer":' + BoolToJsonStr(ThickSet)
         + ',"file_path":"' + EscapeJsonString(Board.FileName) + '"'
         + ',"note":"Vias loaded with the board count on the new layer now. '
         + 'A via placed since the board was opened does not until the board is '

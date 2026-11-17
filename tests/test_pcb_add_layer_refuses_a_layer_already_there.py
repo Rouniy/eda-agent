@@ -19,3 +19,13 @@ def test_the_stack_is_walked_before_the_edit_opens():
     assert refuse < body.index("PcbBeginEdit(0);")
     assert "If Walk.Name = NewObj.Name Then" in body[:refuse]
     assert "nothing was changed" in body
+
+
+def test_the_new_layer_is_given_a_copper_thickness():
+    """Altium inserts it at 0, and a saved stack then carries a copper
+    layer with no thickness."""
+    body = load(PCB)["PCB_AddLayer"]
+    insert = body.index("LayerStack.InsertInStackBelow(RefObj, NewObj)")
+    assert "If NewObj.CopperThickness = 0 Then" in body[insert:]
+    assert "NewObj.CopperThickness := Thick;" in body[insert:]
+    assert "copper_thickness_taken_from_first_layer" in body
