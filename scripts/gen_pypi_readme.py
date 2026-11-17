@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Write README.pypi.md: README.md with every repository link made absolute.
 
 PyPI shows the page without the repository around it, so a relative link or
