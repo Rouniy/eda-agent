@@ -3,8 +3,8 @@
 Status: **approved and built the same day** (Stefan, 2026-10-09: "let's add support for the bridge
 to do the rules and stackup edits"); native qualification pending (section 5). Scripts
 `2026.10.09.5`, client PLT-hw `tools/eda-agent`. Third checked board write after
-[placement](PROPOSAL-2026-10-07-placement-write-increment.md) and
-[copper](PROPOSAL-2026-10-09-copper-write-increment.md); same gates.
+[placement](../../docs/PROPOSAL-2026-10-07-placement-write-increment.md) and
+[copper](../../docs/PROPOSAL-2026-10-09-copper-write-increment.md); same gates.
 
 ## 1. Why this, why now
 

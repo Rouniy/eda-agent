@@ -58,7 +58,6 @@ NOT_TOOLS: dict[str, str] = {
     "design_roots": "a parameter of altium365_library_report",
     "part_id": "a parameter of sch_place_dblib_component",
     "part_id_applied": "a reply field of sch_place_dblib_component",
-    "lib_reference": "a schematic library component field and placement parameter",
     "part_issues": "a reply field of sch_place_components_from_list",
     "pcb_only": "a reply field of the schematic/PCB comparison",
     "pcb_units": "a key of a profile's document_settings.json (docs/OPTIONS.md)",

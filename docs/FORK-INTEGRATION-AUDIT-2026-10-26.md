@@ -123,7 +123,7 @@ The GitHub fork listing of `salitronic/eda-agent` contained 60 direct forks. The
 | `yniantongtian-oss` | Cross-platform checkout and manifest integrity check | 848 tracked paths, one manifest, zero errors |
 | `yniantongtian-oss` | Require the exact Windows sheet path before using an active-document size response | 33 sheet-plan tests |
 
-The `main` source script version is `2026.10.26.2`. At 20:49 +02:00 on 2026-10-26, the Altium worker was restarted directly from the `main` checkout; `app_ping` confirmed the loaded and bundled versions both report `2026.10.26.2`. See `docs/CURRENT-STATE.md` for the live handoff.
+The `main` source script version is `2026.10.26.2`. At 20:49 +02:00 on 2026-10-26, the Altium worker was restarted directly from the `main` checkout; `app_ping` confirmed the loaded and bundled versions both report `2026.10.26.2`. See `fork/notes/CURRENT-STATE.md` for the live handoff.
 
 ## Reviewed but held for separate work
 

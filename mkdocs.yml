@@ -164,11 +164,8 @@ nav:
 
   - Fork integration:
       - ALTIUM_MCP_RU.md
-      - CURRENT-STATE.md
       - DELIVERY_ACCEPTANCE.md
-      - DESIGN-event-driven-dispatch.md
       - FORK-ARGUMENT-AUDIT-2026-10-28.md
-      - FORK-BEHAVIOR-CHECK-2026-10-28.md
       - FORK-INTEGRATION-AUDIT-2026-10-26.md
       - INTEGRATION-BASELINE.md
       - LEGACY_FORK_GUIDE.md
@@ -182,6 +179,4 @@ nav:
       - PROPOSAL-2026-09-28-metadata-write-increment.md
       - PROPOSAL-2026-10-07-placement-write-increment.md
       - PROPOSAL-2026-10-09-copper-write-increment.md
-      - PROPOSAL-2026-10-09-setup-write-increment.md
-      - SHUTDOWN.md
       - UPSTREAM-SYNC-2026-10-27.md

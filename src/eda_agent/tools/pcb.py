@@ -10218,7 +10218,7 @@ def register_pcb_tools(mcp):
 
         WRITTEN THROUGH THE VIA'S PAD CACHE. Assigning the expansion
         straight onto a via crashes Altium's scripting engine (an access
-        violation in ScriptingSystem.DLL, measured on AD 26.10); the same
+        violation, measured on AD 26.10); the same
         value written into the cache a via shares with pads takes and
         reads back, so the handler only ever uses that route.
 

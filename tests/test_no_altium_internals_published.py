@@ -34,7 +34,28 @@ def _tracked() -> list[Path]:
     if out.returncode != 0:
         pytest.skip("not a git checkout")
     return [ROOT / p for p in out.stdout.splitlines()
-            if Path(p).suffix.lower() in _TEXT and Path(p).name != "LICENSE"]
+            if Path(p).suffix.lower() in _TEXT and Path(p).name != "LICENSE"
+            and not _fork_only(p)]
+
+
+# THIS FORK ONLY. Upstream's rule holds for the whole tree except what is
+# listed here, so the tree can be taken upstream as it is by leaving these
+# paths behind:
+# - fork/ is this fork's own working material (crash journals, shutdown
+#   notes); none of it is part of the product.
+# - the sdk-symbols feature reads the scripting engine's own table of names
+#   from the user's Altium installation, and has to name the file it reads.
+_FORK_ONLY_DIRS = ("fork/",)
+_FORK_ONLY_FILES = frozenset({
+    "src/eda_agent/sdk/symbols.py",
+    "tests/test_sdk_symbols.py",
+    "docs/SDK_COVERAGE.md",
+})
+
+
+def _fork_only(path: str) -> bool:
+    path = path.replace("\\", "/")
+    return path.startswith(_FORK_ONLY_DIRS) or path in _FORK_ONLY_FILES
 
 
 @pytest.mark.parametrize("name,pattern", [

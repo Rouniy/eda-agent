@@ -10,7 +10,7 @@ qualify natively, flip the pointer. Roughly one tranche per sitting.
 lines of capability; we import along a risk ladder (pure reads → approved
 artifact generation → gated writes), and only when a concrete 22p/HDMI task
 consumes the tranche. Nothing gets qualified that nothing uses. The
-non-negotiable operating limits in [CURRENT-STATE.md](CURRENT-STATE.md) apply
+non-negotiable operating limits in [CURRENT-STATE.md](../fork/notes/CURRENT-STATE.md) apply
 at every phase; the write gates are defined in
 [PROJECT-SELECTION-AND-WRITES.md](PROJECT-SELECTION-AND-WRITES.md).
 

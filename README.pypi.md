@@ -32,8 +32,8 @@ schematic, PCB, library, project, review, signal and power integrity, and therma
 ### Rouniy integration
 
 Source candidate: package `0.8.2`, script `2026.11.16.1`. Read
-[AGENTS.md](https://github.com/Rouniy/eda-agent/blob/main/AGENTS.md), [current deployment and qualification](https://github.com/Rouniy/eda-agent/blob/main/docs/CURRENT-STATE.md)
-and [the integration TODO](https://github.com/Rouniy/eda-agent/blob/main/TODO.md) before connecting to Altium.
+[AGENTS.md](https://github.com/Rouniy/eda-agent/blob/main/AGENTS.md), [current deployment and qualification](https://github.com/Rouniy/eda-agent/blob/main/fork/notes/CURRENT-STATE.md)
+and [the integration TODO](https://github.com/Rouniy/eda-agent/blob/main/fork/notes/TODO.md) before connecting to Altium.
 Shared use requires the generated selected-project read-only runtime and its
 matching client. The raw source defaults `SELECTED_PROJECT_READ_ONLY=False`;
 the developer quick start below enables the broader tool surface. New native
@@ -171,7 +171,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Engineering tools](https://github.com/Rouniy/eda-agent/blob/main/docs/ENGINEERING_TOOLS.md) | The `eng_*` family, Altium 365, and what is unverified live |
 | [SPICE models and LTspice](https://github.com/Rouniy/eda-agent/blob/main/docs/SPICE_MODELS.md) | Vendor model index, pin maps, LTspice decks, export and compare |
 | [Token usage](https://github.com/Rouniy/eda-agent/blob/main/docs/TOKEN_USAGE.md) | Tokens the AI spends on each EDA tool, where it is shown and kept |
-| [Hardware CI](https://github.com/Rouniy/eda-agent/blob/main/docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
+| [Hardware CI](https://github.com/Rouniy/eda-agent/blob/main/docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no running Altium |
 | [Rust compute](https://github.com/Rouniy/eda-agent/blob/main/docs/RUST_COMPUTE.md) | The optional compiled router core: the idea, the options considered, settings, measured speed-ups |
 | [UI automation](https://github.com/Rouniy/eda-agent/blob/main/docs/ui-automation.md) | What synthesised input can reach, and what contains it |
 
@@ -232,9 +232,9 @@ eda-agent is maintained in this fork by [MOREmbedded](https://github.com/MOREmbe
 
 - [ALTIUM_MCP_RU](https://github.com/Rouniy/eda-agent/blob/main/docs/ALTIUM_MCP_RU.md)
 - [DELIVERY_ACCEPTANCE](https://github.com/Rouniy/eda-agent/blob/main/docs/DELIVERY_ACCEPTANCE.md)
-- [DESIGN event driven dispatch](https://github.com/Rouniy/eda-agent/blob/main/docs/DESIGN-event-driven-dispatch.md)
+- [DESIGN event driven dispatch](https://github.com/Rouniy/eda-agent/blob/main/fork/notes/DESIGN-event-driven-dispatch.md)
 - [FORK ARGUMENT AUDIT 2026 10 28](https://github.com/Rouniy/eda-agent/blob/main/docs/FORK-ARGUMENT-AUDIT-2026-10-28.md)
-- [FORK BEHAVIOR CHECK 2026 10 28](https://github.com/Rouniy/eda-agent/blob/main/docs/FORK-BEHAVIOR-CHECK-2026-10-28.md)
+- [FORK BEHAVIOR CHECK 2026 10 28](https://github.com/Rouniy/eda-agent/blob/main/fork/notes/FORK-BEHAVIOR-CHECK-2026-10-28.md)
 - [FORK INTEGRATION AUDIT 2026 10 26](https://github.com/Rouniy/eda-agent/blob/main/docs/FORK-INTEGRATION-AUDIT-2026-10-26.md)
 - [INTEGRATION BASELINE](https://github.com/Rouniy/eda-agent/blob/main/docs/INTEGRATION-BASELINE.md)
 - [LEGACY_FORK_GUIDE](https://github.com/Rouniy/eda-agent/blob/main/docs/LEGACY_FORK_GUIDE.md)
@@ -244,8 +244,8 @@ eda-agent is maintained in this fork by [MOREmbedded](https://github.com/MOREmbe
 - [PROPOSAL 2026 09 28 metadata write increment](https://github.com/Rouniy/eda-agent/blob/main/docs/PROPOSAL-2026-09-28-metadata-write-increment.md)
 - [PROPOSAL 2026 10 07 placement write increment](https://github.com/Rouniy/eda-agent/blob/main/docs/PROPOSAL-2026-10-07-placement-write-increment.md)
 - [PROPOSAL 2026 10 09 copper write increment](https://github.com/Rouniy/eda-agent/blob/main/docs/PROPOSAL-2026-10-09-copper-write-increment.md)
-- [PROPOSAL 2026 10 09 setup write increment](https://github.com/Rouniy/eda-agent/blob/main/docs/PROPOSAL-2026-10-09-setup-write-increment.md)
-- [SHUTDOWN](https://github.com/Rouniy/eda-agent/blob/main/docs/SHUTDOWN.md)
+- [PROPOSAL 2026 10 09 setup write increment](https://github.com/Rouniy/eda-agent/blob/main/fork/notes/PROPOSAL-2026-10-09-setup-write-increment.md)
+- [SHUTDOWN](https://github.com/Rouniy/eda-agent/blob/main/fork/notes/SHUTDOWN.md)
 - [UPSTREAM SYNC 2026 10 27](https://github.com/Rouniy/eda-agent/blob/main/docs/UPSTREAM-SYNC-2026-10-27.md)
 
 <!-- mcp-name: io.github.salitronic/eda-agent -->

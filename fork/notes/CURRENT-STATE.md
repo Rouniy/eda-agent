@@ -3450,8 +3450,8 @@ the activity log, so graceful logging on host exit remains unverified.
 
 
 Updated 2026-09-09. This is the current-state entry point; dated session logs are
-historical evidence, not pending-work truth. See [TODO](../TODO.md) and the
-[read/write delivery gates](PROJECT-SELECTION-AND-WRITES.md#delivery-plan-and-release-gates-2026-09-09).
+historical evidence, not pending-work truth. See [TODO](TODO.md) and the
+[read/write delivery gates](../../docs/PROJECT-SELECTION-AND-WRITES.md#delivery-plan-and-release-gates-2026-09-09).
 
 Published checkpoint: [eda-agent d5b62a0](https://github.com/4pplet/eda-agent/commit/d5b62a03b20d1c2c6dfa416b4990d7c74fe11ad9)
 and [PLT-hw 3b7cc66](https://github.com/4pplet/PLT-hw/commit/3b7cc66f4bd55cffe53a26141abdc85a52e65160).
@@ -3477,7 +3477,7 @@ baselines; no installed package/runtime redeployment accompanied publication.
   first write, checked `LCSC Part #` / `Instruction` edits, approved by the operator and
   gated off by default (`SELECTED_PARAM_EDITS = False`). Not provisioned, not deployed;
   native qualification T1-T17 is open:
-  [PROPOSAL-2026-09-28](PROPOSAL-2026-09-28-metadata-write-increment.md) section 7. The
+  [PROPOSAL-2026-09-28](../../docs/PROPOSAL-2026-09-28-metadata-write-increment.md) section 7. The
   running runtime above is unaffected.
   **Runtime paths are written with the environment variable on purpose.** An
   absolute path here names one machine's private storage, which
@@ -3719,7 +3719,7 @@ under the operating contract in the shared runbook meanwhile.
 
 The long-horizon sequencing - importing the remaining upstream surface
 through the scoped model, phase by phase up the risk ladder with a
-never-import list - is planned in [PARITY-ROADMAP.md](PARITY-ROADMAP.md)
+never-import list - is planned in [PARITY-ROADMAP.md](../../docs/PARITY-ROADMAP.md)
 (agreed with Stefan 2026-09-10). The numbered items below are the near-term
 qualification order within that plan.
 

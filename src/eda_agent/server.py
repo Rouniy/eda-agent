@@ -1344,7 +1344,7 @@ def build_parser() -> argparse.ArgumentParser:
     symbols_p = subparsers.add_parser(
         "sdk-symbols", help="Inspect names registered by Altium's scripting engine.")
     symbols_p.add_argument("--refresh", action="store_true",
-                           help="Extract the table from the local ScriptingSystem.dll.")
+                           help="Extract the table from the local Altium installation.")
     symbols_p.add_argument("--name", default="", metavar="NAME",
                            help="Check one member name.")
     symbols_p.add_argument("--json", action="store_true", dest="json_out")

@@ -1,7 +1,7 @@
 # Historical fork guide
 
 This preserves the previous fork README. For current versions and qualification,
-read [the current-state handoff](CURRENT-STATE.md).
+read [the current-state handoff](../fork/notes/CURRENT-STATE.md).
 
 <div align="center">
 
@@ -12,11 +12,11 @@ MCP server that lets an AI (or any MCP-compatible client) **interact with a live
 An MCP server that gives Claude, or any MCP client, around 800 tools on the design you have open:
 schematic, PCB, library, project and review. You watch every change happen in Altium.
 
-Local fork reliability work and acceptance gaps: [integration TODO](../TODO.md).
+Local fork reliability work and acceptance gaps: [integration TODO](../fork/notes/TODO.md).
 Exact upstream and MOREmbedded merge points: [integration baseline](INTEGRATION-BASELINE.md).
 Release artifacts and exact-commit checks: [delivery acceptance](DELIVERY_ACCEPTANCE.md).
 Agents: read [AGENTS.md](../AGENTS.md) before using the upstream setup or connecting to Altium.
-Current deployment, evidence and next-agent memory: [current-state handoff](CURRENT-STATE.md).
+Current deployment, evidence and next-agent memory: [current-state handoff](../fork/notes/CURRENT-STATE.md).
 
 The optional [battery research lab](../research/battery-ai-comsol-lab/README.md)
 from a fork runs as a separate Python package for PyBaMM baselines, sweeps
@@ -32,7 +32,7 @@ passed; the optional edit modes remain unqualified. The raw source keeps
 matching restricted client enables that mode. Source edits do not update a
 running installation. Stop the bridge and verify that its session ended before
 closing the script project or quitting Altium. See the
-[current-state handoff](CURRENT-STATE.md) for the exact native evidence and
+[current-state handoff](../fork/notes/CURRENT-STATE.md) for the exact native evidence and
 remaining lifecycle gaps.
 
 See the companion [shared setup and acceptance guide](https://github.com/4pplet/PLT-hw/blob/main/tools/eda-agent/SHARED-PROJECTS.md)
@@ -104,7 +104,7 @@ Claude Code with eda-agent designs a round 54 mm, 4-layer RGB LED display board 
 - **Your house style.** Profiles hold pad rounding, design rules, ERC levels, fab stackups and templates, one per company or project.
 - **More than Altium.** KiCad 10 and EasyEDA Pro backends use the same tool surface. 773+ with both backends registered.
 
-- **In-Altium status window** - a floating Altium-side window showing live status, request count, cumulative Altium-side time, auto-shutdown countdown, and a per-command log with durations. `Hide pings` filters the 30 s keep-alive traffic; `Only >100ms` isolates slow calls. Its native **Detach** button requests a no-save stop. API/browser Detach instead saves dirty documents. See [shutdown and recovery](SHUTDOWN.md).
+- **In-Altium status window** - a floating Altium-side window showing live status, request count, cumulative Altium-side time, auto-shutdown countdown, and a per-command log with durations. `Hide pings` filters the 30 s keep-alive traffic; `Only >100ms` isolates slow calls. Its native **Detach** button requests a no-save stop. API/browser Detach instead saves dirty documents. See [shutdown and recovery](../fork/notes/SHUTDOWN.md).
 - **Web dashboard** - a local browser dashboard at `http://127.0.0.1:8766`, focused on design review. A **Review** tab surfaces datasheet / MPN / manufacturer / footprint coverage gauges and an actionable issue queue (missing datasheet, missing MPN, orphan nets, ...); **Project**, **Components**, **Nets**, **Libraries** and **Plan** tabs give live structured views. Click any component or net to drill into a detail drawer; one click cross-probes it into Altium. Light / dark theme, server-sent-events live feed. It is auto-started by the MCP server - the **Open Dashboard** button on the in-Altium status window launches the browser. Set `EDA_AGENT_DASHBOARD_PORT=8877` before starting the MCP server if 8766 is occupied; the button follows the port that actually bound.
 
 ## Layout voting
@@ -946,7 +946,7 @@ Altium itself uses DelphiScript internally for many built-in commands (some ribb
 - The native Altium status window's **Detach** / Close button is used, or a `stop` file is placed in the verified IPC workspace; these request a stop without saving CAD, OR
 - **10 minutes of total silence** from the MCP client (no commands AND no keep-alive pings) triggers the built-in auto-shutdown
 
-While an MCP client sends keep-alive pings every 30 s, inactivity shutdown does not occur. Disconnecting that client does not immediately stop the Altium loop. Explicitly stop the bridge and confirm a fresh session-end log before closing its script project or quitting Altium. A blocking command or modal can delay stopping; do not assume a fixed deadline. [Shutdown instructions and pending native regression tests](SHUTDOWN.md) cover the local quit-crash hardening.
+While an MCP client sends keep-alive pings every 30 s, inactivity shutdown does not occur. Disconnecting that client does not immediately stop the Altium loop. Explicitly stop the bridge and confirm a fresh session-end log before closing its script project or quitting Altium. A blocking command or modal can delay stopping; do not assume a fixed deadline. [Shutdown instructions and pending native regression tests](../fork/notes/SHUTDOWN.md) cover the local quit-crash hardening.
 
 ### ECO (sch → PCB update) opens a modal, and there is no silent API
 
@@ -992,7 +992,7 @@ While an MCP client is attached, the Python bridge pings Altium every 30 seconds
 - **30 s later, Python pings** → Altium responds "pong", idle timer resets
 - **10 min later, still no AI activity and no ping** → Altium auto-shuts down
 
-The server normally remains alive while a client sends keep-alives. After disconnection, inactivity shutdown is approximately ten minutes (paused sessions do not time out). Before quitting Altium, explicitly stop and verify completion. Native status-window Detach is no-save; API/browser Detach invokes `application.stop_server`, which calls `SaveAllDirty(0)`. Neither can guarantee a stop deadline while a command blocks. See [shutdown instructions](SHUTDOWN.md).
+The server normally remains alive while a client sends keep-alives. After disconnection, inactivity shutdown is approximately ten minutes (paused sessions do not time out). Before quitting Altium, explicitly stop and verify completion. Native status-window Detach is no-save; API/browser Detach invokes `application.stop_server`, which calls `SaveAllDirty(0)`. Neither can guarantee a stop deadline while a command blocks. See [shutdown instructions](../fork/notes/SHUTDOWN.md).
 
 ### Why this matters for Altium UI responsiveness
 
@@ -1036,21 +1036,21 @@ The deeper references:
 | [`docs/DESIGN_MODES.md`](DESIGN_MODES.md) | presets for the kind of run: reference-design redraw, dev-kit derivative, schematic only, layout only |
 | [`docs/AI_ALTIUM_FIELD_NOTES.md`](AI_ALTIUM_FIELD_NOTES.md) | Altium behaviours measured while driving it, written as operating constraints |
 | [`docs/ALTIUM_AUTONOMY_RUNBOOK.md`](ALTIUM_AUTONOMY_RUNBOOK.md) | the by-hand runbook, deliberately outside the unit suite because it drives a real Altium |
-| [`docs/HARDWARE_CI.md`](HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
+| [`docs/HARDWARE_CI.md`](HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no running Altium |
 | [`docs/TOOL_NAMING.md`](TOOL_NAMING.md) | the `ns_verb_object` convention every tool name follows |
 | [`docs/ui-automation.md`](ui-automation.md) | what the synthesised input can reach, and what contains it |
 
 | [`docs/ALTIUM_MCP_RU.md`](ALTIUM_MCP_RU.md) | Additional project reference |
-| [`docs/DESIGN-event-driven-dispatch.md`](DESIGN-event-driven-dispatch.md) | Additional project reference |
+| [`fork/notes/DESIGN-event-driven-dispatch.md`](../fork/notes/DESIGN-event-driven-dispatch.md) | Additional project reference |
 | [`docs/FORK-ARGUMENT-AUDIT-2026-10-28.md`](FORK-ARGUMENT-AUDIT-2026-10-28.md) | Additional project reference |
-| [`docs/FORK-BEHAVIOR-CHECK-2026-10-28.md`](FORK-BEHAVIOR-CHECK-2026-10-28.md) | Additional project reference |
+| [`fork/notes/FORK-BEHAVIOR-CHECK-2026-10-28.md`](../fork/notes/FORK-BEHAVIOR-CHECK-2026-10-28.md) | Additional project reference |
 | [`docs/FORK-INTEGRATION-AUDIT-2026-10-26.md`](FORK-INTEGRATION-AUDIT-2026-10-26.md) | Additional project reference |
 | [`docs/LIBRARY-READS-DESIGN.md`](LIBRARY-READS-DESIGN.md) | Additional project reference |
 | [`docs/PARITY-ROADMAP.md`](PARITY-ROADMAP.md) | Additional project reference |
 | [`docs/PROPOSAL-2026-09-28-metadata-write-increment.md`](PROPOSAL-2026-09-28-metadata-write-increment.md) | Additional project reference |
 | [`docs/PROPOSAL-2026-10-07-placement-write-increment.md`](PROPOSAL-2026-10-07-placement-write-increment.md) | Additional project reference |
 | [`docs/PROPOSAL-2026-10-09-copper-write-increment.md`](PROPOSAL-2026-10-09-copper-write-increment.md) | Additional project reference |
-| [`docs/PROPOSAL-2026-10-09-setup-write-increment.md`](PROPOSAL-2026-10-09-setup-write-increment.md) | Additional project reference |
+| [`fork/notes/PROPOSAL-2026-10-09-setup-write-increment.md`](../fork/notes/PROPOSAL-2026-10-09-setup-write-increment.md) | Additional project reference |
 | [`docs/UPSTREAM-SYNC-2026-10-27.md`](UPSTREAM-SYNC-2026-10-27.md) | Additional project reference |
 
 At runtime `tool_catalog` serves the same data, filtered by category,

@@ -4,7 +4,7 @@
 `2026.10.03.1`); NOT deployed. Native qualification (section 5, plus T14-T17 in
 section 7) is open.** Section 7 records how the build differs from this proposal.
 Qualify on a day without CAD work, on a disposable copy, per the operator's
-standing decision in [CURRENT-STATE](CURRENT-STATE.md).
+standing decision in [CURRENT-STATE](../fork/notes/CURRENT-STATE.md).
 
 This is a scoped, concrete slice of **Gate 3** in
 [PROJECT-SELECTION-AND-WRITES](PROJECT-SELECTION-AND-WRITES.md). It adds

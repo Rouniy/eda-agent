@@ -31,8 +31,8 @@ schematic, PCB, library, project, review, signal and power integrity, and therma
 ### Rouniy integration
 
 Source candidate: package `0.8.2`, script `2026.11.16.1`. Read
-[AGENTS.md](AGENTS.md), [current deployment and qualification](docs/CURRENT-STATE.md)
-and [the integration TODO](TODO.md) before connecting to Altium.
+[AGENTS.md](AGENTS.md), [current deployment and qualification](fork/notes/CURRENT-STATE.md)
+and [the integration TODO](fork/notes/TODO.md) before connecting to Altium.
 Shared use requires the generated selected-project read-only runtime and its
 matching client. The raw source defaults `SELECTED_PROJECT_READ_ONLY=False`;
 the developer quick start below enables the broader tool surface. New native
@@ -170,7 +170,7 @@ The same documents, with search and navigation, are on the [website](https://mor
 | [Engineering tools](docs/ENGINEERING_TOOLS.md) | The `eng_*` family, Altium 365, and what is unverified live |
 | [SPICE models and LTspice](docs/SPICE_MODELS.md) | Vendor model index, pin maps, LTspice decks, export and compare |
 | [Token usage](docs/TOKEN_USAGE.md) | Tokens the AI spends on each EDA tool, where it is shown and kept |
-| [Hardware CI](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no Altium and no license |
+| [Hardware CI](docs/HARDWARE_CI.md) | `eda-agent review --offline` as a CI gate, with no running Altium |
 | [Rust compute](docs/RUST_COMPUTE.md) | The optional compiled router core: the idea, the options considered, settings, measured speed-ups |
 | [UI automation](docs/ui-automation.md) | What synthesised input can reach, and what contains it |
 
@@ -231,9 +231,9 @@ eda-agent is maintained in this fork by [MOREmbedded](https://github.com/MOREmbe
 
 - [ALTIUM_MCP_RU](docs/ALTIUM_MCP_RU.md)
 - [DELIVERY_ACCEPTANCE](docs/DELIVERY_ACCEPTANCE.md)
-- [DESIGN event driven dispatch](docs/DESIGN-event-driven-dispatch.md)
+- [DESIGN event driven dispatch](fork/notes/DESIGN-event-driven-dispatch.md)
 - [FORK ARGUMENT AUDIT 2026 10 28](docs/FORK-ARGUMENT-AUDIT-2026-10-28.md)
-- [FORK BEHAVIOR CHECK 2026 10 28](docs/FORK-BEHAVIOR-CHECK-2026-10-28.md)
+- [FORK BEHAVIOR CHECK 2026 10 28](fork/notes/FORK-BEHAVIOR-CHECK-2026-10-28.md)
 - [FORK INTEGRATION AUDIT 2026 10 26](docs/FORK-INTEGRATION-AUDIT-2026-10-26.md)
 - [INTEGRATION BASELINE](docs/INTEGRATION-BASELINE.md)
 - [LEGACY_FORK_GUIDE](docs/LEGACY_FORK_GUIDE.md)
@@ -243,8 +243,8 @@ eda-agent is maintained in this fork by [MOREmbedded](https://github.com/MOREmbe
 - [PROPOSAL 2026 09 28 metadata write increment](docs/PROPOSAL-2026-09-28-metadata-write-increment.md)
 - [PROPOSAL 2026 10 07 placement write increment](docs/PROPOSAL-2026-10-07-placement-write-increment.md)
 - [PROPOSAL 2026 10 09 copper write increment](docs/PROPOSAL-2026-10-09-copper-write-increment.md)
-- [PROPOSAL 2026 10 09 setup write increment](docs/PROPOSAL-2026-10-09-setup-write-increment.md)
-- [SHUTDOWN](docs/SHUTDOWN.md)
+- [PROPOSAL 2026 10 09 setup write increment](fork/notes/PROPOSAL-2026-10-09-setup-write-increment.md)
+- [SHUTDOWN](fork/notes/SHUTDOWN.md)
 - [UPSTREAM SYNC 2026 10 27](docs/UPSTREAM-SYNC-2026-10-27.md)
 
 <!-- mcp-name: io.github.salitronic/eda-agent -->

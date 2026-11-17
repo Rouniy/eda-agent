@@ -131,7 +131,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | `EDA_AGENT_SDK_INDEX` | reference/altium_sdk/altium_sdk_index.json | Altium SDK index used by SDK reach diagnostics. |
 | `EDA_AGENT_STEP_WRITER` | cadquery | `freecad` tries FreeCAD before CadQuery when building a STEP model. With neither, the body is extruded and the reply says so. |
 | `EDA_AGENT_SDK_JSON` | `reference/altium_sdk.json` | The reflected Altium SDK that `sdk-coverage` reads. |
-| `EDA_AGENT_SDK_SYMBOLS` | Altium's `ScriptingSystem.dll` | The scripting DLL `sdk-symbols` reads its symbol table from. |
+| `EDA_AGENT_SDK_SYMBOLS` | the scripting library of the local Altium | The scripting DLL `sdk-symbols` reads its symbol table from. |
 | `EDA_AGENT_PCB_TOOLKIT` | `pcb-toolkit` on `PATH`, then the one `eda-agent install-deps` built | Path to a pcb-toolkit binary for `calc-cross-check` and `pcb_calc_cross_check`. |
 | `EDA_AGENT_FREECADCMD` | `freecadcmd` on `PATH`, then FreeCAD's install folders | FreeCAD's headless `freecadcmd`, used for STEP models when CadQuery is not installed. |
 
@@ -460,7 +460,7 @@ Inspect names registered by Altium's scripting engine.
 
 | Argument | Takes | What it does |
 |---|---|---|
-| `--refresh` | switch | Extract the table from the local ScriptingSystem.dll. |
+| `--refresh` | switch | Extract the table from the local Altium installation. |
 | `--name` | `NAME` | Check one member name. |
 | `--json` | switch |  |
 | `--sdk-json` | `PATH` |  |

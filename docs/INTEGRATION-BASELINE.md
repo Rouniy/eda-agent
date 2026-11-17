@@ -36,7 +36,7 @@ The two `rev-list` counts show new source commits that have not been
 merged. Upstream advances may be reviewed later; stabilization of the
 current `main` does not depend on automatically merging them. For feature
 reviews from other forks, compare their behavior with this `main` and
-record accepted changes in `docs/FORK-BEHAVIOR-CHECK-2026-10-28.md`.
+record accepted changes in `fork/notes/FORK-BEHAVIOR-CHECK-2026-10-28.md`.
 
 ## Verification on 2026-10-28
 

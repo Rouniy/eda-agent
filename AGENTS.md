@@ -1,7 +1,7 @@
 # Agent entry points
 
 Before changing this integration or connecting to Altium, read
-[current state / handoff](docs/CURRENT-STATE.md), [TODO](TODO.md) and the
+[current state / handoff](fork/notes/CURRENT-STATE.md), [TODO](fork/notes/TODO.md) and the
 [shared operating runbook](https://github.com/4pplet/PLT-hw/blob/main/tools/eda-agent/SHARED-PROJECTS.md).
 With sibling checkouts, the runbook is ../PLT-hw/tools/eda-agent/SHARED-PROJECTS.md
 relative to this repository root. Report missing dependencies rather than use
@@ -52,6 +52,6 @@ Run relevant source/helper tests and Pascal lint in canonical file order; these
 are not native VM execution. Record exact runtime/source hashes, Altium version,
 target identity, test outcomes and remaining native acceptance gaps. Counts and
 successful responses are not completeness or electrical sign-off; compare native
-exports from the same snapshot. Keep current state in docs/CURRENT-STATE.md and
+exports from the same snapshot. Keep current state in fork/notes/CURRENT-STATE.md and
 TODO.md; dated logs retain history. Do not publish venvs, copied CAD, IPC artifacts
 or local SDK material. Hardware/software findings belong in their owning repos.

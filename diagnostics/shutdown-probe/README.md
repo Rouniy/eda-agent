@@ -83,7 +83,7 @@ units. Existing MCP profiles, pointers and configuration are unchanged.
 
 Native status: **Stop baseline passed; direct quit did not complete** (Altium
 23.3.1, 2026-09-08). Do not repeat test B unchanged. See the
-[recorded results](../../docs/SHUTDOWN.md#standalone-probe-results-2026-09-08).
+[recorded results](../../fork/notes/SHUTDOWN.md#standalone-probe-results-2026-09-08).
 Eight static tests passed;
 the fork's DelphiScript trap linter reported zero findings. The configured runtime
 was compared against source (only its log-directory constant differs); hashes are
@@ -93,4 +93,4 @@ recorded in its `deployment.json`. Existing bridge profiles were not changed.
 python -m unittest discover -s tests -p test_shutdown_probe.py -v
 ```
 
-Related evidence: [shutdown investigation](../../docs/SHUTDOWN.md).
+Related evidence: [shutdown investigation](../../fork/notes/SHUTDOWN.md).

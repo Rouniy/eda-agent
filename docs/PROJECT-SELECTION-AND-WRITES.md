@@ -7,7 +7,7 @@ profiles remain unchanged. Component editing below is a requested roadmap, not
 implemented or enabled write access.
 Runnable setup and limits: companion PLT-hw
 [shared-mode guide](https://github.com/4pplet/PLT-hw/blob/main/tools/eda-agent/SHARED-PROJECTS.md).
-Latest runtime/evidence: [current-state handoff](CURRENT-STATE.md).
+Latest runtime/evidence: [current-state handoff](../fork/notes/CURRENT-STATE.md).
 
 ## One bridge, operator-selected project
 

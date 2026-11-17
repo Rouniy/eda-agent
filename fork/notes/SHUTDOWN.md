@@ -79,7 +79,7 @@ lifetime itself.
 
 ## Normal shutdown (all projects)
 
-The [standalone shutdown probe](../diagnostics/shutdown-probe/README.md) passed
+The [standalone shutdown probe](../../diagnostics/shutdown-probe/README.md) passed
 its explicit Stop baseline, but direct quit left Altium open with Stop disabled.
 It avoids CAD/MCP/Client calls and checks the local stop flag before post-yield
 logging. Thus removing the host query and changing guard ordering alone did not

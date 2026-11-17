@@ -360,7 +360,7 @@
   branch-tip capabilities were rechecked against current source with 122
   passing focused tests. A further review matched seven divergent feature
   groups, with 77 focused tests passing. See
-  `docs/FORK-BEHAVIOR-CHECK-2026-10-28.md`.
+  `fork/notes/FORK-BEHAVIOR-CHECK-2026-10-28.md`.
 - [x] Review the other 14 donor-only tool argument pairs from the
   2026-10-28 signature scan. All have an existing equivalent route or
   are a nested helper rather than a public tool argument; the mapping
@@ -744,7 +744,7 @@
 - [x] Qualify `vincent-himpe`'s fractional circular board outline in
   Altium `.115`: exact centre and radius were returned as four closed
   quarter arcs and persisted after save/close/reopen on a disposable
-  PcbDoc. See `docs/CURRENT-STATE.md` for coordinates.
+  PcbDoc. See `fork/notes/CURRENT-STATE.md` for coordinates.
 - [x] Qualify a fractional polygon board outline with a true arc in
   Altium `.115`: three lines and a 500-mil half-circle persisted after
   save/close/reopen on the same disposable PcbDoc.
@@ -1429,9 +1429,9 @@ are historical evidence, not a claim that `.2` fixes direct quit.
 Focused Altium/PLT integration backlog, not a full upstream audit.
 Distinguish reproduced Python behavior, source-level risks and native acceptance.
 These items do not authorize CAD writes or enabling additional tools.
-Current deployment/test evidence and agent memory: [handoff](docs/CURRENT-STATE.md).
+Current deployment/test evidence and agent memory: [handoff](CURRENT-STATE.md).
 
-Execution order: [read/write delivery gates](docs/PROJECT-SELECTION-AND-WRITES.md#delivery-plan-and-release-gates-2026-09-09).
+Execution order: [read/write delivery gates](../../docs/PROJECT-SELECTION-AND-WRITES.md#delivery-plan-and-release-gates-2026-09-09).
 First target is qualified metadata editing (Gates 0-3), then values/footprints and
 annotation/variants separately. Missing Start report resolved: the screenshot was
 the Projects panel, not Run Script; operator started the candidate and live
@@ -1470,7 +1470,7 @@ Three things follow:
 - **The shutdown guards deployed since 09-09 did not fix it**, which the
   matrix should stop implying.
 
-**This re-frames §8 of `docs/DESIGN-event-driven-dispatch.md`**, which worried
+**This re-frames §8 of `fork/notes/DESIGN-event-driven-dispatch.md`**, which worried
 that a live timer at quit "may be a *new* crash surface, where today the answer
 is the blunt but effective stop-the-bridge-first". Quit-while-running already
 crashes today, so it is an *existing* surface, not a new one. **P3's bar is
@@ -1578,7 +1578,7 @@ either way: stop the bridge before quitting Altium.
     cause, with the untested `OnMessage` hook as the sole fallback.
 
   - **✅ P2 ANSWERED 2026-09-23, SAME SESSION: THE TIMER FIRES. The redesign is
-    buildable and `docs/DESIGN-event-driven-dispatch.md` §3-§7 are unblocked.**
+    buildable and `fork/notes/DESIGN-event-driven-dispatch.md` §3-§7 are unblocked.**
     `ShowStatusFormTimerProbe` armed a 1 s `TTimer` and returned; it kept
     ticking with no script running. Measured **externally** rather than by eye,
     by sampling the form's window caption  -  `GetWindowText` against another
@@ -1790,7 +1790,7 @@ either way: stop the bridge before quitting Altium.
     `Running` goes false. **Design it before coding it**  -  the shutdown path is
     the delicate part and already has its own P0 section above.
   - **DESIGN WRITTEN 2026-09-23:
-    [docs/DESIGN-event-driven-dispatch.md](docs/DESIGN-event-driven-dispatch.md)**
+    [fork/notes/DESIGN-event-driven-dispatch.md](DESIGN-event-driven-dispatch.md)**
      -  architecture, the state-migration table, re-entrancy guard, finalise
     order, and what could make it worse. **Gated on a staged prerequisite: P1
     (does a form outlive the call that showed it) is free and already rides
@@ -1945,7 +1945,7 @@ either way: stop the bridge before quitting Altium.
   11:50:51 heap-corruption signature that followed an idle-timeout exit).
   Only unrelated LiveKernelEvent WER entries (P1 124/1cc, 15:49:56):
   machine-level, not Altium. Count toward the shutdown matrix rows.
-- [ ] Complete [the shutdown matrix](docs/SHUTDOWN.md) on disposable CAD:
+- [ ] Complete [the shutdown matrix](SHUTDOWN.md) on disposable CAD:
   new-version ping/read, explicit no-save stop, native Detach/Close, repeated
   restart cycles, paused/active/idle stop and timeout. Test quit while running
   only after a separately reviewed lifecycle change; do not repeat the known failure.
@@ -1959,14 +1959,14 @@ either way: stop the bridge before quitting Altium.
   shutdown/lifecycle/event-driven dispatch.
   Do not assume the interpreter's exact failure point from its address, or add
   arbitrary sleep delays. Current post-yield guards are insufficient.
-- [x] Prepare a separate no-CAD/no-MCP [shutdown probe](diagnostics/shutdown-probe/README.md)
+- [x] Prepare a separate no-CAD/no-MCP [shutdown probe](../../diagnostics/shutdown-probe/README.md)
   with local-stop-first ordering and form-close/yield event logs. No production
   bridge code changed by this experiment.
 - [x] Run probe A (Stop button baseline), inspect its log, then probe B (normal
   Altium quit with only the diagnostic running). A recorded clean loop completion;
   B left Altium open, source under Free Documents and Run > Stop disabled. Last
   log event was `before_yield`; operator force-closed. No AV dialog was captured
-  for B. See [probe evidence](docs/SHUTDOWN.md#standalone-probe-results-2026-09-08).
+  for B. See [probe evidence](SHUTDOWN.md#standalone-probe-results-2026-09-08).
 - [ ] Deferred while qualifying stop-first use: prepare a separate timer-only lifetime probe: startup returns, no polling
   loop/manual UI pump, no CAD/MCP. Verify callback survival first, then explicit
   Stop and normal quit. Timer support alone does not establish safe lifetime.
@@ -2329,7 +2329,7 @@ either way: stop the bridge before quitting Altium.
 
 - [ ] **Parameter WRITES: BUILT in source 2026-10-03, operator-approved; native
   qualification open, not deployed.** The Ctrl+Z P0 below was closed 2026-09-24 (timer
-  dispatch). Scope and implementation: [PROPOSAL-2026-09-28](docs/PROPOSAL-2026-09-28-metadata-write-increment.md)
+  dispatch). Scope and implementation: [PROPOSAL-2026-09-28](../../docs/PROPOSAL-2026-09-28-metadata-write-increment.md)
   section 7 (`LCSC Part #` and `Instruction` only; the wider field list below stays
   for Gate 4). Next: provision `--param-edits` on a non-CAD day and run T1-T17 on a
   disposable copy. History of the item follows.
@@ -2505,7 +2505,7 @@ either way: stop the bridge before quitting Altium.
 
 ## Future enhancements: selected-project UI and scoped writes
 
-Design notes: [project selection and controlled metadata editing](docs/PROJECT-SELECTION-AND-WRITES.md).
+Design notes: [project selection and controlled metadata editing](../../docs/PROJECT-SELECTION-AND-WRITES.md).
 Project-selection implementation was authorized subsequently; metadata writes
 remain proposals. Existing named copy profiles are unchanged. New shared mode
 requires native qualification and remains read-only.
@@ -2592,7 +2592,7 @@ requires native qualification and remains read-only.
 - [ ] **Placement-write increment (approved 2026-10-07, scripts 2026.10.07.1, deployed as runtime
   selected-edits-20261007 the same day; T1 and T14 pass on the live HDMI project, T2-T13 and T15
   open, proposal section 10):**
-  [docs/PROPOSAL-2026-10-07-placement-write-increment.md](docs/PROPOSAL-2026-10-07-placement-write-increment.md).
+  [docs/PROPOSAL-2026-10-07-placement-write-increment.md](../../docs/PROPOSAL-2026-10-07-placement-write-increment.md).
   - A narrow `pcb_move_components_checked`: the selected board only, raw coordinates,
     compare-and-set, refusals for locked, flipped and routed parts, its own session tick, read-back,
     never save.
