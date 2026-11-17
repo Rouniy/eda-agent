@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Two cycle-time fixes measured on a live board (2026-11-15).
 
 * The keep-alive pings only when nothing reached Altium for a whole

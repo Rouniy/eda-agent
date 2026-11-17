@@ -37,6 +37,10 @@ def bridge(temp_workspace):
     configure(workspace_dir=temp_workspace)
     b = AltiumBridge()
     b.ensure_workspace()
+    # No Altium for these waits: the crash check otherwise reads the title
+    # of whatever Altium runs on this machine, and one showing the script
+    # project turns a plain timeout into a reported script crash.
+    b.process_manager.get_altium_info = lambda: None
     return b
 
 

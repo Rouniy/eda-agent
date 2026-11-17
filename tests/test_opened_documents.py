@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A session closes only the documents it opened.
 
 The Pascal dispatcher reports, per reply, which of the documents a command
