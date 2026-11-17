@@ -20092,6 +20092,51 @@ Begin
     Result := PCBServer.GetCurrentPCBLibrary;
 End;
 
+{ Lib_SetCurrentFootprint - make a named footprint the library's current one. }
+{ The PcbLib twin of Lib_SetCurrentComponent, which only knows SchLibs. The    }
+{ authoring calls take footprint_name and select it themselves; this is for   }
+{ aiming the editor (and whatever reads the current footprint) without         }
+{ writing anything. The switch is PcbLibTarget's, read back by name, and the   }
+{ reply carries the origin read AFTER the switch.                              }
+{ From TechAUmNu's fork (carrier-local), on this unit's helpers.               }
+{ Params: footprint_name (required; component_name accepted), library_path.   }
+Function Lib_SetCurrentFootprint(Params : String; RequestId : String) : String;
+Var
+    Wanted, LibPath, Problem : String;
+    PcbLib : IPCB_Library;
+    Footprint : IPCB_LibComponent;
+Begin
+    Wanted := ExtractJsonValue(Params, 'footprint_name');
+    If Wanted = '' Then Wanted := ExtractJsonValue(Params, 'component_name');
+    If Wanted = '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'MISSING_PARAM',
+            'footprint_name is required: the footprint to make current');
+        Exit;
+    End;
+    LibPath := ExtractJsonValue(Params, 'library_path');
+    PcbLib := FocusPcbLibAt(LibPath);
+    If PcbLib = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCBLIB',
+            'No PCB library at ' + LibPath);
+        Exit;
+    End;
+    Footprint := PcbLibTarget(PcbLib, Wanted, Problem);
+    If Footprint = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_FOOTPRINT', Problem);
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId, JsonObj(
+        JsonBool('success', True) + ','
+        + JsonStr('library', LibPath) + ','
+        + JsonStr('footprint', Footprint.Name) + ','
+        + '"origin_x_mils":' + FloatToJsonStr(CoordToMilsF(FootprintOriginX(Footprint))) + ','
+        + '"origin_y_mils":' + FloatToJsonStr(CoordToMilsF(FootprintOriginY(Footprint)))));
+End;
+
+
 { A primitive's place and size as text: two primitives with the same key    }
 { are the same object drawn twice on the same layer.                         }
 Function PcbCheckPrimKey(Prim : IPCB_Primitive) : String;
@@ -24647,6 +24692,7 @@ Begin
         'set_label_format':   Result := Lib_SetLabelFormat(Params, RequestId);
         'set_label_formats':  Result := Lib_SetLabelFormats(Params, RequestId);
         'set_current_component': Result := Lib_SetCurrentComponent(Params, RequestId);
+        'set_current_footprint': Result := Lib_SetCurrentFootprint(Params, RequestId);
         'set_active_part':     Result := Lib_SetActivePart(Params, RequestId);
         'update_footprint_heights_from_3d': Result := Lib_UpdateFootprintHeightsFrom3D(Params, RequestId);
         'set_footprint_height': Result := Lib_SetFootprintHeight(Params, RequestId);

@@ -2767,6 +2767,39 @@ def register_library_tools(mcp):
         }
 
     @mcp.tool()
+    async def lib_set_current_footprint(
+        footprint_name: str,
+        library_path: str = "",
+    ) -> dict[str, Any]:
+        """Make a named footprint the current one in a PCB library.
+
+        The PcbLib twin of ``lib_set_current_component``, which only knows
+        SchLibs. The footprint authoring tools take ``footprint_name`` and
+        select it themselves; use this to aim the editor at a footprint
+        without writing anything. The switch is read back, and a name
+        that cannot be selected is refused rather than left pointing at
+        the previous footprint.
+
+        Args:
+            footprint_name: The footprint to make current.
+            library_path: Full path of the .PcbLib to focus first; empty
+                takes the focused PCB library.
+
+        Returns:
+            ``success``, ``library``, ``footprint`` and ``origin_x_mils`` /
+            ``origin_y_mils``: the footprint's origin after the switch.
+        """
+        if not footprint_name or not footprint_name.strip():
+            return {"ok": False,
+                    "reason": "footprint_name is required: the footprint "
+                              "to make current"}
+        params: dict[str, Any] = {"footprint_name": footprint_name.strip()}
+        if library_path:
+            params["library_path"] = library_path
+        return await get_bridge().send_command_async(
+            "library.set_current_footprint", params)
+
+    @mcp.tool()
     async def lib_set_current_component(
         component_name: str,
     ) -> dict[str, Any]:
