@@ -48,8 +48,11 @@ async def test_set_active_part_wrapper(monkeypatch):
 
 
 def test_schlib_queries_walk_component_owned_primitives():
-    assert "LibComp := GetTargetLibComponent(SchLib);" in GENERIC
-    assert "Iterator := LibComp.SchIterator_Create;" in GENERIC
+    # Upstream's walk: the symbol the scope names (or the editor's current
+    # one), walked through the component's own iterator.
+    assert "LibComp := ScopeComp;" in GENERIC
+    assert "If LibComp = Nil Then LibComp := RememberedLibComponent(SchDoc);" in GENERIC
+    assert "Iterator := LibComp.SchIterator_Create" in GENERIC
     assert '"_owner_part_id":' in GENERIC
 
 

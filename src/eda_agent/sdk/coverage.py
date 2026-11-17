@@ -114,6 +114,11 @@ def chain_body(source: str, function_name: str) -> str:
     rest = source[start:]
     nxt = re.search(r"\n(?=Function |Procedure )", rest[1:])
     block = rest[: nxt.start() + 1] if nxt else rest
+    # A chain that only hands on to its gated form (GetSchProperty calls
+    # GetSchPropertyGated with the gate already worked out) is read there.
+    gated = f"Function {function_name}Gated("
+    if f"{function_name}Gated(" in block and gated in source:
+        return chain_body(source, f"{function_name}Gated")
     return block
 
 
@@ -235,10 +240,13 @@ def delegated_names(function_name: str) -> dict:
     path, _ = CHAINS[function_name]
     code = routines(_read(path))
     body = code.get(function_name, "")
+    gated = function_name + "Gated"
+    if gated in code and f"{gated}(" in body:      # see chain_body
+        body = code[gated]
     out: dict = {}
     for match in _CALL.finditer(body):
         callee = match.group(1)
-        if callee == function_name or callee not in code:
+        if callee in (function_name, gated) or callee not in code:
             continue
         names = set(re.findall(r"PropName = '([^']+)'", code[callee]))
         if not names:
