@@ -22454,7 +22454,8 @@ End;
 { The quote a column name takes in a WHERE clause: the DbLib's own pair only  }
 { when it is one an SQL dialect really quotes names with ([ ], " ", ` `),   }
 { else none. A DbLib on MySQL over ODBC can carry another pair (YBI_DB has   }
-{ LeftQuote=} and RightQuote={), and a column sent as }PN{ is a syntax error }
+{ a closing and an opening curly brace as LeftQuote and RightQuote), and a    }
+{ column sent between those is a syntax error                                }
 { that Altium raises as a dialog. Left picks which side to return.          }
 Function DbLibColumnQuote(LeftQ : String; RightQ : String; Left : Boolean) : String;
 Var
