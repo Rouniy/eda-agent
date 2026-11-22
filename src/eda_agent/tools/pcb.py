@@ -1630,6 +1630,32 @@ def _pour_params(index: Optional[int], name: str) -> dict[str, Any]:
         ask["name"] = name.strip()
     return ask
 
+# Measured on AD 26.11 (2026-11-22): a scope given to a rule by script is used
+# at once by the dominant-rule lookup and by pcb_measure_clearance, and not by
+# the batch DRC of the same session, which went on reporting a pair under the
+# general rule. Closing the Rules editor with OK, or loading the board again
+# from a saved copy, made the batch DRC use it. Board.InvalidateScopeTester,
+# ValidateScopeTester and RebuildPadCaches did not.
+_BATCH_DRC_SCOPE_NOTE = (
+    "The batch DRC of this session may still judge pairs by the scopes as they were: "
+    "measured on AD 26.11, a scope written by script took effect in the batch DRC only "
+    "after Design > Rules was opened and closed with OK, or after the board was saved to "
+    "a copy and that copy opened. pcb_find_dominant_rule and pcb_measure_clearance use "
+    "the new scope at once.")
+
+
+def _note_batch_drc_scope(out: Any) -> None:
+    if isinstance(out, dict) and out.get("ok") is not False and "error" not in out:
+        out["batch_drc_uses_new_scope"] = False
+        out["batch_drc_note"] = _BATCH_DRC_SCOPE_NOTE
+
+
+# A Clearance rule's per-object-kind table: the kinds a cell can name, as the
+# bridge spells them (PCB.pas ClearanceKindName).
+_CLEARANCE_KINDS = {k.lower(): k for k in (
+    "Track", "Arc", "SMDPad", "THPad", "Via", "Fill", "Poly", "Region", "Text", "Hole")}
+
+
 def register_pcb_tools(mcp):
     """Register PCB tools with the MCP server."""
 
@@ -9982,8 +10008,11 @@ def register_pcb_tools(mcp):
             scope, net_scope, allowed, connect_style)
         if "name" not in params:
             return params
-        return await _rule_edit("pcb_create_design_rule", params,
-                                "pcb.create_design_rule", params)
+        out = await _rule_edit("pcb_create_design_rule", params,
+                               "pcb.create_design_rule", params)
+        if scope:
+            _note_batch_drc_scope(out)
+        return out
 
     @mcp.tool()
     async def pcb_delete_design_rule(
@@ -11995,6 +12024,12 @@ def register_pcb_tools(mcp):
         itself; for Board Outline Clearance the descriptor says
         ``Gap=0mil`` whatever the rule holds, so read ``gap_mm``.
 
+        ``scope_1``, ``scope_2`` and ``comment`` are the rule's own. A
+        Clearance rule (kind 0) also returns ``object_clearances``: its
+        table of one value per pair of object kinds, in mils, each pair
+        once (``"Track-SMDPad"``); ``pcb_set_rule_properties`` writes it.
+        The Hole cells read ``null``: a script cannot reach them.
+
         Args:
             name: Design rule name (e.g., "Clearance", "Width", "RoutingVias").
 
@@ -12054,6 +12089,7 @@ def register_pcb_tools(mcp):
         antenna_tolerance_mils: float | None = None,
         matched_length_tolerance_mils: float | None = None,
         dp_max_uncoupled_length_mils: float | None = None,
+        object_clearances_mils: dict[str, float] | None = None,
         fanout_style: int | None = None,
         fanout_direction: int | None = None,
         bga_fanout_direction: int | None = None,
@@ -12101,6 +12137,25 @@ def register_pcb_tools(mcp):
           Differential Pairs Routing (kind 51):
           ``dp_max_uncoupled_length_mils``. Both are read back under
           ``settings``.
+        - Clearance (kind 0): ``object_clearances_mils``, the rule's table of
+          one value per pair of object kinds (the Rules editor's "Minimum
+          Clearance" grid), as ``{"Track-SMDPad": 4, "Hole-*": 0}`` in
+          mils. Kinds: Track, Arc, SMDPad, THPad, Via, Fill, Poly, Region,
+          Text, Hole; ``*`` stands for every kind. Each cell is written
+          both ways round and read back: ``settings.object_clearances`` is
+          the whole table after the write (each pair once) and a cell that
+          did not take is named in ``settings_not_applied``. A script
+          cannot reach the Hole cells: they read ``null`` and a write of
+          one is listed as not applied. ``pcb_get_rule_properties`` reads
+          the table. Measured on AD 26.11: the batch DRC judged a pair by
+          the cell written (a track 0.15 mm from an SMD pad stopped being
+          reported with ``Track-SMDPad`` at 4 mil under a 10 mil gap).
+
+        After ``scope1`` / ``scope2`` the reply carries
+        ``batch_drc_uses_new_scope: false`` and ``batch_drc_note``: the
+        batch DRC of the same session went on judging pairs by the old
+        scopes until Design > Rules was closed with OK or the board was
+        loaded again from a saved copy.
         - Signal Integrity Impedance (kind 33):
           ``min_signal_impedance_ohms`` / ``max_signal_impedance_ohms``.
         - Flight Time Rising/Falling Edge (kinds 36/37):
@@ -12147,6 +12202,28 @@ Args: name selects an existing rule. Pass only fields to change. Lengths use mil
             if refusal:
                 return refusal
         params: dict[str, Any] = {"name": name}
+        if comment == "":
+            # An empty value is how the bridge reads "not given".
+            params["clear_comment"] = "true"
+            comment = None
+        if object_clearances_mils is not None:
+            cells = []
+            for pair, mils in object_clearances_mils.items():
+                kinds = str(pair).split("-")
+                if len(kinds) != 2 or any(k != "*" and k.lower() not in _CLEARANCE_KINDS for k in kinds):
+                    return {"ok": False, "reason": f"object_clearances_mils has no cell {pair!r}; a cell is "
+                            "two of " + ", ".join(_CLEARANCE_KINDS.values()) + " (or *) joined by -"}
+                try:
+                    value = float(mils)
+                except (TypeError, ValueError):
+                    value = float("nan")
+                if not math.isfinite(value) or value < 0:
+                    return {"ok": False, "reason": f"object_clearances_mils {pair} must be a length of 0 mils or more"}
+                cells.append("-".join(k if k == "*" else _CLEARANCE_KINDS[k.lower()] for k in kinds)
+                             + "=" + repr(value))
+            if not cells:
+                return {"ok": False, "reason": "object_clearances_mils names no cell"}
+            params["object_clearances"] = ";".join(cells)
         for key, value in [
             ("scope1", scope1),
             ("scope2", scope2),
@@ -12274,8 +12351,11 @@ Args: name selects an existing rule. Pass only fields to change. Lengths use mil
                     "reason": "provide at least one rule property to change",
                     "properties_updated": 0}
 
-        return await _rule_edit("pcb_set_rule_properties", params,
-                                "pcb.set_rule_properties", params)
+        out = await _rule_edit("pcb_set_rule_properties", params,
+                               "pcb.set_rule_properties", params)
+        if scope1 or scope2:
+            _note_batch_drc_scope(out)
+        return out
 
     @mcp.tool()
     async def pcb_place_embedded_board(

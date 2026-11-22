@@ -688,7 +688,6 @@ Begin
         '{"object_classes":[' + JsonItems + '],"count":' + IntToStr(Emitted)
         + ',"user_class_count":' + IntToStr(UserClassCount)
         + ',"classes_seen":' + IntToStr(ClassCount)
-        + ',"any_probe_errors":' + BoolToJsonStr(AnyProbeErrors)
         + ',"member_names_truncated":' + BoolToJsonStr(Truncated)
         + ',"max_members_per_kind":' + IntToStr(MaxMembersPerKind)
         + ',"membership_source":"probed via IsMember; the declared MemberKind is'
@@ -1150,11 +1149,129 @@ End;
 { dispatching on RuleKind to typed subtype access in script.                    }
 {..............................................................................}
 
+{ The table of one Clearance rule as one JSON member, "object_clearances", }
+{ an object of "Track-Track":mils and so on: 55 cells, each pair once. A   }
+{ cell Altium would not give reads null. Empty when the rule is not a      }
+{ Clearance rule.                                                          }
+Function ClearanceCellsJson(Board : IPCB_Board; RuleName : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_ClearanceConstraint;
+    A, B, V : Integer;
+    S : String;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = eRule_Clearance) And (R.Name = RuleName) Then
+            Begin
+                S := '';
+                For A := 0 To 9 Do
+                    For B := A To 9 Do
+                    Begin
+                        V := ClearanceCell(R, A, B, -1);
+                        If S <> '' Then S := S + ',';
+                        S := S + '"' + ClearanceKindName(A) + '-' + ClearanceKindName(B) + '":';
+                        If V < 0 Then S := S + 'null'
+                        Else S := S + FloatToJsonStr(CoordToMilsF(V));
+                    End;
+                Result := '"object_clearances":{' + S + '}';
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
+{ Write cells of one Clearance rule. Spec is "A-B=mils;C-*=mils;..." (the  }
+{ Python side checks the names); "*" stands for every kind. Each cell is   }
+{ written both ways round and read back; a cell that reads otherwise is    }
+{ named in Missed. Returns how many cells were written.                    }
+Function ClearanceCellsWrite(Board : IPCB_Board; RuleName, Spec : String; Var Missed : String) : Integer;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_ClearanceConstraint;
+    Rest, One, Pair, ValS, NA, NB : String;
+    P, A, B, A0, A1, B0, B1, Got : Integer;
+    Want : TCoord;
+Begin
+    Result := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = eRule_Clearance) And (R.Name = RuleName) Then
+            Begin
+                PCBServer.SendMessageToRobots(R.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                Rest := Spec;
+                While Rest <> '' Do
+                Begin
+                    P := Pos(';', Rest);
+                    If P = 0 Then
+                    Begin
+                        One := Rest;
+                        Rest := '';
+                    End
+                    Else
+                    Begin
+                        One := Copy(Rest, 1, P - 1);
+                        Rest := Copy(Rest, P + 1, Length(Rest));
+                    End;
+                    P := Pos('=', One);
+                    If P > 0 Then
+                    Begin
+                        Pair := Copy(One, 1, P - 1);
+                        ValS := Copy(One, P + 1, Length(One));
+                        P := Pos('-', Pair);
+                        NA := Copy(Pair, 1, P - 1);
+                        NB := Copy(Pair, P + 1, Length(Pair));
+                        Want := MilsToCoordF(StrToFloatDef(ValS, 0));
+                        A0 := ClearanceKindIndex(NA);
+                        A1 := A0;
+                        If NA = '*' Then Begin A0 := 0; A1 := 9; End;
+                        B0 := ClearanceKindIndex(NB);
+                        B1 := B0;
+                        If NB = '*' Then Begin B0 := 0; B1 := 9; End;
+                        If (A0 < 0) Or (B0 < 0) Or (P = 0) Then
+                            Missed := Missed + '"' + EscapeJsonString(Pair) + '",'
+                        Else
+                            For A := A0 To A1 Do
+                                For B := B0 To B1 Do
+                                Begin
+                                    Got := ClearanceCell(R, A, B, Want);
+                                    Inc(Result);
+                                    If Got <> Want Then
+                                        Missed := Missed + '"' + ClearanceKindName(A) + '-' + ClearanceKindName(B) + '",';
+                                End;
+                    End;
+                End;
+                PCBServer.SendMessageToRobots(R.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 Function PCB_GetRuleProperties(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Rule : IPCB_Rule;
-    RuleName, GapField, DrcField : String;
+    RuleName, GapField, DrcField, ScopeField, CellsField : String;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -1186,6 +1303,20 @@ Begin
     Try DrcField := ',"drc_enabled":' + BoolToJsonStr(Rule.DRCEnabled);
     Except DrcField := ',"drc_enabled":true'; End;
 
+    { The scopes and the comment as the rule holds them, and for a Clearance }
+    { rule its per-object-kind table.                                        }
+    ScopeField := '';
+    Try
+        ScopeField := ',"scope_1":"' + EscapeJsonString(Rule.Scope1Expression) + '",'
+            + '"scope_2":"' + EscapeJsonString(Rule.Scope2Expression) + '",'
+            + '"comment":"' + EscapeJsonString(Rule.Comment) + '"';
+    Except
+        ScopeField := '';
+    End;
+    CellsField := '';
+    If Rule.RuleKind = eRule_Clearance Then CellsField := ClearanceCellsJson(Board, RuleName);
+    If CellsField <> '' Then CellsField := ',' + CellsField;
+
     Result := BuildSuccessResponse(RequestId,
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
         + '"rule_kind":' + IntToStr(Rule.RuleKind) + ','
@@ -1193,7 +1324,7 @@ Begin
         + DrcField + ','
         + '"priority":' + IntToStr(Rule.Priority) + ','
         + '"descriptor":"' + EscapeJsonString(Rule.Descriptor) + '"'
-        + GapField + '}');
+        + GapField + ScopeField + CellsField + '}');
 End;
 
 { MORE RULE SETTINGS, by rule kind: Width (2) impedance limits and the      }
@@ -1891,8 +2022,8 @@ Var
     LimitsReport : String;
     XHMin, XHMax, XHPref, XVGap, XShow, XMode, XCMin, XCMax, XAnt, XMTol, XDUnc : String;
     XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XReport, XMissed, XBad : String;
-    XWDrv, XWMin, XWMax, XWFav, XWCopper : String;
-    DiffAsked : Integer;
+    XWDrv, XWMin, XWMax, XWFav, XWCopper, XCells : String;
+    DiffAsked, XCellCount : Integer;
     RulePlaneConn : IPCB_PowerPlaneConnectStyleRule;
     MinWMM, MaxWMM, FavWMM, CStyle, CWidth, CWidthMM, CGap, CGapMM, CEntries, CAngle, CExp : String;
     ConnReport, ConnProblem, Desc : String;
@@ -1980,6 +2111,12 @@ Begin
         Begin
             Try Rule.Comment := V; Inc(UpdatedCount); Except NoteWriteFailed('rule Comment'); End;
         End;
+        { An empty comment cannot be told from "no comment given" above, so }
+        { clearing it is asked for by its own flag.                          }
+        If ExtractJsonValue(Params, 'clear_comment') = 'true' Then
+        Begin
+            Try Rule.Comment := ''; Inc(UpdatedCount); Except NoteWriteFailed('rule Comment'); End;
+        End;
 
         PCBServer.SendMessageToRobots(Rule.I_ObjectAddress, c_Broadcast,
             PCBM_EndModify, c_NoEventData);
@@ -2026,6 +2163,7 @@ Begin
     XCMax := ExtractJsonValue(Params, 'corner_max_setback_mils');
     XAnt := ExtractJsonValue(Params, 'antenna_tolerance_mils');
     XMTol := ExtractJsonValue(Params, 'matched_length_tolerance_mils');
+    XCells := ExtractJsonValue(Params, 'object_clearances');
     XDUnc := ExtractJsonValue(Params, 'dp_max_uncoupled_length_mils');
     XFStyle := ExtractJsonValue(Params, 'fanout_style');
     XFDir := ExtractJsonValue(Params, 'fanout_direction');
@@ -2676,6 +2814,7 @@ Begin
     If (XAnt <> '') And (Kind <> 56) Then XBad := 'antenna_tolerance_mils is for a Net Antennae rule';
     If (XMTol <> '') And (Kind <> 4) Then XBad := 'matched_length_tolerance_mils is for a Matched Lengths rule';
     If (XDUnc <> '') And (Kind <> 51) Then XBad := 'dp_max_uncoupled_length_mils is for a Differential Pairs Routing rule';
+    If (XCells <> '') And (Kind <> 0) Then XBad := 'object_clearances is for a Clearance rule';
     If ((XWDrv <> '') Or (XWMin <> '') Or (XWMax <> '') Or (XWFav <> '') Or (XWCopper <> ''))
         And (Kind <> 2) Then XBad := 'width_*_impedance and check_connected_copper are for a Width rule';
     If ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> ''))
@@ -2701,6 +2840,18 @@ Begin
         XReport := RuleExtrasMatched(Board, RuleName, XMTol, XMissed);
     If (Kind = 51) And (XDUnc <> '') Then
         XReport := RuleExtrasUncoupled(Board, RuleName, XDUnc, XMissed);
+    If (Kind = 0) And (XCells <> '') Then
+    Begin
+        PcbBeginEdit(0);
+        Try
+            XCellCount := ClearanceCellsWrite(Board, RuleName, XCells, XMissed);
+        Finally
+            PcbEndEdit(0);
+        End;
+        XReport := '"object_clearances_written":' + IntToStr(XCellCount);
+        V := ClearanceCellsJson(Board, RuleName);
+        If V <> '' Then XReport := XReport + ',' + V;
+    End;
     If (Kind = 49) And ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> '')) Then
         XReport := RuleExtrasFanout(Board, RuleName, XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XMissed);
     If IsTestpointStyleKind(Kind) And TestpointAsked(Params) Then
@@ -3019,7 +3170,6 @@ End;
 { where the violation actually is, not just guess from the description.     }
 { Includes: violation bbox centre (x, y, layer) and each offending          }
 { primitive's own centre coords. With this the agent can drive the          }
-{ dashboard's Drawing tab to the exact spot or call cross_probe + the       }
 { Components / Nets tabs.                                                    }
 Function BuildViolationJson(Violation : IPCB_Violation) : String;
 Var

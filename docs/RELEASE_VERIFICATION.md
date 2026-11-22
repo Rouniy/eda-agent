@@ -1,4 +1,4 @@
-# Release verification: 2026.11.17.6
+# Release verification: 2026.11.22.1
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -92,7 +92,7 @@ works elsewhere cannot be an undeclared identifier:
 | 34, pad setter | `SetState_Cache` on a library pad | yes, `Lib_AddFootprintPads` | low |
 | 34, arc mirror | `StartAngle`, `EndAngle` written on a placed arc | yes, `Lib_AddSymbolArc` | low |
 | 35, footprint switch | `SetState_CurrentComponent` on the library, away from the target and back | yes, `Lib_Link3DModel` | low |
-| 35, freeing a removed primitive | `DestroyPCBObject` on a primitive just removed, inside the open iterator | no, nowhere | medium, a freed primitive used again takes the loop down; ran 25 cycles live without a fault |
+| 35, freeing a removed primitive | `DestroyPCBObject` on a primitive just removed, inside the open iterator | yes, `ClearanceCell` in `PCBGeneric.pas` | medium, a freed primitive used again takes the loop down; ran 25 cycles live without a fault |
 | 35, temporary holder | `GetUniqueCompName`, `DestroyPCBLibComp` on a footprint made for the delete | no, nowhere | low, ran live in a single-footprint library |
 | 36, body layer | `Layer` written on a library 3D body | yes, `PCB_Place3DBody` | low |
 | 55, supplier links and pin timing | `ISch_Parameter.Text` for supplier fields; `ISch_Pin.PropagationDelay` and `PinPackageLength` | existing parameter and pin setters cover related writes | medium; measured on a disposable library with save/reopen |
@@ -441,7 +441,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.17.6`, `version_match` =
+Expect `altium_script_version` = `2026.11.22.1`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.

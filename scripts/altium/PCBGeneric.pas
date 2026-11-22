@@ -1316,6 +1316,145 @@ Begin
         Result := FloatToJsonStr(Round(StrToFloatDef(S, 0) * 0.0254 * 100000) / 100000);
 End;
 
+{ A Clearance rule (kind 0) holds, besides its Gap, one value for every   }
+{ pair of object kinds: the table the Rules editor shows under "Minimum   }
+{ Clearance". Ten kinds are read and written here, by these names:        }
+{ Track, Arc, SMDPad, THPad, Via, Fill, Poly, Region, Text, Hole. The     }
+{ values go through IPCB_ClearanceConstraint.GetClearance / SetClearance. }
+{ Lengths are mils.                                                       }
+Function ClearanceKindName(I : Integer) : String;
+Begin
+    Result := '';
+    If I = 0 Then Result := 'Track'
+    Else If I = 1 Then Result := 'Arc'
+    Else If I = 2 Then Result := 'SMDPad'
+    Else If I = 3 Then Result := 'THPad'
+    Else If I = 4 Then Result := 'Via'
+    Else If I = 5 Then Result := 'Fill'
+    Else If I = 6 Then Result := 'Poly'
+    Else If I = 7 Then Result := 'Region'
+    Else If I = 8 Then Result := 'Text'
+    Else If I = 9 Then Result := 'Hole';
+End;
+
+Function ClearanceKindIndex(Name : String) : Integer;
+Var
+    I : Integer;
+Begin
+    Result := -1;
+    For I := 0 To 9 Do
+        If LowerCase(ClearanceKindName(I)) = LowerCase(Name) Then Result := I;
+End;
+
+{ GetClearance and SetClearance take two PRIMITIVES in DelphiScript, not   }
+{ two kind numbers (given numbers they answer 0 and write nothing): the    }
+{ cell is the one for the kinds of the two primitives handed over. So a    }
+{ cell is addressed with two primitives made for the purpose, which are    }
+{ never added to the board and are destroyed again. No primitive stands    }
+{ for a bare hole, so the Hole cells are not reached from a script: they   }
+{ read null and a write of one is reported as not applied.                 }
+Function ClearanceKindPrim(I : Integer) : IPCB_Primitive;
+Var
+    Pad : IPCB_Pad;
+Begin
+    Result := Nil;
+    Try
+        If I = 0 Then Result := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default)
+        Else If I = 1 Then Result := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default)
+        Else If (I = 2) Or (I = 3) Then
+        Begin
+            Pad := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+            If I = 2 Then
+            Begin
+                Pad.Layer := eTopLayer;
+                Pad.HoleSize := 0;
+            End
+            Else
+            Begin
+                Pad.Layer := eMultiLayer;
+                Pad.HoleSize := MilsToCoordF(20);
+            End;
+            Result := Pad;
+        End
+        Else If I = 4 Then Result := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default)
+        Else If I = 5 Then Result := PCBServer.PCBObjectFactory(eFillObject, eNoDimension, eCreate_Default)
+        Else If I = 6 Then Result := PCBServer.PCBObjectFactory(ePolyObject, eNoDimension, eCreate_Default)
+        Else If I = 7 Then Result := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default)
+        Else If I = 8 Then Result := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);
+        If (Result <> Nil) And (I <> 2) And (I <> 3) And (I <> 4) Then Result.Layer := eTopLayer;
+    Except
+        Result := Nil;
+    End;
+End;
+
+{ One cell read (Want < 0) or written and read back. -1: not reachable. }
+Function ClearanceCell(R : IPCB_ClearanceConstraint; A, B, Want : Integer) : Integer;
+Var
+    P1, P2 : IPCB_Primitive;
+Begin
+    Result := -1;
+    P1 := ClearanceKindPrim(A);
+    P2 := ClearanceKindPrim(B);
+    If (P1 <> Nil) And (P2 <> Nil) Then
+    Begin
+        Try
+            If Want >= 0 Then
+            Begin
+                R.SetClearance(P1, P2, Want);
+                R.SetClearance(P2, P1, Want);
+            End;
+            Result := R.GetClearance(P1, P2);
+        Except
+            Result := -1;
+        End;
+    End;
+    Try If P1 <> Nil Then PCBServer.DestroyPCBObject(P1); Except End;
+    Try If P2 <> Nil Then PCBServer.DestroyPCBObject(P2); Except End;
+End;
+
+{ obj_query on a design rule (eRuleObject): the scopes, whether DRC checks  }
+{ it, its priority, kind and comment, and for a Clearance rule its table   }
+{ as "Track-Track=10;Track-Arc=10;..." in mils, each reachable pair once.  }
+Function IsPCBRuleProperty(PropName : String) : Boolean;
+Begin
+    Result := (PropName = 'Scope1Expression') Or (PropName = 'Scope2Expression')
+        Or (PropName = 'DRCEnabled') Or (PropName = 'Priority')
+        Or (PropName = 'RuleKind') Or (PropName = 'Comment') Or (PropName = 'Name')
+        Or (PropName = 'ObjectClearances');
+End;
+
+Function PCBRulePropertyText(Obj : IPCB_Primitive; PropName : String) : String;
+Var
+    Rule : IPCB_Rule;
+    RC : IPCB_ClearanceConstraint;
+    A, B, V : Integer;
+Begin
+    Result := '';
+    Rule := Obj;
+    If PropName = 'Scope1Expression' Then Result := Rule.Scope1Expression
+    Else If PropName = 'Scope2Expression' Then Result := Rule.Scope2Expression
+    Else If PropName = 'DRCEnabled' Then Result := BoolToJsonStr(Rule.DRCEnabled)
+    Else If PropName = 'Priority' Then Result := IntToStr(Rule.Priority)
+    Else If PropName = 'RuleKind' Then Result := IntToStr(Rule.RuleKind)
+    Else If PropName = 'Comment' Then Result := Rule.Comment
+    Else If PropName = 'Name' Then Result := Rule.Name
+    Else If (PropName = 'ObjectClearances') And (Rule.RuleKind = eRule_Clearance) Then
+    Begin
+        RC := Obj;
+        For A := 0 To 9 Do
+            For B := A To 9 Do
+            Begin
+                V := ClearanceCell(RC, A, B, -1);
+                If V >= 0 Then
+                Begin
+                    If Result <> '' Then Result := Result + ';';
+                    Result := Result + ClearanceKindName(A) + '-' + ClearanceKindName(B)
+                        + '=' + FloatToJsonStr(CoordToMilsF(V));
+                End;
+            End;
+    End;
+End;
+
 Function GetPCBProperty(Obj : IPCB_Primitive; PropName : String) : String;
 Var
     Track : IPCB_Track;
@@ -1345,7 +1484,8 @@ Begin
     Try
         Oid := Obj.ObjectId;
         { Base IPCB_Primitive members, valid to read on ANY primitive. }
-        If PropName = 'ObjectId'        Then Result := IntToStr(Oid)
+        If (Oid = eRuleObject) And IsPCBRuleProperty(PropName) Then Result := PCBRulePropertyText(Obj, PropName)
+        Else If PropName = 'ObjectId'   Then Result := IntToStr(Oid)
         Else If (PropName = 'X') Or (PropName = 'Y') Then
         Begin
             PosVal := PCBPrimitivePos(Obj, PropName = 'Y', PosFound);
@@ -2667,7 +2807,7 @@ Begin
     { refused as "not a PCB property": the same lag, on a chain nobody   }
     { had typed by hand. Generating the test from the same list the      }
     { reads come from makes that impossible rather than merely noticed.  }
-    If IsGeneratedPCBProperty(PropName) Then
+    If IsGeneratedPCBProperty(PropName) Or IsPCBRuleProperty(PropName) Then
     Begin
         Result := True;
         Exit;
