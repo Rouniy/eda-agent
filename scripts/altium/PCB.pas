@@ -1267,6 +1267,42 @@ Begin
     End;
 End;
 
+{ Silk To Solder Mask Clearance (kind 54): the rule's choice between      }
+{ "Clearance To Exposed Copper" and "Clearance To Solder Mask Openings".  }
+{ SetTo 'true' / 'false' writes it first; the reply is what the rule then }
+{ holds, 'true' or 'false', or '' when it could not be read.              }
+Function SilkMaskExposedCopper(Board : IPCB_Board; RuleName, SetTo : String) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    R : IPCB_SilkToSolderMaskClearanceRule;
+Begin
+    Result := '';
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+        Iter.AddFilter_Method(eProcessAll);
+        R := Iter.FirstPCBObject;
+        While R <> Nil Do
+        Begin
+            If (R.RuleKind = 54) And (R.Name = RuleName) Then
+            Begin
+                If SetTo <> '' Then
+                Begin
+                    PCBServer.SendMessageToRobots(R.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                    Try R.IsClearanceToExposedCopper := (SetTo = 'true'); Except End;
+                    PCBServer.SendMessageToRobots(R.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                End;
+                Try Result := BoolToJsonStr(R.IsClearanceToExposedCopper); Except Result := ''; End;
+                Break;
+            End;
+            R := Iter.NextPCBObject;
+        End;
+    Finally
+        Board.BoardIterator_Destroy(Iter);
+    End;
+End;
+
 Function PCB_GetRuleProperties(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -1316,6 +1352,12 @@ Begin
     CellsField := '';
     If Rule.RuleKind = eRule_Clearance Then CellsField := ClearanceCellsJson(Board, RuleName);
     If CellsField <> '' Then CellsField := ',' + CellsField;
+    If Rule.RuleKind = 54 Then
+    Begin
+        GapField := GapField + ',"clearance_to_exposed_copper":';
+        If SilkMaskExposedCopper(Board, RuleName, '') = '' Then GapField := GapField + 'null'
+        Else GapField := GapField + SilkMaskExposedCopper(Board, RuleName, '');
+    End;
 
     Result := BuildSuccessResponse(RequestId,
         '{"name":"' + EscapeJsonString(Rule.Name) + '",'
@@ -2022,7 +2064,7 @@ Var
     LimitsReport : String;
     XHMin, XHMax, XHPref, XVGap, XShow, XMode, XCMin, XCMax, XAnt, XMTol, XDUnc : String;
     XFStyle, XFDir, XFBgaDir, XFBgaVia, XFGrid, XReport, XMissed, XBad : String;
-    XWDrv, XWMin, XWMax, XWFav, XWCopper, XCells : String;
+    XWDrv, XWMin, XWMax, XWFav, XWCopper, XCells, XExposed : String;
     DiffAsked, XCellCount : Integer;
     RulePlaneConn : IPCB_PowerPlaneConnectStyleRule;
     MinWMM, MaxWMM, FavWMM, CStyle, CWidth, CWidthMM, CGap, CGapMM, CEntries, CAngle, CExp : String;
@@ -2164,6 +2206,7 @@ Begin
     XAnt := ExtractJsonValue(Params, 'antenna_tolerance_mils');
     XMTol := ExtractJsonValue(Params, 'matched_length_tolerance_mils');
     XCells := ExtractJsonValue(Params, 'object_clearances');
+    XExposed := ExtractJsonValue(Params, 'clearance_to_exposed_copper');
     XDUnc := ExtractJsonValue(Params, 'dp_max_uncoupled_length_mils');
     XFStyle := ExtractJsonValue(Params, 'fanout_style');
     XFDir := ExtractJsonValue(Params, 'fanout_direction');
@@ -2815,6 +2858,7 @@ Begin
     If (XMTol <> '') And (Kind <> 4) Then XBad := 'matched_length_tolerance_mils is for a Matched Lengths rule';
     If (XDUnc <> '') And (Kind <> 51) Then XBad := 'dp_max_uncoupled_length_mils is for a Differential Pairs Routing rule';
     If (XCells <> '') And (Kind <> 0) Then XBad := 'object_clearances is for a Clearance rule';
+    If (XExposed <> '') And (Kind <> 54) Then XBad := 'clearance_to_exposed_copper is for a Silk To Solder Mask Clearance rule';
     If ((XWDrv <> '') Or (XWMin <> '') Or (XWMax <> '') Or (XWFav <> '') Or (XWCopper <> ''))
         And (Kind <> 2) Then XBad := 'width_*_impedance and check_connected_copper are for a Width rule';
     If ((XFStyle <> '') Or (XFDir <> '') Or (XFBgaDir <> '') Or (XFBgaVia <> '') Or (XFGrid <> ''))
@@ -2840,6 +2884,18 @@ Begin
         XReport := RuleExtrasMatched(Board, RuleName, XMTol, XMissed);
     If (Kind = 51) And (XDUnc <> '') Then
         XReport := RuleExtrasUncoupled(Board, RuleName, XDUnc, XMissed);
+    If (Kind = 54) And (XExposed <> '') Then
+    Begin
+        PcbBeginEdit(0);
+        Try
+            V := SilkMaskExposedCopper(Board, RuleName, XExposed);
+        Finally
+            PcbEndEdit(0);
+        End;
+        If V <> XExposed Then XMissed := XMissed + '"clearance_to_exposed_copper",';
+        If V = '' Then V := 'null';
+        XReport := '"clearance_to_exposed_copper":' + V;
+    End;
     If (Kind = 0) And (XCells <> '') Then
     Begin
         PcbBeginEdit(0);

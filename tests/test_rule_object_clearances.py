@@ -147,3 +147,20 @@ def test_obj_query_reads_a_rule():
     assert ("If (Oid = eRuleObject) And IsPCBRuleProperty(PropName) Then "
             "Result := PCBRulePropertyText(Obj, PropName)") in units["GetPCBProperty"]
     assert "IsGeneratedPCBProperty(PropName) Or IsPCBRuleProperty(PropName)" in units["IsKnownPCBProperty"]
+
+
+def test_the_silk_to_mask_choice_is_written_read_back_and_kind_checked(monkeypatch):
+    tool, bridge = _tool(monkeypatch)
+    asyncio.run(tool(name="SilkToSolderMaskClearance", clearance_to_exposed_copper=False))
+    asyncio.run(tool(name="SilkToSolderMaskClearance", clearance_to_exposed_copper=True))
+    assert [p["clearance_to_exposed_copper"] for p in _sent(bridge)] == ["false", "true"]
+    units = load(PCB_PAS)
+    helper = units["SilkMaskExposedCopper"]
+    assert "(R.RuleKind = 54) And (R.Name = RuleName)" in helper
+    assert "R.IsClearanceToExposedCopper := (SetTo = 'true');" in helper
+    assert "Result := BoolToJsonStr(R.IsClearanceToExposedCopper);" in helper, "not read back"
+    text = PCB_PAS.read_text(encoding="latin-1")
+    assert ("If (XExposed <> '') And (Kind <> 54) Then XBad := "
+            "'clearance_to_exposed_copper is for a Silk To Solder Mask Clearance rule';") in text
+    assert "If V <> XExposed Then XMissed := XMissed + '\"clearance_to_exposed_copper\",';" in text
+    assert '"clearance_to_exposed_copper":' in units["PCB_GetRuleProperties"]

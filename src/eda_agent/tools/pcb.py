@@ -12090,6 +12090,7 @@ def register_pcb_tools(mcp):
         matched_length_tolerance_mils: float | None = None,
         dp_max_uncoupled_length_mils: float | None = None,
         object_clearances_mils: dict[str, float] | None = None,
+        clearance_to_exposed_copper: bool | None = None,
         fanout_style: int | None = None,
         fanout_direction: int | None = None,
         bga_fanout_direction: int | None = None,
@@ -12150,6 +12151,12 @@ def register_pcb_tools(mcp):
           the table. Measured on AD 26.11: the batch DRC judged a pair by
           the cell written (a track 0.15 mm from an SMD pad stopped being
           reported with ``Track-SMDPad`` at 4 mil under a 10 mil gap).
+
+        - Silk To Solder Mask Clearance (kind 54):
+          ``clearance_to_exposed_copper``: True checks silk against the
+          exposed copper, False against the solder mask openings (the
+          two choices of the rule's dialog). Read back under ``settings``;
+          ``pcb_get_rule_properties`` returns it too.
 
         After ``scope1`` / ``scope2`` the reply carries
         ``batch_drc_uses_new_scope: false`` and ``batch_drc_note``: the
@@ -12330,6 +12337,8 @@ Args: name selects an existing rule. Pass only fields to change. Lengths use mil
                 params[key] = "true" if value else "false"
         if show_distances is not None:
             params["show_distances"] = "true" if show_distances else "false"
+        if clearance_to_exposed_copper is not None:
+            params["clearance_to_exposed_copper"] = "true" if clearance_to_exposed_copper else "false"
         if dp_impedance_driven is not None:
             params["dp_impedance_driven"] = "true" if dp_impedance_driven else "false"
         for key, value in (testpoint or {}).items():
